@@ -29,8 +29,13 @@ const (
 )
 
 func (c Class) String() string {
-	if c == VEC {
+	switch c {
+	case VEC:
 		return "v"
+	case FPR:
+		return "f"
+	case SLOT:
+		return "slot"
 	}
 	return "x"
 }
@@ -43,22 +48,6 @@ type Reg struct {
 }
 
 func (r Reg) String() string { return r.Class.String() + strconv.Itoa(r.Num) }
-
-// reserved registers are never renamed: the frame pointer and link
-// register (the prologue's save pair), the platform register x18, and x8,
-// the indirect result address.
-func reserved(r Reg) bool {
-	return r.Class == GPR && (r.Num == 8 || r.Num == 18 || r.Num == 29 || r.Num == 30)
-}
-
-// calleeSaved reports the registers the callee preserves: x19–x28 whole
-// and the low 64 bits of v8–v15.
-func calleeSaved(r Reg) bool {
-	if r.Class == GPR {
-		return r.Num >= 19 && r.Num <= 28
-	}
-	return r.Num >= 8 && r.Num <= 15
-}
 
 // part locates a register inside an operand: the register itself or a
 // memory operand's base (partReg), a memory operand's index (partIndex),
@@ -120,6 +109,7 @@ type Function struct {
 	Blocks []*Block
 	Instrs []*Instr // every instruction in linear order
 	labels map[string]*Block
+	t      *target
 }
 
 // shape is an instruction's register semantics: the operands it writes,
@@ -187,15 +177,16 @@ func Lift(fn *asm.Function) (*Function, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("machine: no function")
 	}
-	if fn.Arch != "" && fn.Arch != asm.ArchArm64 {
-		return nil, fmt.Errorf("machine: the %s lane is not lifted", fn.Arch)
+	t, err := targetFor(fn.Arch)
+	if err != nil {
+		return nil, err
 	}
-	out := &Function{Asm: fn, labels: map[string]*Block{}}
+	out := &Function{Asm: fn, labels: map[string]*Block{}, t: t}
 	if err := out.buildBlocks(); err != nil {
 		return nil, err
 	}
 	for _, ins := range out.Instrs {
-		if err := accesses(ins); err != nil {
+		if err := accesses(t, ins); err != nil {
 			return nil, fmt.Errorf("machine: line %d: %v", ins.Asm.Line, err)
 		}
 	}
@@ -205,13 +196,11 @@ func Lift(fn *asm.Function) (*Function, error) {
 	return out, nil
 }
 
-// terminator reports an instruction that ends a block.
-func terminator(ins asm.Instruction) bool {
-	switch ins.Mnemonic {
-	case "b", "b.", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "br":
-		return true
-	}
-	return false
+// terminator reports an instruction that ends a block: a branch, a
+// return, a trap, or a jump the lift refuses.
+func (t *target) terminator(ins asm.Instruction) bool {
+	_, ret, trap, branch, err := t.kind(ins)
+	return ret || trap || branch || err != nil
 }
 
 // branchTarget is the label a branch names, "" for none.
@@ -226,24 +215,17 @@ func branchTarget(ins asm.Instruction) string {
 }
 
 // accesses fills an instruction's defs and uses from its shape.
-func accesses(ins *Instr) error {
+func accesses(t *target, ins *Instr) error {
 	a := ins.Asm
-	sh, known := shapes[a.Mnemonic]
+	sh, known := t.shapes[a.Mnemonic]
 	if !known {
 		return fmt.Errorf("unknown instruction %s", a.Mnemonic)
 	}
-	switch a.Mnemonic {
-	case "bl", "blr":
-		ins.Call = true
-	case "ret":
-		ins.Ret = true
-	case "brk":
-		ins.Trap = true
-	case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
-		ins.Branch = true
-	case "br":
-		return fmt.Errorf("indirect branch")
+	call, ret, trap, branch, err := t.kind(a)
+	if err != nil {
+		return err
 	}
+	ins.Call, ins.Ret, ins.Trap, ins.Branch = call, ret, trap, branch
 	isDef := map[int]bool{}
 	for _, d := range sh.defs {
 		isDef[d] = true
@@ -251,7 +233,7 @@ func accesses(ins *Instr) error {
 	for i, op := range a.Operands {
 		switch o := op.(type) {
 		case asm.Register:
-			r, bits, lane, ok, err := regOf(o)
+			r, bits, lane, ok, err := t.regOf(o)
 			if err != nil {
 				return err
 			}
@@ -279,13 +261,13 @@ func accesses(ins *Instr) error {
 			if o.MulVL {
 				return fmt.Errorf("scalable memory operand")
 			}
-			if r, bits, _, ok, err := regOf(o.Base); err != nil {
+			if r, bits, _, ok, err := t.regOf(o.Base); err != nil {
 				return err
 			} else if ok {
 				ins.Uses = append(ins.Uses, Access{Op: i, Part: partReg, Reg: r, Bits: bits})
 			}
 			if o.Index != nil {
-				if r, bits, _, ok, err := regOf(*o.Index); err != nil {
+				if r, bits, _, ok, err := t.regOf(*o.Index); err != nil {
 					return err
 				} else if ok {
 					ins.Uses = append(ins.Uses, Access{Op: i, Part: partIndex, Reg: r, Bits: bits})
@@ -293,7 +275,7 @@ func accesses(ins *Instr) error {
 			}
 		case asm.RegisterList:
 			for k, reg := range o.Regs {
-				r, bits, lane, ok, err := regOf(reg)
+				r, bits, lane, ok, err := t.regOf(reg)
 				if err != nil {
 					return err
 				}
@@ -315,86 +297,18 @@ func accesses(ins *Instr) error {
 		}
 	}
 	if ins.Call {
-		// The procedure call standard (AAPCS64): arguments in x0–x7 and
-		// v0–v7, the indirect result address in x8; the callee may write
-		// x0–x18, x30, v0–v7, and v16–v31, and the upper halves of v8–v15
-		// (a wide value there does not survive a call: allocation keeps
-		// wide webs out of v8–v15 across calls).
-		for n := 0; n <= 8; n++ {
-			ins.Uses = append(ins.Uses, Access{Implicit: true, Reg: Reg{GPR, n}, Bits: 64})
-		}
-		for n := 0; n <= 7; n++ {
-			ins.Uses = append(ins.Uses, Access{Implicit: true, Reg: Reg{VEC, n}, Bits: 128})
-		}
-		for n := 0; n <= 18; n++ {
-			ins.Defs = append(ins.Defs, Access{Implicit: true, Reg: Reg{GPR, n}, Bits: 64})
-		}
-		ins.Defs = append(ins.Defs, Access{Implicit: true, Reg: Reg{GPR, 30}, Bits: 64})
-		for n := 0; n <= 31; n++ {
-			if n >= 8 && n <= 15 {
-				continue
-			}
-			ins.Defs = append(ins.Defs, Access{Implicit: true, Reg: Reg{VEC, n}, Bits: 128})
-		}
+		// The procedure-call contract: the argument registers read, the
+		// caller-saved registers written.
+		ins.Uses = append(ins.Uses, t.callUses...)
+		ins.Defs = append(ins.Defs, t.callDefs...)
 	}
 	if ins.Ret {
-		// The result registers and the link register.
-		for _, n := range []int{0, 1, 8, 30} {
-			ins.Uses = append(ins.Uses, Access{Implicit: true, Reg: Reg{GPR, n}, Bits: 64})
-		}
-		for _, n := range []int{0, 1, 2, 3} {
-			ins.Uses = append(ins.Uses, Access{Implicit: true, Reg: Reg{VEC, n}, Bits: 128})
-		}
+		ins.Uses = append(ins.Uses, t.retUses...)
 	}
-	markCopy(ins)
+	if bits, ok := t.copyOf(a); ok && len(ins.Defs) == 1 && len(ins.Uses) >= 1 && ins.Defs[0].Reg.Class == ins.Uses[0].Reg.Class {
+		ins.Copy, ins.CopyBits = true, bits
+	}
 	return nil
-}
-
-// markCopy recognizes a register-to-register copy.
-func markCopy(ins *Instr) {
-	a := ins.Asm
-	regs := func(n int) ([]asm.Register, bool) {
-		if len(a.Operands) != n {
-			return nil, false
-		}
-		out := make([]asm.Register, n)
-		for i, op := range a.Operands {
-			r, ok := op.(asm.Register)
-			if !ok || r.Class == asm.ClassSP || r.ZeroRegister() || r.Lane >= 0 {
-				return nil, false
-			}
-			out[i] = r
-		}
-		return out, true
-	}
-	switch a.Mnemonic {
-	case "mov":
-		rs, ok := regs(2)
-		if !ok || rs[0].Class != rs[1].Class {
-			return
-		}
-		switch rs[0].Class {
-		case asm.ClassX, asm.ClassW:
-			ins.Copy, ins.CopyBits = true, viewBits(rs[0])
-		case asm.ClassV:
-			if rs[0].Vec == rs[1].Vec && (rs[0].Vec == "16b" || rs[0].Vec == "8b") {
-				ins.Copy, ins.CopyBits = true, viewBits(rs[0])
-			}
-		}
-	case "fmov":
-		rs, ok := regs(2)
-		if ok && rs[0].Class == asm.ClassV && rs[1].Class == asm.ClassV && rs[0].Vec == rs[1].Vec && rs[0].Vec != "" {
-			ins.Copy, ins.CopyBits = true, viewBits(rs[0])
-		}
-	case "orr":
-		rs, ok := regs(3)
-		if ok && rs[0].Class == asm.ClassV && rs[1].Num == rs[2].Num && rs[1].Vec == rs[2].Vec && rs[0].Vec == rs[1].Vec && (rs[0].Vec == "16b" || rs[0].Vec == "8b") {
-			ins.Copy, ins.CopyBits = true, viewBits(rs[0])
-		}
-	}
-	if ins.Copy && (len(ins.Defs) != 1 || len(ins.Uses) < 1 || ins.Defs[0].Reg.Class != ins.Uses[0].Reg.Class) {
-		ins.Copy = false
-	}
 }
 
 // regOf maps an assembly register to a Reg with the width of its view; ok
@@ -490,21 +404,21 @@ func regAt(a asm.Instruction, acc Access) asm.Register {
 }
 
 // setRegAt rewrites the register an access names.
-func setRegAt(a *asm.Instruction, acc Access, to Reg) {
+func (t *target) setRegAt(a *asm.Instruction, acc Access, to Reg) {
 	switch o := a.Operands[acc.Op].(type) {
 	case asm.Register:
-		a.Operands[acc.Op] = spell(o, to)
+		a.Operands[acc.Op] = t.spell(o, to)
 	case asm.Memory:
 		if acc.Part == partIndex {
-			idx := spell(*o.Index, to)
+			idx := t.spell(*o.Index, to)
 			o.Index = &idx
 		} else {
-			o.Base = spell(o.Base, to)
+			o.Base = t.spell(o.Base, to)
 		}
 		a.Operands[acc.Op] = o
 	case asm.RegisterList:
 		regs := append([]asm.Register(nil), o.Regs...)
-		regs[acc.Part-partList] = spell(regs[acc.Part-partList], to)
+		regs[acc.Part-partList] = t.spell(regs[acc.Part-partList], to)
 		a.Operands[acc.Op] = asm.RegisterList{Regs: regs}
 	}
 }

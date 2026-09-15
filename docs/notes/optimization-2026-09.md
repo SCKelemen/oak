@@ -61,10 +61,10 @@ survey. The first target-independent expression increment landed on
 every backend; `source.canonical.integer.v1` removes fixed-width `+ 0`, `- 0`,
 `* 1`, `/ 1`, `| 0`, `^ 0`, and shifts by zero when the retained operand has
 the exact checked result type. The changed program is checked again. Both
-deliberately keep every non-literal operand; widening expressions, CSE, SCCP, and
-dead-path removal wait for OptIR to carry effects and traps explicitly. Literal
-negation also waits for typed OptIR so canonicalization never mutates a source
-token that keys checked facts. The independent validation clone receives only
+deliberately keep every non-literal operand; widening rewrites, CSE, and
+dead-path removal wait for validated OptIR transformation and emission. Literal
+negation also stays out of source rewriting so canonicalization never mutates a
+source token that keys checked facts. The independent validation clone receives only
 the concrete generic ADT declarations recorded by the specializing checker;
 they are rebuilt through checked type substitution and never enter emission. `-opt
 0` against `-opt 2` still measures how much generic scalar work the C compiler
@@ -73,12 +73,35 @@ has left to do.
 The first target-neutral middle-end substrate now lives in `optir/`. It keeps
 structured conditionals and pre-test loops with explicit loop-carried SSA
 values, operation effects, attributes, and proof facts, while also projecting
-deterministically to a typed block-argument CFG. Its independent verifier
-rejects undefined or non-dominating values, invalid same-block order,
-unreachable blocks, malformed edges and terminators, non-Bool conditions, and
-wrong returns. No backend consumes this IR yet; this increment establishes the
-fail-closed representation and analysis boundary before compiler projection or
-SCCP/CSE/DCE can affect emitted code.
+deterministically to a typed block-argument CFG. `Compilation.OptIR()` projects
+the checked, concrete scalar subset: fixed-width integers, Bool, unit, local
+assignments, structured branches and short-circuiting, exhaustive Bool matches,
+pre-test loops with explicit carried locals, value-preserving integer widening,
+and effect-marked ordinary calls. Unsupported memory, method, kernel, protocol,
+and richer algebraic forms produce per-function refusals rather than partial IR.
+The independent verifier rejects undefined or non-dominating values, invalid
+same-block order, unreachable blocks, malformed edges and terminators, non-Bool
+conditions, and wrong returns.
+
+The first analysis-only SCCP validates operation arity, types, attributes, and
+cast legality, then computes exact constants and executable CFG edges with Oak's
+8/16/32/64/128-bit wrapping semantics, signed division edge behavior, and
+checked shift/division traps. Results are deterministic evidence and do not
+rewrite the CFG. No backend consumes this IR yet; equivalence validation remains
+mandatory before SCCP, CSE, or DCE can affect emitted code.
+
+The first target-independent cleanup candidate now runs beside that evidence.
+Dominance-scoped CSE shares exact operations only from a closed vocabulary of
+total pure scalar operations; code, result types, canonical SSA operands, and
+ordered attributes must all match. It retains sibling computations, trapping
+arithmetic, calls, memory, synchronization, unknown operations, and any
+operation carrying an effect. Proof facts move to the dominating definition
+only when all of their values are valid there. Fixed-point DCE then removes
+unused chains from the same closed vocabulary, treating terminators, other
+operations' facts, and function facts as roots. A definition's own fact leaves
+with the definition. Both transforms clone their input and independently verify
+input and output. `Compilation.OptIR()` exposes the simplified CFG and a
+deterministic report, but emission still consumes neither.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
@@ -159,6 +182,23 @@ per-processor cost data for layer B's selection and scheduling, still to
 come. The chain: source equals rewritten body (A), rewritten body equals
 instructions (B), instructions mean what Arm's ASL and the RISC-V Sail
 export say (the assembler's proofs); `-verified` demands all of it.
+
+## Generic optimization coverage index
+
+The familiar compiler-optimization taxonomy is a completeness index, not one
+destructive pass order. Oak places every family at the highest semantic layer
+that still has the facts needed to prove it, and leaves profitability to
+candidate selection.
+
+| Family | Techniques tracked for Oak | Placement |
+| --- | --- | --- |
+| Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analyses; CSE/DCE and analysis-only SCCP are the first executable pieces |
+| Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
+| Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
+| Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |
+| Static analysis | alias, array-access, control-flow, data-flow, dependence, escape, pointer, shape, and value-range analysis | reusable proof domains feeding legality, representation choice, and costs |
+| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; AArch64 first, the same contracts reused by RV64 |
 
 ## The program, in measured order
 

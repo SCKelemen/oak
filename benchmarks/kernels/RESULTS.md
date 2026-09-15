@@ -530,6 +530,33 @@ frame slot the local no longer occupied — instead of the area this
 function itself returns; `TestNativeShapesBoundaryCopies` now carries
 `relay` for the shape, and the scan's chain agrees again.
 
+## Fields in registers, 2026-09-16
+
+With the record fields a loop touches in callee-saved registers
+(docs/spec/94-assembler.md §9 "Fields in registers"), measured over #472–#476
+merged locally (the machine under the compiler suites, C and native
+interleaved, three runs each), the dbs frame scan's native build stands
+at 120–150 ms against the C build's 101–136 ms — from 1.8× to about 1.15×
+of clang in one increment, the chain hash agreeing and the verdicts
+unchanged (383 proven, 71 bodies left to C). `sha256_update`'s byte loop
+is eleven instructions and the loop's two: `filled` is `w23`, so the
+guard compares it, the increment writes it, and the `== 64` test reads
+it, with no load or store of the record anywhere in the loop; the
+record's memory is written where `next` is used whole — passed to
+`sha256_compress` by the addresses of its `h` and `block` fields, which
+are not promoted, and at the return, where the caller's area takes the
+homes. What remains beside clang's ten: the block's address rebuilt each
+iteration (`add x9, x22, #32`; the loop invariants, now on
+`specification`, take it). The copy of the index into a scratch before
+the guard (`mov w10, w23`) went with the same increment: an index in its
+own register — a local's home or a promoted field's — is guarded and
+read where it lies (`indexHome`), so the absorber's loop is ten
+instructions and its control two. Beyond parity: the loop's exit test at its top
+(`cmp; b.hs done` then `add; b loop`, four instructions of control to
+clang's three) waits on a bottom-tested loop shape the verifier's
+recognizer admits, and the per-block chain of calls on the inlining of
+small record-returning callees.
+
 ## Rotates, 2026-09-16
 
 `rotr32(x, u32(7))` inlined is one `ror w5, w3, #7` (docs/spec/94-assembler.md
@@ -561,4 +588,91 @@ return. That is the order of the next increments: the slot reload and
 the Bool compare in the byte loop, the result built in the `x8` area,
 by-reference arguments passed as the caller's own storage when the
 callee reads them in place, and pair copies for aggregates.
+## The register budget, 2026-09-16
 
+With the single-use span local forwarded into its call
+(docs/spec/94-assembler.md §9 "The register budget"), the aggregate
+helpers fold: `sha256_update`'s loop no longer calls `sha256_compress`
+and `sha256_block` but the FEAT_SHA256 dispatch itself (`bl
+sha256_block_hw` twice in the body, once per loop), the chaining value
+and the block copied by pairs around it. Over every open branch merged
+(#473–#488, a fresh measurement tree from `specification`), the dbs
+frame scan's native build stands at 121–143 ms against the C build's
+118–122 ms under the suites' load, and at 94–112 ms against 88–105 ms
+once the load fell (five interleaved runs each; best 93.6 against 88.3)
+— parity within five percent, from 1.8× at the start of the day — with the chain
+hash agreeing, 70 bodies left to C (89 at the start), 384 proven and no
+refutation. The byte loop is ten instructions and its control two;
+clang's is ten and three. What the dump still shows, in order: the loop
+invariants' form was rejected for `sha256_update` because both forms
+verify as trusted and the policy keeps the plain one on a tie
+(`keeps its loop invariants in place`), so `add x11, x22, #32` is
+rebuilt each byte; `sha256_block`'s `true ? { … }` scope lowers as `movz
+w11, #1; cbz w11`, a constant condition not folded; and the per-block
+path copies the block into a temp for the callee's `view(&block)`, as
+the source asks. The next increments are those three, then a
+bottom-tested loop shape for the verifier's recognizer.
+
+
+## The native backend after the day's increments, 2026-09-16 (evening)
+
+The ten kernels through both backends at revision `a449cf2a` (every
+increment above in place: strength reduction, elision, if-conversion,
+select forms, unrolling, LICM, rotation, pair loads, arrays as values,
+vector operands in place, the word fusion, the inliner's literals, the
+late cleanup, the register reallocator) on the M4 Max at load average
+40–50 — the quietest the host has been this week, so these ratios are the
+first since the baseline that are worth reading against each other. Two
+alternated rounds of three samples over three inner rounds, 1 MiB per
+kernel; checksums equal on every row.
+
+| Kernel | C backend | oak-native | native / C | Selected body (instructions, through sp) | Verdict |
+| --- | ---: | ---: | ---: | --- | --- |
+| crc32c | 186 µs | 185 µs | 0.99× | 11, 4 | trusted (table) |
+| dispatch | 11.7 ms | 10.0 ms | 0.85× | 55, 2 | proven |
+| sha256 | 798 µs | 832 µs | 1.04× | 22, 6 | trusted (table) |
+| dot | 1,045 µs | 1,147 µs | 1.10× | 32, 6 | proven |
+| search | 13.2 ms | 15.1 ms | 1.14× | 44, 8 | witnessed |
+| tiled | 209 µs | 247 µs | 1.18× | 88, 10 | witnessed |
+| bitmap | 225 µs | 266 µs | 1.18× | C on both sides | — |
+| page_probe | 13.5 ms | 18.1 ms | 1.35× | 78, 10 | witnessed |
+| sum | 136 µs | 231 µs | 1.70× | 38, 2 | proven |
+| blake3 | 3.28 ms | 10.9 ms | 3.33× | partly native | trusted |
+
+`bitmap` is the C backend on both rows (its `cnt64` is a C helper in
+value position), so 1.18× is this run's noise floor; `dot`, `sha256`,
+`crc32c`, and `dispatch` are inside it. Two gaps remain above it:
+
+- **`blake3` 3.3×** is frame traffic. Of the package's 5,101 selected
+  instructions, 3,002 are loads and stores, and 2,104 of those go through
+  `sp` — `blake3_final` 773, `blake3_init` 620, `blake3_start_flag` 409,
+  `blake3_compress` 318. The state arrays live in frame slots; this is
+  the reallocator's and the frame-slot promotion's case (§9.ag onward),
+  and the reallocator does not lower 21 of the package's candidates yet
+  (`machine: line N: operand of an unknown kind`, across `bench_sum`,
+  `bench_dot`, `bench_page_probe`, `bench_sha256`, the CRC chunk and
+  update, the SHA rounds, and the deque helpers).
+- **`sum` 1.7×** was the strided header. The unrolled loop was fourteen
+  instructions per four elements, five of them the header
+  `cmp w20, #4; b.lo done; sub w9, w20, #4; cmp w3, w9; b.hi done` —
+  `len(v) >= 4` and `len(v) - 4` are loop-invariant, but the
+  loop-invariant pass scanned the body, not the header, and ran before
+  the unrolling in its phase, so it reported no site. The register-budget
+  increment landed the same evening (`94-assembler.md` §9 "Loop
+  invariants": the exit tests as groups, an invariant group peeled before
+  the header, a setup instruction hoisted under a new name, the unrolling
+  first in the loop phase) and the selected `sum` body is the
+  eight-instruction body under `cmp w3, w14; b.ls` — ten per four
+  elements, proven, against clang's NEON loop at about six per four. The
+  remaining gap is the vector form of the same reduction
+  (`compiler/e2e_native_header_hoist_test.go` pins the shape).
+
+**The search itself**, read off the report over the 49 natively lowered
+functions: 15 select the identity; the rest select one to five
+transforms (`reallocate` and `late-cleanup` most often, together or
+alone). The validation budget of three cut a candidate on 12 functions;
+the cut candidate was in every case a costlier variant of the selected
+one, so the budget affected verdict strength, not shape. A beam of eight
+against the default four changes one selection (`blake3_final`, to a
+five-transform form the model prices 3.5 percent lower), so beam
+pressure is not yet a constraint at eight transforms.

@@ -343,8 +343,13 @@ type recordLayout struct {
 	size     int64
 	align    int64
 	hasFloat bool // a float field anywhere inside (the vector save area is reserved)
-	fields   map[string]recordField
-	order    []string
+	// hasVec: a fixed vector field anywhere inside. Such a record lives in
+	// the frame or behind a span like any other, but is not passed or
+	// returned by value on the native lane (AAPCS64 flattens the lane
+	// array into the composite's members, an HFA question v1 leaves to C).
+	hasVec bool
+	fields map[string]recordField
+	order  []string
 	// A tagged union (ADT) is a synthetic record: the u32 field "tag" at
 	// offset 0 and one field per payload-carrying variant, named after the
 	// variant, at the payload union's offset (semir.TaggedUnionLayout — the
@@ -427,7 +432,7 @@ func (l *recordLayout) isHFA() bool {
 	if len(l.order) == 0 {
 		return false
 	}
-	first := l.fields[l.order[0]].typ
+	first, _ := hfaMember(l.fields[l.order[0]])
 	if !first.isFloat {
 		return false
 	}
@@ -437,15 +442,35 @@ func (l *recordLayout) isHFA() bool {
 	members := int64(0)
 	for _, name := range l.order {
 		field := l.fields[name]
-		if field.kind == fieldRecord || field.typ != first {
+		member, count := hfaMember(field)
+		if field.kind == fieldRecord || member != first {
 			return false
 		}
-		members++
-		if field.kind == fieldArray {
-			members += field.length - 1
-		}
+		members += count
 	}
 	return members <= 4
+}
+
+// hfaMember is a field's fundamental data type and member count for the
+// HFA rule: a float vector field is its lanes — the C backend's lane array
+// `struct { f32 lanes[4]; }` flattens into four float members (a lone
+// `simd.F32x4` field makes an HFA; two are eight members, a 32-byte
+// composite by reference); an array is its elements.
+func hfaMember(field recordField) (scalar, int64) {
+	if field.typ.isVec {
+		if !field.typ.laneFloat {
+			return field.typ, 1
+		}
+		lane := scalars["f32"]
+		if field.typ.laneBits == 64 {
+			lane = scalars["f64"]
+		}
+		return lane, int64(field.typ.lanes)
+	}
+	if field.kind == fieldArray {
+		return field.typ, field.length
+	}
+	return field.typ, 1
 }
 
 // arrayLayout is an owned array of scalars `[N]T` seen as a value: the
@@ -607,6 +632,11 @@ var fieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4}, "f32": {Size: 4, Alignment: 4},
 	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8}, "f64": {Size: 8, Alignment: 8},
 	"Bool": {Size: 4, Alignment: 4},
+	// The fixed vectors as the C backend places them: the 16-byte lane
+	// array at the lane's alignment (codegen/records.go).
+	"simd.U8x16": {Size: 16, Alignment: 1}, "simd.U16x8": {Size: 16, Alignment: 2},
+	"simd.U32x4": {Size: 16, Alignment: 4}, "simd.U64x2": {Size: 16, Alignment: 8},
+	"simd.F32x4": {Size: 16, Alignment: 4}, "simd.F64x2": {Size: 16, Alignment: 8},
 }
 
 // layoutOf places a declared record type, or reports why it is outside the
@@ -648,12 +678,15 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 		case func() bool { _, ok := scalarOf(field.Value); return ok }():
 			typ, _ := scalarOf(field.Value)
 			fixed, placeable := fieldRepresentations[field.Value.String()]
-			if !placeable {
+			if !placeable || (typ.isVec && g.rvLane) {
+				// The rv64 lane keeps records of vectors with the C
+				// backend (docs/spec/93-simd.md section 1.4).
 				return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
 			}
 			rep = fixed
 			placed = recordField{kind: fieldScalar, typ: typ}
-			layout.hasFloat = layout.hasFloat || typ.isFloat
+			layout.hasFloat = layout.hasFloat || typ.isFloat || typ.isVec
+			layout.hasVec = layout.hasVec || typ.isVec
 		case func() bool { _, ok := g.recordTypeName(field.Value); return ok }():
 			nestedName, _ := g.recordTypeName(field.Value)
 			nested, err := g.layoutOf(nestedName)
@@ -663,6 +696,7 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 			rep = semir.RecordFieldRepresentation{Size: uint32(nested.size), Alignment: uint32(nested.align)}
 			placed = recordField{kind: fieldRecord, layout: nested}
 			layout.hasFloat = layout.hasFloat || nested.hasFloat
+			layout.hasVec = layout.hasVec || nested.hasVec
 		case g.isArrayType(field.Value):
 			arrayRep, arrayField, err := g.fieldOf("the record "+name, field.Value)
 			if err != nil {
@@ -670,6 +704,7 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 			}
 			rep, placed = arrayRep, arrayField
 			layout.hasFloat = layout.hasFloat || placed.mentionsFloat()
+			layout.hasVec = layout.hasVec || (placed.layout != nil && placed.layout.hasVec)
 		default:
 			return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
 		}
@@ -723,7 +758,8 @@ func (g *generator) fieldOf(owner string, member ast.Expression) (semir.RecordFi
 	}
 	if elem, length, isArray := arrayOf(member); isArray {
 		fixed, placeable := fieldRepresentations[elem.name]
-		if !placeable {
+		if !placeable || elem.isVec {
+			// Arrays of vectors stay with the C backend (docs/spec/93-simd.md).
 			return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
 		}
 		return semir.RecordFieldRepresentation{Size: fixed.Size * uint32(length), Alignment: fixed.Alignment}, recordField{kind: fieldArray, typ: elem, length: length}, nil
@@ -743,7 +779,7 @@ func (f recordField) mentionsFloat() bool {
 	if f.layout != nil {
 		return f.layout.hasFloat
 	}
-	return f.typ.isFloat
+	return f.typ.isFloat || f.typ.isVec
 }
 
 // adtLayoutOf places a tagged union as a synthetic record: the u32 tag,
@@ -825,9 +861,30 @@ func (g *generator) variantTypeName(e *ast.VariantExpression, expected *recordLa
 // local, `r.f` on a record place (a scalar, nested record, or array field),
 // recursively. An expression that is no such chain is the zero place.
 func (g *generator) placeOf(expr ast.Expression) (place, error) {
+	return g.resolvePlace(expr, true)
+}
+
+// resolvePlace is placeOf; whole marks a use of the resolved record as a
+// whole (its memory read or written), which writes its register-resident
+// fields back first; a descent into a field passes false.
+func (g *generator) resolvePlace(expr ast.Expression, whole bool) (place, error) {
+	if index, isIndex := expr.(*ast.IndexExpression); isIndex {
+		if _, _, isPromoted := g.promotedFieldOf(index); isPromoted {
+			// A promoted field reached as a place (its address taken by a
+			// path the pre-scan let through): its memory, made current.
+			if err := g.flushPromoted(index.Left.(*ast.Identifier).Value); err != nil {
+				return place{}, err
+			}
+		}
+	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		if rec, isRecord := g.records[e.Value]; isRecord {
+			if whole {
+				if err := g.flushPromoted(e.Value); err != nil {
+					return place{}, err
+				}
+			}
 			return place{rec: rec}, nil
 		}
 		if arr, isArray := g.arrays[e.Value]; isArray {
@@ -854,7 +911,7 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 					return g.spanRecordElement(sp, e.Index)
 				}
 			}
-			base, err := g.placeOf(e.Left)
+			base, err := g.resolvePlace(e.Left, false)
 			if err != nil {
 				return place{}, err
 			}
@@ -863,7 +920,7 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 			}
 			return g.recordElement(base.arr, e.Index)
 		}
-		base, err := g.placeOf(e.Left)
+		base, err := g.resolvePlace(e.Left, false)
 		if err != nil {
 			return place{}, err
 		}
@@ -1391,6 +1448,14 @@ type generator struct {
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
 	held map[heldKey]heldSlot
+	// promotable/promoted: record fields kept in registers (nativegen/fields.go).
+	promotable    map[string][]string
+	promoted      map[string]*promotedRecord
+	promotedCount int
+	// licmReserve: callee-saved registers held for the loop-invariant pass,
+	// handed back to declarations that would otherwise refuse the body
+	// (reclaimReserve).
+	licmReserve []int
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// bottomTest (Lane.RotateLoops): bottom-tested loops
@@ -1662,11 +1727,22 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			return nil, unsupported("%v", rerr)
 		}
 		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		if err != nil || !lane.Reallocate {
+			return out, err
+		}
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Sites()
+		promotedSlots[out] = alloc.Promoted
+		return out, nil
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1886,6 +1962,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if layout.isHFA() {
 				return nil, 0, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, layout.name)
 			}
+			if layout.hasVec {
+				return nil, 0, 0, unsupported("parameter %s: %s holds a vector (by value)", p.Name.Value, layout.name)
+			}
 			regs := 1
 			if layout.size <= 16 {
 				regs = layout.chunks()
@@ -2008,6 +2087,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				if layout.isHFA() {
 					return nil, 0, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", layout.name)
 				}
+				if layout.hasVec {
+					return nil, 0, 0, unsupported("result of type %s (a record holding a vector)", layout.name)
+				}
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
 				g.resultAreaReg = 8
@@ -2062,11 +2144,11 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Callee-saved registers reserved for the loop-invariant pass, saved
 	// and restored with the variables' (the count the first lowering
 	// wanted; the epilogue and the prologue read usedCallee after this).
-	var licmReserve []int
 	for k := 0; k < reserve && g.usedCallee < calleeHigh-calleeLow+1; k++ {
-		licmReserve = append(licmReserve, calleeLow+g.usedCallee)
+		g.licmReserve = append(g.licmReserve, calleeLow+g.usedCallee)
 		g.usedCallee++
 	}
+	g.promotable = g.promotableFields(fn)
 	body, err := g.lowerBody(fn.Body)
 	if err != nil {
 		return nil, 0, 0, err
@@ -2229,7 +2311,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
 		var hoistedInto []int
 		var moved int
-		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, licmReserve, g.globals, g.trap)
+		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, g.licmReserve, g.globals, g.trap)
 		hoistedLoops[out] = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
@@ -2965,6 +3047,9 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 	if layout.isHFA() {
 		return nil, unsupported("a call to %s returning a homogeneous floating-point aggregate", ident.Value)
 	}
+	if layout.hasVec {
+		return nil, unsupported("a call to %s returning a record holding a vector", ident.Value)
+	}
 	dst := g.tempRecord(layout)
 	if _, err := g.callWith(e, dst); err != nil {
 		return nil, err
@@ -2999,6 +3084,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 				g.release(out)
 			}
 			return nil
+		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordExpr(arm)
 		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
@@ -3072,6 +3160,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordInto(arm, outs)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
@@ -3574,6 +3665,9 @@ func (g *generator) overflowScratch() (int, bool) {
 		return r, true
 	}
 	if g.usedCallee >= calleeHigh-calleeLow+1 {
+		if r, ok := g.reclaimReserve(); ok {
+			return r, true
+		}
 		return 0, false
 	}
 	if g.saveArea == 0 {
@@ -3903,6 +3997,7 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	delete(g.regs, name)
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	g.promoteFields(name, rec)
 }
 
 // returnSlotLocal names the record local a function builds in its result
@@ -3976,11 +4071,10 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 	if s.Value == nil {
 		return unsupported("the span local %s without an initializer", s.Name.Value)
 	}
-	if g.usedCallee+2 > calleeHigh-calleeLow+1 {
+	baseReg, lenReg, ok := g.takeCalleePair()
+	if !ok {
 		return unsupported("the span local %s: the callee-saved registers are exhausted", s.Name.Value)
 	}
-	baseReg, lenReg := calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
-	g.usedCallee += 2
 	value, owned, err := g.spanValue(s.Value, &target, baseReg, lenReg)
 	if err != nil {
 		return err
@@ -4058,14 +4152,16 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if target != nil && (arr.elem != target.elem || arr.elemLayout != target.elemLayout) {
 			return span{}, false, unsupported("%s over %s where the span type's elements are expected", fn.Value, borrow.Right.String())
 		}
-		if arr.inReg && !arr.readOnly {
-			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
-		}
 		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
 		if arr.inReg {
-			// A constant table's address (the checker copies the region).
-			if shape.writable {
-				return span{}, false, unsupported("span of the constant table %s (read-only)", borrow.Right.String())
+			// A constant table's address (the checker copies the region), or
+			// an array field of a computed element — `view(&stages[k].coeffs)`
+			// through a span of records (docs/spec/50-borrowing.md section 8):
+			// the field's address is the element's plus its offset, the
+			// region the checker narrows; the borrow's elements are then
+			// addressed from the view's own base register.
+			if shape.writable && arr.readOnly {
+				return span{}, false, unsupported("span of the read-only %s", borrow.Right.String())
 			}
 			if err := g.addOffset(baseReg, arr.reg, arr.offset); err != nil {
 				return span{}, false, err
@@ -4141,6 +4237,15 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 // without an initializer is left to the C backend, which leaves it
 // uninitialized — no semantics are invented here.
 func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName string) error {
+	if err := g.lowerRecordDeclarationInto(s, typeName); err != nil {
+		return err
+	}
+	// The record's memory is initialized: its register-resident fields
+	// take their values from it (nativegen/fields.go).
+	return g.reloadPromoted(s.Name.Value)
+}
+
+func (g *generator) lowerRecordDeclarationInto(s *ast.VariableDeclaration, typeName string) error {
 	layout, err := g.layoutOf(typeName)
 	if err != nil {
 		return err
@@ -4267,7 +4372,12 @@ func (g *generator) fieldLoad(sc *scalarPlace) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	g.emit(load, reg(r, sc.typ), mem)
+	if sc.typ.isVec {
+		// A vector field moves whole through its q register.
+		g.emit("ldr", qreg(r-vecBase), mem)
+	} else {
+		g.emit(load, reg(r, sc.typ), mem)
+	}
 	if temp >= 0 {
 		g.release(temp)
 	}
@@ -4285,7 +4395,11 @@ func (g *generator) fieldStore(sc *scalarPlace, r int) error {
 	if err != nil {
 		return err
 	}
-	g.emit(store, reg(r, sc.typ), mem)
+	if sc.typ.isVec {
+		g.emit("str", qreg(r-vecBase), mem)
+	} else {
+		g.emit(store, reg(r, sc.typ), mem)
+	}
 	if temp >= 0 {
 		g.release(temp)
 	}
@@ -4481,6 +4595,10 @@ func (g *generator) declare(name string, s scalar) int64 {
 		case g.usedCallee < calleeHigh-calleeLow+1:
 			r = calleeLow + g.usedCallee
 			g.usedCallee++
+		case len(g.licmReserve) > 0:
+			// The loop-invariant pass's reserve yields to a variable that
+			// would otherwise take a caller-saved home or a slot.
+			r, _ = g.reclaimReserve()
 		case len(g.callerHomes) > 0:
 			r = g.callerHomes[0]
 			g.callerHomes = g.callerHomes[1:]
@@ -4641,6 +4759,42 @@ func (g *generator) liveHomes() map[int]bool {
 		}
 	}
 	return homes
+}
+
+// reclaimReserve hands back the last callee-saved register reserved for
+// the loop-invariant pass (docs/spec/94-assembler.md §9 "The register
+// budget"): a declaration that would otherwise refuse the body, or fall to
+// a slot, takes it, and the pass hoists into what remains. The register
+// is already counted in usedCallee, so the prologue saves it either way.
+func (g *generator) reclaimReserve() (int, bool) {
+	if len(g.licmReserve) == 0 {
+		return 0, false
+	}
+	r := g.licmReserve[len(g.licmReserve)-1]
+	g.licmReserve = g.licmReserve[:len(g.licmReserve)-1]
+	return r, true
+}
+
+// takeCalleePair claims two callee-saved registers for a span local's
+// base and length: the unclaimed ones, then the invariant pass's reserve.
+func (g *generator) takeCalleePair() (base, length int, ok bool) {
+	if g.usedCallee+2 <= calleeHigh-calleeLow+1 {
+		base, length = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
+		g.usedCallee += 2
+		return base, length, true
+	}
+	if g.usedCallee+1 <= calleeHigh-calleeLow+1 && len(g.licmReserve) >= 1 {
+		base = calleeLow + g.usedCallee
+		g.usedCallee++
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	if len(g.licmReserve) >= 2 {
+		base, _ = g.reclaimReserve()
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	return 0, 0, false
 }
 
 // declareAt binds a scalar variable to a given register: a leaf's
@@ -5033,7 +5187,7 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 				return err
 			}
 			g.releaseTemps(from.temps)
-			return nil
+			return g.reloadPromoted(s.Name.Value)
 		}
 		if arr, isArray := g.arrays[s.Name.Value]; isArray {
 			// `h = f(h)`: a whole owned array of scalars assigned as a value.
@@ -5272,6 +5426,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
 	}
+	if arm, isConstant := constantArm(match); isConstant {
+		// `true ? { … }`: the arm alone; `false ? { … }`: nothing.
+		if arm == nil {
+			return nil
+		}
+		return g.lowerArm(arm)
+	}
 	// If-conversion (nativegen/select.go): a chain over one comparison
 	// whose arms only assign lowers as compare and select.
 	if arms, final, isChain := conditionalArms(match); isChain {
@@ -5338,6 +5499,12 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 	// selection"): a negation inverts the branch instead of materializing
 	// a Bool, and a Bool variable in a register is tested where it lives.
 	switch e := expr.(type) {
+	case *ast.Boolean:
+		// A literal condition: the branch is always or never taken.
+		if e.Value != jumpIfFalse {
+			g.emit("b", asm.Symbol{Name: target})
+		}
+		return nil
 	case *ast.PrefixExpression:
 		if e.Operator == "!" {
 			return g.conditionBranch(e.Right, target, !jumpIfFalse)
@@ -5482,6 +5649,12 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 // 4096, possibly under a widening constructor.
 func (g *generator) simpleOperand(expr ast.Expression, typ scalar, allowImm bool) (asm.Operand, bool) {
 	switch e := expr.(type) {
+	case *ast.IndexExpression:
+		if hidden, elem, isPromoted := g.promotedFieldOf(e); isPromoted && !elem.isFloat && elem.wide() == typ.wide() {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
+				return reg(v, typ), true
+			}
+		}
 	case *ast.Identifier:
 		if v, inReg := g.regs[e.Value]; inReg && v >= 0 && !typ.isFloat {
 			if t, ok := g.types[e.Value]; ok && !t.isFloat && t.wide() == typ.wide() {
@@ -5636,6 +5809,9 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.expr(arm, &typ)
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			out, err := g.alloc(typ)
@@ -6297,6 +6473,11 @@ func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) 
 	}
 	if index, isIndex := expr.(*ast.IndexExpression); isIndex && !typ.isVec {
 		if hidden, elem, isScalar := g.scalarElement(index); isScalar && elem == typ {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
+				return v, true, nil
+			}
+		}
+		if hidden, elem, isPromoted := g.promotedFieldOf(index); isPromoted && elem == typ {
 			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
 				return v, true, nil
 			}
@@ -7389,6 +7570,30 @@ func spillReg(r int) asm.Register {
 
 // boolConditional recognizes `cond ? a | b`: two arms on the Bool literals,
 // or one literal and a trailing wildcard.
+// constantArm is the arm a Boolean-literal scrutinee selects — `true ? {
+// … }`, a source idiom for a scope, or a `false` that disables a branch —
+// so the conditional lowers as that arm alone: no Bool materialized and
+// tested, no label, no dead arm (docs/spec/94-assembler.md §9 "Constant
+// conditions"). The arm may be nil (a statement conditional without an
+// else arm whose literal is false): nothing to lower.
+func constantArm(match *ast.MatchExpression) (ast.Expression, bool) {
+	lit, isLit := match.Scrutinee.(*ast.Boolean)
+	if !isLit {
+		return nil, false
+	}
+	whenTrue, whenFalse, ok := boolConditional(match)
+	if !ok {
+		whenTrue, whenFalse, ok = statementConditional(match)
+	}
+	if !ok {
+		return nil, false
+	}
+	if lit.Value {
+		return whenTrue, true
+	}
+	return whenFalse, true
+}
+
 func boolConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
 	if match.Scrutinee == nil || len(match.Arms) != 2 {
 		return nil, nil, false
@@ -7783,6 +7988,27 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 		}
 		return mem, -1, temp, nil
 	}
+	if home, isHome := g.indexHome(index); isHome {
+		// A 32-bit index in its own register — a local's home or a
+		// promoted field's (nativegen/fields.go) — is guarded and read
+		// where it lies; no copy, nothing to release (idx is -1).
+		base, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		if arr.inReg {
+			if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
+				return asm.Memory{}, 0, 0, err
+			}
+		} else {
+			g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+		}
+		if err := g.constantGuard(home, arr.length); err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		idx := wr(home)
+		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, base, nil
+	}
 	r, err := g.indexValue(index)
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
@@ -7800,6 +8026,30 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 		g.elided++
 	}
 	return g.arrayAddressAt(arr, r, guard)
+}
+
+// indexHome is the register a 32-bit unsigned (or i32) index already lives
+// in: a variable's home, or a promoted record field's.
+func (g *generator) indexHome(index ast.Expression) (int, bool) {
+	var name string
+	switch e := index.(type) {
+	case *ast.Identifier:
+		name = e.Value
+	case *ast.IndexExpression:
+		hidden, _, isPromoted := g.promotedFieldOf(e)
+		if !isPromoted {
+			return 0, false
+		}
+		name = hidden
+	default:
+		return 0, false
+	}
+	v, inReg := g.regs[name]
+	typ, typed := g.types[name]
+	if !inReg || !typed || v < 0 || v >= vecBase || typ.isBool || typ.isFloat || typ.isVec || typ.wide() || (typ.signed && typ.bits != 32) {
+		return 0, false
+	}
+	return v, true
 }
 
 // arrayAddressReg is arrayAddress over an index already evaluated into
@@ -7970,6 +8220,15 @@ func (g *generator) storeRecordToPlace(target place, src *recordLocal, s *ast.In
 // element lowers `v[i]`: a guarded, whole-element load through the bound
 // base, zero- or sign-extending as the element type reads in C.
 func (g *generator) element(e *ast.IndexExpression) (int, error) {
+	if hidden, typ, isPromoted := g.promotedFieldOf(e); isPromoted {
+		// A field in its register (nativegen/fields.go): read as a local.
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		g.put(g.loadVar(hidden, r))
+		return r, nil
+	}
 	if e.Dot {
 		sc, err := g.fieldOperand(e)
 		if err != nil {
@@ -8082,6 +8341,16 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 // The place is computed once to learn its type — that computation is
 // rolled back — then again after the value.
 func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
+	if hidden, typ, isPromoted := g.promotedFieldOf(s.Target); isPromoted {
+		// A field in its register: assigned as a local (nativegen/fields.go).
+		r, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		g.assignVar(hidden, r)
+		g.killLoopFacts(hidden)
+		return nil
+	}
 	if !mentionsCall(s.Value) {
 		target, err := g.placeOf(s.Target)
 		if err != nil {
@@ -8323,6 +8592,9 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			g.release(out)
 			return nil
 		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultExpr(arm)
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultExpr)
 		}
@@ -8446,6 +8718,9 @@ func zeroReg(s scalar) asm.Register {
 func (g *generator) resultInto(expr ast.Expression, out int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultInto(arm, out)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {

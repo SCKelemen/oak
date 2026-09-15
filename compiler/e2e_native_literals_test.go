@@ -57,6 +57,16 @@ func TestE2ENativeLiteralsVerdicts(t *testing.T) {
 			t.Errorf("%s must be lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The scanner's step functions: their group loop calls classify four
+	// times and verify_* under four conditions; the loop bodies' forks
+	// merge at their joins and the calls' loops are summarized, so the
+	// loops couple and the witnesses agree (a proof waits on the classify
+	// results spelled alike on both sides).
+	for _, fn := range []string{"step_count_neon_abi", "step_first_neon_abi"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") && !strings.Contains(joined, "asm unit "+fn+": agrees with its Oak body on") {
+			t.Errorf("%s must be proven or witnessed; diagnostics:\n%s", fn, joined)
+		}
+	}
 	if strings.Contains(joined, "left to the C backend") {
 		t.Errorf("every function of the module must be taken by the native backend; diagnostics:\n%s", joined)
 	}

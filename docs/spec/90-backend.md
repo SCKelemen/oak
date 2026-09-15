@@ -689,10 +689,26 @@ and pre-test `while` regions with explicit loop-carried values. Its canonical
 CFG projection represents joins and loop recurrences as typed block arguments.
 Projection is deterministic and fails closed through an independent verifier
 for definitions, dominance, same-block order, reachability, terminators, edge
-arity/types, Bool conditions, and return types. This substrate is not yet an
-emission path: no backend consumes OptIR and no OptIR analysis can authorize a
-code-generation change until checked Oak projection and equivalence validation
-are connected.
+arity/types, Bool conditions, and return types. `Compilation.OptIR()` connects
+the ordinary checked semantic model to this substrate for concrete scalar
+functions: fixed-width integers, Bool, unit, local assignments, structured
+branches and short-circuiting, exhaustive Bool matches, pre-test loops with
+explicit carried locals, value-preserving integer widening, and effect-marked
+calls. Unsupported memory, methods, kernels, protocol lowerings, and richer
+algebraic forms are per-function refusals, never partial projections.
+
+The first analysis-only SCCP pass validates its operation vocabulary before
+computing exact constants and executable CFG edges. Its folds use Oak's exact
+fixed-width signed/unsigned arithmetic and trap boundaries rather than host or
+target arithmetic. Dominance-scoped CSE and fixed-point DCE produce a second,
+verified CFG from a closed vocabulary of total pure scalar operations. Exact
+operation code, types, operands, and ordered attributes must agree; proof facts
+move only when valid at the dominating definition. Calls, traps, memory,
+synchronization, unknown operations, and every explicitly effectful operation
+remain roots. `Compilation.OptIR()` returns the original CFG, SCCP evidence, the
+simplified candidate, and its report. This substrate is not yet an emission
+path: no backend consumes either OptIR CFG, and no OptIR transform can authorize
+a code-generation change until equivalence validation is connected.
 
 1. **Licensed removals only.** The compiler removes a check, a guard, a
    copy, a reload, or a trap only on a fact it has proved: an index under

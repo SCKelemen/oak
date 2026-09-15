@@ -201,6 +201,22 @@ func Transforms() []opt.Transform {
 			fired:   ReusedCompares,
 		},
 		&laneTransform{
+			// Reduction unrolling over four independent accumulators
+			// (nativegen/reduction.go): a source rewrite licensed by the
+			// operator's associativity (Oak.Reduction.unrolled4_eq); the
+			// verifier judges the lowering against the rewritten body.
+			// First of the loop phase: the machine passes after it (the
+			// invariant pass, the rotation) see the unrolled shape — its
+			// slack test is theirs to peel and rotate — where a candidate
+			// they fire on nothing would never meet the unrolling.
+			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return !l.NoReductions },
+			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
+			fired:   Unrolled,
+		},
+		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
 			// peeling (nativegen/licm.go; §9 "Loop invariants"): machine
 			// shape only, judged by the checker and the verifier.
@@ -242,23 +258,11 @@ func Transforms() []opt.Transform {
 			// shape only, judged by the checker and the verifier — and, new,
 			// shipping only on the verifier's verdict.
 			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
-			arches:  arm64Only,
+			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Reallocate },
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}},
-		&laneTransform{
-			// Reduction unrolling over four independent accumulators
-			// (nativegen/reduction.go): a source rewrite licensed by the
-			// operator's associativity (Oak.Reduction.unrolled4_eq); the
-			// verifier judges the lowering against the rewritten body.
-			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
-			arches:  bothLanes,
-			applied: func(l Lane) bool { return !l.NoReductions },
-			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
-			fired:   Unrolled,
-		},
 		cleanupTransform,
 	}
 }

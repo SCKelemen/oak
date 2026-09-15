@@ -133,8 +133,16 @@ source and both gated by the verifier's loop coupling as it stands:
   `sum` keeps its unrolled form (the peeled test on a three-trip
   remainder does not pay), and `page_probe`'s rotated form is checked
   under the general taken-edge facts but loses to the unrotated one on
-  cost. Left: `||` loops, and a header whose second test hides behind a
-  setup instruction.
+  cost. Landed 2026-09-16: the header whose second test hid behind a
+  setup instruction — the unrolled reduction's `cmp wL, #4; b.lo; sub wT,
+  wL, #4; cmp wI, wT; b.hi` — is the invariant pass's now: the invariant
+  test is peeled right before the header, the setup hoisted under a new
+  name, and the verifier reads the peeled test as the loop's entry-only
+  test (`asm/loops.go` `invariantEntryTests`), keying the loop there so
+  the loops keep their program order. `bench_sum`'s four-way loop: ten
+  instructions and one branch a trip, from fourteen and three, proven.
+  The unrolling moved first in the loop phase, so the machine passes see
+  the unrolled shape. Left: `||` loops.
 - *A guard the loop test already decided.* `bench_search`'s outer loop
   read `probes[p]` under `while p < len(probes)` with both the exit test
   and the guard comparing the same registers: the index was proven and

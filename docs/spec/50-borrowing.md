@@ -40,6 +40,22 @@ returning it (a derived decoder's `Event[R]` with view fields beside an
 owned array, §8c) carries only what its borrow fields carry, and the
 record itself is not a borrow of a local owner.
 
+The same through an element: `view(&s[i].field)` and `span(&s[i].field)`
+name an owned-array field of the `i`th record of `s` (any chain of fields
+below the element — `&s[i].f.g` — resolves the same way). When `s` is an
+owned array of records the borrow is of `s`, whole, as `&record.field`
+borrows the record. When `s` is a span or view binding — a `[*]Stage`
+parameter — the borrow is a reborrow of `s`, exactly as `subslice(s, …)`
+is: `OwnerOf(view(&s[i].field)) = OwnerOf(s)`, a writable field span
+needs `s` to be a span (a read-only view yields only views), and two live
+writable field spans of one span are checked for overlap like sibling
+subslices (their regions are not known, so they conflict outside
+`unsafe`). Passed straight to a callee (`total(view(&stages[k].coeffs))`)
+the borrow lives for the call. The native lane lowers it as the element's
+address plus the field's offset in the view's own base register with the
+field's constant length; the verifier trusts a body that passes such a
+derived view to a callee (`94-assembler.md` §5).
+
 ## 2a. Alignment facts on views and spans
 
 A view or span type may carry an **alignment fact**: `[* align 4096]u8` is
@@ -1257,3 +1273,33 @@ its Go rule cites. The Go is kept line for line with the Lean. The
 correspondence is scoped to the discharge: the extraction of facts from
 conditions, declarations, and loops, and the flow-sensitive kills, remain
 transliterations whose laws `Oak.Extents` states one by one.
+
+**Facts from asserts, exact lengths, and length aliases (2026-09-15).** A
+measurement over the stdlib-bearing program — every element access in
+every body, against `IndexProven` — found 208 of 1,098 proven, with the
+unproven indices in a few shapes: 410 plain bindings, 224 literals, 158
+`i + K`. Reading the bodies behind the literals gave three rules the
+extraction lacked, each a runtime check the program already performs:
+
+- `assert(cond)` establishes `cond` for the statements after it in its
+  block (`enterAssertFacts`), as the true arm of a `?` has its condition
+  — the program traps unless it holds (Oak.Extents.loop_invariant, the
+  same discharge). `assert(len(state) == u32(1))` before `state[0]`.
+- `len(v) == K` (either order) is a minimum length of `K`
+  (Oak.Extents.exact_length_min): `len(v) == u32(2) ? v[0] + v[1]`.
+- A binding declared as a length, `n: u32 = len(src)`, stands for that
+  length in the conditions that follow until either is written
+  (`factLenAlias`, a substitution): `n >= u32(4) && src[0] == …` proves
+  the four reads. The binding keeps its own facts alongside — `lo < hi`
+  under `hi = len(keys)` still feeds the midpoint rule — and it keeps the
+  upper bound `n <= len(src)` it already carried.
+
+With the three, 292 of the 1,098 accesses are proven
+(`TestE2EExtentsAssertAndLengthAlias`). What the measurement leaves, in
+order of size: a bound through a helper predicate (`bytes_range_fits(len(src),
+offset, u32(8))` before eight reads at `offset + k`, the codecs' word
+readers — a Bool function whose body is a condition over its parameters,
+to be read as that condition with the arguments substituted); the
+inclusive head `while i + u32(3) <= len(src)`, unsound as a plain fact
+because the fixed-width sum may have wrapped, provable only with a bound
+on `i`; and running output counters (`dst[out]`) with no check to read.
