@@ -2813,6 +2813,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			continue
 		}
+		if instr.Mnemonic == "ldp" {
+			if reason, ok := x.loadPair(instr, state); !ok {
+				return nil, nil, reason, false
+			}
+			continue
+		}
 		if isLoad(instr.Mnemonic) {
 			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
 				if reason, ok := x.loadVector(instr, state); !ok {
@@ -2855,6 +2861,27 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 // verifier's only question is which element it reads. The offset must be a
 // whole element and the register width the element's width; loads from the
 // frame, stores, and moving bases are outside the subset.
+// loadPair reads `ldp xA, xB, [xE, #off]` off a span element address
+// (nativegen/pair_loads.go) as two loads of the register width, the
+// second one width on; the frame's pairs are read before this.
+func (x *pathExecutor) loadPair(instr Instruction, state *symbolicState) (string, bool) {
+	if len(instr.Operands) != 3 {
+		return "a pair load in a form the verifier does not read", false
+	}
+	first, okA := instr.Operands[0].(Register)
+	second, okB := instr.Operands[1].(Register)
+	mem, okM := instr.Operands[2].(Memory)
+	if !okA || !okB || !okM || first.Class == ClassV || mem.Mode != MemOffset {
+		return "a pair load the verifier does not read (a vector pair, or a pre/post-indexed form outside the frame)", false
+	}
+	if reason, ok := x.load(Instruction{Mnemonic: "ldr", Operands: []Operand{first, mem}, Line: instr.Line}, state); !ok {
+		return reason, false
+	}
+	next := mem
+	next.Offset += int64(widthOf(first.Class) / 8)
+	return x.load(Instruction{Mnemonic: "ldr", Operands: []Operand{second, next}, Line: instr.Line}, state)
+}
+
 func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bool) {
 	dest, isReg := instr.Operands[0].(Register)
 	if !isReg || dest.Class == ClassV {
