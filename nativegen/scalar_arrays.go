@@ -146,6 +146,6 @@ func (g *generator) declareScalarArray(s *ast.VariableDeclaration, elem scalar, 
 		g.scalarArrays = map[string]*scalarArray{}
 	}
 	g.scalarArrays[name] = sa
-	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, sa: sa}
+	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, reg: -1, sa: sa}
 	return nil
 }

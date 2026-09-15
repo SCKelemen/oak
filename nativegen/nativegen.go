@@ -3787,7 +3787,9 @@ func (g *generator) popScope() {
 	for _, name := range names {
 		// The variable's register or slot returns to the pool for the
 		// declarations that follow.
-		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
+		// A scalar-replaced array's binding names its elements, not a slot.
+		// It must never return a phantom offset to the frame-slot pool.
+		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && b.sa == nil && !b.freed {
 			switch {
 			case b.reg >= vecBase:
 				g.releaseVectorHome(b.reg)

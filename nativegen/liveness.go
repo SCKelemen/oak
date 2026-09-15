@@ -104,7 +104,7 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 			continue
 		}
 		b, ok := top[name]
-		if !ok || b.arr != nil || b.rec != nil || b.sp != nil || b.freed {
+		if !ok || b.arr != nil || b.rec != nil || b.sp != nil || b.sa != nil || b.freed {
 			continue
 		}
 		switch {
