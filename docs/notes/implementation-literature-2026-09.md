@@ -56,7 +56,8 @@ and slots each loop assigns, and live ranges, would serve all three, plus the
 allocator and loop-invariant motion. `llvm-optimization-catalog-2026-09.md`
 §1.3 already states the principle that analyses are reusable products; this is
 the cheapest concrete instance of it, and it is the per-ISA item-level layer
-that `94-assembler.md` §9.ac's layering decision asks for. The measurement is
+that `94-assembler.md`'s layering decision asks for (the paragraph
+"Where the optimizer's layers should live"). The measurement is
 not a speedup: it is the deletion of the duplicate scans, with every existing
 test and verdict unchanged.
 
@@ -87,7 +88,7 @@ value whose next use is furthest away.
 That is the allocator Oak should build first, and for Oak the argument is
 stronger than compile time. The seam checker reads register facts — a span's
 base and length registers, an index's guard, a frame address, the slot facts
-of `94-assembler.md` §9.ah — and an allocator that moves values unpredictably
+of `94-assembler.md`, "Masked and narrow indices into tables and arrays" — and an allocator that moves values unpredictably
 destroys them. This is not hypothetical: a scratch register holding a
 not-yet-computed value was once spilled around a call, which the checker read
 as an uninitialized register, and the fix was to spill only defined registers.
@@ -95,6 +96,16 @@ A predictable allocator with a stated spill rule can be taught to the checker;
 a clever one cannot. The measurement is the arm64 lane's `mov` traffic: today
 expressions evaluate into an `x9`–`x15` operand stack, so a large share of the
 instruction stream is shuffling between a scratch register and a home.
+
+Maglev's other storage decision is worth reading beside
+`mojo-futhark-optimization-2026-09.md`'s proposal that one interference-and-
+coloring machinery serve registers, stack slots, scratch arrays, and spill
+slots alike. Maglev goes the other way and deliberately coarsens, splitting
+its frame into two regions rather than tracking slots individually, because
+its consumer is a garbage collector that needs only to know which words are
+tagged. Oak's consumer is the seam checker, which reads slots by address, so
+the fine-grained side is the one to keep; the lesson is that the granularity
+should follow the consumer.
 
 ## 4. Destination-driven code generation
 
@@ -118,11 +129,11 @@ mechanism addresses the exact limit that four of this month's proof-guided
 increments each worked around. Guard facts die where paths meet:
 
 - the AArch64 checker's guard-fact fixpoint keeps only what every predecessor
-  carries (`94-assembler.md` §9.ad);
-- the RV64 checker needed the same fixpoint built for it (§9.ae);
+  carries (`asm/check.go`, `meetGuards`);
+- the RV64 checker needed the same fixpoint built for it (`94-assembler.md`, "Check elision on the RV64 lane");
 - a condition materialized into a boolean and tested after a label proves
   nothing, which is why the second stage of a short-circuit conjunction stays
-  unread (§9.ad);
+  unread (same file, "Proof-guided elision: the guards the checker carries");
 - the per-line guard fallback exists precisely because one refused access in a
   body costs the whole body its elision (§9 "Check elision").
 
@@ -134,11 +145,22 @@ version is a candidate the seam checker admits and the verifier proves, or it
 is not selected. This is the one item in this note that is Oak-specific rather
 than borrowed, and it is the largest remaining lever on elision reach.
 
+It is not the multi-versioning that `mojo-futhark-optimization-2026-09.md` §8
+already records from Futhark's incremental flattening, and the two should not
+be conflated. That versioning chooses between whole implementations of one
+semantic operation, and may defer the choice to startup or run time. This one
+is inside a single body: the same statements emitted more than once so that a
+fact holding on one path is not lost to the meet at a join. They compose —
+each version of a body is still one candidate in the search — but the
+mechanisms, the cost models, and the proof obligations differ.
+
 ## 6. Verified rewrite rules at scale
 
 The resources list points at the egg library for equality saturation and at
-Cranelift's use of e-graphs, whose lowering and rewrite rules are checked
-against an SMT semantics rather than trusted.
+Cranelift's use of e-graphs. Published work on that compiler checks its
+instruction-selection rules against an SMT semantics rather than trusting
+them; how much of the production rule set that covers is not something this
+note establishes.
 
 `optimizer-search-2026-09.md` §7 already proposes equality saturation for pure
 scalar regions, so the new information is the precedent for the verification
