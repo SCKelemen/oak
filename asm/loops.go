@@ -4187,6 +4187,16 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if budget == nil {
+		// A decision that arrives without a budget (decideEqual on a
+		// chunk's terms) still ends: the case splits and the congruence
+		// rule recurse over the operands of both sides, each pair pruned
+		// and blasted anew, and over a hash block's term that walk ran
+		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
+		// implication budget). One decision's allowance bounds it; past
+		// the allowance the implication is undecided, not unending.
+		budget = &nodeBudget{remaining: loopDecisionNodeBudget}
+	}
 	if budget != nil {
 		// Each implication costs a call from the proof's allowance, and
 		// terms too large to blast cost a failed diagram's nodes, before
