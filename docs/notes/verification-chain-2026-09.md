@@ -194,13 +194,13 @@ or the verifier, not in the program:
    §9.aa), and the RV64 checker's move rule (`Oak.RiscVSpanAlias`,
    `TestRV64SpanAliasMatchesLeanTransliteration`, §9.ab). The checker
    facts named in STATUS are all refined. **Proof-guided elision widened
-   (2026-09-15, §9.ac):** the checker carries a guard through `add #0`,
+   (2026-09-15, §9.ad):** the checker carries a guard through `add #0`,
    reads the exclusive slack guard, and keeps guards in callee-saved
    registers across calls; a hole (slack facts admitted without their
    minimum, and offsets weakening the minimum required) is closed with the
-   fact's `need`. Refusals 22 → 10, guards elided 58 → 136 on the
-   stdlib-bearing program (conditions materialized by `cset` and tested
-   by `cbz`/`cbnz` read as the branch would).
+   fact's `need`. Guards elided 74 → 134 on the stdlib-bearing program, like for like
+   on the merged head (conditions materialized by `cset` and tested by
+   `cbz`/`cbnz` read as the branch would).
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

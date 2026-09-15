@@ -4500,7 +4500,7 @@ its three `udiv`, two `mul`, and three zero tests. The timing rows wait
 for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
 `compiler/e2e_native_strength_test.go`.
 
-### 9.ac Proof-guided elision: the guards the checker carries (2026-09-15)
+### 9.ad Proof-guided elision: the guards the checker carries (2026-09-15)
 
 The native lowering elides an element guard the typechecker proved
 (`IndexProven`, §9 "Check elision under the checker's own facts") only
@@ -4560,18 +4560,25 @@ for a slack fact. The refinement's pinned examples carry the field
 the wrap among them. No emitted body relied on the hole: the lowering
 emits the slack idiom only under the minimum guard.
 
-Measured on the stdlib-bearing program (AArch64): the checker refuses 10
-bodies where it refused 22, 48 bodies elide 136 guards where 36 elided 58,
-241 bodies stay proven and none mismatch. `OAK_NATIVE_DUMP=1` now prints
-the refused elided form of a body under a `// refused elided form of`
-header, which is how these shapes were read. What remains, by shape: an
+Measured on the stdlib-bearing program (AArch64), like for like on the
+head these admissions merged onto (the per-line fallback and the
+condition selection of §9 "Check elision" already in place): 48 bodies
+elide 134 guards where 41 elided 74, one body keeps the guards of one
+line where four did, one keeps them all as before, 250 bodies stay
+proven and none mismatch. Against the whole-body fallback they were
+developed on, the checker refused 10 elided bodies where it refused 22
+and 136 guards went where 58 went. `OAK_NATIVE_DUMP=1` prints each
+refused elided form under a `// refused elided form of` header, which is
+how the shapes were read. What remains, by shape: an
 index reloaded from a frame slot after its guard (`append_byte`: the
 guard is on the register the compare read, the store indexes a fresh load
 of the same field — a fact about the slot would carry it); a bound through
 another register (`bytes_compare`'s `limit = min(len(a), len(b))`,
 `uuid_compare`, `text_equal_ascii_fold`: the guard is against a register
 the checker cannot relate to the span's length across the select's join —
-`leFacts` through the label fixpoint); the conjunction's second stage
+`leFacts` through the label fixpoint — on the optimization program's list
+as "a bound copied to another register, a decreasing bound below a
+length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second stage
 above (`json_value_boundary`, `url_parse`); and index arithmetic the
 typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
 `normalize_find`: `at = low * 5` under `low < len / 5`), which the
