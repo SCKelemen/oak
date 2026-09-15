@@ -42,6 +42,7 @@ const (
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
+	TransformVecBlocks   = "vector-blocks"
 	TransformReallocate  = "reallocate"
 	TransformRotate      = "rotate-loops"
 )
@@ -279,6 +280,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}},
+		vecBlocksTransform,
 		cleanupTransform,
 	}
 }
@@ -294,6 +296,21 @@ var cleanupTransform = &laneTransform{
 	applied: func(l Lane) bool { return l.Cleanup },
 	apply:   func(l Lane) Lane { l.Cleanup = true; return l },
 	fired:   CleanedCopies,
+}
+
+// vecBlocksTransform reads a block's vector loads off one element address
+// (nativegen/vector_blocks.go).
+var vecBlocksTransform = &laneTransform{
+	// Vector block loads (docs/spec/94-assembler.md §9 "Vector block
+	// loads"): the vector loads of one basic block at immediate offsets
+	// off a single element address, where the lowering formed an address
+	// register for each — machine shape only, judged by the checker and
+	// the verifier.
+	name: TransformVecBlocks, phase: opt.PhaseMachine, proof: opt.Mechanical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.VectorBlocks },
+	apply:   func(l Lane) Lane { l.VectorBlocks = true; return l },
+	fired:   FusedVectorBlocks,
 }
 
 // Registry is the lane's transform registry.
@@ -312,6 +329,7 @@ func PlainLane(lane Lane) Lane {
 	lane.RotateLoops = false
 	lane.VectorHomes = false
 	lane.Cleanup = false
+	lane.VectorBlocks = false
 	lane.Reallocate = false
 	lane.VectorReductions = false
 	lane.NoReductions = true

@@ -326,6 +326,28 @@ What the rows say:
   emits; the three `u32` rows above are what calibrated it, and the
   model now orders them as measured (`opt/cost.go`).
 
+## Vector block loads, 2026-09-16
+
+The vectorized reduction's four `ldr q` read one element address at the
+immediate offsets `#16`, `#32`, `#48` instead of forming an address each
+(`docs/spec/94-assembler.md` §9 "Vector block loads"). The `u32` main
+loop goes from eighteen instructions for sixteen elements to eleven, and
+stays proven.
+
+| `u32` reduction, array size | per-load addresses | one block address |
+| --- | ---: | ---: |
+| 2^20 elements (4 MiB, streamed) | 0.057 ns/element | 0.057 ns/element |
+| 2^12 elements (16 KiB, L1-resident) | 0.044–0.047 | 0.039–0.042 |
+
+The 4 MiB row is bandwidth-bound — 0.057 ns an element over four bytes is
+about 70 GB/s — so the address arithmetic was already free in the core's
+spare issue slots, and removing seven instructions from the loop buys
+nothing there. The L1-resident row is where the instructions show, at
+about eight percent. What the increment really buys is the instruction
+count itself: code size, instruction cache, and the lanes whose cores
+have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
+gain this harness cannot see and should not claim.
+
 ## Found on the way## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a

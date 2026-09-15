@@ -161,6 +161,7 @@ var setAside = map[string]string{
 	nativegen.TransformVectorHomes: "keeps its vector slots",
 	nativegen.TransformCleanup:     "keeps its copies",
 	nativegen.TransformVectorize:   "keeps its scalar reduction",
+	nativegen.TransformVecBlocks:   "addresses each vector load",
 	nativegen.TransformReallocate:  "keeps its register assignment",
 }
 

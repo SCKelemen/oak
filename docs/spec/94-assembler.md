@@ -3061,6 +3061,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The fifty-ninth increment is vector block loads (§9 "Vector block
+loads"): the vector loads of one basic block read off a single element
+address at immediate offsets, dropping an index add and an address add
+each. The `u32` reduction's main loop goes from eighteen instructions to
+eleven; the checker and the verifier already admitted the form.
+
 The fifty-eighth increment is reduction vectorization (§9 "Reduction
 vectorization"): the recognized integer reduction's accumulators as the
 lanes of four fixed vectors, licensed by the same law at as many
@@ -4290,6 +4296,37 @@ trusted. And the cost model's assumed trip count, 32, made a
 sixteen-element main loop's fifteen-trip remainder half the work, so no
 strided form could pay for its tail; it is 256 now, calibrated from
 these rows (`opt/cost.go`, §16 of `90-backend.md`).
+
+**Vector block loads (2026-09-16, AArch64 lane;
+`nativegen/vector_blocks.go`).** For lanes wider than a byte the lowering
+forms a vector load's address in a register (`vecAddress`), so the
+vectorized reduction's four loads each paid an index add and an address
+add. Within one basic block, a vector load whose address is `add xA, xB,
+wJ, uxtw #s` with `wJ` the group's index — directly, through a copy
+(`mov wJ, wI`, before the late cleanup forwards it), or at an offset
+(`add wJ, wI, #k`) — reads the same span at element `wI + k`, so it is
+the first load's address at the byte offset `k << s`, and the address and
+index instructions it owned are dropped. The pass requires that nothing
+between the two loads writes the base, the index, or the kept address,
+and that the dropped registers are dead after the load, which the
+whole-function liveness of the general registers answers (the cleanup
+pass's `liveAfter`). The offset must be a multiple of sixteen inside the
+`ldr q` immediate's range.
+
+Neither the seam checker nor the verifier needed extending: the slack
+guard that admits the first load marks a region of its bound's elements
+(`elementRegionOf`; sixteen `u32` elements is 64 bytes) and
+`regionAdmits` takes every offset inside it, while the verifier reads a
+vector load through an element address at a non-zero offset as the span's
+elements from that index (`loadVector`, §8). The `u32` reduction's main
+loop is eleven instructions for sixteen elements where it was eighteen —
+one address, four `ldr q`, four `add v.4s`, the index step, the test —
+and stays proven. Measured: no change on a 4 MiB stream, which is
+bandwidth-bound at 0.057 ns an element either way, and about eight
+percent on a 16 KiB array that fits L1 (0.039–0.042 against
+0.044–0.047); the instructions are what the increment buys, which is
+where a core with less spare issue than an M4 — the RV64 lane, an MCU —
+would feel it.
 
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
