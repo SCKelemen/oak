@@ -32,7 +32,11 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   against a fake lane.
 - `nativegen/opt.go` — the native lane's side: the six transforms the
   lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
-  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `hoist-invariants`, `vector-homes`, `unroll-reductions` — the
+  unrolling first in the loop phase since 2026-09-16, so the invariant
+  pass and `rotate-loops` are applied to the unrolled shape: a transform
+  that fires on nothing leaves the frontier, so one that fires only on
+  another's output must follow it), then
   `reallocate` and the first transform written for the registry,
   `late-cleanup` (§11 "Machine", late copy/branch cleanup:
   `nativegen/cleanup.go`, a block-local peephole under a whole-function
@@ -167,9 +171,30 @@ written), and the `sd ra`/`sd s1`… prologue for callee-saved growth. The
 vector extension's registers refuse the lift for now. The `reallocate`
 transform runs on both lanes.
 
+### Phase C, first increment: analyses and cleanups over the lifted IR
+
+`machine.Dominators` builds the dominator tree (Cooper–Harvey–Kennedy
+over a reverse postorder) and `Loops` the natural loops from its back
+edges — headers, latches, bodies, preheaders, nesting — as analyses for
+the passes to come (machine-level LICM and induction detection). Two
+global cleanups use the webs and the liveness segments (`Simplify`, run
+inside reallocation before allocation): copy propagation reads a copied
+value from its source wherever the source has one definition and is
+still live (so another web of the same register — a call's result, a
+later assignment — cannot have taken the register in between), and
+dead-code elimination removes an instruction whose every result no one
+reads when the lane's table says it is pure (no store, call, branch,
+compare or flag write, atomic, or system effect; loads only from the
+frame) and it writes no callee-saved or reserved register (a restore).
+Both refused wrong forms in their first tests — a propagation across a
+call's clobber, an elided callee-saved restore — before the liveness and
+the restore rule were added; the checker would have refused the bodies,
+but the pass should not propose them.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, and scheduling.
+directly, scheduling, machine-level LICM on the loop tree, and the
+recurrence analysis.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
@@ -194,9 +219,29 @@ exact constants plus executable blocks and edges. Integer folding follows Oak's
 fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
 it does not rewrite the CFG or authorize emission.
 
-Not yet: OptIR transformation with equivalence-validated emission, CSE/DCE and
-loop analyses beyond explicit recurrence shape, vector plans (Phase D), and the
-proof-obligation service of the proof-guided note §26 beyond the
+The first generic transformation candidate is also connected. CSE uses exact
+operation identity and dominance, and DCE removes the resulting unused pure
+chains to a fixed point. Both are restricted to a closed vocabulary of total
+scalar operations: missing effect metadata never makes calls, traps, memory, or
+unknown operations removable. Proof facts are remapped only where they remain
+valid. Input and output pass the independent verifier, and
+`Compilation.OptIR()` retains the original CFG beside the simplified candidate
+and its deterministic report.
+
+OptIR also has its semantic loop analysis: reverse postorder and immediate
+dominators; natural loops with back edges, latches, exits, canonical preheaders,
+parents, and depths; and typed affine recurrences over explicit loop-carried
+block arguments. It normalizes the unique continuation predicate and proves an
+exact constant trip count only when a monotone fixed-width recurrence reaches
+the exit without wrapping. Symbolic bounds, multiple exits, latch disagreement,
+and wrapping boundaries retain only the facts actually established. These
+results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
+meaning, while MachineIR owns eventual layout and scheduling.
+
+Not yet: equivalence-validated emission of the candidate, available-expression
+and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
+LICM/unrolling transforms that consume the loop facts, vector plans (Phase D),
+and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
 
 ## 1. Why this architecture
@@ -807,7 +852,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
 ### Phase D: vector planning
 
 22. vector-plan representation;
-23. fixed-width integer reduction vectorization;
+23. fixed-width integer reduction vectorization — **in progress (2026-09-16, the oak session at ~/oakmcu/oak): a law-licensed source rewrite beside the unrolling, lanes as the four accumulators, `vectorize-reductions` in the registry**;
 24. map/zip vectorization;
 25. SLP-like straight-line packing;
 26. vector-aware cost model;

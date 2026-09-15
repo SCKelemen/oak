@@ -202,8 +202,8 @@ func TestReallocateCoalescesCopyChains(t *testing.T) {
 	// Both copies go: the counter's web takes the zero's register and the
 	// sum lands in w0 directly.
 	got := text(out.Items)
-	if alloc.Coalesced != 2 || strings.Count(got, "mov") != 1 || !strings.Contains(got, "add w0, w10, w1") {
-		t.Fatalf("coalesced %d:\n%s", alloc.Coalesced, got)
+	if alloc.Coalesced+alloc.Propagated != 2 || strings.Count(got, "mov") != 1 || !strings.Contains(got, "add w0, w10, w1") {
+		t.Fatalf("coalesced %d propagated %d:\n%s", alloc.Coalesced, alloc.Propagated, got)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestReallocateKeepsNarrowingCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if alloc.Coalesced != 1 || strings.Contains(text(out.Items), "mov w") {
+	if alloc.Coalesced+alloc.Propagated != 1 || strings.Contains(text(out.Items), "mov w") {
 		t.Fatalf("a safe copy stayed:\n%s", text(out.Items))
 	}
 }
@@ -310,8 +310,8 @@ func TestReallocateVectorCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := text(out.Items)
-	if alloc.Coalesced != 2 || strings.Contains(got, "orr") {
-		t.Fatalf("coalesced %d:\n%s", alloc.Coalesced, got)
+	if alloc.Coalesced+alloc.Propagated != 2 || strings.Contains(got, "orr") {
+		t.Fatalf("coalesced %d propagated %d:\n%s", alloc.Coalesced, alloc.Propagated, got)
 	}
 	// Clobbers cover every register the body now writes.
 	written := map[string]bool{}
@@ -591,8 +591,8 @@ func TestRV64LiftAndCoalesce(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := text(out.Items)
-	if alloc.Coalesced != 2 || !strings.Contains(got, "addi a0, a0, #1") {
-		t.Fatalf("coalesced %d:\n%s", alloc.Coalesced, got)
+	if alloc.Coalesced+alloc.Propagated != 2 || !strings.Contains(got, "addi a0, a0, #1") {
+		t.Fatalf("coalesced %d propagated %d:\n%s", alloc.Coalesced, alloc.Propagated, got)
 	}
 	// Unknown shapes refuse: an indirect jump, a vector register.
 	for _, body := range [][]asm.Item{
@@ -644,5 +644,117 @@ func TestRV64CallContractAndSlots(t *testing.T) {
 		if r, _, _, ok, _ := rv64Target.regOf(c); ok && rv64Target.calleeSaved(r) {
 			t.Fatalf("callee-saved %s declared a clobber", c.Text)
 		}
+	}
+}
+
+func TestDominatorsAndLoops(t *testing.T) {
+	// entry -> outer header; outer body: inner loop; inner latch back to
+	// inner header; outer latch back to outer header; exit.
+	f, err := Lift(fn(
+		ins("mov", w(9), w(0)),
+		label("outer_1"),
+		ins("cmp", w(9), w(1)),
+		bcond("hs", "done_4"),
+		ins("mov", w(10), w(31)),
+		label("inner_2"),
+		ins("cmp", w(10), w(2)),
+		bcond("hs", "next_3"),
+		ins("add", w(10), w(10), imm(1)),
+		ins("b", sym("inner_2")),
+		label("next_3"),
+		ins("add", w(9), w(9), imm(1)),
+		ins("b", sym("outer_1")),
+		label("done_4"),
+		ins("ret"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := f.Dominators()
+	outer, inner, next, done := f.labels["outer_1"], f.labels["inner_2"], f.labels["next_3"], f.labels["done_4"]
+	if !d.Dominates(outer, inner) || !d.Dominates(inner, next) || !d.Dominates(outer, done) || d.Dominates(inner, done) {
+		t.Fatal("dominance")
+	}
+	if d.Idom(next) != inner || d.Idom(inner) == nil || d.Idom(f.Blocks[0]) != nil {
+		t.Fatalf("idom: next %v inner %v", d.Idom(next), d.Idom(inner))
+	}
+	loops := d.Loops()
+	if len(loops) != 2 || loops[0].Header != outer || loops[1].Header != inner {
+		t.Fatalf("loops: %d", len(loops))
+	}
+	if loops[0].Depth != 1 || loops[1].Depth != 2 || loops[1].Parent != loops[0] {
+		t.Fatalf("nesting: %d %d", loops[0].Depth, loops[1].Depth)
+	}
+	if loops[0].Preheader != f.Blocks[0] || loops[1].Preheader == nil || !loops[0].Contains(next) || loops[1].Contains(next) {
+		t.Fatalf("preheaders/bodies: outer %v inner %v", loops[0].Preheader, loops[1].Preheader)
+	}
+}
+
+func TestSimplifyPropagatesAndEliminates(t *testing.T) {
+	// `mov w10, w9; add w0, w0, w10` with w9 live after: the add reads w9
+	// and the copy goes; a dead frame reload goes; a dead store, a dead
+	// compare, and a call's unread result stay.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("add", w(9), w(0), w(1)),
+		ins("mov", w(10), w(9)),
+		ins("add", w(0), w(0), w(10)),
+		ins("sub", w(0), w(0), w(9)),
+		ins("ldr", q(16), mem(sp(), 16)),
+		ins("dup", v(16, "4s"), w(0)),
+		ins("str", q(16), mem(sp(), 16)),
+		ins("cmp", w(0), w(1)),
+		ins("bl", sym("g")),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(30)}
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.Propagated != 1 || alloc.Eliminated < 2 {
+		t.Fatalf("propagated %d eliminated %d:\n%s", alloc.Propagated, alloc.Eliminated, got)
+	}
+	if strings.Contains(got, "mov w10") || !strings.Contains(got, "add w0, w0, w9") {
+		t.Fatalf("copy not propagated:\n%s", got)
+	}
+	if strings.Contains(got, "ldr q16") || !strings.Contains(got, "str q16") || !strings.Contains(got, "cmp w0, w1") || !strings.Contains(got, "bl g") {
+		t.Fatalf("elimination:\n%s", got)
+	}
+}
+
+func TestSimplifyKeepsUnsafeCopies(t *testing.T) {
+	// The source is written twice: the copy's value would change.
+	f := fn(
+		ins("add", w(9), w(0), w(1)),
+		ins("mov", w(10), w(9)),
+		ins("add", w(9), w(9), w(1)),
+		ins("add", w(0), w(9), w(10)),
+		ins("ret"),
+	)
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc.Propagated != 0 || alloc.Coalesced != 0 || !strings.Contains(text(out.Items), "mov w") {
+		t.Fatalf("propagated %d coalesced %d:\n%s", alloc.Propagated, alloc.Coalesced, text(out.Items))
+	}
+	// A narrowing copy read wide stays.
+	f = fn(
+		ins("lsl", x(9), x(0), imm(40)),
+		ins("mov", w(10), w(9)),
+		ins("add", x(0), x(10), x(9)),
+		ins("ret"),
+	)
+	out, alloc, err = Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc.Propagated != 0 || !strings.Contains(text(out.Items), "mov w10, w9") {
+		t.Fatalf("propagated a narrowing copy:\n%s", text(out.Items))
 	}
 }
