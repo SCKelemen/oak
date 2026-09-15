@@ -4149,6 +4149,9 @@ func laneTests(t *term) (lanes []*term, negated bool, ok bool) {
 			negated = !negated // (c ? 1 : 0) == 0 is ¬c
 			t = t.left.cond
 			continue
+		case t.kind == termCmp && t.op == "ne" && t.right.kind == termConst && t.right.value == 0 && t.left.kind == termIte && t.left.left.kind == termConst && t.left.right.kind == termConst && t.left.left.value == 1 && t.left.right.value == 0:
+			t = t.left.cond // (c ? 1 : 0) != 0 is c
+			continue
 		}
 		break
 	}
@@ -4266,7 +4269,7 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth); !decided || !holds {
 		if trace {
-			fmt.Fprintf(os.Stderr, "verify: arm rule: conditions not proven equal (holds=%v decided=%v; a.cond %d nodes, b.cond %d nodes)\n", holds, decided, termSize(a.cond, map[*term]int{}), termSize(b.cond, map[*term]int{}))
+			fmt.Fprintf(os.Stderr, "verify: arm rule: conditions not proven equal (holds=%v decided=%v; a.cond %d nodes, b.cond %d nodes)\n  a.cond: %s\n  b.cond: %s\n", holds, decided, termSize(a.cond, map[*term]int{}), termSize(b.cond, map[*term]int{}), spineOf(a.cond, 4), spineOf(b.cond, 4))
 		}
 		// The conditions may be each other's negation with the arms
 		// swapped (`x == 0 ? p : q` against `x != 0 ? q : p`, a branch
@@ -4300,6 +4303,9 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 			return x == y
 		}
 		holds, decided := impliesEqualDepth(premise, x, y, widthOf, budget, depth)
+		if !(decided && holds) && os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: congruence: operands not proven equal (holds=%v decided=%v)\n  a: %s\n  b: %s\n", holds, decided, spineOf(x, 4), spineOf(y, 4))
+		}
 		return decided && holds
 	}
 	switch a.kind {

@@ -1360,6 +1360,15 @@ func truncate(t *term, width int) *term {
 		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(width) && t.left.width == width {
 			return t.left
 		}
+		// A mask that keeps every bit under the width is invisible under
+		// it: `(x and 0xFFFFFFFF) at 32 bits` is x at 32 bits (the
+		// machine's `mov w, w` of a result then read at its width). Not
+		// over a parameter: a parameter at a width is the parameter, and
+		// its extension back (the case above, the Oak lowering's
+		// convention with its own masks) would forget the mask.
+		if t.op == "and" && t.right.kind == termConst && t.right.value&mask(width) == mask(width) && t.left.width > width && t.left.kind != termParam {
+			return truncate(t.left, width)
+		}
 		// Bits placed above the width vanish under it: a call's result with
 		// its unspecified upper bits (`(r and mask) or (hi shl 32)`) read
 		// at its width is the result — the same term the Oak side builds,
@@ -4739,7 +4748,77 @@ func (lo *oakLowering) underPath(cond *term) func() {
 	return func() { lo.path = saved }
 }
 
-func notTerm(t *term) *term { return binaryTerm("xor", truncate(t, 1), constTerm(1, 1)) }
+func notTerm(t *term) *term {
+	if t.kind == termCmp {
+		if neg := negatedCmp(truncate(t, 1)); neg != nil {
+			return neg
+		}
+	}
+	return binaryTerm("xor", truncate(t, 1), constTerm(1, 1))
+}
+
+// booleanValued reports a term whose value is 0 or 1 at its width: a
+// comparison, a one-bit term or a constant 0 or 1, a bitwise
+// combination or conditional of such terms, a one-bit term extended.
+func booleanValued(t *term, memo map[*term]bool) bool {
+	if t.width == 1 {
+		return true
+	}
+	if known, seen := memo[t]; seen {
+		return known
+	}
+	memo[t] = false
+	var is bool
+	switch t.kind {
+	case termConst:
+		is = t.value <= 1
+	case termCmp:
+		is = true
+	case termBinary:
+		switch t.op {
+		case "and":
+			is = (t.right.kind == termConst && t.right.value == 1) || (t.left.kind == termConst && t.left.value == 1) || (booleanValued(t.left, memo) && booleanValued(t.right, memo))
+		case "or", "xor":
+			is = booleanValued(t.left, memo) && booleanValued(t.right, memo)
+		}
+	case termIte:
+		is = booleanValued(t.left, memo) && booleanValued(t.right, memo)
+	}
+	memo[t] = is
+	return is
+}
+
+// complementary reports whether two one-bit conditions are each other's
+// negation: one the other's xor with 1, or comparisons of the same
+// operands under opposite codes.
+func complementary(a, b *term) bool {
+	isNot := func(x, y *term) bool {
+		if x.kind != termBinary || x.op != "xor" || x.right.kind != termConst || x.right.value != 1 {
+			return false
+		}
+		budget := sameTermBudget
+		return sameTerm(x.left, y, &budget)
+	}
+	if isNot(a, b) || isNot(b, a) {
+		return true
+	}
+	if a.kind != termCmp || b.kind != termCmp || negatedCondition[a.op] != b.op {
+		return false
+	}
+	budget := sameTermBudget
+	return sameTerm(a.left, b.left, &budget) && sameTerm(a.right, b.right, &budget)
+}
+
+// negatedCmp is the one-bit comparison's negation as the opposite
+// comparison (`lo` for `hs`, `ne` for `eq`), nil for a condition without
+// one.
+func negatedCmp(c *term) *term {
+	neg, known := negatedCondition[c.op]
+	if !known || c.kind != termCmp {
+		return nil
+	}
+	return &term{kind: termCmp, width: 1, op: neg, left: c.left, right: c.right}
+}
 
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
@@ -9095,10 +9174,10 @@ const witnessVisitBudget = 4000000
 // lowering itself keeps the product, which the refinement model renders
 // (Oak.LoweringRefinement); only the comparison canonicalizes.
 func canonical(t *term) *term {
-	return canonicalMemo(t, map[*term]*term{})
+	return canonicalMemo(t, map[*term]*term{}, map[*term]bool{})
 }
 
-func canonicalMemo(t *term, memo map[*term]*term) *term {
+func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term {
 	if t == nil {
 		return nil
 	}
@@ -9112,7 +9191,7 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 	case termFloat, termQuant:
 		out = t // an operation's spelling is its identity; a binder's body stays as built
 	default:
-		left, right, cond := canonicalMemo(t.left, memo), canonicalMemo(t.right, memo), canonicalMemo(t.cond, memo)
+		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
 		case termBinary:
 			if t.op == "mul" && left.width == t.width {
@@ -9151,8 +9230,39 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 					// its truncation, which folds a zero-extension away; a
 					// truncation that only wraps the operand again is left.
 					if tr := truncate(left, t.width); !(tr.kind == termBinary && tr.op == "and" && tr.left == left) {
-						out = canonicalMemo(tr, memo)
+						out = canonicalMemo(tr, memo, boolean)
 					}
+				}
+			}
+			if out == nil && (t.op == "and" || t.op == "or") && left.width == right.width && right.width == t.width {
+				// Boolean algebra the machine's branches leave behind: a
+				// path condition and its complement, joined where the two
+				// paths merge, are a tautology (`here != n or here == n`)
+				// or a contradiction; a conjunct with zero is zero, a
+				// disjunct with every bit set is every bit.
+				switch {
+				case t.op == "and" && ((left.kind == termConst && left.value == 0) || (right.kind == termConst && right.value == 0)):
+					out = constTerm(0, t.width)
+				case t.op == "or" && ((left.kind == termConst && left.value == mask(t.width)) || (right.kind == termConst && right.value == mask(t.width))):
+					out = constTerm(mask(t.width), t.width)
+				case t.width == 1 && complementary(left, right):
+					if t.op == "or" {
+						out = constTerm(1, 1)
+					} else {
+						out = constTerm(0, 1)
+					}
+				}
+			}
+			if out == nil && t.op == "xor" && t.width == 1 {
+				// The negation of a comparison is the opposite comparison:
+				// `here < found` as the Oak body writes it, against the
+				// machine's `not (here >= found)` from a branch taken the
+				// other way, spell one term.
+				switch {
+				case left.kind == termCmp && left.width == 1 && right.kind == termConst && right.value == 1:
+					out = negatedCmp(left)
+				case right.kind == termCmp && right.width == 1 && left.kind == termConst && left.value == 1:
+					out = negatedCmp(right)
 				}
 			}
 			if out == nil && left.width == right.width {
@@ -9187,13 +9297,34 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 				}
 			}
 		case termCmp:
-			if left == t.left && right == t.right {
+			switch {
+			case right.kind == termConst && right.value == 0 && t.op == "ne" && booleanValued(left, boolean):
+				// A zero test of a 1/0 value is the value (the machine's
+				// `cset` then `cmp #0`); of its negation, the negation.
+				out = adaptWidth(left, t.width)
+			case right.kind == termConst && right.value == 0 && t.op == "eq" && booleanValued(left, boolean):
+				out = adaptWidth(binaryTerm("xor", left, constTerm(1, left.width)), t.width)
+			case left == t.left && right == t.right:
 				out = t
-			} else {
+			default:
 				out = &term{kind: termCmp, width: t.width, op: t.op, left: left, right: right}
 			}
 		case termIte:
-			if left == t.left && right == t.right && cond == t.cond {
+			budget := sameTermBudget
+			if left.kind == termConst && right.kind == termConst && left.value == 1 && right.value == 0 && booleanValued(cond, boolean) {
+				// `c ? 1 : 0` (the machine's cset) of a 1/0 condition is
+				// the condition, at the conditional's width; `c ? 0 : 1`
+				// its negation. The Oak side's `any` (an or of lane
+				// tests) and the machine's (a reduction, cset, cmp) then
+				// meet as one shape.
+				out = adaptWidth(cond, t.width)
+			} else if left.kind == termConst && right.kind == termConst && left.value == 0 && right.value == 1 && booleanValued(cond, boolean) {
+				out = adaptWidth(binaryTerm("xor", cond, constTerm(1, cond.width)), t.width)
+			} else if left.width == right.width && sameTerm(left, right, &budget) {
+				// A conditional with one value on both arms is that value:
+				// the join of two paths that agree.
+				out = adaptWidth(left, t.width)
+			} else if left == t.left && right == t.right && cond == t.cond {
 				out = t
 			} else {
 				out = iteTerm(cond, left, right)
