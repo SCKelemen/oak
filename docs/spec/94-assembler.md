@@ -3552,6 +3552,58 @@ compares canonical (sign-extended) values while the guard fact needs the
 zero-extended index, so its guards stay until the index representation
 changes; the C backend elides through `IndexProven` as before.
 
+*The fallback is per source line (2026-09-15).* A refused elision no
+longer costs the body every guard: the checker's finding names the line
+of the access it could not admit (`function:line:`), the compiler adds
+that line to the lane's `GuardLines` and lowers the body again with the
+guards of those lines kept, and repeats — at most eight rounds, a finding
+without a line or on a line already kept falling back to every guard as
+before — so the accesses the checker does admit stay elided. A binary
+search reads `probes[p]` under `while p < len(probes)` (admitted off the
+exit test) and `keys[mid]` under `mid < hi ≤ len(keys)` (proven by the
+decreasing-bound law, which the checker cannot read at the seam): the
+probe read is now unguarded and the key read keeps its guard, where
+before both were guarded (`compiler/e2e_native_guard_lines_test.go`;
+`bench_search` and `bench_page_probe` each lose one guard, their verdicts
+unchanged, `benchmarks/native/README.md`). The optimizer still decides
+nothing about safety: every unguarded access is one the checker admitted.
+
+**Condition selection (2026-09-15, AArch64 lane).** Four selections in
+the lowering of conditions and compares, each the mechanical layer's
+(`90-backend.md` §16 rule 2) and each gated by the verifier as every body
+is: a negation in condition position inverts the branch instead of
+materializing a Bool (`!found` was `mov; eor #1; cbz`, is `cbnz` on the
+variable's own register); a Bool variable homed in a register is tested
+where it lives, no copy; a small constant on a comparison's right — a
+literal, a folded conversion, a named constant — or in a match arm's
+literal pattern is the compare's immediate (`movz w10, #1; cmp w9, w10`
+is `cmp w9, #1`); and a bitwise `and`, `orr`, or `eor` with a constant
+inside the type's mask is not masked again (`and w9, w5, #7; and w6, w9,
+#255` is the first alone). On the kernels (`OAK_NATIVE_DUMP=1`):
+`bench_dispatch` 68 to 60 instructions (seven `movz` gone from its match
+chain), `bench_search` 57 to 54, `bench_page_probe` 93 to 90, the verdicts
+unchanged (`compiler/e2e_native_condition_test.go` asserts the shapes and
+the value against the C backend). A fifth, the same day: the second
+`cmp` of a conditional chain (`k == t ? … | k < t ? …`) repeated the
+first with no flag writer between them, but a label lay between and the
+checker's flags fact did not cross labels. The checker now carries flag
+validity through the same label fixpoint as its guard facts
+(`guardState.flags`: valid at a label when every predecessor arrives
+with flags a producer set), and the lowering reuses a compare at an else
+label whose every transfer is that compare's branch and which nothing
+falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
+reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
+else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
+90, verdicts unchanged. Two more of the same kind: an unsigned value
+shifted right by a constant is not masked after the `lsr` (it stays
+inside its width), and a scalar match whose scrutinee is a variable in a
+register compares that register in every arm instead of a copy
+(`bench_dispatch` 58 from 60, still proven). The per-line fallback keys
+its kept lines by the line the emitted instructions carry — the
+statement's — which is the line a finding names; an access token on a
+later line of a multi-line statement had escaped the first version and
+sent the body to every guard.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
@@ -4410,6 +4462,43 @@ then holds as the `example … := by decide` lines the Lean file states.
 Outside the model, as on the AArch64 lane: the index, scaled, half,
 remaining-count, and difference facts the write also forgets, which `mv`
 copies none of, and the frame-address and widened facts.
+
+### 9.ac Strength reduction of constant arithmetic (2026-09-15)
+
+The first increment of the optimization system (`90-backend.md` §16). On
+the AArch64 lane a multiplication, division, or remainder whose right
+operand is a constant lowers to the instruction the constant licenses:
+`x * 2^k` to `lsl #k` (signed or unsigned — a wrapping product is a
+shift in two's complement); unsigned `x / 2^k` to `lsr #k` and unsigned
+`x % 2^k` to `and #(2^k-1)` (`x / 1` to nothing, `x % 1` to zero); and a
+division or remainder by any other nonzero constant to `udiv`/`sdiv`
+(with `msub` for `%`) without the zero test, since a constant cannot be
+zero at run time. A signed division by a power of two keeps `sdiv`: the
+round-toward-zero bias is a later idiom. A variable divisor keeps its
+`cbz` to the trap and its division; a constant zero divisor keeps the
+test, which traps as the language says.
+
+The verifier is the gate. The Oak-side model already lowers an unsigned
+division or remainder by a constant power of two to `shr` and `and`
+(§8, `Oak.IntegerDivision`), a multiplication by a constant to a linear
+scaling, and any other division to the uninterpreted quotient with the
+zero divisor as a trap obligation — which a constant nonzero divisor
+discharges. So each reduced body proves equal to its Oak body by the
+same canonical forms as before, and the compiler reports it: `N constant
+operation(s) strength-reduced, proven`. Should the seam checker refuse a
+reduced body, or the verifier return less than proven for it, the
+compiler lowers the body again without the reduction and keeps the plain
+form when that one proves (`compiler/native_bodies.go`; the diagnostic
+names which). The RV64 lane is untouched: its division and shift
+emitters are its own, and `Lane.Strength` is set for AArch64 only.
+
+Read off `benchmarks/kernels` through `benchmarks/native/emit`: nine
+bodies of the package reduce and prove; `bench_search`'s inner loop, a
+`/ u32(2)` that lowered to `movz; cbz; udiv` on the path from the
+midpoint to its load, reads one `lsr #1`, and `bench_page_probe` loses
+its three `udiv`, two `mul`, and three zero tests. The timing rows wait
+for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
+`compiler/e2e_native_strength_test.go`.
 
 ### 9.ac Proof-guided elision: the guards the checker carries (2026-09-15)
 

@@ -612,3 +612,41 @@ effectful operand per group emits exactly the C it did before. The
 differential test `compiler/e2e_evaluation_order_test.go` holds the
 interpreter and the compiled C to the specified value for every
 construct above and for the expression that exposed the gap.
+
+## 16. The optimization system
+
+The rules a backend optimization obeys, restating `05-ergonomics-and-cost.md`
+"The mechanical backend" for the compiler's own passes. The design note is
+`docs/notes/optimization-2026-09.md`.
+
+1. **Licensed removals only.** The compiler removes a check, a guard, a
+   copy, a reload, or a trap only on a fact it has proved: an index under
+   its extent (§8), a value within its refinement, two spans that cannot
+   overlap (`50-borrowing.md`), an alignment fact, a declared operator
+   law (`20-types.md`), an effect row. Nothing is removed on a
+   speculation, and an unproved case keeps its defined behavior.
+2. **The mechanical layer is free.** Register assignment, instruction
+   selection, and scheduling change neither meaning nor the costs
+   `05-ergonomics-and-cost.md` makes visible; the backend may do them as
+   it likes, on either lane, without a source spelling.
+3. **Translation validated per body on the native lane.** A natively
+   lowered body passes the seam checker and the verifier
+   (`94-assembler.md` §9) whatever transforms produced it; a body they
+   refuse is re-lowered without the transform, and the refusal is
+   reported with the body. No optimization is trusted because its pass
+   is believed correct.
+4. **Facts cross the seam as facts.** A caller's proof reaches a callee
+   only as a stated proposition on the callee's signature
+   (`50-borrowing.md` extent propositions) or through inlining (§9);
+   the native lane's checker admits an elision only from a fact it can
+   read at the seam.
+5. **Measured, with the verdict.** An optimization lands with the kernel
+   rows it targets before and after (`benchmarks/native`,
+   `benchmarks/kernels`) and the verifier's verdict for every body it
+   touched; a row that moves while a verdict falls from proven is not a
+   result. `-opt` keeps its one meaning (`115-tooling.md`): the C
+   compiler's level, never Oak's.
+6. **A win elsewhere is a gap here.** A case where C, Rust, or Zig is
+   faster because it expresses something Oak cannot is filed as an
+   expressiveness finding (`docs/checklists/performance.md` §0), never
+   answered by a flag or a speculative pass.
