@@ -181,3 +181,4 @@ import Oak.RupCheck
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.RVWMO
+import Oak.Reduction

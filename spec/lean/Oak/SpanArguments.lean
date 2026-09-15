@@ -78,3 +78,15 @@ theorem two_writes_commute_on_first (mem : Nat → BitVec 8) (addr i j elem : Na
   exact store_read_back mem (addr + i * elem) elem vi k hk
 
 end Oak.SpanArguments
+
+namespace Oak.SpanArguments
+
+/-- **A record copy's chunks**: the 8-byte chunks of a record copied into
+    the frame are disjoint slots (the element law at `elem = 8`), so the
+    summary reading chunk `k` from slot `k` reads the record's bytes
+    `[8k, 8k + 8)` and no other chunk's. -/
+theorem record_chunks_disjoint (addr k j b : Nat) (hkj : k ≠ j)
+    (hk : Slot addr k 8 b) (hj : Slot addr j 8 b) : False :=
+  slots_disjoint addr k j 8 b hkj hk hj
+
+end Oak.SpanArguments

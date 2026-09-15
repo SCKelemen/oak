@@ -20,7 +20,7 @@ import (
 //   - reads only of bound, written, sp, or zero registers (no uninitialized
 //     reads); writes only to bound registers, the result register, or
 //     declared clobbers; callee-saved registers refused in v1;
-//   - flags consumers dominated by a producer (labels and calls invalidate);
+//   - flags consumers dominated by a producer on every path (calls and entries invalidate; a label keeps flags every predecessor arrives with);
 //   - memory only through the declared sp frame, offsets bounds-checked
 //     against `frame N` with the static sp displacement tracked through
 //     pre/post-index and sp arithmetic, consistent at every label;
@@ -71,70 +71,116 @@ func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool,
 	return c
 }
 
-// guardState is the guard knowledge at a program point: per span base
-// register the proven minimum length, per index register its bound, per
-// register the frame address it holds.
+// guardState is the abstract register state at a program point — every
+// register-keyed fact the checker holds: per span base register the span
+// it addresses (element size, writability, the registers holding its
+// length, the proven minimum length), per index register its bound, per
+// register the frame address, constant, region, global page or address,
+// slack, subslice, length-equality, sum, upper, and midpoint facts it
+// holds, and whether flags are valid. A label holds exactly the state
+// every predecessor carries (meetGuards): a fact a back edge does not
+// carry — a length register rewritten inside the loop, a span base
+// advanced — is not assumed at the header.
 type guardState struct {
-	mins  map[int]int64
-	idx   map[int]idxFact
-	frame map[int]int64
-	// consts: the registers holding a known constant (movz, mov #imm) — a
-	// loop bound hoisted into a callee-saved register — kept where every
-	// predecessor agrees on the value.
-	consts map[int]int64
+	spans    map[int]*spanImage
+	idx      map[int]idxFact
+	frame    map[int]int64
+	consts   map[int]int64
+	regions  map[int]region
+	pages    map[int]string
+	addrs    map[int]string
+	slack    map[int]slackFact
+	le       map[int]int
+	diff     map[int]diffFact
+	sub      map[int]subFact
+	lenEqual map[int]int
+	sums     map[int]sumFact
+	upper    map[int]upperFact
+	mid      map[int]midFact
+	// flags: NZCV was produced on every path arriving here (a cmp, subs,
+	// adds, or another producer with no call or entry between), so a
+	// b.cond right after the label consumes flags a dominating producer
+	// set — the compare a conditional chain's else arm repeats is reused
+	// (docs/spec/94-assembler.md §9 "Condition selection").
+	flags bool
+}
+
+// spanImage is a span fact's value: what a base register addresses.
+type spanImage struct {
+	lenReg   int
+	elem     int64
+	writable bool
+	hasMin   bool
+	minLen   int64
+	lens     map[int]bool
+}
+
+func (img *spanImage) equal(other *spanImage) bool {
+	return img.lenReg == other.lenReg && img.elem == other.elem && img.writable == other.writable && img.hasMin == other.hasMin && img.minLen == other.minLen && equalSet(img.lens, other.lens)
 }
 
 func newGuardState() *guardState {
-	return &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}}
+	return &guardState{spans: map[int]*spanImage{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}, regions: map[int]region{}, pages: map[int]string{}, addrs: map[int]string{}, slack: map[int]slackFact{}, le: map[int]int{}, diff: map[int]diffFact{}, sub: map[int]subFact{}, lenEqual: map[int]int{}, sums: map[int]sumFact{}, upper: map[int]upperFact{}, mid: map[int]midFact{}}
 }
 
 func (c *checker) guardSnapshot() *guardState {
 	gs := newGuardState()
 	for base, fact := range c.spans {
-		if fact.hasMin {
-			gs.mins[base] = fact.minLen
-		}
+		gs.spans[base] = &spanImage{lenReg: fact.lenReg, elem: fact.elem, writable: fact.writable, hasMin: fact.hasMin, minLen: fact.minLen, lens: copyMap(fact.lenRegs)}
 	}
-	for reg, fact := range c.idxFacts {
-		gs.idx[reg] = fact
-	}
-	for reg, addr := range c.frameAddrs {
-		gs.frame[reg] = addr
-	}
-	for reg, k := range c.constFacts {
-		gs.consts[reg] = k
-	}
+	gs.idx = copyMap(c.idxFacts)
+	gs.frame = copyMap(c.frameAddrs)
+	gs.consts = copyMap(c.constFacts)
+	gs.regions = copyMap(c.regions)
+	gs.pages = copyMap(c.globalPages)
+	gs.addrs = copyMap(c.globalAddrs)
+	gs.slack = copyMap(c.slackFacts)
+	gs.le = copyMap(c.leFacts)
+	gs.diff = copyMap(c.diffFacts)
+	gs.sub = copyMap(c.subFacts)
+	gs.lenEqual = copyMap(c.lenEqual)
+	gs.sums = copyMap(c.sumFacts)
+	gs.upper = copyMap(c.upper)
+	gs.mid = copyMap(c.mid)
+	gs.flags = c.flagsValid
 	return gs
 }
 
-// applyGuards installs a label's guard state: exactly the facts it holds,
-// on the spans that still exist.
+// applyGuards installs a label's state: exactly the facts it holds.
 func (c *checker) applyGuards(gs *guardState) {
-	for base, fact := range c.spans {
-		minLen, has := gs.mins[base]
-		fact.hasMin = has
-		fact.minLen = minLen
+	c.spans = map[int]*spanFact{}
+	for base, img := range gs.spans {
+		c.spans[base] = &spanFact{lenReg: img.lenReg, elem: img.elem, writable: img.writable, hasMin: img.hasMin, minLen: img.minLen, lenRegs: copyMap(img.lens)}
 	}
-	c.idxFacts = map[int]idxFact{}
-	c.slackFacts = map[int]slackFact{}
-	for reg, fact := range gs.idx {
-		c.idxFacts[reg] = fact
-	}
-	c.frameAddrs = map[int]int64{}
-	for reg, addr := range gs.frame {
-		c.frameAddrs[reg] = addr
-	}
-	c.constFacts = map[int]int64{}
-	for reg, k := range gs.consts {
-		c.constFacts[reg] = k
-	}
+	c.idxFacts = copyMap(gs.idx)
+	// A materialized condition is not carried through the meet: a
+	// boolean tested after a label proves nothing (the join's other
+	// predecessors may have written it).
+	c.condFacts = map[int]condFact{}
+	c.frameAddrs = copyMap(gs.frame)
+	c.constFacts = copyMap(gs.consts)
+	c.regions = copyMap(gs.regions)
+	c.globalPages = copyMap(gs.pages)
+	c.globalAddrs = copyMap(gs.addrs)
+	c.slackFacts = copyMap(gs.slack)
+	c.leFacts = copyMap(gs.le)
+	c.diffFacts = copyMap(gs.diff)
+	c.subFacts = copyMap(gs.sub)
+	c.lenEqual = copyMap(gs.lenEqual)
+	c.sumFacts = copyMap(gs.sums)
+	c.upper = copyMap(gs.upper)
+	c.mid = copyMap(gs.mid)
 	c.pendingCmp = cmpFact{}
+	c.flagsValid = gs.flags
 }
 
-// meetGuards is the intersection of two states: a length bound holds after
-// a merge only at the smaller of the two proven minimums
-// (Oak.Assembler.meet_sound), an index fact or a frame address only when
-// both sides agree.
+// meetGuards is the intersection of two states: a span at a base only when
+// both sides address a span of the same element size and writability there,
+// with the length registers both hold and the smaller of the two proven
+// minimums (Oak.Assembler.meet_sound); every other register-keyed fact
+// only when both sides agree. An upper fact one side states is kept when
+// the other side proves it another way: the register and the referent
+// hold constants in the relation, or both hold one span's length.
 func meetGuards(a, b *guardState) *guardState {
 	if a == nil {
 		return b
@@ -143,27 +189,79 @@ func meetGuards(a, b *guardState) *guardState {
 		return a
 	}
 	out := newGuardState()
-	for reg, addrA := range a.frame {
-		if addrB, ok := b.frame[reg]; ok && addrA == addrB {
-			out.frame[reg] = addrA
+	for base, imgA := range a.spans {
+		imgB, ok := b.spans[base]
+		if !ok || imgA.elem != imgB.elem || imgA.writable != imgB.writable {
+			continue
+		}
+		lens := map[int]bool{}
+		for reg := range imgA.lens {
+			if imgB.lens[reg] {
+				lens[reg] = true
+			}
+		}
+		primary := -1
+		if lens[imgA.lenReg] {
+			primary = imgA.lenReg
+		} else {
+			for reg := range lens {
+				if primary < 0 || reg < primary {
+					primary = reg
+				}
+			}
+		}
+		img := &spanImage{lenReg: primary, elem: imgA.elem, writable: imgA.writable, lens: lens}
+		if imgA.hasMin && imgB.hasMin {
+			img.hasMin = true
+			img.minLen = min(imgA.minLen, imgB.minLen)
+		}
+		out.spans[base] = img
+	}
+	out.idx = meetMap(a.idx, b.idx)
+	out.frame = meetMap(a.frame, b.frame)
+	out.consts = meetMap(a.consts, b.consts)
+	out.regions = meetMap(a.regions, b.regions)
+	out.pages = meetMap(a.pages, b.pages)
+	out.addrs = meetMap(a.addrs, b.addrs)
+	out.slack = meetMap(a.slack, b.slack)
+	out.le = meetMap(a.le, b.le)
+	out.diff = meetMap(a.diff, b.diff)
+	out.sub = meetMap(a.sub, b.sub)
+	out.lenEqual = meetMap(a.lenEqual, b.lenEqual)
+	out.sums = meetMap(a.sums, b.sums)
+	out.mid = meetMap(a.mid, b.mid)
+	for reg, u := range a.upper {
+		if b.holdsUpper(reg, u) {
+			out.upper[reg] = u
 		}
 	}
-	for base, minA := range a.mins {
-		if minB, ok := b.mins[base]; ok {
-			out.mins[base] = min(minA, minB)
+	for reg, u := range b.upper {
+		if _, kept := out.upper[reg]; !kept && a.holdsUpper(reg, u) {
+			out.upper[reg] = u
 		}
 	}
-	for reg, factA := range a.idx {
-		if factB, ok := b.idx[reg]; ok && factA == factB {
-			out.idx[reg] = factA
-		}
-	}
-	for reg, kA := range a.consts {
-		if kB, ok := b.consts[reg]; ok && kA == kB {
-			out.consts[reg] = kA
-		}
-	}
+	out.flags = a.flags && b.flags
 	return out
+}
+
+// holdsUpper reports whether the state proves value(reg) <= value(u.ref)
+// >> u.shift: it states the fact, the two registers hold constants in
+// that relation, or both hold one span's length (reg = ref).
+func (gs *guardState) holdsUpper(reg int, u upperFact) bool {
+	if have, ok := gs.upper[reg]; ok && have == u {
+		return true
+	}
+	if k, ok := gs.consts[reg]; ok {
+		if kr, okr := gs.consts[u.ref]; okr && k >= 0 && kr >= 0 && k <= kr>>u.shift {
+			return true
+		}
+	}
+	for _, img := range gs.spans {
+		if img.lens[reg] && img.lens[u.ref] {
+			return true
+		}
+	}
+	return false
 }
 
 // arrive records a state reaching a label.
@@ -180,31 +278,26 @@ func guardStatesEqual(a, b map[string]*guardState) bool {
 	}
 	for name, ga := range a {
 		gb, ok := b[name]
-		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) || len(ga.consts) != len(gb.consts) {
+		if !ok || !ga.equal(gb) {
 			return false
-		}
-		for reg, k := range ga.consts {
-			if gb.consts[reg] != k {
-				return false
-			}
-		}
-		for reg, addr := range ga.frame {
-			if gb.frame[reg] != addr {
-				return false
-			}
-		}
-		for base, m := range ga.mins {
-			if gb.mins[base] != m {
-				return false
-			}
-		}
-		for reg, f := range ga.idx {
-			if gb.idx[reg] != f {
-				return false
-			}
 		}
 	}
 	return true
+}
+
+func (gs *guardState) equal(other *guardState) bool {
+	if len(gs.spans) != len(other.spans) || gs.flags != other.flags {
+		return false
+	}
+	for base, img := range gs.spans {
+		if o, ok := other.spans[base]; !ok || !img.equal(o) {
+			return false
+		}
+	}
+	return equalMap(gs.idx, other.idx) && equalMap(gs.frame, other.frame) && equalMap(gs.consts, other.consts) &&
+		equalMap(gs.regions, other.regions) && equalMap(gs.pages, other.pages) && equalMap(gs.addrs, other.addrs) &&
+		equalMap(gs.slack, other.slack) && equalMap(gs.le, other.le) && equalMap(gs.diff, other.diff) && equalMap(gs.sub, other.sub) &&
+		equalMap(gs.lenEqual, other.lenEqual) && equalMap(gs.sums, other.sums) && equalMap(gs.upper, other.upper) && equalMap(gs.mid, other.mid)
 }
 
 type checker struct {
@@ -241,6 +334,7 @@ type checker struct {
 	// any write to the index or bound register, any label, and any call.
 	idxFacts   map[int]idxFact
 	slackFacts map[int]slackFact
+	condFacts  map[int]condFact
 	// frameAddrs: register -> the frame address it holds, relative to the
 	// entry sp (`add xN, sp, #imm`): the base of an owned array in the
 	// frame. Memory through it is checked against the declared frame like
@@ -286,6 +380,22 @@ type checker struct {
 	leFacts   map[int]int
 	diffFacts map[int]diffFact
 	subFacts  map[int]subFact
+	// lenEqual: `cmp wA, wB; b.ne <exit>` proves wA = wB on the fall-through
+	// path, so an index guarded below one is below the other — the
+	// guard of a second span walked in step with the first (`len(a) ==
+	// len(b) ? { ... a[i] ... b[i] ... }`, Oak.Assembler.index_under_equal_len).
+	// Dies with a write to either register, at labels, and at calls.
+	lenEqual map[int]int
+	// sumFacts: w register -> the index register and constant it is the
+	// sum of (`add wS, wI, #K`), so that `cmp wL, wS; b.lo <exit>` over a
+	// span's length wL proves wI + K <= len on the fall-through — the
+	// guard `len(v) >= i + K` spelled as the generator spells it
+	// (Oak.Assembler.sum_guard_slack). Dies like the other guard facts.
+	sumFacts map[int]sumFact
+	// upper, mid: the bounds-through-arithmetic facts (asm/bounds_arith.go):
+	// value(reg) <= value(ref) >> shift, and a midpoint difference.
+	upper map[int]upperFact
+	mid   map[int]midFact
 	// constFacts: w register -> the constant a `movz`/`mov` just put in it
 	// (the stride of an array of records for `umaddl`); dies with a write,
 	// at labels, and at calls.
@@ -389,6 +499,20 @@ type spanFact struct {
 // holdsLen reports whether w register n holds the span's length.
 func (f *spanFact) holdsLen(n int) bool { return f.lenRegs[n] }
 
+// boundsLen reports whether an index guarded below w register n is below
+// the span's length: n holds the length, or is proven equal to a register
+// that does (`cmp wA, wB; b.ne`, checker.lenEqual; Oak.Assembler
+// .index_under_equal_len), or holds a constant no larger than one a
+// length register holds, or is at most a shifted length by its upper
+// chain (asm/bounds_arith.go; Oak.Assembler.index_under_upper).
+func (c *checker) boundsLen(f *spanFact, n int) bool {
+	if c.lenLike(f, n) {
+		return true
+	}
+	root, _ := c.resolveUpper(n)
+	return root != n && c.lenLike(f, root)
+}
+
 // dropLen forgets that w register n holds the length (it was written); the
 // primary moves to any remaining copy.
 func (f *spanFact) dropLen(n int) {
@@ -438,6 +562,28 @@ type idxFact struct {
 	// wI < len — the vector idiom `sub wT, wL, #K; cmp wI, wT; b.hi trap`
 	// under len >= K, admitting an access of K elements at wI.
 	slack bool
+	// need: the minimum length under which a slack fact is exact — the K
+	// of the `sub wT, wL, #K` that made the slack register, which `add wJ,
+	// wI, #k` carries unchanged while it lowers bound: the subtraction
+	// wrapped unless len >= K, whatever the access then reads
+	// (Oak.Assembler.slack_guard). Zero for a plain fact.
+	need int64
+}
+
+// condFact: wB = 1 when `cond` held of the compare `cmp` and 0 otherwise
+// (`cset wB, cond` right after the compare), so a later `cbz wB` /
+// `cbnz wB` tests the compare's condition: the lowering's spelling of
+// `a && b` and `a || b` (short-circuit through a boolean). Dies with a
+// write to wB or to either compared register, at labels, and at calls.
+type condFact struct {
+	cmp  cmpFact
+	cond string
+}
+
+// sumFact: the register is wI + K for the index register wI.
+type sumFact struct {
+	idx int
+	k   int64
 }
 
 // slackFact: wT = wL - K for a span's length register wL, under len >= K.
@@ -578,11 +724,16 @@ func (c *checker) bindContract() {
 	c.spans = map[int]*spanFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
+	c.condFacts = map[int]condFact{}
 	c.spanParams = map[string]spanParam{}
 	c.compositeParams = map[string]compositeParam{}
 	c.regions = map[int]region{}
 	c.globalPages = map[int]string{}
 	c.globalAddrs = map[int]string{}
+	c.lenEqual = map[int]int{}
+	c.sumFacts = map[int]sumFact{}
+	c.upper = map[int]upperFact{}
+	c.mid = map[int]midFact{}
 	c.resultRegs = 1
 	c.stackParams = map[int64]stackParam{}
 	c.stackSpanFacts = map[string][]*spanFact{}
@@ -989,7 +1140,14 @@ func (c *checker) enterLabel(label Label) {
 		c.disp = 0
 	}
 	c.labelDisp[label.Name] = c.disp
-	c.flagsValid = false
+	// Flags at the label: the fixpoint's assumption, as the guard facts
+	// below — valid only when every predecessor arrives with flags a
+	// producer set; the first pass carries the fall-through's over (a
+	// label reached by branches alone starts with none), the conservative
+	// fallback knows none.
+	if c.unreachable || c.forgetAtLabels {
+		c.flagsValid = false
+	}
 	c.unreachable = false
 	// Guard facts at the label: the fixpoint's assumption for it — the meet
 	// of every predecessor's facts — or, on the first pass (no assumption
@@ -1000,12 +1158,99 @@ func (c *checker) enterLabel(label Label) {
 		c.forgetGuards()
 	case c.labelIn == nil:
 		c.pendingCmp = cmpFact{}
+		c.condFacts = map[int]condFact{}
 	default:
 		if assumed, known := c.labelIn[label.Name]; known {
 			c.applyGuards(assumed)
 		} else {
 			c.forgetGuards() // no predecessor reached it: unreachable label
+			c.flagsValid = false
 		}
+	}
+}
+
+// guardFacts reads what the fall-through of a conditional branch on the
+// compare `guard` proves when the branch condition is `cond` — the branch
+// leaves on `cond`, so the path after it has its negation. The same
+// reading serves `b.cond` itself and a condition materialized by `cset`
+// and tested by `cbz`/`cbnz` (condFacts, Oak.Assembler.cset_cbz).
+func (c *checker) guardFacts(guard cmpFact, cond string) {
+	// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
+	// len >= N for every span whose length register is wL.
+	if guard.valid && guard.rightReg < 0 && (cond == "lo" || cond == "cc") {
+		for _, fact := range c.spans {
+			if fact.holdsLen(guard.left) {
+				fact.hasMin = true
+				fact.minLen = guard.imm
+			}
+		}
+	}
+	// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
+	// path knows wI < len / wI < K — the index guard of a loop walking
+	// a span (Oak.Assembler.index_access).
+	if guard.valid && (cond == "hs" || cond == "cs") {
+		if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
+			// `sub wT, wL, #K` then `cmp wI, wT` then `b.hs trap`: the
+			// exclusive form of the slack guard, wI < len - K, which
+			// under len >= K gives wI + K <= len as well
+			// (Oak.Assembler.slack_guard_strict) — the wrap-free
+			// remaining guard `i < len(v) - K` before reads at i + k, k < K.
+			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+		} else {
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+	}
+	// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
+	// fall-through path knows wI + K <= len — the guard of a K-element
+	// vector access at wI (Oak.Assembler.index_access, K lanes).
+	if guard.valid && guard.rightReg >= 0 && cond == "hi" {
+		if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
+			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+		}
+	}
+	// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
+	// wS <= wL; against a difference register wT = wL - wS this is the
+	// subslice count bound wN <= wL - wS.
+	if guard.valid && guard.rightReg >= 0 && cond == "hi" {
+		c.leFacts[guard.left] = guard.rightReg
+		if diff, isDiff := c.diffFacts[guard.rightReg]; isDiff {
+			c.subFacts[guard.left] = subFact{start: diff.start, len: diff.len}
+		}
+	}
+	// `add wS, wI, #K` then `cmp wL, wS` then `b.lo exit` over a span's
+	// length wL: the fall-through path knows len >= wI + K — the guard
+	// `len(v) >= i + K` as the generator spells it — the slack fact under
+	// which wI's element and the K - 1 after it are inside the span
+	// (Oak.Assembler.sum_guard_slack); no subtraction made it, so it needs
+	// no minimum length. Symmetric: `cmp wS, wL` then `b.hi exit`.
+	if guard.valid && guard.rightReg >= 0 {
+		lenReg, sumReg := -1, -1
+		switch {
+		case cond == "lo" || cond == "cc":
+			lenReg, sumReg = guard.left, guard.rightReg
+		case cond == "hi":
+			lenReg, sumReg = guard.rightReg, guard.left
+		}
+		if lenReg >= 0 {
+			if sum, isSum := c.sumFacts[sumReg]; isSum {
+				for _, fact := range c.spans {
+					if fact.holdsLen(lenReg) {
+						c.idxFacts[sum.idx] = idxFact{boundReg: lenReg, bound: sum.k, slack: true}
+						break
+					}
+				}
+			}
+		}
+	}
+	// `cmp wA, wB` then `b.ne exit`: the fall-through path knows the two
+	// registers are equal — two spans' lengths, so an index guarded below
+	// one is below the other (Oak.Assembler.index_under_equal_len).
+	if guard.valid && guard.rightReg >= 0 && cond == "ne" && guard.left != guard.rightReg {
+		if c.lenEqual == nil {
+			c.lenEqual = map[int]int{}
+		}
+		c.lenEqual[guard.left] = guard.rightReg
+		c.lenEqual[guard.rightReg] = guard.left
 	}
 }
 
@@ -1018,6 +1263,7 @@ func (c *checker) forgetGuards() {
 	c.pendingCmp = cmpFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
+	c.condFacts = map[int]condFact{}
 	c.frameAddrs = map[int]int64{}
 	c.globalPages = map[int]string{}
 	c.globalAddrs = map[int]string{}
@@ -1025,6 +1271,10 @@ func (c *checker) forgetGuards() {
 	c.diffFacts = map[int]diffFact{}
 	c.subFacts = map[int]subFact{}
 	c.constFacts = map[int]int64{}
+	c.lenEqual = map[int]int{}
+	c.sumFacts = map[int]sumFact{}
+	c.upper = map[int]upperFact{}
+	c.mid = map[int]midFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -1091,39 +1341,7 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
 		c.branch(instr, false)
-		// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
-		// len >= N for every span whose length register is wL.
-		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
-			for _, fact := range c.spans {
-				if fact.holdsLen(guard.left) {
-					fact.hasMin = true
-					fact.minLen = guard.imm
-				}
-			}
-		}
-		// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
-		// path knows wI < len / wI < K — the index guard of a loop walking
-		// a span (Oak.Assembler.index_access).
-		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
-			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
-		}
-		// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
-		// fall-through path knows wI + K <= len — the guard of a K-element
-		// vector access at wI (Oak.Assembler.index_access, K lanes).
-		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
-			if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
-				c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true}
-			}
-		}
-		// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
-		// wS <= wL; against a difference register wT = wL - wS this is the
-		// subslice count bound wN <= wL - wS.
-		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
-			c.leFacts[guard.left] = guard.rightReg
-			if diff, isDiff := c.diffFacts[guard.rightReg]; isDiff {
-				c.subFacts[guard.left] = subFact{start: diff.start, len: diff.len}
-			}
-		}
+		c.guardFacts(guard, instr.Cond)
 		return false
 	case "retaa", "retab":
 		return c.ret(instr) // an authenticated return
@@ -1224,6 +1442,16 @@ func (c *checker) instruction(instr Instruction) bool {
 			}
 		}
 		c.branch(instr, false)
+		if fact, has := c.condFacts[reg.Num]; has && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {
+			// `cbz wB` leaves when the condition failed, so its
+			// fall-through has the condition: read as `b.<not cond>`;
+			// `cbnz wB` the reverse (Oak.Assembler.cset_cbz, cset_cbnz).
+			cond := fact.cond
+			if instr.Mnemonic == "cbz" {
+				cond = invertCondition(fact.cond)
+			}
+			c.guardFacts(fact.cmp, cond)
+		}
 		return false
 	case "bl":
 		c.call(instr)
@@ -1390,6 +1618,7 @@ func (c *checker) instruction(instr Instruction) bool {
 	// wJ + (K - k) <= len (a vector access k lanes on from a guarded index).
 	var slack *slackFact
 	var carried *idxFact
+	var sum *sumFact
 	if (instr.Mnemonic == "sub" || instr.Mnemonic == "add") && dest.Class == ClassW && len(instr.Operands) == 3 {
 		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
 			// The constant: an immediate, or a register a movz just filled
@@ -1401,6 +1630,13 @@ func (c *checker) instruction(instr Instruction) bool {
 					k, isImm = Immediate{Value: value}, true
 				}
 			}
+			if isImm && k.Shift == 0 && k.Value == 0 && instr.Mnemonic == "add" {
+				// `add wJ, wI, #0` is a copy: wJ carries wI's guard as a
+				// `mov` would (Oak.SpanAlias.idxMeans_preserved).
+				if f, has := c.idxFacts[src.Num]; has {
+					carried = &f
+				}
+			}
 			if isImm && k.Shift == 0 && k.Value > 0 {
 				if instr.Mnemonic == "sub" {
 					for _, fact := range c.spans {
@@ -1410,11 +1646,17 @@ func (c *checker) instruction(instr Instruction) bool {
 						}
 					}
 				} else if f, has := c.idxFacts[src.Num]; has && f.slack && f.bound > k.Value {
-					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true}
+					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true, need: f.need}
+				}
+				if instr.Mnemonic == "add" && dest.Num != src.Num {
+					sum = &sumFact{idx: src.Num, k: k.Value}
 				}
 			}
 		}
 	}
+	// Bounds through arithmetic (asm/bounds_arith.go): the midpoint, the
+	// narrowing copy, and the shifts, read before the write.
+	newUpper, newIdx, newMid := c.arithmeticFacts(instr, dest, regs)
 	// The source's region before the write: an immediate add that narrows
 	// a region in place (`add xA, xA, #48`, the second add of a field past
 	// one immediate's reach) must still see it.
@@ -1424,12 +1666,24 @@ func (c *checker) instruction(instr Instruction) bool {
 		priorRegion, hadRegion = c.regions[regs[1].Num]
 	}
 	c.write(instr, dest)
+	if instr.Mnemonic == "cset" && guard.valid && c.flagsValid && len(instr.Operands) == 2 {
+		if cond, isCond := instr.Operands[1].(Condition); isCond {
+			c.condFacts[dest.Num] = condFact{cmp: guard, cond: strings.ToLower(cond.Code)}
+		}
+	}
 	if slack != nil {
 		c.slackFacts[dest.Num] = *slack
+	}
+	if sum != nil {
+		if c.sumFacts == nil {
+			c.sumFacts = map[int]sumFact{}
+		}
+		c.sumFacts[dest.Num] = *sum
 	}
 	if carried != nil {
 		c.idxFacts[dest.Num] = *carried
 	}
+	c.applyArithmeticFacts(dest, newUpper, newIdx, newMid)
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest, priorRegion, hadRegion)
 	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
@@ -1617,6 +1871,18 @@ func (c *checker) boundVector(num int) bool {
 // the result register, or a declared clobber. wN/xN alias: writing either
 // width is a write of the physical register.
 func (c *checker) write(instr Instruction, reg Register) {
+	if other, equal := c.lenEqual[reg.Num]; equal && (reg.Class == ClassW || reg.Class == ClassX) {
+		delete(c.lenEqual, reg.Num)
+		delete(c.lenEqual, other)
+	}
+	if reg.Class == ClassW || reg.Class == ClassX {
+		delete(c.sumFacts, reg.Num)
+		for r, f := range c.sumFacts {
+			if f.idx == reg.Num {
+				delete(c.sumFacts, r)
+			}
+		}
+	}
 	if reg.Class == ClassSP {
 		c.errorf(instr.Line, "sp may only move by add/sub sp, sp, #imm or pre/post-index addressing")
 		return
@@ -1678,20 +1944,37 @@ func (c *checker) write(instr Instruction, reg Register) {
 // the span whose base it was, its place among a span's length registers,
 // an index fact on it or bounded by it, a frame address in it.
 func (c *checker) forgetRegisterFacts(num int) {
+	// A register proven to hold the old value (another register holding
+	// the same span length, its lenEqual partner, the same constant) takes
+	// its place as the bound of the facts naming it; without one they die.
+	equal := c.equalRegister(num)
 	delete(c.spans, num)
 	for _, fact := range c.spans {
 		fact.dropLen(num)
 	}
 	delete(c.idxFacts, num)
 	for index, fact := range c.idxFacts {
-		if fact.boundReg == num {
+		if fact.boundReg != num {
+			continue
+		}
+		if equal >= 0 && equal != index {
+			fact.boundReg = equal
+			c.idxFacts[index] = fact
+		} else {
 			delete(c.idxFacts, index)
 		}
 	}
+	c.forgetArithmeticFacts(num, equal)
 	delete(c.slackFacts, num)
 	for reg, fact := range c.slackFacts {
 		if fact.len == num {
 			delete(c.slackFacts, reg)
+		}
+	}
+	delete(c.condFacts, num)
+	for reg, fact := range c.condFacts {
+		if fact.cmp.left == num || fact.cmp.rightReg == num {
+			delete(c.condFacts, reg)
 		}
 	}
 	delete(c.frameAddrs, num)
@@ -1763,7 +2046,17 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 		if primary < 0 {
 			return
 		}
-		c.spans[dest.Num] = &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+		derived := &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+		// A count register holding a constant is the derived span's exact
+		// length: the fixed-size page `subslice(keys, start, u32(512))`
+		// has minimum length 512, so an index guarded below the constant
+		// (a compare against a register holding it) is inside it.
+		for n := range lens {
+			if k, isConst := c.constFacts[n]; isConst && k >= 0 && (!derived.hasMin || k < derived.minLen) {
+				derived.hasMin, derived.minLen = true, k
+			}
+		}
+		c.spans[dest.Num] = derived
 	}
 }
 
@@ -1875,10 +2168,13 @@ func elementRegionOf(frame int64, frameAddr *int64, span *spanFact, extent *regi
 		return region{size: size, writable: true}, true
 	}
 	if span != nil && span.elem == size {
-		if bound.slack && bound.boundReg >= 0 && span.holdsLen(bound.boundReg) && span.hasMin && bound.bound <= span.minLen {
+		if bound.slack && bound.boundReg >= 0 && span.holdsLen(bound.boundReg) && span.hasMin && bound.need <= span.minLen {
 			return region{size: size * bound.bound, writable: span.writable}, true
 		}
-		inBounds := (bound.boundReg >= 0 && span.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && span.hasMin && bound.bound <= span.minLen)
+		// A slack fact is exact only under len >= K (the subtraction did
+		// not wrap): without the minimum it admits nothing, not even one
+		// element (Oak.Assembler.slack_guard needs its hypothesis).
+		inBounds := (!bound.slack && bound.boundReg >= 0 && span.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && span.hasMin && bound.bound <= span.minLen)
 		if inBounds {
 			return region{size: size, writable: span.writable}, true
 		}
@@ -1928,6 +2224,13 @@ func (c *checker) aliasSpan(dest, src Register) {
 			c.regions[dest.Num] = extent
 		}
 		return
+	}
+	if (dest.Class == ClassW || dest.Class == ClassX) && dest.Class == src.Class {
+		// A copy of a register holding a constant holds it (the length
+		// register of a fixed-size subslice copied into a callee-saved home).
+		if k, isConst := c.constFacts[src.Num]; isConst {
+			c.constFacts[dest.Num] = k
+		}
 	}
 	if dest.Class == ClassW && src.Class == ClassW {
 		for _, fact := range c.spans {
@@ -2283,6 +2586,9 @@ func lastRegister(operands []Operand) (Register, bool) {
 // clobberCallerSaved: after a call or an exception, x0–x17, v0–v7, and the
 // flags belong to the callee.
 func (c *checker) clobberCallerSaved() {
+	// The guards a call preserves, read while the length copies in x0–x17
+	// still name their spans (calleeSavedGuards rebinds through them).
+	parkedIdx, parkedSlack, parkedMins := c.calleeSavedGuards()
 	for num := 0; num <= 17; num++ {
 		if !c.bound[num] || num == 0 {
 			delete(c.written, num)
@@ -2321,6 +2627,97 @@ func (c *checker) clobberCallerSaved() {
 	}
 	for reg, k := range parkedConsts {
 		c.constFacts[reg] = k
+	}
+	c.restoreGuards(parkedIdx, parkedSlack, parkedMins)
+}
+
+// calleeSavedGuards collects the guard facts a call preserves: an index
+// guard whose index register and bound register (or immediate bound) are
+// callee-saved, a slack register wT = len - K with wT and the length in
+// callee-saved registers, and a proven minimum of a span whose every
+// length register is callee-saved. The callee preserves x19–x28 under
+// AAPCS64 (every Oak callee's save and restore of them is checked), so
+// the registers hold their values across the call and what the guard says
+// of them still holds (Oak.SpanAlias.idxMeans_preserved); the span's
+// length is a fact about memory the guard does not depend on the callee
+// leaving alone, only its register copies, which are the ones kept.
+func (c *checker) calleeSavedGuards() (idx map[int]idxFact, slack map[int]slackFact, mins map[int]int64) {
+	kept := func(reg int) bool { return reg >= 19 && reg <= 28 }
+	// survivingLen finds a callee-saved register holding the length the
+	// bound register holds: the guard says wI < len (or wI + K <= len), a
+	// fact about the span's length, which any register still holding it
+	// after the call names as well — the length copied into a callee-saved
+	// register for exactly this purpose.
+	survivingLen := func(bound int) (int, bool) {
+		if kept(bound) {
+			return bound, true
+		}
+		for _, fact := range c.spans {
+			if !fact.holdsLen(bound) {
+				continue
+			}
+			best := -1
+			for reg := range fact.lenRegs {
+				if kept(reg) && (best < 0 || reg < best) {
+					best = reg
+				}
+			}
+			if best >= 0 {
+				return best, true
+			}
+		}
+		return -1, false
+	}
+	idx = map[int]idxFact{}
+	for reg, fact := range c.idxFacts {
+		if !kept(reg) {
+			continue
+		}
+		if fact.boundReg < 0 {
+			idx[reg] = fact
+			continue
+		}
+		if bound, ok := survivingLen(fact.boundReg); ok {
+			fact.boundReg = bound
+			idx[reg] = fact
+		}
+	}
+	slack = map[int]slackFact{}
+	for reg, fact := range c.slackFacts {
+		if !kept(reg) {
+			continue
+		}
+		if length, ok := survivingLen(fact.len); ok {
+			fact.len = length
+			slack[reg] = fact
+		}
+	}
+	// A proven minimum is a fact about the span's length, which no call
+	// changes; it stays with every span that survives the call (a base
+	// parked in a callee-saved register).
+	mins = map[int]int64{}
+	for base, fact := range c.spans {
+		if fact.hasMin && kept(base) {
+			mins[base] = fact.minLen
+		}
+	}
+	return idx, slack, mins
+}
+
+// restoreGuards reinstates the facts calleeSavedGuards kept, on the spans
+// that still exist.
+func (c *checker) restoreGuards(idx map[int]idxFact, slack map[int]slackFact, mins map[int]int64) {
+	for reg, fact := range idx {
+		c.idxFacts[reg] = fact
+	}
+	for reg, fact := range slack {
+		c.slackFacts[reg] = fact
+	}
+	for base, minLen := range mins {
+		if fact, has := c.spans[base]; has {
+			fact.hasMin = true
+			fact.minLen = minLen
+		}
 	}
 }
 
@@ -2404,14 +2801,14 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		// not wrap): the whole access lies inside the span.
 		lanes := size / fact.elem
 		switch {
-		case bound.boundReg < 0 || !fact.holdsLen(bound.boundReg):
+		case bound.boundReg < 0 || !c.boundsLen(fact, bound.boundReg):
 			c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
 			return
 		case bound.bound < lanes:
 			c.errorf(instr.Line, "%s: the guard leaves %d elements after %s but the access reads %d", instr.Mnemonic, bound.bound, index.Text, lanes)
 			return
-		case !fact.hasMin || fact.minLen < bound.bound:
-			c.errorf(instr.Line, "%s: the slack guard needs len >= %d proven first (`cmp w%d, #%d; b.lo <trap>`)", instr.Mnemonic, bound.bound, fact.lenReg, bound.bound)
+		case !fact.hasMin || fact.minLen < bound.need:
+			c.errorf(instr.Line, "%s: the slack guard needs len >= %d proven first (`cmp w%d, #%d; b.lo <trap>`)", instr.Mnemonic, bound.need, fact.lenReg, bound.need)
 			return
 		}
 		if !isStore {
@@ -2429,8 +2826,14 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 	case !guarded:
 		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
 		return
-	case bound.boundReg >= 0 && fact.holdsLen(bound.boundReg):
-		// index < len: in bounds.
+	case bound.slack && bound.need > 0 && bound.boundReg >= 0 && c.boundsLen(fact, bound.boundReg) && (!fact.hasMin || fact.minLen < bound.need):
+		// The slack fact wI + K <= len is exact only under len >= K: the
+		// subtraction that made the slack register may have wrapped.
+		c.errorf(instr.Line, "%s: the slack guard needs len >= %d proven first (`cmp w%d, #%d; b.lo <trap>`)", instr.Mnemonic, bound.need, fact.lenReg, bound.need)
+		return
+	case bound.boundReg >= 0 && c.boundsLen(fact, bound.boundReg):
+		// index < len: in bounds (under a slack fact, wI + K <= len with
+		// K >= 1 and len >= K established above).
 	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
 		// index < K <= len.
 	case bound.boundReg < 0:
@@ -2512,6 +2915,9 @@ func (c *checker) call(instr Instruction) {
 		lr.written = true
 		lr.restored = false
 	}
+	// The guards a call preserves, read while the length copies in x0–x17
+	// still name their spans (calleeSavedGuards rebinds through them).
+	parkedIdx, parkedSlack, parkedMins := c.calleeSavedGuards()
 	// The callee owns x0–x17, v0–v7, and the flags under AAPCS64.
 	for num := 0; num <= 17; num++ {
 		if !c.bound[num] || num == 0 {
@@ -2552,6 +2958,7 @@ func (c *checker) call(instr Instruction) {
 	for reg, k := range parkedConsts {
 		c.constFacts[reg] = k
 	}
+	c.restoreGuards(parkedIdx, parkedSlack, parkedMins)
 }
 
 func (c *checker) ret(instr Instruction) bool {

@@ -124,7 +124,7 @@ func renderInt(v int64) string {
 }
 
 func renderIdx(f idxFact) string {
-	return fmt.Sprintf("⟨%s, %d, %v⟩", renderInt(int64(f.boundReg)), f.bound, f.slack)
+	return fmt.Sprintf("⟨%s, %d, %v, %d⟩", renderInt(int64(f.boundReg)), f.bound, f.slack, f.need)
 }
 
 func renderOptIdx(f *idxFact) string {

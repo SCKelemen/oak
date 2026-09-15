@@ -60,13 +60,24 @@ is the interpreter's enumeration; at the bit level each binder is a fresh
 leaf of the blast and the quantifier is eliminated from the body's
 diagram bit by bit — `forall` the conjunction and `exists` the disjunction
 of the two cofactors at each of the binder's variables (Shannon's
-expansion; under the clause engine the domain is expanded, up to 256
-values) — so `exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32`
-parameter decides in a few hundred nodes, and a counterexample names the
-theorem's parameters only. A binder over a sum type is decided by
-enumeration (the bit level takes `Bool` and the integers); the Lean
-projection (§5) renders a quantifier as `List.all`/`List.any` over the
-explicit list of the domain, so `decide` evaluates the same enumeration.
+expansion; the clause engine has no cofactor and declines, so the
+certificate rung leaves a quantified theorem to the diagrams) — so
+`exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32` parameter
+decides in a few hundred nodes, and a counterexample names the theorem's
+parameters only. A binder over a sum type is decided by enumeration (the
+bit level takes `Bool` and the integers); the Lean projection (§5)
+renders a quantifier as `List.all`/`List.any` over the explicit list of
+the domain, so `decide` evaluates the same enumeration. The prover
+written in Oak (§7) takes quantifiers the same way: its parser reads the
+binder form, its serializer lays out a fresh leaf `name@qk` per binder
+after the parameters' leaves (the Go serializer's twin, word for word; a
+binder inside a callee stays with the Go decider), its lowering emits a
+quantifier term (kind 7 of the problem words) whose evaluator enumerates
+the domain by restarting the body at the leaf's parameter term, and its
+blaster eliminates the leaf's variables by an explicit-stack cofactor
+memoized in the apply cache — the same nodes the Go blaster creates, so
+the verdicts agree node for node over the Go-serialized problem
+(`spec/oak/quantifiers.oak`).
 
 Shape (`OAK-V0001`): a theorem is monomorphic (state it at the types it is
 about), has no receiver, no variadic tail, no effect clauses, and no
@@ -712,11 +723,12 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 470 of them proven equal to
+  admits and the Oak assembler encodes, 546 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its
-  caller through the call summary since the twenty-ninth, the stores of
+  caller through the call summary since the twenty-ninth (and a record
+  it returns through the caller's frame), the stores of
   a data-dependent loop as loop memory inducted from equal entry
   memories — the C build the oracle with
   identical rows over the corpus — verification carried to the object,

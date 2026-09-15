@@ -152,9 +152,21 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
+	}
+	// The plain integer reductions unrolled (nativegen/reduction.go), as on
+	// the AArch64 lane; the rewritten body is the one the verifier sees.
+	if unrolled, changed := unrollReductions(fn, fn.Body); changed && unroll {
+		expanded := *fn
+		expanded.Body = unrolled
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false); err == nil {
+			out.Body = unrolled
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
 	}
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
@@ -1516,6 +1528,9 @@ func pick(wide bool, full, w string) string {
 }
 
 func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if w, isWord := g.recognizeWordAssembly(e, typ); isWord {
+		return g.rvFusedWordLoad(w, typ) // nativegen/word_fusion.go
+	}
 	switch e.Operator {
 	case "&&", "||":
 		b := scalars["Bool"]

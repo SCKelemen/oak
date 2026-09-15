@@ -44,6 +44,11 @@ type blaster struct {
 	groupBase map[string]int // parameter -> first variable of its block
 	groupSize map[string]int // parameter -> parameters in its block
 	groupPos  map[string]int // parameter -> position within its block
+	// lastBase and lastSize are the last block's first variable and
+	// parameter count: the first select slots interleave with that block
+	// (the data parameters, under the control-first orders), so a
+	// comparison of a parameter with an element read stays linear.
+	lastBase, lastSize int
 	// owners maps a parameter variable back to its parameter bit, for
 	// counterexamples under either order.
 	owners map[int]variableOwner
@@ -124,6 +129,32 @@ func newControlFirstBlaster(params []string, widths map[string]int, control map[
 	return newBlockedBlaster(params, widths, role, []string{"control", "data"}, "control bits first")
 }
 
+// newSelectorFirstBlaster interleaves the parameters' bits with the
+// selectors — the parameters a conditional's condition reads directly
+// (selectorParams) — first at every bit. A read of an array at a loop's
+// index is a conditional chain over the index with the elements in its
+// arms: with the index's bit read before the elements' at each level, the
+// diagram narrows the arms as it goes and stays linear in the elements,
+// where reading the elements first must remember which of them is which —
+// exponential in their count. The interleaving is kept (a block of the
+// selectors apart would make an adder over one of them exponential).
+func newSelectorFirstBlaster(params []string, widths map[string]int, selectors map[string]bool) *blaster {
+	ordered := make([]string, 0, len(params))
+	for _, name := range params {
+		if selectors[name] {
+			ordered = append(ordered, name)
+		}
+	}
+	for _, name := range params {
+		if !selectors[name] {
+			ordered = append(ordered, name)
+		}
+	}
+	bl := newBlaster(ordered, widths)
+	bl.label = "selectors first"
+	return bl
+}
+
 // newBlockedBlaster orders the parameters in blocks by groupOf, the blocks
 // in the order given (or of first appearance), the bits of a block's
 // parameters interleaved.
@@ -152,11 +183,14 @@ func newBlockedBlaster(params []string, widths map[string]int, groupOf func(stri
 		}
 	}
 	base := 0
-	for _, group := range groups {
+	for i, group := range groups {
 		for pos, name := range members[group] {
 			bl.groupBase[name] = base
 			bl.groupSize[name] = len(members[group])
 			bl.groupPos[name] = pos
+		}
+		if i == len(groups)-1 {
+			bl.lastBase, bl.lastSize = base, len(members[group])
 		}
 		base += 64 * len(members[group])
 	}
@@ -178,7 +212,11 @@ func (bl *blaster) stride() int { return len(bl.params) + selectSlots }
 func (bl *blaster) variableIndex(param string, bit int) int {
 	var v int
 	if bl.grouped {
-		v = bl.groupBase[param] + bit*bl.groupSize[param] + bl.groupPos[param]
+		size := bl.groupSize[param]
+		if base := bl.groupBase[param]; base == bl.lastBase {
+			size += selectSlots // the last block carries the select slots
+		}
+		v = bl.groupBase[param] + bit*size + bl.groupPos[param]
 	} else {
 		v = bit*bl.stride() + bl.index[param]
 	}
@@ -187,15 +225,18 @@ func (bl *blaster) variableIndex(param string, bit int) int {
 }
 
 // selectVariable is the position of bit j of select slot s: interleaved with
-// the parameters for the first slots, past every parameter bit after them
-// (and always past them under the grouped order, whose parameter blocks
-// fill the interleaved region).
+// the parameters for the first slots (under the grouped order, with the
+// last block's), past every parameter bit after them.
 func (bl *blaster) selectVariable(slot, bit int) int {
-	if slot < selectSlots && !bl.grouped {
-		return bit*bl.stride() + len(bl.params) + slot
-	}
 	if bl.grouped {
-		return 64*bl.stride() + slot*64 + bit
+		size := bl.lastSize + selectSlots
+		if slot < selectSlots {
+			return bl.lastBase + bit*size + bl.lastSize + slot
+		}
+		return bl.lastBase + 64*size + (slot-selectSlots)*64 + bit
+	}
+	if slot < selectSlots {
+		return bit*bl.stride() + len(bl.params) + slot
 	}
 	return 64*bl.stride() + (slot-selectSlots)*64 + bit
 }
@@ -899,13 +940,13 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 }
 
 // quantify eliminates a quantifier's bound parameter from its body's
-// diagram (docs/spec/10-syntax.md section 3e): under the diagram engine,
-// `forall` is the conjunction and `exists` the disjunction of the two
-// cofactors at each of the parameter's variables, innermost bit first —
-// the diagram of the body with the variables gone, sound by Shannon's
-// expansion. Under the clause engine there is no cofactor, so the domain
-// is expanded: the body under every constant value of the parameter, up
-// to 256 values; a wider binder is declined there.
+// diagram (docs/spec/10-syntax.md section 3e): `forall` is the
+// conjunction and `exists` the disjunction of the two cofactors at each
+// of the parameter's variables, bit 0 first — the diagram of the body
+// with the variables gone, sound by Shannon's expansion. The clause
+// engine has no cofactor and declines, as its twin written in Oak does
+// (prove/solver/bdd.oak blast_term): the certificate rung leaves a
+// quantified theorem to the diagrams.
 func (bl *blaster) quantify(t *term) (int, bool) {
 	op := opAnd
 	if t.op == "exists" {
@@ -913,21 +954,7 @@ func (bl *blaster) quantify(t *term) (int, bool) {
 	}
 	width := int(t.value)
 	if bl.cnf != nil {
-		if width > 8 {
-			return 0, false
-		}
-		acc := bddTrue
-		if op == opOr {
-			acc = bddFalse
-		}
-		for v := uint64(0); v < uint64(1)<<uint(width); v++ {
-			body := bl.blast(substitute(t.left, map[string]*term{t.name: constTerm(v, width)}))
-			if body == nil {
-				return 0, false
-			}
-			acc = bl.apply(op, acc, body[0])
-		}
-		return acc, !bl.exceeded()
+		return 0, false
 	}
 	body := bl.blast(t.left)
 	if body == nil {
