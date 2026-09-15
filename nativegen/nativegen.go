@@ -1269,6 +1269,8 @@ type generator struct {
 	flagsTo    map[string]string
 	liveFlags  string
 	reused     int
+	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
+	selected int
 	// elided counts the guards left out under elide (reported).
 	elided int
 	// strength lowers constant multiplications, divisions, and remainders
@@ -4441,6 +4443,11 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 }
 
 func (g *generator) lowerIf(s *ast.IfStatement) error {
+	if arms, final, isChain := ifArms(s); isChain {
+		if chain, ok := g.recognizeSelectChain(arms, final); ok {
+			return g.lowerSelectChain(chain)
+		}
+	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 	if err := g.condition(s.Condition, elseLabel); err != nil {
 		return err
@@ -4480,6 +4487,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	whenTrue, whenFalse, ok := statementConditional(match)
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
+	}
+	// If-conversion (nativegen/select.go): a chain over one comparison
+	// whose arms only assign lowers as compare and select.
+	if arms, final, isChain := conditionalArms(match); isChain {
+		if chain, ok := g.recognizeSelectChain(arms, final); ok {
+			return g.lowerSelectChain(chain)
+		}
 	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
