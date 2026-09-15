@@ -199,7 +199,7 @@ trips and once more inside its outer loop's count — additively — so
 rotating `bench_search`'s probe loop priced as a two-point loss and was
 never validated. A nested loop's items are now its own and weigh the
 product of the trips around them (`LoopWeight` squared at depth one);
-the rotated inner loop is a six-percent win by the model and is
+the rotated inner loop is the cheaper form by the model and is
 selected, witnessed as before. `bench_page_probe`'s rotated form kept
 one guard the unrotated one elided: at the rotated loop's header the
 entry compared the index against a bound register still holding its
@@ -207,7 +207,8 @@ constant (an immediate fact) while the back edge compared it against the
 narrowed register, and the meet dropped the disagreeing facts; the meet
 reconciles them (`meetIdx`), the page's key read is unguarded under
 rotation, and the three-loop body selects the hoisted rotated form
-(cost 30798 against 32716 unrotated).
+(six percent below the hoisted unrotated one by the model, at the
+calibrated loop weight).
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
