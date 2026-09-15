@@ -4436,9 +4436,15 @@ type oakLowering struct {
 	tableLens map[string]int64
 	locals    map[string]*oakLocal // statement-body locals, in declaration scope
 	concrete  map[string]uint64    // a witness run: parameters are these constants
-	loops     []*loopEvent         // data-dependent loops met, in creation order
-	loopStack []int                // indices of the loops whose bodies are being lowered
-	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// work counts the loop iterations this lowering has run, its inlined
+	// callees' included (loweringWorkBudget): a body whose unrolled loops
+	// inline callees that unroll their own (the BDD apply's, sixty-four
+	// trips each way) is left to the machine comparison's budgets rather
+	// than lowered for minutes.
+	work      int
+	loops     []*loopEvent   // data-dependent loops met, in creation order
+	loopStack []int          // indices of the loops whose bodies are being lowered
+	fresh     map[string]int // loop-carried fresh symbols -> width
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
@@ -6033,6 +6039,10 @@ func (lo *oakLowering) assignPlace(target *oakValue, value ast.Expression) (stri
 // loopBudget bounds the iterations a `while` may unroll.
 const loopBudget = 4096
 
+// loweringWorkBudget bounds the loop iterations one lowering runs in all,
+// its inlined callees' included (oakLowering.work).
+const loweringWorkBudget = 1 << 15
+
 // witnessLoopBudget and witnessStepBudget bound a witness run — one
 // concrete input through the body — far below the symbolic budgets: a
 // witness is evidence, and a body chasing the fixed memory's small
@@ -6298,6 +6308,10 @@ func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state
 
 // lowerLoopBody executes one iteration of a loop body.
 func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
+	lo.work++
+	if lo.work > loweringWorkBudget {
+		return "a loop beyond the verifier's unrolling budget (the body's loops and its callees' in all)", false
+	}
 	for _, stmt := range body.Statements {
 		switch s := stmt.(type) {
 		case *ast.AssignmentStatement:

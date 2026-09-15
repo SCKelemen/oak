@@ -1912,10 +1912,15 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 // loopEventBudget bounds the data-dependent loops one body may hold.
 const loopEventBudget = 32
 
-// witnessWorkBudget bounds the machine steps a loop proof's witness runs
-// take in all: a cheap body runs every input loopWitnessInputs offers,
-// one whose callees unroll their loops on each input runs a few.
-const witnessWorkBudget = 1 << 21
+// witnessWorkBudget bounds the work a loop proof's witness runs take in
+// all — the machine's steps, and the Oak lowering's loop iterations at
+// witnessIterationCost steps each: a cheap body runs every input
+// loopWitnessInputs offers, one whose callees unroll their loops on each
+// input runs a few.
+const (
+	witnessWorkBudget    = 1 << 21
+	witnessIterationCost = 256
+)
 
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
@@ -3330,6 +3335,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// A unit function: the concrete run's memories are the comparison.
 			reasonO, okO = concrete.lowerUnitBody(oakBody)
 		}
+		work += witnessIterationCost * concrete.work
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
 		}
