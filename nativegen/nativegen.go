@@ -1197,6 +1197,12 @@ type generator struct {
 	// removes a write into one (the value is the variable's, read where
 	// the block cannot see: after the loop, at the header, in another arm).
 	loopHomes map[string]map[int]bool
+	// openLoops: the header labels of the loops being lowered, innermost
+	// last — a home handed out inside a loop's body joins the loop's set
+	// (a span declared in an arm of the body has no reader the pass can
+	// see once its guards are elided, yet its length register carries
+	// the checker's facts).
+	openLoops []string
 	// callerHomes: in a function that calls, the caller-saved registers a
 	// variable may live in once the callee-saved ones are taken — x16, x17
 	// and the argument registers no parameter occupies — each saved before
@@ -1725,6 +1731,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				// parameter the body never writes, borrows, or addresses is
 				// the caller's copy for the whole call.
 				rp.inPlace, rp.park = true, calleeLow+g.usedCallee
+				g.noteLoopHomes(rp.park)
 				g.usedCallee++
 				g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 			}
@@ -3521,6 +3528,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
 	g.spans[s.Name.Value] = local
+	g.noteLoopHomes(local.baseReg, local.lenReg)
 	g.scopes[len(g.scopes)-1][s.Name.Value] = slotBinding{reg: -1, sp: &local}
 	return nil
 }
@@ -3950,7 +3958,28 @@ func (g *generator) declare(name string, s scalar) int64 {
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
+	g.noteLoopHomes(r)
 	return offset
+}
+
+// noteLoopHomes adds registers handed out as homes inside the loops being
+// lowered to those loops' home sets.
+func (g *generator) noteLoopHomes(regs ...int) {
+	if g.loopHomes == nil {
+		return
+	}
+	for _, head := range g.openLoops {
+		set := g.loopHomes[head]
+		if set == nil {
+			set = map[int]bool{}
+			g.loopHomes[head] = set
+		}
+		for _, r := range regs {
+			if r >= 0 && r < vecBase {
+				set[r] = true
+			}
+		}
+	}
 }
 
 // liveHomes is the set of general registers the variables in scope live
@@ -3986,6 +4015,7 @@ func (g *generator) declareAt(name string, s scalar, r int) {
 	g.homesUsed[r] = true
 	g.slots[name], g.types[name], g.regs[name] = -1, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, typ: s, reg: r}
+	g.noteLoopHomes(r)
 }
 
 // slotMem is the frame address of a slot: past the [x29, x30] pair and the
@@ -4518,6 +4548,8 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 	g.label(head)
 	if g.loopHomes != nil {
 		g.loopHomes[head] = g.liveHomes() // for the loop-invariant pass
+		g.openLoops = append(g.openLoops, head)
+		defer func() { g.openLoops = g.openLoops[:len(g.openLoops)-1] }()
 	}
 	if err := g.condition(loop.Condition, end); err != nil {
 		return err
