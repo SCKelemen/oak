@@ -1987,6 +1987,8 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// The loop header a tail self-call re-enters: after the parameters are
 	// in their slots.
 	prologue = append(prologue, asm.Label{Name: g.head, Line: fn.Token.Line})
+	// Adjacent element loads of one span pair up (nativegen/pair_loads.go).
+	body = pairLoads(body)
 	// Loop-invariant code motion (nativegen/licm.go): the registers a rename
 	// may take are those neither the prologue nor the body names.
 	hoistWanted := 0
@@ -5566,6 +5568,15 @@ func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) 
 		if hidden, elem, isScalar := g.scalarElement(index); isScalar && elem == typ {
 			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
 				return v, true, nil
+			}
+		}
+	}
+	// A span's length is read from its length register (`sub w9, w20, #4`
+	// for `len(v) - u32(4)`, not a copy then the subtraction in place).
+	if call, isCall := expr.(*ast.InvocationExpression); isCall && !typ.wide() && !typ.isFloat && !typ.isVec && !typ.signed && typ.bits == 32 && len(call.Arguments) == 1 {
+		if ident, isIdent := call.Function.(*ast.Identifier); isIdent && ident.Value == "len" {
+			if sp, err := g.spanOperand(call.Arguments[0]); err == nil && sp.lenReg >= 0 {
+				return sp.lenReg, true, nil
 			}
 		}
 	}

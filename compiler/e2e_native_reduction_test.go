@@ -97,7 +97,9 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	for _, fn := range model.AsmFunctions {
 		units[fn.Name] = fn
 	}
-	loops := func(name string) (count int, loads int) {
+	// loops counts a unit's loops and, in the first, its element loads
+	// (`ldr`, `ldrb`) and pair loads (`ldp`, nativegen/pair_loads.go).
+	loops := func(name string) (count int, loads int, pairs int) {
 		fn, ok := units[name]
 		if !ok {
 			t.Fatalf("%s was not lowered natively:\n%s", name, strings.Join(infos, "\n"))
@@ -116,13 +118,18 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 				if inFirst && (it.Mnemonic == "ldr" || it.Mnemonic == "ldrb") {
 					loads++
 				}
+				if inFirst && it.Mnemonic == "ldp" {
+					pairs++
+				}
 			}
 		}
-		return count, loads
+		return count, loads, pairs
 	}
 	joined := strings.Join(infos, "\n")
-	if count, loads := loops("sum"); count != 2 || loads != 4 {
-		t.Errorf("sum must lower as a four-load main loop and a remainder loop, got %d loop(s), %d load(s) in the first", count, loads)
+	// The four 8-byte loads of the main loop are two pair loads off one
+	// block address (nativegen/pair_loads.go).
+	if count, loads, pairs := loops("sum"); count != 2 || loads != 0 || pairs != 2 {
+		t.Errorf("sum must lower as a main loop of two pair loads and a remainder loop, got %d loop(s), %d load(s), %d pair(s) in the first", count, loads, pairs)
 	}
 	if units["sum"].Body == nil {
 		t.Error("sum must record the rewritten body for the verifier")
@@ -135,14 +142,15 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	// for the loop as written too), so the unrolled form is kept — the
 	// verdict is not weakened — and the wrapping sum agrees with the C
 	// backend below.
-	if count, loads := loops("sum8"); count != 2 || loads != 4 {
+	// Byte loads have no pair form: the four stay.
+	if count, loads, _ := loops("sum8"); count != 2 || loads != 4 {
 		t.Errorf("sum8 must unroll as sum does (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
 	}
 	if !strings.Contains(joined, "asm unit sum8: agrees with its Oak body") {
 		t.Errorf("sum8 must keep at least the evidence verdict of its plain form; diagnostics:\n%s", joined)
 	}
 	for _, name := range []string{"fsum", "running_max"} {
-		if count, _ := loops(name); count != 1 {
+		if count, _, _ := loops(name); count != 1 {
 			t.Errorf("%s must keep its single loop (a float accumulator, an accumulator read in the body), got %d loops", name, count)
 		}
 	}

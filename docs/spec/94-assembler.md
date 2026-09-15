@@ -2759,13 +2759,9 @@ into the back edge (`b endif; endif: b loop`) both demote a proven loop to
 evidence. They wait on a loop summary that admits break paths.
 
 The forty-fifth increment is the verified reduction unrolling (§9
-"Reductions"): the first rewrite licensed by a type — integer addition
-wraps and reassociates, so the plain reduction becomes four accumulators
-and a remainder loop before lowering, the verifier proving the assembly
-against the rewritten body and Lean proving the rewrite
-(`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
-(`asm.Function.Body`) so the verifier and the verdict cache judge the
-right one.
+The forty-sixth increment is the pair loads (§9): adjacent element loads
+of one span become a block address and `ldp` pairs, the verifier reading
+a pair as two loads (`asm/pair_loads_test.go`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3927,6 +3923,26 @@ other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
 
+**Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
+Within one basic block, two element loads of one span at consecutive
+indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
+x10, [x19, w10, uxtw #3]` with `w10 = w3 + 1` — become the block's element
+address formed once, `add x15, x19, w3, uxtw #3`, and one pair load at
+the immediate offset, `ldp x9, x10, [x15]`; the next pair reads `[x15,
+#16]`. The second load moves up to the first, so nothing between them may
+write the base, the index, or the block address, read or write the second
+destination, or store; the index temporary the second load consumed dies
+with it, and the block address is a scratch register the whole function
+never names (a register the second lowering pass gave a variable is live
+across blocks that never mention it). The seam checker admits the pair
+through the element region the index's slack guard marks (§7: `add xE, xB,
+wI, uxtw #s` under `wI + K <= len` is a region of K elements, and a pair
+of two elements at offset `2j` lies inside it for `2j + 2 <= K`); the
+verifier reads a pair load as two loads of the register width, in a
+straight path and in a loop body alike. The unrolled reduction's four
+loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
+four elements.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
@@ -4542,7 +4558,101 @@ literal as an f64 against f32 bits and the Oak side refuted itself —
 which had hidden behind an undecided asm term until the fold made the
 asm side definite and the mismatch confirmed (`floatWidthOf`;
 `TestFloatElementWidth`, `TestShiftCountWrapsAtWidth`). With the
-upstream commits of the same hour: proven 470.
+upstream commits of the same hour: proven 470. A call summary
+refused a callee with more than eight parameters before it laid them
+out, though it reads the ones beyond the registers from the outgoing
+area; the count is no bar now (`term_new` with eleven, `sr_emit` with
+ten). The loop-event budget is sixteen where it was eight: a body that
+reaches its loops through summaries counts the callees' loops among its
+own. And a division by a constant power of two on the asm side was
+tried as the shift it equals, so that the `i / 8` of a bit-set walk
+would meet the Oak side's shift rather than an uninterpreted quotient;
+it proved four bodies and cost the build ten CPU-minutes in bodies
+whose divisions had ended quickly as uninterpreted, so it is not kept.
+Proven 477.
+
+**A record returned through memory (2026-09-15).** A record result
+beyond two register chunks comes back through the area the caller
+passes in x8, and twenty-eight bodies stopped there ("returned through
+memory"). The executor now binds x8 to a frame address of the area's own
+— far above the frame and the incoming arguments (`resultAreaBase`), so
+the body's stores through x8 tile it as they tile the frame — and the
+`ret` delivers each word of the record assembled from the area's slots,
+leaf by leaf; a leaf the body never stored leaves the body trusted with
+its name. Verify runs one chunk per word, as it runs two for a two-chunk
+record, and the Oak side packs the same chunk from its aggregate
+(`packAggregateChunk`). Seven of the twenty-eight prove, eight are
+evidence, and thirteen stop at a callee returning such a record — the
+call summary does not carry the area yet. Alongside, the decision
+canonicalizes a product by a constant power of two into the shift the
+backend's strength reduction emits (`n * 8` against `lsl #3`; the
+lowering keeps the product, which the refinement model renders), which
+returned five proofs the reduction had unmade and added two. With the
+strength reduction and the other commits of the evening: proven 529,
+evidence 97, trusted 333, no disagreement, the rows identical
+(`TestE2ENativeWideResult`).
+
+**The area a callee returns through, in the summary (2026-09-15).** The
+thirteen bodies that stopped at "a call to `rs_name` returning `Name16`"
+called a callee whose record result exceeds two chunks. Their caller
+passes the address of a frame slot in x8 (`add x8, sp, #off` before the
+`bl`) and reads the fields from that slot afterward. The summary now
+takes the address x8 holds — it must be a frame address, as the backend
+emits it — lowers the callee's body to its aggregate value as the
+register-returned case does, and stores every leaf into the caller's
+frame at the leaf's offset and width (a Bool as its 4-byte cell); the
+padding bytes between leaves keep what the frame held, which the Oak
+body never reads; the caller-saved registers are forgotten as after any
+call. The caller's loads then find the callee's leaves as frame slots,
+and a load from the wrong offset is refuted (`TestVerifyMemoryReturnedCallee`:
+a caller reading `w.a + w.b`, a narrow leaf `w.c`, and a caller reading
+`b` where its Oak body reads `a`). A record holding a union stays
+outside — its inactive payload bytes are unspecified, which a leaf-wise
+store does not express — as does RV64, where the area's address arrives
+in a0 and shifts the arguments. Alongside, the inliner's literal
+substitution now reaches the field map of a record literal (a field whose
+whole value was a parameter kept the renamed temporary;
+`TestE2EInlineLiteralArgumentsIntoRecordLiteral`). Prover build: proven
+538, evidence 100, trusted 329, no disagreement, no body left at a
+record-returning callee; the rows identical.
+
+**One loop event per site (2026-09-15).** The executor enumerates paths
+by forking at every undecided branch, and every path reaching a loop
+head — or a call whose callee has loops — appended an event of its own,
+so a body with a diamond before its loop counted two events where its
+Oak body counts one: thirty-nine bodies stopped at "the asm body has N
+data-dependent loops, the Oak body M" (`lstr`: three summaries of one
+call to `ap_lits`, one per path through the inlined `sb_begin`), and the
+duplicates spent the loop budget of others (`span_owner_of`: forty
+events for three loops). Events are now keyed by their site — the loop
+head's position, or the call instruction's line — and a path reaching a
+site another path summarized reuses its index and symbols and merges
+its summary into the event field by field: each header value, the
+continue condition, each next value selects the summary of the path
+taken (`ite(path, fresh, prior)`), the entry memories and the
+iteration's stores merge as a fork's write logs do; the loop's shape —
+its variables, widths, symbols, nesting — must agree, else the body is
+trusted ("a loop whose shape differs between two paths"). The path is
+carried on the state as the chain of forks it took (`pathNode`: the
+fork, the side, the condition), so the relation of two reaches is
+structural: paths that left one fork on different sides are exclusive,
+and the select is exact under both; a path that extends another's
+(an unrolled counted loop calling the same callee twice) is the same
+path reaching the site again, and its events stay distinct instances.
+The loop budget counts sites. `TestVerifyLoopSitesAcrossPaths`: a
+looping callee called with a count from either arm of a diamond is
+proven, and an arm passing the wrong count is refuted. A trap guard's
+fork is left out of the path: its taken side summarizes nothing, and the
+inputs it excludes are outside the comparison on both sides, so a merged
+event's selects spell the conditions the Oak body's guards spell (with
+the guard in the path, the entry memory of a caller that stores under a
+bounds check before its loop did not prove equal). Prover build: proven
+546, evidence 129, trusted 292, no disagreement; two bodies still count
+differently, five stop at a callee whose loops differ between two paths
+(a constant argument on one path unrolls a loop the other keeps), and
+the merged bodies mostly reach the coupling proof, where their diagram
+budgets run out — the next work, with the path budget (eighty-five
+bodies: sequential diamonds enumerate exponentially).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
