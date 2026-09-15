@@ -39,11 +39,19 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 	base := int64(0)
 	proven := tc != nil
 	for lane, term := range terms {
-		shift, ok := term.(*ast.InfixExpression)
-		if !ok || shift.Operator != "<<" || !bytePackConstant(shift.Right, width, int64(lane*8)) {
+		// Lane 0 is `uW(src[o]) << uW(0)`, or — the identity shift removed by
+		// the post-specialization canonicalizer (compiler/canonical_integer.go)
+		// — the cast alone.
+		packed := term
+		if shift, isShift := term.(*ast.InfixExpression); isShift && shift.Operator == "<<" {
+			if !bytePackConstant(shift.Right, width, int64(lane*8)) {
+				return false
+			}
+			packed = shift.Left
+		} else if lane != 0 {
 			return false
 		}
-		cast, ok := shift.Left.(*ast.InvocationExpression)
+		cast, ok := packed.(*ast.InvocationExpression)
 		if !ok || len(cast.Arguments) != 1 || !bytePackName(cast.Function, width) {
 			return false
 		}
@@ -70,6 +78,15 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 		info := cg.localContainerOf(v)
 		if info.kind != containerView || info.element != "u8" {
 			return false
+		}
+		// Lane 0's index is `o + u32(K)`, or the bare offset `o` once the
+		// canonicalizer removed `+ u32(0)` (K = 0).
+		if o, bare := index.(*ast.Identifier); bare && lane == 0 {
+			view, offset, base = v, o, 0
+			if proven && !tc.IndexProven(token) {
+				proven = false
+			}
+			continue
 		}
 		add, ok := index.(*ast.InfixExpression)
 		if !ok || add.Operator != "+" {
