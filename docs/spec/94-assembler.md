@@ -268,7 +268,16 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `wI < wB` with `wB <= wL >> s` and `k <= s` proves the slack fact
   `wD + 2^k <= len` (`Oak.Assembler.shifted_index_slack`) — the binary
   search reads its midpoint, and the page probe its page's keys, with no
-  guard of their own. An access admits an index guarded below a register
+  guard of their own. At a label the index facts meet (`meetIdx`): a fact
+  both paths state survives, and so does a register bound one path states
+  (`wI < wB`) when the other states the index below a constant that `wB`
+  holds at least on that path (`wI < K`, `wB = K' >= K`) — the entry of a
+  bottom-tested probe loop compares the index against a bound register
+  still holding its initial constant, which the compare records as an
+  immediate, while the back edge compares it against the narrowed
+  register; the register form holds on both (2026-09-16, the page
+  probe's inner loop rotates with its key read unguarded). An access
+  admits an index guarded below a register
   whose upper chain ends at a register holding the span's length, proven
   equal to one, or holding a constant no larger than one such holds
   (`Oak.Assembler.index_under_upper`). A label's state is the whole
