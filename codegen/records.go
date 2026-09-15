@@ -51,6 +51,15 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	"f32": {Size: 4, Alignment: 4}, "f64": {Size: 8, Alignment: 8},
 	"f16": {Size: 2, Alignment: 2}, "bf16": {Size: 2, Alignment: 2},
 	"f8e4m3": {Size: 1, Alignment: 1}, "f8e5m2": {Size: 1, Alignment: 1},
+	// The fixed 128-bit vectors (docs/spec/93-simd.md section 1.1, 1.2a)
+	// are placed as their lane arrays — the `struct { T lanes[N]; }` the
+	// C backend emits (codegen/simd.go): 16 bytes at the lane's
+	// alignment, so a record holding one has the same shape on every
+	// realization (portable loop, NEON, RVV); the emitted assertions
+	// ratify it. The native lane loads and stores such a field whole.
+	"simd.U8x16": {Size: 16, Alignment: 1}, "simd.U16x8": {Size: 16, Alignment: 2},
+	"simd.U32x4": {Size: 16, Alignment: 4}, "simd.U64x2": {Size: 16, Alignment: 8},
+	"simd.F32x4": {Size: 16, Alignment: 4}, "simd.F64x2": {Size: 16, Alignment: 8},
 }
 
 // fieldRepresentation resolves one field's size and alignment, reporting

@@ -343,8 +343,13 @@ type recordLayout struct {
 	size     int64
 	align    int64
 	hasFloat bool // a float field anywhere inside (the vector save area is reserved)
-	fields   map[string]recordField
-	order    []string
+	// hasVec: a fixed vector field anywhere inside. Such a record lives in
+	// the frame or behind a span like any other, but is not passed or
+	// returned by value on the native lane (AAPCS64 flattens the lane
+	// array into the composite's members, an HFA question v1 leaves to C).
+	hasVec bool
+	fields map[string]recordField
+	order  []string
 	// A tagged union (ADT) is a synthetic record: the u32 field "tag" at
 	// offset 0 and one field per payload-carrying variant, named after the
 	// variant, at the payload union's offset (semir.TaggedUnionLayout — the
@@ -427,7 +432,7 @@ func (l *recordLayout) isHFA() bool {
 	if len(l.order) == 0 {
 		return false
 	}
-	first := l.fields[l.order[0]].typ
+	first, _ := hfaMember(l.fields[l.order[0]])
 	if !first.isFloat {
 		return false
 	}
@@ -437,15 +442,35 @@ func (l *recordLayout) isHFA() bool {
 	members := int64(0)
 	for _, name := range l.order {
 		field := l.fields[name]
-		if field.kind == fieldRecord || field.typ != first {
+		member, count := hfaMember(field)
+		if field.kind == fieldRecord || member != first {
 			return false
 		}
-		members++
-		if field.kind == fieldArray {
-			members += field.length - 1
-		}
+		members += count
 	}
 	return members <= 4
+}
+
+// hfaMember is a field's fundamental data type and member count for the
+// HFA rule: a float vector field is its lanes — the C backend's lane array
+// `struct { f32 lanes[4]; }` flattens into four float members (a lone
+// `simd.F32x4` field makes an HFA; two are eight members, a 32-byte
+// composite by reference); an array is its elements.
+func hfaMember(field recordField) (scalar, int64) {
+	if field.typ.isVec {
+		if !field.typ.laneFloat {
+			return field.typ, 1
+		}
+		lane := scalars["f32"]
+		if field.typ.laneBits == 64 {
+			lane = scalars["f64"]
+		}
+		return lane, int64(field.typ.lanes)
+	}
+	if field.kind == fieldArray {
+		return field.typ, field.length
+	}
+	return field.typ, 1
 }
 
 // arrayLayout is an owned array of scalars `[N]T` seen as a value: the
@@ -607,6 +632,11 @@ var fieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4}, "f32": {Size: 4, Alignment: 4},
 	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8}, "f64": {Size: 8, Alignment: 8},
 	"Bool": {Size: 4, Alignment: 4},
+	// The fixed vectors as the C backend places them: the 16-byte lane
+	// array at the lane's alignment (codegen/records.go).
+	"simd.U8x16": {Size: 16, Alignment: 1}, "simd.U16x8": {Size: 16, Alignment: 2},
+	"simd.U32x4": {Size: 16, Alignment: 4}, "simd.U64x2": {Size: 16, Alignment: 8},
+	"simd.F32x4": {Size: 16, Alignment: 4}, "simd.F64x2": {Size: 16, Alignment: 8},
 }
 
 // layoutOf places a declared record type, or reports why it is outside the
@@ -648,12 +678,15 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 		case func() bool { _, ok := scalarOf(field.Value); return ok }():
 			typ, _ := scalarOf(field.Value)
 			fixed, placeable := fieldRepresentations[field.Value.String()]
-			if !placeable {
+			if !placeable || (typ.isVec && g.rvLane) {
+				// The rv64 lane keeps records of vectors with the C
+				// backend (docs/spec/93-simd.md section 1.4).
 				return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
 			}
 			rep = fixed
 			placed = recordField{kind: fieldScalar, typ: typ}
-			layout.hasFloat = layout.hasFloat || typ.isFloat
+			layout.hasFloat = layout.hasFloat || typ.isFloat || typ.isVec
+			layout.hasVec = layout.hasVec || typ.isVec
 		case func() bool { _, ok := g.recordTypeName(field.Value); return ok }():
 			nestedName, _ := g.recordTypeName(field.Value)
 			nested, err := g.layoutOf(nestedName)
@@ -663,6 +696,7 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 			rep = semir.RecordFieldRepresentation{Size: uint32(nested.size), Alignment: uint32(nested.align)}
 			placed = recordField{kind: fieldRecord, layout: nested}
 			layout.hasFloat = layout.hasFloat || nested.hasFloat
+			layout.hasVec = layout.hasVec || nested.hasVec
 		case g.isArrayType(field.Value):
 			arrayRep, arrayField, err := g.fieldOf("the record "+name, field.Value)
 			if err != nil {
@@ -670,6 +704,7 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 			}
 			rep, placed = arrayRep, arrayField
 			layout.hasFloat = layout.hasFloat || placed.mentionsFloat()
+			layout.hasVec = layout.hasVec || (placed.layout != nil && placed.layout.hasVec)
 		default:
 			return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
 		}
@@ -723,7 +758,8 @@ func (g *generator) fieldOf(owner string, member ast.Expression) (semir.RecordFi
 	}
 	if elem, length, isArray := arrayOf(member); isArray {
 		fixed, placeable := fieldRepresentations[elem.name]
-		if !placeable {
+		if !placeable || elem.isVec {
+			// Arrays of vectors stay with the C backend (docs/spec/93-simd.md).
 			return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
 		}
 		return semir.RecordFieldRepresentation{Size: fixed.Size * uint32(length), Alignment: fixed.Alignment}, recordField{kind: fieldArray, typ: elem, length: length}, nil
@@ -743,7 +779,7 @@ func (f recordField) mentionsFloat() bool {
 	if f.layout != nil {
 		return f.layout.hasFloat
 	}
-	return f.typ.isFloat
+	return f.typ.isFloat || f.typ.isVec
 }
 
 // adtLayoutOf places a tagged union as a synthetic record: the u32 tag,
@@ -1830,6 +1866,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if layout.isHFA() {
 				return nil, 0, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, layout.name)
 			}
+			if layout.hasVec {
+				return nil, 0, 0, unsupported("parameter %s: %s holds a vector (by value)", p.Name.Value, layout.name)
+			}
 			regs := 1
 			if layout.size <= 16 {
 				regs = layout.chunks()
@@ -1944,6 +1983,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				}
 				if layout.isHFA() {
 					return nil, 0, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", layout.name)
+				}
+				if layout.hasVec {
+					return nil, 0, 0, unsupported("result of type %s (a record holding a vector)", layout.name)
 				}
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
@@ -2861,6 +2903,9 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 	}
 	if layout.isHFA() {
 		return nil, unsupported("a call to %s returning a homogeneous floating-point aggregate", ident.Value)
+	}
+	if layout.hasVec {
+		return nil, unsupported("a call to %s returning a record holding a vector", ident.Value)
 	}
 	dst := g.tempRecord(layout)
 	if _, err := g.callWith(e, dst); err != nil {
@@ -3847,14 +3892,16 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if target != nil && (arr.elem != target.elem || arr.elemLayout != target.elemLayout) {
 			return span{}, false, unsupported("%s over %s where the span type's elements are expected", fn.Value, borrow.Right.String())
 		}
-		if arr.inReg && !arr.readOnly {
-			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
-		}
 		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
 		if arr.inReg {
-			// A constant table's address (the checker copies the region).
-			if shape.writable {
-				return span{}, false, unsupported("span of the constant table %s (read-only)", borrow.Right.String())
+			// A constant table's address (the checker copies the region), or
+			// an array field of a computed element — `view(&stages[k].coeffs)`
+			// through a span of records (docs/spec/50-borrowing.md section 8):
+			// the field's address is the element's plus its offset, the
+			// region the checker narrows; the borrow's elements are then
+			// addressed from the view's own base register.
+			if shape.writable && arr.readOnly {
+				return span{}, false, unsupported("span of the read-only %s", borrow.Right.String())
 			}
 			if err := g.addOffset(baseReg, arr.reg, arr.offset); err != nil {
 				return span{}, false, err
@@ -3999,7 +4046,12 @@ func (g *generator) fieldLoad(sc *scalarPlace) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	g.emit(load, reg(r, sc.typ), mem)
+	if sc.typ.isVec {
+		// A vector field moves whole through its q register.
+		g.emit("ldr", qreg(r-vecBase), mem)
+	} else {
+		g.emit(load, reg(r, sc.typ), mem)
+	}
 	if temp >= 0 {
 		g.release(temp)
 	}
@@ -4017,7 +4069,11 @@ func (g *generator) fieldStore(sc *scalarPlace, r int) error {
 	if err != nil {
 		return err
 	}
-	g.emit(store, reg(r, sc.typ), mem)
+	if sc.typ.isVec {
+		g.emit("str", qreg(r-vecBase), mem)
+	} else {
+		g.emit(store, reg(r, sc.typ), mem)
+	}
 	if temp >= 0 {
 		g.release(temp)
 	}

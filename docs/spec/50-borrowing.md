@@ -40,6 +40,22 @@ returning it (a derived decoder's `Event[R]` with view fields beside an
 owned array, §8c) carries only what its borrow fields carry, and the
 record itself is not a borrow of a local owner.
 
+The same through an element: `view(&s[i].field)` and `span(&s[i].field)`
+name an owned-array field of the `i`th record of `s` (any chain of fields
+below the element — `&s[i].f.g` — resolves the same way). When `s` is an
+owned array of records the borrow is of `s`, whole, as `&record.field`
+borrows the record. When `s` is a span or view binding — a `[*]Stage`
+parameter — the borrow is a reborrow of `s`, exactly as `subslice(s, …)`
+is: `OwnerOf(view(&s[i].field)) = OwnerOf(s)`, a writable field span
+needs `s` to be a span (a read-only view yields only views), and two live
+writable field spans of one span are checked for overlap like sibling
+subslices (their regions are not known, so they conflict outside
+`unsafe`). Passed straight to a callee (`total(view(&stages[k].coeffs))`)
+the borrow lives for the call. The native lane lowers it as the element's
+address plus the field's offset in the view's own base register with the
+field's constant length; the verifier trusts a body that passes such a
+derived view to a callee (`94-assembler.md` §5).
+
 ## 2a. Alignment facts on views and spans
 
 A view or span type may carry an **alignment fact**: `[* align 4096]u8` is
