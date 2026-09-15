@@ -23,6 +23,8 @@ type OptIRFunction struct {
 	Loops          optir.LoopAnalysis
 	Simplified     optir.CFG
 	Simplification optir.CSEDCEReport
+	LoopInvariant  optir.CFG
+	LoopMotion     optir.LICMReport
 }
 
 // OptIRRefusal is an ordinary unsupported-subset result. The function remains
@@ -88,6 +90,10 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR CSE/DCE of %s failed: %w", function.Name.Value, err)
 		}
+		loopInvariant, loopMotion, err := optir.HoistLoopInvariants(simplified)
+		if err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR LICM of %s failed: %w", function.Name.Value, err)
+		}
 		module.Functions = append(module.Functions, OptIRFunction{
 			Name:           function.Name.Value,
 			Structured:     structured,
@@ -96,6 +102,8 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			Loops:          loops,
 			Simplified:     simplified,
 			Simplification: simplification,
+			LoopInvariant:  loopInvariant,
+			LoopMotion:     loopMotion,
 		})
 	}
 	return module, nil

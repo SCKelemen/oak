@@ -5792,15 +5792,23 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 // before the loop); above it the copies exceed the event budget.
 const countedUnrollLimit = 4
 
+// countedTripLimit is the trip count from which any counted loop is
+// summarized rather than unrolled, loop inside or not: a loop clearing
+// or copying a table of two thousand words unrolls into a write log the
+// decision cannot afford (and, guarded at every iteration, meets the
+// path budget first), where its induction is a few steps. Sixty-four:
+// above it the unrolled copies cost more than the induction (the
+// interpreter's `step_binding` took five minutes unrolled, under a
+// second inducted), and only a few loops of 128 and 512 trips prove
+// unrolled where their coupling does not yet.
+const countedTripLimit = 64
+
 // summarizeCounted decides, at a counted loop's entry, whether the loop
 // is summarized: its body holds a loop (bodyHasLoop) and its trip count —
 // the bound of `i < c` or `i <= c` less the counter's value, both
 // constant here — is past countedUnrollLimit. A condition of another
 // shape unrolls as before.
 func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
-	if !bodyHasLoop(loop.Body, lo.functions) {
-		return false
-	}
 	infix, isInfix := loop.Condition.(*ast.InfixExpression)
 	if !isInfix || (infix.Operator != "<" && infix.Operator != "<=") {
 		return false
@@ -5814,7 +5822,7 @@ func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
 	if infix.Operator == "<=" {
 		trips++
 	}
-	return trips > countedUnrollLimit
+	return trips > countedTripLimit || (trips > countedUnrollLimit && bodyHasLoop(loop.Body, lo.functions))
 }
 
 // summarizeCounted is the machine side's reading of the same decision at
@@ -5822,9 +5830,6 @@ func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
 // (loopsInside) and the flags compare the counter with its bound, both
 // constant, the exit taken at or above the bound.
 func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state *symbolicState) bool {
-	if !x.loopsInside(shape) {
-		return false
-	}
 	var left, right *term
 	var atOrAbove bool
 	switch exit.Mnemonic {
@@ -5870,7 +5875,7 @@ func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state
 	if !atOrAbove {
 		trips++
 	}
-	return trips > countedUnrollLimit
+	return trips > countedTripLimit || (trips > countedUnrollLimit && x.loopsInside(shape))
 }
 
 // lowerLoopBody executes one iteration of a loop body.

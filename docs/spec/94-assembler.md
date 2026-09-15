@@ -2997,6 +2997,10 @@ boundary"): a returned local built in the `x8` area, a read-only
 aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
+The fifty-fourth increment is aggregate helpers (§9 "Aggregate helpers"):
+the native lane expands small record- and array-typed helpers at their
+calls, a field-path argument standing for a read-only parameter without
+a copy (`Oak.Inlining.eval_subst`).
 
 The fifty-third increment is fields in registers (§9 "Fields in
 registers"): the scalar fields a loop touches of a top-level record
@@ -3008,6 +3012,10 @@ The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
 frame slot's value is read from the register that stored or loaded it
 while that register stands, and a comparison on a computed operand
 branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
+The fifty-seventh increment is read-only borrows (§9 "Read-only
+borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
+read in place and passed as the caller's storage
+(`Oak.ReadOnlyBorrow.view_of_copy`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -4550,6 +4558,56 @@ increments, comes to ten instructions where clang's is thirteen.
 record assigned whole inside its loop (`a = seed`, the homes reloading).
 The RV64 lane is untouched.
 
+**Aggregate helpers (2026-09-16, AArch64 lane; `nativegen/inline.go`,
+`spec/lean/Oak/Inlining.lean`).** The native lane's helper inliner, so far
+the vector helpers' (§9 "Vector helpers expanded"), also expands a small
+helper that takes or returns a record or an owned array — the shape the
+source-level inliner leaves alone, since an aggregate temporary is a
+binding of its own there: a body of at most eight statements and no loop,
+every parameter a scalar, record, owned array, span, or view, the result a
+scalar, record, owned array, or unit, no dispatch and no effects row
+(`aggregateHelper`). The call's argument copies, the callee's prologue,
+epilogue, and result copy go with the `bl`. Binding: an identifier
+argument to a parameter the callee never assigns substitutes as before; a
+field-path argument — `next.h`, `acc.h` — to a parameter the callee never
+assigns, borrows, or addresses (`recordParamTouched`), when no parameter of
+the callee is a writable span (through which it could reach the path's
+storage) and the callee does not mention the path's root, stands for the
+parameter at every use with no copy (`substituteBound`); every other
+argument is declared as a copy under a fresh name. A record- or
+array-valued call in expression position becomes a block expression, which
+the record lowering evaluates as its statements then its tail
+(`recordValueAs`); a record local the tail names keeps its storage past
+the block's scope. The verifier still compares against the body as written,
+the callees taken at their Oak bodies. The theorem is the substitution
+lemma over a small expression language: evaluating the body with the
+parameter replaced by the argument equals evaluating it in the environment
+that binds the parameter to the argument's value, the declared copy
+(`Oak.Inlining.eval_subst`). `TestNativeShapesAggregateInline` pins
+`absorb`, whose loop drives `acc.h = step(acc.h, k)` and `fold(acc.h)`
+with no `bl`; `TestE2ENativeAggregateInline` agrees with the C backend.
+On the SHA-256 path, `sha256_compress` and `sha256_block` fold into
+`sha256_update`'s loop once owned arrays travel as values (#472).
+**Read-only borrows (2026-09-16, AArch64 lane; `spec/lean/Oak/ReadOnlyBorrow.lean`).**
+A by-value record or array parameter counted as touched when its address
+was taken — any `&p…` — so `sha256_compress`'s `sha256_block(h,
+view(&block))` copied the 64-byte block into the callee's frame and made
+the caller copy it into a temp first. A read-only borrow, the address as
+the argument of `view(…)`, reads the parameter and nothing else: it no
+longer touches it (`recordParamTouched`), so the callee reads the
+parameter in place through its park register, the caller passes its own
+storage (`readsInPlace`, which still refuses when the callee has a writable
+span parameter through which that storage could change — `bump_first(b.block,
+span(&b.block))` keeps its copy and reads the value before the write, as
+Oak's by-value semantics say), and the native inliner substitutes a field
+path for the parameter. `span(&p…)` and every other address taken still
+touch. The theorem: reading through a view of the copy is reading the
+storage (`Oak.ReadOnlyBorrow.view_of_copy`), and a store outside the
+aggregate leaves the view's reads unchanged (`view_unchanged`).
+`TestNativeShapesReadOnlyBorrow` pins `sum` reading its block in place and
+`main` copying the block once, for the call with the writable span;
+`TestE2ENativeReadOnlyBorrow` agrees with the C backend.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
@@ -5333,6 +5391,27 @@ its branches and is proven again, and the natively built prover builds
 and runs (`TestE2ENativeSelectDoesNotSpeculateAGuardedShift`). Prover
 build after the fix: proven 565, evidence 154, trusted 311, no
 disagreement.
+
+**Long counted loops inducted (2026-09-16).** A counted loop unrolled
+whatever its trip count, and a loop clearing or copying a table of two
+thousand words (`set_clear`, `set_copy`, `clear_depth`) unrolled into a
+write log no decision affords — guarded at every iteration, it met the
+path budget first. The counted loop's exception (`summarizeCounted`, both
+sides: a loop over a loop past four trips is summarized rather than
+unrolled) now takes any counted loop past sixty-four trips
+(`countedTripLimit`), loop inside or not: both sides read the same
+constant bound from the loop's compare, summarize the loop at its first
+iteration, and the coupling proves it inductively — a store per
+iteration, the loop memory equal — where the unrolling could not.
+Sixty-four: above it the unrolled copies cost more than the induction
+(`step_binding` took five minutes unrolled, under a second inducted);
+four bodies of 128 and 512 trips proved unrolled where their coupling
+does not yet (`intern_long`, `positional_arms_ahead`).
+`TestVerifyLongCountedLoopInducted`: eighty trips are inducted and
+proven, a wrong store is refuted on a witness input long enough, and
+forty trips still unroll. Prover build (per body, the optimizer's
+candidates aside): proven 565 → 577, evidence 141 → 147, trusted
+266 → 253, no disagreement.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

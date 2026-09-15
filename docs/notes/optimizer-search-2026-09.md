@@ -238,9 +238,33 @@ and wrapping boundaries retain only the facts actually established. These
 results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
 meaning, while MachineIR owns eventual layout and scheduling.
 
+Its first loop transform is analysis-only LICM. After CSE/DCE it moves a closed
+total-pure operation to a canonical preheader only when all operands are
+available there. Potential traps, effects, calls, memory, unknown operations,
+noncanonical entries, and facts other than the definition-local checked type
+fact pin the operation. The cloned result passes the independent verifier and
+is retained with deterministic movement evidence; emission consumes neither.
+
+The implementation topology is not yet a unified pass DAG. `Stage.Then` remains
+linear, candidate search branches internally, and OptIR analyses are invoked
+directly. The intended artifact DAG has immutable nodes for checked input,
+structured IR, each CFG version, analysis facts, transform candidates,
+verification/equivalence verdicts, target costs, and final selection. Edges are
+typed requirements and invalidations: SCCP and loop analysis may share one CFG
+version, LICM depends on dominance/loops/purity, and a changed CFG invalidates
+only the analyses it can affect. Cheap structural admission precedes costing;
+cost may prioritize unverified candidates, but selection cannot observe one
+without its required verdict. Version-addressed nodes provide incremental reuse
+and make independent ready nodes parallelizable. The generic key, graph,
+derived-version, cache, and deterministic exact-once executor are implemented
+in `opt/artifact.go`; compiler migration, typed gate builders, preservation
+certificates, and concurrent ready-node scheduling remain. The complete design
+is `optimizer-artifact-dag-2026-09.md`.
+
 Not yet: equivalence-validated emission of the candidate, available-expression
 and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
-LICM/unrolling transforms that consume the loop facts, vector plans (Phase D),
+unrolling and further loop transforms, compiler migration to the artifact DAG,
+analysis-aspect invalidation and concurrent scheduling, vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
 
@@ -825,7 +849,9 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 4. target-cost API;
 5. optimization remarks and structural metrics;
 6. bounded candidate pruning / beam search;
-7. migrate current transforms into the registry.
+7. migrate current transforms into the registry and the landed immutable
+   artifact-DAG executor; add typed invalidation and concurrent ready-node
+   scheduling.
 
 ### Phase B: machine substrate
 
@@ -847,7 +873,8 @@ This phase targets the measured UTF-8 call/spill gap directly.
 18. region-aware memory SSA / Mod-Ref summaries;
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
-21. LICM, loop rotation, address induction, loop strength reduction.
+21. LICM (**analysis-only OptIR candidate landed**), loop rotation, address
+    induction, loop strength reduction.
 
 ### Phase D: vector planning
 
