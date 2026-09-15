@@ -2933,6 +2933,11 @@ branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
 The fifty-second increment is pair copies (§9 "Pair copies"): aggregate
 copies move sixteen bytes a step as `ldp`/`stp` where both sides are
 8-aligned and a pair remains (`Oak.PairCopies.pair_copy`).
+The fifty-first increment is copies at the boundary (§9 "Copies at the
+boundary"): a returned local built in the `x8` area, a read-only
+aggregate argument passed as the caller's storage, a call's result
+received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
+`build_in_place`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -4207,6 +4212,44 @@ names no operand. `TestNativeShapesForwarding` pins the byte loop of an
 absorber: no `cset`, no reload after a store, the `== 64` test on the
 register the increment was stored from; `TestE2ENativeForwarding` agrees
 with the C backend. The RV64 lane is untouched.
+**Copies at the boundary (2026-09-16, AArch64 lane;
+`spec/lean/Oak/BoundaryCopies.lean`).** Three copies of aggregates at
+calls and returns go. A record local the function returns through `x8` —
+the body's tail is the bare name of a local declared once at the body's
+top level, of the result type, not from a literal, its address never
+taken (`returnSlotLocal`) — is the caller's result area itself: its
+fields live behind the parked result register, `next: Sha256State =
+state` copies the parameter into the area, `next.filled = next.filled +
+u32(1)` reads and writes `[x21, #96]`, and the return copies nothing
+(`sha256_update` copied 112 bytes twice: in and out). A by-reference
+argument whose callee only reads it — the callee's body never assigns,
+borrows, or addresses the parameter (`recordParamTouched`), is a body and
+not an extern or a unit, and no parameter of the callee is a writable
+span, through which it could reach the caller's storage — is passed as
+the address of the caller's own storage, `add x9, sp, #off` for a frame
+record or `add x9, xR, #off` for one behind a register, where before a
+temp was filled and its address passed (`sha256_compress(next.h,
+next.block)` copied 96 bytes per block). And a local initialized from a
+call returning a record through memory, `y: Big = step(x)`, receives the
+callee's result in its own storage — reserved before the arguments
+evaluate and bound after, since an argument may name an outer binding of
+the same name — where before a temp received it and was copied. The
+same untouched-parameter rule now admits parameters whose records hold
+arrays: an array field behind a register is walked as an array field of a
+computed element is (`arrayAddressReg`), so `Sha256State` arrives in
+place. The theorems: the callee's reads through the caller's address are
+the reads of the copy, since nothing writes the storage during the call
+(`Oak.BoundaryCopies.read_in_place`), and an aggregate built at the
+result area holds word for word what one built in the frame and copied
+would (`build_in_place`). `TestNativeShapesBoundaryCopies` pins `step`
+(no frame slot in the body: the parameter read in place, the result
+written in place) and `twice` (its locals passed by their own addresses,
+results received in place; one spill across a call);
+`TestE2ENativeBoundaryCopies` agrees with the C backend. Not elided: a
+result stored into existing storage, `next.h = f(next.h, …)`, whose
+target may alias an argument passed in place — the temp stays; a callee
+with a writable span parameter; a parameter the callee passes to its own
+recursive call.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array
