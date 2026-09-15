@@ -2596,8 +2596,13 @@ func (c *checker) clobberCallerSaved() {
 		// A span parked in x0–x17 does not survive the callee.
 		c.forgetRegisterFacts(num)
 	}
-	for num := 0; num <= 7; num++ {
-		delete(c.writtenV, num)
+	// The callee owns every vector register but d8–d15's low halves; a
+	// value kept in v16–v31 across the call must be reloaded before it is
+	// read (docs/spec/94-assembler.md §9.ad).
+	for num := 0; num <= 31; num++ {
+		if !calleeSavedVector(num) {
+			delete(c.writtenV, num)
+		}
 	}
 	// The call's result: x0 for an integer (x1 too for a record of two
 	// chunks), v0 for a floating-point one — the checker does not see the
@@ -2926,8 +2931,13 @@ func (c *checker) call(instr Instruction) {
 		// A span parked in x0–x17 does not survive the callee.
 		c.forgetRegisterFacts(num)
 	}
-	for num := 0; num <= 7; num++ {
-		delete(c.writtenV, num)
+	// The callee owns every vector register but d8–d15's low halves; a
+	// value kept in v16–v31 across the call must be reloaded before it is
+	// read (docs/spec/94-assembler.md §9.ad).
+	for num := 0; num <= 31; num++ {
+		if !calleeSavedVector(num) {
+			delete(c.writtenV, num)
+		}
 	}
 	// The call's result: x0 for an integer (x1 too for a record of two
 	// chunks), v0 for a floating-point one — the checker does not see the

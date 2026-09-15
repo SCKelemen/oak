@@ -92,6 +92,11 @@ type Options struct {
 	// a witnessed or trusted body, or one left to the C backend, refuses
 	// the build, naming the reason. Implies NativeBodies.
 	VerifiedProfile bool
+	// OptReport prints the native lane's optimization report — what the
+	// candidate search tried, kept, and set aside for each body, with the
+	// facts that licensed it (opt.Report; docs/notes/optimizer-search-2026-09.md
+	// §9) — to standard error. OAK_OPT_REPORT=1 does the same.
+	OptReport bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -289,6 +294,13 @@ func (comp Compilation) WithNativeBodies() Compilation {
 // anew, ignoring the verdict cache.
 func (comp Compilation) WithVerifyFresh() Compilation {
 	comp.options.VerifyFresh = true
+	return comp
+}
+
+// WithOptReport returns a compilation that prints the native lane's
+// optimization report (Options.OptReport).
+func (comp Compilation) WithOptReport() Compilation {
+	comp.options.OptReport = true
 	return comp
 }
 

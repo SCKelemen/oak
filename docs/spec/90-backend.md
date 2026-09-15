@@ -656,3 +656,21 @@ The rules a backend optimization obeys, restating `05-ergonomics-and-cost.md`
    faster because it expresses something Oak cannot is filed as an
    expressiveness finding (`docs/checklists/performance.md` §0), never
    answered by a flag or a speculative pass.
+7. **Candidates, not a pass order.** The native lane's transforms are
+   proposals in a bounded candidate search (package `opt`,
+   `compiler/native_search.go`; `docs/notes/optimizer-search-2026-09.md`):
+   the plain lowering is the identity candidate and always in the search;
+   each transform names the facts it consumes with the provenance it
+   needs (`nativegen.Transforms`: check elision needs an index the
+   typechecker proved, reduction unrolling the operator's associativity
+   law), and proposes a configuration from a candidate; a static cost
+   model orders the admitted bodies; the checker and the verifier judge
+   them in that order, and the cheapest proven body is kept — else the
+   strongest verdict, the plain lowering last, so no body ships on a
+   verdict weaker than the plain lowering earns. The search records an
+   optimization report (`-opt-report`, `OAK_OPT_REPORT`): every
+   transform taken with the fact that licensed it, every one set aside
+   with the checker's or the verifier's reason, and the body's
+   structural counts before and after. Cost is never correctness: a
+   wrong estimate makes a body slower, and only the verdict decides
+   what ships.

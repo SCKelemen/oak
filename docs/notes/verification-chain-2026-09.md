@@ -200,7 +200,12 @@ or the verifier, not in the program:
    minimum, and offsets weakening the minimum required) is closed with the
    fact's `need`. Guards elided 74 → 134 on the stdlib-bearing program, like for like
    on the merged head (conditions materialized by `cset` and tested by
-   `cbz`/`cbnz` read as the branch would).
+   `cbz`/`cbnz` read as the branch would). **RV64 elision on (2026-09-15,
+   §9.ae):** the exit test `i < len(v)` compares the zero-extended index
+   with the normalized length and the proven access reuses that register;
+   two verifier gaps closed on the way (header temporaries carried into
+   the body; the `(x << 32) >> 32` fold only for 32-bit symbols), with
+   no existing verdict changing on either lane.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two
