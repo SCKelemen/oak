@@ -3576,6 +3576,24 @@ first would return from its spill slot without provenance (the OS
 pilot's N8, `s[dom].pages[cell(i, j)]`); the guard and the region
 bounds are unchanged.
 
+**Spans of records, verified.** A parameter `[*]T` or `[]T` with `T` a
+record binds in the verifier as a span of `T`'s size whose element
+fields are the record's scalar leaves: a field of element `i` is the
+select term over the memory `v.f` at `i` (the parameter `v[k].f` for a
+constant `k`), an element of an array field `v[i].a[j]` the select over
+`v.a` at the linear index `i·N + j`, and both sides form the same terms —
+the executor from the element address (the shifted add or the `umaddl`
+term, then the field offset) and the Oak lowering from the expression —
+over the same deterministic witness memory. Readers of spans of records
+are therefore proven against their Oak bodies, and a lowering that reads
+the wrong field or element is a mismatch. Stores go into the same
+memories' write logs (the effects model above), one memory per scalar
+leaf and one per array field, guarded by the path condition, marked at a
+data-dependent loop, and the verdict compares each written memory at a
+fresh index — so writers of spans of records are proven too, and a store
+into the wrong field is a mismatch (the OS pilot's V1: `stage2` and
+`addr_space` enter the proof chain, readers and writers).
+
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
 body names its cell as `adrp xA, G` then `add xA, xA, :lo12:G` and
