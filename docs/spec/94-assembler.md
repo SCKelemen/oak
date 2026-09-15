@@ -2652,6 +2652,19 @@ arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
 summarized into a unit caller proven in its span and into a caller
 proven in its result and its span; the C backend the oracle).
 
+**The linear normal form sees through a covering mask.** A mask of low
+ones that covers every bit its operand can have set is the identity to
+the normal form — a parameter's declared width, a constant's length, a
+mask's ones are the bits a term can have set (`knownBits`), and an `or`,
+`xor`, or shift by at least the mask's width strips what lies above it
+(`stripAbove`) — so `u64(index)` over a `u16` parameter (`index and
+0xFFFF` on the Oak side; the machine's read of the argument register,
+`(index#hi shl 16) or index` under `and 65535`) is the parameter, and
+`pool_base + u64(index) * page_size` (the OS pilot's `page_pa`) is proven
+as `4096*index + pool_base` rather than left as evidence where the
+64-bit sum of two unknowns exceeded the bit-level budget
+(`asm/linear_form_test.go`, `compiler/e2e_native_linear_mask_test.go`).
+
 **Thirty-first increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
 `asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
