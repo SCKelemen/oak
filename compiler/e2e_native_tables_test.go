@@ -80,8 +80,9 @@ func TestE2ENativeConstantTables(t *testing.T) {
 		// so is table_sum, which passes a view of a table to a callee — the
 		// summary takes the table's address beside its constant length as
 		// the table passed whole (docs/spec/94-assembler.md §8, span
-		// arguments over owned arrays).
-		for _, fn := range []string{"digit_at", "word", "third", "table_sum"} {
+		// arguments over owned arrays), and main, whose callee's body sees
+		// the tables as the caller does.
+		for _, fn := range []string{"digit_at", "word", "third", "table_sum", "main"} {
 			for _, m := range native {
 				if strings.Contains(m, "asm unit "+fn+":") && !strings.Contains(m, "proven equal") {
 					t.Errorf("%s: %s is not proven: %s", tname, fn, m)
