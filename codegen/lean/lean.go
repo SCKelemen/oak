@@ -2006,6 +2006,14 @@ func (em *emitter) infix(e *ast.InfixExpression, want string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if em.options.BitFloats && operand == "Float32" {
+			op := map[string]string{
+				"==": "eq32", "!=": "ne32", "<": "lt32",
+				"<=": "le32", ">": "gt32", ">=": "ge32",
+			}[e.Operator]
+			em.usesFloatOps = true
+			return fmt.Sprintf("(Oak.FloatOps.%s %s %s)", op, left, right), nil
+		}
 		switch e.Operator {
 		case "==":
 			return fmt.Sprintf("(%s == %s)", left, right), nil

@@ -281,10 +281,13 @@ the agreement invariant while the verifier substitutes a local's lowered
 initializer. The operation map, operand order, literal bits, and substitution
 shapes are pinned to `oakLowering.lower` by
 `asm/lowering_refinement_test.go`, including the non-contraction of
-`a * b + c` and the sign-mask forms. This is deliberately still a first slice:
-decimal parsing into the literal bits, comparisons, conversions, spans,
-control flow, calls, `f64`, and vector operations remain related to the
-extraction by tests rather than this theorem.
+`a * b + c` and the sign-mask forms. `lowerCondition_eval` adds all six IEEE
+comparisons over those expressions; the bit-level predicates make NaN
+unordered and signed zeros equal, and the production render pins include the
+verifier's complete `floatCompare` expansions. This is deliberately still a
+first slice: decimal parsing into the literal bits, conversions, spans, control
+flow, calls, `f64`, and vector operations remain related to the extraction by
+tests rather than this theorem.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -354,9 +357,11 @@ for a workload):
    `*`, unary negation, `abs`, and `copysign` over parameters, post-rounding
    literal bits, and straight-line local declaration/rebinding to the verifier's
    width-32 operation/sign-bit terms and local substitution; the production
-   render pins cover those shapes and a multiply followed by an add. Decimal
-   parsing, comparisons, conversions, memory, control flow, calls, and the rest
-   of the float/vector edge stay open.
+   render pins cover those shapes and a multiply followed by an add.
+   `lowerCondition_eval` covers `==`, `!=`, `<`, `<=`, `>`, and `>=` over the
+   same expressions and pins the verifier's bit-level comparison expansion.
+   Decimal parsing, conversions, memory, control flow, calls, and the rest of
+   the float/vector edge stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

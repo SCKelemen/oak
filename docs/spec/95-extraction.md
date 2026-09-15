@@ -159,7 +159,7 @@ ml pilot's F25: the packages whose state lives in flat arenas extract, and
 the oracle's `view` package reaches Lean without being rewritten as pure
 functions over parameters. A read-only global stays a constant.
 
-**Seventh: `f32` arithmetic at the bit level, on request.** Lean's
+**Seventh: `f32` arithmetic and comparisons at the bit level, on request.** Lean's
 `Float32` is the host's binary32 with opaque arithmetic: it computes the
 right bits but a theorem cannot see how `+` rounds. Under `oak build -lean
 out.lean -lean-floats bits` the extraction renders `f32` addition,
@@ -180,11 +180,15 @@ bounds of `Oak.FloatBounds` are bounds on these functions wherever the
 exact result rounds to a normal number (the ml pilot's E4, RFC 0004's
 `bounded`). Subnormal and overflowing results follow IEEE 754-2019 in the
 code and are outside the integer model, as `Oak.Floats` says of itself.
-Division and the comparisons stay Lean's.
-`compiler/lean_float_bits_test.go` holds all six functions to binary32 on edge
+The six comparison operators render through `Oak.FloatOps.eq32`, `ne32`,
+`lt32`, `le32`, `gt32`, and `ge32`: NaN is unordered, either signed zero equals
+the other, and nonzero values use the IEEE sign-magnitude order. Division and
+`f64` comparisons stay Lean's. `compiler/lean_float_bits_test.go` holds all
+twelve functions to binary32 on explicit zeros, infinities and NaNs plus edge
 and random operands—arithmetic against the host, sign operations against their
-exact bit transforms under the canonical-NaN carrier. The default mode is
-unchanged, so an extraction that never states a rounding fact keeps Lean's
+exact bit transforms under the canonical-NaN carrier, and comparisons against
+the host's IEEE predicates. The default mode is unchanged, so an extraction
+that never states a rounding or bit-level comparison fact keeps Lean's
 operators.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
