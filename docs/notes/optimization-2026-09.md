@@ -143,13 +143,19 @@ column unchanged or improved.
    closed) and the verifier reloads a saved vector lane for lane. Read
    off the fixture, not the kernels: the helper expansion has flattened
    every calling vector body in the kernel package, so the row that
-   remains is the flattened one — forty vector locals against
-   thirty-two registers, where the leaf path hands out twenty homes and
-   the rest spill. The next step is therefore **a liveness-based
-   allocator for leaves**: registers reused across disjoint live ranges
-   (the last-use release exists; the pool must be sized by simultaneous
-   liveness, not by declaration count) and spills chosen by use count.
-   Target: UTF-8 (5×), then inlining pays instead of hurting.
+   remains is the flattened one — the validator's loop spilled five
+   temporaries of the expanded `check_blocks` to slots, forty q-register
+   frame accesses per sixty-four bytes.
+3. **A leaf's vector locals in the argument registers** (landed
+   2026-09-15, `94-assembler.md` §9.ae): v1–v7 past the vector
+   parameters as homes, the scalar leaf scheme for the vector file. The
+   validator's loop goes from forty q-register frame accesses to none,
+   its body from forty-one to one, both bodies still proven. The
+   liveness allocator proper — registers reused across disjoint live
+   ranges beyond the last-use release, spills chosen by use count — is
+   still ahead for bodies wider than twenty-seven vector locals; the
+   validator no longer needs it. Target: UTF-8 (5×) measured on a quiet
+   host, then inlining pays instead of hurting.
 3. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;

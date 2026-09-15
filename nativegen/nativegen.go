@@ -1297,6 +1297,13 @@ type generator struct {
 	callerHomesV []int
 	homesUsedV   map[int]bool
 	vecHomes     int
+	// leafHomesV (Lane.VectorHomes, leaves): the vector argument registers
+	// no parameter occupies, v1–v7, as homes for a leaf's vector locals
+	// once the callee-saved and scratch homes are taken; leafVecHomes
+	// counts them (reported).
+	leafHomesV    []int
+	leafPoolBuilt bool
+	leafVecHomes  int
 }
 
 type slotBinding struct {
@@ -1545,6 +1552,12 @@ var reducedOps = map[*asm.Function]int{}
 func VectorHomes(fn *asm.Function) int { return vectorHomesOf[fn] }
 
 var vectorHomesOf = map[*asm.Function]int{}
+
+// LeafVectorHomes reports how many vector locals of a leaf a lowering
+// homed in the argument registers v1–v7 under Lane.VectorHomes.
+func LeafVectorHomes(fn *asm.Function) int { return leafVectorHomesOf[fn] }
+
+var leafVectorHomesOf = map[*asm.Function]int{}
 
 // pressured marks a lowering in which some scalar variable had to take a
 // caller-saved home or a frame slot: the second pass is worth its cost.
@@ -2049,6 +2062,13 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 					out.Clobbers = append(out.Clobbers, dr(r))
 				}
 			}
+		} else {
+			// A leaf's argument-register vector homes (leafVectorPool).
+			for r := 1; r <= 7; r++ {
+				if g.homesUsedV[vecBase+r] {
+					out.Clobbers = append(out.Clobbers, dr(r))
+				}
+			}
 		}
 	}
 	if g.hasCalls {
@@ -2129,6 +2149,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.vecHomes > 0 {
 		vectorHomesOf[out] = g.vecHomes
+	}
+	if g.leafVecHomes > 0 {
+		leafVectorHomesOf[out] = g.leafVecHomes
 	}
 	if g.reused > 0 {
 		reusedCompares[out] = g.reused
@@ -3935,6 +3958,14 @@ func (g *generator) declare(name string, s scalar) int64 {
 			r, g.callerHomesV = g.callerHomesV[0], g.callerHomesV[1:]
 			g.homesUsedV[r] = true
 			g.vecHomes++
+		case !g.hasCalls && g.leafVectorPool() > 0:
+			// A leaf's vector local in an argument register no parameter
+			// occupies (Lane.VectorHomes), as the scalar leaf homes in
+			// x2–x7: nothing to save, no call to clobber it. v0 is left
+			// out for the result.
+			r, g.leafHomesV = g.leafHomesV[0], g.leafHomesV[1:]
+			g.homesUsedV[r] = true
+			g.leafVecHomes++
 		case len(g.freeSlots16) > 0:
 			offset, g.freeSlots16 = g.freeSlots16[len(g.freeSlots16)-1], g.freeSlots16[:len(g.freeSlots16)-1]
 		default:
@@ -4013,11 +4044,40 @@ func (g *generator) vectorHomePool() int {
 	return len(g.callerHomesV)
 }
 
+// leafVectorPool is the pool of a leaf's argument-register vector homes
+// (Lane.VectorHomes), built on first demand: v1–v7 past the vector and
+// float parameters, which arrive in v0 upward; its size.
+func (g *generator) leafVectorPool() int {
+	if !g.vectorHomes || g.rvLane || g.hasCalls {
+		return 0
+	}
+	if !g.leafPoolBuilt {
+		g.leafPoolBuilt = true
+		params := 0
+		for _, p := range g.fn.Parameters {
+			if p != nil {
+				if s, ok := scalarOf(p.Type); ok && (s.isVec || s.isFloat) {
+					params++
+				}
+			}
+		}
+		for r := params; r <= 7; r++ {
+			if r == 0 {
+				continue
+			}
+			g.leafHomesV = append(g.leafHomesV, vecBase+r)
+		}
+	}
+	return len(g.leafHomesV)
+}
+
 // releaseVectorHome returns a vector register home to the pool it came
 // from: a caller-saved one (v16–v31) to the calling function's home pool
 // or a leaf's scratch, a callee-saved one (v8–v15) to freeCalleeV.
 func (g *generator) releaseVectorHome(r int) {
 	switch {
+	case r >= vecBase && r <= vecBase+7 && !g.hasCalls:
+		g.leafHomesV = append(g.leafHomesV, r)
 	case r >= vecBase+vecScratchLow && r <= vecBase+vecScratchHigh && g.hasCalls:
 		g.callerHomesV = append(g.callerHomesV, r)
 	case r >= vecBase+vecScratchLow && r <= vecBase+vecScratchHigh:
