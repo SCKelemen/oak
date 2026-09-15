@@ -417,3 +417,28 @@ is the vector form of the same reduction. `tiled` and `dot` are
 unchanged by this increment (their loads are float lanes, which the
 pair pass leaves alone).
 
+## Fields in registers, 2026-09-16
+
+With the record fields a loop touches in callee-saved registers
+(docs/spec/94-assembler.md §9 "Fields in registers"), measured over #472–#476
+merged locally (the machine under the compiler suites, C and native
+interleaved, three runs each), the dbs frame scan's native build stands
+at 120–150 ms against the C build's 101–136 ms — from 1.8× to about 1.15×
+of clang in one increment, the chain hash agreeing and the verdicts
+unchanged (383 proven, 71 bodies left to C). `sha256_update`'s byte loop
+is eleven instructions and the loop's two: `filled` is `w23`, so the
+guard compares it, the increment writes it, and the `== 64` test reads
+it, with no load or store of the record anywhere in the loop; the
+record's memory is written where `next` is used whole — passed to
+`sha256_compress` by the addresses of its `h` and `block` fields, which
+are not promoted, and at the return, where the caller's area takes the
+homes. What remains beside clang's ten: the block's address rebuilt each
+iteration (`add x9, x22, #32`; the loop invariants, now on
+`specification`, take it) and a copy of the index into a scratch before
+the guard (`mov w10, w23`), which the element idiom can read from the
+home as a compare does. Beyond parity: the loop's exit test at its top
+(`cmp; b.hs done` then `add; b loop`, four instructions of control to
+clang's three) waits on a bottom-tested loop shape the verifier's
+recognizer admits, and the per-block chain of calls on the inlining of
+small record-returning callees.
+
