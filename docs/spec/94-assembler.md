@@ -4228,6 +4228,57 @@ pairs, and still proven); `TestE2ENativePairCopies` agrees with the C
 backend. The RV64 lane keeps its word copies (no pair form in its base
 contract).
 
+**Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
+condition is a conjunction of simple tests — comparisons of simple
+operands, Bool variables in registers, their negations — is lowered with
+its test once before the loop and again at the bottom, every conjunct but
+the last leaving to the exit when false and the last a conditional back
+edge when true — `cmp; b.hs done; loop: body; cmp; b.lo loop; done:`; for
+`lo < hi && !found`, `cmp; b.hs done; cbz wF, loop` — one branch an
+iteration where the top-tested form paid its tests, a conditional exit,
+and an unconditional jump (`Lane.RotateLoops`; a disjunction keeps the
+top-tested shape). The rotation is a pass over the emitted items
+(`nativegen/rotate.go`), run after the loop-invariant pass, whose loop
+finder reads the top-tested shape; a header whose exit test hides a
+later test behind a setup instruction (the unrolled reduction's `sub wT,
+wL, #4; cmp wI, wT; b.hi done`) is left as it is. The verifier recognizes the shape by its conditional
+back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
+compares and branches to the exit label ending in the back edge, the
+entry test right before the header label is the same run with its last
+branch to the exit under the complementary condition, and nothing else
+branches to the header. Such a loop runs its body exactly as the
+top-tested loop with that test at its header — the entry test is the
+first iteration's, the tail test every later one's — so the shape is the
+top-tested one with its test range at the tail: `headerCondition` walks
+the tail test over the header state, an exit branch taken as the exit
+and the back edge taken as the continue, and the loop is keyed at every
+entry branch, so the executor summarizes it at the first undecided one
+(a Bool cleared before the loop decides its own test) with the entry
+state. The checker learns the taken side of `cmp wI, wL; b.lo header`
+carries `wI < wL` (the fall-through of `b.hs exit` did already, the same
+`Oak.Assembler.index_access` fact), so an elided element guard inside the
+body stays admitted on the back-edge path. A body the verifier judges
+weaker than its top-tested form — or the checker refuses — is lowered
+again top-tested. On the kernels `bench_sum` is five instructions and one
+branch an iteration (`ldr; add; add; cmp; b.lo`), `bench_dot`,
+`bench_dispatch`, `bytes_equal`, `bytes_find`, `bytes_fill`,
+`bitset_count`, and the CRC word helper rotate and prove; `bench_search`
+and `bench_page_probe` rotate both their loops (the inner conditions are
+conjunctions) with their verdicts unchanged; on the stdlib-bearing
+program 39 bodies rotate and prove and none falls back
+(`compiler/e2e_native_rotation_test.go`).
+
+**Two copies removed (2026-09-15).** A widening from a narrow unsigned
+type to a wide one wrote `mov wR, wR` to clear the upper half; a value a
+w instruction just computed has it clear already, so only a value that
+arrived otherwise — an argument register, whose upper half the caller
+leaves unspecified — is written once as w, and the declaration's
+retargeting then lands the computation in the variable's home
+(`lsr w6, w4, #3` for `arg: u64 = u64(b >> u8(3))`, from `lsr w9; mov w6,
+w9`). A function whose result is a variable in its home register moves it
+to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
+w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam

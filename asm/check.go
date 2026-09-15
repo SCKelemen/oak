@@ -1357,7 +1357,21 @@ func (c *checker) instruction(instr Instruction) bool {
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
-		c.branch(instr, false)
+		if guard.valid && (instr.Cond == "lo" || instr.Cond == "cc") {
+			// `cmp wI, wL` then `b.lo header`: the taken path knows wI < wL
+			// — a bottom-tested loop's back edge, the same fact as the
+			// fall-through of `b.hs exit` (Oak.Assembler.index_access).
+			previous, had := c.idxFacts[guard.left]
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+			c.branch(instr, false)
+			if had {
+				c.idxFacts[guard.left] = previous
+			} else {
+				delete(c.idxFacts, guard.left)
+			}
+		} else {
+			c.branch(instr, false)
+		}
 		c.guardFacts(guard, instr.Cond)
 		return false
 	case "retaa", "retab":

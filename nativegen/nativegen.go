@@ -1390,6 +1390,10 @@ type generator struct {
 	held map[int64]heldSlot
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
+	// bottomTest (Lane.RotateLoops): bottom-tested loops
+	// (nativegen/rotate.go); bottomTested counts them.
+	bottomTest   bool
+	bottomTested int
 	// elided counts the guards left out under elide (reported).
 	elided int
 	// strength lowers constant multiplications, divisions, and remainders
@@ -1468,6 +1472,14 @@ type Lane struct {
 	// body again without the reuse (docs/spec/94-assembler.md §9
 	// "Condition selection").
 	ReuseFlags bool
+	// RotateLoops lowers a `while` whose condition is one comparison of
+	// simple operands (or a Bool in a register) bottom-tested: the test
+	// once before the loop, then the body and the test with a conditional
+	// back edge — one branch per iteration instead of two. The verifier
+	// recognizes the shape (asm/loops.go tailLoopShape); a body that
+	// proves less falls back to the top-tested form
+	// (docs/spec/94-assembler.md §9 "Bottom-tested loops").
+	RotateLoops bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -1628,7 +1640,7 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
+		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops)
 		if err != nil {
 			return out, err
 		}
@@ -1662,7 +1674,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false)
 }
 
 // Reallocated reports how many webs a lowering recolored and copies it
@@ -1700,6 +1712,12 @@ func Hoisted(fn *asm.Function) int { return hoistedLoops[fn] }
 
 var hoistedLoops = map[*asm.Function]int{}
 
+// RotatedLoops reports how many loops a lowering bottom-tested under
+// Lane.RotateLoops.
+func RotatedLoops(fn *asm.Function) int { return rotatedLoops[fn] }
+
+var rotatedLoops = map[*asm.Function]int{}
+
 var reducedOps = map[*asm.Function]int{}
 
 // VectorHomes reports how many vector locals a lowering kept in registers
@@ -1724,7 +1742,7 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -1737,7 +1755,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -1747,7 +1765,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1758,8 +1776,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool) (*asm.Function, error) {
-	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, 0, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool) (*asm.Function, error) {
+	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1774,7 +1792,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare == 0 && reserve == 0 {
 		return first, nil
 	}
-	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, spare, reserve)
+	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, spare, reserve)
 	if err != nil {
 		return first, nil
 	}
@@ -1785,8 +1803,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, spare int, reserve int) (*asm.Function, int, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, spare int, reserve int) (*asm.Function, int, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -2213,6 +2231,11 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 		}
 	}
+	// Bottom-tested loops (nativegen/rotate.go), after the invariant pass,
+	// whose loop finder reads the top-tested shape.
+	if rotate {
+		body, g.bottomTested = rotateLoops(body)
+	}
 	out.Items = append(prologue, body...)
 	// Clobbers: the scratch registers, the argument registers a call
 	// writes beyond the bound parameters, and the link register.
@@ -2339,6 +2362,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.reused > 0 {
 		reusedCompares[out] = g.reused
+	}
+	if g.bottomTested > 0 {
+		rotatedLoops[out] = g.bottomTested
 	}
 	return out, g.peakScratch, hoistWanted, nil
 }
@@ -3412,6 +3438,16 @@ func (g *generator) branchFlags(cond, label, compare string) {
 }
 
 func (g *generator) label(name string) {
+	// A jump to the label about to be placed is a fall-through: the last
+	// arm of a match or conditional ends with `b end` right before `end:`.
+	if n := len(g.items); n > 0 {
+		if ins, isIns := g.items[n-1].(asm.Instruction); isIns && ins.Mnemonic == "b" && len(ins.Operands) == 1 {
+			if sym, isSym := ins.Operands[0].(asm.Symbol); isSym && sym.Name == name {
+				g.items = g.items[:n-1]
+				g.terminated = false
+			}
+		}
+	}
 	// The flags at the label are one compare's when every transfer to it
 	// is that compare's branch and nothing falls through (the label
 	// follows an unconditional transfer); a backward branch to a label
@@ -6193,6 +6229,21 @@ func (g *generator) assignVar(name string, r int) {
 	g.release(r)
 }
 
+// lastWroteW reports that the last emitted instruction wrote scratch
+// register r as a w register (its upper half is zero).
+func (g *generator) lastWroteW(r int) bool {
+	n := len(g.items)
+	if n == 0 {
+		return false
+	}
+	ins, isIns := g.items[n-1].(asm.Instruction)
+	if !isIns || !retargetable[ins.Mnemonic] || len(ins.Operands) == 0 {
+		return false
+	}
+	dst, isReg := ins.Operands[0].(asm.Register)
+	return isReg && dst.Num == r && dst.Class == asm.ClassW
+}
+
 // retargetable names the instructions whose destination may be renamed
 // without changing their meaning: they read their sources only (movk reads
 // its destination, the exclusives write a status).
@@ -6455,8 +6506,12 @@ func (g *generator) convert(operand ast.Expression, target scalar, op string) (i
 	case !source.wide() && target.wide():
 		if source.signed {
 			g.emit("sxtw", xr(r), wr(r))
-		} else {
-			g.emit("mov", wr(r), wr(r)) // the upper half is already zero: a w write clears it
+		} else if !g.lastWroteW(r) {
+			// A w write clears the upper half: a value just computed by one
+			// needs nothing, a value that arrived otherwise (an argument
+			// register, whose upper half the caller leaves unspecified) is
+			// written once as w.
+			g.emit("mov", wr(r), wr(r))
 		}
 	case source.wide() && !target.wide():
 		g.emit("mov", wr(r), wr(r))
@@ -8124,12 +8179,16 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			}
 		}
 	}
-	r, err := g.expr(expr, g.result)
+	// A variable in its home register moves to the result register
+	// directly; anything else is computed into a scratch first.
+	r, fixed, err := g.operand(expr, *g.result)
 	if err != nil {
 		return err
 	}
 	g.moveResult(r, *g.result)
-	g.release(r)
+	if !fixed {
+		g.release(r)
+	}
 	return nil
 }
 
