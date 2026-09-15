@@ -43,7 +43,15 @@ select: (flag: Bool): u32 {
 
 count: (n: u32): u32 {
   i: u32 = u32(0)
-  while i < n {
+  while i < n + u32(1) {
+    i = i + u32(1)
+  }
+  i
+}
+
+fixed: (): u32 {
+  i: u32 = u32(0)
+  while i < u32(4) {
     i = i + u32(1)
   }
   i
@@ -120,6 +128,26 @@ main: (): i32 = 0
 	}
 	if !seenLoop {
 		t.Fatalf("count lost structured loop: %#v", counted.Structured)
+	}
+	if len(counted.Loops.Loops) != 1 || len(counted.Loops.Loops[0].Inductions) != 1 || counted.Loops.Loops[0].Inductions[0].Step != "1" || counted.Loops.Loops[0].Inductions[0].HasExactTripCount {
+		t.Fatalf("count loop analysis = %+v", counted.Loops)
+	}
+	if counted.LoopMotion.HoistedOperations != 2 {
+		t.Fatalf("count LICM report = %+v", counted.LoopMotion)
+	}
+	if err := optir.Verify(counted.LoopInvariant); err != nil {
+		t.Fatalf("count loop-invariant candidate does not verify: %v", err)
+	}
+
+	fixed, ok := optIRFunction(first, "fixed")
+	if !ok {
+		t.Fatalf("fixed was not projected: %+v", first.Refusals)
+	}
+	if len(fixed.Loops.Loops) != 1 || len(fixed.Loops.Loops[0].Inductions) != 1 || !fixed.Loops.Loops[0].Inductions[0].HasExactTripCount || fixed.Loops.Loops[0].Inductions[0].ExactTripCount != "4" {
+		t.Fatalf("fixed loop analysis = %+v", fixed.Loops)
+	}
+	if fixed.LoopMotion.HoistedOperations != 2 {
+		t.Fatalf("fixed LICM report = %+v", fixed.LoopMotion)
 	}
 
 	common, ok := optIRFunction(first, "common")

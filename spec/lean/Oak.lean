@@ -193,6 +193,7 @@ import Oak.Tseitin
 import Oak.RVWMO
 import Oak.Reduction
 import Oak.ReadOnlyBorrow
+import Oak.Inlining
 import Oak.SpanForward
 import Oak.ConstantConditions
 import Oak.BoundaryCopies

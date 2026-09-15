@@ -2997,6 +2997,10 @@ boundary"): a returned local built in the `x8` area, a read-only
 aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
+The fifty-fourth increment is aggregate helpers (§9 "Aggregate helpers"):
+the native lane expands small record- and array-typed helpers at their
+calls, a field-path argument standing for a read-only parameter without
+a copy (`Oak.Inlining.eval_subst`).
 
 The fifty-third increment is fields in registers (§9 "Fields in
 registers"): the scalar fields a loop touches of a top-level record
@@ -3004,6 +3008,10 @@ local live in callee-saved registers, flushed where the record is used
 whole and reloaded where it is written whole
 (`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
 
+The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
+frame slot's value is read from the register that stored or loaded it
+while that register stands, and a comparison on a computed operand
+branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
 The fifty-seventh increment is read-only borrows (§9 "Read-only
 borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
@@ -4436,6 +4444,40 @@ retargeting then lands the computation in the variable's home
 w9`). A function whose result is a variable in its home register moves it
 to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
 w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
+**Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
+`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per memory word
+addressed as a constant offset from a base register — a frame slot from
+`sp`, a field of a record behind a register (an in-place parameter, the
+`x8` result area) — the integer register whose value the word holds: a
+store records the register it stored, a load the register it loaded into.
+A later load of the same word at the same width — or a 32-bit load of a
+word a 64-bit register was stored to, which reads that register's low
+half — while that register has not been written since, is the register's
+value already: the load becomes a `mov`, or nothing when its destination
+is that register. So
+the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
+str w9, [sp, #304]`, followed by the field's test, no longer reloads what
+it just stored (`sha256_update`'s `next.filled`). Every write of a
+register drops the words it held and the words addressed through it; a
+store drops the words under every other base (two bases may address the
+same memory) and the words its extent overlaps under its own; a label
+(paths meet), a call (the callee owns the scratch registers and may write
+memory through a span), an `sp` move, an indexed store, a truncation of
+the emitted items, and the retargeting of an emitted instruction's
+destination drop them all. The
+rule is the frame's write-then-read (`Oak.Forwarding.load_store`,
+`forward`), and a store elsewhere leaves a held slot in place
+(`held_survives`) — the generator forgets exactly the slots a store's
+extent overlaps. Alongside it, a comparison whose left operand is
+computed — a record field, `next.filled == u32(64)` — evaluates it into
+a scratch and branches on the compare, `cmp w9, #64; b.ne`, where before
+the Bool was materialized and tested (`cmp; cset; cbz`;
+`Oak.Forwarding.cbz_cset`, `cbnz_cset`); the flags such a compare leaves
+are not offered for reuse at the else label, since a scratch's spelling
+names no operand. `TestNativeShapesForwarding` pins the byte loop of an
+absorber: no `cset`, no reload after a store, the `== 64` test on the
+register the increment was stored from; `TestE2ENativeForwarding` agrees
+with the C backend. The RV64 lane is untouched.
 
 **The register budget (2026-09-16, AArch64 lane; `nativegen/span_forward.go`,
 `spec/lean/Oak/SpanForward.lean`).** Two rules against the callee-saved
@@ -4516,6 +4558,36 @@ increments, comes to ten instructions where clang's is thirteen.
 record assigned whole inside its loop (`a = seed`, the homes reloading).
 The RV64 lane is untouched.
 
+**Aggregate helpers (2026-09-16, AArch64 lane; `nativegen/inline.go`,
+`spec/lean/Oak/Inlining.lean`).** The native lane's helper inliner, so far
+the vector helpers' (§9 "Vector helpers expanded"), also expands a small
+helper that takes or returns a record or an owned array — the shape the
+source-level inliner leaves alone, since an aggregate temporary is a
+binding of its own there: a body of at most eight statements and no loop,
+every parameter a scalar, record, owned array, span, or view, the result a
+scalar, record, owned array, or unit, no dispatch and no effects row
+(`aggregateHelper`). The call's argument copies, the callee's prologue,
+epilogue, and result copy go with the `bl`. Binding: an identifier
+argument to a parameter the callee never assigns substitutes as before; a
+field-path argument — `next.h`, `acc.h` — to a parameter the callee never
+assigns, borrows, or addresses (`recordParamTouched`), when no parameter of
+the callee is a writable span (through which it could reach the path's
+storage) and the callee does not mention the path's root, stands for the
+parameter at every use with no copy (`substituteBound`); every other
+argument is declared as a copy under a fresh name. A record- or
+array-valued call in expression position becomes a block expression, which
+the record lowering evaluates as its statements then its tail
+(`recordValueAs`); a record local the tail names keeps its storage past
+the block's scope. The verifier still compares against the body as written,
+the callees taken at their Oak bodies. The theorem is the substitution
+lemma over a small expression language: evaluating the body with the
+parameter replaced by the argument equals evaluating it in the environment
+that binds the parameter to the argument's value, the declared copy
+(`Oak.Inlining.eval_subst`). `TestNativeShapesAggregateInline` pins
+`absorb`, whose loop drives `acc.h = step(acc.h, k)` and `fold(acc.h)`
+with no `bl`; `TestE2ENativeAggregateInline` agrees with the C backend.
+On the SHA-256 path, `sha256_compress` and `sha256_block` fold into
+`sha256_update`'s loop once owned arrays travel as values (#472).
 **Read-only borrows (2026-09-16, AArch64 lane; `spec/lean/Oak/ReadOnlyBorrow.lean`).**
 A by-value record or array parameter counted as touched when its address
 was taken — any `&p…` — so `sha256_compress`'s `sha256_block(h,

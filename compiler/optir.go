@@ -20,8 +20,11 @@ type OptIRFunction struct {
 	Structured     optir.Function
 	CFG            optir.CFG
 	Constants      optir.SCCPResult
+	Loops          optir.LoopAnalysis
 	Simplified     optir.CFG
 	Simplification optir.CSEDCEReport
+	LoopInvariant  optir.CFG
+	LoopMotion     optir.LICMReport
 }
 
 // OptIRRefusal is an ordinary unsupported-subset result. The function remains
@@ -79,17 +82,28 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR SCCP of %s failed: %w", function.Name.Value, err)
 		}
+		loops, err := optir.AnalyzeLoops(cfg)
+		if err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR loop analysis of %s failed: %w", function.Name.Value, err)
+		}
 		simplified, simplification, err := optir.SimplifyCSEDCE(cfg)
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR CSE/DCE of %s failed: %w", function.Name.Value, err)
+		}
+		loopInvariant, loopMotion, err := optir.HoistLoopInvariants(simplified)
+		if err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR LICM of %s failed: %w", function.Name.Value, err)
 		}
 		module.Functions = append(module.Functions, OptIRFunction{
 			Name:           function.Name.Value,
 			Structured:     structured,
 			CFG:            cfg,
 			Constants:      constants,
+			Loops:          loops,
 			Simplified:     simplified,
 			Simplification: simplification,
+			LoopInvariant:  loopInvariant,
+			LoopMotion:     loopMotion,
 		})
 	}
 	return module, nil

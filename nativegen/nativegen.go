@@ -1447,7 +1447,7 @@ type generator struct {
 	liveFlags  string
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
-	held map[int64]heldSlot
+	held map[heldKey]heldSlot
 	// promotable/promoted: record fields kept in registers (nativegen/fields.go).
 	promotable    map[string][]string
 	promoted      map[string]*promotedRecord
@@ -2603,6 +2603,27 @@ func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (
 		return g.fillRecord(layout, e, "")
 	case *ast.InvocationExpression:
 		return g.callRecord(e)
+	case *ast.BlockExpression:
+		// An expanded aggregate helper (nativegen/inline.go): its
+		// statements, then its tail as the value. A record local the tail
+		// names keeps its storage past the scope (popScope frees no
+		// record's slots).
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return nil, unsupported("an empty block in record position")
+		}
+		stmts := e.Block.Statements
+		tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+		if !isExpr || tail.Discard {
+			return nil, unsupported("a block whose last statement is not its record value")
+		}
+		g.pushScope()
+		if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], tail); err != nil {
+			g.popScope()
+			return nil, err
+		}
+		rec, err := g.recordValueAs(tail.Expression, expected)
+		g.popScope()
+		return rec, err
 	}
 	return nil, unsupported("a record value %s", expr.String())
 }

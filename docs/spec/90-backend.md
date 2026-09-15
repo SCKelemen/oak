@@ -706,9 +706,30 @@ operation code, types, operands, and ordered attributes must agree; proof facts
 move only when valid at the dominating definition. Calls, traps, memory,
 synchronization, unknown operations, and every explicitly effectful operation
 remain roots. `Compilation.OptIR()` returns the original CFG, SCCP evidence, the
-simplified candidate, and its report. This substrate is not yet an emission
-path: no backend consumes either OptIR CFG, and no OptIR transform can authorize
-a code-generation change until equivalence validation is connected.
+simplified candidate, and its report. Its loop analysis reports dominators,
+back edges, natural-loop structure and nesting, canonical preheaders, and typed
+affine loop-carried recurrences. A unique continuation comparison is normalized
+around the induction value; an exact constant trip count is reported only when
+fixed-width range reasoning proves that every update through loop exit avoids
+wrap. Symbolic, multi-exit, and wrapping cases remain unproved rather than
+borrowing mathematical-integer semantics. Its LICM candidate runs after
+CSE/DCE and moves only closed total-pure operations whose operands are
+available at a canonical preheader. It does not speculate division, remainder,
+shifts, calls, memory, effects, unknown operations, or relational/path-local
+facts; a result-local `checked.type` fact may move because it is identical to
+the SSA result type. The cloned output is independently verified and carries a
+deterministic movement report. This substrate is not yet an emission path: no
+backend consumes either OptIR CFG, and no OptIR transform can authorize a
+code-generation change until equivalence validation is connected.
+
+Compiler stages, analyses, candidates, and verification verdicts are not yet
+executed by one dependency DAG. The required direction is an immutable,
+versioned artifact graph: analysis and transform nodes name the exact input IR
+artifact, typed edges state prerequisites, mutations create new versions,
+invalidations follow only affected edges, and cost/selection nodes cannot
+observe a candidate before its required verification nodes succeed. This is
+also the concurrency boundary: independent ready analyses and candidate checks
+may run in parallel without sharing mutable IR.
 
 1. **Licensed removals only.** The compiler removes a check, a guard, a
    copy, a reload, or a trap only on a fact it has proved: an index under
