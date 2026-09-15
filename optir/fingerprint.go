@@ -86,6 +86,41 @@ func fingerprintLoopAnalysis(analysis LoopAnalysis) string {
 	return hex.EncodeToString(digest.Sum(nil))
 }
 
+func fingerprintLoopStructure(structure LoopStructure) string {
+	digest := sha256.New()
+	fingerprintString(digest, "oak.optir.loop-structure.v1")
+	fingerprintString(digest, structure.inputFingerprint)
+	fingerprintBlockIDs(digest, structure.ReversePostOrder)
+	fingerprintUint64(digest, uint64(len(structure.Dominators)))
+	for _, dominator := range structure.Dominators {
+		fingerprintUint64(digest, uint64(dominator.Block))
+		fingerprintUint64(digest, uint64(dominator.Immediate))
+		fingerprintBool(digest, dominator.HasImmediate)
+		fingerprintUint64(digest, uint64(int64(dominator.Depth)))
+	}
+	fingerprintUint64(digest, uint64(len(structure.BackEdges)))
+	for _, edge := range structure.BackEdges {
+		fingerprintFlowEdge(digest, edge)
+	}
+	fingerprintUint64(digest, uint64(len(structure.Loops)))
+	for _, loop := range structure.Loops {
+		fingerprintUint64(digest, uint64(loop.Header))
+		fingerprintBlockIDs(digest, loop.Latches)
+		fingerprintBlockIDs(digest, loop.Blocks)
+		fingerprintUint64(digest, uint64(len(loop.Exits)))
+		for _, edge := range loop.Exits {
+			fingerprintFlowEdge(digest, edge)
+		}
+		fingerprintUint64(digest, uint64(loop.Preheader))
+		fingerprintBool(digest, loop.HasPreheader)
+		fingerprintUint64(digest, uint64(loop.Parent))
+		fingerprintBool(digest, loop.HasParent)
+		fingerprintUint64(digest, uint64(int64(loop.Depth)))
+		fingerprintUint64(digest, uint64(len(loop.Inductions)))
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
 func fingerprintBlockIDs(digest hash.Hash, blocks []BlockID) {
 	fingerprintUint64(digest, uint64(len(blocks)))
 	for _, block := range blocks {

@@ -1,6 +1,7 @@
 package optir
 
 import (
+	"fmt"
 	"math/big"
 	"sort"
 )
@@ -53,6 +54,20 @@ type NaturalLoop struct {
 	Inductions   []Induction
 }
 
+// LoopStructure is the value-independent control structure of one CFG:
+// traversal order, dominance, back edges, and the natural-loop tree. Loops in
+// this artifact never carry Inductions. A checked CFGTopology preservation
+// certificate can reuse it across versions.
+type LoopStructure struct {
+	ReversePostOrder []BlockID
+	Dominators       []Dominator
+	BackEdges        []FlowEdge
+	Loops            []NaturalLoop
+
+	inputFingerprint string
+	integrity        string
+}
+
 type LoopAnalysis struct {
 	ReversePostOrder []BlockID
 	Dominators       []Dominator
@@ -85,35 +100,118 @@ type naturalLoopBuilder struct {
 // AnalyzeLoops computes target-independent dominance, natural-loop, affine
 // recurrence, and exact constant trip-count facts. It never rewrites the CFG.
 func AnalyzeLoops(cfg CFG) (LoopAnalysis, error) {
-	if err := validateAnalysisCFG(cfg); err != nil {
+	structure, err := AnalyzeLoopStructure(cfg)
+	if err != nil {
 		return LoopAnalysis{}, err
 	}
-	blocks, predecessors, incoming, operations, types := loopGraphInfo(cfg)
+	return AnalyzeLoopsWithStructure(cfg, structure)
+}
+
+// AnalyzeLoopStructure computes the CFGTopology-only portion of loop analysis.
+func AnalyzeLoopStructure(cfg CFG) (LoopStructure, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return LoopStructure{}, err
+	}
+	blocks, predecessors, _, _, _ := loopGraphInfo(cfg)
 	reachable := make(map[BlockID]bool, len(blocks))
 	for id := range blocks {
 		reachable[id] = true
 	}
 	dominatorSets := computeDominators(cfg.Entry, reachable, predecessors)
-	analysis := LoopAnalysis{
+	structure := LoopStructure{
 		ReversePostOrder: loopReversePostOrder(cfg.Entry, blocks),
 		inputFingerprint: fingerprintCFG(cfg),
 	}
-	analysis.Dominators = publicDominators(dominatorSets)
-	analysis.BackEdges = loopBackEdges(blocks, dominatorSets)
-	builders := buildNaturalLoops(analysis.BackEdges, predecessors)
+	structure.Dominators = publicDominators(dominatorSets)
+	structure.BackEdges = loopBackEdges(blocks, dominatorSets)
+	builders := buildNaturalLoops(structure.BackEdges, predecessors)
 	finishNaturalLoops(builders, blocks, predecessors)
 	for _, loop := range builders {
-		loop.info.Inductions = analyzeInductions(loop.info, loop.members, blocks, incoming, operations, types)
-		analysis.Loops = append(analysis.Loops, loop.info)
+		structure.Loops = append(structure.Loops, cloneNaturalLoop(loop.info))
 	}
-	sort.Slice(analysis.Loops, func(i, j int) bool {
-		if analysis.Loops[i].Depth != analysis.Loops[j].Depth {
-			return analysis.Loops[i].Depth < analysis.Loops[j].Depth
+	sort.Slice(structure.Loops, func(i, j int) bool {
+		if structure.Loops[i].Depth != structure.Loops[j].Depth {
+			return structure.Loops[i].Depth < structure.Loops[j].Depth
 		}
-		return analysis.Loops[i].Header < analysis.Loops[j].Header
+		return structure.Loops[i].Header < structure.Loops[j].Header
 	})
+	structure.integrity = fingerprintLoopStructure(structure)
+	return structure, nil
+}
+
+// AnalyzeLoopsWithStructure completes value-dependent induction facts from a
+// structure artifact produced for the same exact CFG.
+func AnalyzeLoopsWithStructure(cfg CFG, structure LoopStructure) (LoopAnalysis, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return LoopAnalysis{}, err
+	}
+	if err := validateLoopStructure(structure); err != nil {
+		return LoopAnalysis{}, err
+	}
+	if structure.inputFingerprint != fingerprintCFG(cfg) {
+		return LoopAnalysis{}, fmt.Errorf("optir: loop structure belongs to a different CFG")
+	}
+	return completeLoopAnalysis(cfg, structure), nil
+}
+
+// AnalyzeLoopsWithPreservedStructure reuses structure from an older CFG only
+// when an intact certificate binds both contents and proves every declared
+// LoopStructure requirement.
+func AnalyzeLoopsWithPreservedStructure(cfg CFG, structure LoopStructure, certificate PreservationCertificate) (LoopAnalysis, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return LoopAnalysis{}, err
+	}
+	if err := validateLoopStructure(structure); err != nil {
+		return LoopAnalysis{}, err
+	}
+	currentFingerprint := fingerprintCFG(cfg)
+	if err := certificate.permitsContentReuse(structure.inputFingerprint, currentFingerprint, LoopStructureAnalysisRequirements()); err != nil {
+		return LoopAnalysis{}, err
+	}
+	return completeLoopAnalysis(cfg, structure), nil
+}
+
+func completeLoopAnalysis(cfg CFG, structure LoopStructure) LoopAnalysis {
+	blocks, _, incoming, operations, types := loopGraphInfo(cfg)
+	analysis := LoopAnalysis{
+		ReversePostOrder: append([]BlockID(nil), structure.ReversePostOrder...),
+		Dominators:       append([]Dominator(nil), structure.Dominators...),
+		BackEdges:        append([]FlowEdge(nil), structure.BackEdges...),
+		inputFingerprint: fingerprintCFG(cfg),
+	}
+	for _, base := range structure.Loops {
+		loop := cloneNaturalLoop(base)
+		members := make(map[BlockID]bool, len(loop.Blocks))
+		for _, block := range loop.Blocks {
+			members[block] = true
+		}
+		loop.Inductions = analyzeInductions(loop, members, blocks, incoming, operations, types)
+		analysis.Loops = append(analysis.Loops, loop)
+	}
 	analysis.integrity = fingerprintLoopAnalysis(analysis)
-	return analysis, nil
+	return analysis
+}
+
+func validateLoopStructure(structure LoopStructure) error {
+	if structure.inputFingerprint == "" {
+		return fmt.Errorf("optir: loop structure has no input identity")
+	}
+	if structure.integrity == "" || structure.integrity != fingerprintLoopStructure(structure) {
+		return fmt.Errorf("optir: loop structure was mutated")
+	}
+	return nil
+}
+
+func cloneNaturalLoop(loop NaturalLoop) NaturalLoop {
+	result := loop
+	result.Latches = append([]BlockID(nil), loop.Latches...)
+	result.Blocks = append([]BlockID(nil), loop.Blocks...)
+	result.Exits = append([]FlowEdge(nil), loop.Exits...)
+	result.Inductions = append([]Induction(nil), loop.Inductions...)
+	for index := range result.Inductions {
+		result.Inductions[index].Updates = append([]ValueID(nil), result.Inductions[index].Updates...)
+	}
+	return result
 }
 
 func loopGraphInfo(cfg CFG) (map[BlockID]*Block, map[BlockID][]BlockID, map[BlockID][]incomingTransfer, map[ValueID]loopOperation, map[ValueID]Type) {

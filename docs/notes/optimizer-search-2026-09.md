@@ -260,26 +260,24 @@ noncanonical entries, and facts other than the definition-local checked type
 fact pin the operation. The cloned result passes the independent verifier and
 is retained with deterministic movement evidence; emission consumes neither.
 
-The implementation topology is not yet a unified pass DAG. `Stage.Then` remains
-linear, candidate search branches internally, and OptIR analyses are invoked
-directly. The intended artifact DAG has immutable nodes for checked input,
-structured IR, each CFG version, analysis facts, transform candidates,
-verification/equivalence verdicts, target costs, and final selection. Edges are
-typed requirements and invalidations: SCCP and loop analysis may share one CFG
-version, LICM depends on dominance/loops/purity, and a changed CFG invalidates
-only the analyses it can affect. Cheap structural admission precedes costing;
-cost may prioritize unverified candidates, but selection cannot observe one
-without its required verdict. Version-addressed nodes provide incremental reuse
-and make independent ready nodes parallelizable. The generic key, graph,
-derived-version, cache, and deterministic exact-once executor are implemented
-in `opt/artifact.go`; compiler migration, typed gate builders, preservation
-certificates, and concurrent ready-node scheduling remain. The complete design
-is `optimizer-artifact-dag-2026-09.md`.
+The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
+remains linear and native candidate search still branches internally. The
+generic OptIR chain is now migrated, however. Immutable, exact-version nodes
+hold CFG v0, SCCP, loop structure/facts, CSE/DCE, CFG v1, checked preservation,
+recomputed induction facts, and LICM. CFGs have canonical content fingerprints.
+Analyses declare a closed set of topology, SSA, operation, effect, type, fact,
+and layout aspects. CSE/DCE's admission node independently compares per-aspect
+digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
+and natural loops while recomputing recurrence facts from v1. No certificate is
+an equivalence verdict or emission license. Cheap structural admission still
+precedes future costing, and final selection will require its independent
+verdict. Typed native gate builders and concurrent ready-node scheduling
+remain. The complete design is `optimizer-artifact-dag-2026-09.md`.
 
 Not yet: equivalence-validated emission of the candidate, available-expression
 and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
-unrolling and further loop transforms, compiler migration to the artifact DAG,
-analysis-aspect invalidation and concurrent scheduling, vector plans (Phase D),
+unrolling and further loop transforms, native migration to the artifact DAG,
+concurrent scheduling, vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
 

@@ -345,9 +345,13 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	// A vector register's store (`str qN` / `str dN`) writes its bytes as
 	// whole elements: one write per lane, at consecutive indices — the
 	// native lowering's `simd.store` (nativegen/simd.go), the Oak side's
-	// simdStore (asm/verify_simd.go).
+	// simdStore (asm/verify_simd.go). A scalar float's store (`str sN`,
+	// `str dN`, `str hN`) is the one-lane case: the register's low lane at
+	// the element's width — `ys[i] = x` over `[*]f32` (nativegen's float
+	// span store), decided up to the IEEE operations like every float
+	// value (docs/spec/94-assembler.md §8).
 	vector := src.Class == ClassV
-	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8)) {
+	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8 && src.VecBytes() != 4 && src.VecBytes() != 2)) {
 		return true, "a vector-register store to a span through the " + src.Vec + " view", false
 	}
 	if mem.Mode != MemOffset {
