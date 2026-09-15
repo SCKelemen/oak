@@ -4052,6 +4052,16 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			if !okN || !okM {
 				return "unbound register read", false
 			}
+			if instr.Mnemonic == "udiv" && m.kind == termConst && m.value != 0 && m.value&(m.value-1) == 0 {
+				// An unsigned quotient by a constant power of two is the
+				// shift — the spelling the Oak lowering and the
+				// strength-reduced lowering use — so `va % page_size` as
+				// `udiv; msub` (the un-reduced form the pilot's flag idiom
+				// keeps) meets `va and 4095` at the bit level rather than
+				// as an uninterpreted division.
+				state.write(dest, binaryTerm("shr", n, constTerm(uint64(bits.TrailingZeros64(m.value)), width)))
+				break
+			}
 			state.write(dest, floatTerm(instr.Mnemonic, width, n, m))
 		case "umaddl", "smaddl":
 			// xD = xA + ext32(wN) * ext32(wM): the element idiom's stride

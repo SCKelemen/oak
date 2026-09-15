@@ -121,7 +121,7 @@ func TestE2ENativeRecordLoopStoresProven(t *testing.T) {
 		"asm unit alloc: proven equal to its Oak body at the bit level",
 		"the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.high_water)",
 		"asm unit walk: proven equal to its Oak body at the bit level",
-		"(callees taken at their Oak bodies: clear_pages, alloc) and the package state it writes (st)",
+		"(callees taken at their Oak bodies: clear_pages, alloc) and the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("diagnostics lack %q:\n%s", want, joined)
@@ -219,11 +219,13 @@ func TestE2ENativeCellsAroundLoopProven(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.free_count, s.pages)") {
+	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the span memory it writes (s.free_count, s.pages) and the package state it writes (st)") {
 		t.Errorf("reset must be proven with its cell and leaf memories:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit tally: not verified (") {
-		t.Errorf("tally (a cell stored in the loop body) is trusted, not decided:\n%s", joined)
+	// A cell stored in the loop body is loop-carried on the machine side
+	// (compiler/e2e_native_loop_cells_test.go): tally is proven too.
+	if !strings.Contains(joined, "asm unit tally: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (count↔global:count") {
+		t.Errorf("tally (a cell stored in the loop body) must be proven with its cell coupled:\n%s", joined)
 	}
 	if strings.Contains(joined, "disagrees") {
 		t.Errorf("a false mismatch:\n%s", joined)
@@ -318,7 +320,7 @@ func TestE2ENativeStage2AllocTableProven(t *testing.T) {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
 	// Every leaf memory the loop marks is compared after it, written or not.
-	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.free_stack, s.high_water, s.pages, s.pool_base, s.root)") {
+	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the span memory it writes (s.entry_count, s.free_count, s.free_stack, s.high_water, s.pages, s.pool_base, s.root) and the package state it writes (st)") {
 		t.Errorf("alloc_table must be proven with its cell and leaf memories:\n%s", joined)
 	}
 	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {

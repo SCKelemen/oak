@@ -4124,8 +4124,22 @@ summarized for its writes alone, and on the Oak side the inlined callee
 shares the caller's cell locals. Around a data-dependent loop the cells
 are compared after the loops under the coupling and the exit premise, as
 the result and the span memories are (`st = u8(0)` before or after the
-table-zeroing loop of the OS pilot's `reset`); only a cell the body
-stores inside a loop body stays trusted. A unit's `Function.Globals` names the
+table-zeroing loop of the OS pilot's `reset`). A cell the body stores
+inside a loop body (`count = count + u32(1)` beside the counter) is a
+loop-carried variable on the machine side — the body's `adrp`/`add`
+names the cell and the store through it is found by a scan of the body
+(`cellsStoredIn`), the cell takes a fresh symbol at its width with its
+header value the cell as the path holds it, and the coupling pairs it
+with the Oak side's cell local like a register — so the loop is proven
+with the cell's final value (`compiler/e2e_native_loop_cells_test.go`).
+A flag loop (`while un { st = u8(4); un = false }`, an `if` spelled as a
+loop) whose flag short-circuits before the header still leaves the
+result as evidence: the machine's paths that never reach the loop hold
+the entry cell while the Oak side's summary stands for both; spell it as
+the statement conditional it is. An unsigned quotient or remainder by a
+constant power of two on the machine side (`udiv`, then `msub`; `divu`,
+`remu`) is read as the shift and the mask, the spelling the Oak lowering
+and the strength-reduced lowering use. A unit's `Function.Globals` names the
 cells its callees reach as well as its own (`nativegen`'s
 `reachableGlobals`, the call graph walked from the body), so a summary
 of `alloc_table` inside `walk_leaf` finds the cell `st` declared though
