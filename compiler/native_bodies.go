@@ -123,6 +123,10 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// label every predecessor reaches with them, or the body lowers
 		// again without the reuse.
 		lane.ReuseFlags = lane.Arch == asm.ArchArm64
+		// Loop-invariant code motion (§9 "Loop invariants"): hoisted
+		// values, propagated copies, peeled guards; the checker judges the
+		// result, or the body lowers again with its loops as written.
+		lane.HoistInvariants = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -179,6 +183,16 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			} else {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
 			}
+		}
+		if len(findings) != 0 && lane.HoistInvariants && nativegen.Hoisted(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its loop invariants in place (the checker did not admit the hoisted form: %s)", fn.Name.Value, findings[0])))
+			lane.HoistInvariants = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
 		}
 		if len(findings) != 0 && lane.ReuseFlags && nativegen.ReusedCompares(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s repeats its compares (the checker did not admit the reused form: %s)", fn.Name.Value, findings[0])))

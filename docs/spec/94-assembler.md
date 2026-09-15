@@ -2740,6 +2740,13 @@ still bounded the index at the header. The state is now the whole
 register state, met across every predecessor
 (`asm/bounds_arith_test.go`).
 
+The forty-fourth increment is the loop-invariant code motion (§9 "Loop
+invariants"): a machine-level pass over the emitted items — hoisting,
+copy propagation, guard peeling behind the exit test — that the seam
+checker and the verifier judge as they judge the lowering itself
+(`compiler/e2e_native_licm_test.go`: the hoisted form admitted and
+proven, a loop that never runs not trapping on its peeled guard).
+
 The forty-fourth increment is if-conversion (§9): a conditional chain over
 one comparison whose arms only assign lowers as one compare and a select
 per variable (`nativegen/select.go`, `Oak.Assembler.selectChain_firstArm`,
@@ -3795,6 +3802,56 @@ its kept lines by the line the emitted instructions carry — the
 statement's — which is the line a finding names; an access token on a
 later line of a multi-line statement had escaped the first version and
 sent the body to every guard.
+
+**Loop invariants (2026-09-16, AArch64 lane; `nativegen/licm.go`).** A
+pass over the emitted items of a function, judged like every lowering by
+the seam checker and the verifier. A loop is the generator's shape — the
+`loop_N` header, its exit tests to `done_M`, the body, the back edge —
+and, innermost first, three things leave the body for a preheader before
+the header. A pure instruction (a constant, a global's address, an element
+address, arithmetic) whose sources the loop never writes is hoisted, its
+destination renamed to a scratch register the whole function never names
+and its readers in the block renamed with it — either the old destination
+is written again in the same block, or no instruction anywhere in the
+loop reads it, the exit tests and the next iteration's header included,
+so no path reaches a reader through the old name. A copy of a register
+(`mov wD, wS`, `add xD, xS, #0`) is propagated instead of moved when the
+source holds until the copy's last reader: its readers take the source
+and the copy disappears; a copy of the zero register makes `str xzr`. The
+first trapping instruction of the body, when it is an element guard `cmp
+wA, wB; b.cond trap` over invariant registers and only pure instructions
+and loads precede it, is peeled into the preheader behind a copy of the
+loop's exit tests — the preheader runs exactly when the body would have
+run once, so the trap fires on the same inputs as before, once — and the
+fact it establishes holds at the header on both edges, so the element
+address it licenses hoists after it (§7: constants, global addresses,
+element regions, and index guards are in the label state). A write into a
+register a variable lives in is the variable's value, read where no block
+sees — after the loop, at the header, in another arm — so it is neither
+moved nor propagated away (the verifier refuted a `result = true` hoisted
+and an `x = y` propagated during development, `dec_prefix_less`,
+`utf8_first_error_at`); a write into an argument, result, or platform
+register belongs to a call or a return and stays too (a call reads its
+argument registers without naming them — the pass once dropped `mov x1,
+x24` before a `bl`, and the linked program faulted where the verifier's
+witnesses had not reached). A hoisted value takes a scratch register the
+function never names, or one of the callee-saved registers the lowering
+reserves for the pass: the first lowering reports the values it could
+not place, and the second reserves that many (four at most), saved and
+restored with the variables'. A loop that calls hoists nothing into a
+scratch register (a call clobbers every one); its copies still propagate
+and its guard still peels, and its reserved registers survive the call.
+A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
+add :lo12:`) leaves a loop that stores to no global's address and calls
+nothing: a span cannot alias a scalar global — its elements lie in arrays
+and aggregates — so the loop's span stores leave it alone, a fact the
+type system gives and C's aliasing rules do not. Other loads stay (a span
+the loop stores through may alias one it reads), as do stores and calls.
+The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
+of its decoder cycle) went from twenty-two instructions per element to
+nine: the exit test, the index's add, the element guard, `str xzr, [x17,
+w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
+did not reach; the C backend under clang runs it in five.
 
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares
