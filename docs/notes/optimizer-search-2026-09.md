@@ -841,7 +841,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
 ### Phase D: vector planning
 
 22. vector-plan representation;
-23. fixed-width integer reduction vectorization;
+23. fixed-width integer reduction vectorization — **in progress (2026-09-16, the oak session at ~/oakmcu/oak): a law-licensed source rewrite beside the unrolling, lanes as the four accumulators, `vectorize-reductions` in the registry**;
 24. map/zip vectorization;
 25. SLP-like straight-line packing;
 26. vector-aware cost model;
