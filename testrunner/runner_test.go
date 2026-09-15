@@ -32,6 +32,30 @@ func runCLI(t *testing.T, args ...string) (int, []Result, string) {
 		t.Skip("requires cc")
 	}
 	var stdout, stderr bytes.Buffer
+	// The per-case process timeout defaults to two seconds of wall time —
+	// right for a user's terminal, wrong for a machine running several
+	// test suites at once, where a healthy case can be starved past it and
+	// report "timeout" (a liveness failure) for what is a correctness or
+	// pass outcome. Tests that exercise the timeout itself pass their own
+	// -timeout; every other run gets a budget that load cannot reach.
+	hasTimeout, hasBuildTimeout := false, false
+	for _, arg := range args {
+		switch arg {
+		case "-timeout":
+			hasTimeout = true
+		case "-build-timeout":
+			hasBuildTimeout = true
+		}
+	}
+	if !hasTimeout {
+		args = append([]string{"-timeout", "60s"}, args...)
+	}
+	if !hasBuildTimeout {
+		// The C compiler's minute is likewise wall time a loaded machine
+		// exceeds (a fixture's build then reports as a failure with no test
+		// name); give it a budget load cannot reach.
+		args = append([]string{"-build-timeout", "10m"}, args...)
+	}
 	args = append([]string{"-json"}, args...)
 	code := Main(args, &stdout, &stderr)
 	var results []Result

@@ -72,10 +72,18 @@ TestTraceBound: (): () {
 TestTraceCrash: (): () { testing_trace(u32(45), u64(1), u64(2)); assert(false) }
 TestTraceTimeout: (): () { testing_trace(u32(46), u64(3), u64(4)); while true {} }
 `})
-	code, results, stderr := runCLI(t, "-timeout", "2s", "-shrink", "0", dir)
-	if code != 1 || len(results) != 3 {
+	// The bound and crash cases run under the helper's load-proof budget;
+	// only the case that must time out gets the two-second one, so a loaded
+	// machine cannot turn the bound case into a timeout.
+	code, results, stderr := runCLI(t, "-run", "^TestTrace(Bound|Crash)$", "-shrink", "0", dir)
+	if code != 1 || len(results) != 2 {
 		t.Fatalf("%d %+v %s", code, results, stderr)
 	}
+	code, timeouts, stderr := runCLI(t, "-run", "^TestTraceTimeout$", "-timeout", "2s", "-shrink", "0", dir)
+	if code != 1 || len(timeouts) != 1 {
+		t.Fatalf("%d %+v %s", code, timeouts, stderr)
+	}
+	results = append(results, timeouts...)
 	for _, r := range results {
 		if r.Name == "TestTraceBound" {
 			if r.Failure != "invariant:7004" || len(r.Trace) != traceLimit || !r.TraceTruncated || r.Trace[traceLimit-1].A != traceLimit-1 {
