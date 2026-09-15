@@ -195,6 +195,8 @@ type arrayLocal struct {
 	temps []int
 	// readOnly: an array field of a view's element: stores are refused.
 	readOnly bool
+	// paramRef: an in-place by-reference array parameter (recordParam.inPlace).
+	paramRef bool
 }
 
 // elemSize is the array's element stride in bytes.
@@ -421,19 +423,100 @@ type recordParam struct {
 // float type, at most four): AAPCS64 passes it in v registers, which v1
 // leaves to the C backend.
 func (l *recordLayout) isHFA() bool {
-	if len(l.order) == 0 || len(l.order) > 4 {
+	if len(l.order) == 0 {
 		return false
 	}
 	first := l.fields[l.order[0]].typ
 	if !first.isFloat {
 		return false
 	}
+	// An array field's elements are members in their own right (AAPCS64
+	// §5.9.5.3 counts the fundamental data types of the composite), so
+	// `[4]f32` is an HFA and `[8]f32` a 32-byte composite by reference.
+	members := int64(0)
 	for _, name := range l.order {
-		if l.fields[name].typ != first {
+		field := l.fields[name]
+		if field.kind == fieldRecord || field.typ != first {
 			return false
 		}
+		members++
+		if field.kind == fieldArray {
+			members += field.length - 1
+		}
 	}
-	return true
+	return members <= 4
+}
+
+// arrayLayout is an owned array of scalars `[N]T` seen as a value: the
+// one-field composite the C backend's wrapper struct is (a `T v[N]` member,
+// so the AAPCS64 rules for records apply unchanged — chunks up to 16
+// bytes, by reference beyond), docs/spec/94-assembler.md §9, forty-seventh
+// increment. The layout is shared per (T, N), so layouts compare by
+// identity as record layouts do; its name is the type's spelling.
+func (g *generator) arrayLayout(elem scalar, length int64) *recordLayout {
+	key := fmt.Sprintf("(%s[%d])", elem.name, length)
+	if layout, done := g.layouts[key]; done {
+		return layout
+	}
+	rep := fieldRepresentations[elem.name]
+	size := int64(rep.Size) * length
+	layout := &recordLayout{name: key, size: size, align: int64(rep.Alignment), hasFloat: elem.isFloat, fields: map[string]recordField{"": {kind: fieldArray, typ: elem, length: length, size: size}}, order: []string{""}}
+	g.layouts[key] = layout
+	return layout
+}
+
+// arrayLayoutOf is arrayLayout for a written array type of placeable
+// scalars (vectors and Bool stay outside: their arrays never cross the
+// boundary as values).
+func (g *generator) arrayLayoutOf(expr ast.Expression) (*recordLayout, bool) {
+	elem, length, ok := arrayOf(expr)
+	if !ok {
+		return nil, false
+	}
+	if _, placeable := fieldRepresentations[elem.name]; !placeable {
+		return nil, false
+	}
+	return g.arrayLayout(elem, length), true
+}
+
+// valueLayoutOf is the layout of a type that travels as a composite value:
+// a declared record or union (layoutOf), or an owned array of scalars.
+func (g *generator) valueLayoutOf(typ ast.Expression) (layout *recordLayout, isValue bool, err error) {
+	if name, isRecord := g.recordTypeName(typ); isRecord {
+		layout, err = g.layoutOf(name)
+		return layout, true, err
+	}
+	if layout, isArray := g.arrayLayoutOf(typ); isArray {
+		return layout, true, nil
+	}
+	return nil, false, nil
+}
+
+// arrayElem is the element type and count of an array layout.
+func (l *recordLayout) arrayElem() (scalar, int64, bool) {
+	field, isArray := l.fields[""]
+	if !isArray || len(l.order) != 1 || field.kind != fieldArray {
+		return scalar{}, 0, false
+	}
+	return field.typ, field.length, true
+}
+
+// isArray reports an array layout.
+func (l *recordLayout) isArray() bool {
+	_, _, isArray := l.arrayElem()
+	return isArray
+}
+
+// arrayAsRecord views an owned array of scalars as the record value its
+// layout describes: the same storage, the same temps.
+func (g *generator) arrayAsRecord(arr *arrayLocal) (*recordLocal, bool) {
+	if arr.elemLayout != nil {
+		return nil, false
+	}
+	if _, placeable := fieldRepresentations[arr.elem.name]; !placeable {
+		return nil, false
+	}
+	return &recordLocal{offset: arr.offset, layout: g.arrayLayout(arr.elem, arr.length), inReg: arr.inReg, reg: arr.reg, temps: arr.temps, readOnly: arr.readOnly, paramRef: arr.paramRef}, true
 }
 
 // chunks is the number of x registers a record of this size travels in.
@@ -1707,13 +1790,12 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			classes = append(classes, asm.ArgClass{Words: 1, Bytes: size, Align: size})
 			continue
 		}
-		if name, isRecord := g.recordTypeName(p.Type); isRecord {
-			layout, err := g.layoutOf(name)
+		if layout, isValue, err := g.valueLayoutOf(p.Type); isValue {
 			if err != nil {
 				return nil, 0, 0, err
 			}
 			if layout.isHFA() {
-				return nil, 0, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
+				return nil, 0, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, layout.name)
 			}
 			regs := 1
 			if layout.size <= 16 {
@@ -1757,7 +1839,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				rp.reg = -1
 				g.stackParams[name] = place
 			}
-			if indirect && !recordParamTouched(fn, name) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
+			if indirect && !recordParamTouched(fn, name) && (!layoutHasArray(layout) || layout.isArray()) && g.usedCallee < calleeHigh-calleeLow+1 {
 				// Read in place: the address parked in a callee-saved
 				// register, the fields loaded through it (the checker's
 				// region rule), no copy into the frame. Types drive it: a
@@ -1823,13 +1905,12 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if fn.ReturnType != nil && !g.never {
 		if fn.ReturnType.String() != "()" {
-			if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
-				layout, err := g.layoutOf(name)
+			if layout, isValue, err := g.valueLayoutOf(fn.ReturnType); isValue {
 				if err != nil {
 					return nil, 0, 0, err
 				}
 				if layout.isHFA() {
-					return nil, 0, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", name)
+					return nil, 0, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", layout.name)
 				}
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
@@ -1862,9 +1943,18 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
-			if rp.inPlace {
+			elem, length, isArray := rp.layout.arrayElem()
+			switch {
+			case isArray && rp.inPlace:
+				rp.local = g.bindArrayParamRef(p.Name.Value, rp, elem, length)
+			case isArray:
+				// An array parameter is an array local whose storage the
+				// prologue fills from the chunks or the caller's copy.
+				arr := g.declareArray(p.Name.Value, elem, length)
+				rp.local = &recordLocal{offset: arr.offset, layout: rp.layout}
+			case rp.inPlace:
 				rp.local = g.bindParamRef(p.Name.Value, rp)
-			} else {
+			default:
 				rp.local = g.declareRecord(p.Name.Value, rp.layout)
 			}
 		}
@@ -2114,6 +2204,11 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				out.Composites[expr.String()] = comp
 			}
 		}
+		if layout, isArray := g.arrayLayoutOf(expr); isArray {
+			// An owned array of scalars as a value: its one-field composite
+			// under the type's spelling.
+			out.Composites[expr.String()] = layout.composite()
+		}
 		if index, isIndex := expr.(*ast.IndexExpression); isIndex && !index.Dot {
 			if marker, isMarker := index.Index.(*ast.Identifier); isMarker && (marker.Value == "" || marker.Value == "*") {
 				if name, isRecord := g.recordTypeName(index.Left); isRecord {
@@ -2266,9 +2361,16 @@ func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (
 			return nil, err
 		}
 		if p.rec == nil {
+			if p.arr != nil {
+				if rec, isValue := g.arrayAsRecord(p.arr); isValue {
+					return rec, nil
+				}
+			}
 			return nil, unsupported("%s is not a record", expr.String())
 		}
 		return p.rec, nil
+	case *ast.ArrayLiteral:
+		return g.arrayLiteralValue(e, expected)
 	case *ast.RecordLiteral:
 		if e.TypeName == nil {
 			return nil, unsupported("an untyped record literal")
@@ -2282,6 +2384,44 @@ func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (
 		return g.callRecord(e)
 	}
 	return nil, unsupported("a record value %s", expr.String())
+}
+
+// arrayLiteralValue builds an array literal (`[8]u32{…}`, or an untyped
+// one where an array value is expected) in fresh frame storage, one
+// element at a time, and yields it as the array's record view.
+func (g *generator) arrayLiteralValue(e *ast.ArrayLiteral, expected *recordLayout) (*recordLocal, error) {
+	layout := expected
+	if e.Type != nil {
+		typed, isArray := g.arrayLayoutOf(e.Type)
+		if !isArray {
+			return nil, unsupported("an array literal of type %s as a value", e.Type.String())
+		}
+		layout = typed
+	}
+	if layout == nil {
+		return nil, unsupported("an untyped array literal as a value")
+	}
+	elem, length, isArray := layout.arrayElem()
+	if !isArray {
+		return nil, unsupported("an array literal where %s is expected", layout.name)
+	}
+	if int64(len(e.Elements)) != length {
+		return nil, unsupported("an array literal of %d elements for %s", len(e.Elements), layout.name)
+	}
+	if elem.isFloat {
+		g.usedFloat = true
+	}
+	arr := g.allocArray(elem, length)
+	for i, element := range e.Elements {
+		r, err := g.expr(element, &elem)
+		if err != nil {
+			return nil, err
+		}
+		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
+		g.release(r)
+	}
+	rec, _ := g.arrayAsRecord(arr)
+	return rec, nil
 }
 
 // buildVariant constructs `.Variant(payload)` in a fresh temp: the tag as a
@@ -2676,11 +2816,10 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 	if !known || callee.ReturnType == nil {
 		return nil, unsupported("a call to %s", ident.Value)
 	}
-	name, isRecord := g.recordTypeName(callee.ReturnType)
-	if !isRecord {
+	layout, isValue, err := g.valueLayoutOf(callee.ReturnType)
+	if !isValue {
 		return nil, unsupported("a call to %s in record position", ident.Value)
 	}
-	layout, err := g.layoutOf(name)
 	if err != nil {
 		return nil, err
 	}
@@ -3405,6 +3544,29 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	if elem.isFloat {
 		g.usedFloat = true
 	}
+	if _, isLiteral := s.Value.(*ast.ArrayLiteral); s.Value != nil && !isLiteral {
+		// `state: [8]u32 = h` / `= f(…)`: the value evaluates first (an
+		// initializer never sees the array it fills), then copies into
+		// storage reserved for the name.
+		if _, placeable := fieldRepresentations[elem.name]; !placeable || elem.isBool {
+			return unsupported("an array local initialized from %s", s.Value.String())
+		}
+		from, err := g.recordValueAs(s.Value, g.arrayLayout(elem, length))
+		if err != nil {
+			return err
+		}
+		arr := g.allocArray(elem, length)
+		dst, _ := g.arrayAsRecord(arr)
+		if from.layout != dst.layout {
+			return unsupported("an array local %s initialized from a %s", s.Name.Value, from.layout.name)
+		}
+		if err := g.copyRecord(dst, from); err != nil {
+			return err
+		}
+		g.releaseTemps(from.temps)
+		g.bindArray(s.Name.Value, arr)
+		return nil
+	}
 	if !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length) {
 		// Every use an element at a literal index: the elements are
 		// scalars in registers (nativegen/scalar_arrays.go).
@@ -3473,6 +3635,16 @@ func (g *generator) bindParamRef(name string, rp *recordParam) *recordLocal {
 	delete(g.regs, name)
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	return rec
+}
+
+// bindArrayParamRef binds an in-place array parameter: the caller's array
+// at the parked address register, read-only; the record view of it is
+// what a call passing it on uses.
+func (g *generator) bindArrayParamRef(name string, rp *recordParam, elem scalar, length int64) *recordLocal {
+	arr := &arrayLocal{elem: elem, length: length, inReg: true, reg: rp.park, readOnly: true, paramRef: true}
+	g.bindArray(name, arr)
+	rec, _ := g.arrayAsRecord(arr)
 	return rec
 }
 
@@ -4546,6 +4718,28 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 	case *ast.AssignmentStatement:
 		if dst, isRecord := g.records[s.Name.Value]; isRecord {
 			// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
+			from, err := g.recordValueAs(s.Value, dst.layout)
+			if err != nil {
+				return err
+			}
+			if from.layout != dst.layout {
+				return unsupported("an assignment of a %s to the %s %s", from.layout.name, dst.layout.name, s.Name.Value)
+			}
+			if err := g.copyRecord(dst, from); err != nil {
+				return err
+			}
+			g.releaseTemps(from.temps)
+			return nil
+		}
+		if arr, isArray := g.arrays[s.Name.Value]; isArray {
+			// `h = f(h)`: a whole owned array of scalars assigned as a value.
+			dst, isValue := g.arrayAsRecord(arr)
+			if !isValue {
+				return unsupported("an assignment to the array %s", s.Name.Value)
+			}
+			if dst.readOnly {
+				return unsupported("an assignment to the read-only array %s", s.Name.Value)
+			}
 			from, err := g.recordValueAs(s.Value, dst.layout)
 			if err != nil {
 				return err
@@ -6261,7 +6455,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	}
 	var resultType *scalar
 	if callee.ReturnType != nil && callee.ReturnType.String() != "()" {
-		if _, isRecord := g.recordTypeName(callee.ReturnType); isRecord {
+		if _, isValue, _ := g.valueLayoutOf(callee.ReturnType); isValue {
 			if recordResult == nil {
 				return 0, unsupported("a call to %s (returning a record) in scalar position", ident.Value)
 			}
@@ -6355,8 +6549,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 			push(i, argument{regs: []int{r}, types: []scalar{s}})
 			continue
 		}
-		if name, isRecord := g.recordTypeName(p.Type); isRecord {
-			layout, err := g.layoutOf(name)
+		if layout, isValue, err := g.valueLayoutOf(p.Type); isValue {
 			if err != nil {
 				return 0, err
 			}
@@ -6368,7 +6561,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				return 0, err
 			}
 			if rec.layout != layout {
-				return 0, unsupported("a call to %s: a %s where %s is expected", ident.Value, rec.layout.name, name)
+				return 0, unsupported("a call to %s: a %s where %s is expected", ident.Value, rec.layout.name, layout.name)
 			}
 			if layout.size > 16 && rec.paramRef {
 				// An in-place parameter passed on: the same address (the
@@ -6638,8 +6831,7 @@ func (g *generator) argClassOf(typ ast.Expression) (asm.ArgClass, bool) {
 		}
 		return asm.ArgClass{Words: 1, Bytes: size, Align: size}, true
 	}
-	if name, isRecord := g.recordTypeName(typ); isRecord {
-		layout, err := g.layoutOf(name)
+	if layout, isValue, err := g.valueLayoutOf(typ); isValue {
 		if err != nil || layout.isHFA() {
 			return asm.ArgClass{}, false
 		}
@@ -7274,6 +7466,16 @@ func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) 
 			return err
 		}
 		return g.storeRecordToPlace(target, src, s)
+	case target.arr != nil:
+		// `r.h = f(r.h)` / `r.h = [8]u32{…}`: a whole owned array of
+		// scalars stored as one value.
+		if dst, isValue := g.arrayAsRecord(target.arr); isValue {
+			src, err := g.recordValueAs(s.Value, dst.layout)
+			if err != nil {
+				return err
+			}
+			return g.storeRecordToPlace(place{rec: dst}, src, s)
+		}
 	}
 	return unsupported("a store to the array %s", s.Target.String())
 }
