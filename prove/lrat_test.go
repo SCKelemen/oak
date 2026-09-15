@@ -120,3 +120,50 @@ main: (): i32 = 0
 		t.Fatalf("checked %d theorems, want at least 9", checked)
 	}
 }
+
+// The word-protocol checker decides as the text checker does: the same
+// acceptance with the same counts, the same refusals for every fixture the
+// word form can express (a RAT hint, a malformed line, and an undeclared
+// variable are refused by the encoder before any checker sees them).
+func TestLRATWordsAgree(t *testing.T) {
+	words, err := EncodeLRATWords(lratFormula, lratProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWords, err := CheckLRATWords(words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromText, _ := CheckLRAT(lratFormula, lratProof)
+	if fromWords != fromText {
+		t.Fatalf("words counted %+v, text %+v", fromWords, fromText)
+	}
+	cases := map[string]struct{ proof, want string }{
+		"no conflict":          {"5 2 0 1 0\n6 0 5 3 4 0\n", "reach no conflict"},
+		"hint not unit":        {"5 0 1 0\n", "neither unit nor the conflict"},
+		"dead hint":            {"5 2 0 1 2 0\n5 d 1 2 0\n6 0 5 1 2 0\n", "names no live clause"},
+		"id does not increase": {"4 2 0 1 2 0\n", "does not increase"},
+		"no empty clause":      {"5 2 0 1 2 0\n", "never derives the empty clause"},
+		"satisfied hint":       {"5 -2 0 1 2 0\n", "already satisfied"},
+	}
+	for name, c := range cases {
+		words, err := EncodeLRATWords(lratFormula, c.proof)
+		if err != nil {
+			t.Fatalf("%s: encode: %v", name, err)
+		}
+		_, err = CheckLRATWords(words)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want an error mentioning %q, got %v", name, c.want, err)
+		}
+	}
+	// A record whose steps run past its end, and one with an unknown kind.
+	truncated := append([]uint32(nil), words[:len(words)-2]...)
+	if _, err := CheckLRATWords(truncated); err == nil {
+		t.Errorf("a truncated record must be refused")
+	}
+	unknown := append([]uint32(nil), words...)
+	unknown[8+int(words[3])] = 2
+	if _, err := CheckLRATWords(unknown); err == nil || !strings.Contains(err.Error(), "neither an addition") {
+		t.Errorf("an unknown step kind must be refused, got %v", err)
+	}
+}

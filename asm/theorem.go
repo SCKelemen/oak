@@ -306,6 +306,51 @@ func controlParams(terms []*term) map[string]bool {
 	return control
 }
 
+// selectorParams names the parameters a conditional's condition reads
+// directly: through the conditions of conditionals nested in it, never
+// through their arms. In `l == 0 ? cand[0] : l == 1 ? cand[1] : ... != 0`
+// the index l is the selector and the elements are the data the
+// condition tests; controlParams counts both as control.
+func selectorParams(terms []*term) map[string]bool {
+	selectors := map[string]bool{}
+	visited := map[*term]bool{}
+	inCondition := map[*term]bool{}
+	var condition func(t *term)
+	condition = func(t *term) {
+		if t == nil || inCondition[t] {
+			return
+		}
+		inCondition[t] = true
+		switch t.kind {
+		case termParam:
+			selectors[t.name] = true
+		case termIte:
+			condition(t.cond) // the arms are the data selected
+		default:
+			condition(t.cond)
+			condition(t.left)
+			condition(t.right)
+		}
+	}
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		if t.kind == termIte {
+			condition(t.cond)
+		}
+		walk(t.cond)
+		walk(t.left)
+		walk(t.right)
+	}
+	for _, t := range terms {
+		walk(t)
+	}
+	return selectors
+}
+
 // decideBlasted settles the theorem with one blaster: every recorded trap
 // condition must be impossible and the claim must be the true node. The
 // second result reports a blown node budget, which the caller may answer

@@ -203,7 +203,10 @@ checkers were then profiled on the largest certificate the corpus makes
 (439,601 additions, 132 MB): the checker written in Oak takes 0.42 s, the
 Go checker took 3.4 s and takes 1.0 s after its parsing and assignment
 stopped allocating — the checking itself is about half a second on either
-side, the rest is reading a hundred megabytes of text. First run with CaDiCaL 3.0.1:
+side, the rest is reading a hundred megabytes of text. The text then went:
+the Go-driven rung takes the solver's word record straight to both
+checkers, the Oak one in the solver's process and the Go one through a
+file, the way `-solver self` has worked since the rung moved in-process. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

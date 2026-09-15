@@ -1,3 +1,4 @@
+import Std.Tactic.BVDecide
 /-!
 # The typed assembler: seam laws
 
@@ -141,6 +142,42 @@ theorem span_access (elem minLen len off size : Nat)
   calc off + size ≤ elem * minLen := hacc
     _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
 
+/-- **A wide load assembles the elements** (the executor's model of a load
+    wider than the span's element, docs/spec/94-assembler.md §8): eight
+    consecutive bytes read as one 64-bit little-endian word are the or of
+    each byte zero-extended and shifted to its position — the term Oak's
+    `u64(v[i]) | u64(v[i+1]) << 8 | … | u64(v[i+7]) << 56` spells — so the
+    native backend's one `ldr x` is the same value as the eight byte reads. -/
+theorem wide_load_assembles (b0 b1 b2 b3 b4 b5 b6 b7 : BitVec 8) :
+    (b7 ++ b6 ++ b5 ++ b4 ++ b3 ++ b2 ++ b1 ++ b0 : BitVec 64) =
+      b0.zeroExtend 64 ||| (b1.zeroExtend 64 <<< 8) ||| (b2.zeroExtend 64 <<< 16) |||
+      (b3.zeroExtend 64 <<< 24) ||| (b4.zeroExtend 64 <<< 32) ||| (b5.zeroExtend 64 <<< 40) |||
+      (b6.zeroExtend 64 <<< 48) ||| (b7.zeroExtend 64 <<< 56) := by
+  bv_decide
+
+/-- The 32-bit form: four bytes. -/
+theorem wide_load_assembles32 (b0 b1 b2 b3 : BitVec 8) :
+    (b3 ++ b2 ++ b1 ++ b0 : BitVec 32) =
+      b0.zeroExtend 32 ||| (b1.zeroExtend 32 <<< 8) ||| (b2.zeroExtend 32 <<< 16) ||| (b3.zeroExtend 32 <<< 24) := by
+  bv_decide
+
+/-- **The sum shape of a slack guard** (the checker's `sumFacts`,
+    docs/spec/94-assembler.md §7): `len(v) >= i + K` as the generator spells
+    it — `add wS, wI, #K; cmp wL, wS; b.lo <exit>` — proves `i + K ≤ len` on
+    the fall-through, the slack fact under which element `i + k` for every
+    `k < K` lies inside the span. -/
+theorem sum_guard_slack (len i K k : Nat) (hguard : i + K ≤ len) (hk : k < K) : i + k < len := by
+  omega
+
+/-- **Index under an equal length** (the checker's `lenEqual` fact,
+    docs/spec/94-assembler.md §7): `cmp wA, wB; b.ne <exit>` proves the two
+    lengths equal on the fall-through path, so an index guarded below one
+    span's length is below the other's — the second span walked in step
+    (`len(a) == len(b) ? { ... a[i] ... b[i] ... }`) needs no guard of its
+    own. -/
+theorem index_under_equal_len (i la lb : Nat) (hi : i < la) (heq : la = lb) : i < lb := by
+  omega
+
 /-- Every byte of an admitted span access lies inside the span. -/
 theorem span_access_bytes (elem minLen len off size b : Nat)
     (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)
@@ -188,6 +225,27 @@ theorem index_access_lanes (elem len i K : Nat) (hguard : i + K ≤ len) :
     `len ≥ K`, `wT = len - K` is exact and `i ≤ wT` is `i + K ≤ len`. -/
 theorem slack_guard (len i K : Nat) (hmin : K ≤ len) (hle : i ≤ len - K) : i + K ≤ len := by
   omega
+
+/-- The exclusive form of the slack guard, `sub wT, wL, #K; cmp wI, wT; b.hs
+    trap`: with `len ≥ K`, `i < len - K` gives `i + K ≤ len` as well — the
+    checker records the same slack fact for it, one element weaker than
+    the guard, so the reads at `i + k` for `k < K` are admitted. -/
+theorem slack_guard_strict (len i K : Nat) (hmin : K ≤ len) (hlt : i < len - K) : i + K ≤ len := by
+  omega
+
+/-- A condition materialized and tested: `cset wB, cond` writes 1 when the
+    compare's condition held and 0 otherwise, so the fall-through of
+    `cbz wB, L` has the condition and that of `cbnz wB, L` its negation —
+    the same facts as `b.<not cond>` and `b.cond` on the compare. -/
+theorem cset_cbz (c : Prop) [Decidable c] (h : (if c then (1 : Nat) else 0) ≠ 0) : c := by
+  by_cases hc : c
+  · exact hc
+  · simp [hc] at h
+
+theorem cset_cbnz (c : Prop) [Decidable c] (h : (if c then (1 : Nat) else 0) = 0) : ¬ c := by
+  by_cases hc : c
+  · simp [hc] at h
+  · exact hc
 
 /-- **Guard facts across a merge.** A label holds the meet of its
     predecessors' facts: for proven minimum lengths, the smaller of the

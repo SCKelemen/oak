@@ -2169,8 +2169,16 @@ func (c *rvChecker) spanAccess(mem Memory, width int64, store bool, line int) {
 			c.errorf(line, "%d-byte access at offset %d through %s: a global is one cell of %d bytes at its address", width, mem.Offset, base.Text, region.size)
 			return
 		}
-		if mem.Offset < 0 || mem.Offset+width > region.size {
-			c.errorf(line, "access at %d..%d through %s is outside its %d-byte element", mem.Offset, mem.Offset+width, base.Text, region.size)
+		// A region formed under a slack guard is `lanes` elements deep: a
+		// wider scalar access inside them — `ld` over eight bytes, the
+		// fused word load (docs/spec/94-assembler.md §9, wide loads) — is
+		// admitted as a vector access is (Oak.RiscV.slack_access_in_bounds).
+		extent := region.size
+		if region.lanes > 1 {
+			extent = region.size * region.lanes
+		}
+		if mem.Offset < 0 || mem.Offset+width > extent {
+			c.errorf(line, "access at %d..%d through %s is outside its %d-byte element", mem.Offset, mem.Offset+width, base.Text, extent)
 			return
 		}
 		if store && !region.writable {

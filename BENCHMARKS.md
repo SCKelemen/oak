@@ -97,12 +97,31 @@ This is a narrow typed workload, not a general JSON ranking; additional
 schemas, long strings, floats, large arrays, and selective extraction need
 their own workloads before any parity claim.
 
+## The native backend against the C backend
+
+The rows above are the C backend (clang over the emitted C). The native
+backend (`oak build -native`, the Oak assembler alone, `docs/spec/94-assembler.md`
+§9) was measured against it on the same kernels on 2026-09-14, on an Apple
+M4 Max under load; `benchmarks/native/README.md` has the table, the raw
+samples (`benchmarks/native/results/`), and the reasons. The short form:
+the hash kernels and the branchy kernels are within 1.1–1.9× of the C
+backend, the scalar reductions (`sum`, `dot`) are 3.2–3.4× behind because
+the backend neither unrolls nor vectorizes a loop clang vectorizes, the
+bytecode `dispatch` kernel is faster natively, and CRC-32C was 23× behind
+until this pass — the native backend had lowered the dispatching function's
+portable body over its hardware unit — and is 5.7× behind after it, the
+rest being fifty-six guarded byte loads where clang reads seven words.
+`tiled` was refused at the measurement revision by a verifier false alarm
+that upstream has since fixed; at 30ca36eb it runs natively at 2.8×, the
+scalar-loop gap. Every native row's checksum agrees with the C backend's.
+
 ## What is not measured yet
 
 Kernels shaped like the database's page and B-tree paths, the hypervisor's
 dispatch and bitmap scans, and the ml runtime's tiled reductions; Rust's
 `sha2`/`crc32c` crates (the harness is offline and uses the standard
-library only); anything with allocation; anything on x86 for the kernels.
+library only); anything with allocation; anything on x86 for the kernels; the native
+backend on any machine but one loaded M4 Max.
 Each of these is a row to add to `benchmarks/kernels`, not a claim to
 make in advance.
 

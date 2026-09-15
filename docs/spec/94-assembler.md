@@ -252,7 +252,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   admitted only under a **dominating index guard**: `cmp w9, w1` then
   `b.hs <exit>` proves `w9 < len` on the fall-through path (or `cmp w9,
   #K` then `b.hs` with `len >= K` already established), so the access lies
-  inside the span (`Oak.Assembler.index_access`). Index facts die like
+  inside the span (`Oak.Assembler.index_access`). A second span walked in
+  step under `cmp wLa, wLb` then `b.ne <exit>` needs no guard of its own:
+  the fall-through path knows the two lengths equal, so an index guarded
+  below one is below the other (`Oak.Assembler.index_under_equal_len`;
+  the fact dies with a write to either register, at labels, and at
+  calls). The guard `len(v) >= i + K` as the generator spells it — `add
+  wS, wI, #K` then `cmp wL, wS` then `b.lo <exit>` (or `cmp wS, wL` then
+  `b.hi`) — proves `wI + K <= len` on the fall-through, the slack fact
+  under which `wI`'s element and the `K - 1` after it (`add wJ, wI, #k`,
+  `k < K`) need no guard of their own (`Oak.Assembler.sum_guard_slack`).
+  Index facts die like
   length guards: at calls, and on any write to the index or the register
   it was compared against. **At a label a fact survives exactly when every
   predecessor carries it** — fall-through and every branch targeting the
@@ -982,6 +992,64 @@ entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
 proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
 sizes, and whether the sides became one term.
 
+**The literal scanner's kernel (2026-09-15).** `verify_first` of
+`stdlib/literals.oak` — a frame array of the candidate lanes read at the
+outer loop's index, an inner loop over the literals of a bucket calling
+`literal_at`, whose own loop compares bytes — was evidence: the coupling
+search exhausted its budget with the right pairing first in line. Five
+things, found in order by tracing where the diagrams went. **The proof's
+node budget is charged.** Each implication had been bounded by what the
+proof had left, but nothing spent it; every undecided obligation ran
+its full 2M nodes under four orders, and the search went on to refute
+the wrong pairings one diagram at a time. The largest diagram a decision
+built is now taken from the budget, so a search that keeps failing near
+the per-decision budget ends as evidence in a few tries. **Select slots
+interleave with the last block.** Under the grouped orders the element
+reads' variables sat past every parameter's, so `k < starts[j+1] −
+starts[j]` in the inner loop's exit premise had to remember `k` whole
+before it read either element: exponential. The first eight slots now
+interleave with the last block (the data parameters, under the
+control-first orders), and the comparison is linear again. **Selectors
+first.** In `l == 0 ? cand[0] : l == 1 ? cand[1] : … ≠ 0` — the frame
+array read — the index and the lanes are both control parameters to
+`controlParams`; a fifth order (`selectorParams`: what a condition reads
+directly, through nested conditions but never through an arm) interleaves
+the index's bits before the lanes' at every level, so the diagram narrows
+the arms as it reads and stays linear in the lanes, where reading the
+lanes first must remember which is which. **Widths narrowed under the
+premise.** A conjunct `p < 16` over a parameter leaves its bits from the
+fourth up zero wherever the premise holds; the decision reads `p` at four
+bits (`narrowByPremise`) — the implication is unchanged, and an adder over
+the index is copied sixteen times rather than once per value of a word.
+**Conditionals proven by their parts.** The inner loop's `found` after one
+iteration is `literal occurs here ? base + l : found` on both sides, the
+test spelled over the same inputs as the arm; a diagram of the whole
+repeats the test's diagram in every result bit — 250K nodes, thirty-two
+times over. `impliesEqualByArms` proves the conditions equal under the
+premise, then each pair of arms under the premise and the condition (or
+its negation): the parts cost the test once, and the arms are one term.
+The rule proves and never refutes — conditionals on different conditions
+may agree where their arms do — so a part that fails leaves the decision
+to the whole; a mask over a conditional is pushed into its arms first
+(`pushMask`), which is how a narrower side's zero-extension meets the
+wider side arm for arm. Last, a body's **invariant registers** — written
+but left at their header value after one iteration, a spill reloaded —
+are not loop-carried, and their symbols stand for the header value in
+every term of the body: this event's, and those of the loops and calls
+summarized inside it (`substituteAll`), where `loop2.r17` in the callee's
+byte comparison otherwise had no Oak counterpart. With these,
+`verify_first` is **proven** — three nested data-dependent loops coupled
+inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
+the callee's `k`, `same` as themselves) in three seconds — alongside
+`longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
+same module: the functions with more than eight vector parameters
+(`classify` and its callers) and, as evidence or trusted, `groups_of`
+(budget), `build` (an expression statement in a loop body),
+`verify_count` (an inner loop summarized per path past the event budget).
+The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
+implication, each order's node count and the stage it exceeded at, and
+under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
@@ -1360,7 +1428,13 @@ rejects), the encoder and object writer realize it, and the Oak body stays
 as the portable realization under `OAK_PORTABLE_INTRINSICS` — the
 differential oracle. `Compilation.WithNativeBodies()` (CLI `-native`)
 switches it on; a function outside the subset is left to the C backend
-with the reason reported.
+with the reason reported. So is a function with a `dispatch` clause
+(`93-simd.md` §6), whatever its body: the function is the selection
+between its realizations, made once from the processor's probed features,
+and only the C backend emits that selection; lowering its Oak body would
+define the symbol as the portable realization and leave the hardware unit
+unreachable (measured on CRC-32C, 23× behind, `benchmarks/native/README.md`).
+Its callers lower as usual and call the C backend's definition.
 
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
@@ -2576,6 +2650,66 @@ and array corpora are proven on both lanes (`asm/agg_views_test.go`;
 `compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
 states that the translated index of a view stays inside its owner.
 
+**Forty-first increment — tables in a callee, records from the frame,
+and the rv64 lane's register-held frame addresses (2026-09-16;
+`asm/verify.go` frameRecordArgument, `asm/rv64_verify.go`).** Three small
+gaps the corpus tally kept: an inlined callee saw only its parameters as
+spans, so `sum_view(view(&TABLE))` inside `table_sum` was "not a borrow
+of an aggregate local" and the tables `main` was trusted — the callee's
+span table now carries the program's constant tables as the caller's
+does; a by-reference record argument that is the caller's own copy in its
+frame — a record local passed on, and on the rv64 lane every by-reference
+record passed on, which the lane copies before the call — was "not a
+record parameter of the caller" — the summary now reads the record's
+8-byte chunks from the frame slots and unpacks them leaf by leaf, as a
+by-value record's register chunks are (a chunk's unstored bytes the
+frame's unknowns), so `push_ab`, `push_n`, `push_then_count`, and the
+callee-effects `main` are proven on both lanes; and the rv64 executor
+routes a load or store through a register holding a frame address —
+`addi t0, sp, off; lw a0, 4(t0)`, or the address advanced by a constant
+(`add t0, t0, t1` with a field's offset) — to the frame slot, as the
+AArch64 executor's registerFrameMemory does. `Oak.SpanArguments.
+record_chunks_disjoint`: the copy's chunks are disjoint slots, so reading
+them back is the record. (`compiler/e2e_native_tables_test.go`,
+`compiler/e2e_native_callee_effects_test.go`.)
+
+**Forty-second increment — the native optimization program's first
+steps (2026-09-15; `benchmarks/kernels/RESULTS.md`, `nativegen/scalar_arrays.go`,
+`nativegen/word_fusion.go`).** With the kernel harness's `oak-native` row
+as the measure (the native backend 2.3–3.3× behind clang over the C
+backend on the plain loops at the start), the lowering gained, each landed
+under the verifier's verdict: a float local's register home read in place
+and written by the operation (the accumulator's two copies through a
+scratch register per iteration gone); an array local whose every use is an
+element at a literal index — never borrowed, passed, assigned whole, or
+indexed by a computed value — lowered as its elements in registers
+(`acc: [8]f32` as eight accumulators in `d8`–`d15`, the array's liveness
+theirs); a squared operand evaluated once; and the little-endian word
+assembly `u64(v[i]) | u64(v[i+1]) << 8 | … | u64(v[i+7]) << 56` over a byte
+span lowered as one wide load under the slack guard `i + 8 <= len` — the
+checker admits a wide scalar access under a slack guard as it admits a
+vector one, and the verifier reads a load wider than the span's element as
+the or of the elements shifted to their positions
+(`Oak.Assembler.wide_load_assembles`, `wide_load_assembles32`), so the
+fused load is proven equal to the eight reads and a big-endian body is
+refuted; the rv64 lane fuses the same shape (`ld` at the element address
+under its slack guard, the checker admitting a wider scalar access through
+a region the guard marked K lanes deep). A word assembly whose base is a
+literal and whose every byte the typechecker proved — the inlined
+`crc32c_word_at(chunk, u32(48))` under the caller's `len(chunk) >= u32(56)`,
+once the inliner substitutes the literal (`90-backend.md` §9) and the
+extents checker folds `u32(48) + u32(3)` — is one load at the immediate
+offset, `ldr x, [xB, #48]`, bounded by the span's proven minimum length,
+and its `?` guard `len(chunk) >= u32(48) + u32(8)` folds to `cmp wL, #56`. Two checker facts came with them (§7): a length equality and the
+sum shape of a slack guard. `dot` went from 13 to 8 instructions per
+element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
+per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178
+instructions, `sha256` to 0.92×; `sum` stays 2.75× (a multi-accumulator
+reduction needs a coupling image that is a sum of registers), `crc32c`
+1.86× (two calls per chunk where clang inlines), `search` and `page_probe`
+2.3× (bounds facts through arithmetic). The order of the rest is in
+`RESULTS.md`.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3564,6 +3698,58 @@ compares canonical (sign-extended) values while the guard fact needs the
 zero-extended index, so its guards stay until the index representation
 changes; the C backend elides through `IndexProven` as before.
 
+*The fallback is per source line (2026-09-15).* A refused elision no
+longer costs the body every guard: the checker's finding names the line
+of the access it could not admit (`function:line:`), the compiler adds
+that line to the lane's `GuardLines` and lowers the body again with the
+guards of those lines kept, and repeats — at most eight rounds, a finding
+without a line or on a line already kept falling back to every guard as
+before — so the accesses the checker does admit stay elided. A binary
+search reads `probes[p]` under `while p < len(probes)` (admitted off the
+exit test) and `keys[mid]` under `mid < hi ≤ len(keys)` (proven by the
+decreasing-bound law, which the checker cannot read at the seam): the
+probe read is now unguarded and the key read keeps its guard, where
+before both were guarded (`compiler/e2e_native_guard_lines_test.go`;
+`bench_search` and `bench_page_probe` each lose one guard, their verdicts
+unchanged, `benchmarks/native/README.md`). The optimizer still decides
+nothing about safety: every unguarded access is one the checker admitted.
+
+**Condition selection (2026-09-15, AArch64 lane).** Four selections in
+the lowering of conditions and compares, each the mechanical layer's
+(`90-backend.md` §16 rule 2) and each gated by the verifier as every body
+is: a negation in condition position inverts the branch instead of
+materializing a Bool (`!found` was `mov; eor #1; cbz`, is `cbnz` on the
+variable's own register); a Bool variable homed in a register is tested
+where it lives, no copy; a small constant on a comparison's right — a
+literal, a folded conversion, a named constant — or in a match arm's
+literal pattern is the compare's immediate (`movz w10, #1; cmp w9, w10`
+is `cmp w9, #1`); and a bitwise `and`, `orr`, or `eor` with a constant
+inside the type's mask is not masked again (`and w9, w5, #7; and w6, w9,
+#255` is the first alone). On the kernels (`OAK_NATIVE_DUMP=1`):
+`bench_dispatch` 68 to 60 instructions (seven `movz` gone from its match
+chain), `bench_search` 57 to 54, `bench_page_probe` 93 to 90, the verdicts
+unchanged (`compiler/e2e_native_condition_test.go` asserts the shapes and
+the value against the C backend). A fifth, the same day: the second
+`cmp` of a conditional chain (`k == t ? … | k < t ? …`) repeated the
+first with no flag writer between them, but a label lay between and the
+checker's flags fact did not cross labels. The checker now carries flag
+validity through the same label fixpoint as its guard facts
+(`guardState.flags`: valid at a label when every predecessor arrives
+with flags a producer set), and the lowering reuses a compare at an else
+label whose every transfer is that compare's branch and which nothing
+falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
+reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
+else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
+90, verdicts unchanged. Two more of the same kind: an unsigned value
+shifted right by a constant is not masked after the `lsr` (it stays
+inside its width), and a scalar match whose scrutinee is a variable in a
+register compares that register in every arm instead of a copy
+(`bench_dispatch` 58 from 60, still proven). The per-line fallback keys
+its kept lines by the line the emitted instructions carry — the
+statement's — which is the line a finding names; an access token on a
+later line of a multi-line statement had escaped the first version and
+sent the body to every guard.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
@@ -4392,4 +4578,166 @@ Outside the model: the RV64 checker's move rule (`rv64_check.go`, the same
 shape over its normalized-length facts), the constant and frame-address
 facts a move also carries, and the derived facts `deriveSpan` and
 `deriveElement` add after the alias.
+
+### 9.ab The RV64 checker's register moves refined (2026-09-14)
+
+The RV64 checker's facts about integer registers — a span's base naming
+the raw length register it was bound with, a normalized copy of a length,
+a parked raw length, a constant, a region, and the raw length registers
+written since binding — are maintained across `addi rd, rs, 0` by two
+rules (`asm/rv64_check.go`): `forgetRegister` at every write drops the
+register's own facts, marks it dead as a raw length, and lets the proven
+minimum of the spans it measured lapse while the copies that name it stay
+(the length of a span never changes); `deriveShift` then copies what the
+source held, read from the snapshot taken before the write — a normalized
+length, a constant, a span base, a raw length canonicalized through its
+alias, a region. `spec/lean/Oak/RiscVSpanAlias.lean` transliterates both
+over the fact maps, maintained line for line with the Go, and proves them
+sound (`forget_sound`, `mv_sound`) against a register file and a fixed
+world of spans and regions with one length per raw name: a base
+addresses its span, a normalized copy holds the length, a parked raw copy
+holds it in its low 32 bits, a bound raw register not yet dead still
+holds it, constants and regions as stated. The corner the by-name design
+buys is checked: when the raw length register itself is overwritten by a
+base copy, the parked and normalized copies keep naming it, the span's
+minimum lapses, and the copied base keeps the snapshot's minimum, which
+the world's length by name justifies. `TestRV64SpanAliasMatchesLeanTransliteration`
+(`asm/rv64_span_alias_refinement_test.go`) runs the checker's rules for
+eleven moves over two fact states and renders what every named register
+then holds as the `example … := by decide` lines the Lean file states.
+Outside the model, as on the AArch64 lane: the index, scaled, half,
+remaining-count, and difference facts the write also forgets, which `mv`
+copies none of, and the frame-address and widened facts.
+
+### 9.ac Strength reduction of constant arithmetic (2026-09-15)
+
+The first increment of the optimization system (`90-backend.md` §16). On
+the AArch64 lane a multiplication, division, or remainder whose right
+operand is a constant lowers to the instruction the constant licenses:
+`x * 2^k` to `lsl #k` (signed or unsigned — a wrapping product is a
+shift in two's complement); unsigned `x / 2^k` to `lsr #k` and unsigned
+`x % 2^k` to `and #(2^k-1)` (`x / 1` to nothing, `x % 1` to zero); and a
+division or remainder by any other nonzero constant to `udiv`/`sdiv`
+(with `msub` for `%`) without the zero test, since a constant cannot be
+zero at run time. A signed division by a power of two keeps `sdiv`: the
+round-toward-zero bias is a later idiom. A variable divisor keeps its
+`cbz` to the trap and its division; a constant zero divisor keeps the
+test, which traps as the language says.
+
+The verifier is the gate. The Oak-side model already lowers an unsigned
+division or remainder by a constant power of two to `shr` and `and`
+(§8, `Oak.IntegerDivision`), a multiplication by a constant to a linear
+scaling, and any other division to the uninterpreted quotient with the
+zero divisor as a trap obligation — which a constant nonzero divisor
+discharges. So each reduced body proves equal to its Oak body by the
+same canonical forms as before, and the compiler reports it: `N constant
+operation(s) strength-reduced, proven`. Should the seam checker refuse a
+reduced body, or the verifier return less than proven for it, the
+compiler lowers the body again without the reduction and keeps the plain
+form when that one proves (`compiler/native_bodies.go`; the diagnostic
+names which). The RV64 lane is untouched: its division and shift
+emitters are its own, and `Lane.Strength` is set for AArch64 only.
+
+Read off `benchmarks/kernels` through `benchmarks/native/emit`: nine
+bodies of the package reduce and prove; `bench_search`'s inner loop, a
+`/ u32(2)` that lowered to `movz; cbz; udiv` on the path from the
+midpoint to its load, reads one `lsr #1`, and `bench_page_probe` loses
+its three `udiv`, two `mul`, and three zero tests. The timing rows wait
+for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
+`compiler/e2e_native_strength_test.go`.
+
+### 9.ad Proof-guided elision: the guards the checker carries (2026-09-15)
+
+The native lowering elides an element guard the typechecker proved
+(`IndexProven`, §9 "Check elision under the checker's own facts") only
+where the seam checker admits the guardless access from the facts on the
+path; where it refuses, the body is lowered again with every guard. On the
+stdlib-bearing program the checker refused 22 of the 58 bodies the
+typechecker had proven something in, for four reasons the lowered text
+makes exact. Three are closed:
+
+- **A copy carries its guard.** `add wJ, wI, #0` (the lowering's spelling of
+  an index at offset zero) now carries wI's guard to wJ as a `mov` does
+  (`Oak.SpanAlias.idxMeans_preserved`).
+- **The exclusive slack guard.** `sub wT, wL, #K; cmp wI, wT; b.hs trap`
+  — the wrap-free remaining guard `i < len(v) - K` before reads at
+  `i + k`, `k < K` — records the slack fact `wI + K ≤ len`, one element
+  weaker than the guard (`Oak.Assembler.slack_guard_strict`), which
+  `add wJ, wI, #k` then lowers to `wJ + (K - k) ≤ len` as before.
+- **Guards survive a call in callee-saved registers.** A call forgot every
+  guard. An index guard whose index register is callee-saved and whose
+  bound is an immediate or a length some callee-saved register still holds
+  after the call now survives, rebound to that register; so does a slack
+  register in callee-saved registers, and the proven minimum of a span
+  whose base survives. The callee preserves x19–x28 under AAPCS64 (every
+  Oak callee's save and restore is checked), so the guard's registers hold
+  their values and what it says of them still holds
+  (`Oak.SpanAlias.idxMeans_preserved`); the length is a fact about memory
+  no call changes. Loop bodies that call between the exit test and the
+  access (`random_fill`, the json scanners) are the beneficiaries.
+- **A condition materialized, then tested.** The lowering spells `a && b`
+  and `a || b` through a boolean: `cmp wI, wL; cset wB, lo; cbz wB, skip`
+  and the access follows. The checker read guards only off `cmp; b.cond`.
+  It now records the compare's condition on wB at the `cset` (a
+  `condFact`, dying with a write to wB or to either compared register,
+  at labels, and at calls) and reads `cbz wB` as `b.<not cond>` and
+  `cbnz wB` as `b.cond` on that compare — the same facts, the same
+  laws (`Oak.Assembler.cset_cbz`, `cset_cbnz`). A boolean tested after a
+  label proves nothing: the join's other predecessors may have written
+  it, and the fact is not part of the label fixpoint's meet. The
+  conjunction's second stage (`short: mov w9, w10; cbz w9`) therefore
+  stays unread; a meet of "wB ≠ 0 implies these conditions", vacuous on
+  the predecessor that wrote zero, would read it.
+
+Closing them found a hole. A slack fact is exact only under `len ≥ K`
+(`Oak.Assembler.slack_guard`'s hypothesis: below it the subtraction
+wrapped and the compare proves nothing), and the checker required the
+minimum only for vector accesses, and there against the fact's current
+bound rather than the `K` it came from — `add wJ, wI, #3` under `K = 4`
+left a fact of bound 1 that a minimum of 1 satisfied. A scalar read under
+a slack fact with no minimum proven was admitted. The fact now carries
+`need`, the `K` of its subtraction, unchanged by offsets, and every
+admission — the element region (`elementRegionOf`, refined in
+`Oak.CheckerRefinement.spanElement`), the vector access, and the scalar
+access — requires `need ≤ minLen`; a plain register bound admits nothing
+for a slack fact. The refinement's pinned examples carry the field
+(`TestCheckerDecisionsMatchLeanTransliteration`), and
+`TestCheckerGuardFacts` states the accepted shapes and the refused ones,
+the wrap among them. No emitted body relied on the hole: the lowering
+emits the slack idiom only under the minimum guard.
+
+Measured on the stdlib-bearing program (AArch64), like for like on the
+head these admissions merged onto (the per-line fallback and the
+condition selection of §9 "Check elision" already in place): 48 bodies
+elide 134 guards where 41 elided 74, one body keeps the guards of one
+line where four did, one keeps them all as before, 250 bodies stay
+proven and none mismatch. Against the whole-body fallback they were
+developed on, the checker refused 10 elided bodies where it refused 22
+and 136 guards went where 58 went. `OAK_NATIVE_DUMP=1` prints each
+refused elided form under a `// refused elided form of` header, which is
+how the shapes were read. What remains, by shape: an
+index reloaded from a frame slot after its guard (`append_byte`: the
+guard is on the register the compare read, the store indexes a fresh load
+of the same field — a fact about the slot would carry it); a bound through
+another register (`bytes_compare`'s `limit = min(len(a), len(b))`,
+`uuid_compare`, `text_equal_ascii_fold`: the guard is against a register
+the checker cannot relate to the span's length across the select's join —
+`leFacts` through the label fixpoint — on the optimization program's list
+as "a bound copied to another register, a decreasing bound below a
+length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second stage
+above (`json_value_boundary`, `url_parse`); and index arithmetic the
+typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
+`normalize_find`: `at = low * 5` under `low < len / 5`), which the
+checker has no fact for. On the RV64 lane elision stays off until its
+index representation admits it.
+
+**Where optimizing passes live (decision, 2026-09-15).** Two levels carry
+proofs and admit passes: the AST, where the typechecker's facts are keyed
+by position (a rewrite keeps provenance, as the inliner does — the home of
+proof-preserving inlining), and the emitted item list, a linear register
+program the verifier re-proves whatever is rewritten (the home of the
+peephole and a liveness allocator, with def-use chains computed on demand).
+A mid-level IR is not introduced: it would re-derive how the facts reach
+the lowering across ten thousand lines for what the item list can carry
+until an allocator shows otherwise.
 

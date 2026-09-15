@@ -363,6 +363,41 @@ type loopEvent struct {
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
 
+// substituteAll rewrites every term of the event under sigma: the
+// condition, the header and next values, and the stores. The memo is
+// shared across the terms (and across events): a subterm is rewritten once.
+func (ev *loopEvent) substituteAll(sigma map[string]*term, memo map[*term]*term) {
+	ev.cond = substituteMemo(ev.cond, sigma, memo)
+	for name, t := range ev.header {
+		ev.header[name] = substituteMemo(t, sigma, memo)
+	}
+	for name, t := range ev.next {
+		ev.next[name] = substituteMemo(t, sigma, memo)
+	}
+	for _, log := range [2]map[string][]*spanWrite{ev.writes, ev.entry} {
+		for _, writes := range log {
+			for _, w := range writes {
+				w.index = substituteMemo(w.index, sigma, memo)
+				w.value = substituteMemo(w.value, sigma, memo)
+				if w.guard != nil {
+					w.guard = substituteMemo(w.guard, sigma, memo)
+				}
+			}
+		}
+	}
+}
+
+// descends reports whether inner was summarized inside outer's body: outer
+// is on inner's chain of parents.
+func (x *pathExecutor) descends(inner, outer *loopEvent) bool {
+	for p := inner.parent; p != 0; p = x.loops[p-1].parent {
+		if p == outer.index {
+			return true
+		}
+	}
+	return false
+}
+
 // loopEvent summarizes the top-level asm loop whose exit branch was just
 // reached with an undecided condition, then continues past the exit.
 func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState) (*term, *pathEffects, string, bool) {
@@ -725,9 +760,65 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
 		for i := len(ends) - 2; i >= 0; i-- {
-			merged = iteTerm(ends[i].cond, ends[i].valueOfVar(name, freshState), merged)
+			value := ends[i].valueOfVar(name, freshState)
+			if equalTerms(value, merged) {
+				continue // the same value on both paths: no select
+			}
+			merged = iteTerm(ends[i].cond, value, merged)
 		}
 		ev.next[name] = truncate(merged, ev.width[name])
+	}
+	// A variable the body writes but leaves, after one iteration, at the
+	// value it held at the header — a spill reloaded, a copy of itself, a
+	// value re-materialized from the loop's invariants — is not
+	// loop-carried: its symbol stands for the header value in the
+	// condition, in the other variables' next values, and in the state
+	// past the loop. So an outer loop's counter that an inner body only
+	// spills stays the outer loop's variable, not the inner loop's.
+	invariant := map[string]*term{}
+	carried := make([]string, 0, len(ev.vars))
+	for _, name := range ev.vars {
+		fresh := ev.fresh[name]
+		if equalTerms(ev.next[name], truncate(fresh, ev.width[name])) || equalTerms(ev.next[name], truncate(ev.header[name], ev.width[name])) {
+			invariant[fresh.name] = ev.header[name]
+			delete(ev.next, name)
+			delete(ev.fresh, name)
+			delete(ev.width, name)
+			delete(ev.header, name)
+			continue
+		}
+		carried = append(carried, name)
+	}
+	if len(invariant) > 0 {
+		ev.vars = carried
+		// The symbols stood in the body's every term: this event's, and
+		// those of the loops and calls summarized inside the body — its
+		// descendants by the parent links, not every later event (the
+		// executor summarizes the loops of other paths meanwhile) — which
+		// read the header value through them. One memo across the terms:
+		// the events share their subterms.
+		memo := map[*term]*term{}
+		for _, inner := range x.loops[ev.index-1:] {
+			if inner == ev || x.descends(inner, ev) {
+				inner.substituteAll(invariant, memo)
+			}
+		}
+		for reg, value := range freshState.regs {
+			freshState.regs[reg] = substitute(value, invariant)
+		}
+		for reg, value := range freshState.vregs {
+			lanes := make([]*term, len(value.lanes))
+			for k, lane := range value.lanes {
+				lanes[k] = substitute(lane, invariant)
+			}
+			freshState.vregs[reg] = vecValue{bits: value.bits, lanes: lanes}
+		}
+		for reg, value := range freshState.fregs {
+			freshState.fregs[reg] = substitute(value, invariant)
+		}
+		for addr, slot := range freshState.frame {
+			freshState.frame[addr] = frameSlot{value: substitute(slot.value, invariant), width: slot.width}
+		}
 	}
 	// A body that stored into a frame array at a data-dependent index
 	// forgot the region on its paths; the state past the loop forgets it too.
@@ -1664,18 +1755,20 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return lowering.declaredWidth(name)
 	}
-	// Every implication of this proof spends from one budget.
-	// A body no concrete input decided within budget gets an eighth of the
-	// proof's budgets, each
-	// implication bounded by what is left: its
-	// coupling is as sound as any, but without
-	// a witness the search over a hopeless pairing has nothing to refute
-	// it early. On the prover the forty-five such bodies that prove do so
-	// in under three seconds each, and the seventy-five that end in
-	// evidence spent minutes on the way there under the full budgets.
+	// Every implication of this proof spends from one budget, each
+	// bounded by what is left, and an undecided one costs its whole
+	// diagram: a search that keeps failing near the per-decision budget
+	// ends as evidence in a few tries. A body no concrete input decided
+	// within budget gets an eighth of the search and half the nodes — its
+	// coupling is as sound as any, but without a witness the search over
+	// a hopeless pairing has nothing to refute it early, and on the prover
+	// the seventy-five such bodies that end in evidence spent minutes on
+	// the way there under the full search. Half the nodes still leaves
+	// the pairings before the right one a few undecided obligations (the
+	// prover's `solve_roots` spends one on its first).
 	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
 	if checked == 0 {
-		proofNodes, searchBudget = loopProofNodeBudget/8, couplingSearchBudget/8
+		proofNodes, searchBudget = loopProofNodeBudget/2, couplingSearchBudget/8
 	}
 	budget := &nodeBudget{remaining: proofNodes}
 	implies := func(premise, a, b *term) (bool, bool) {
@@ -1892,6 +1985,25 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				}
 			}
 		}
+		// The likely pairings first: a register the event's continue
+		// condition reads (the counter the exit test compares — an
+		// unpaired one leaves the condition undecidable), then an equality
+		// before an affine image with an offset (an address temporary
+		// `base + i` is an image of the counter too, but the counter's own
+		// register is the one the loop turns on).
+		inCond := map[string]bool{}
+		collectParams(asmEv.cond, inCond)
+		rank := func(c coupling) int {
+			r := 0
+			if !inCond[asmEv.freshName(c.reg)] {
+				r += 2
+			}
+			if c.a != 1 || c.b.kind != termConst || c.b.value != 0 {
+				r++
+			}
+			return r
+		}
+		sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
 		return out, taken
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
@@ -2640,8 +2752,12 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		widths[name] = widthOf(name)
 	}
 	sort.Strings(names)
+	narrowByPremise(premise, widths)
 	if refutedByValuation(premise, a, b, names, widths) {
 		return false, true
+	}
+	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
+		return holds, true
 	}
 	blasters := equalityBlasters(names, widths, a, b)
 	var stop atomic.Bool
@@ -2660,10 +2776,37 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 			results <- attempt{holds, decided}
 		}(bl)
 	}
+	holds, decided = false, false
 	for range blasters {
-		if r := <-results; r.decided {
+		// The first order to finish decides; the rest stop at their next
+		// node, and every racer has returned before its diagram is read.
+		if r := <-results; r.decided && !decided {
+			holds, decided = r.holds, true
 			stop.Store(true)
-			return r.holds, true
+		}
+	}
+	if budget != nil {
+		// The decision cost the proof its largest diagram: undecided ones
+		// near the per-decision budget exhaust the proof's in a few tries.
+		spent := 0
+		for _, bl := range blasters {
+			if n := len(bl.bdd.nodes); n > spent {
+				spent = n
+			}
+		}
+		budget.remaining -= spent
+	}
+	if decided {
+		return holds, true
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		remaining := -1
+		if budget != nil {
+			remaining = budget.remaining
+		}
+		fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
+		for _, bl := range blasters {
+			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, exceeded=%v, budget %d\n", bl.label, len(bl.bdd.nodes), bl.bdd.exceeded, bl.bdd.budget)
 		}
 	}
 	if !branching {
@@ -3009,25 +3152,175 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
 	return refutedByValuation(premise, a, b, names, widths)
 }
 
+// impliesEqualByArms proves premise → (a = b) for two conditionals by
+// their parts: the conditions equal under the premise, the taken arms
+// equal under the premise and the condition, the other arms under its
+// negation. A diagram of the whole repeats the condition's in every
+// result bit — a conditional on a test over the loop's inputs (a literal
+// occurs at this position) selecting an arm over the same inputs (the
+// position) costs the test's diagram thirty-two times over, past any
+// budget, where the parts cost it once. The rule proves and never
+// refutes: conditionals with different conditions may still agree
+// (where their arms do), so a part that fails leaves the decision to
+// the whole. A mask over a conditional is pushed into its arms first.
+func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	a, b = pushMask(a), pushMask(b)
+	if a.kind != termIte || b.kind != termIte {
+		return false, false
+	}
+	if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth); !decided || !holds {
+		return false, false
+	}
+	taken := binaryTerm("and", premise, truncate(a.cond, 1))
+	if holds, decided := impliesEqualDepth(taken, a.left, b.left, widthOf, budget, depth); !decided || !holds {
+		return false, false
+	}
+	other := binaryTerm("and", premise, notTerm(a.cond))
+	if holds, decided := impliesEqualDepth(other, a.right, b.right, widthOf, budget, depth); !decided || !holds {
+		return false, false
+	}
+	return true, true
+}
+
+// pushMask moves a low mask over a conditional into its arms: the
+// conditional's width is the arms', a zero-extension of a narrower
+// conditional becomes one of each arm (the same term a parameter's
+// extension is on the other side).
+func pushMask(t *term) *term {
+	if t.kind != termBinary || t.op != "and" || t.right.kind != termConst || !isLowMask(t.right.value) || t.left.kind != termIte {
+		return t
+	}
+	inner := t.left
+	arm := func(x *term) *term {
+		if t.right.value == mask(inner.width) && inner.width < t.width {
+			return zeroExtend(adaptWidth(x, inner.width), t.width)
+		}
+		return binaryTerm("and", adaptWidth(x, t.width), t.right)
+	}
+	return iteTerm(inner.cond, pushMask(arm(inner.left)), pushMask(arm(inner.right)))
+}
+
+// diagnoseBlast (under OAK_VERIFY_DIAGNOSE; it builds a diagram per
+// subterm) reports, along the path of the largest subterm, the diagram
+// each subterm of t needs on its own under bl's order and premise: where
+// a decision past the budget spends it.
+func diagnoseBlast(bl *blaster, premise, t *term) {
+	fresh := func() *blaster {
+		nb := *bl
+		nb.bdd = newBDD(blastNodeBudget)
+		nb.selects = nil
+		nb.memo = nil
+		nb.owners = map[int]variableOwner{}
+		nb.assumed = false
+		p := nb.blast(premise)
+		if p != nil && p[0] != bddTrue {
+			nb.assume, nb.assumed = p[0], true
+		}
+		return &nb
+	}
+	size := func(t *term) int {
+		nb := fresh()
+		before := len(nb.bdd.nodes)
+		nb.blast(t)
+		if nb.bdd.exceeded {
+			return -1
+		}
+		return len(nb.bdd.nodes) - before
+	}
+	for depth := 0; t != nil && depth < 12; depth++ {
+		fmt.Fprintf(os.Stderr, "  diagnose depth %d: %d nodes for %.200s\n", depth, size(t), t.String())
+		var largest *term
+		worst := -2
+		for _, child := range []*term{t.cond, t.left, t.right} {
+			if child == nil || child.kind == termConst || child.kind == termParam {
+				continue
+			}
+			n := size(child)
+			if n == -1 {
+				n = 1 << 30
+			}
+			if n > worst {
+				worst, largest = n, child
+			}
+		}
+		t = largest
+	}
+}
+
+// narrowByPremise bounds the parameters' widths under the premise: a
+// conjunct `p < c` (or `p <= c`) over a parameter leaves p's bits from the
+// bound's up zero wherever the premise holds, so the decision reads p at
+// that many bits. The implication is unchanged — where the bits are set
+// the premise fails and it holds — and a conditional chain over a loop
+// index below sixteen is decided over the index's four bits, an adder
+// over it copied sixteen times rather than once per value of a word.
+func narrowByPremise(premise *term, widths map[string]int) {
+	var walk func(t *term)
+	walk = func(t *term) {
+		switch {
+		case t.kind == termBinary && t.op == "and":
+			walk(t.left)
+			walk(t.right)
+		case t.kind == termCmp && t.left.kind == termParam && t.right.kind == termConst:
+			var bound uint64 // p ranges over [0, bound)
+			switch t.op {
+			case "lo":
+				bound = t.right.value
+			case "ls":
+				bound = t.right.value + 1
+			}
+			if bound == 0 {
+				return
+			}
+			k := bits.Len64(bound - 1)
+			if k < 1 {
+				k = 1
+			}
+			if w, known := widths[t.left.name]; known && k < w {
+				widths[t.left.name] = k
+			}
+		}
+	}
+	walk(premise)
+}
+
 // impliesEqualUnder is impliesEqual's bit-level decision under one
 // variable order.
 func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool, decided bool) {
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	stage := func(what string) {
+		if trace && bl.bdd.exceeded {
+			fmt.Fprintf(os.Stderr, "verify: order %q exceeded while blasting %s (%d nodes)\n", bl.label, what, len(bl.bdd.nodes))
+		}
+	}
 	pBits := bl.blast(premise)
+	stage("the premise")
 	if pBits == nil {
 		return false, false
 	}
 	if pBits[0] != bddTrue {
 		bl.assume, bl.assumed = pBits[0], true // the premise settles the branches it decides
 	}
-	aBits, bBits := bl.blast(a), bl.blast(b)
+	aBits := bl.blast(a)
+	stage("a")
+	if bl.bdd.exceeded && bl.label == "selectors first" && os.Getenv("OAK_VERIFY_DIAGNOSE") != "" {
+		diagnoseBlast(bl, premise, a)
+	}
+	bBits := bl.blast(b)
+	stage("b")
 	if pBits == nil || aBits == nil || bBits == nil || bl.bdd.exceeded {
 		return false, false
 	}
 	allEqual := bddTrue
 	for i := 0; i < width; i++ {
 		allEqual = bl.bdd.apply(opAnd, allEqual, bl.bdd.not(bl.bdd.apply(opXor, aBits[i], bBits[i])))
+		if bl.bdd.exceeded {
+			stage(fmt.Sprintf("the equality at bit %d", i))
+			break
+		}
 	}
 	implication := bl.bdd.apply(opOr, bl.bdd.not(pBits[0]), allEqual)
+	stage("the implication")
 	if bl.bdd.exceeded {
 		return false, false
 	}
@@ -3039,6 +3332,7 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 	// coupling where the independent reads did not.
 	premiseHolds := bl.apply(opAnd, pBits[0], bl.consistency())
 	implication = bl.apply(opOr, bl.not(premiseHolds), allEqual)
+	stage("the consistency")
 	if bl.bdd.exceeded {
 		return false, false
 	}

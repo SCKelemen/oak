@@ -530,12 +530,50 @@ cnf_main: (): i32 {
         literal_words: u32 = region_view[l.clauses_at + u32(3)]
         clause_cap: u32 = region_view[l.clauses_at + u32(5)]
         store_cap: u32 = region_view[l.clauses_at + u32(6)]
-        sl: SatLayout = sat_layout(variables, clause_cap, store_cap, u32(0))
+        // The solver runs quiet and records its certificate as words; the
+        // record is checked here by the checker written in Oak (the line
+        // lrat status additions deletions) and written to the file
+        // OAK_RECORD_FILE names for the Go checker, so no certificate text
+        // is printed or parsed.
+        clause_count: u32 = region_view[l.clauses_at + u32(2)]
+        record_cap: u32 = sat_record_cap(sat_conflicts(conflict_budget, clause_count), LRAT_HEADER_WORDS + literal_words)
+        sl: SatLayout = sat_layout(variables, clause_cap, store_cap, record_cap)
         sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
         sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
         status: u32 = SAT_MALFORMED
-        sat_init(sl, span(&sat_arena), subslice(region_view, l.clauses_at, LRAT_HEADER_WORDS + literal_words), conflict_budget, false) ? {
+        sat_init(sl, span(&sat_arena), subslice(region_view, l.clauses_at, LRAT_HEADER_WORDS + literal_words), conflict_budget, true) ? {
           status = sat_solve(sl, span(&sat_arena))
+        } | { }
+        status == SAT_UNSATISFIABLE ? {
+          length: u32 = sat_record_finish(sl, span(&sat_arena))
+          checked: [3]u32
+          checked[u32(0)] = LRAT_CAPACITY
+          checked[u32(1)] = u32(0)
+          checked[u32(2)] = u32(0)
+          length > u32(0) ? {
+            sat_view: []u32 = view(&sat_arena)
+            record: []u32 = subslice(sat_view, sl.record_at, length)
+            accepted: u32 = lrat_check_record(record, variables, span(&checked))
+            checked[u32(0)] = accepted
+            path_buf: [1024]u8
+            path_len: u32 = copy_env(c_getenv(c.cstr("OAK_RECORD_FILE\0")), span(&path_buf))
+            path_len > u32(0) ? {
+              path_view: []u8 = view(&path_buf)
+              path: []u8 = subslice(path_view, u32(0), path_len + u32(1))
+              write_words_file(path, record) ? { } | { checked[u32(0)] = LRAT_CAPACITY }
+            } | { }
+          } | { }
+          write_byte(u8(108))
+          write_byte(u8(114))
+          write_byte(u8(97))
+          write_byte(u8(116))
+          write_byte(u8(32))
+          write_u32(checked[u32(0)])
+          write_byte(u8(32))
+          write_u32(checked[u32(1)])
+          write_byte(u8(32))
+          write_u32(checked[u32(2)])
+          write_byte(u8(10))
         } | { }
         sat_report(sl, span(&sat_arena), status, variables)
         free(c.disown(sat_arena))
@@ -1166,6 +1204,13 @@ type OakClauseRun struct {
 	Inputs    map[int]uint32
 	Constant  int
 	Outcome   prove.SATOutcome
+	// Record is the certificate as the solver recorded it (the checkers'
+	// word protocol), read from the file the run named; OakCheck is the
+	// verdict of the checker written in Oak over that record, in the
+	// solver's process.
+	Record   []uint32
+	OakCheck OakLRATVerdict
+	Checked  bool
 }
 
 // runOakClauses lowers a problem to clauses in Oak (prove/solver/cnf.oak)
@@ -1188,8 +1233,15 @@ func runOakClausesWithin(problem asm.Problem, budget int) (OakClauseRun, error) 
 	for i, w := range words {
 		binary.LittleEndian.PutUint32(encoded[4*i:], w)
 	}
+	recordFile, err := os.CreateTemp("", "oak-record-")
+	if err != nil {
+		return OakClauseRun{}, err
+	}
+	recordPath := recordFile.Name()
+	recordFile.Close()
+	defer os.Remove(recordPath)
 	run := exec.Command(solver)
-	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=cnf")
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=cnf", "OAK_RECORD_FILE="+recordPath)
 	run.Stdin = bytes.NewReader(encoded)
 	run.Stderr = os.Stderr
 	out, err := run.Output()
@@ -1218,6 +1270,10 @@ func runOakClausesWithin(problem asm.Problem, budget int) (OakClauseRun, error) 
 			}
 		case strings.HasPrefix(line, "s CONSTANT "):
 			fmt.Sscanf(line, "s CONSTANT %d", &result.Constant)
+		case strings.HasPrefix(line, "lrat "):
+			if _, err := fmt.Sscanf(line, "lrat %d %d %d", &result.OakCheck.Status, &result.OakCheck.Additions, &result.OakCheck.Deletions); err == nil {
+				result.Checked = true
+			}
 		default:
 			rest.WriteString(line)
 			rest.WriteByte('\n')
@@ -1232,5 +1288,13 @@ func runOakClausesWithin(problem asm.Problem, budget int) (OakClauseRun, error) 
 		return result, err
 	}
 	result.Outcome = outcome
+	if outcome.Unsatisfiable {
+		if encoded, err := os.ReadFile(recordPath); err == nil && len(encoded) >= 32 && len(encoded)%4 == 0 {
+			result.Record = make([]uint32, len(encoded)/4)
+			for i := range result.Record {
+				result.Record[i] = binary.LittleEndian.Uint32(encoded[4*i:])
+			}
+		}
+	}
 	return result, nil
 }

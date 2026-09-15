@@ -94,9 +94,11 @@ const (
 )
 
 // quantTerm is the quantifier op over the bound parameter name of the
-// given width, body a 1-bit term.
-func quantTerm(op, name string, width int, body *term) *term {
-	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1)}
+// given width, body a 1-bit term; right is the parameter's own term, so a
+// serialization numbers it before the terms that read it (the Oak
+// solver's evaluator restarts the body there for every value).
+func quantTerm(op, name string, width int, body, param *term) *term {
+	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1), right: param}
 }
 
 // quantifierBound reports a name the theorem lowering minted for a
@@ -2836,7 +2838,7 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	// element into its register — zero-extending, or sign-extending for
 	// the ldrs* family.
 	size := memorySize(instr.Mnemonic, dest.Class)
-	if size != elem {
+	if size < elem || size%elem != 0 || isSignExtendingLoad(instr.Mnemonic) && size != elem {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
 	}
 	extend := func(element *term) *term {
@@ -2844,6 +2846,33 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
 		}
 		return zeroExtend(element, widthOf(dest.Class))
+	}
+	// A load wider than the element (`ldr x` over bytes, the little-endian
+	// word assembly the native backend fuses, docs/spec/94-assembler.md §9)
+	// reads size/elem consecutive elements: the value is the or of each
+	// element shifted to its byte position — the term Oak's `u64(v[i]) |
+	// u64(v[i+1]) << 8 | …` spells (Oak.Assembler.wide_load_assembles).
+	wide := func(first *term) *term {
+		if size == elem {
+			return extend(x.elementIn(state, param, first, int(elem)*8))
+		}
+		var value *term
+		for k := int64(0); k < size/elem; k++ {
+			at := first
+			if k != 0 {
+				at = binaryTerm("add", truncate(first, 32), constTerm(uint64(k), 32))
+			}
+			element := zeroExtend(x.elementIn(state, param, at, int(elem)*8), widthOf(dest.Class))
+			if k != 0 {
+				element = binaryTerm("shl", element, constTerm(uint64(k*elem*8), widthOf(dest.Class)))
+			}
+			if value == nil {
+				value = element
+			} else {
+				value = binaryTerm("or", value, element)
+			}
+		}
+		return value
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -2859,13 +2888,13 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if baseIndex != 0 {
 			index = binaryTerm("add", truncate(index, 32), constTerm(uint64(baseIndex), 32))
 		}
-		state.write(dest, extend(x.elementIn(state, param, index, int(elem)*8)))
+		state.write(dest, wide(truncate(index, 32)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, extend(x.elementIn(state, param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
+	state.write(dest, wide(constTerm(uint64(mem.Offset/elem+baseIndex), 32)))
 	return "", true
 }
 
@@ -4314,6 +4343,40 @@ func (x *pathExecutor) bindAggregateArgument(lo *oakLowering, param *ast.Functio
 	return len(chunks), "", true
 }
 
+// frameRecordArgument binds a summarized callee's by-reference record
+// parameter to the caller's copy in its frame at addr: the record's
+// 8-byte chunks read from the slots (a chunk's unstored bytes are the
+// frame's unknowns) and unpacked leaf by leaf, as a by-value record's
+// register chunks are (docs/spec/94-assembler.md §8, record arguments).
+func (x *pathExecutor) frameRecordArgument(lo *oakLowering, param *ast.FunctionParameter, comp Composite, addr int64, state *symbolicState, name string) (string, bool) {
+	paramText := typeText(param.Type)
+	typ, isType := lo.oakTypeOf(param.Type)
+	if len(comp.Fields) == 0 || !isType || typ.kind == oakScalar {
+		return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+	}
+	leaves, _, ok := compositeLeaves(x.fn.Composites, paramText, "", 0, nil)
+	if !ok {
+		return fmt.Sprintf("a call to %s: parameter %s (no layout)", name, param.Name.Value), false
+	}
+	if state.unknownFrom != nil && addr+comp.Size > *state.unknownFrom {
+		return fmt.Sprintf("a call to %s: the record argument %s lies in the frame's unknown region", name, param.Name.Value), false
+	}
+	chunks := make([]*term, (comp.Size+7)/8)
+	for k := range chunks {
+		value, has := x.loadFrame(state, addr+int64(8*k), 8)
+		if !has {
+			return fmt.Sprintf("a call to %s: the record argument %s is not held in the frame", name, param.Name.Value), false
+		}
+		chunks[k] = value
+	}
+	value, ok := unpackAggregate(typ, leaves, chunks)
+	if !ok {
+		return fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
+	}
+	lo.locals[param.Name.Value] = &oakLocal{agg: value}
+	return "", true
+}
+
 // unpackAggregate reads an aggregate value of the type from its register
 // chunks (the inverse of packAggregateChunk): each leaf is the slice of
 // the chunk at its offset and width.
@@ -5281,6 +5344,48 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.InfixExpression:
+		// A sum or product of two literals converted to one unsigned type
+		// (`u32(0) + u32(3)`, an inlined helper's constant offsets) folds
+		// when the result fits the type, as the extents checker folds it;
+		// a wrapping `u8(200) + u8(100)` is lowered as the operation.
+		if e.Operator != "+" && e.Operator != "*" {
+			return 0, false
+		}
+		typeName := ""
+		for _, side := range []ast.Expression{e.Left, e.Right} {
+			call, isCall := side.(*ast.InvocationExpression)
+			if !isCall || len(call.Arguments) != 1 {
+				return 0, false
+			}
+			conv, isIdent := call.Function.(*ast.Identifier)
+			if !isIdent || (typeName != "" && conv.Value != typeName) {
+				return 0, false
+			}
+			typeName = conv.Value
+		}
+		width := map[string]int{"u8": 8, "u16": 16, "u32": 32, "u64": 64}[typeName]
+		if width == 0 {
+			return 0, false
+		}
+		left, leftConst := lo.constantIndexValue(e.Left)
+		right, rightConst := lo.constantIndexValue(e.Right)
+		if !leftConst || !rightConst || left < 0 || right < 0 {
+			return 0, false
+		}
+		var value uint64
+		if e.Operator == "+" {
+			value = uint64(left) + uint64(right)
+		} else {
+			if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
+				return 0, false
+			}
+			value = uint64(left) * uint64(right)
+		}
+		if width < 64 && value >= uint64(1)<<uint(width) || value >= 1<<32 {
+			return 0, false
+		}
+		return int64(value), true
 	case *ast.Identifier:
 		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
 			return int64(local.value.value), true
@@ -5385,6 +5490,13 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	calleeAlias := map[string]string{}
 	calleeOffset := map[string]*term{}
 	calleeLen := map[string]*term{}
+	// The program's constant tables are in scope for the callee as they
+	// are for the caller (`sum_view(view(&TABLE))` inside a callee).
+	for table := range lo.tableLens {
+		if contract, isSpan := lo.spans[table]; isSpan {
+			calleeSpans[table] = contract
+		}
+	}
 	calleeViews := map[string]aggView{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
@@ -6129,6 +6241,7 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 		name  string
 		fresh string
 		width int
+		param *term
 		prev  *oakLocal
 		had   bool
 	}
@@ -6157,8 +6270,9 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 		lo.params[fresh] = width
 		lo.signed[fresh] = signed
 		prev, had := lo.locals[binder.Name.Value]
-		lo.locals[binder.Name.Value] = &oakLocal{value: paramTerm(fresh, width), width: width, signed: signed}
-		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, prev: prev, had: had})
+		param := paramTerm(fresh, width)
+		lo.locals[binder.Name.Value] = &oakLocal{value: param, width: width, signed: signed}
+		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, param: param, prev: prev, had: had})
 	}
 	body, reason, ok := lo.lowerBlock(expr.Body.Block, 1)
 	restore()
@@ -6171,7 +6285,7 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 	}
 	t := truncate(body, 1)
 	for i := len(binders) - 1; i >= 0; i-- {
-		t = quantTerm(op, binders[i].fresh, binders[i].width, t)
+		t = quantTerm(op, binders[i].fresh, binders[i].width, t, binders[i].param)
 	}
 	return t, "", true
 }
@@ -6883,6 +6997,16 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			base, has := word(place, 0, 8)
 			if !has {
 				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
+			}
+			if addr, isFrame := frameAddressOf(base); isFrame || func() bool { addr, isFrame = rvFrameAddrOf(base); return isFrame }() {
+				// The caller's copy of the record in its frame (the rv64
+				// lane copies a by-reference record it passes on, and a
+				// record local passed by reference): the callee's parameter
+				// is the aggregate read from the frame slots.
+				if reason, ok := x.frameRecordArgument(lo, param, arg.comp, addr, state, name); !ok {
+					return reason, false
+				}
+				continue
 			}
 			owner, offset, isBase := spanBaseOf(base)
 			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {
@@ -7885,6 +8009,10 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	control := controlParams([]*term{asmTerm, oakTerm})
 	if len(control) > 0 && len(control) < len(names) {
 		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
+	}
+	selectors := selectorParams([]*term{asmTerm, oakTerm})
+	if len(selectors) > 0 && len(selectors) < len(names) {
+		blasters = append(blasters, newSelectorFirstBlaster(names, widths, selectors))
 	}
 	return blasters
 }

@@ -158,6 +158,8 @@ P_ARGS: u32 = 7
 P_RECORD: u32 = 8
 P_ARRAY: u32 = 9
 P_PROTOCOL: u32 = 10
+// A bounded quantifier's binders and body (step_quant_p).
+P_QUANT: u32 = 11
 
 Par: type = struct {
   tokens_at: u32,
@@ -878,6 +880,15 @@ callable_definition_ahead: (p: Par, w: [*]u32): Bool {
   out
 }
 
+// quantifier_ahead: at `forall` or `exists`, whether the binder form
+// follows — `(`, a name, `:` (parser/parser.go quantifierAhead). The
+// words are identifiers everywhere else, and at statement level the form
+// takes precedence over the colon-less definition.
+quantifier_ahead: (p: Par, w: [*]u32, src: []u32): Bool {
+  (cur_is_word(p, w, src, u64(0x6C6C61726F66), u64(0), u32(6)) || cur_is_word(p, w, src, u64(0x737473697865), u64(0), u32(6))) &&
+    peek_kind(p, w) == T_LPAREN && tok_ahead(p, w, u32(2)) == T_IDENT && tok_ahead(p, w, u32(3)) == T_COLON
+}
+
 // bracket_group_precedes_colon: at IDENT `[`, whether `:` follows the group.
 bracket_group_precedes_colon: (p: Par, w: [*]u32): Bool {
   depth: u32 = 1
@@ -1060,6 +1071,12 @@ step_expr_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
   c: u32 = cur(p, w)
   k: u32 = cur_kind(p, w)
   phase == EP_PREFIX ? {
+    (k == T_IDENT && quantifier_ahead(p, w, src)) ? {
+      // `forall (x: T) { … }` / `exists (…) { … }`: the binder form of a
+      // bounded quantifier (docs/spec/10-syntax.md section 3e).
+      w[at + u32(1)] = EP_LEFT
+      px_push(p, w, P_QUANT, cur_is_word(p, w, src, u64(0x6C6C61726F66), u64(0), u32(6)) ? { u32(1) } | { u32(0) }, NONE)
+    } | {
     (k == T_IDENT) ? {
       w[at + u32(3)] = px_node(p, w, RAW_IDENT, px_intern_token(p, w, src, c), u32(0), u32(0), u32(0), u32(0))
       w[at + u32(1)] = EP_LOOP
@@ -1121,7 +1138,7 @@ step_expr_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     k == T_LBRACK ? {
       w[at + u32(1)] = EP_LEFT
       px_push(p, w, P_ARRAY, NONE, NONE)
-    } | { px_fail(p, w, u32(283)) } } } } } } } } } }
+    } | { px_fail(p, w, u32(283)) } } } } } } } } } } }
   } | {
   phase == EP_PREFIXED ? {
     w[at + u32(3)] = px_node(p, w, RAW_PREFIX, w[at + u32(4)], ret, u32(0), u32(0), u32(0))
@@ -1888,7 +1905,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           px_push_expr(p, w, PR_LOWEST)
         }
       } | {
-      (pk == T_LPAREN && callable_definition_ahead(p, w)) ? {
+      (pk == T_LPAREN && !quantifier_ahead(p, w, src) && callable_definition_ahead(p, w)) ? {
         pst(p, w, PS_BLOCK_DEPTH) > u32(0) ? { px_fail(p, w, u32(388)) } | {
           px_advance(p, w)
           w[at + u32(1)] = SP_DEFINED
@@ -1991,6 +2008,54 @@ step_block_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
 
 // --- the machine and the output ---------------------------------------------------------------------------------
 
+// The phases of a quantifier frame (a = 1 for forall; word 4 the binders'
+// start in the parameter table, 5 their count, 6 the pending binder name).
+QP_START: u32 = 0
+QP_TYPED: u32 = 1
+QP_BODIED: u32 = 2
+
+// quant_binder reads `name :` at the next binder and pushes its type.
+quant_binder: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  expect_peek(p, w, T_IDENT, u32(391)) ? {
+    w[at + u32(6)] = px_intern_token(p, w, src, cur(p, w))
+    expect_peek(p, w, T_COLON, u32(392)) ? {
+      px_advance(p, w)
+      w[at + u32(1)] = QP_TYPED
+      px_push(p, w, P_TYPE, NONE, NONE)
+    } | { }
+  } | { }
+}
+
+// step_quant_p parses a bounded quantifier from its word: `(` binders `)`
+// then a brace block; the RAW_QUANT node (parser/parser.go
+// parseQuantifierExpression).
+step_quant_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  phase: u32 = w[at + u32(1)]
+  ret: u32 = pst(p, w, PS_RET)
+  phase == QP_START ? {
+    w[at + u32(4)] = pst(p, w, PS_NPARAMS)
+    w[at + u32(5)] = u32(0)
+    expect_peek(p, w, T_LPAREN, u32(390)) ? { quant_binder(p, w, src, at) } | { }
+  } | {
+  phase == QP_TYPED ? {
+    px_add_param(p, w, w[at + u32(6)], ret)
+    w[at + u32(5)] = w[at + u32(5)] + u32(1)
+    peek_kind(p, w) == T_COMMA ? {
+      px_advance(p, w)
+      quant_binder(p, w, src, at)
+    } | {
+      expect_peek(p, w, T_RPAREN, u32(393)) ? {
+        expect_peek(p, w, T_LBRACE, u32(394)) ? {
+          w[at + u32(1)] = QP_BODIED
+          px_push_block(p, w, u32(1))
+        } | { }
+      } | { }
+    }
+  } | {
+    px_deliver(p, w, px_node(p, w, RAW_QUANT, w[at + u32(4)], w[at + u32(5)], ret, w[at + u32(2)], u32(0)))
+  } }
+}
+
 px_run: (p: Par, w: [*]u32, src: []u32): () {
   while pst(p, w, PS_SP) > u32(0) && !px_failed(p, w) {
     at: u32 = pfr_at(p, pst(p, w, PS_SP) - u32(1))
@@ -2005,7 +2070,8 @@ px_run: (p: Par, w: [*]u32, src: []u32): () {
     kind == P_ARGS ? { step_args_p(p, w, at) } | {
     kind == P_RECORD ? { step_record_p(p, w, src, at) } | {
     kind == P_ARRAY ? { step_array_p(p, w, src, at) } | {
-    kind == P_PROTOCOL ? { step_protocol_p(p, w, src, at) } | { px_fail(p, w, u32(299)) } } } } } } } } } } }
+    kind == P_PROTOCOL ? { step_protocol_p(p, w, src, at) } | {
+    kind == P_QUANT ? { step_quant_p(p, w, src, at) } | { px_fail(p, w, u32(299)) } } } } } } } } } } } }
   }
 }
 
