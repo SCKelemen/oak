@@ -6351,9 +6351,16 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		return 0, unsupported("a call to %s: the arguments exhaust the floating-point argument registers", ident.Value)
 	}
 	if recordResult != nil && recordResult.layout.size > 16 {
-		// The callee writes its result into the temp through x8.
+		// The callee writes its result through x8: into the temp, the
+		// local it initializes, or the area this function itself returns.
 		g.usedX8 = true
-		g.emit("add", xr(8), sp(), imm(g.slotMem(recordResult.offset).Offset))
+		if recordResult.inReg {
+			if err := g.addOffset(8, recordResult.reg, recordResult.offset); err != nil {
+				return 0, err
+			}
+		} else {
+			g.emit("add", xr(8), sp(), imm(g.slotMem(recordResult.offset).Offset))
+		}
 	}
 	// Spill the live scratch registers that hold a value: the callee owns
 	// x9–x15 and v16–v23 (one allocated for an enclosing expression's

@@ -37,6 +37,13 @@ step: (s: Big, by: u64): Big {
 // An untouched parameter: its caller passes its own storage.
 total: (s: Big): u64 = s.a + s.b + s.c + u64(s.d) + u64(s.tag[1])
 
+// A returned local initialized from a call: the callee writes this
+// function's own result area.
+relay: (s: Big): Big {
+  y: Big = step(s, u64(5))
+  y
+}
+
 // The result of a call lands in the fresh local directly.
 twice: (s: Big): u64 {
   y: Big = step(s, u64(10))
@@ -52,6 +59,9 @@ main: (): i32 {
   x.d = u32(0)
   assert(total(x) == u64(6))
   assert(twice(x) == u64(11 + 13 + 3 + 1 + 7) + u64(111 + 124 + 3 + 2 + 7))
+  r: Big = relay(x)
+  assert(r.a == u64(6) && r.b == u64(8) && r.d == u32(1) && r.tag[1] == u8(7))
+  assert(total(relay(relay(x))) == u64(11 + 19 + 3 + 2 + 7))
   42
 }
 `
@@ -69,7 +79,7 @@ func TestE2ENativeBoundaryCopies(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native boundary copies: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, fn := range []string{"step", "total", "twice", "main"} {
+	for _, fn := range []string{"step", "total", "relay", "twice", "main"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
