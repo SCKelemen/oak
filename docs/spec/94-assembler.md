@@ -5004,8 +5004,13 @@ symbols have no value there (`sat_decide` was reported trapping on an
 input its loop never entered). Prover build: proven 561, evidence 139,
 trusted 265, and one mismatch — `src_name`, the speculated shift guard
 above — which the native build reports as an error and leaves to the C
-backend; the natively built prover therefore does not build until the
-backend's if-conversion stops speculating an arm whose guard can trap.
+backend. The if-conversion now speculates a shift only by a literal
+count (`literalShiftCount`; a variable count is guarded at the width,
+and the arm not taken may hold one past it), so `src_name` lowers with
+its branches and is proven again, and the natively built prover builds
+and runs (`TestE2ENativeSelectDoesNotSpeculateAGuardedShift`). Prover
+build after the fix: proven 565, evidence 154, trusted 311, no
+disagreement.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
