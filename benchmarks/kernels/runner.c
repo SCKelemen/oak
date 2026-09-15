@@ -3,6 +3,12 @@
    programs (benchmarks/kernels/README.md). */
 #define main oak_kernels_unused_main
 #include "kernels.c"
+/* OAK_IMPL labels the row: "oak" is the C backend over the emitted C, and
+   "oak-native" the native backend's companion object linked beside it
+   (benchmarks/kernels/README.md). */
+#ifndef OAK_IMPL
+#define OAK_IMPL "oak"
+#endif
 #undef main
 #include <stdint.h>
 #include <stdio.h>
@@ -90,7 +96,7 @@ int main(int argc, char **argv) {
   size_t width = !strcmp(kernel, "sha256") || !strcmp(kernel, "blake3") ? 32 : (!strcmp(kernel, "sum") || !strcmp(kernel, "bitmap") || !strcmp(kernel, "dispatch") ? 8 : 4);
   for (size_t i = 0; i < width; ++i) sprintf(checksum + 2 * i, "%02x", out[i]);
   qsort(ns, samples, sizeof(double), cmp_double);
-  printf("{\"impl\":\"oak\",\"kernel\":\"%s\",\"size\":%u,\"checksum\":\"%s\",\"ns_per_op_median\":%.1f,\"samples\":[", kernel, size, checksum, ns[samples / 2]);
+  printf("{\"impl\":\"" OAK_IMPL "\",\"kernel\":\"%s\",\"size\":%u,\"checksum\":\"%s\",\"ns_per_op_median\":%.1f,\"samples\":[", kernel, size, checksum, ns[samples / 2]);
   for (int s = 0; s < samples; ++s) printf("%s%.1f", s ? "," : "", ns[s]);
   printf("]}\n");
   return 0;

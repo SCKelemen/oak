@@ -2494,7 +2494,7 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	// element into its register — zero-extending, or sign-extending for
 	// the ldrs* family.
 	size := memorySize(instr.Mnemonic, dest.Class)
-	if size != elem {
+	if size < elem || size%elem != 0 || isSignExtendingLoad(instr.Mnemonic) && size != elem {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
 	}
 	extend := func(element *term) *term {
@@ -2502,6 +2502,33 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
 		}
 		return zeroExtend(element, widthOf(dest.Class))
+	}
+	// A load wider than the element (`ldr x` over bytes, the little-endian
+	// word assembly the native backend fuses, docs/spec/94-assembler.md §9)
+	// reads size/elem consecutive elements: the value is the or of each
+	// element shifted to its byte position — the term Oak's `u64(v[i]) |
+	// u64(v[i+1]) << 8 | …` spells (Oak.Assembler.wide_load_assembles).
+	wide := func(first *term) *term {
+		if size == elem {
+			return extend(x.elementIn(state, param, first, int(elem)*8))
+		}
+		var value *term
+		for k := int64(0); k < size/elem; k++ {
+			at := first
+			if k != 0 {
+				at = binaryTerm("add", truncate(first, 32), constTerm(uint64(k), 32))
+			}
+			element := zeroExtend(x.elementIn(state, param, at, int(elem)*8), widthOf(dest.Class))
+			if k != 0 {
+				element = binaryTerm("shl", element, constTerm(uint64(k*elem*8), widthOf(dest.Class)))
+			}
+			if value == nil {
+				value = element
+			} else {
+				value = binaryTerm("or", value, element)
+			}
+		}
+		return value
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -2517,13 +2544,13 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if baseIndex != 0 {
 			index = binaryTerm("add", truncate(index, 32), constTerm(uint64(baseIndex), 32))
 		}
-		state.write(dest, extend(x.elementIn(state, param, index, int(elem)*8)))
+		state.write(dest, wide(truncate(index, 32)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, extend(x.elementIn(state, param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
+	state.write(dest, wide(constTerm(uint64(mem.Offset/elem+baseIndex), 32)))
 	return "", true
 }
 

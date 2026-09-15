@@ -252,7 +252,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   admitted only under a **dominating index guard**: `cmp w9, w1` then
   `b.hs <exit>` proves `w9 < len` on the fall-through path (or `cmp w9,
   #K` then `b.hs` with `len >= K` already established), so the access lies
-  inside the span (`Oak.Assembler.index_access`). Index facts die like
+  inside the span (`Oak.Assembler.index_access`). A second span walked in
+  step under `cmp wLa, wLb` then `b.ne <exit>` needs no guard of its own:
+  the fall-through path knows the two lengths equal, so an index guarded
+  below one is below the other (`Oak.Assembler.index_under_equal_len`;
+  the fact dies with a write to either register, at labels, and at
+  calls). The guard `len(v) >= i + K` as the generator spells it — `add
+  wS, wI, #K` then `cmp wL, wS` then `b.lo <exit>` (or `cmp wS, wL` then
+  `b.hi`) — proves `wI + K <= len` on the fall-through, the slack fact
+  under which `wI`'s element and the `K - 1` after it (`add wJ, wI, #k`,
+  `k < K`) need no guard of their own (`Oak.Assembler.sum_guard_slack`).
+  Index facts die like
   length guards: at calls, and on any write to the index or the register
   it was compared against. **At a label a fact survives exactly when every
   predecessor carries it** — fall-through and every branch targeting the
@@ -2639,6 +2649,37 @@ and array corpora are proven on both lanes (`asm/agg_views_test.go`;
 `compiler/e2e_native_rv64_subslice_test.go`,
 `compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
 states that the translated index of a view stays inside its owner.
+
+**Forty-second increment — the native optimization program's first
+steps (2026-09-15; `benchmarks/kernels/RESULTS.md`, `nativegen/scalar_arrays.go`,
+`nativegen/word_fusion.go`).** With the kernel harness's `oak-native` row
+as the measure (the native backend 2.3–3.3× behind clang over the C
+backend on the plain loops at the start), the lowering gained, each landed
+under the verifier's verdict: a float local's register home read in place
+and written by the operation (the accumulator's two copies through a
+scratch register per iteration gone); an array local whose every use is an
+element at a literal index — never borrowed, passed, assigned whole, or
+indexed by a computed value — lowered as its elements in registers
+(`acc: [8]f32` as eight accumulators in `d8`–`d15`, the array's liveness
+theirs); a squared operand evaluated once; and the little-endian word
+assembly `u64(v[i]) | u64(v[i+1]) << 8 | … | u64(v[i+7]) << 56` over a byte
+span lowered as one wide load under the slack guard `i + 8 <= len` — the
+checker admits a wide scalar access under a slack guard as it admits a
+vector one, and the verifier reads a load wider than the span's element as
+the or of the elements shifted to their positions
+(`Oak.Assembler.wide_load_assembles`, `wide_load_assembles32`), so the
+fused load is proven equal to the eight reads and a big-endian body is
+refuted; the rv64 lane fuses the same shape (`ld` at the element address
+under its slack guard, the checker admitting a wider scalar access through
+a region the guard marked K lanes deep). Two checker facts came with them (§7): a length equality and the
+sum shape of a slack guard. `dot` went from 13 to 8 instructions per
+element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
+per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178
+instructions, `sha256` to 0.92×; `sum` stays 2.75× (a multi-accumulator
+reduction needs a coupling image that is a sum of registers), `crc32c`
+1.86× (two calls per chunk where clang inlines), `search` and `page_probe`
+2.3× (bounds facts through arithmetic). The order of the rest is in
+`RESULTS.md`.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
