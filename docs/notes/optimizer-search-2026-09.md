@@ -52,7 +52,12 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   strided one); `Registry`, `PlainLane`, `FindingLine`.
 - The cost model (`opt.TargetCosts`) is static and per class: straight-line
   code at weight one, each loop body at `LoopWeight` trips divided by its
-  stride and bounded by its shape's trips, so a four-way unrolled
+  stride and bounded by its shape's trips — and, since 2026-09-16,
+  multiplied by the trips of every loop around it: a nested loop's items
+  are its own (`LoopMetrics.Depth`, `Outer`), not its outer loops', and
+  weigh `LoopWeight` squared at depth one, where the additive reading
+  before priced the search kernel's inner-loop rotation a loss and now a
+  win — so a four-way unrolled
   reduction is priced per element against the plain loop and its
   remainder loop as its expected few trips. The weights are uncalibrated
   heuristics (§8); the report's `candidates` line lists every admitted
@@ -289,13 +294,14 @@ digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
 and natural loops while recomputing recurrence facts from v1. No certificate is
 an equivalence verdict or emission license. Cheap structural admission still
 precedes future costing, and final selection will require its independent
-verdict. Typed native gate builders and concurrent ready-node scheduling
+verdict. The executor now runs bounded deterministic ready waves, and OptIR uses
+three workers for its independent analysis fan-out. Typed native gate builders
 remain. The complete design is `optimizer-artifact-dag-2026-09.md`.
 
 Not yet: equivalence-validated emission of the candidate, available-expression
 and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms, native migration to the artifact DAG,
-concurrent scheduling, vector plans (Phase D),
+vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
 
@@ -889,9 +895,8 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 4. target-cost API;
 5. optimization remarks and structural metrics;
 6. bounded candidate pruning / beam search;
-7. migrate current transforms into the registry and the landed immutable
-   artifact-DAG executor; add typed invalidation and concurrent ready-node
-   scheduling.
+7. migrate current transforms into the registry and the landed immutable,
+   selectively invalidated, bounded-parallel artifact-DAG executor.
 
 ### Phase B: machine substrate
 

@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	optIRAnalysisWorkers       = 3
 	optIRSCCPRevision          = "oak.optir.sccp.v1"
 	optIRLoopStructureRevision = "oak.optir.loop-structure.v1"
 	optIRLoopsRevision         = "oak.optir.loops.v2"
@@ -56,7 +57,7 @@ func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
-	run, err := graph.Run(context.Background(), nil, keys.sccp, keys.loopsV0, keys.cleanup, keys.licm)
+	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, keys.sccp, keys.loopsV0, keys.cleanup, keys.licm)
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}

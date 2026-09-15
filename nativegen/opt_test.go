@@ -44,6 +44,46 @@ func TestMetricsStrideIsTheInductionVariable(t *testing.T) {
 	}
 }
 
+// A loop inside a loop: the inner loop's items are its own (depth 1,
+// outer 1), the outer loop counts the rest.
+func TestMetricsNestedLoops(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Num: n} }
+	bc := func(cond, target string) asm.Instruction {
+		return asm.Instruction{Mnemonic: "b.", Cond: cond, Operands: []asm.Operand{asm.Symbol{Name: target}}}
+	}
+	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		asm.Label{Name: "loop_4"},
+		ins("cmp", w(5), w(22)),
+		bc("hs", "done_5"),
+		ins("mov", w(7), w(20)),
+		asm.Label{Name: "loop_6"},
+		ins("cmp", w(7), w(23)),
+		bc("hs", "done_7"),
+		ins("ldr", w(9), w(19)),
+		ins("add", w(7), w(7), asm.Immediate{Value: 1}),
+		ins("b", asm.Symbol{Name: "loop_6"}),
+		asm.Label{Name: "done_7"},
+		ins("add", w(5), w(5), asm.Immediate{Value: 1}),
+		ins("b", asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("ret"),
+	}}
+	m := Metrics(fn)
+	if len(m.LoopBodies) != 2 {
+		t.Fatalf("loop bodies %+v", m.LoopBodies)
+	}
+	outer, inner := m.LoopBodies[0], m.LoopBodies[1]
+	if outer.Instructions != 5 || outer.Branches != 2 || outer.Depth != 0 || outer.Outer != 0 {
+		t.Errorf("outer loop: %+v, want its own five instructions and two branches at depth 0", outer)
+	}
+	if inner.Instructions != 5 || inner.Branches != 2 || inner.Loads != 1 || inner.Depth != 1 || inner.Outer != 1 {
+		t.Errorf("inner loop: %+v, want five instructions, two branches, one load at depth 1 inside loop 1", inner)
+	}
+	if m.LoopInstructions != 10 {
+		t.Errorf("the loops hold %d instructions, want 10", m.LoopInstructions)
+	}
+}
+
 func TestMetricsCountsLoopsAndGuards(t *testing.T) {
 	x := func(n int) asm.Register { return asm.Register{Text: "x", Num: n} }
 	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{

@@ -192,6 +192,24 @@ loops keep their order). The whole body grows by two (the entry tests
 paid once), 38 → 40 by the dump's line count; the trip shrinks by four
 instructions and two branches.
 
+**Nested loops weigh their nesting; the probe loops rotate (2026-09-16,
+`docs/notes/optimizer-search-2026-09.md`, `docs/spec/94-assembler.md`
+§7).** The cost model charged an inner loop's body once for its own
+trips and once more inside its outer loop's count — additively — so
+rotating `bench_search`'s probe loop priced as a two-point loss and was
+never validated. A nested loop's items are now its own and weigh the
+product of the trips around them (`LoopWeight` squared at depth one);
+the rotated inner loop is the cheaper form by the model and is
+selected, witnessed as before. `bench_page_probe`'s rotated form kept
+one guard the unrotated one elided: at the rotated loop's header the
+entry compared the index against a bound register still holding its
+constant (an immediate fact) while the back edge compared it against the
+narrowed register, and the meet dropped the disagreeing facts; the meet
+reconciles them (`meetIdx`), the page's key read is unguarded under
+rotation, and the three-loop body selects the hoisted rotated form
+(six percent below the hoisted unrotated one by the model, at the
+calibrated loop weight).
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —
