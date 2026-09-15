@@ -1060,10 +1060,11 @@ byte comparison otherwise had no Oak counterpart. With these,
 inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
 the callee's `k`, `same` as themselves) in three seconds — alongside
 `longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
-same module: the functions with more than eight vector parameters
-(`classify` and its callers) and, as evidence or trusted, `groups_of`
-(budget), `build` (an expression statement in a loop body),
-`verify_count` (an inner loop summarized per path past the event budget).
+same module at that point: the functions with more than eight vector
+parameters (`classify` and its callers — taken the same day, §9.ah) and,
+as evidence or trusted, `groups_of` (budget), `build` (an expression
+statement in a loop body), `verify_count` (an inner loop summarized per
+path past the event budget) — the last two proven below.
 The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
 implication, each order's node count and the stage it exceeded at, and
 under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
@@ -5576,4 +5577,60 @@ layer A's output; an expansion alone leaves the source as the reference,
 the verifier taking callees at their bodies. The compiler reports every body's sites by rewrite
 and obligation: `layer A — strength reduction ×2 decided at the bit
 level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
+
+### 9.ah The vector class of the argument layout (2026-09-15)
+
+A function with more than eight floating-point or vector parameters
+stayed with the C backend: the register contract passes eight, in v0–v7,
+and the ninth's place — the caller's outgoing area — was not spelled.
+The literal scanner's `classify` takes ten vectors, and `step_count` and
+`step_first` thirteen beside their spans, so the scanner's entry points
+were C-backend functions calling a native kernel. The layout now spells
+it. `asm.LayoutArguments` takes the vector class alongside the integer
+one (`ArgClass.Vector`: a float or a fixed vector, one v register): each
+class fills its own eight registers in order, and once an argument of a
+class does not fit, it and every later argument of that class go to the
+stack — one cursor shared by both classes, in declaration order, AAPCS64's
+NSAA — at the argument's natural size and alignment under Apple's packed
+convention, and under the standard one an integer-class argument its
+registers' worth in 8-byte slots and a vector-class one its natural size
+and alignment, at least 8 (a 128-bit vector sixteen bytes, sixteen-aligned
+under both). The Lean transliteration (`Oak.ArgumentLayout`) follows the
+Go line for line: the fold carries both classes' first free register and
+both flags, and the theorems are restated per class — every register
+place inside its class's eight registers, the stack places aligned,
+disjoint, and covered by the area, once on the stack so is every later
+argument of that class — with the Go layouts of nine cases stated as
+`decide` examples, three of them over vectors (ten vectors, the ninth and
+tenth on the stack; four spans, a word, and ten vectors overflowing
+together; a float past the vector registers under the standard
+convention). The shared classification (`classifyArguments`) gives the
+vector class its bytes from the type, so the checker, the backend, and the
+call summary place a vector argument alike.
+
+The backend (`nativegen`) places a vector or float parameter by the
+layout: its v register, or, on the stack, a `bind [sp, #off]` and a
+prologue that loads it whole into a scratch vector register (`ldr q16`,
+`ldr d16`, `ldr s16`) and homes it as one that arrived in a register; a
+call stores a stack vector argument whole (`str qN, [sp, #off]`, the q
+view — the `.16b` arrangement is no store operand) into the outgoing area
+the callee's layout sized. The checker binds a stack vector parameter as
+a sixteen-byte stack parameter and admits exactly the whole load of it
+into a vector register (`stackParam.vector`, `incomingRead`); the
+verifier holds it as two eight-byte frame slots, the lanes packed as the
+register would hold them, which the body's q load reads (the vector's
+lanes stay the leaves `p[k]`), and a call summary reads a stack vector
+argument from the two words the caller stored. With these, `classify` is
+**proven** on both halves of its vector result, and the scanner's entry
+points `step_count`, `step_first`, `count`, and `find_from` are lowered
+natively — trusted for now, their group loop forking on four `classify`
+results into eight conditional calls past the path budget — so the
+literals module is taken whole by the native backend
+(`TestE2ENativeLiteralsVerdicts`). `TestE2ENativeVectorStackArgs` runs a
+ten-vector function and a nineteen-parameter one whose ninth word and
+last two vectors share the stack, from a native caller and from the C
+shim, against the C build; `TestE2ENativeSimd`'s `nine` and `ninth`, left
+to C the day before, are proven. The nineteen-parameter body itself is
+witnessed, not proven: its nine-word sum beside a call summary over ten
+vectors exceeds the diagram budget under every order.
 

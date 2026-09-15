@@ -1300,6 +1300,7 @@ type generator struct {
 	// function's own calls need below its saved registers.
 	packedStack bool
 	stackParams map[string]asm.ArgPlace
+	vecArgs     map[string]int // a float or vector parameter's v register (the layout's place)
 	stackArgs   int64
 	outgoing    int64
 	pressure    bool // a scalar variable took a caller-saved home or a slot
@@ -1755,7 +1756,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
 func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, spare int, reserve int) (*asm.Function, int, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -1801,24 +1802,22 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		s      scalar
 		layout *recordLayout
 		sp     span
-		kind   int // 0 scalar, 1 record, 2 span
+		kind   int // 0 scalar, 1 record, 2 span, 3 float or vector (the vector class)
 	}
 	var intParams []paramClass
 	var classes []asm.ArgClass
-	vectorParams := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
 			return nil, 0, 0, unsupported("variadic parameter %s", p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
 			if s.isFloat || s.isVec {
-				// Floats and fixed vectors arrive in v0–v7 (AAPCS64); a ninth
-				// would go on the stack, which the register contract does
-				// not spell — the function stays with the C backend.
-				vectorParams++
-				if vectorParams > 8 {
-					return nil, 0, 0, unsupported("parameter %s: more than eight floating-point or vector parameters (the register contract passes eight, in v0–v7)", p.Name.Value)
-				}
+				// Floats and fixed vectors: the vector class of the shared
+				// layout — v0–v7 while they fit, then the caller's outgoing
+				// area at their natural size and alignment (asm/abi.go).
+				class, _ := g.argClassOfAll(p.Type)
+				intParams = append(intParams, paramClass{p: p, s: s, kind: 3})
+				classes = append(classes, class)
 				continue
 			}
 			size := int64(s.bits / 8)
@@ -1857,10 +1856,17 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	for i, pc := range intParams {
 		place := places[i]
 		name := pc.p.Name.Value
-		if !place.OnStack && place.Reg+place.Regs > nextReg {
+		if !place.OnStack && !place.Vector && place.Reg+place.Regs > nextReg {
 			nextReg = place.Reg + place.Regs
 		}
 		switch pc.kind {
+		case 3:
+			// A float or vector: its v register, or its bytes in the outgoing area.
+			if place.OnStack {
+				g.stackParams[name] = place
+			} else {
+				g.vecArgs[name] = place.Reg
+			}
 		case 0:
 			if place.OnStack {
 				g.stackParams[name] = place
@@ -2050,7 +2056,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Bind and store the parameters (narrow ones normalized: the caller's
 	// upper bits are unspecified under AAPCS64); a span's pair stays bound.
 	// Floating-point parameters take v0–v7 by their own count.
-	regIndex, vecIndex := 0, 0
+	regIndex := 0
 	if g.resultIndirect && g.resultAreaReg != 8 {
 		prologue = append(prologue, g.ins("mov", xr(g.resultAreaReg), xr(8)))
 	}
@@ -2077,6 +2083,18 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 			if sp, isSpan := g.spans[p.Name.Value]; isSpan {
 				prologue = append(prologue, g.ins("ldr", xr(sp.baseReg), mem(at)), g.ins("ldr", wr(sp.lenReg), mem(at+8)))
+				continue
+			}
+			if s, ok := scalarOf(p.Type); ok && (s.isVec || s.isFloat) {
+				// A vector or float past v0–v7: loaded whole from the
+				// outgoing area into a scratch vector register, then
+				// homed like one that arrived in a register.
+				if s.isVec {
+					prologue = append(prologue, g.ins("ldr", qreg(vecScratchLow), mem(at)))
+				} else {
+					prologue = append(prologue, g.ins("ldr", vr(vecScratchLow, s), mem(at)))
+				}
+				prologue = append(prologue, g.storeVar(p.Name.Value, vecBase+vecScratchLow))
 				continue
 			}
 			s, _ := scalarOf(p.Type)
@@ -2128,8 +2146,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		}
 		s, _ := scalarOf(p.Type)
 		if s.isFloat || s.isVec {
-			i := vecIndex
-			vecIndex++
+			i := g.vecArgs[p.Name.Value]
 			out.Bindings = append(out.Bindings, asm.Binding{Register: vr(i, s), Param: p.Name.Value, Line: fn.Token.Line})
 			prologue = append(prologue, g.storeVar(p.Name.Value, vecBase+i))
 			continue
@@ -2186,7 +2203,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			out.Clobbers = append(out.Clobbers, dr(vecCalleeLow+i))
 		}
 		if g.hasCalls {
-			for r := vecIndex; r <= 7; r++ {
+			for r := len(g.vecArgs); r <= 7; r++ {
 				if !(g.result != nil && g.result.isFloat && r == 0) {
 					out.Clobbers = append(out.Clobbers, dr(r))
 				}
@@ -6594,10 +6611,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	var classes []asm.ArgClass
 	var intArgs []int
 	for i, p := range callee.Parameters {
-		if s, ok := scalarOf(p.Type); ok && (s.isFloat || s.isVec) {
-			continue
-		}
-		class, ok := g.argClassOf(p.Type)
+		class, ok := g.argClassOfAll(p.Type)
 		if !ok {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
 		}
@@ -6619,7 +6633,11 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		place := placeOf[i]
 		if place.OnStack && !a.fixed && !a.isConst && len(a.regs) > 0 {
 			for j, r := range a.regs {
-				g.emit(stackStoreOf(a.types[j], len(a.regs) == 1), reg(r, a.types[j]), mem(place.Offset+int64(8*j)))
+				operand := reg(r, a.types[j])
+				if a.types[j].isVec {
+					operand = qreg(r - vecBase) // a vector's sixteen bytes, whole
+				}
+				g.emit(stackStoreOf(a.types[j], len(a.regs) == 1), operand, mem(place.Offset+int64(8*j)))
 				g.release(r)
 			}
 			a.regs, a.stored = nil, true
@@ -6734,7 +6752,6 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	for _, r := range homes {
 		g.emit("str", spillReg(r), g.slotMem(g.spillSlot(r)))
 	}
-	vector := 0
 	for i, arg := range args {
 		place := placeOf[i]
 		if arg.stored {
@@ -6758,12 +6775,14 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		for j, r := range arg.regs {
 			typ := arg.types[j]
 			switch {
+			case typ.isVec && place.OnStack:
+				g.emit("str", qreg(r-vecBase), mem(place.Offset))
 			case typ.isVec:
-				g.vmove(vector, r-vecBase)
-				vector++
+				g.vmove(place.Reg, r-vecBase)
+			case typ.isFloat && place.OnStack:
+				g.emit("str", reg(r, typ), mem(place.Offset))
 			case typ.isFloat:
-				g.emit("fmov", reg(vecBase+vector, typ), reg(r, typ))
-				vector++
+				g.emit("fmov", reg(vecBase+place.Reg, typ), reg(r, typ))
 			case !place.OnStack:
 				g.emit("mov", reg(place.Reg+j, typ), reg(r, typ))
 			default:
@@ -6773,9 +6792,6 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				g.release(r)
 			}
 		}
-	}
-	if vector > 8 {
-		return 0, unsupported("a call to %s: the arguments exhaust the floating-point argument registers", ident.Value)
 	}
 	if recordResult != nil && recordResult.layout.size > 16 {
 		// The callee writes its result into the temp through x8.
@@ -6926,6 +6942,21 @@ func stackStoreOf(typ scalar, scalarWord bool) string {
 // registers and sixteen bytes, a record its chunks or one register for a
 // reference; false for a type outside the subset (floats and vectors take
 // their own registers).
+// argClassOfAll is argClassOf with the vector class too: a float or a
+// fixed vector, one v register, its natural size and alignment on the
+// stack (the AArch64 lane's layout; the RV64 lane places its floats and
+// vectors by count, argClassOf).
+func (g *generator) argClassOfAll(typ ast.Expression) (asm.ArgClass, bool) {
+	if s, ok := scalarOf(typ); ok && (s.isFloat || s.isVec) {
+		bytes := int64(16)
+		if s.isFloat {
+			bytes = int64(s.bits / 8)
+		}
+		return asm.ArgClass{Words: 1, Bytes: bytes, Align: bytes, Vector: true}, true
+	}
+	return g.argClassOf(typ)
+}
+
 func (g *generator) argClassOf(typ ast.Expression) (asm.ArgClass, bool) {
 	if s, ok := scalarOf(typ); ok {
 		if s.isFloat || s.isVec {
@@ -6973,7 +7004,7 @@ func (g *generator) outgoingArea(body ast.Expression) int64 {
 		}
 		var classes []asm.ArgClass
 		for _, p := range callee.Parameters {
-			if class, ok := g.argClassOf(p.Type); ok {
+			if class, ok := g.argClassOfAll(p.Type); ok {
 				classes = append(classes, class)
 			}
 		}

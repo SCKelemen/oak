@@ -45,4 +45,19 @@ func TestE2ENativeLiteralsVerdicts(t *testing.T) {
 	if !strings.Contains(joined, "asm unit longest: proven") {
 		t.Errorf("longest must be proven; diagnostics:\n%s", joined)
 	}
+	// classify takes ten vectors: the ninth and tenth arrive on the stack
+	// (the vector class of asm.LayoutArguments), and its straight-line body
+	// is proven on both halves; its callers, which pass thirteen vectors
+	// beside their spans, are lowered natively too.
+	if !strings.Contains(joined, "asm unit classify_neon_abi: proven equal to its Oak body at the bit level (128-bit vector result, both halves)") {
+		t.Errorf("classify must be proven on both halves; diagnostics:\n%s", joined)
+	}
+	for _, fn := range []string{"step_count_neon_abi", "step_first_neon_abi", "count", "find_from"} {
+		if !strings.Contains(joined, "asm unit "+fn+":") {
+			t.Errorf("%s must be lowered by the native backend; diagnostics:\n%s", fn, joined)
+		}
+	}
+	if strings.Contains(joined, "left to the C backend") {
+		t.Errorf("every function of the module must be taken by the native backend; diagnostics:\n%s", joined)
+	}
 }
