@@ -3062,12 +3062,13 @@ read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
 The fifty-eighth increment is reduction vectorization (§9 "Reduction
-vectorization"): the recognized integer reduction's eight accumulators as
-the lanes of fixed vectors, licensed by the same law at eight
-accumulators (`Oak.Reduction.vector8_eq`), with the verifier's vector
-load gaining the element-address form the wider lanes use. A `u32`
-reduction runs at 1.6× the scalar unrolling; a `u64` one keeps the scalar
-form on cost.
+vectorization"): the recognized integer reduction's accumulators as the
+lanes of four fixed vectors, licensed by the same law at as many
+accumulators as the shape has lanes (`Oak.Reduction.vector16_eq`,
+`vector8_eq`), with the verifier's vector load gaining the
+element-address form the wider lanes use and the cost model's assumed
+trip count calibrated from the measurement. A `u32` reduction runs at
+2.6× the scalar unrolling, a `u64` one at 1.4×, both proven.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -4255,35 +4256,40 @@ body; a use of the index after the loop reads `len(v)` on both sides.
 
 **Reduction vectorization (2026-09-16, AArch64 lane;
 `nativegen/vector_reduction.go`, the `vectorize-reductions` candidate).**
-The same recognized reduction, vectorized: eight elements an iteration
-whose eight accumulators are the lanes of fixed vectors — two
-`simd.U32x4` for a `u32` accumulator, four `simd.U64x2` for a `u64` one —
-under the same slack guard, the remainder loop as written, and a combine
+The same recognized reduction, vectorized: four vector accumulators —
+four `simd.U32x4` over sixteen elements an iteration, four `simd.U64x2`
+over eight — under the same slack guard, the remainder loop as written, and a combine
 that folds the vector accumulators pairwise in the vector domain, stores
 the one vector left into a frame array of its lanes, and adds the lanes
 to the scalar as a balanced tree. The lanes reach the scalar through
 memory because the integer vectors have no lane `extract` in v1
 (`93-simd.md` §1.2a reserves it with the comparison masks); the round
-trip runs once after the loops. The license is the same law at eight
-accumulators (`Oak.Reduction.vector8_eq`, `vector8_sum`), and the
-verifier proves the assembly against the rewritten body, the lanes
-coupled as packs to the halves of their registers.
+trip runs once after the loops. The license is the same law at as many
+accumulators as the shape has lanes (`Oak.Reduction.vector16_eq` over
+`u32` lanes, `vector8_eq` over `u64` ones, with their `_sum` corollaries),
+and the verifier proves the assembly against the rewritten body, the
+lanes coupled as packs to the halves of their registers.
 
-Eight elements an iteration, not four, because a single vector
-accumulator is one loop-carried chain: measured over 2^20 `u32`
-elements, one `simd.U32x4` accumulator runs at 0.18 ns an element against
-the scalar unrolling's 0.14, and two accumulators at 0.08 —
-1.6× the scalar form, which is what the search selects
-(`benchmarks/native/README.md`). A `u64` reduction keeps the scalar
-unrolling: two lanes to a vector means four accumulators and an address
-register per 128-bit load, and the cost model prices that above the four
-scalar accumulators with their pair loads — the candidates line records
-both. The vector loads are the form §8's `loadVector` gained with this
-increment: `add xE, xB, wI, uxtw #s` then `ldr q, [xE]`, the address the
-lowering forms for lanes wider than a byte, read as the span's elements
-from `wI` (`asm/verify_vector_test.go`), where before only the
-byte-lane form `[base, wI, uxtw]` was modeled and a wider-lane vector
-kernel was trusted.
+Four accumulators, not one, because a single vector accumulator is one
+loop-carried chain: measured over 2^20 `u32` elements, one `simd.U32x4`
+runs at 0.18 ns an element against the scalar unrolling's 0.16, two at
+0.11, and four at 0.063 — 2.6× the scalar form. A `u64` reduction's four
+`simd.U64x2` run at 1.4× (`benchmarks/native/README.md`). The combine
+folds the accumulators pairwise in the vector domain before storing,
+which is both proven and cheaper than storing each accumulator into a
+wider frame array: that form is witnessed, the verifier not equating the
+results after the loops.
+
+Two things had to give first. The vector loads are the form §8's
+`loadVector` gained with this increment — `add xE, xB, wI, uxtw #s` then
+`ldr q, [xE]`, the address the lowering forms for lanes wider than a
+byte, read as the span's elements from `wI`
+(`asm/verify_vector_test.go`) — where before only the byte-lane form
+`[base, wI, uxtw]` was modeled and every wider-lane vector kernel was
+trusted. And the cost model's assumed trip count, 32, made a
+sixteen-element main loop's fifteen-trip remainder half the work, so no
+strided form could pay for its tail; it is 256 now, calibrated from
+these rows (`opt/cost.go`, §16 of `90-backend.md`).
 
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive

@@ -739,6 +739,15 @@ The existing native optimizations should be migrated into the candidate interfac
 - guard elimination from proven extents;
 - byte-assembly to wide-load fusion;
 - pair loads;
+- vector block loads — **next, claimed 2026-09-16 by the oak session at
+  ~/oakmcu/oak**: the vectorized reduction's four `ldr q` each pay an
+  index add and an address add, where one element address and the
+  immediate offsets `#16`, `#32`, `#48` would serve. The seam checker
+  already admits them (a slack guard of sixteen `u32` elements marks a
+  64-byte region, and `regionAdmits` takes every offset inside it) and
+  the verifier already models them (`loadVector`'s element-address form
+  with a non-zero offset), so this is a machine peephole only — about
+  seven of the loop's seventeen instructions;
 - scalar-array element promotion;
 - constant-offset addressing forms.
 
@@ -893,16 +902,29 @@ This phase targets the measured UTF-8 call/spill gap directly.
 
 22. vector-plan representation;
 23. fixed-width integer reduction vectorization — **landed 2026-09-16**
-    (`vectorize-reductions`, `nativegen/vector_reduction.go`): eight
-    elements an iteration over the lanes of two `simd.U32x4` or four
-    `simd.U64x2`, licensed by `Oak.Reduction.vector8_eq`, proven by the
-    verifier, 1.6× the scalar unrolling on `u32`; `u64` keeps the scalar
-    form on cost (an address register per 128-bit load). One vector
-    accumulator was measured slower than four scalar ones — the plan
-    table's VF/UF pair matters, and the interleave is where the win is;
+    (`vectorize-reductions`, `nativegen/vector_reduction.go`): four
+    vector accumulators, sixteen elements an iteration over `simd.U32x4`
+    lanes and eight over `simd.U64x2`, licensed by
+    `Oak.Reduction.vector16_eq` and `vector8_eq`, proven by the verifier,
+    2.6× the scalar unrolling on `u32` and 1.4× on `u64`. Three findings
+    came out of it, all in `benchmarks/native/README.md`: one vector
+    accumulator is *slower* than four scalar ones, so the plan table's
+    UF matters more than its VF; the combine belongs in the vector
+    domain, since storing every accumulator into a wider frame array is
+    witnessed where folding them pairwise first is proven; and the cost
+    model's assumed trip count had to be calibrated before it agreed
+    with any of it (item 26 below);
 24. map/zip vectorization;
 25. SLP-like straight-line packing;
-26. vector-aware cost model;
+26. vector-aware cost model — **first calibration landed 2026-09-16**:
+    `LoopWeight`, the trips a data-dependent loop is assumed to run, was
+    32, which charged a sixteen-element main loop's fifteen-trip
+    remainder half the work and kept every strided form out of the
+    selection. It is 256 now, from the reduction microbenchmark's three
+    `u32` rows, which the model then orders as measured (`opt/cost.go`).
+    Still static and per class: no lane throughput, no dependency-chain
+    term (the finding that sent the rewrite to four accumulators is one
+    the model cannot yet express), no port pressure;
 27. SVE/RVV scalable plans where semantics and verifier support permit.
 
 ### Phase E: interprocedural planning

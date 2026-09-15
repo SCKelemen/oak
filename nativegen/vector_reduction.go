@@ -12,29 +12,31 @@ import (
 //
 //	while i < len(v) { acc = acc + v[i]; i = i + 1 }
 //
-// is rewritten, before lowering, into a main loop of eight elements an
-// iteration whose accumulators are fixed vectors — four simd.U64x2 for a
-// u64 accumulator, two simd.U32x4 for a u32 one — under the slack guard
+// is rewritten, before lowering, into a main loop over four vector
+// accumulators — four simd.U32x4, sixteen elements an iteration, or four
+// simd.U64x2, eight elements an iteration — under the slack guard
 // the vector kernels spell, the remainder loop as written, and the
 // lane-wise combine through an eight-element frame array:
 //
-//	acc_v0: simd.U32x4 = simd.splat_u32x4(u32(0))   acc_v1: simd.U32x4 = simd.splat_u32x4(u32(0))
-//	while len(v) >= u32(8) && i <= len(v) - u32(8) {
+//	acc_v0 … acc_v3: simd.U32x4 = simd.splat_u32x4(u32(0))
+//	while len(v) >= u32(16) && i <= len(v) - u32(16) {
 //	  acc_v0 = simd.add_u32x4(acc_v0, simd.load_u32x4(v, i))
 //	  acc_v1 = simd.add_u32x4(acc_v1, simd.load_u32x4(v, i + u32(4)))
-//	  i = i + u32(8)
+//	  acc_v2 = simd.add_u32x4(acc_v2, simd.load_u32x4(v, i + u32(8)))
+//	  acc_v3 = simd.add_u32x4(acc_v3, simd.load_u32x4(v, i + u32(12)))
+//	  i = i + u32(16)
 //	}
 //	while i < len(v) { acc = acc + v[i]; i = i + u32(1) }
-//	acc_vs: simd.U32x4 = simd.add_u32x4(acc_v0, acc_v1)
+//	acc_vs: simd.U32x4 = simd.add_u32x4(simd.add_u32x4(acc_v0, acc_v1), simd.add_u32x4(acc_v2, acc_v3))
 //	acc_vl: [4]u32 = [4]u32{ 0, 0, 0, 0 }
 //	simd.store_u32x4(span(&acc_vl), u32(0), acc_vs)
 //	acc = acc + ((acc_vl[0] + acc_vl[1]) + (acc_vl[2] + acc_vl[3]))
 //
-// Eight elements an iteration, not four: with one vector accumulator the
-// loop-carried chain is a single lane-wise add and the form is slower than
-// the scalar unrolling's four independent chains (measured: 0.18 against
-// 0.14 ns an element over 2^20 u32 elements), where two or four vector
-// accumulators break the chain and win (0.10; benchmarks/native/README.md).
+// Four accumulators, not one: with a single vector accumulator the
+// loop-carried chain is one lane-wise add and the form is slower than the
+// scalar unrolling's four independent chains (measured over 2^20 u32
+// elements: 0.18 against 0.14 ns an element), where two break the chain
+// and win (0.09) and four win most (0.05; benchmarks/native/README.md).
 // The lanes reach the scalar through the frame array because the integer
 // vectors have no lane `extract` in v1 (docs/spec/93-simd.md §1.2a
 // reserves it with the comparison masks), and the round trip runs once
@@ -133,7 +135,11 @@ func freshVectorNames(body ast.Expression, acc string) bool {
 // vectorizedReduction spells the rewrite for one recognized loop: step
 // elements an iteration over step/lanes vector accumulators.
 func vectorizedReduction(red reductionLoop, suffix string, lanes int64) []ast.Statement {
-	const step = 8
+	// Four vector accumulators, whatever the lane width: four independent
+	// loop-carried chains, sixteen elements an iteration over `u32` lanes
+	// and eight over `u64` ones.
+	const vectors = 4
+	step := vectors * lanes
 	tok := red.loop.Token
 	ident := func(name string) *ast.Identifier { return &ast.Identifier{Token: tok, Value: name} }
 	literal := func(v int64) ast.Expression { return &ast.IntegerLiteral{Token: tok, Value: v} }
@@ -168,7 +174,6 @@ func vectorizedReduction(red reductionLoop, suffix string, lanes int64) []ast.St
 	assign := func(name string, value ast.Expression) ast.Statement {
 		return &ast.AssignmentStatement{Token: tok, Name: ident(name), Value: value}
 	}
-	vectors := int64(step) / lanes
 	var out []ast.Statement
 	for k := int64(0); k < vectors; k++ {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(vectorName(red.acc, int(k))), Type: vecType(), Value: simd("splat", typed(red.accType.String(), 0))})

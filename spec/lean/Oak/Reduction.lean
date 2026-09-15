@@ -102,4 +102,37 @@ theorem vector8_sum {w : Nat} (acc : BitVec w) (l : List (BitVec w)) :
   rw [vector8_eq]
   simp
 
+/-- The vectorized loops at four vector accumulators
+    (`nativegen/vector_reduction.go`): each block of sixteen feeds the
+    sixteen lane accumulators — the lanes of four `simd.U32x4` — the
+    remainder feeds the scalar accumulator, and the result is the scalar
+    plus the combined lanes. -/
+def vector16 {w : Nat} (acc a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 : BitVec w) : List (BitVec w) → BitVec w
+  | x0 :: x1 :: x2 :: x3 :: x4 :: x5 :: x6 :: x7 :: x8 :: x9 :: x10 :: x11 :: x12 :: x13 :: x14 :: x15 :: rest =>
+      vector16 acc (a0 + x0) (a1 + x1) (a2 + x2) (a3 + x3) (a4 + x4) (a5 + x5) (a6 + x6) (a7 + x7) (a8 + x8) (a9 + x9) (a10 + x10) (a11 + x11) (a12 + x12) (a13 + x13) (a14 + x14) (a15 + x15) rest
+  | rest =>
+      rest.foldl (· + ·) acc + ((((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))) + (((a8 + a9) + (a10 + a11)) + ((a12 + a13) + (a14 + a15))))
+
+/-- **The vector rewrite is the loop** at sixteen accumulators. -/
+theorem vector16_eq {w : Nat} (acc a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 : BitVec w) (l : List (BitVec w)) :
+    vector16 acc a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 l = sequential (acc + ((((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))) + (((a8 + a9) + (a10 + a11)) + ((a12 + a13) + (a14 + a15))))) l := by
+  induction a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, l using vector16.induct with
+  | case1 a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 rest ih =>
+    rw [vector16, ih]
+    unfold sequential
+    simp only [List.foldl]
+    congr 1
+    ac_rfl
+  | case2 a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 rest hrest =>
+    rw [vector16.eq_2 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ hrest]
+    unfold sequential
+    rw [foldl_add_right]
+
+/-- The kernel's statement at sixteen accumulators: zero lanes, the
+    sequential sum from the scalar accumulator. -/
+theorem vector16_sum {w : Nat} (acc : BitVec w) (l : List (BitVec w)) :
+    vector16 acc 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 l = sequential acc l := by
+  rw [vector16_eq]
+  simp
+
 end Oak.Reduction
