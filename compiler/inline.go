@@ -891,6 +891,23 @@ func literalArgument(arg ast.Expression, typ ast.Expression) (ast.Expression, bo
 // left alone, as renameBindings leaves them.
 func substituteBindings(v reflect.Value, subst map[string]ast.Expression) {
 	expressionType := reflect.TypeOf((*ast.Expression)(nil)).Elem()
+	// One clone per replaced identifier: a record literal's field map and
+	// its FieldOrder name the same identifier node, and must keep naming
+	// one node after the substitution (the typechecker annotates the node
+	// it visits; the backends read the other reference).
+	replacement := map[*ast.Identifier]ast.Expression{}
+	replacementOf := func(ident *ast.Identifier) (ast.Expression, bool) {
+		expr, named := subst[ident.Value]
+		if !named {
+			return nil, false
+		}
+		if made, done := replacement[ident]; done {
+			return made, true
+		}
+		made := cloneExpression(expr)
+		replacement[ident] = made
+		return made, true
+	}
 	var walk func(v reflect.Value)
 	replace := func(slot reflect.Value) bool {
 		if slot.Kind() != reflect.Interface || slot.Type() != expressionType || slot.IsNil() {
@@ -900,11 +917,11 @@ func substituteBindings(v reflect.Value, subst map[string]ast.Expression) {
 		if !isIdent {
 			return false
 		}
-		expr, named := subst[ident.Value]
+		made, named := replacementOf(ident)
 		if !named || !slot.CanSet() {
 			return false
 		}
-		slot.Set(reflect.ValueOf(cloneExpression(expr)))
+		slot.Set(reflect.ValueOf(made))
 		return true
 	}
 	walk = func(v reflect.Value) {
@@ -956,8 +973,8 @@ func substituteBindings(v reflect.Value, subst map[string]ast.Expression) {
 				value := iter.Value()
 				if value.Kind() == reflect.Interface && value.Type() == expressionType && !value.IsNil() {
 					if ident, isIdent := value.Interface().(*ast.Identifier); isIdent {
-						if expr, named := subst[ident.Value]; named {
-							v.SetMapIndex(iter.Key(), reflect.ValueOf(cloneExpression(expr)))
+						if made, named := replacementOf(ident); named {
+							v.SetMapIndex(iter.Key(), reflect.ValueOf(made))
 							continue
 						}
 					}
