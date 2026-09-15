@@ -159,7 +159,10 @@ var arm64Only = map[string]bool{asm.ArchArm64: true}
 var bothLanes = map[string]bool{asm.ArchArm64: true, asm.ArchRV64: true}
 
 // Transforms are the lane's transforms in the order they compose within
-// their phases.
+// their phases: a transform sees the proposals of the transforms before
+// it in its phase, so the reduction unrolling, which rewrites the loop
+// into the strided shape, comes before the invariant hoisting and the
+// rotation that improve that shape.
 func Transforms() []opt.Transform {
 	return []opt.Transform{
 		&laneTransform{
@@ -199,6 +202,18 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.ReuseFlags },
 			apply:   func(l Lane) Lane { l.ReuseFlags = true; return l },
 			fired:   ReusedCompares,
+		},
+		&laneTransform{
+			// Reduction unrolling over four independent accumulators
+			// (nativegen/reduction.go): a source rewrite licensed by the
+			// operator's associativity (Oak.Reduction.unrolled4_eq); the
+			// verifier judges the lowering against the rewritten body.
+			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return !l.NoReductions },
+			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
+			fired:   Unrolled,
 		},
 		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
@@ -247,18 +262,6 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}},
-		&laneTransform{
-			// Reduction unrolling over four independent accumulators
-			// (nativegen/reduction.go): a source rewrite licensed by the
-			// operator's associativity (Oak.Reduction.unrolled4_eq); the
-			// verifier judges the lowering against the rewritten body.
-			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
-			arches:  bothLanes,
-			applied: func(l Lane) bool { return !l.NoReductions },
-			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
-			fired:   Unrolled,
-		},
 		cleanupTransform,
 	}
 }

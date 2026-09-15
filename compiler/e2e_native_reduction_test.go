@@ -120,7 +120,9 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 				break
 			}
 			instruction, ok := item.(asm.Instruction)
-			if !ok || (instruction.Mnemonic != "b" && instruction.Mnemonic != "j") || len(instruction.Operands) == 0 {
+			// The back edge: unconditional, or the conditional one of a
+			// bottom-tested loop (§9 "Bottom-tested loops").
+			if !ok || (instruction.Mnemonic != "b" && instruction.Mnemonic != "b." && instruction.Mnemonic != "j" && instruction.Mnemonic != "bltu" && instruction.Mnemonic != "bgeu" && instruction.Mnemonic != "bne") || len(instruction.Operands) == 0 {
 				continue
 			}
 			if symbol, ok := instruction.Operands[len(instruction.Operands)-1].(asm.Symbol); ok && symbol.Name == firstName && i >= firstStart {

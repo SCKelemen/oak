@@ -395,6 +395,78 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		}
 		return r, ok
 	}
+	// Header setup hoisting: a pure invariant instruction among the exit
+	// tests — the strided header's `sub w9, w20, #4` under
+	// `len(v) >= 4 && i <= len(v) - 4` — whose destination is a scratch
+	// the body writes before it reads and nothing reads after the loop is
+	// computed once before the loop into a fresh register, and the exit
+	// tests read that register. The checker's slack fact from the `sub`
+	// reaches the header through the label state as the proven minimum
+	// does (docs/spec/94-assembler.md §7), so the accesses it licenses
+	// stay admitted. Every strided loop pays one instruction less per
+	// iteration.
+	header := make([]asm.Item, bodyStart-h-1)
+	copy(header, items[h+1:bodyStart])
+	var headerHoisted []asm.Item
+	headerRemoved := map[int]bool{}
+	if !hasCall {
+		for i := 0; i < len(header); i++ {
+			ins, isIns := header[i].(asm.Instruction)
+			if !isIns || !pureInvariantMnemonics[ins.Mnemonic] || len(ins.Operands) < 2 || ins.Mnemonic == "movk" {
+				continue
+			}
+			dest, isReg := ins.Operands[0].(asm.Register)
+			if !isReg || (dest.Class != asm.ClassX && dest.Class != asm.ClassW) || homes[dest.Num] || dest.Num <= 8 || dest.Num == 18 || dest.Num >= 29 {
+				continue
+			}
+			sourcesInvariant := true
+			for _, r := range sourceRegisters(ins) {
+				if !invariant(r) {
+					sourcesInvariant = false
+				}
+			}
+			if !sourcesInvariant {
+				continue
+			}
+			// The destination's old value must be dead everywhere but the
+			// header: the body writes it before reading it (on every path,
+			// judged by the first mention in text order and, past a label
+			// or branch, by the absence of any read), the rest of the header
+			// reads it only until the header writes it again, and nothing
+			// after the loop reads it before writing it.
+			if readBeforeWrite(body, dest.Num) || readBeforeWrite(items[b+1:], dest.Num) {
+				continue
+			}
+			laterWrite := false
+			for j := i + 1; j < len(header); j++ {
+				if k, ok := header[j].(asm.Instruction); ok && writesGeneral(k, dest.Num) {
+					laterWrite = true
+				}
+			}
+			if laterWrite {
+				continue
+			}
+			renamed, ok := free()
+			if !ok {
+				missed++
+				continue
+			}
+			renamed.Class = dest.Class
+			if dest.Class == asm.ClassW {
+				renamed.Text = "w" + itoa(renamed.Num)
+			}
+			hoisted := ins
+			hoisted.Operands = append([]asm.Operand(nil), ins.Operands...)
+			hoisted.Operands[0] = renamed
+			headerHoisted = append(headerHoisted, hoisted)
+			headerRemoved[i] = true
+			for j := i + 1; j < len(header); j++ {
+				if k, ok := header[j].(asm.Instruction); ok && !headerRemoved[j] {
+					header[j] = renameReads(k, dest.Num, renamed)
+				}
+			}
+		}
+	}
 	for i := 0; i < len(body); i++ {
 		ins, isIns := body[i].(asm.Instruction)
 		if !isIns || removed[i] {
@@ -542,15 +614,20 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			break
 		}
 	}
-	if len(preheader) == 0 && len(peeled) == 0 && len(removed) == 0 {
+	if len(preheader) == 0 && len(peeled) == 0 && len(removed) == 0 && len(headerHoisted) == 0 {
 		return items, nil, missed
 	}
 	var out []asm.Item
 	out = append(out, items[:h]...)
+	// The header's hoisted setup first: the exit tests (and their copy
+	// before a peeled guard) read the registers it fills.
+	out = append(out, headerHoisted...)
 	if len(peeled) > 0 {
 		// The exit tests' copy: the preheader runs only when the body would.
-		for i := h + 1; i < bodyStart; i++ {
-			out = append(out, items[i])
+		for i := range header {
+			if !headerRemoved[i] {
+				out = append(out, header[i])
+			}
 		}
 	}
 	// The moved instructions in their body order — the peeled guard before
@@ -570,7 +647,12 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			out = append(out, peeled...)
 		}
 	}
-	out = append(out, items[h:bodyStart]...)
+	out = append(out, items[h])
+	for i := range header {
+		if !headerRemoved[i] {
+			out = append(out, header[i])
+		}
+	}
 	for i, item := range body {
 		if !removed[i] {
 			out = append(out, item)
@@ -578,6 +660,35 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 	}
 	out = append(out, items[b:]...)
 	return out, used, missed
+}
+
+// readBeforeWrite reports whether items may read reg's value from before
+// them: in text order until the first label or branch a write ends the
+// question; past that point every block is judged on its own — a read
+// after a write in the same block reads that write, a read before any
+// write in its block may see the old value on some path.
+func readBeforeWrite(items []asm.Item, reg int) bool {
+	straight, written := true, false
+	for _, item := range items {
+		ins, isIns := item.(asm.Instruction)
+		if !isIns {
+			straight, written = false, false // a label: a new block
+			continue
+		}
+		if readsGeneral(ins, reg) && !written {
+			return true
+		}
+		if writesGeneral(ins, reg) {
+			if straight {
+				return false
+			}
+			written = true
+		}
+		if isBranchMnemonic(ins.Mnemonic) {
+			straight, written = false, false
+		}
+	}
+	return false
 }
 
 func itoa(n int) string {

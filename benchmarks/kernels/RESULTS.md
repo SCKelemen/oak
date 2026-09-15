@@ -601,16 +601,20 @@ value position), so 1.18× is this run's noise floor; `dot`, `sha256`,
   (`machine: line N: operand of an unknown kind`, across `bench_sum`,
   `bench_dot`, `bench_page_probe`, `bench_sha256`, the CRC chunk and
   update, the SHA rounds, and the deque helpers).
-- **`sum` 1.7×** is the strided header. The unrolled loop is fourteen
+- **`sum` 1.7×** is the strided header. The unrolled loop was fourteen
   instructions per four elements, five of them the header
   `cmp w20, #4; b.lo done; sub w9, w20, #4; cmp w3, w9; b.hi done` —
   `len(v) >= 4` and `len(v) - 4` are loop-invariant, but the
-  loop-invariant pass reports no site on this shape and rotation leaves
-  the same count. Hoisting the peelable guard and the limit needs the
-  checker to carry the slack fact `i <= len - 4` across the loop's
-  label as it carries the proven minimum; that is the next lever for
-  every strided loop (the SIMD kernels' `len >= N && off <= len - N`
-  headers included), worth three of fourteen instructions here.
+  loop-invariant pass reported no site on this shape (it scanned the
+  body, not the header, and ran before the unrolling in its phase) and
+  rotation left the same count. Landed the same evening
+  (`94-assembler.md` §9 "Loop invariants"): the header's `sub` hoists
+  into a fresh register before the loop, the unrolling composes before
+  the hoisting and the rotation, and the selected `sum` body is the
+  eight-instruction body under a four-instruction bottom test — twelve
+  per four elements, proven. The invariant guard `len(v) >= 4` is the
+  remaining two: peeling it needs the verifier's coupling to read the
+  peeled fact as a premise of the continue condition.
 
 **The search itself**, read off the report over the 49 natively lowered
 functions: 15 select the identity; the rest select one to five

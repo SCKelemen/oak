@@ -2832,7 +2832,26 @@ invariants"): a machine-level pass over the emitted items — hoisting,
 copy propagation, guard peeling behind the exit test — that the seam
 checker and the verifier judge as they judge the lowering itself
 (`compiler/e2e_native_licm_test.go`: the hoisted form admitted and
-proven, a loop that never runs not trapping on its peeled guard).
+proven, a loop that never runs not trapping on its peeled guard). The
+strided header's setup came later (2026-09-16): under
+`len(v) >= N && i <= len(v) - N` the header computed `len(v) - N` every
+iteration (`sub w9, w20, #4` between its two exit tests); the pass now
+hoists a pure invariant instruction from among the exit tests into a
+fresh register when the body writes its old destination before reading
+it on every path and nothing after the loop reads it first, and the exit
+test reads the hoisted register — the checker's slack fact from the `sub`
+reaches the header through the label state as the proven minimum does
+(§7). With it the reduction unrolling composes before the hoisting and
+the rotation within the loop phase (a transform sees only the proposals
+of the transforms before it in its phase; the unrolling makes the strided
+shape the other two improve): `sum`'s main loop went from fourteen
+instructions per four elements to twelve — the body, then the bottom
+test `cmp w20, #4; b.lo; cmp w3, w14; b.ls` — still proven
+(`compiler/e2e_native_header_hoist_test.go`). The invariant guard
+`len(v) >= N` itself stays in the loop: peeling it changes the header's
+continue condition, which the verifier compares term for term against
+the Oak conjunction; it waits on the coupling reading the peeled fact as a
+premise.
 
 The forty-fourth increment is if-conversion (§9): a conditional chain over
 one comparison whose arms only assign lowers as one compare and a select
