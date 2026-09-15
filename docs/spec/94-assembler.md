@@ -3771,8 +3771,12 @@ memories' write logs (the effects model above), one memory per scalar
 leaf and one per array field, guarded by the path condition, marked at a
 data-dependent loop, and the verdict compares each written memory at a
 fresh index — so writers of spans of records are proven too, and a store
-into the wrong field is a mismatch (the OS pilot's V1: `stage2` and
-`addr_space` enter the proof chain, readers and writers).
+into the wrong field is a mismatch A span of records passed
+to a callee binds as the callee's alias of the caller's span — in the
+call summary as in the inlined call — so its leaf memories are the
+caller's and the caller is proven through its callees (the OS pilot's
+V1: `stage2` and `addr_space` enter the proof chain, readers, writers,
+and the functions that call them).
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
