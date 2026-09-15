@@ -634,6 +634,7 @@ func (g *generator) retargetSelect(r, v int, typ scalar, from int) bool {
 	operands[0] = reg(v, typ)
 	ins.Operands = operands
 	g.items[at] = ins
+	g.forgetAll()
 	return true
 }
 

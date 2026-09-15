@@ -472,11 +472,12 @@ type compositeParam struct {
 // stackParam is a parameter placed in the caller's outgoing area.
 type stackParam struct {
 	name     string
-	bytes    int64 // the argument's size there (a span 16, a reference 8)
+	bytes    int64 // the argument's size there (a span 16, a reference 8, a vector 16)
 	span     *spanParam
 	comp     *compositeParam
 	scalar   bool
 	scalarSz int64
+	vector   bool // a vector-class parameter past v0–v7: loaded whole by a q load
 }
 
 type region struct {
@@ -767,12 +768,19 @@ func (c *checker) bindContract() {
 		case argVector:
 			c.paramClass[param.Name.Value] = ClassV
 			c.paramView[param.Name.Value] = floatView(param.Type)
-			if nextVector > 7 {
-				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
+			if c.fn.Arch == ArchRV64 {
+				if nextVector > 7 {
+					c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
+					continue
+				}
+				c.paramRegister[param.Name.Value] = nextVector
+				nextVector++
 				continue
 			}
-			c.paramRegister[param.Name.Value] = nextVector
-			nextVector++
+			// AArch64: the vector class shares the layout — v0–v7 while they
+			// fit, then the caller's outgoing area (a 128-bit vector sixteen
+			// bytes, sixteen-aligned), read whole by a q load.
+			ints = append(ints, intParam{param: param, class: arg.class})
 		default:
 			class, _ := contractClass(param.Type)
 			c.paramClass[param.Name.Value] = class
@@ -791,11 +799,10 @@ func (c *checker) bindContract() {
 		place := places[i]
 		if place.OnStack {
 			c.paramRegister[name] = -1
-			sp := stackParam{name: name, bytes: ip.class.Bytes, scalarSz: ip.scalarSz}
-			if !c.fn.PackedStackArgs {
-				sp.bytes = int64(ip.class.Words) * 8
-			}
+			sp := stackParam{name: name, bytes: stackSize(c.fn.PackedStackArgs, ip.class), scalarSz: ip.scalarSz}
 			switch {
+			case ip.class.Vector:
+				sp.vector = true
 			case ip.span != nil:
 				sp.span = ip.span
 			case ip.comp != nil:
@@ -965,13 +972,23 @@ func (c *checker) incomingRead(instr Instruction, mem Memory, regs []Register, s
 		return true
 	}
 	dest := regs[0]
-	if dest.Class != ClassW && dest.Class != ClassX {
-		c.errorf(instr.Line, "%s: an incoming argument loads into a general register", instr.Mnemonic)
-		return true
-	}
 	for off, sp := range c.stackParams {
 		if addr < off || addr+size > off+sp.bytes {
 			continue
+		}
+		if sp.vector {
+			// A vector parameter past v0–v7: its sixteen bytes load whole
+			// into a vector register (`ldr qN`), the parameter's value.
+			if dest.Class != ClassV || addr != off || size != sp.bytes {
+				c.errorf(instr.Line, "%s reads the vector parameter %s other than whole into a vector register", instr.Mnemonic, sp.name)
+				return true
+			}
+			c.write(instr, dest)
+			return true
+		}
+		if dest.Class != ClassW && dest.Class != ClassX {
+			c.errorf(instr.Line, "%s: an incoming argument loads into a general register", instr.Mnemonic)
+			return true
 		}
 		c.write(instr, dest)
 		switch {
