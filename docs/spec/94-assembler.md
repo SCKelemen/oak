@@ -2671,7 +2671,13 @@ the or of the elements shifted to their positions
 fused load is proven equal to the eight reads and a big-endian body is
 refuted; the rv64 lane fuses the same shape (`ld` at the element address
 under its slack guard, the checker admitting a wider scalar access through
-a region the guard marked K lanes deep). Two checker facts came with them (§7): a length equality and the
+a region the guard marked K lanes deep). A word assembly whose base is a
+literal and whose every byte the typechecker proved — the inlined
+`crc32c_word_at(chunk, u32(48))` under the caller's `len(chunk) >= u32(56)`,
+once the inliner substitutes the literal (`90-backend.md` §9) and the
+extents checker folds `u32(48) + u32(3)` — is one load at the immediate
+offset, `ldr x, [xB, #48]`, bounded by the span's proven minimum length,
+and its `?` guard `len(chunk) >= u32(48) + u32(8)` folds to `cmp wL, #56`. Two checker facts came with them (§7): a length equality and the
 sum shape of a slack guard. `dot` went from 13 to 8 instructions per
 element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
 per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178

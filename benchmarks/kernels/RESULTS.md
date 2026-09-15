@@ -203,6 +203,17 @@ calls per 56-byte chunk (the chunk step, then the dispatching `step7` in
 the C shell) with their spills, where clang inlines the chain — item 3
 below.
 
+The sixth: the inliner substitutes a literal argument for a parameter the
+helper never assigns (`compiler/inline.go`), and the extents checker, the
+generator and the Oak-side lowering fold `T(a) + T(b)` exactly, so the
+seven `crc32c_word_at(chunk, u32(k))` of a chunk read
+`chunk[u32(k) + u32(3)]` under `len(chunk) >= u32(k) + u32(8)`: every byte
+proven under the caller's `len(chunk) >= 56`, each word one
+`ldr x, [xB, #k]` with no index register and no slack guard, each `?`
+test a `cmp wL, #k+8`. The chunk step is 117 lines against 140; the timing
+row did not move on the loaded host (0.217 against 0.213 ns/byte, the C
+backend at 0.151).
+
 What remains, in the program's order:
 
 1. **Reductions unrolled with several accumulators** (`sum`): clang takes

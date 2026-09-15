@@ -137,6 +137,30 @@ func (g *generator) wordTermOf(expr ast.Expression, typ scalar) (wordTerm, bool)
 // the slack guard and returns the register holding the word.
 func (g *generator) fusedWordLoad(w wordAssembly, typ scalar) (int, error) {
 	sp := g.spans[w.span]
+	if k, isConst := constantValue(w.index); isConst && w.proven && k >= 0 && k%w.bytes == 0 && k <= 4095*w.bytes {
+		// A constant base whose every byte is proven (an inlined
+		// `word_at(chunk, u32(48))` under the caller's `len(chunk) >= 56`,
+		// the literal substituted by compiler/inline.go): one load at the
+		// immediate offset, which the checker bounds by the span's proven
+		// minimum length; a register index would need a slack fact no
+		// guard here produced.
+		out, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		address := asm.Memory{Base: xr(sp.baseReg), Offset: k}
+		switch w.bytes {
+		case 8:
+			g.emit("ldr", xr(out), address)
+		case 4:
+			g.emit("ldr", wr(out), address)
+		default:
+			g.emit("ldrh", wr(out), address)
+		}
+		g.elided++
+		g.fusedWords++
+		return out, nil
+	}
 	idx, err := g.indexValue(w.index)
 	if err != nil {
 		return 0, err
