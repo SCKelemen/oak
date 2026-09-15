@@ -5469,3 +5469,46 @@ twenty-four vector locals live at once and reports the ones the argument
 registers took. The timing row waits for a quiet host
 (`benchmarks/native/README.md`); the instruction count is the result.
 
+### 9.ag Layer A: verified body rewrites (2026-09-15)
+
+The rewrites of the checked Oak body that every lane shares
+(`90-backend.md` §16, `nativegen/rewrite.go`), applied before the
+lowering. The bodies to lower are tried most rewritten first, the source
+last, so a shape the lowering does not support falls back to the shape
+before it. Three rewrites today:
+
+- **Helper expansion**, law-backed as substitution: the callee's body in
+  place of the call with its parameters bound to the arguments (§9.y).
+- **Reduction unrolling**, law-backed by `Oak.Reduction.unrolled4_eq`
+  (§9 "Reductions"), instantiated by its matcher.
+- **Strength reduction of constant arithmetic**, decided per site: a
+  multiplication by a constant power of two above one becomes the shift,
+  an unsigned division the right shift, an unsigned remainder the mask,
+  each after the bit-level decider proves the theorem `old == new` over
+  the site's free variables (their declared scalar types as parameters,
+  `asm.DecideTheoremWith`). The decider's own model reads the constant
+  division as the shift, so the sites prove as the same term on both
+  sides; a site with a free variable of no scalar type, or one the
+  decider does not prove, is left as written and reported so. The
+  rewrite serves both lanes: the RV64 lowering of the same body carries
+  shifts and a mask where it lowered divides
+  (`compiler/e2e_native_rv64_rewrites_test.go`), and the AArch64 emitter's
+  own reduction (§9.ac) keeps only what a body rewrite cannot express, the
+  zero test dropped for a nonzero constant divisor.
+
+The strength reduction is proposed by the candidate search's
+`strength-reduce` transform on both lanes (`nativegen/opt.go`): the
+identity candidate is the plain body, and a body the search sets aside
+keeps its plain arithmetic, as §16's fallback rule asks. An operand that
+reads an element (`v[i] / u32(2)`) is abstracted in the site's theorem as
+a fresh parameter of the element type — the read is the same value on
+both sides — so the equality is of the arithmetic alone. The stages are
+computed once per body and switch setting, not once per candidate.
+
+A stage that rewrote more than substitution marks its body as the one
+the verifier judges (`asm.Function.Body`), so layer B's proof is against
+layer A's output; an expansion alone leaves the source as the reference,
+the verifier taking callees at their bodies. The compiler reports every body's sites by rewrite
+and obligation: `layer A — strength reduction ×2 decided at the bit
+level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
+

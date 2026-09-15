@@ -106,7 +106,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 		}
 	}
 	// The rv64 lane has the law-licensed unrolling, check elision, and
-	// strength reduction.
+	// layer A's strength reduction (nativegen/rewrite.go, both lanes).
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil

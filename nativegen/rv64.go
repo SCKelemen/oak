@@ -195,11 +195,21 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	}
 	// The plain integer reductions unrolled (nativegen/reduction.go), as on
 	// the AArch64 lane; the rewritten body is the one the verifier sees.
-	if unrolled, changed := unrollReductions(fn, fn.Body); changed && unroll {
+	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
+	// most rewritten shape tried first, the source last. The RV64 lane
+	// expands no helpers; it unrolls and strength-reduces as the AArch64
+	// lane does.
+	for _, stage := range rewriteStages(fn, functions, false, unroll, strength) {
+		if stage.body == fn.Body {
+			break
+		}
 		expanded := *fn
-		expanded.Body = unrolled
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, strength); err == nil {
-			out.Body = unrolled
+		expanded.Body = stage.body
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, false); err == nil {
+			if stage.judged {
+				out.Body = stage.body
+			}
+			rewriteSitesOf[out] = stage.sites
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err

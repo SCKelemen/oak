@@ -11,7 +11,9 @@ import (
 // Strength reduction on the RV64 lane (docs/spec/90-backend.md §16): the
 // same program as the AArch64 test, lowered for linux/riscv64 — the W
 // forms keep the 32-bit types canonical — and every reduced body proven by
-// the verifier, the variable divisor keeping its test.
+// the verifier, the variable divisor keeping its test. The power-of-two
+// sites are layer A's (94-assembler.md §9.ag), decided at the bit level;
+// the divisions by three and the signed one are the lane's own.
 func TestE2ENativeRV64StrengthReduction(t *testing.T) {
 	var infos []string
 	tgt := target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}
@@ -29,7 +31,7 @@ func TestE2ENativeRV64StrengthReduction(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for fn, want := range map[string]string{"midpoint": "1 constant operation(s) strength-reduced, proven", "page_of": "2 constant operation(s) strength-reduced, proven", "thirds": "2 constant operation(s) strength-reduced, proven", "halves": "1 constant operation(s) strength-reduced, proven"} {
+	for fn, want := range map[string]string{"midpoint": "layer A — strength reduction ×1 decided at the bit level", "page_of": "layer A — strength reduction ×2 decided at the bit level", "thirds": "2 constant operation(s) strength-reduced, proven", "halves": "1 constant operation(s) strength-reduced, proven"} {
 		if !strings.Contains(joined, fn+": "+want) {
 			t.Errorf("%s: want %q; diagnostics:\n%s", fn, want, joined)
 		}

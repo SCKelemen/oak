@@ -29,9 +29,9 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   `opt/opt_test.go` covers selection, fallback, requirement gating,
   pruning of unchanged and duplicate bodies, refinement, and budgets
   against a fake lane.
-- `nativegen/opt.go` — the native lane's side: the five transforms the
-  lane already performed (`strength-reduce`, `elide-guards`,
-  `reuse-flags`, `hoist-invariants`, `unroll-reductions`) as
+- `nativegen/opt.go` — the native lane's side: the six transforms the
+  lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
+  `hoist-invariants`, `vector-homes`, `unroll-reductions`) as
   `opt.Transform`s over `Lane` configurations, each with its phase,
   proof kind, and requirements; `FunctionFacts` reading the
   typechecker's proved indices and the language's integer associativity
