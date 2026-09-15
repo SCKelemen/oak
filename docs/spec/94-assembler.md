@@ -4543,6 +4543,44 @@ whole value was a parameter kept the renamed temporary;
 538, evidence 100, trusted 329, no disagreement, no body left at a
 record-returning callee; the rows identical.
 
+**One loop event per site (2026-09-15).** The executor enumerates paths
+by forking at every undecided branch, and every path reaching a loop
+head — or a call whose callee has loops — appended an event of its own,
+so a body with a diamond before its loop counted two events where its
+Oak body counts one: thirty-nine bodies stopped at "the asm body has N
+data-dependent loops, the Oak body M" (`lstr`: three summaries of one
+call to `ap_lits`, one per path through the inlined `sb_begin`), and the
+duplicates spent the loop budget of others (`span_owner_of`: forty
+events for three loops). Events are now keyed by their site — the loop
+head's position, or the call instruction's line — and a path reaching a
+site another path summarized reuses its index and symbols and merges
+its summary into the event field by field: each header value, the
+continue condition, each next value selects the summary of the path
+taken (`ite(path, fresh, prior)`), the entry memories and the
+iteration's stores merge as a fork's write logs do; the loop's shape —
+its variables, widths, symbols, nesting — must agree, else the body is
+trusted ("a loop whose shape differs between two paths"). The path is
+carried on the state as the chain of forks it took (`pathNode`: the
+fork, the side, the condition), so the relation of two reaches is
+structural: paths that left one fork on different sides are exclusive,
+and the select is exact under both; a path that extends another's
+(an unrolled counted loop calling the same callee twice) is the same
+path reaching the site again, and its events stay distinct instances.
+The loop budget counts sites. `TestVerifyLoopSitesAcrossPaths`: a
+looping callee called with a count from either arm of a diamond is
+proven, and an arm passing the wrong count is refuted. A trap guard's
+fork is left out of the path: its taken side summarizes nothing, and the
+inputs it excludes are outside the comparison on both sides, so a merged
+event's selects spell the conditions the Oak body's guards spell (with
+the guard in the path, the entry memory of a caller that stores under a
+bounds check before its loop did not prove equal). Prover build: proven
+546, evidence 129, trusted 292, no disagreement; two bodies still count
+differently, five stop at a callee whose loops differ between two paths
+(a constant argument on one path unrolls a loop the other keeps), and
+the merged bodies mostly reach the coupling proof, where their diagram
+budgets run out — the next work, with the path budget (eighty-five
+bodies: sequential diamonds enumerate exponentially).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

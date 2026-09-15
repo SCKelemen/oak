@@ -1159,6 +1159,11 @@ type symbolicState struct {
 	// notes is the execution's shared record (pathNotes); nil in a state
 	// that reports nothing (a callee's summary, a witness run).
 	notes *pathNotes
+	// path is the chain of branches this path took at every undecided
+	// fork, nil before the first (pathNode). A loop or a call with loops
+	// reached again on another path merges its event's fields under the
+	// path's condition (loopSite, mergeLoopEvents).
+	path *pathNode
 	// termBounds: the RV64 lane's index guards by the index's term —
 	// `li rK, K; bgeu rI, rK, trap` bounds the value rI held below K —
 	// which survives the scaling and the add that rewrite the register
@@ -1715,8 +1720,13 @@ type pathExecutor struct {
 	loopExits map[int]loopShape
 	loops     []*loopEvent // data-dependent loops met, in creation order
 	loopStack []int        // indices of the loops whose bodies are being executed
-	paths     int
-	steps     int
+	// sites: the loop events by the site that created them — a loop head
+	// (`loop@<pc>`) or a call whose callee has loops (`call@<line>`) — as
+	// the range of indices the site's events occupy. A site reached again
+	// on another path reuses them (asm/loops.go, loopSite).
+	sites map[string]loopSite
+	paths int
+	steps int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -1941,7 +1951,67 @@ func (s *symbolicState) clone() *symbolicState {
 			termBounds[t] = bound
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds, path: s.path}
+}
+
+// pathNode is one fork on a path: the condition (1 bit) the path took
+// there, which side of the fork it is, and the fork itself (one mark per
+// fork, shared by its two sides), so two paths' relation is structural:
+// they are exclusive when they left one fork on different sides.
+type pathNode struct {
+	parent *pathNode
+	cond   *term
+	fork   *forkMark
+	side   bool
+	term   *term // the conjunction down to here, built on demand
+}
+
+// forkMark identifies one fork; it carries a field so that every mark is
+// a distinct allocation (pointers to zero-size values may coincide).
+type forkMark struct {
+	pc int
+}
+
+// assume narrows the path to one side of a fork: the inputs on which cond
+// (its low bit) holds.
+func (s *symbolicState) assume(cond *term, fork *forkMark, side bool) {
+	s.path = &pathNode{parent: s.path, cond: truncate(cond, 1), fork: fork, side: side}
+}
+
+// pathCondition is the path's condition: the conjunction of the branches
+// it took, nil before the first fork.
+func (s *symbolicState) pathCondition() *term {
+	return s.path.condition()
+}
+
+func (n *pathNode) condition() *term {
+	if n == nil {
+		return nil
+	}
+	if n.term == nil {
+		if parent := n.parent.condition(); parent != nil {
+			n.term = binaryTerm("and", parent, n.cond)
+		} else {
+			n.term = n.cond
+		}
+	}
+	return n.term
+}
+
+// exclusive reports whether two paths cannot both be taken: they left
+// one fork on different sides. Otherwise one is a prefix of the other —
+// the same path, reaching a site again (an unrolled iteration's call).
+func (n *pathNode) exclusive(other *pathNode) bool {
+	sides := map[*forkMark]bool{}
+	for at := other; at != nil; at = at.parent {
+		sides[at.fork] = at.side
+	}
+	for at := n; at != nil; at = at.parent {
+		if side, shared := sides[at.fork]; shared && side != at.side {
+			return true
+		}
+	}
+	return false
 }
 
 // noteTrapGuard records, on the path that falls through a `b.hs <trap>`
@@ -2685,12 +2755,25 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			// Any other undecided branch forks; backward or forward alike —
 			// an unrecognized loop unfolds until the budgets stop it.
-			taken, takenEffects, reason, ok := x.run(target, state.clone())
+			// The path records the fork, except a trap guard's: its taken
+			// side summarizes nothing, and the inputs it excludes are
+			// outside the comparison on both sides, so the fall-through
+			// keeps the path it had (its loop events then select on the
+			// conditions the Oak body's guards spell).
+			guard := isTrapBlock(x.items, target)
+			fork := &forkMark{pc: pc}
+			takenState := state.clone()
+			if !guard {
+				takenState.assume(cond, fork, true)
+			}
+			taken, takenEffects, reason, ok := x.run(target, takenState)
 			if !ok {
 				return nil, nil, reason, false
 			}
-			if isTrapBlock(x.items, target) {
+			if guard {
 				state.noteTrapGuard(instr)
+			} else {
+				state.assume(notTerm(cond), fork, false)
 			}
 			fallThrough, fallEffects, reason, ok := x.run(pc+1, state)
 			if !ok {
@@ -6986,7 +7069,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
-	lo.loopBase = len(x.loops)
+	// The callee's loop events take the indices this call site's events
+	// took the first time the site was reached (loopSite): a second path
+	// through the same call merges its events with the first's below.
+	callSite := fmt.Sprintf("call@%d", instr.Line)
+	priorSite, siteSeen := x.sites[callSite]
+	if siteSeen && !priorSite.diverged(state.path) {
+		// The same path reaching the call again (an unrolled counted
+		// loop's body): a distinct instance, its events its own.
+		siteSeen = false
+	}
+	if siteSeen {
+		lo.loopBase = priorSite.base
+	} else {
+		lo.loopBase = len(x.loops)
+	}
 	lo.loopStack = append([]int(nil), x.loopStack...)
 	lo.writableSpans = map[string]bool{}
 	lo.rootContracts = map[string]spanContract{}
@@ -7249,7 +7346,28 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// by identity (asm/loops.go).
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
-		x.loops = append(x.loops, ev)
+	}
+	if siteSeen {
+		if len(lo.loops) != priorSite.count {
+			return fmt.Sprintf("a call to %s whose loops differ between two paths", name), false
+		}
+		for k, ev := range lo.loops {
+			merged, reason, ok := mergeLoopEvents(state.pathCondition(), ev, x.loops[priorSite.base+k])
+			if !ok {
+				return fmt.Sprintf("a call to %s %s", name, reason), false
+			}
+			x.loops[priorSite.base+k] = merged
+		}
+		priorSite.paths = append(priorSite.paths, state.path)
+		x.sites[callSite] = priorSite
+	} else {
+		if len(lo.loops) > 0 && x.sites[callSite].count == 0 {
+			if x.sites == nil {
+				x.sites = map[string]loopSite{}
+			}
+			x.sites[callSite] = loopSite{base: len(x.loops), count: len(lo.loops), paths: []*pathNode{state.path}}
+		}
+		x.loops = append(x.loops, lo.loops...)
 	}
 	for symbol, width := range lo.fresh {
 		if x.freshSyms == nil {
