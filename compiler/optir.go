@@ -78,32 +78,20 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR projection of %s failed verification: %w", function.Name.Value, err)
 		}
-		constants, err := optir.AnalyzeSCCP(cfg)
+		analyses, err := runOptIRAnalysisGraph(cfg)
 		if err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR SCCP of %s failed: %w", function.Name.Value, err)
-		}
-		loops, err := optir.AnalyzeLoops(cfg)
-		if err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR loop analysis of %s failed: %w", function.Name.Value, err)
-		}
-		simplified, simplification, err := optir.SimplifyCSEDCE(cfg)
-		if err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR CSE/DCE of %s failed: %w", function.Name.Value, err)
-		}
-		loopInvariant, loopMotion, err := optir.HoistLoopInvariants(simplified)
-		if err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR LICM of %s failed: %w", function.Name.Value, err)
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR analysis graph for %s failed: %w", function.Name.Value, err)
 		}
 		module.Functions = append(module.Functions, OptIRFunction{
 			Name:           function.Name.Value,
 			Structured:     structured,
 			CFG:            cfg,
-			Constants:      constants,
-			Loops:          loops,
-			Simplified:     simplified,
-			Simplification: simplification,
-			LoopInvariant:  loopInvariant,
-			LoopMotion:     loopMotion,
+			Constants:      analyses.constants,
+			Loops:          analyses.loops,
+			Simplified:     analyses.simplified,
+			Simplification: analyses.simplification,
+			LoopInvariant:  analyses.loopInvariant,
+			LoopMotion:     analyses.loopMotion,
 		})
 	}
 	return module, nil

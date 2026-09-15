@@ -58,6 +58,13 @@ type LoopAnalysis struct {
 	Dominators       []Dominator
 	BackEdges        []FlowEdge
 	Loops            []NaturalLoop
+
+	// inputFingerprint and integrity bind these public facts to the exact CFG
+	// that produced them and detect mutation before a transform consumes them.
+	// They are deliberately private: an analysis artifact is evidence returned
+	// by AnalyzeLoops, not a record callers may forge.
+	inputFingerprint string
+	integrity        string
 }
 
 type loopOperation struct {
@@ -87,7 +94,10 @@ func AnalyzeLoops(cfg CFG) (LoopAnalysis, error) {
 		reachable[id] = true
 	}
 	dominatorSets := computeDominators(cfg.Entry, reachable, predecessors)
-	analysis := LoopAnalysis{ReversePostOrder: loopReversePostOrder(cfg.Entry, blocks)}
+	analysis := LoopAnalysis{
+		ReversePostOrder: loopReversePostOrder(cfg.Entry, blocks),
+		inputFingerprint: fingerprintCFG(cfg),
+	}
 	analysis.Dominators = publicDominators(dominatorSets)
 	analysis.BackEdges = loopBackEdges(blocks, dominatorSets)
 	builders := buildNaturalLoops(analysis.BackEdges, predecessors)
@@ -102,6 +112,7 @@ func AnalyzeLoops(cfg CFG) (LoopAnalysis, error) {
 		}
 		return analysis.Loops[i].Header < analysis.Loops[j].Header
 	})
+	analysis.integrity = fingerprintLoopAnalysis(analysis)
 	return analysis, nil
 }
 

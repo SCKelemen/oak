@@ -1,15 +1,16 @@
 # Optimizer artifact DAG
 
-Status: direction plus first generic executor. This note refines the optimizer
-search design; it does not change Oak semantics or authorize OptIR emission.
+Status: generic executor plus the first OptIR analysis migration. This note
+refines the optimizer search design; it does not change Oak semantics or
+authorize OptIR emission.
 
 ## 1. Decision
 
 Oak's compiler stages, optimizer analyses, transforms, validation, costing, and
 selection should be represented as one dependency graph of immutable
-artifacts. The current implementation is not there yet: `compiler.Stage.Then`
-is linear, candidate search owns an internal branching search, and OptIR calls
-its analyses and transforms directly.
+artifacts. `compiler.Stage.Then` remains linear and native candidate search
+still owns an internal branching search. OptIR's first generic analysis chain,
+however, now executes through the artifact graph rather than direct calls.
 
 The graph is about computation and evidence, not control-flow. An OptIR CFG may
 contain cycles while the artifact graph that produced and analyzed that CFG is
@@ -209,12 +210,27 @@ partial selectable graph.
 
 ## 10. Migration
 
-1. Land the generic graph, deterministic executor, derived versions, and
-   process-local cache in `opt/`.
-2. Project the current OptIR analysis API onto graph nodes without changing its
-   returned values or emission behavior.
-3. Give CFG artifacts canonical fingerprints; make SCCP, loop analysis,
-   CSE/DCE, and LICM consume exact versions and remove redundant recomputation.
+Completed:
+
+1. The generic graph, deterministic executor, derived versions, and
+   process-local cache are in `opt/`.
+2. The current OptIR analysis API is projected onto graph nodes without
+   changing its analysis results or emission behavior.
+3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP,
+   loop analysis, and CSE/DCE consume that exact key. CSE/DCE publishes CFG v1,
+   a second loop node analyzes v1, and LICM consumes both v1 artifacts. LICM no
+   longer recomputes loop analysis or dominance internally. Its loop facts are
+   privately bound to their input fingerprint and integrity digest, so stale or
+   mutated facts fail closed.
+
+The compiler currently runs this graph without a cross-call cache. Public
+OptIR results contain mutable slice-backed Go values, so sharing cached payloads
+across API calls first requires a freeze-or-clone ownership boundary. The graph
+and exact keys already support caching, and tests exercise both exact hits and
+complete dependent invalidation after an input change.
+
+Remaining:
+
 4. Add analysis-aspect declarations and checked preservation certificates.
 5. Move native candidate materialization, seam checking, semantic validation,
    cost, and selection onto typed graph builders while retaining identity.
