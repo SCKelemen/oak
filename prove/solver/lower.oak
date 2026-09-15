@@ -73,6 +73,11 @@ SYN_LEN: u32 = 25
 SYN_BUILTIN: u32 = 26
 SYN_ASSERT: u32 = 27
 SYN_FLOATCONV: u32 = 28
+// A bounded quantifier over one binder (docs/spec/10-syntax.md section 3e;
+// asm/syntax.go synQuant): a = the binder's symbol, b = the body, c = 1
+// for forall and 0 for exists, d = the binder's leaf, vlo = the leaf's
+// width, vhi = the binder's scalar type; the node is Bool.
+SYN_QUANT: u32 = 29
 
 // An arm in the lists: pattern kind, variant index or literal node,
 // binding symbol, body node.
@@ -166,6 +171,9 @@ MAX_LEAFSTORE: u32 = 262144
 MAX_LEAVES: u32 = 64
 LOOP_BUDGET: u32 = 4096
 SELECT_SLOTS_OUT: u32 = 16
+// The quantifiers the evaluator may have open at once (nested binders;
+// eval_terms), three words each in the argument region.
+MAX_QFRAMES: u32 = 32
 
 // The lowering's work regions, word offsets into the work buffer, and the
 // term capacity of the problem buffer it builds.
@@ -1165,7 +1173,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
     ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
     kind == SYN_LEN ? { out = Contract { width: u32(32), signed: false, ok: true } } | {
-    kind == SYN_BUILTIN ? { out = Contract { width: u32(1), signed: false, ok: true } } | {
+    (kind == SYN_BUILTIN || kind == SYN_QUANT) ? { out = Contract { width: u32(1), signed: false, ok: true } } | {
     ((kind == SYN_FIELD || kind == SYN_INDEX || kind == SYN_MATCH) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INFIX ? {
       sp + u32(2) <= u32(64) ? {
@@ -1705,7 +1713,29 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     push_frame_l(lw, w, F_MATCH, node, width)
     w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(0)
   } | {
-  kind == SYN_FLOATCONV ? { step_float_conv(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } } } }
+  kind == SYN_QUANT ? {
+    // The binder is a fresh leaf (asm/verify.go lowerQuantifier): its
+    // parameter term binds the symbol, the body lowers to its bit, and
+    // the quantifier term closes over the leaf.
+    leaf: u32 = node_d(sx, node)
+    qw: u32 = node_vlo(sx, node)
+    phase == u32(0) ? {
+      leaf >= state(lw, w, LS_LEAVES) ? { fail_at(lw, w, u32(50)) } | {
+        b[HEADER_WORDS + leaf * LEAF_WORDS] = qw
+        param: u32 = t_param(lw, w, b, leaf, qw)
+        bind_scalar(lw, w, node_a(sx, node), param, node_vhi(sx, node))
+        w[f + u32(4)] = param
+        w[f + u32(3)] = u32(1)
+        push_frame_l(lw, w, F_EXPR, node_b(sx, node), u32(1))
+      }
+    } | {
+      qop: u32 = node_c(sx, node) != u32(0) ? { u32(0) } | { u32(1) }
+      q: u32 = term_new(lw, w, b, KIND_QUANT, qop, u32(1), t_bit(lw, w, b, ret), w[f + u32(4)], NONE, leaf, u32(0))
+      set_state(lw, w, LS_RET, t_adapt(lw, w, b, q, width))
+      pop_frame_l(lw, w)
+    }
+  } | {
+  kind == SYN_FLOATCONV ? { step_float_conv(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } } } } }
 }
 
 // The conversion modes of step_float_conv (word 4 of its frame).
@@ -2719,6 +2749,15 @@ leaf_blocks: (lw: Lower, w: [*]u32, sx: []u32, leaves: u32, control: Bool): () {
       }
       p = p + u32(1)
     }
+    // A quantifier's binder leaf follows the parameters' leaves and is a
+    // block of its own (the Go blaster's grouped order roots it alone).
+    li: u32 = syn_leaf_indices(sx)
+    while li < leaves {
+      w[lw.argv_at + li * u32(3)] = u32(64) * li
+      w[lw.argv_at + li * u32(3) + u32(1)] = u32(1)
+      w[lw.argv_at + li * u32(3) + u32(2)] = u32(0)
+      li = li + u32(1)
+    }
   }
 }
 
@@ -2785,7 +2824,7 @@ compact_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim
         b[dst] = kind
         b[dst + u32(1)] = b[src + u32(1)]
         b[dst + u32(2)] = b[src + u32(2)]
-        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT || kind == KIND_FLOAT
+        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT || kind == KIND_FLOAT || kind == KIND_QUANT
         a: u32 = b[src + u32(3)]
         bb: u32 = b[src + u32(4)]
         c: u32 = b[src + u32(5)]
@@ -2877,9 +2916,19 @@ term_value: (lw: Lower, w: [*]u32, t: u32): u64 = (u64(w[lw.leaves_at + t * u32(
 // leaf store holds the values, two words per term), an operation term as
 // its IEEE value (float_eval); false when a term is outside the evaluator
 // (a select).
+// A quantifier (KIND_QUANT) is enumerated with a frame per open
+// quantifier (the argument region, three words: the term, the value under
+// way, unused): meeting the term with no frame of its own opens one at
+// value 0 and restarts the walk at the leaf's parameter term (every term
+// reading the leaf lies between it and the quantifier, the table being in
+// dependency order); meeting it again folds the body's bit and moves to
+// the next value, or closes at the deciding value — false under forall,
+// true under exists — or at the domain's end. Nested quantifiers open
+// frames of their own inside the restart.
 eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
   ok: Bool = true
   t: u32 = 0
+  qsp: u32 = 0
   while t < nterms && ok {
     kind: u32 = tkind(lw, w, b, t)
     width: u32 = twidth(lw, w, b, t)
@@ -2887,6 +2936,38 @@ eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
     a: u32 = tword(lw, w, b, t, u32(3))
     bb: u32 = tword(lw, w, b, t, u32(4))
     value: u64 = 0
+    next: u32 = t + u32(1)
+    kind == KIND_QUANT ? {
+      leaf: u32 = tword(lw, w, b, t, u32(6))
+      qw: u32 = b[HEADER_WORDS + leaf * LEAF_WORDS]
+      universal: Bool = tword(lw, w, b, t, u32(1)) == u32(0)
+      active: Bool = qsp > u32(0) && w[lw.argv_at + (qsp - u32(1)) * u32(3)] == t
+      !active ? {
+        (qsp >= MAX_QFRAMES || qw > u32(16)) ? { ok = false } | {
+          fr: u32 = lw.argv_at + qsp * u32(3)
+          w[fr] = t
+          w[fr + u32(1)] = u32(0)
+          qsp = qsp + u32(1)
+          w[lw.snap_at + leaf * u32(2)] = u32(0)
+          w[lw.snap_at + leaf * u32(2) + u32(1)] = u32(0)
+          next = bb
+        }
+      } | {
+        fr: u32 = lw.argv_at + (qsp - u32(1)) * u32(3)
+        holds: Bool = (term_value(lw, w, a) & u64(1)) == u64(1)
+        decided: Bool = holds != universal
+        v: u32 = w[fr + u32(1)] + u32(1)
+        (decided || v >= (u32(1) << qw)) ? {
+          value = (decided != universal) ? { u64(1) } | { u64(0) }
+          qsp = qsp - u32(1)
+        } | {
+          w[fr + u32(1)] = v
+          w[lw.snap_at + leaf * u32(2)] = v
+          w[lw.snap_at + leaf * u32(2) + u32(1)] = u32(0)
+          next = bb
+        }
+      }
+    } | {
     kind == KIND_PARAM ? { value = leaf_value(lw, w, a) & m } | {
     kind == KIND_CONST ? { value = tvalue(lw, w, b, t) } | {
     kind == KIND_BINARY ? { value = fold_binary(tword(lw, w, b, t, u32(1)), term_value(lw, w, a) & m, bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & m }, width) } | {
@@ -2898,10 +2979,10 @@ eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
       vb: u64 = bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & mask64(twidth(lw, w, b, bb)) }
       vc: u64 = c == NONE ? { u64(0) } | { term_value(lw, w, c) & mask64(twidth(lw, w, b, c)) }
       value = float_eval(tword(lw, w, b, t, u32(1)), width, va, vb, vc, twidth(lw, w, b, a)) & m
-    } | { ok = false } } } } } }
+    } | { ok = false } } } } } } }
     w[lw.leaves_at + t * u32(2)] = u32_trunc_u64(value)
     w[lw.leaves_at + t * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
-    t = t + u32(1)
+    t = next
   }
   ok
 }

@@ -37,6 +37,10 @@ RAW_ASSIGN: u32 = 20
 RAW_INDEXASSIGN: u32 = 21
 RAW_WHILE: u32 = 22
 RAW_OTHER: u32 = 23
+// A bounded quantifier (docs/spec/10-syntax.md section 3e): a = the
+// binders' start in the parameter table, b = their count, c = the body (a
+// block expression), value low = 1 for forall, 0 for exists.
+RAW_QUANT: u32 = 24
 
 RAW_TYPE_NAME: u32 = 0
 RAW_TYPE_ARRAY: u32 = 1
@@ -85,6 +89,9 @@ ST_TSP: u32 = 17
 ST_TRET: u32 = 18
 ST_NLNAMES: u32 = 19
 ST_CAPTURE: u32 = 20
+// ST_QUANTS counts the quantifier binders serialized: binder k is the
+// theorem's leaf `name@qk` (asm/syntax.go syntaxWriter.quantifiers).
+ST_QUANTS: u32 = 21
 
 // Frame kinds.
 X_EXPR: u32 = 0
@@ -1223,6 +1230,70 @@ CP_CONV: u32 = 30
 CP_LEN: u32 = 40
 CP_UTF8: u32 = 41
 
+// step_quant_x serializes `forall (x: T, …) { body }` / `exists (…) { body }`
+// (asm/syntax.go quantifier): every binder a scalar of at most 16 bits
+// that shadows no symbol, bound as a fresh symbol and a fresh leaf
+// `name@qk` appended after the parameters' leaves (word 5 remembers the
+// first); the body a Bool block; then one SYN_QUANT node per binder, the
+// first binder outermost. Only the theorem's own body takes one.
+step_quant_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32, phase: u32): () {
+  pstart: u32 = rn_a(rx, raw, node)
+  count: u32 = rn_b(rx, raw, node)
+  body: u32 = rn_c(rx, raw, node)
+  phase == u32(0) ? {
+    f != sst(s, w, ST_THEOREM) ? { sr_fail(s, w, u32(196)) } | {
+    (count == u32(0) || body == NONE || rn_kind(rx, raw, body) != RAW_BLOCKEXPR) ? { sr_fail(s, w, u32(197)) } | {
+      w[at + u32(5)] = sst(s, w, ST_LEAVES)
+      i: u32 = 0
+      while i < count && !sr_failed(s, w) {
+        name: u32 = rp_word(rx, raw, pstart + i, u32(0))
+        t: u32 = sr_type_of_expr(s, w, rx, raw, rp_word(rx, raw, pstart + i, u32(1)))
+        sr_failed(s, w) ? { } | {
+          (ty_kind(s, w, t) != TY_SCALAR || ty_float(s, w, t) || ty_word(s, w, t, u32(7)) > u32(16)) ? { sr_fail(s, w, u32(198)) } | {
+          sr_find_symbol(s, w, f, name) != NONE ? { sr_fail(s, w, u32(199)) } | {
+            n: u32 = sst(s, w, ST_NLNAMES)
+            (n >= SR_LNAMES || sst(s, w, ST_LEAVES) != n) ? { sr_fail(s, w, u32(161)) } | {
+              sym: u32 = sr_add_symbol(s, w, f, name, t)
+              q: u32 = sst(s, w, ST_QUANTS) + u32(1)
+              set_sst(s, w, ST_QUANTS, q)
+              off: u32 = sst(s, w, ST_POOL)
+              pool_push_raw(s, w, rx, raw, name)
+              pool_push(s, w, u32(64))
+              pool_push(s, w, u32(113))
+              pool_push_decimal(s, w, q)
+              la: u32 = s.lnames_at + n * u32(4)
+              w[la] = off
+              w[la + u32(1)] = sst(s, w, ST_POOL) - off
+              w[la + u32(2)] = NONE
+              w[la + u32(3)] = NONE
+              set_sst(s, w, ST_NLNAMES, n + u32(1))
+              set_sst(s, w, ST_LEAVES, n + u32(1))
+              sym == NONE ? { } | { }
+            }
+          } }
+        }
+        i = i + u32(1)
+      }
+      sr_failed(s, w) ? { } | {
+        w[at + u32(2)] = u32(1)
+        sr_push_block_typed(s, w, rn_a(rx, raw, body), f, sr_bool_type(s, w))
+      }
+    } }
+  } | {
+    universal: u32 = rn_vlo(rx, raw, node)
+    bt: u32 = sr_bool_type(s, w)
+    out: u32 = sst(s, w, ST_RET)
+    i: u32 = count
+    while i > u32(0) && !sr_failed(s, w) {
+      i = i - u32(1)
+      sym: u32 = sr_find_symbol(s, w, f, rp_word(rx, raw, pstart + i, u32(0)))
+      t: u32 = sr_symbol_type(s, w, f, sym)
+      out = sr_emit(s, w, SYN_QUANT, sym, out, universal, w[at + u32(5)] + i, ty_word(s, w, t, u32(7)), t, bt)
+    }
+    sr_deliver(s, w, out)
+  }
+}
+
 step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32, phase: u32): () {
   fnode: u32 = rn_a(rx, raw, node)
   args: u32 = rn_b(rx, raw, node)
@@ -1601,7 +1672,8 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
     }
   } | {
   (kind == RAW_RECORDLIT || kind == RAW_ARRAYLIT) ? { step_literal_x(s, w, rx, raw, at, node, f, phase, kind) } | {
-  kind == RAW_CALL ? { step_call_x(s, w, rx, raw, at, node, f, phase) } | { sr_fail(s, w, u32(100)) } } } } } } } } } } } }
+  kind == RAW_QUANT ? { step_quant_x(s, w, rx, raw, at, node, f, phase) } | {
+  kind == RAW_CALL ? { step_call_x(s, w, rx, raw, at, node, f, phase) } | { sr_fail(s, w, u32(100)) } } } } } } } } } } } } }
 }
 
 // --- blocks ---------------------------------------------------------------------------

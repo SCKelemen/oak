@@ -93,7 +93,61 @@ noise at about twenty percent. Raw samples:
 | `page_probe` | 11.13 | 21.51 | 1.93 | proven |
 | `bitmap` | 0.192 | 0.229 | 1.19 | C helper on both sides (noise floor) |
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
-| `tiled` | — | not built | — | refuted by the verifier (see below) |
+| `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
+
+**Guard elision falls back per source line (2026-09-15,
+`docs/spec/94-assembler.md` §9 "Check elision").** `bench_search` and
+`bench_page_probe` had every element guard, because one access in each
+— `keys[mid]` under the decreasing bound, the fence key under the
+quotient bound — is proven by a law the seam checker cannot read, and
+the refusal re-lowered the whole body guarded. The compiler now keeps
+the guards of the refused line only: `bench_search` reads `probes[p]`
+unguarded (one guard, two instructions, out of its outer loop; the
+key read keeps its `cmp; b.hs`), `bench_page_probe` likewise loses the
+guard of its probe read and keeps lines 76 and 85. Structural counts
+from `OAK_NATIVE_DUMP=1` at 5004065a, whole bodies: `bench_search` 57
+instructions and one guard to the trap (from 61 and three before this
+and the strength reduction), `bench_page_probe` 93 and two (from 102
+and six). The verdicts are unchanged (`bench_search` witnessed, the
+loop's `hits` coupling; `bench_page_probe` trusted, the path budget), so
+the rows stand; timing on a quiet host with the rerun of the strength
+reduction below.
+
+**Condition selection (2026-09-15, `docs/spec/94-assembler.md` §9
+"Condition selection").** Negations invert their branch, Bool homes are
+tested in place, small constants are compare immediates in comparisons
+and match arms, and an in-range bitwise constant is not re-masked.
+Structural counts at 5004065a with the per-line fallback above already
+in: `bench_dispatch` 68 → 60 instructions (its seven-arm match chain
+lost every `movz`), `bench_search` 57 → 54 (`!found` is one `cbnz`, and
+the inner loop is eleven instructions from the exit test to the key
+load), `bench_page_probe` 93 → 90; `crc32c`, `blake3`, `sum`, `dot`
+unchanged. With the compare of a conditional chain reused at its else
+label (the checker carrying flags across the label): `bench_search` 53,
+`bench_page_probe` 89; with no mask after an unsigned right shift and a
+match scrutinee compared from its own register, `bench_dispatch` 58.
+Verdicts unchanged (`dispatch` proven, `search`
+witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
+
+**Strength reduction of constant arithmetic (2026-09-15,
+`docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
+were attributed below to frame traffic; the lowered bodies say otherwise —
+neither kernel calls, and every local sits in a register. Their inner
+loops paid for arithmetic: `(hi - lo) / u32(2)` lowered as `movz w10, #2;
+cbz w10, trap; udiv w9, w9, w10` on the mid-to-load critical path, and
+`mid * u32(512)` as `movz; mul`. With the first increment of the
+optimization system the same loops read `lsr w9, w9, #1` and `lsl #9`:
+`bench_search`'s loop is three instructions shorter and free of the
+multi-cycle divide, `bench_page_probe` goes from three `udiv`, two `mul`,
+and six `cbz` to three `lsr`, two `lsl`, and three `cbz`, and nine bodies
+of the kernel package report `constant operation(s) strength-reduced,
+proven` with no fallback. The timing rows are not updated here: the
+measurement run on 2026-09-15 found the host at a load average above 200
+from other suites, and two byte-identical `sum` bodies timed two-fold
+apart across the three runners, so no ratio from it is a result. The
+protocol to rerun on a quiet host: the C runner, the native runner from
+the previous revision, and the native runner from this one, alternated
+over five rounds of five samples at 1 MiB, checksums equal on every row.
 
 What the rows say, in the order they matter:
 
@@ -140,20 +194,23 @@ What the rows say, in the order they matter:
 
 ## The refuted kernel
 
-`bench_tiled` (an `f32` sum of squares over eight accumulators in a
-`[8]f32` local, a stride-8 loop and a remainder loop) is the one kernel the
-native build refuses: the verifier reports a mismatch at `len(a) = 8`,
-with the asm producing `+Inf` and the Oak model `0xF66F…` — a negative
-value, which a sum of squares cannot produce, and which no float
-accumulator that started at zero can reach in one iteration. The lowered
-asm (`results/bench_tiled-native-2026-09-14.asm`) performs the Oak body's
-operations in the Oak body's order; the accumulators live in frame slots
-across the two data-dependent loops, and the refutation is most likely
-the verifier's model of float slots across loop summaries, not the
-backend. It is recorded here as a verifier finding to reproduce in
-isolation; the gate is not bypassed for a measurement (a mismatch rejects
-the build, by design), so the kernel has no native row. The C backend
-runs it at the speed `BENCHMARKS.md` records.
+At the measurement revision (aade7acd) the native build refused
+`bench_tiled` (an `f32` sum of squares over eight accumulators in an
+`[8]f32` local, a stride-8 loop and a remainder loop): the verifier
+reported a mismatch at `len(a) = 8`, the asm producing `+Inf` and the Oak
+model `0xF66F…`, a negative value a sum of squares cannot produce. The
+lowered asm (`results/bench_tiled-native-2026-09-14.asm`) performs the Oak
+body's operations in the Oak body's order. The gate was not bypassed for a
+measurement (a mismatch rejects the build, by design); the kernel was
+reduced instead. Reduced in isolation the refutation did not reproduce at
+the current revision, and rebuilding the emitter at aade7acd reproduced it
+on the same source, so it was a verifier false alarm that an upstream
+commit between aade7acd and dc714aee has since fixed (a bisect narrowed it
+to one of `deb20e52` "a counterexample reports the element values the
+diagrams chose", `5038ac25`, `e7f6fdb6`; the other two candidates were
+build skips). At 30ca36eb the kernel lowers, is witnessed on nineteen
+inputs, agrees with the C backend's checksum, and runs at 2.8× the C
+backend's time — the same scalar-loop gap as `sum` and `dot`.
 
 ## Found on the way
 
@@ -178,6 +235,6 @@ runs it at the speed `BENCHMARKS.md` records.
 - A little-endian word assembled from eight guarded byte reads at
   constant offsets is fifty-six guarded `ldrb`s in the native body and one
   `ldr` under clang; the idiom is the next CRC and hash win.
-- The verifier refutes `bench_tiled` with a value the Oak body cannot
-  produce (a negative sum of squares); a probable false alarm in the
-  float-slot model across two loops, to be reduced to a unit case.
+- The verifier refuted `bench_tiled` at aade7acd with a value the Oak body
+  cannot produce (a negative sum of squares); reproduced there, gone at
+  30ca36eb — a false alarm an upstream verifier fix closed.

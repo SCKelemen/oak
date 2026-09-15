@@ -66,9 +66,15 @@ const (
 	// (asm/floats_lowering.go floatConversion): a = target width, b =
 	// target signedness, c = operand, d = 1 when the target is a float.
 	synFloatConv = 28
-	synView      = 24 // a = the array symbol; the node's type is the view (element, length)
-	synLen       = 25 // a = operand (an array or a view of known length); u32
-	synBuiltin   = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
+	// synQuant is a bounded quantifier over one binder (docs/spec/10-syntax.md
+	// section 3e; a quantifier with several binders nests, the first
+	// binder outermost): a = the binder's symbol, b = the body, c = 1 for
+	// forall and 0 for exists, d = the binder's leaf, vlo = the leaf's
+	// width, vhi = the binder's scalar type; the node's type is Bool.
+	synQuant   = 29
+	synView    = 24 // a = the array symbol; the node's type is the view (element, length)
+	synLen     = 25 // a = operand (an array or a view of known length); u32
+	synBuiltin = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
 
 	// An arm in the lists: pattern kind, variant index or literal node,
 	// binding symbol (NONE for none), body node.
@@ -164,6 +170,10 @@ type syntaxWriter struct {
 	leafSpans [][2]int // per theorem parameter: start and count in leafIdx
 	leaves    int
 	leafNames []string // the theorem's leaves in the decider's name order
+	// quantifiers counts the binders serialized so far: binder k of the
+	// theorem is the leaf `name@qk`, appended after the parameters' leaves
+	// (asm/verify.go lowerQuantifier names the Go decider's the same way).
+	quantifiers int
 }
 
 // ExportSyntax serializes the theorem and its callees for the Oak
@@ -541,6 +551,8 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		return w.node(synInfix, code, left, right, 0, 0, 0, typ), "", true
 	case *ast.BlockExpression:
 		return w.block(f, e.Block, true)
+	case *ast.QuantifierExpression:
+		return w.quantifier(f, e)
 	case *ast.VariantExpression:
 		if e.TypeName == nil {
 			return 0, "a variant without its type name", false
@@ -837,6 +849,64 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 // result) in value position; in statement position (a loop body, a
 // conditional's arm) every statement is a statement, a conditional among
 // them a statement conditional.
+// quantifier serializes `forall (x: T, …) { body }` / `exists (…) { body }`
+// (docs/spec/10-syntax.md section 3e) as nested synQuant nodes, the
+// first binder outermost. Every binder is a scalar of at most 16 bits
+// that shadows no symbol, bound as a fresh symbol and a fresh leaf of the
+// theorem (the serializer written in Oak, prove/solver/syntax.oak, lays
+// the same out); a quantifier inside a callee stays with the Go decider.
+func (w *syntaxWriter) quantifier(f *synFunction, e *ast.QuantifierExpression) (uint32, string, bool) {
+	if e.Body == nil || e.Body.Block == nil {
+		return 0, "a quantifier without a body", false
+	}
+	if f.index != 0 {
+		return 0, "a quantifier inside a callee", false
+	}
+	type binder struct {
+		sym, leaf uint32
+		width     int
+		typ       int
+	}
+	var binders []binder
+	for _, b := range e.Binders {
+		if b == nil || b.Name == nil {
+			return 0, "a quantifier binder without a name", false
+		}
+		t, reason, ok := w.typeOfExpr(b.Type)
+		if !ok {
+			return 0, fmt.Sprintf("quantifier binder %s: %s", b.Name.Value, reason), false
+		}
+		typ := w.types[t]
+		if typ.kind != synKindScalar || typ.float || len(typ.leaves) != 1 || typ.leaves[0].width > 16 {
+			return 0, fmt.Sprintf("quantifier binder %s over %s (the bit level takes Bool and the 8- and 16-bit integers)", b.Name.Value, typeText(b.Type)), false
+		}
+		if _, shadows := f.symbols[b.Name.Value]; shadows {
+			return 0, fmt.Sprintf("quantifier binder %s shadows a name in scope", b.Name.Value), false
+		}
+		sym := len(f.symbols)
+		f.symbols[b.Name.Value] = sym
+		f.symTypes = append(f.symTypes, t)
+		w.quantifiers++
+		w.leafNames = append(w.leafNames, fmt.Sprintf("%s@q%d", b.Name.Value, w.quantifiers))
+		binders = append(binders, binder{sym: uint32(sym), leaf: uint32(w.leaves), width: typ.leaves[0].width, typ: t})
+		w.leaves++
+	}
+	body, reason, ok := w.block(f, e.Body.Block, true)
+	if !ok {
+		return 0, reason, false
+	}
+	universal := uint32(0)
+	if e.Universal {
+		universal = 1
+	}
+	boolType := w.scalarType(1, false)
+	node := body
+	for i := len(binders) - 1; i >= 0; i-- {
+		node = w.node(synQuant, binders[i].sym, node, universal, binders[i].leaf, uint32(binders[i].width), uint32(binders[i].typ), boolType)
+	}
+	return node, "", true
+}
+
 func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bool) (uint32, string, bool) {
 	if block == nil {
 		return w.node(synBlock, 0, 0, 0, 0, 0, 0, -1), "", true

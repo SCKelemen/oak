@@ -14,7 +14,9 @@ import "github.com/SCKelemen/oak/ast"
 // kind * 16 + condition code), 4 a conditional (c, a, b), 5 an element
 // read of a span (op = the span, a = the index), 6 a floating-point
 // operation (op in problemFloatOps; a, b, c the operands, NONE past the
-// arity) — the last two abstracted as uninterpreted values: a select slot
+// arity), 7 a bounded quantifier (op 0 forall, 1 exists; a the body, b
+// the bound leaf's parameter term, the leaf in value low) — the select
+// and the operation abstracted as uninterpreted values: a select slot
 // per distinct (span, index bits) or (operation, width, operand bits), the
 // slots numbered in the order the blast meets them and their variables
 // serialized after the roots. The Oak solver blasts the same terms under
@@ -253,12 +255,17 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 			op = problemFloatOps[t.op]
 			a, b, c = operand(t.left), operand(t.right), operand(t.cond)
 		case termQuant:
-			// A bounded quantifier is outside the solver's subset: the
-			// unsupported operator makes it decline, and the Go decider
-			// eliminates the binder on the diagram (asm/blast.go).
-			kind = 2
-			op = problemNone
-			a = operand(t.left)
+			// A bounded quantifier (kind 7; docs/spec/10-syntax.md section
+			// 3e): op 0 for forall, 1 for exists; a the body's bit, b the
+			// bound leaf's own parameter term (the evaluator's restart
+			// point), the leaf in the value word. The Oak solver eliminates
+			// the leaf's variables by cofactors as asm/blast.go does.
+			kind = 7
+			if t.op == "exists" {
+				op = 1
+			}
+			a, b = operand(t.left), operand(t.right)
+			vlo = uint32(leafIndex[t.name])
 		}
 		words = append(words, kind, op, uint32(t.width), a, b, c, vlo, vhi)
 	}

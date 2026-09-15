@@ -94,9 +94,11 @@ const (
 )
 
 // quantTerm is the quantifier op over the bound parameter name of the
-// given width, body a 1-bit term.
-func quantTerm(op, name string, width int, body *term) *term {
-	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1)}
+// given width, body a 1-bit term; right is the parameter's own term, so a
+// serialization numbers it before the terms that read it (the Oak
+// solver's evaluator restarts the body there for every value).
+func quantTerm(op, name string, width int, body, param *term) *term {
+	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1), right: param}
 }
 
 // quantifierBound reports a name the theorem lowering minted for a
@@ -5757,6 +5759,7 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 		name  string
 		fresh string
 		width int
+		param *term
 		prev  *oakLocal
 		had   bool
 	}
@@ -5785,8 +5788,9 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 		lo.params[fresh] = width
 		lo.signed[fresh] = signed
 		prev, had := lo.locals[binder.Name.Value]
-		lo.locals[binder.Name.Value] = &oakLocal{value: paramTerm(fresh, width), width: width, signed: signed}
-		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, prev: prev, had: had})
+		param := paramTerm(fresh, width)
+		lo.locals[binder.Name.Value] = &oakLocal{value: param, width: width, signed: signed}
+		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, param: param, prev: prev, had: had})
 	}
 	body, reason, ok := lo.lowerBlock(expr.Body.Block, 1)
 	restore()
@@ -5799,7 +5803,7 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 	}
 	t := truncate(body, 1)
 	for i := len(binders) - 1; i >= 0; i-- {
-		t = quantTerm(op, binders[i].fresh, binders[i].width, t)
+		t = quantTerm(op, binders[i].fresh, binders[i].width, t, binders[i].param)
 	}
 	return t, "", true
 }
@@ -7326,6 +7330,10 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	control := controlParams([]*term{asmTerm, oakTerm})
 	if len(control) > 0 && len(control) < len(names) {
 		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
+	}
+	selectors := selectorParams([]*term{asmTerm, oakTerm})
+	if len(selectors) > 0 && len(selectors) < len(names) {
+		blasters = append(blasters, newSelectorFirstBlaster(names, widths, selectors))
 	}
 	return blasters
 }

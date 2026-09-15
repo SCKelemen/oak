@@ -982,6 +982,64 @@ entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
 proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
 sizes, and whether the sides became one term.
 
+**The literal scanner's kernel (2026-09-15).** `verify_first` of
+`stdlib/literals.oak` — a frame array of the candidate lanes read at the
+outer loop's index, an inner loop over the literals of a bucket calling
+`literal_at`, whose own loop compares bytes — was evidence: the coupling
+search exhausted its budget with the right pairing first in line. Five
+things, found in order by tracing where the diagrams went. **The proof's
+node budget is charged.** Each implication had been bounded by what the
+proof had left, but nothing spent it; every undecided obligation ran
+its full 2M nodes under four orders, and the search went on to refute
+the wrong pairings one diagram at a time. The largest diagram a decision
+built is now taken from the budget, so a search that keeps failing near
+the per-decision budget ends as evidence in a few tries. **Select slots
+interleave with the last block.** Under the grouped orders the element
+reads' variables sat past every parameter's, so `k < starts[j+1] −
+starts[j]` in the inner loop's exit premise had to remember `k` whole
+before it read either element: exponential. The first eight slots now
+interleave with the last block (the data parameters, under the
+control-first orders), and the comparison is linear again. **Selectors
+first.** In `l == 0 ? cand[0] : l == 1 ? cand[1] : … ≠ 0` — the frame
+array read — the index and the lanes are both control parameters to
+`controlParams`; a fifth order (`selectorParams`: what a condition reads
+directly, through nested conditions but never through an arm) interleaves
+the index's bits before the lanes' at every level, so the diagram narrows
+the arms as it reads and stays linear in the lanes, where reading the
+lanes first must remember which is which. **Widths narrowed under the
+premise.** A conjunct `p < 16` over a parameter leaves its bits from the
+fourth up zero wherever the premise holds; the decision reads `p` at four
+bits (`narrowByPremise`) — the implication is unchanged, and an adder over
+the index is copied sixteen times rather than once per value of a word.
+**Conditionals proven by their parts.** The inner loop's `found` after one
+iteration is `literal occurs here ? base + l : found` on both sides, the
+test spelled over the same inputs as the arm; a diagram of the whole
+repeats the test's diagram in every result bit — 250K nodes, thirty-two
+times over. `impliesEqualByArms` proves the conditions equal under the
+premise, then each pair of arms under the premise and the condition (or
+its negation): the parts cost the test once, and the arms are one term.
+The rule proves and never refutes — conditionals on different conditions
+may agree where their arms do — so a part that fails leaves the decision
+to the whole; a mask over a conditional is pushed into its arms first
+(`pushMask`), which is how a narrower side's zero-extension meets the
+wider side arm for arm. Last, a body's **invariant registers** — written
+but left at their header value after one iteration, a spill reloaded —
+are not loop-carried, and their symbols stand for the header value in
+every term of the body: this event's, and those of the loops and calls
+summarized inside it (`substituteAll`), where `loop2.r17` in the callee's
+byte comparison otherwise had no Oak counterpart. With these,
+`verify_first` is **proven** — three nested data-dependent loops coupled
+inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
+the callee's `k`, `same` as themselves) in three seconds — alongside
+`longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
+same module: the functions with more than eight vector parameters
+(`classify` and its callers) and, as evidence or trusted, `groups_of`
+(budget), `build` (an expression statement in a loop body),
+`verify_count` (an inner loop summarized per path past the event budget).
+The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
+implication, each order's node count and the stage it exceeded at, and
+under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
