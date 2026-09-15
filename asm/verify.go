@@ -6693,7 +6693,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		if first.Kind != VerdictProven {
 			return first
 		}
-		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+		if chunks == 2 {
+			return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+		}
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("%s (all %d result chunks)", first.Message, chunks)}
 	}
 	return verifyChunk(fn, sig, oakBody, 0)
 }
@@ -6891,6 +6894,10 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// value; its padding bits are fresh unknowns, as the ABI leaves them.
 	var aggLeaves []compositeLeaf
 	aggChunks := 0
+	// A record result beyond two chunks is stored leaf by leaf into the
+	// caller's frame at the address x8 held (memResultBase).
+	memResult := false
+	memResultBase := int64(0)
 	// A fixed-vector result comes back whole in the lane's vector result
 	// register (v0 on AArch64, v8 on RV64 — the RVV psABI; docs/spec/
 	// 94-assembler.md §9, vectors across the call boundary): the callee's
@@ -6916,12 +6923,35 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || (class == ClassV && floatResult == 0) {
 			returned := typeText(callee.ReturnType)
 			comp, isComposite := x.fn.Composites[returned]
-			if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+			if !isComposite || len(comp.Fields) == 0 {
 				return fmt.Sprintf("a call to %s returning %s", name, returned), false
 			}
 			leaves, _, ok := compositeLeaves(x.fn.Composites, returned, "", 0, nil)
 			if !ok {
 				return fmt.Sprintf("a call to %s returning %s (no layout)", name, returned), false
+			}
+			if comp.Size > 16 {
+				// Returned through memory: the caller passed the address of
+				// a frame area in x8 (nativegen: `add x8, sp, #off` before
+				// the call), and the callee's leaves land there at their
+				// offsets and widths; the caller's later loads read them
+				// as frame slots (docs/spec/94-assembler.md §9). RV64
+				// passes the area in a0, shifting the arguments, outside
+				// the subset; a union's inactive payload bytes are left as
+				// they were, which the leaf-wise store cannot express.
+				if x.arch == ArchRV64 {
+					return fmt.Sprintf("a call to %s returning %s through memory on RV64", name, returned), false
+				}
+				addr, isFrame := frameAddressOf(state.regs[8])
+				if !isFrame {
+					return fmt.Sprintf("a call to %s returning %s through an area x8 does not address in the frame", name, returned), false
+				}
+				for _, leaf := range leaves {
+					if len(leaf.guards) > 0 {
+						return fmt.Sprintf("a call to %s returning %s holding a union", name, returned), false
+					}
+				}
+				memResultBase, memResult = addr, true
 			}
 			aggLeaves, aggChunks = leaves, int((comp.Size+7)/8)
 		}
@@ -7278,6 +7308,33 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			}
 		}
 		state.writeVec(vecArg0, vecOfLanes(vecLanes, laneWidth(*vecResult)))
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if aggregate != nil && memResult {
+		terms := map[string]*term{}
+		leafTerms(aggregate, "", terms)
+		for _, leaf := range aggLeaves {
+			t, has := terms[leaf.name]
+			if !has {
+				return fmt.Sprintf("a call to %s returning %s with a leaf the layout lacks", name, typeText(callee.ReturnType)), false
+			}
+			// A Bool leaf is its 4-byte C enum cell holding 0 or 1; every
+			// other leaf is stored at its width. The padding bytes between
+			// leaves keep what the frame held: the callee's contract says
+			// nothing about them and the Oak body never reads them.
+			cell := leaf.width
+			if cell == 1 {
+				cell = 32
+			}
+			state.storeSlot(memResultBase+leaf.offset, zeroExtend(adaptWidth(t, leaf.width), cell), int64(cell/8))
+		}
+		x.forgetCallerSaved(state)
 		for _, seen := range x.summarized {
 			if seen == name {
 				return "", true

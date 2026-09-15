@@ -49,6 +49,11 @@ func TestE2ENativeWideResult(t *testing.T) {
 	if !strings.Contains(joined, "asm unit mk_wide: proven equal to its Oak body") {
 		t.Errorf("mk_wide returns its record through the result area and must be proven chunk by chunk; diagnostics:\n%s", joined)
 	}
+	// The caller passes the area in x8; the summary of mk_wide stores the
+	// record's leaves there, and wide_sum's loads read them.
+	if !strings.Contains(joined, "asm unit wide_sum: proven equal to its Oak body") {
+		t.Errorf("wide_sum calls a callee returning its record through memory and must be proven; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_wide_result_c", New().WithSource("wide.oak", nativeWideResultProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

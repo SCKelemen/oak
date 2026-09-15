@@ -4519,6 +4519,30 @@ strength reduction and the other commits of the evening: proven 529,
 evidence 97, trusted 333, no disagreement, the rows identical
 (`TestE2ENativeWideResult`).
 
+**The area a callee returns through, in the summary (2026-09-15).** The
+thirteen bodies that stopped at "a call to `rs_name` returning `Name16`"
+called a callee whose record result exceeds two chunks. Their caller
+passes the address of a frame slot in x8 (`add x8, sp, #off` before the
+`bl`) and reads the fields from that slot afterward. The summary now
+takes the address x8 holds — it must be a frame address, as the backend
+emits it — lowers the callee's body to its aggregate value as the
+register-returned case does, and stores every leaf into the caller's
+frame at the leaf's offset and width (a Bool as its 4-byte cell); the
+padding bytes between leaves keep what the frame held, which the Oak
+body never reads; the caller-saved registers are forgotten as after any
+call. The caller's loads then find the callee's leaves as frame slots,
+and a load from the wrong offset is refuted (`TestVerifyMemoryReturnedCallee`:
+a caller reading `w.a + w.b`, a narrow leaf `w.c`, and a caller reading
+`b` where its Oak body reads `a`). A record holding a union stays
+outside — its inactive payload bytes are unspecified, which a leaf-wise
+store does not express — as does RV64, where the area's address arrives
+in a0 and shifts the arguments. Alongside, the inliner's literal
+substitution now reaches the field map of a record literal (a field whose
+whole value was a parameter kept the renamed temporary;
+`TestE2EInlineLiteralArgumentsIntoRecordLiteral`). Prover build: proven
+538, evidence 100, trusted 329, no disagreement, no body left at a
+record-returning callee; the rows identical.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
