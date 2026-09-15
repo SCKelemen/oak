@@ -77,6 +77,26 @@ theorem bic_as_and {w : Nat} (a b : BitVec w) : bic a b = apply .and a (~~~b) :=
 theorem orn_as_orr {w : Nat} (a b : BitVec w) : orn a b = apply .orr a (~~~b) := rfl
 theorem eon_as_eor {w : Nat} (a b : BitVec w) : eon a b = apply .eor a (~~~b) := rfl
 
+/-- A rotation spelled with shifts — `(x >> k) | (x << (w - k))`, the hash
+    library's `rotr32` once its literal count is inlined — is `ror x, #k`
+    for `k < w`: the native lowering emits the one instruction where the
+    spelling took a shift, a folded difference, a second shift, and an or
+    (docs/spec/94-assembler.md §9 "Rotates"). -/
+theorem ror_spelling {w : Nat} (a : BitVec w) (k : Nat) (hk : k < w) :
+    (a >>> k) ||| (a <<< (w - k)) = ror a k := by
+  unfold ror
+  rw [Nat.mod_eq_of_lt hk, BitVec.rotateRight_eq_rotateRightAux_of_lt hk]
+  rfl
+
+/-- The mirrored spelling — `(x << k) | (x >> (w - k))`, a left rotation by
+    `k` — is the right rotation by `w - k`. -/
+theorem rol_spelling {w : Nat} (a : BitVec w) (k : Nat) (hk : 0 < k) (hk' : k < w) :
+    (a <<< k) ||| (a >>> (w - k)) = ror a (w - k) := by
+  have h := ror_spelling a (w - k) (by omega)
+  rw [Nat.sub_sub_self (Nat.le_of_lt hk')] at h
+  rw [BitVec.or_comm]
+  exact h
+
 /-- `neg` and `mvn` are `sub` from zero and `eor` with all ones. -/
 theorem neg_as_sub {w : Nat} (a : BitVec w) : -a = apply .sub 0 a := by
   simp [apply, BitVec.zero_sub]

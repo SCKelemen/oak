@@ -319,10 +319,23 @@ func TestVerifyCountedLoops(t *testing.T) {
 	if forkedOK.Kind != VerdictProven {
 		t.Fatalf("a forking counted loop must be proven against its conditional accumulate, got %s: %s", forkedOK.Kind, forkedOK.Message)
 	}
-	// Past the path budget (2^9 paths) the unfolding stops: trusted.
+	// Nine iterations, each forking: the two paths of every fork meet at
+	// `skip` and merge there (joinPoints, mergeStates), so the unfolding
+	// is linear in the count rather than 2^9 paths — proven against the
+	// nine-fold conditional accumulate, a mismatch against the three-fold.
 	manyForks := strings.Replace(forkInLoop, "mov w10, #3", "mov w10, #9", 1)
-	budget := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, manyForks)
+	nine := verifyCase(t, "triple: (a: u32) -> u32", strings.Replace(guardedTriple, "i < u32(3)", "i < u32(9)", 1), manyForks)
+	if nine.Kind != VerdictProven {
+		t.Fatalf("a nine-fold forking counted loop must be proven through its joins, got %s: %s", nine.Kind, nine.Message)
+	}
+	if short := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, manyForks); short.Kind != VerdictMismatch {
+		t.Fatalf("nine iterations against three must be a mismatch, got %s: %s", short.Kind, short.Message)
+	}
+	// Past the step budget (a count the unrolling cannot reach) the
+	// unfolding stops: trusted.
+	huge := strings.Replace(forkInLoop, "mov w10, #3", "movz w10, #1, lsl #16", 1)
+	budget := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, huge)
 	if budget.Kind != VerdictTrusted || !strings.Contains(budget.Message, "budget") {
-		t.Fatalf("exceeding the path budget must be trusted, got %s: %s", budget.Kind, budget.Message)
+		t.Fatalf("exceeding the unrolling budget must be trusted, got %s: %s", budget.Kind, budget.Message)
 	}
 }

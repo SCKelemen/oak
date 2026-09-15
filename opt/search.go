@@ -214,7 +214,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			order = append(order, c)
 		}
 	}
-	sort.SliceStable(order, func(i, j int) bool { return order[i].Cost < order[j].Cost })
+	sort.SliceStable(order, func(i, j int) bool { return cheaper(order[i], order[j]) })
 	order = append(order, identity)
 	sel.Frontier = order
 	var best *Validated
@@ -237,6 +237,31 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			}
 			break
 		}
+	}
+	if best.Verdict.Outcome <= Trusted && s.gated(best.Candidate) {
+		// No candidate was judged, and the best carries a transform that
+		// ships only on a verdict: the cheapest candidate without one takes
+		// its place — validated already, or validated now — at worst the
+		// plain lowering (docs/spec/90-backend.md §16 rule 3).
+		var replacement *Validated
+		for _, c := range order {
+			if s.gated(c) {
+				continue
+			}
+			for i := range sel.Validations {
+				if sel.Validations[i].Candidate == c {
+					replacement = &sel.Validations[i]
+				}
+			}
+			if replacement == nil {
+				verdict := d.Validate(c)
+				sel.Validations = append(sel.Validations, Validated{Candidate: c, Verdict: verdict})
+				replacement = &sel.Validations[len(sel.Validations)-1]
+			}
+			break
+		}
+		s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified (a trusted verdict) and %s ships only on a verdict: the %s form is kept", best.Candidate.Name(), s.gatedNames(best.Candidate), replacement.Candidate.Name()))
+		best = replacement
 	}
 	sel.Candidate, sel.Verdict = best.Candidate, best.Verdict
 	s.remark(function, sel)
@@ -304,13 +329,27 @@ func (s *Search) refine(c *Candidate, finding string) (*Candidate, bool) {
 	return nil, false
 }
 
+// cheaper orders candidates by the model's cost; at one cost the
+// candidate with more transforms applied comes first, since the static
+// model cannot see what a residency transform saves (a vector home
+// against a slot round trip is one load and one store either way) and an
+// admitted transformed body is preferred to a plainer one at equal price
+// (docs/notes/optimizer-search-2026-09.md §0, the tie-break).
+func cheaper(a, b *Candidate) bool {
+	if a.Cost != b.Cost {
+		return a.Cost < b.Cost
+	}
+	return len(a.Applied) > len(b.Applied)
+}
+
 // prune keeps the beam cheapest candidates, the identity always among
-// them; order among equal costs is the order proposed.
+// them; order among equal costs is by transforms applied, then the order
+// proposed.
 func prune(candidates []*Candidate, beam int, identity *Candidate) []*Candidate {
 	if len(candidates) <= beam {
 		return candidates
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Cost < candidates[j].Cost })
+	sort.SliceStable(candidates, func(i, j int) bool { return cheaper(candidates[i], candidates[j]) })
 	kept := candidates[:beam]
 	for _, c := range kept {
 		if c == identity {
@@ -367,4 +406,24 @@ func (s *Search) remark(function string, sel *Selection) {
 	if best != sel.Identity {
 		s.Report.Analysis(function, "metrics", Delta(sel.Identity.Metrics, best.Metrics))
 	}
+}
+
+// gated reports whether a candidate carries a transform that ships only
+// on a verdict.
+func (s *Search) gated(c *Candidate) bool {
+	return s.gatedNames(c) != ""
+}
+
+// gatedNames spells the candidate's transforms that ship only on a
+// verdict, "" for none.
+func (s *Search) gatedNames(c *Candidate) string {
+	var names []string
+	for _, name := range c.Applied {
+		if t, ok := s.Registry.Lookup(name); ok {
+			if g, ok := t.(Gated); ok && g.NeedsVerdict() {
+				names = append(names, name)
+			}
+		}
+	}
+	return strings.Join(names, "+")
 }
