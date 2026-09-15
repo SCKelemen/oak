@@ -19,6 +19,25 @@ build (the CLI's `-emit-c` writes the C alone). `run.sh` does everything.
 
 ## Results
 
+Apple arm64, 2026-09-16, the two backends and the native lowering before
+vector operands were read in place (`94-assembler.md` §9), alternated
+three times on a host at load average 370; the ratios are the claim.
+
+| Backend | ns/byte | GB/s | valid |
+| --- | --- | --- | --- |
+| C backend, clang `-O2` over the emitted C | 0.10–0.11 | 8.8–9.6 | yes |
+| Native backend, before (1641e9a8) | 0.17–0.18 | 5.5–6.0 | yes |
+| Native backend, vector operands in place, `movi` splats | 0.12–0.14 | 7.3–8.0 | yes |
+
+The validator's body went from 611 lines to 330: fifty `orr` register
+copies (every vector read into a scratch and every result back to its
+home) to none, fifty frame-slot loads and stores to thirty-six, twenty-six
+constant splats from `movz; and; dup` to one `movi` each; every unit stays
+proven at the bit level. What remains is the slot traffic of the five
+vector locals the register file did not hold (the flattened kernel's live
+set peaks past the twenty homes; the liveness allocator of program item 2)
+and the loop's scalar bookkeeping.
+
 Apple arm64, 2026-09-13.
 
 | Backend | ns/byte | GB/s | valid |
@@ -128,6 +147,17 @@ label (the checker carrying flags across the label): `bench_search` 53,
 match scrutinee compared from its own register, `bench_dispatch` 58.
 Verdicts unchanged (`dispatch` proven, `search`
 witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
+
+**A leaf's vector locals in the argument registers (2026-09-15,
+`docs/spec/94-assembler.md` §9.af).** The flattened `valid` and
+`valid_with` spilled five vector temporaries of the expanded
+`check_blocks` to frame slots: forty `str q`/`ldr q` per sixty-four-byte
+step of the main loop, forty-one in the body. Declaration order had spent
+the leaf's twenty vector homes before the temporaries were declared. With
+v1–v7 as homes too the loop has no q-register frame access and the body
+one; both bodies prove as before. The timing row is not updated here (the
+host's load average stayed above 90 all day); the protocol is `run.sh`,
+best of five, against the 0.28 ns/byte row below.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows

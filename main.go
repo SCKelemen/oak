@@ -113,7 +113,7 @@ func buildPackage(args []string) int {
 	metalCheck := false
 	lines, emitC, nativeBodies, verified := false, false, false, false
 	asmMode, linkMode := "", "c"
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-opt-report] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
@@ -129,6 +129,7 @@ func buildPackage(args []string) int {
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&verifyFresh, "verify-fresh", false, "verify every natively lowered body anew, bypassing the verdict cache under the temporary directory (the full check; OAK_VERIFY_CACHE=0 does the same; docs/spec/94-assembler.md section 9)")
+	fs.BoolVar(&optReport, "opt-report", false, "print the native lane's optimization report: what the candidate search tried, kept, and set aside for each body, with the facts that licensed it (OAK_OPT_REPORT=1 does the same; docs/notes/optimizer-search-2026-09.md)")
 	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object), oak (the Oak assembler alone realizes the natively lowered bodies: a static ELF executable on Linux, a relocatable object on a freestanding target; implies -native), or oak-image (a standalone freestanding image with Oak's start stub, for an emulator or a bare board)")
 	fs.BoolVar(&verified, "verified", false, "hold the build to the verified native profile: every body lowered natively with a proven verdict, none witnessed, trusted, or left to C; the refusal lists what holds the program back (implies -link oak; docs/spec/94-assembler.md section 9)")
 	rest, code, stop := parseFlags(fs, args)
@@ -188,6 +189,10 @@ func buildPackage(args []string) int {
 // verified anew, the verdict cache bypassed (compiler/verdict_cache.go).
 var verifyFresh bool
 
+// optReport prints the native lane's optimization report (-opt-report;
+// compiler.Options.OptReport).
+var optReport bool
+
 func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven, verified bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
@@ -203,6 +208,9 @@ func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMo
 	}
 	if verifyFresh {
 		comp = comp.WithVerifyFresh()
+	}
+	if optReport {
+		comp = comp.WithOptReport()
 	}
 	if verified {
 		comp = comp.WithVerifiedProfile()

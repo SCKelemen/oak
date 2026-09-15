@@ -715,11 +715,35 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
-	cond, reason, ok := x.headerCondition(shape, freshState)
+	cond, fallThroughStates, reason, ok := x.headerCondition(shape, freshState)
 	if !ok {
 		return nil, reason, false
 	}
 	ev.cond = cond
+	// A header temporary the body reads — the exit test's operand setup,
+	// such as the zero-extended index `slli z, i, 32; srli z, z, 32; bgeu
+	// z, norm` whose z the RV64 lane's elided element access then scales
+	// (docs/spec/94-assembler.md §9, "Check elision on the RV64 lane") —
+	// holds at the body's first instruction the value the header gave it,
+	// not a fresh one: when the header falls through on one path, the
+	// body starts from that path's register values for the registers the
+	// header wrote (the memory markers below are added to the fresh state
+	// first; only registers are carried over).
+	var headerValues map[int]*term
+	if len(fallThroughStates) == 1 {
+		headerValues = map[int]*term{}
+		for reg := range headerWritten {
+			if value, written := fallThroughStates[0].regs[reg]; written {
+				headerValues[reg] = value
+			}
+		}
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: loop %d header paths %d, header-written %v, carried %d\n", x.fn.Name, ev.index, len(fallThroughStates), headerWritten, len(headerValues))
+		for reg, value := range headerValues {
+			fmt.Fprintf(os.Stderr, "verify %s:   r%d = %s\n", x.fn.Name, reg, value.String())
+		}
+	}
 	_ = exit
 	// The writable span parameters (`[*]T`, the only spans a body can
 	// store through) take the loop's memory marker before the iteration
@@ -749,7 +773,11 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// in place) all reach the back edge and merge register by register
 	// into selects on the path conditions.
 	x.loopStack = append(x.loopStack, ev.index)
-	ends, reason, ok := x.runBody(shape, freshState.clone())
+	bodyStart := freshState.clone()
+	for reg, value := range headerValues {
+		bodyStart.regs[reg] = value
+	}
+	ends, reason, ok := x.runBody(shape, bodyStart)
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]
 	if !ok {
 		return nil, reason + " (in a loop body)", false
@@ -986,7 +1014,7 @@ const headerPathBudget = 16
 // traps, as the Oak side's element read does), an exit branch narrows the
 // path to its fall-through, a forward branch to a label inside the header
 // forks, a load reads the span as the executor does.
-func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*term, string, bool) {
+func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*term, []*symbolicState, string, bool) {
 	type headerPath struct {
 		pc    int
 		cond  *term
@@ -994,6 +1022,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 	}
 	work := []headerPath{{pc: shape.header + 1, cond: constTerm(1, 1), state: fresh.clone()}}
 	var cont *term
+	var fallThroughStates []*symbolicState
 	paths := 0
 	for len(work) > 0 {
 		cur := work[len(work)-1]
@@ -1012,13 +1041,13 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 			if isConditionalBranch(instr.Mnemonic) {
 				taken, reason, ok := branchCondition(instr, st)
 				if !ok {
-					return nil, reason, false
+					return nil, nil, reason, false
 				}
 				taken = truncate(taken, 1)
 				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if target < shape.bodyStart {
 					if paths+len(work)+1 > headerPathBudget {
-						return nil, "more header paths than the verifier's budget", false
+						return nil, nil, "more header paths than the verifier's budget", false
 					}
 					fork := &forkMark{pc: pc}
 					takenState := st.clone()
@@ -1045,11 +1074,12 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 				reason, ok = step(instr, st)
 			}
 			if !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			pc++
 		}
 		paths++
+		fallThroughStates = append(fallThroughStates, st)
 		if cont == nil {
 			cont = cond
 		} else {
@@ -1057,9 +1087,9 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 		}
 	}
 	if cont == nil {
-		return constTerm(0, 1), "", true
+		return constTerm(0, 1), fallThroughStates, "", true
 	}
-	return cont, "", true
+	return cont, fallThroughStates, "", true
 }
 
 // loopEventBudget bounds the data-dependent loops one body may hold.
@@ -1255,6 +1285,15 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					pc++
 					continue
 				}
+				if instr.Mnemonic == "ldp" {
+					// A pair load off a span element address: two loads
+					// (nativegen/pair_loads.go).
+					if reason, ok := x.loadPair(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
 				if !isLoad(instr.Mnemonic) {
 					// A store through a span: into the iteration's memory
 					// (the loop's marker), recorded for the coupling proof.
@@ -1277,6 +1316,21 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				if reason, ok := x.load(instr, st); !ok {
 					return nil, reason, false
 				}
+			case "adrl":
+				// A constant table's address inside the body (the CRC table
+				// of a byte loop): the base of the span its Oak name
+				// denotes, as on a straight path.
+				dest := instr.Operands[0].(Register)
+				sym, isSym := instr.Operands[1].(Symbol)
+				if !isSym || x.fn == nil {
+					return nil, "adrl without a constant table", false
+				}
+				if _, known := x.fn.Tables[sym.Name]; !known {
+					return nil, "adrl of a symbol that is not a constant table", false
+				}
+				st.write(dest, paramTerm(spanBaseName(TableName(sym.Name)), 64))
+				pc++
+				continue
 			default:
 				if x.arch == ArchRV64 {
 					// The RV64 lane: its own semantics; frame memory and
@@ -2093,6 +2147,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		// before an affine image with an offset (an address temporary
 		// `base + i` is an image of the counter too, but the counter's own
 		// register is the one the loop turns on).
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			var regs []string
+			for _, c := range out {
+				regs = append(regs, c.show())
+			}
+			fmt.Fprintf(os.Stderr, "verify %s: candidates for %s of loop %d: %v (asm vars %v)\n", fn.Name, s.name, s.event+1, regs, asmEv.vars)
+		}
 		inCond := map[string]bool{}
 		collectParams(asmEv.cond, inCond)
 		rank := func(c coupling) int {
@@ -2199,7 +2260,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			if refutedByCoupling(premise, next, asmNext, widthOfName) {
 				if trace {
-					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show())
+					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n  premise %s\n  oak-next %s\n  asm-next %s\n", fn.Name, c.show(), premise.String(), next.String(), asmNext.String())
 				}
 				conflict = conflictOf(asmLoops[s.event].next[c.reg])
 				conflict[depthOf[asmLoops[s.event].freshName(c.reg)]] = true
@@ -2212,7 +2273,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			asmCond := substitute(asmLoops[k].cond, sigma)
 			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName) {
 				if trace {
-					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n", fn.Name, k+1)
+					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n  premise %s\n  oak-cond %s\n  asm-cond %s\n  sigma %v\n", fn.Name, k+1, bodyPremise(k, sigma, false).String(), substitute(oakLoops[k].cond, sigma).String(), asmCond.String(), sigmaShow(sigma))
 				}
 				return conflictOf(asmLoops[k].cond), newly
 			}
@@ -3653,4 +3714,14 @@ func slotUnchanged(s loopSlot, ev *loopEvent) bool {
 		}
 	}
 	return true
+}
+
+// sigmaShow renders a coupling substitution for the trace.
+func sigmaShow(sigma map[string]*term) string {
+	var parts []string
+	for name, value := range sigma {
+		parts = append(parts, name+"="+value.String())
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
