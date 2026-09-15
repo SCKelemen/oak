@@ -540,6 +540,10 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 				}
 				addPostSpecializationValidationTypes(candidate, tc)
 				checked := newTypeChecker()
+				// The first checker rewrote size_of[T]() to its plain spelling
+				// with the query recorded by position; the validating checker
+				// reads the same positions.
+				checked.AdoptLayoutQueries(tc)
 				checkTypes(checked, candidate)
 				if errors := diagnosticErrors(checked.Diagnostics()); len(errors) != 0 {
 					if err := comp.gate("optimizer", errors, tree.Modules); err != nil {

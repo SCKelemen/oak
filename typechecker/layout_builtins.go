@@ -35,6 +35,23 @@ func (tc *TypeChecker) LayoutQueryAt(tok token.Token) (LayoutQuery, bool) {
 	return query, ok
 }
 
+// AdoptLayoutQueries copies another checker's recorded layout queries, so
+// a checker validating a tree that checker already rewrote (the
+// post-specialization optimizer's candidate, compiler/compilation.go)
+// reads `size_of()` — the plain spelling the rewrite left — as the query
+// recorded at its position rather than as an undefined name.
+func (tc *TypeChecker) AdoptLayoutQueries(from *TypeChecker) {
+	if from == nil || len(from.layoutQueries) == 0 {
+		return
+	}
+	if tc.layoutQueries == nil {
+		tc.layoutQueries = make(map[tokenKey]LayoutQuery, len(from.layoutQueries))
+	}
+	for key, query := range from.layoutQueries {
+		tc.layoutQueries[key] = query
+	}
+}
+
 // IsAsmBacked reports whether name is an asm-backed declaration.
 func (tc *TypeChecker) IsAsmBacked(name string) bool {
 	return tc.asmBackedFunctions[name]
@@ -51,6 +68,14 @@ func (tc *TypeChecker) resolveLayoutBuiltin(expr *ast.InvocationExpression) (Typ
 			return tc.checkAddressOf(expr), true
 		case "static_assert":
 			return tc.checkStaticAssert(expr), true
+		}
+		if layoutBuiltinNames[ident.Value] {
+			// The plain spelling a previous check left behind (the indexed
+			// form rewritten, the query recorded at this position): a
+			// re-check of the same tree resolves it from the record.
+			if _, recorded := tc.layoutQueries[positionKey(ident.Token)]; recorded {
+				return &PrimitiveType{Name: "u32"}, true
+			}
 		}
 		return nil, false
 	}
