@@ -3664,6 +3664,44 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence("the results after the loops were not proven equal")
 		}
 	}
+	// The package cells after the loops, under the coupling and the exit
+	// premise, as decideEffects compares them in a body without loops: a
+	// cell written before or after a loop (`st = u8(0)` around the
+	// table-zeroing loop of the OS pilot's reset) meets its entry value or
+	// the other side's write; a cell the body writes inside a loop the
+	// coupling has not modeled leaves the comparison undecided — evidence.
+	oakCells := lowering.writtenCells()
+	cellSet := map[string]bool{}
+	for name := range exec.cells {
+		cellSet[name] = true
+	}
+	for name := range oakCells {
+		cellSet[name] = true
+	}
+	writtenCells := make([]string, 0, len(cellSet))
+	for name := range cellSet {
+		writtenCells = append(writtenCells, name)
+	}
+	sort.Strings(writtenCells)
+	for _, name := range writtenCells {
+		global := exec.globals[name]
+		cellBits := cellWidth(global)
+		asmCell, oakCell := exec.cells[name], oakCells[name]
+		if asmCell == nil {
+			asmCell = cellEntry(name, global)
+		}
+		if oakCell == nil {
+			oakCell = cellEntry(name, global)
+		}
+		asmCell = substitute(truncate(asmCell, cellBits), sigma)
+		oakCell = truncate(oakCell, cellBits)
+		if equal, decided := implies(premise, oakCell, asmCell); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: cell %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakCell, asmCell)
+			}
+			return evidence(fmt.Sprintf("the package cell %s after the loops was not proven equal", name))
+		}
+	}
 	// The span memories after the loops: the final element at a fresh
 	// index over the entry memory, as decideSpans compares them, here under
 	// the coupling and the exit premise.
@@ -3698,8 +3736,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	memoryNote := ""
+	if len(writtenCells) > 0 {
+		memoryNote += " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
+	}
 	if len(writtenSpans) > 0 {
-		memoryNote = " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
+		memoryNote += " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
 	}
 	var notes []string
 	for k, inv := range invariants {

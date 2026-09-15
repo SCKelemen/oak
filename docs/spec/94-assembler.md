@@ -4048,8 +4048,11 @@ unit function that only writes state is proven in its cells alone. A
 calls: a callee's summary starts from the cells as the caller's path
 holds them and its writes return to the path, a unit callee is
 summarized for its writes alone, and on the Oak side the inlined callee
-shares the caller's cell locals; only state written around a
-data-dependent loop stays trusted. A unit's `Function.Globals` names the
+shares the caller's cell locals. Around a data-dependent loop the cells
+are compared after the loops under the coupling and the exit premise, as
+the result and the span memories are (`st = u8(0)` before or after the
+table-zeroing loop of the OS pilot's `reset`); only a cell the body
+stores inside a loop body stays trusted. A unit's `Function.Globals` names the
 cells its callees reach as well as its own (`nativegen`'s
 `reachableGlobals`, the call graph walked from the body), so a summary
 of `alloc_table` inside `walk_leaf` finds the cell `st` declared though

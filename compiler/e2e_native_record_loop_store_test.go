@@ -152,3 +152,83 @@ func TestE2ENativeGuardedRecordLoopProven(t *testing.T) {
 		}
 	}
 }
+
+// Package cells around a data-dependent loop are compared after the loops
+// under the coupling (`st = u8(0)` after reset's zeroing loop, then a call
+// that writes it); a cell stored inside the loop body stays trusted, never
+// a mismatch.
+const nativeCellsAroundLoopProgram = `Table: type = struct {
+  pages: [8]u64
+  free_count: u16
+}
+
+st: u8
+count: u32
+
+alloc: (s: [*]Table, dom: u32): u16 {
+  idx: u16 = u16(0)
+  dom < len(s) ? {
+    none: Bool = s[dom].free_count == u16(0)
+    none ? { st = u8(1) } | { st = st }
+    ok: Bool = st == u8(0)
+    ok ? {
+      s[dom].free_count = s[dom].free_count - u16(1)
+      idx = s[dom].free_count
+    } | { idx = idx }
+    idx
+  } | { u16(0) }
+}
+
+reset: (s: [*]Table, dom: u32, n: u32): u16 {
+  dom < len(s) && n <= u32(8) ? {
+    j: u32 = u32(0)
+    while j < n {
+      s[dom].pages[j] = u64(0)
+      j = j + u32(1)
+    }
+    s[dom].free_count = u16(3)
+    st = u8(0)
+    alloc(s, dom)
+  } | { u16(0) }
+}
+
+tally: (s: []Table, dom: u32, n: u32): u32 {
+  acc: u32 = u32(0)
+  dom < len(s) && n <= u32(8) ? {
+    j: u32 = u32(0)
+    while j < n {
+      acc = acc + u32_trunc_u64(s[dom].pages[j])
+      count = count + u32(1)
+      j = j + u32(1)
+    }
+    acc
+  } | { u32(0) }
+}
+
+main: (): i32 {
+  t: [1]Table = [Table { pages: [1, 2, 3, 4, 5, 6, 7, 8], free_count: 0 }]
+  r: u16 = reset(span(&t), u32(0), u32(6))
+  k: u32 = tally(view(&t), u32(0), u32(8))
+  (r == u16(2) && k == u32(15) && count == u32(8) && st == u8(0)) ? 42 | 1
+}
+`
+
+func TestE2ENativeCellsAroundLoopProven(t *testing.T) {
+	requireArm64Host(t)
+	code, abnormal, joined := nativeVerdicts(t, "cells_around_loop", nativeCellsAroundLoopProgram)
+	if abnormal || code != 42 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
+	}
+	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.free_count, s.pages)") {
+		t.Errorf("reset must be proven with its cell and leaf memories:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit tally: not verified (") {
+		t.Errorf("tally (a cell stored in the loop body) is trusted, not decided:\n%s", joined)
+	}
+	if strings.Contains(joined, "disagrees") {
+		t.Errorf("a false mismatch:\n%s", joined)
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "cells_around_loop_c", New().WithSource("cells_around_loop.oak", nativeCellsAroundLoopProgram)); abnormal || code != 42 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
