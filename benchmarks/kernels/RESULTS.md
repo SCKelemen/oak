@@ -434,9 +434,11 @@ record's memory is written where `next` is used whole — passed to
 are not promoted, and at the return, where the caller's area takes the
 homes. What remains beside clang's ten: the block's address rebuilt each
 iteration (`add x9, x22, #32`; the loop invariants, now on
-`specification`, take it) and a copy of the index into a scratch before
-the guard (`mov w10, w23`), which the element idiom can read from the
-home as a compare does. Beyond parity: the loop's exit test at its top
+`specification`, take it). The copy of the index into a scratch before
+the guard (`mov w10, w23`) went with the same increment: an index in its
+own register — a local's home or a promoted field's — is guarded and
+read where it lies (`indexHome`), so the absorber's loop is ten
+instructions and its control two. Beyond parity: the loop's exit test at its top
 (`cmp; b.hs done` then `add; b loop`, four instructions of control to
 clang's three) waits on a bottom-tested loop shape the verifier's
 recognizer admits, and the per-block chain of calls on the inlining of

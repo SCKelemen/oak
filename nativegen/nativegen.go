@@ -6907,11 +6907,56 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 		}
 		return mem, -1, temp, nil
 	}
+	if home, isHome := g.indexHome(index); isHome {
+		// A 32-bit index in its own register — a local's home or a
+		// promoted field's (nativegen/fields.go) — is guarded and read
+		// where it lies; no copy, nothing to release (idx is -1).
+		base, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		if arr.inReg {
+			if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
+				return asm.Memory{}, 0, 0, err
+			}
+		} else {
+			g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+		}
+		if err := g.constantGuard(home, arr.length); err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		idx := wr(home)
+		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, base, nil
+	}
 	r, err := g.indexValue(index)
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
 	}
 	return g.arrayAddressReg(arr, r)
+}
+
+// indexHome is the register a 32-bit unsigned (or i32) index already lives
+// in: a variable's home, or a promoted record field's.
+func (g *generator) indexHome(index ast.Expression) (int, bool) {
+	var name string
+	switch e := index.(type) {
+	case *ast.Identifier:
+		name = e.Value
+	case *ast.IndexExpression:
+		hidden, _, isPromoted := g.promotedFieldOf(e)
+		if !isPromoted {
+			return 0, false
+		}
+		name = hidden
+	default:
+		return 0, false
+	}
+	v, inReg := g.regs[name]
+	typ, typed := g.types[name]
+	if !inReg || !typed || v < 0 || v >= vecBase || typ.isBool || typ.isFloat || typ.isVec || typ.wide() || (typ.signed && typ.bits != 32) {
+		return 0, false
+	}
+	return v, true
 }
 
 // arrayAddressReg is arrayAddress over an index already evaluated into

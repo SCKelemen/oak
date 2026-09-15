@@ -3925,10 +3925,13 @@ stores, flushes, and whole writes, the register reads what the
 memory-resident field would hold (`Oak.FieldPromotion.promoted_reads`),
 at a flush the memory holds it too (`flushed_memory`), and after a whole
 write the register holds what memory holds (`reloaded`).
-`TestNativeShapesFieldPromotion` pins the byte loop of an absorber whose
-`filled`, `blocks`, and `total` live in `w21`, `w22`, `x23`: the loop's
-only memory operations are the byte load from the view and the byte
-store into the block — `sha256_update`'s loop, with the pending
+An index in its own register — a local's home or a promoted field's —
+is guarded and read where it lies (`indexHome`: `cmp w21, #64; b.hs
+trap; strb w9, [x10, w21, uxtw]`), where before it was copied into a
+scratch first. `TestNativeShapesFieldPromotion` pins the byte loop of an
+absorber whose `filled`, `blocks`, and `total` live in `w21`, `w22`,
+`x23`: the loop's only memory operations are the byte load from the view
+and the byte store into the block — `sha256_update`'s loop, with the pending
 increments, comes to ten instructions where clang's is thirteen.
 `TestE2ENativeFieldPromotion` agrees with the C backend, including a
 record assigned whole inside its loop (`a = seed`, the homes reloading).
