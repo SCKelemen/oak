@@ -9,6 +9,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -441,6 +442,34 @@ func Metrics(fn *asm.Function) opt.Metrics {
 	}
 	sort.Slice(loops, func(i, j int) bool { return loops[i].from < loops[j].from })
 	m.Loops = len(loops)
+	// Nesting: a loop's outer loop is the innermost range enclosing it;
+	// the items of a nested loop are that loop's own, not its outer
+	// loops' — the cost model charges them by the trips of every loop
+	// around them (opt.LoopMetrics.Outer).
+	encloses := func(j, k int) bool {
+		return j != k && loops[j].from <= loops[k].from && loops[k].to <= loops[j].to && (loops[j].from < loops[k].from || loops[k].to < loops[j].to)
+	}
+	outer := make([]int, len(loops))
+	depth := make([]int, len(loops))
+	for k := range loops {
+		outer[k] = -1
+		for j := range loops {
+			if encloses(j, k) {
+				depth[k]++
+				if outer[k] < 0 || loops[j].from > loops[outer[k]].from || (loops[j].from == loops[outer[k]].from && loops[j].to < loops[outer[k]].to) {
+					outer[k] = j
+				}
+			}
+		}
+	}
+	nested := func(k, i int) bool {
+		for j := range loops {
+			if encloses(k, j) && loops[j].from <= i && i <= loops[j].to {
+				return true
+			}
+		}
+		return false
+	}
 	classify := func(i int, ins asm.Instruction, count *opt.LoopMetrics) {
 		count.Instructions++
 		switch {
@@ -477,13 +506,24 @@ func Metrics(fn *asm.Function) opt.Metrics {
 	}
 	m.Instructions, m.Branches, m.Loads, m.Stores, m.Guards = whole.Instructions, whole.Branches, whole.Loads, whole.Stores, whole.Guards
 	m.LoopInstructions, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards = inLoops.Instructions, inLoops.Branches, inLoops.Loads, inLoops.Stores, inLoops.Guards
+	// The recurrence analysis (machine.LoopShapes) reads each loop's
+	// index, stride, and trip bound off the lifted body; a body the lift
+	// refuses keeps the register-increment heuristic below.
+	shapes := map[string]*machine.LoopShape{}
+	if analyzed, err := machine.LoopShapes(fn); err == nil {
+		for _, sh := range analyzed {
+			if sh.Header != "" {
+				shapes[sh.Header] = sh
+			}
+		}
+	}
 	indices := make([]int, len(loops)) // each loop's index register, -1 when unknown
 	for k, loop := range loops {
-		var body opt.LoopMetrics
+		body := opt.LoopMetrics{Depth: depth[k], Outer: outer[k] + 1}
 		compared := map[int]bool{}
 		for i := loop.from; i <= loop.to; i++ {
 			ins, ok := fn.Items[i].(asm.Instruction)
-			if !ok {
+			if !ok || nested(k, i) {
 				continue
 			}
 			classify(i, ins, &body)
@@ -498,7 +538,7 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		// rounds or rebuilds (an `add r, r, #7` before a shift) is not one.
 		defs := map[int]int{}
 		for i := loop.from; i <= loop.to; i++ {
-			if ins, ok := fn.Items[i].(asm.Instruction); ok {
+			if ins, ok := fn.Items[i].(asm.Instruction); ok && !nested(k, i) {
 				for _, r := range writtenGeneral(ins) {
 					defs[r]++
 				}
@@ -506,6 +546,9 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		}
 		body.Stride, indices[k] = 1, -1
 		for i := loop.from; i <= loop.to; i++ {
+			if nested(k, i) {
+				continue
+			}
 			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] && defs[reg] == 1 {
 				body.Stride, indices[k] = step, reg
 				break
@@ -514,6 +557,14 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		if k > 0 && body.Stride == 1 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from {
 			if prev := m.LoopBodies[k-1]; prev.Stride > 1 {
 				body.MaxTrips = prev.Stride - 1
+			}
+		}
+		if label, ok := fn.Items[loop.from].(asm.Label); ok {
+			if sh := shapes[label.Name]; sh != nil {
+				body.Stride = sh.Stride
+				if sh.MaxTrips > 0 {
+					body.MaxTrips = sh.MaxTrips
+				}
 			}
 		}
 		m.LoopBodies = append(m.LoopBodies, body)

@@ -142,7 +142,14 @@ source and both gated by the verifier's loop coupling as it stands:
   the loops keep their program order. `bench_sum`'s four-way loop: ten
   instructions and one branch a trip, from fourteen and three, proven.
   The unrolling moved first in the loop phase, so the machine passes see
-  the unrolled shape. Left: `||` loops.
+  the unrolled shape. Left: `||` loops (one top-level case in the tree).
+- *Nested loops in the cost model (landed 2026-09-16).* The model charged
+  an inner loop's body additively with its outer loop's, so rotating the
+  probe loops of `bench_search` priced as a loss; a nested loop's items
+  are its own and weigh the product of the trips around them
+  (`opt.LoopMetrics.Depth`, `Outer`). With the checker's index-fact meet
+  reconciling a constant bound with the narrowed register (`meetIdx`),
+  `bench_search` and `bench_page_probe` select their rotated inner loops.
 - *A guard the loop test already decided.* `bench_search`'s outer loop
   read `probes[p]` under `while p < len(probes)` with both the exit test
   and the guard comparing the same registers: the index was proven and

@@ -1,8 +1,8 @@
 # Optimizer artifact DAG
 
-Status: OptIR analysis DAG with exact identities and first checked selective
-reuse. This note refines the optimizer search design; it does not change Oak
-semantics or authorize OptIR emission.
+Status: OptIR analysis DAG with exact identities, checked selective reuse, and
+bounded deterministic parallel execution. This note refines the optimizer
+search design; it does not change Oak semantics or authorize OptIR emission.
 
 ## 1. Decision
 
@@ -174,7 +174,8 @@ covers every aspect in the consumer's declaration. There is no implicit
 
 ## 7. Scheduling
 
-The first executor is deliberately deterministic and single-threaded. It:
+The reference `Run` executor is deterministic and single-threaded. Each
+executor:
 
 - validates keys, dependencies, and acyclicity;
 - computes only the transitive closure of requested targets;
@@ -185,12 +186,20 @@ The first executor is deliberately deterministic and single-threaded. It:
 - observes cancellation between nodes;
 - attributes an error to the exact failing artifact.
 
-This establishes graph semantics before introducing concurrency. The compatible
-parallel scheduler maintains a sorted ready set, runs at most a configured
-number of independent nodes, publishes results only after a node completes, and
-chooses errors by deterministic graph order rather than completion time.
-Per-function analyses are natural parallel work; within one function, SCCP,
-loop analysis, and other readers of one immutable CFG can also run concurrently.
+`RunParallel` uses deterministic ready waves. It removes at most the configured
+worker count from the sorted ready set, runs those independent computations,
+waits for the entire wave, and considers results in key order. A wave publishes
+and caches all its results only when every task succeeds and the context remains
+live. Otherwise every private result from that wave is discarded and the
+earliest failing key wins, regardless of completion order. Earlier successful
+waves remain useful cache entries, but a failed run publishes no target list.
+
+Waves deliberately trade some pipeline utilization for reproducibility: worker
+timing cannot change which later nodes start, the selected error, cache
+contents, or trace. `ArtifactRun` still reports executed/cache-hit keys in the
+canonical graph order. OptIR uses three workers, matching its current SCCP,
+loop-structure, and CSE/DCE fan-out. Artifact computations must remain isolated
+producers; the scheduler coordinates all cache reads and writes itself.
 
 ## 8. Cache rules
 
@@ -217,10 +226,10 @@ or cycle is rejected before execution. A node failure prevents every dependent
 node from running. Independent nodes outside the requested target closure never
 run.
 
-Cancellation returns the context error attributed to the next not-started node.
-The future parallel executor will stop admitting new work, wait for already
-running computations to publish or discard their private results, and retain no
-partial selectable graph.
+Cancellation in the sequential executor returns the context error attributed
+to the next not-started node. The parallel executor stops after the current
+wave, waits for its running computations, discards that wave, and retains no
+partial selectable target graph.
 
 ## 10. Migration
 
@@ -240,6 +249,9 @@ Completed:
    certificates. CSE/DCE's certificate is an admission artifact over exact CFG
    v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
    so v1 reuses dominance/natural loops while recomputing induction facts.
+6. The graph has bounded deterministic ready-wave concurrency. OptIR runs with
+   three workers; reverse completion, worker bounds, deterministic failures,
+   cancellation, exact-once dependencies, and cache pruning are race-tested.
 
 The compiler currently runs this graph without a cross-call cache. Public
 OptIR results contain mutable slice-backed Go values, so sharing cached payloads
@@ -251,7 +263,6 @@ Remaining:
 
 5. Move native candidate materialization, seam checking, semantic validation,
    cost, and selection onto typed graph builders while retaining identity.
-6. Add bounded ready-node concurrency and deterministic tracing.
 7. Add persistent content-addressed caching only after canonical serialization
    and version invalidation are stable.
 
@@ -260,6 +271,5 @@ Remaining:
 - no code-emission change;
 - no persistent cache;
 - no analysis reuse across IR versions without a checked aspect certificate;
-- no parallel executor yet;
 - no claim that a graph kind replaces a proof or verifier verdict;
 - no requirement that language users understand or configure the graph.

@@ -220,7 +220,7 @@ func meetGuards(a, b *guardState) *guardState {
 		}
 		out.spans[base] = img
 	}
-	out.idx = meetMap(a.idx, b.idx)
+	out.idx = meetIdx(a, b)
 	out.frame = meetMap(a.frame, b.frame)
 	out.consts = meetMap(a.consts, b.consts)
 	out.regions = meetMap(a.regions, b.regions)
@@ -246,6 +246,50 @@ func meetGuards(a, b *guardState) *guardState {
 	}
 	out.flags = a.flags && b.flags
 	return out
+}
+
+// meetIdx meets the index facts: a fact both paths state survives, and so
+// does a register bound one path states (`wI < wB`) when the other path
+// states the same index below a constant that wB holds at least (`wI <
+// K`, wB = K' >= K) — the entry of a bottom-tested loop compares the
+// index against a bound register still holding its initial constant,
+// which the compare recorded as an immediate (cmpFact.imm), while the
+// back edge compares it against the bound as a register; both prove the
+// register form (Oak.Assembler.index_access; the constant side by
+// transitivity, Oak.Assembler.index_below_const_bound).
+func meetIdx(a, b *guardState) map[int]idxFact {
+	out := map[int]idxFact{}
+	for reg, fa := range a.idx {
+		fb, ok := b.idx[reg]
+		if !ok {
+			continue
+		}
+		if fa == fb {
+			out[reg] = fa
+			continue
+		}
+		if f, ok := reconcileIdx(a, fa, b, fb); ok {
+			out[reg] = f
+		} else if f, ok := reconcileIdx(b, fb, a, fa); ok {
+			out[reg] = f
+		}
+	}
+	return out
+}
+
+// reconcileIdx: constState proves the index below the constant of
+// constFact; regFact (the other path's) bounds it by a register that on
+// constState holds a constant at least as large. The register fact then
+// holds on both paths.
+func reconcileIdx(constState *guardState, constFact idxFact, regState *guardState, regFact idxFact) (idxFact, bool) {
+	if constFact.boundReg >= 0 || constFact.slack || regFact.boundReg < 0 || regFact.slack || regFact.bound != 0 {
+		return idxFact{}, false
+	}
+	k, isConst := constState.consts[regFact.boundReg]
+	if !isConst || k < constFact.bound {
+		return idxFact{}, false
+	}
+	return regFact, true
 }
 
 // holdsUpper reports whether the state proves value(reg) <= value(u.ref)

@@ -879,3 +879,127 @@ func TestHoistNestedLoops(t *testing.T) {
 		t.Fatalf("hoisted %d:\n%s", hoisted, got)
 	}
 }
+
+func TestShapesInductionAndRemainder(t *testing.T) {
+	// A main loop striding by four, then its remainder by one over the
+	// same index and bound; a constant-bounded loop with a known trip
+	// count; an increment that is not the exit's index.
+	f := fn(
+		ins("mov", w(9), w(31)),
+		ins("mov", w(11), w(31)),
+		label("main_1"),
+		ins("cmp", w(9), w(20)),
+		bcond("hi", "rest_2"),
+		ins("add", w(11), w(11), imm(2)),
+		ins("add", w(9), w(9), imm(4)),
+		ins("b", sym("main_1")),
+		label("rest_2"),
+		ins("cmp", w(9), w(1)),
+		bcond("hs", "count_3"),
+		ins("add", w(9), w(9), imm(1)),
+		ins("b", sym("rest_2")),
+		label("count_3"),
+		ins("movz", w(10), imm(0)),
+		label("loop_4"),
+		ins("cmp", w(10), imm(10)),
+		bcond("hs", "done_5"),
+		ins("add", w(11), w(11), w(10)),
+		ins("add", w(10), w(10), imm(3)),
+		ins("b", sym("loop_4")),
+		label("done_5"),
+		ins("mov", w(0), w(11)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11)}
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 3 {
+		t.Fatalf("%d loops", len(shapes))
+	}
+	by := map[string]*LoopShape{}
+	for _, sh := range shapes {
+		by[sh.Header] = sh
+	}
+	main, rest, count := by["main_1"], by["rest_2"], by["loop_4"]
+	if main == nil || main.Index == nil || main.Stride != 4 || main.Index.Reg != (Reg{GPR, 9}) || main.BoundReg != (Reg{GPR, 20}) || main.MaxTrips != 0 {
+		t.Fatalf("main: %v", main)
+	}
+	if len(main.Inductions) != 2 {
+		t.Fatalf("main inductions: %d (w11 steps by two every trip too)", len(main.Inductions))
+	}
+	// The remainder's bound differs (w1 against w20), so no trip bound.
+	if rest == nil || rest.Stride != 1 || rest.MaxTrips != 0 {
+		t.Fatalf("rest: %v", rest)
+	}
+	if count == nil || count.Stride != 3 || !count.BoundIsImm || count.BoundImm != 10 || !count.Index.StartKnown || count.MaxTrips != 4 {
+		t.Fatalf("count: %v", count)
+	}
+}
+
+func TestShapesRemainderBound(t *testing.T) {
+	f := fn(
+		ins("mov", w(9), w(31)),
+		label("main_1"),
+		ins("cmp", w(9), w(20)),
+		bcond("hi", "rest_2"),
+		ins("add", w(9), w(9), imm(4)),
+		ins("b", sym("main_1")),
+		label("rest_2"),
+		ins("cmp", w(9), w(20)),
+		bcond("hs", "done_3"),
+		ins("add", w(9), w(9), imm(1)),
+		ins("b", sym("rest_2")),
+		label("done_3"),
+		ins("mov", w(0), w(9)),
+		ins("ret"),
+	)
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 2 || shapes[1].MaxTrips != 3 || shapes[0].Stride != 4 {
+		t.Fatalf("%v / %v", shapes[0], shapes[1])
+	}
+	// An index incremented under a condition is not an induction.
+	f = fn(
+		ins("mov", w(9), w(31)),
+		label("loop_1"),
+		ins("cmp", w(9), w(20)),
+		bcond("hs", "done_3"),
+		ins("cbz", w(1), sym("skip_2")),
+		ins("add", w(9), w(9), imm(2)),
+		label("skip_2"),
+		ins("add", w(9), w(9), imm(1)),
+		ins("b", sym("loop_1")),
+		label("done_3"),
+		ins("ret"),
+	)
+	shapes, err = LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 1 || shapes[0].Index != nil || shapes[0].Stride != 1 {
+		t.Fatalf("conditional increment: %v", shapes[0])
+	}
+}
+
+func TestShapesRV64(t *testing.T) {
+	f := rvfn(
+		ins("mv", rx(5), rx(0)),
+		label("loop_1"),
+		ins("bgeu", rx(5), rx(11), sym("done_2")),
+		ins("addi", rx(5), rx(5), imm(8)),
+		ins("j", sym("loop_1")),
+		label("done_2"),
+		ins("ret"),
+	)
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 1 || shapes[0].Stride != 8 || shapes[0].BoundReg != (Reg{GPR, 11}) || !shapes[0].Index.StartKnown {
+		t.Fatalf("%v", shapes[0])
+	}
+}

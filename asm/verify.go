@@ -647,6 +647,8 @@ func significantBitsMemo(t *term, memo map[*term]int) int {
 	switch t.kind {
 	case termConst:
 		n = bits.Len64(t.value)
+	case termParam:
+		n = min(t.width, t.declaredWidth()) // a parameter widened past its declared width is zero-extended
 	case termCmp:
 		n = 1
 	case termIte:
@@ -1441,6 +1443,19 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	if !ok && strings.HasPrefix(reason, "more paths than the verifier's budget") {
 		return executeBodyChunkJoining(fn, sig, concrete, half, chunk, true)
 	}
+	if ok && exec != nil && !exec.loopsInLayoutOrder() {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: loop events out of layout order; running again merging at the joins\n", fn.Name)
+		}
+		// A fork's first side ran past the meeting point and summarized
+		// the loops there before the other side's (`groups == 1 ? {loop}
+		// | {loop}` then a loop): the events are numbered out of the Oak
+		// body's order. Merging at the joins numbers them as the Oak side
+		// does; when that run fails, the first stands.
+		if joined, joinedExec, joinedReason, joinedOK := executeBodyChunkJoining(fn, sig, concrete, half, chunk, true); joinedOK {
+			return joined, joinedExec, joinedReason, joinedOK
+		}
+	}
 	return result, exec, reason, ok
 }
 
@@ -1782,6 +1797,7 @@ type pathExecutor struct {
 	writes    map[string][]*spanWrite // the span memories written after run (asm/effects.go)
 	concrete  bool                    // a witness run: every input is a constant
 	loopExits map[int]loopShape
+	callAt    int          // the item index of the call being summarized (loopEvent.at)
 	loops     []*loopEvent // data-dependent loops met, in creation order
 	loopStack []int        // indices of the loops whose bodies are being executed
 	// sites: the loop events by the site that created them — a loop head
@@ -2816,6 +2832,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			x.ends = append(x.ends, pathEnd{result: trapPath, cond: state.pathCondition(), path: state.path})
 			return nil, nil, "", true
 		case "bl":
+			x.callAt = pc
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, atInstruction(reason, instr), false
 			}
@@ -2910,8 +2927,23 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// Each side learns what the branch decided about its register.
 			bindZeroTest(instr, takenState, true)
 			bindZeroTest(instr, state, false)
+			// The fall-through side runs first at a forward fork: the
+			// layout's order, which is the Oak body's (`c ? then | else`
+			// lays the then block after the branch and jumps to the else
+			// block), so the loops the two sides summarize take their
+			// indices in the order the Oak side's do — the coupling pairs
+			// the k-th event of each side — and a merged state selects
+			// `taken ? … : fall-through` under the branch condition's
+			// negation, the Oak body's own condition. A loop body's
+			// worklist (runBody) runs the fall-through side first too.
 			join, hasJoin := x.joins[pc]
 			if !hasJoin || target <= pc || join <= pc {
+				if target > pc {
+					if _, _, reason, ok := x.run(pc+1, state); !ok {
+						return nil, nil, atInstruction(reason, instr), false
+					}
+					return x.run(target, takenState)
+				}
 				if _, _, reason, ok := x.run(target, takenState); !ok {
 					return nil, nil, atInstruction(reason, instr), false
 				}
@@ -2919,9 +2951,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			mark := len(x.joined)
 			x.stops = append(x.stops, join)
-			_, _, reason, ok = x.run(target, takenState)
+			_, _, reason, ok = x.run(pc+1, state)
 			if ok {
-				_, _, reason, ok = x.run(pc+1, state)
+				_, _, reason, ok = x.run(target, takenState)
 			}
 			x.stops = x.stops[:len(x.stops)-1]
 			if !ok {
@@ -3306,6 +3338,12 @@ func joinPoints(items []Item, labels map[string]int) map[int]int {
 			}
 			succ[i] = []int{exit}
 		case isConditionalBranch(instr.Mnemonic) && len(instr.Operands) > 0:
+			if isGuardBranch(items, labels, instr) {
+				// A guard's trap path yields nothing: the meeting points
+				// are those of the paths that yield.
+				succ[i] = []int{next}
+				continue
+			}
 			if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym {
 				if target, known := labels[sym.Name]; known {
 					succ[i] = []int{target, next}
@@ -4755,6 +4793,34 @@ func notTerm(t *term) *term {
 		}
 	}
 	return binaryTerm("xor", truncate(t, 1), constTerm(1, 1))
+}
+
+// narrowComparison narrows an unsigned comparison (or an equality) whose
+// operands, at one width, both fit a smaller natural width — parameters
+// widened past their declared width, masked or one-bit values — to that
+// width: the comparison's value is the same, and it is the width the Oak
+// body compares at. Nil when nothing narrows.
+func narrowComparison(t, left, right *term) *term {
+	switch t.op {
+	case "eq", "ne", "hs", "lo", "hi", "ls":
+	default:
+		return nil
+	}
+	if left.width != right.width || left.width <= 8 {
+		return nil
+	}
+	fit := max(significantBits(left), significantBits(right))
+	if fit <= 1 {
+		return nil // 1/0 values: the boolean rules read the comparison
+	}
+	w := 8
+	for w < fit {
+		w *= 2
+	}
+	if w >= left.width {
+		return nil
+	}
+	return &term{kind: termCmp, width: t.width, op: t.op, left: adaptWidth(left, w), right: adaptWidth(right, w)}
 }
 
 // booleanValued reports a term whose value is 0 or 1 at its width: a
@@ -7662,6 +7728,11 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && only != fn.Name {
+		// A diagnostic switch: one function verified, every other unit
+		// trusted without a look (its verdict is never cached).
+		return Verdict{Kind: VerdictTrusted, Message: "skipped under OAK_VERIFY_ONLY"}
+	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		started := time.Now()
 		defer func() {
@@ -8389,6 +8460,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// by identity (asm/loops.go).
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
+		ev.at = x.callAt
 	}
 	if siteSeen {
 		if len(lo.loops) != priorSite.count {
@@ -9259,6 +9331,17 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 					}
 				}
 			}
+			if out == nil && t.op == "and" && t.width == 1 && right.kind == termConst && right.value == 1 && left.width > 1 && left.kind == termBinary && (left.op == "and" || left.op == "or" || left.op == "xor") && booleanValued(left, boolean) {
+				// A 1/0 value's low bit is the value: the truncation of a
+				// bitwise combination of 1/0 values to one bit is the
+				// combination of their truncations (`eor w, w, #1` then
+				// the bit: the negation of the bit), so the machine's
+				// negations and the Oak body's meet at one width.
+				out = canonicalMemo(binaryTerm(left.op, truncate(left.left, 1), truncate(left.right, 1)), memo, boolean)
+			}
+			if out == nil && t.op == "xor" && t.width == 1 && right.kind == termConst && right.value == 1 && left.kind == termBinary && left.op == "xor" && left.width == 1 && left.right.kind == termConst && left.right.value == 1 {
+				out = left.left // a double negation
+			}
 			if out == nil && t.op == "xor" && t.width == 1 {
 				// The negation of a comparison is the opposite comparison:
 				// `here < found` as the Oak body writes it, against the
@@ -9303,6 +9386,12 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				}
 			}
 		case termCmp:
+			if narrow := narrowComparison(t, left, right); narrow != nil {
+				// An unsigned comparison of zero-extended values at a wide
+				// width is the comparison at their own (`cmp x1, x0` over
+				// two u32 parameters, against the Oak body's `start > n`).
+				left, right = narrow.left, narrow.right
+			}
 			switch {
 			case right.kind == termConst && right.value == 0 && t.op == "ne" && booleanValued(left, boolean):
 				// A zero test of a 1/0 value is the value (the machine's
@@ -9316,6 +9405,12 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				out = &term{kind: termCmp, width: t.width, op: t.op, left: left, right: right}
 			}
 		case termIte:
+			if cond.kind == termCmp && cond.width != 1 {
+				// A conditional's comparison at one bit: the Oak body's
+				// `start > n ? n : start` and the machine's `csel` meet
+				// whatever width each compared at.
+				cond = truncate(cond, 1)
+			}
 			budget := sameTermBudget
 			if left.kind == termConst && right.kind == termConst && left.value == 1 && right.value == 0 && booleanValued(cond, boolean) {
 				// `c ? 1 : 0` (the machine's cset) of a 1/0 condition is

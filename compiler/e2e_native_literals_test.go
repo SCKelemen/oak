@@ -57,6 +57,20 @@ func TestE2ENativeLiteralsVerdicts(t *testing.T) {
 			t.Errorf("%s must be lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The scanner's entry points: a fork over the group count whose two
+	// sides each run a step loop, then the tail loop both reach. The
+	// machine's paths run the sides in the Oak body's order and merge at
+	// the join once the executor sees the loop events out of layout
+	// order; a register carried on one path only is scratch on both; the
+	// coupling's candidates prefer registers read past the loop as the
+	// Oak variable is, and a wrong pairing is refuted by a valuation
+	// settled through the premise's exit facts (docs/spec/94-assembler.md
+	// §8, "count and find_from").
+	for _, fn := range []string{"count", "find_from"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body at the bit level — 32 nested data-dependent loops coupled inductively") {
+			t.Errorf("%s must be proven by coupling its thirty-two loops; diagnostics:\n%s", fn, joined)
+		}
+	}
 	// The scanner's step functions: their group loop calls classify four
 	// times and verify_* under four conditions; the loop bodies' forks
 	// merge at their joins and the calls' loops are summarized, so the
