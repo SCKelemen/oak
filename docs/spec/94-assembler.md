@@ -4240,9 +4240,12 @@ and an unconditional jump (`Lane.RotateLoops`, the `rotate-loops`
 transform of the candidate search, loop phase, mechanical; a disjunction
 keeps the top-tested shape). The rotation is a pass over the emitted
 items (`nativegen/rotate.go`), run after the loop-invariant pass, whose
-loop finder reads the top-tested shape; a header whose exit test hides a
-later test behind a setup instruction (the unrolled reduction's `sub wT,
-wL, #4; cmp wI, wT; b.hi done`) is left as it is. The search's cost
+loop finder reads the top-tested shape; the exit run ends at its last
+exit branch, so a guard's compare first in the body (the hoisted loop's
+`cmp wI, #64; b.hs trap`) is the body's and the hoisted form rotates too;
+a header whose exit test hides a later test behind a setup instruction
+(the unrolled reduction's `sub wT, wL, #4; cmp wI, wT; b.hi done`) is
+left as it is. The search's cost
 model decides where the rotation pays: it rotates a plain byte sum over
 the unrolled form when both are evidence, and leaves a three-trip
 remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
@@ -4270,7 +4273,8 @@ branch an iteration (`ldr; add; add; cmp; b.lo`), `bench_dot`,
 and `bench_page_probe` rotate both their loops (the inner conditions are
 conjunctions) with their verdicts unchanged; on the stdlib-bearing
 program 39 bodies rotate and prove and none falls back
-(`compiler/e2e_native_rotation_test.go`). The checker's taken-edge facts
+(`compiler/e2e_native_rotation_test.go`; 50 in the stdlib builder once the
+hoisted forms rotate). The checker's taken-edge facts
 are general: the taken path of `b.cond` after a compare knows what the
 fall-through of `b.inverse` would, so a `b.hi header` back edge carries
 the slack fact as `b.lo header` carries the index fact.

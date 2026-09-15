@@ -41,7 +41,9 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   typechecker's proved indices and the language's integer associativity
   laws into facts; `Metrics` over a lowered body (instruction classes,
   guards, and per loop the counts, the stride read off the index
-  register's increment, and the trip bound of a remainder loop after a
+  register's increment (the register a test compares and the loop
+  writes only there: a scratch register a guard compares and the body
+  reloads before adding a constant is not the index), and the trip bound of a remainder loop after a
   strided one); `Registry`, `PlainLane`, `FindingLine`.
 - The cost model (`opt.TargetCosts`) is static and per class: straight-line
   code at weight one, each loop body at `LoopWeight` trips divided by its

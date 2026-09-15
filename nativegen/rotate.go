@@ -83,8 +83,15 @@ func rotateLoop(items []asm.Item, loop invariantLoop) ([]asm.Item, bool) {
 		}
 		break
 	}
-	if lastBranch < 0 || run != lastBranch+1 || run >= back {
-		return nil, false // no test run, a run not ending in a branch, or no body
+	if lastBranch < 0 {
+		return nil, false // no test run
+	}
+	// The run ends at its last exit branch: a compare after it is the
+	// body's (a guard's `cmp wI, #64; b.hs trap`, first in a body whose
+	// invariants were hoisted).
+	run = lastBranch + 1
+	if run >= back {
+		return nil, false // no body
 	}
 	// The run must be the whole exit test: a later branch to the exit
 	// label is a test behind a setup instruction (`sub wT, wL, #4; cmp wI,
