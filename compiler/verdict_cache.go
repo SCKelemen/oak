@@ -28,7 +28,7 @@ import (
 
 // verdictCacheDir is the directory of cached verdicts, "" when disabled.
 func verdictCacheDir() string {
-	if os.Getenv("OAK_VERIFY_CACHE") == "0" {
+	if os.Getenv("OAK_VERIFY_CACHE") == "0" || os.Getenv("OAK_VERIFY_ONLY") != "" {
 		return ""
 	}
 	return filepath.Join(os.TempDir(), "oak-verify-cache")

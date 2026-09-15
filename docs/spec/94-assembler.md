@@ -1238,9 +1238,65 @@ extends back as the parameter (the Oak lowering's convention, its own
 masks beside it: `u32(a)` for a `u8` parameter is `(a and 255)`), so
 stripping the mask there would forget it (the twelve-diamond join test
 refuted the first attempt). With these `step_first` is **proven**,
-thirteen loops coupled like `step_count`'s. `count` (its step loop's callee loops nest differently
-on the two sides) and `find_from` (a loop reached on two paths with
-different carried variables) stay trusted.
+thirteen loops coupled like `step_count`'s.
+
+**count and find_from (2026-09-15).** The scanner's entry points — a
+fork over the group count whose two sides each run a step loop (one
+with the tables loaded once, one with a group loop inside), then the
+tail loop both sides reach — were trusted for loops that "nest
+differently" or whose "carried variables differ between two paths".
+Behind the messages stood four things. The **executor ran a fork's
+taken side first**, and on its first run (joins are for the rerun past
+the path budget) the first side ran on through the shared tail and
+summarized it before the other side's loop: the machine's events came
+A, tail, B where the Oak body lowers A, B, tail, and the coupling pairs
+the k-th event of each side. Now the fall-through side runs first at a
+forward fork (the layout's order, the Oak body's: `c ? then | else`
+lays the then block after the branch; a loop body's worklist already
+did), each event records **its place in the layout** (`loopEvent.at`,
+the header's index or the call's), and a run whose sibling events are
+out of that order **runs again merging at the joins**
+(`loopsInLayoutOrder`; the merged state then selects `then : else`
+under the Oak body's own condition). For the joins to exist, a **guard's
+trap path no longer counts**: `joinPoints` reads a conditional branch to
+a trap block as falling through (`isGuardBranch`), since a side that
+can trap has no post-dominator otherwise. A **register carried on one
+path and scratch on the other** — bound at one path's header, nothing
+at the other's, its header value never read by the body
+(`mentionsElsewhere`) — is scratch on both before the summaries merge.
+A **register reloaded from its own spill slot** (`str x14, [sp, #576]`
+… `ldr x14`) is no 64-bit write of it: a register the body otherwise
+writes as w stays a 32-bit variable on every path. With the loops
+paired, both functions reached the coupling and ended undecided, for
+one reason: `found` and `off` both start at zero, so either register
+fits either variable at the header, and the wrong pairing could not be
+refuted — no random valuation satisfied a premise of a dozen inner
+loops' exit facts (`g = (total + 15) >> 4`, …), so the obligation went
+to a diagram past its budget. **Valuations settle through the premise's
+own bindings** (`premiseBindings`: a conjunct comparing a symbol with a
+term, its negation folded, is satisfied by the symbol taking the term's
+value or its neighbor), and the wrong pairing falls in a step; the
+**candidates prefer a register read past the loop when the Oak variable
+is** (`exitReadSymbols`: an accumulator's spill slot reloaded after the
+loop over the register that held it inside), and a coupling's **offset
+takes its canonical spelling** (`start > n ? n : start` read at 32 bits
+through a 64-bit mask, against the Oak body's own conditional, is one
+term once the mask is pushed and the comparison is at one bit — a
+conditional's comparison canonicalizes to one bit, a wide unsigned
+comparison of zero-extended values to their width,
+`narrowComparison`). Pruning under the premise rebuilds branches, so
+the sides take the canonical spelling again after it; and the low bit
+of a bitwise combination of 1/0 values is the combination of the bits
+(`eor w, w, #1` then the bit is the negation of the bit). With these
+`count` and `find_from` are **proven**, thirty-two nested loops each
+(the two step loops with `step_count`'s or `step_first`'s thirteen
+inside, the group loop, and the tail's three), in under seven seconds;
+the coupling's term budget is 250,000 nodes (their terms hold 168,000).
+The optimization search's other forms of the two (hoisted, rotated,
+reallocated) stay evidence or trusted, and are not the form emitted. A
+diagnostic switch, `OAK_VERIFY_ONLY=<function>`, verifies one function
+and trusts the rest without a look (its verdicts are never cached), so
+a module's one function is a fifteen-second probe under the trace.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
