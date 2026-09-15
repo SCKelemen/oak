@@ -5389,9 +5389,34 @@ t, base, t` or `add t, base, z` for bytes — with no guard of its own
 (`guardedAddress`), and the checker admits it from the fact through the
 scaled-index and element-region rules it already had for GCC's shape
 (`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
-that line's guards. Outside the mechanism, and still guarded: a bound that is not `len(v)`,
-an index that is not the tested variable, and an access after a label
-inside the body (the RV64 checker forgets index facts at labels).
+that line's guards. Outside the mechanism, and still guarded: a bound that is not `len(v)`
+and an index that is not the tested variable.
+
+**Guard facts through labels on the RV64 lane (2026-09-15).** The RV64
+checker forgot every guard fact where paths meet — index, scaled, upper,
+difference, count, remaining-count, and slack facts, and the spans' proven
+minimums — so an access after an arm inside a loop body (`v[i]` after a
+`?`) was refused however plainly the head had guarded `i`, and stayed
+guarded under the per-line fallback. The checker now runs to the same
+dataflow fixpoint as the AArch64 one (`checkRV64`, `rvGuardState`,
+`rvMeetGuards`): each pass assumes a guard state at every label, records
+the meet of the states that arrive there — by fall-through and by every
+branch, the arrival taken before the branch's own fall-through fact —
+and the passes repeat until the assumptions are the arrivals; the first
+pass carries facts over optimistically, facts only shrink, and past the
+cap the conservative pass forgets them all as before. The facts a stable
+register carries (constants, normalized lengths, aliases, frame addresses,
+regions written once) keep their own rules. A label reached from one path
+keeps that path's facts; one another path skips to loses what that path
+lacks (`TestRV64SpanMemoryChecker`, the two label cases). Measured on the
+stdlib-bearing program, like for like with the verdict cache off: 31
+guards elided where 29 were, the one body under the per-line fallback
+fully elided, the bodies' `bgeu` guards 542 → 536, and no verdict
+changes (237 proven) — a small step here, since after the short-circuit
+heads few elided bodies were being refused at a label; its value is what
+it removes as a reason, so that the capture at the head is now the only
+limit on the lane's elision (a bound other than `len(v)`; an index other
+than the tested variable, `v[i + 1]` under `i + 1 < len(v)`).
 
 **Short-circuit conditions (2026-09-15).** Of the standard library's 473
 `while` loops, 44 test a bare `i < len(v)` and 175 a conjunction, most
