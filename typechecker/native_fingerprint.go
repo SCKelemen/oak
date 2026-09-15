@@ -15,7 +15,7 @@ import (
 // materialization recipe.
 func (tc *TypeChecker) NativeLoweringFingerprint() string {
 	digest := sha256.New()
-	writeNativeFingerprintPart(digest, "oak.typechecker.native-lowering.v1")
+	writeNativeFingerprintPart(digest, "oak.typechecker.native-lowering.v2")
 	if tc == nil {
 		writeNativeFingerprintPart(digest, "nil")
 		return hex.EncodeToString(digest.Sum(nil))
@@ -23,10 +23,28 @@ func (tc *TypeChecker) NativeLoweringFingerprint() string {
 	writeNativeFingerprintPart(digest, strconv.Itoa(tc.intSize))
 	writeNativeFingerprintPart(digest, strconv.Itoa(tc.ptrSize))
 	writeTokenBoolMap(digest, "proven-indices", tc.provenIndices)
+	writeIndexProofMap(digest, tc.indexProofs)
 	writeTokenStringMap(digest, "arithmetic-types", tc.arithmeticTypes)
 	writeTokenIntMap(digest, "shift-widths", tc.shiftWidths)
 	writeTokenStringMap(digest, "variant-resolutions", tc.variantResolutions)
 	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func writeIndexProofMap(digest hash.Hash, values map[tokenKey]IndexProof) {
+	keys := sortedTokenKeys(values)
+	writeNativeFingerprintPart(digest, "index-proofs")
+	writeNativeFingerprintPart(digest, strconv.Itoa(len(keys)))
+	for _, key := range keys {
+		proof := values[key]
+		writeTokenKey(digest, key)
+		for _, value := range []string{proof.ID, proof.Proposition, proof.Container, strconv.FormatInt(proof.Extent, 10), proof.Scope, proof.Provenance, proof.Witness} {
+			writeNativeFingerprintPart(digest, value)
+		}
+		writeNativeFingerprintPart(digest, strconv.Itoa(len(proof.Dependencies)))
+		for _, dependency := range proof.Dependencies {
+			writeNativeFingerprintPart(digest, dependency)
+		}
+	}
 }
 
 func writeTokenBoolMap(digest hash.Hash, domain string, values map[tokenKey]bool) {

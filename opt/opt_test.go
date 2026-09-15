@@ -403,9 +403,28 @@ func TestPruneKeepsIdentity(t *testing.T) {
 	identity := Identity(config{})
 	identity.Cost = 100
 	cheap := []*Candidate{{Applied: []string{"a"}, Cost: 1}, {Applied: []string{"b"}, Cost: 2}, {Applied: []string{"c"}, Cost: 3}}
-	kept := prune(append(cheap, identity), 2, identity)
+	kept := prune(append(cheap, identity), 2, identity, nil)
 	if len(kept) != 2 || kept[0].Name() != "a" || kept[1] != identity {
 		t.Fatalf("kept %v", kept)
+	}
+}
+
+func TestPruneKeepsCheapestUngatedFallback(t *testing.T) {
+	identity := Identity(config{})
+	identity.Cost = 100
+	ungated := &Candidate{Applied: []string{"checked"}, Cost: 4}
+	candidates := []*Candidate{
+		{Applied: []string{"g1"}, Cost: 1},
+		{Applied: []string{"g2"}, Cost: 2},
+		{Applied: []string{"g3"}, Cost: 3},
+		ungated,
+		identity,
+	}
+	kept := prune(candidates, 3, identity, func(candidate *Candidate) bool {
+		return candidate != identity && candidate != ungated
+	})
+	if len(kept) != 3 || kept[0].Name() != "g1" || kept[1] != ungated || kept[2] != identity {
+		t.Fatalf("kept %v, want cheapest gated, cheapest ungated, identity", kept)
 	}
 }
 

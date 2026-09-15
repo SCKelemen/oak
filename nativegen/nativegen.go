@@ -3622,22 +3622,51 @@ func (g *generator) constantOf(name string) (asm.Constant, bool) {
 }
 
 func (g *generator) emit(mnemonic string, operands ...asm.Operand) {
+	g.emitInstruction(g.ins(mnemonic, operands...))
+}
+
+// emitCheckedIndex attaches the exact typechecker proof consumed by an
+// unguarded indexed memory operation. The reference identifies the memory
+// operand, not its current register spelling, so MachineIR rewrites carry it
+// with the use they rewrite. A missing proof or non-indexed operand emits the
+// ordinary instruction; the seam checker therefore still fails closed.
+func (g *generator) emitCheckedIndex(tok *token.Token, extent int64, mnemonic string, operands ...asm.Operand) {
+	ins := g.ins(mnemonic, operands...)
+	if tok != nil && extent > 0 && g.tc != nil {
+		if proof, ok := g.tc.IndexProof(*tok); ok && proof.Proposition == FactIndexInExtent {
+			for position, operand := range operands {
+				memory, isMemory := operand.(asm.Memory)
+				if !isMemory || memory.Index == nil {
+					continue
+				}
+				ins.CheckedFacts = append(ins.CheckedFacts, asm.CheckedFactRef{
+					ID: proof.ID, Kind: proof.Proposition, Container: proof.Container,
+					Operand: position, Extent: extent,
+				})
+				break
+			}
+		}
+	}
+	g.emitInstruction(ins)
+}
+
+func (g *generator) emitInstruction(ins asm.Instruction) {
 	if g.terminated {
 		return
 	}
 	g.liveFlags = ""
-	if ins, keep := g.forward(g.ins(mnemonic, operands...)); keep {
-		g.items = append(g.items, ins)
+	if forwarded, keep := g.forward(ins); keep {
+		g.items = append(g.items, forwarded)
 	}
-	switch mnemonic {
+	switch ins.Mnemonic {
 	case "b", "cbz", "cbnz", "tbz", "tbnz":
 		// A transfer that is not a compare's branch: the target's flags
 		// are not one compare's.
-		if sym, isSym := operands[len(operands)-1].(asm.Symbol); isSym {
+		if sym, isSym := ins.Operands[len(ins.Operands)-1].(asm.Symbol); isSym {
 			g.flagsTo[sym.Name] = ""
 		}
 	}
-	if mnemonic == "b" || mnemonic == "ret" || mnemonic == "brk" {
+	if ins.Mnemonic == "b" || ins.Mnemonic == "ret" || ins.Mnemonic == "brk" {
 		g.terminated = true
 	}
 }
@@ -8313,7 +8342,7 @@ func (g *generator) arrayElementReg(arr *arrayLocal, index ast.Expression, r int
 			return 0, err
 		}
 	}
-	g.emit(loadOf(arr.elem), reg(out, arr.elem), address)
+	g.emitCheckedIndex(tok, arr.length, loadOf(arr.elem), reg(out, arr.elem), address)
 	if base >= 0 {
 		g.release(base)
 	}
@@ -8461,10 +8490,10 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 			return 0, err
 		}
 		if sp.elem.isFloat {
-			g.emit("ldr", reg(out, sp.elem), address)
+			g.emitCheckedIndex(&e.Token, sp.frameLen, "ldr", reg(out, sp.elem), address)
 			return out, nil
 		}
-		g.emit(loadOf(sp.elem), reg(out, sp.elem), address)
+		g.emitCheckedIndex(&e.Token, sp.frameLen, loadOf(sp.elem), reg(out, sp.elem), address)
 		return out, nil
 	}
 	index := wr(r)
@@ -8474,7 +8503,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("ldr", reg(f, sp.elem), address)
+		g.emitCheckedIndex(&e.Token, sp.frameLen, "ldr", reg(f, sp.elem), address)
 		g.release(r)
 		return f, nil
 	}
@@ -8492,7 +8521,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		load = "ldrb"
 	}
 	// The element lands in the index register: the index is spent.
-	g.emit(load, reg(r, sp.elem), address)
+	g.emitCheckedIndex(&e.Token, sp.frameLen, load, reg(r, sp.elem), address)
 	return r, nil
 }
 
@@ -8675,7 +8704,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if err != nil {
 			return err
 		}
-		g.emit(storeOf(arr.elem), reg(value, arr.elem), address)
+		g.emitCheckedIndex(&s.Target.Token, arr.length, storeOf(arr.elem), reg(value, arr.elem), address)
 		for _, r := range []int{value, idx, base} {
 			if r >= 0 {
 				g.release(r)
@@ -8712,7 +8741,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	case 8:
 		store = "strb"
 	}
-	g.emit(store, reg(value, sp.elem), address)
+	g.emitCheckedIndex(&s.Target.Token, sp.frameLen, store, reg(value, sp.elem), address)
 	if !fixed {
 		g.release(r)
 	}

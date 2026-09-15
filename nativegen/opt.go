@@ -371,12 +371,23 @@ func FunctionFacts(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) *opt.
 		if !ok || index.Dot || tc == nil || !tc.IndexProven(index.Token) {
 			return
 		}
-		facts.Add(opt.Fact{
+		proof, hasProof := tc.IndexProof(index.Token)
+		fact := opt.Fact{
 			Proposition: opt.Prop(FactIndexInExtent, index.String()),
 			Provenance:  opt.Checked,
 			Source:      "typechecker/extents.go IndexProven",
 			Scope:       fmt.Sprintf("line %d", index.Token.Line),
-		})
+		}
+		if hasProof {
+			fact.ID = proof.ID
+			fact.Proposition = opt.Prop(proof.Proposition, index.Index.String(), proof.Container)
+			fact.Source = proof.Witness
+			fact.Scope = proof.Scope
+			for _, dependency := range proof.Dependencies {
+				fact.Dependencies = append(fact.Dependencies, opt.Prop(dependency))
+			}
+		}
+		facts.Add(fact)
 	})
 	for _, op := range []string{"+", "|", "&", "^", "min", "max"} {
 		facts.Add(opt.Fact{

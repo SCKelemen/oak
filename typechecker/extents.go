@@ -28,10 +28,16 @@ package typechecker
 // constant below a static extent is in range.
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"hash"
+	"math"
+	"strconv"
+	"strings"
+
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
-	"math"
-	"strings"
 )
 
 type extentFactKind int
@@ -73,9 +79,110 @@ type extentFact struct {
 	viaBinding bool
 }
 
+// IndexProof is the normalized checked proposition retained for one element
+// access. ID is an opaque, deterministic identity over the exact source
+// position and proposition. Extent is a fixed checked extent when the
+// container itself has one, and -1 for a dynamic span/view extent.
+//
+// The native lowering may attach ID to the exact machine use implementing the
+// access. The assembler checker accepts that reference only when the compiler
+// supplies this independently produced record as authority; an instruction's
+// string metadata is never proof by itself.
+type IndexProof struct {
+	ID           string
+	Proposition  string
+	Container    string
+	Extent       int64
+	Scope        string
+	Provenance   string
+	Witness      string
+	Dependencies []string
+}
+
 // IndexProven reports whether the element access at tok was proven in range.
 func (tc *TypeChecker) IndexProven(tok token.Token) bool {
 	return tc.provenIndices[positionKey(tok)]
+}
+
+// IndexProof returns the checked proposition for the element access at tok.
+// A legacy or test-only boolean entry without proof metadata is deliberately
+// not upgraded to authority.
+func (tc *TypeChecker) IndexProof(tok token.Token) (IndexProof, bool) {
+	proof, ok := tc.indexProofs[positionKey(tok)]
+	if !ok || proof.ID == "" || !tc.provenIndices[positionKey(tok)] {
+		return IndexProof{}, false
+	}
+	proof.Dependencies = append([]string(nil), proof.Dependencies...)
+	return proof, true
+}
+
+// IndexProofs returns the immutable authority set for native seam checking,
+// keyed by opaque proof ID. The returned map and dependency slices are copies.
+func (tc *TypeChecker) IndexProofs() map[string]IndexProof {
+	out := map[string]IndexProof{}
+	if tc == nil {
+		return out
+	}
+	for key, proof := range tc.indexProofs {
+		if !tc.provenIndices[key] || proof.ID == "" {
+			continue
+		}
+		proof.Dependencies = append([]string(nil), proof.Dependencies...)
+		out[proof.ID] = proof
+	}
+	return out
+}
+
+func (tc *TypeChecker) recordCheckedIndexProof(tok token.Token, container string, arr *ArrayType, proposition, witness string, dependencies ...string) {
+	if tc.provenIndices == nil {
+		tc.provenIndices = make(map[tokenKey]bool)
+	}
+	if tc.indexProofs == nil {
+		tc.indexProofs = make(map[tokenKey]IndexProof)
+	}
+	key := positionKey(tok)
+	extent := int64(-1)
+	if arr != nil && arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan {
+		extent = arr.Length
+	}
+	proof := IndexProof{
+		Proposition:  proposition,
+		Container:    container,
+		Extent:       extent,
+		Scope:        fmtScope(key),
+		Provenance:   "checked",
+		Witness:      witness,
+		Dependencies: append([]string(nil), dependencies...),
+	}
+	proof.ID = checkedIndexProofID(key, proof)
+	tc.provenIndices[key] = true
+	tc.indexProofs[key] = proof
+}
+
+func fmtScope(key tokenKey) string {
+	if key.context == "" {
+		return "line " + strconv.Itoa(key.line) + ":" + strconv.Itoa(key.column)
+	}
+	return key.context + ":" + strconv.Itoa(key.line) + ":" + strconv.Itoa(key.column)
+}
+
+func checkedIndexProofID(key tokenKey, proof IndexProof) string {
+	digest := sha256.New()
+	writeIndexProofPart(digest, "oak.checked-index-proof.v1", key.context, strconv.Itoa(key.line), strconv.Itoa(key.column), key.literal,
+		proof.Proposition, proof.Container, strconv.FormatInt(proof.Extent, 10), proof.Scope, proof.Provenance, proof.Witness)
+	for _, dependency := range proof.Dependencies {
+		writeIndexProofPart(digest, dependency)
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func writeIndexProofPart(digest hash.Hash, values ...string) {
+	for _, value := range values {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write([]byte(value))
+	}
 }
 
 func (tc *TypeChecker) pushExtentFacts(facts []extentFact) int {
@@ -1044,10 +1151,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 	if !tc.indexUnder(expr.Index, name, arr) {
 		return
 	}
-	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[tokenKey]bool)
-	}
-	tc.provenIndices[positionKey(expr.Token)] = true
+	tc.recordCheckedIndexProof(expr.Token, name, arr, "index-in-extent", "Oak.ExtentsRefinement.indexUnder_sound")
 }
 
 // provenBelow reports whether the live facts prove `index < bound` for a
@@ -1763,10 +1867,7 @@ func (tc *TypeChecker) recordVectorAccessProof(call *ast.InvocationExpression, m
 	if !proven {
 		return
 	}
-	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[tokenKey]bool)
-	}
-	tc.provenIndices[positionKey(call.Token)] = true
+	tc.recordCheckedIndexProof(call.Token, name, nil, "index-window-in-extent", "Oak.ExtentsRefinement.indexUnder_sound", "lanes="+strconv.FormatInt(lanes, 10))
 }
 
 // conditionalMin reads a minimum spelled as a Bool conditional: `a < b ? a

@@ -226,7 +226,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				artifacts[next] = nextArtifacts
 				proposals = append(proposals, next)
 			}
-			frontier = prune(append(frontier, proposals...), beam, identity)
+			frontier = prune(append(frontier, proposals...), beam, identity, s.gated)
 		}
 	}
 
@@ -389,21 +389,55 @@ func cheaper(a, b *Candidate) bool {
 	return len(a.Applied) > len(b.Applied)
 }
 
-// prune keeps the beam cheapest candidates, the identity always among
-// them; order among equal costs is by transforms applied, then the order
-// proposed.
-func prune(candidates []*Candidate, beam int, identity *Candidate) []*Candidate {
+// prune keeps the beam cheapest candidates, the identity always among them,
+// and (when the beam has room) the cheapest ungated candidate. Keeping that
+// second fallback matters when a later machine transform is verifier-gated:
+// it must not evict a cheaper form whose independently checked transforms may
+// still ship when verification is undecided. Order among equal costs is by
+// transforms applied, then the order proposed.
+func prune(candidates []*Candidate, beam int, identity *Candidate, gated func(*Candidate) bool) []*Candidate {
 	if len(candidates) <= beam {
 		return candidates
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return cheaper(candidates[i], candidates[j]) })
-	kept := candidates[:beam]
-	for _, c := range kept {
-		if c == identity {
-			return kept
+	kept := append([]*Candidate(nil), candidates[:beam]...)
+	required := []*Candidate{identity}
+	if beam >= 2 {
+		for _, candidate := range candidates {
+			if gated == nil || !gated(candidate) {
+				if candidate == identity {
+					continue
+				}
+				required = append(required, candidate)
+				break
+			}
 		}
 	}
-	return append(kept[:beam-1:beam-1], identity)
+	isRequired := func(candidate *Candidate) bool {
+		for _, need := range required {
+			if candidate == need {
+				return true
+			}
+		}
+		return false
+	}
+	for _, need := range required {
+		present := false
+		for _, candidate := range kept {
+			present = present || candidate == need
+		}
+		if present {
+			continue
+		}
+		for index := len(kept) - 1; index >= 0; index-- {
+			if !isRequired(kept[index]) {
+				kept[index] = need
+				break
+			}
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return cheaper(kept[i], kept[j]) })
+	return kept
 }
 
 // remark explains the selection: a passed remark per transform of the

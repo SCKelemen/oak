@@ -83,7 +83,11 @@ func (d *nativeDriver) Measure(c *opt.Candidate) opt.Metrics {
 
 // Check runs the seam checker.
 func (d *nativeDriver) Check(c *opt.Candidate) []string {
-	return asm.Check(c.Body.(*asm.Function), d.source, d.symbols)
+	var facts map[string]typechecker.IndexProof
+	if d.tc != nil {
+		facts = d.tc.IndexProofs()
+	}
+	return asm.CheckWithFacts(c.Body.(*asm.Function), d.source, d.symbols, facts)
 }
 
 // Validate runs the verifier, through the verdict cache

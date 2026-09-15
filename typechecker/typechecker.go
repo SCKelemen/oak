@@ -658,6 +658,10 @@ type TypeChecker struct {
 	checkingSpecialization bool
 	extentFacts            []extentFact
 	provenIndices          map[tokenKey]bool
+	// indexProofs retains the checked proposition behind a proven index.
+	// Native lowering may refer to its opaque ID, but cannot manufacture
+	// authority by merely setting provenIndices.
+	indexProofs            map[tokenKey]IndexProof
 	asmBackedFunctions     map[string]bool
 	functionTemplates      map[string]*ast.FunctionStatement
 	functionInstantiations map[string]*ast.FunctionStatement

@@ -3,10 +3,12 @@ package asm
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // Check enforces the seams of one asm function against its Oak declaration
@@ -32,6 +34,19 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
+	return checkWithFacts(fn, decl, symbols, nil)
+}
+
+// CheckWithFacts is Check with checked semantic propositions supplied by the
+// compiler's typechecker. Instruction-local references remain untrusted: each
+// must match this authority set and the exact memory operand and capacity it
+// claims. Handwritten assembler continues to use Check and receives no such
+// authority.
+func CheckWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof) []string {
+	return checkWithFacts(fn, decl, symbols, facts)
+}
+
+func checkWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof) []string {
 	if fn.Arch == ArchRV64 {
 		return checkRV64(fn, decl, symbols)
 	}
@@ -43,25 +58,128 @@ func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) [
 	// shrink, so the iteration terminates. Only the stable pass reports.
 	var labelIn map[string]*guardState
 	for pass := 0; pass < maxGuardPasses; pass++ {
-		c := runPass(fn, decl, symbols, labelIn, false)
+		c := runPass(fn, decl, symbols, facts, labelIn, false)
 		if len(c.errors) != 0 && c.labelArrive == nil {
 			return c.errors // signature errors: nothing to iterate
 		}
 		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
-			return dischargeByVersion(fn, decl, symbols, labelIn, c)
+			return dischargeByVersion(fn, decl, symbols, facts, labelIn, c)
 		}
 		labelIn = c.labelArrive
 	}
 	// Past the cap: the conservative pass forgets every guard at every
 	// label (a sound assumption, the pre-fixpoint behavior).
-	return runPass(fn, decl, symbols, nil, true).errors
+	return runPass(fn, decl, symbols, facts, nil, true).errors
+}
+
+// checkedTableSources reconstructs only the narrow source identity needed by
+// dynamic checked-index facts. A name is usable when the body contains exactly
+// one declaration `name = view(&TABLE)` (or span), TABLE is a constant data
+// symbol in this machine body, and no assignment can retarget name. Shadowing,
+// mutation, unfamiliar borrow expressions, and missing table metadata all
+// fail closed by leaving the name unmapped.
+func checkedTableSources(fn *Function, decl *ast.FunctionStatement) map[string]string {
+	out := map[string]string{}
+	if fn == nil || decl == nil {
+		return out
+	}
+	candidates := map[string]string{}
+	invalid := map[string]bool{}
+	declarations := map[string]int{}
+	walkASTNodes(decl, func(node ast.Node) {
+		switch node := node.(type) {
+		case *ast.VariableDeclaration:
+			if node.Name == nil {
+				return
+			}
+			name := node.Name.Value
+			declarations[name]++
+			if declarations[name] > 1 {
+				invalid[name] = true
+			}
+			symbol, ok := checkedBorrowedTable(node.Value)
+			if !ok {
+				return
+			}
+			if _, known := fn.Tables[symbol]; !known {
+				return
+			}
+			candidates[name] = symbol
+		case *ast.AssignmentStatement:
+			if node.Name != nil {
+				invalid[node.Name.Value] = true
+			}
+		}
+	})
+	for name, symbol := range candidates {
+		if !invalid[name] {
+			out[name] = symbol
+		}
+	}
+	return out
+}
+
+func checkedBorrowedTable(expr ast.Expression) (string, bool) {
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return "", false
+	}
+	callee, ok := call.Function.(*ast.Identifier)
+	if !ok || callee.Value != "view" && callee.Value != "span" {
+		return "", false
+	}
+	borrow, ok := call.Arguments[0].(*ast.PrefixExpression)
+	if !ok || borrow.Operator != "&" {
+		return "", false
+	}
+	owner, ok := borrow.Right.(*ast.Identifier)
+	if !ok {
+		return "", false
+	}
+	return "data_" + owner.Value, true
+}
+
+// walkASTNodes visits the checked AST through exported fields. Parser ASTs are
+// acyclic, but pointer identity is still tracked so caches or future sharing
+// cannot make this authority-building walk recurse indefinitely.
+func walkASTNodes(node ast.Node, visit func(ast.Node)) {
+	seen := map[uintptr]bool{}
+	var walk func(reflect.Value)
+	walk = func(value reflect.Value) {
+		switch value.Kind() {
+		case reflect.Interface:
+			if !value.IsNil() {
+				walk(value.Elem())
+			}
+		case reflect.Ptr:
+			if value.IsNil() || seen[value.Pointer()] {
+				return
+			}
+			seen[value.Pointer()] = true
+			if current, ok := value.Interface().(ast.Node); ok {
+				visit(current)
+			}
+			walk(value.Elem())
+		case reflect.Struct:
+			for field := 0; field < value.NumField(); field++ {
+				if value.Type().Field(field).IsExported() {
+					walk(value.Field(field))
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for index := 0; index < value.Len(); index++ {
+				walk(value.Index(index))
+			}
+		}
+	}
+	walk(reflect.ValueOf(node))
 }
 
 // maxGuardPasses caps the fixpoint iteration.
 const maxGuardPasses = 16
 
-func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
-	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, forgetAtLabels: forgetAtLabels}
+func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
+	c := &checker{fn: fn, symbols: symbols, checkedFacts: facts, semanticTables: checkedTableSources(fn, decl), labelIn: labelIn, forgetAtLabels: forgetAtLabels}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
 		return c
@@ -358,7 +476,7 @@ const (
 // and is discharged. Findings are only ever removed, so a body the meet
 // admits is unaffected, and one the versions admit is admissible under
 // every state that actually arrives.
-func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, stable *checker) []string {
+func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, stable *checker) []string {
 	findings := stable.errors
 	if os.Getenv("OAK_CHECK_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "DBG %s: meet findings %v\n", fn.Name, findings)
@@ -392,7 +510,7 @@ func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[s
 		perVersion := make([][]string, 0, len(versions))
 		for _, version := range versions {
 			passes++
-			perVersion = append(perVersion, runVersionPass(fn, decl, symbols, labelIn, label, version).errors)
+			perVersion = append(perVersion, runVersionPass(fn, decl, symbols, facts, labelIn, label, version).errors)
 		}
 		if os.Getenv("OAK_CHECK_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "DBG   %s: per-version findings %v\n", label, perVersion)
@@ -468,8 +586,8 @@ func findingPlace(finding string) string {
 // runVersionPass checks the body with one label entered at one of the
 // states that reach it, rather than at the meet, and with the regions
 // this context cannot reach left unchecked (contextDead).
-func runVersionPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, label string, version *guardState) *checker {
-	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, pinnedLabel: label, pinnedState: version}
+func runVersionPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, label string, version *guardState) *checker {
+	c := &checker{fn: fn, symbols: symbols, checkedFacts: facts, semanticTables: checkedTableSources(fn, decl), labelIn: labelIn, pinnedLabel: label, pinnedState: version}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
 		return c
@@ -512,6 +630,15 @@ type checker struct {
 	fn      *Function
 	symbols map[string]bool
 	errors  []string
+	// checkedFacts is the semantic authority supplied separately from the
+	// lowered body. A CheckedFactRef in an instruction has no force unless
+	// it exactly matches an entry here.
+	checkedFacts map[string]typechecker.IndexProof
+	// semanticTables is independently recovered from the checked Oak body:
+	// an unshadowed, never-reassigned local `v = view(&TABLE)` maps v to
+	// the exact constant-data symbol the machine region addresses. Dynamic
+	// extent facts have no authority without this second identity check.
+	semanticTables map[string]string
 
 	// contract
 	paramClass    map[string]RegClass // parameter -> width class
@@ -713,6 +840,9 @@ type stackParam struct {
 type region struct {
 	size     int64
 	writable bool
+	// source is the exact data symbol whose address formed this region.
+	// It survives aliases and constant-offset narrowing.
+	source string
 }
 
 type spanFact struct {
@@ -1829,7 +1959,7 @@ func (c *checker) instruction(instr Instruction) bool {
 			return false
 		}
 		c.write(instr, dest)
-		c.regions[dest.Num] = region{size: table.Size}
+		c.regions[dest.Num] = region{size: table.Size, source: sym.Name}
 		return false
 	}
 
@@ -2489,7 +2619,7 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 			// region the source held before the write.
 			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
 				if value := tail.Value << uint(tail.Shift); value <= priorRegion.size {
-					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable}
+					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable, source: priorRegion.source}
 				}
 			}
 		}
@@ -2812,6 +2942,9 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
+		if !guarded {
+			bound, guarded = c.checkedIndexBound(instr, mem, index, extent.size/size, extent.source)
+		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the array's index", instr.Mnemonic, index.Text, index.Text)
 			return
@@ -2872,6 +3005,9 @@ func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, 
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
+		if !guarded && base >= 0 && size > 0 && base <= c.fn.Frame {
+			bound, guarded = c.checkedIndexBound(instr, mem, index, (c.fn.Frame-base)/size, "")
+		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the frame array's index", instr.Mnemonic, index.Text, index.Text)
 			return
@@ -3250,6 +3386,9 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		return
 	}
 	bound, guarded := c.idxFacts[index.Num]
+	if !guarded && fact.hasMin && fact.elem > 0 {
+		bound, guarded = c.checkedIndexBound(instr, mem, index, fact.minLen, "")
+	}
 	if guarded && bound.slack && size > fact.elem && size%fact.elem == 0 && int64(1)<<uint(mem.Shift) == fact.elem {
 		// A vector access of size/elem elements at wI under wI + K <= len,
 		// K >= that many elements and len >= K (so the slack subtraction did
@@ -3303,6 +3442,57 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 			c.write(instr, reg)
 		}
 	}
+}
+
+// checkedIndexBound resolves an instruction-local index-in-extent reference.
+// The source proposition comes from checkedFacts, supplied independently of
+// the lowered function. The lowered reference must name the exact indexed
+// memory operand and a positive extent no larger than the concrete machine
+// region. A static source extent must agree exactly. A dynamic source extent
+// is admitted only when the Oak body independently maps the proof's local
+// container to the exact constant-data symbol carried by the machine region.
+func (c *checker) checkedIndexBound(instr Instruction, mem Memory, index Register, capacity int64, source string) (idxFact, bool) {
+	if len(instr.CheckedFacts) == 0 || len(c.checkedFacts) == 0 || capacity <= 0 {
+		return idxFact{}, false
+	}
+	operand := -1
+	for position, raw := range instr.Operands {
+		candidate, ok := raw.(Memory)
+		if !ok || candidate.Index == nil || mem.Index == nil {
+			continue
+		}
+		if candidate.Base.Class == mem.Base.Class && candidate.Base.Num == mem.Base.Num && candidate.Index.Class == index.Class && candidate.Index.Num == index.Num && candidate.Shift == mem.Shift && candidate.Extend == mem.Extend && candidate.Offset == mem.Offset && candidate.Mode == mem.Mode {
+			operand = position
+			break
+		}
+	}
+	if operand < 0 {
+		return idxFact{}, false
+	}
+	for _, reference := range instr.CheckedFacts {
+		if reference.Operand != operand {
+			continue
+		}
+		proof, authorized := c.checkedFacts[reference.ID]
+		switch {
+		case !authorized:
+			c.errorf(instr.Line, "%s: checked fact %q has no typechecker authority", instr.Mnemonic, reference.ID)
+		case reference.Kind != "index-in-extent" || proof.Proposition != reference.Kind:
+			c.errorf(instr.Line, "%s: checked fact %q has proposition %q, not index-in-extent", instr.Mnemonic, reference.ID, proof.Proposition)
+		case reference.Container == "" || reference.Container != proof.Container:
+			c.errorf(instr.Line, "%s: checked fact %q maps container %q, typechecker proved %q", instr.Mnemonic, reference.ID, reference.Container, proof.Container)
+		case reference.Extent <= 0 || reference.Extent > capacity:
+			c.errorf(instr.Line, "%s: checked fact %q maps %d elements into a machine region of %d", instr.Mnemonic, reference.ID, reference.Extent, capacity)
+		case proof.Extent >= 0 && proof.Extent != reference.Extent:
+			c.errorf(instr.Line, "%s: checked fact %q maps extent %d, typechecker proved fixed extent %d", instr.Mnemonic, reference.ID, reference.Extent, proof.Extent)
+		case proof.Extent < 0 && (source == "" || c.semanticTables[proof.Container] == "" || c.semanticTables[proof.Container] != source):
+			c.errorf(instr.Line, "%s: checked fact %q has dynamic container %q, which the Oak body does not map uniquely to machine region %q", instr.Mnemonic, reference.ID, proof.Container, source)
+		default:
+			return idxFact{boundReg: -1, bound: reference.Extent}, true
+		}
+		return idxFact{}, false
+	}
+	return idxFact{}, false
 }
 
 func log2(n int64) int {
