@@ -192,6 +192,24 @@ loops keep their order). The whole body grows by two (the entry tests
 paid once), 38 → 40 by the dump's line count; the trip shrinks by four
 instructions and two branches.
 
+**Nested loops weigh their nesting; the probe loops rotate (2026-09-16,
+`docs/notes/optimizer-search-2026-09.md`, `docs/spec/94-assembler.md`
+§7).** The cost model charged an inner loop's body once for its own
+trips and once more inside its outer loop's count — additively — so
+rotating `bench_search`'s probe loop priced as a two-point loss and was
+never validated. A nested loop's items are now its own and weigh the
+product of the trips around them (`LoopWeight` squared at depth one);
+the rotated inner loop is the cheaper form by the model and is
+selected, witnessed as before. `bench_page_probe`'s rotated form kept
+one guard the unrotated one elided: at the rotated loop's header the
+entry compared the index against a bound register still holding its
+constant (an immediate fact) while the back edge compared it against the
+narrowed register, and the meet dropped the disagreeing facts; the meet
+reconciles them (`meetIdx`), the page's key read is unguarded under
+rotation, and the three-loop body selects the hoisted rotated form
+(six percent below the hoisted unrotated one by the model, at the
+calibrated loop weight).
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —
@@ -280,21 +298,26 @@ backend's time — the same scalar-loop gap as `sum` and `dot`.
 The integer reduction's accumulators as vector lanes
 (`docs/spec/94-assembler.md` §9 "Reduction vectorization"), measured over
 2^20 elements, best of seven rounds of two hundred calls, alternated with
-the baseline on a host at load average 90–115; each row is the body the
-candidate search selected for that configuration, and every row's
-checksum agrees.
+the baseline. The first table's rows were taken on a host at load
+average 90–115 while the shape was being chosen; the selected rows were
+re-taken at load average 40–55, where the spread is a few percent. Every
+row's checksum agrees.
 
 | Form of the `u32` reduction | ns/element | verdict |
 | --- | ---: | --- |
-| four scalar accumulators (the unrolling, the baseline) | 0.127–0.162 | proven |
-| one `simd.U32x4` accumulator, four elements an iteration | 0.174–0.198 | proven |
-| two `simd.U32x4`, eight elements an iteration (**selected**) | 0.076–0.101 | proven |
-| four `simd.U32x4`, sixteen elements an iteration | 0.045–0.058 | witnessed |
+| four scalar accumulators (the unrolling, the baseline) | 0.157–0.165 | proven |
+| one `simd.U32x4`, four elements an iteration | 0.174–0.198 | proven |
+| two `simd.U32x4`, eight elements an iteration | 0.106 | proven |
+| four `simd.U32x4`, sixteen elements an iteration (**selected**) | 0.063–0.064 | proven |
 
 | Form of the `u64` reduction | ns/element | verdict |
 | --- | ---: | --- |
-| four scalar accumulators (the unrolling, **selected**) | 0.136–0.196 | proven |
-| four `simd.U64x2`, eight elements an iteration | 0.118–0.121 | proven |
+| four scalar accumulators (the unrolling, the baseline) | 0.186–0.194 | proven |
+| four `simd.U64x2`, eight elements an iteration (**selected**) | 0.130–0.145 | proven |
+
+So `u32` runs at 2.6× the scalar unrolling and `u64` at 1.4×, both
+proven at the bit level with the lanes coupled as packs to the halves of
+their registers.
 
 What the rows say:
 
@@ -304,26 +327,46 @@ What the rows say:
   loop-carried chain where four scalar adds are four; the interleave, not
   the vector width, is what breaks the chain. The first shape this
   increment tried was the four-element one, and measuring it is what sent
-  the rewrite to eight.
-- **Sixteen elements an iteration is faster still** (2.4× the baseline)
-  but only witnessed: the verifier does not prove the results after two
-  loops equal with four vector accumulators and a sixteen-lane combine.
-  The search will not take a weaker verdict than the plain lowering earns,
-  so it is not selected; proving that shape is the next step for this
-  plan.
-- **The `u64` vector form is proven and slightly faster** but is not
-  selected: the cost model prices it above the scalar unrolling, because
-  two lanes to a vector means four accumulators and, for lanes wider than
-  a byte, an address register per 128-bit load. The measured difference
-  (0.118 against 0.136–0.196) is inside this host's spread, so the model
-  is not clearly wrong; a quieter host would settle it, and the
-  `candidates` line of the optimization report is where to read the two
-  prices.
-- The `u64` rows also show the host's noise: the same body timed 0.136 and
-  0.196 in one alternated run, so only the `u32` ratio (1.6×, consistent
-  across three runs) is read as a result here.
+  the rewrite to four accumulators.
+- **The combine belongs in the vector domain.** Storing all four
+  accumulators into a sixteen-element frame array and summing the lanes
+  there is witnessed, not proven (the verifier does not equate the
+  results after the loops), and it costs a store and four loads per
+  accumulator. Folding the accumulators pairwise with `simd.add` first,
+  storing the one vector left, and reading its lanes is proven, is
+  fewer instructions, and is what the rewrite emits.
+- **The cost model needed calibrating before it agreed.** At its old
+  LoopWeight of 32 assumed trips, a sixteen-element main loop's
+  fifteen-trip remainder was charged half the work, so no strided form
+  could pay for its tail and the model kept the scalar unrolling. The
+  weight is now 256, the conservative end of the range where the
+  per-element term dominates the tail for every stride the compiler
+  emits; the three `u32` rows above are what calibrated it, and the
+  model now orders them as measured (`opt/cost.go`).
 
-## Found on the way
+## Vector block loads, 2026-09-16
+
+The vectorized reduction's four `ldr q` read one element address at the
+immediate offsets `#16`, `#32`, `#48` instead of forming an address each
+(`docs/spec/94-assembler.md` §9 "Vector block loads"). The `u32` main
+loop goes from eighteen instructions for sixteen elements to eleven, and
+stays proven.
+
+| `u32` reduction, array size | per-load addresses | one block address |
+| --- | ---: | ---: |
+| 2^20 elements (4 MiB, streamed) | 0.057 ns/element | 0.057 ns/element |
+| 2^12 elements (16 KiB, L1-resident) | 0.044–0.047 | 0.039–0.042 |
+
+The 4 MiB row is bandwidth-bound — 0.057 ns an element over four bytes is
+about 70 GB/s — so the address arithmetic was already free in the core's
+spare issue slots, and removing seven instructions from the loop buys
+nothing there. The L1-resident row is where the instructions show, at
+about eight percent. What the increment really buys is the instruction
+count itself: code size, instruction cache, and the lanes whose cores
+have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
+gain this harness cannot see and should not claim.
+
+## Found on the way## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a
   package-level array is refused, so `utf8.valid` as written stays on the

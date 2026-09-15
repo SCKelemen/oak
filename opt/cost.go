@@ -30,8 +30,10 @@ type Metrics struct {
 	LoopStores       int
 	LoopGuards       int
 
-	// LoopBodies are the loops in body order; an inner loop's items count
-	// in its outer loops too, as they run that many times more.
+	// LoopBodies are the loops in body order, each with its own items: a
+	// nested loop's items are its own, not its outer loops', and the cost
+	// model charges them by its trips times its outer loops' (Outer), as
+	// they run that many times more.
 	LoopBodies []LoopMetrics
 }
 
@@ -49,6 +51,12 @@ type LoopMetrics struct {
 	Guards       int
 	Stride       int
 	MaxTrips     int
+	// Depth is how many loops enclose this one; Outer the 1-based index
+	// in LoopBodies of the innermost of them, 0 at the top level. An
+	// inner loop's body runs its own trips for every trip of its outer
+	// loops, so its items weigh the product (Estimate).
+	Depth int
+	Outer int
 }
 
 // String spells the metrics in one line.
@@ -71,6 +79,9 @@ func (m Metrics) String() string {
 		}
 		if loop.MaxTrips > 0 {
 			shape += fmt.Sprintf(", <= %d trips", loop.MaxTrips)
+		}
+		if loop.Depth > 0 {
+			shape += fmt.Sprintf(", depth %d", loop.Depth)
 		}
 		parts = append(parts, shape+"]")
 	}
@@ -122,11 +133,27 @@ type CostModel interface {
 }
 
 // TargetCosts is the first target-cost model: static per-class weights,
+// LoopWeight is how many trips a data-dependent loop is assumed to run,
+// and it decides how a bounded remainder loop weighs against the main
+// loop it follows: at 32 trips a fifteen-trip tail is half the work, so a
+// main loop strided sixteen ways could never pay for its tail. Calibrated
+// to 256 from the reduction microbenchmark (2026-09-16,
+// benchmarks/native/README.md "Reduction vectorization"): over 2^20 u32
+// elements the sixteen-element vector form runs at 0.064 ns an element
+// against the eight-element form's 0.106 and the scalar unrolling's
+// 0.17, and only at 256 does the model order the three as measured. The
+// loops Oak's workloads run — the kernels over 2^20 elements, the page
+// tables' 2048, the frame scan's 64 MiB — are longer still; 256 is the
+// conservative end of the range where the per-element term dominates the
+// tail for every stride the compiler emits.
+//
 // straight-line code at weight one and a loop body at LoopWeight trips
 // (fewer when its shape bounds them, divided by the elements one trip
-// advances), so a candidate that shortens a loop body by one instruction
-// beats one that shortens the prologue by several, and a wider trip pays
-// per element. The weights are heuristics to be calibrated from
+// advances, multiplied by the trips of every loop around it), so a
+// candidate that shortens a loop body by one instruction beats one that
+// shortens the prologue by several, one that shortens an inner loop
+// beats one that shortens its outer loop, and a wider trip pays per
+// element. The weights are heuristics to be calibrated from
 // microbenchmarks; nothing semantic depends on them.
 type TargetCosts struct {
 	Arch       string
@@ -144,12 +171,12 @@ type TargetCosts struct {
 // AArch64Costs are the AArch64 lane's initial weights (an Apple M-series
 // or Neoverse-class core: 4-cycle loads, 2-cycle multiplies, 10+ cycle
 // divides, cheap predicted branches).
-var AArch64Costs = TargetCosts{Arch: "arm64", Arithmetic: 1, Multiply: 3, Divide: 12, Load: 4, Store: 2, Branch: 1, Guard: 1.5, Call: 8, LoopWeight: 32}
+var AArch64Costs = TargetCosts{Arch: "arm64", Arithmetic: 1, Multiply: 3, Divide: 12, Load: 4, Store: 2, Branch: 1, Guard: 1.5, Call: 8, LoopWeight: 256}
 
 // RV64Costs are the RV64 lane's initial weights (an in-order or modest
 // out-of-order core: slower multiplies and divides, fewer addressing
 // modes so loads carry their address arithmetic separately).
-var RV64Costs = TargetCosts{Arch: "rv64", Arithmetic: 1, Multiply: 4, Divide: 20, Load: 4, Store: 2, Branch: 1.5, Guard: 2, Call: 8, LoopWeight: 32}
+var RV64Costs = TargetCosts{Arch: "rv64", Arithmetic: 1, Multiply: 4, Divide: 20, Load: 4, Store: 2, Branch: 1.5, Guard: 2, Call: 8, LoopWeight: 256}
 
 // CostsFor returns the lane's weights; an unknown lane gets AArch64's.
 func CostsFor(arch string) TargetCosts {
@@ -186,7 +213,12 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 	// each body at its own trip weight.
 	inLoops := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards)
 	cost := total - inLoops
-	for _, loop := range m.LoopBodies {
+	// Each loop's own trips; a nested loop's body runs them for every
+	// trip of its outer loops, so its factor is the product along the
+	// chain (an inner loop's instruction weighs LoopWeight squared: a
+	// probe loop inside a loop over probes runs its body that often).
+	factors := make([]float64, len(m.LoopBodies))
+	for k, loop := range m.LoopBodies {
 		trips := weight
 		if loop.MaxTrips > 0 && float64(loop.MaxTrips) < trips {
 			// A bounded loop runs anywhere from none to its bound: its
@@ -197,7 +229,11 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 		if loop.Stride > 1 {
 			trips /= float64(loop.Stride)
 		}
-		cost += t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) * trips
+		factors[k] = trips
+		if loop.Outer > 0 && loop.Outer-1 < k {
+			factors[k] *= factors[loop.Outer-1]
+		}
+		cost += t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) * factors[k]
 	}
 	return cost
 }

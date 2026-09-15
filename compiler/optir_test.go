@@ -154,8 +154,8 @@ main: (): i32 = 0
 	if !ok {
 		t.Fatalf("common was not projected: %+v", first.Refusals)
 	}
-	if common.Simplification.CSE.EliminatedOperations != 2 || common.Simplification.DCE.EliminatedOperations != 2 {
-		t.Fatalf("common CSE/DCE report = %+v", common.Simplification)
+	if common.Simplification.GVN.EliminatedOperations != 2 || common.Simplification.DCE.EliminatedOperations != 2 {
+		t.Fatalf("common GVN/DCE report = %+v", common.Simplification)
 	}
 	if len(common.Simplified.Blocks) != 1 || len(common.Simplified.Blocks[0].Operations) != 3 {
 		t.Fatalf("common simplified CFG = %#v", common.Simplified)

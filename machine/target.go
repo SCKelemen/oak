@@ -64,6 +64,16 @@ type target struct {
 	readsFlags func(asm.Instruction) bool
 	// frame is the lowering's prologue and epilogue shape (growCalleeSaved).
 	frame frameShape
+	// increment reads `r = r + k` / `r = r - k` with an immediate: the
+	// register and its signed step (recurrence analysis).
+	increment func(asm.Instruction) (reg Reg, step int64, ok bool)
+	// constant reads an instruction that materializes a constant into a
+	// register (mov/movz #k; li/mv from zero).
+	constant func(asm.Instruction) (int64, bool)
+	// exitTest reads a loop's compare: the registers compared (in operand
+	// order, matching the instruction's Uses), and an immediate when the
+	// second operand is one.
+	exitTest func(asm.Instruction) (regs []Reg, imm int64, hasImm bool, ok bool)
 }
 
 // frameShape describes the lowering's frame code on a lane: the store
@@ -172,6 +182,56 @@ var arm64Target = &target{
 		return asm.Register{Text: "x" + itoa(r.Num), Class: asm.ClassX, Num: r.Num, Lane: -1}
 	},
 	pure: arm64Pure,
+	increment: func(a asm.Instruction) (Reg, int64, bool) {
+		if (a.Mnemonic != "add" && a.Mnemonic != "sub") || len(a.Operands) != 3 {
+			return Reg{}, 0, false
+		}
+		dst, ok1 := a.Operands[0].(asm.Register)
+		src, ok2 := a.Operands[1].(asm.Register)
+		imm, ok3 := a.Operands[2].(asm.Immediate)
+		if !ok1 || !ok2 || !ok3 || dst.Num != src.Num || dst.Class != src.Class || (dst.Class != asm.ClassX && dst.Class != asm.ClassW) || dst.ZeroRegister() || imm.Shift != 0 {
+			return Reg{}, 0, false
+		}
+		step := imm.Value
+		if a.Mnemonic == "sub" {
+			step = -step
+		}
+		return Reg{GPR, dst.Num}, step, true
+	},
+	constant: func(a asm.Instruction) (int64, bool) {
+		if len(a.Operands) != 2 {
+			return 0, false
+		}
+		switch a.Mnemonic {
+		case "mov", "movz":
+			if imm, ok := a.Operands[1].(asm.Immediate); ok && imm.Shift == 0 {
+				return imm.Value, true
+			}
+			if r, ok := a.Operands[1].(asm.Register); ok && r.ZeroRegister() {
+				return 0, true
+			}
+		}
+		return 0, false
+	},
+	exitTest: func(a asm.Instruction) ([]Reg, int64, bool, bool) {
+		if a.Mnemonic != "cmp" || len(a.Operands) != 2 {
+			return nil, 0, false, false
+		}
+		first, ok := a.Operands[0].(asm.Register)
+		if !ok || first.ZeroRegister() || (first.Class != asm.ClassX && first.Class != asm.ClassW) {
+			return nil, 0, false, false
+		}
+		switch second := a.Operands[1].(type) {
+		case asm.Register:
+			if second.ZeroRegister() || (second.Class != asm.ClassX && second.Class != asm.ClassW) {
+				return nil, 0, false, false
+			}
+			return []Reg{{GPR, first.Num}, {GPR, second.Num}}, 0, false, true
+		case asm.Immediate:
+			return []Reg{{GPR, first.Num}}, second.Value, true, true
+		}
+		return nil, 0, false, false
+	},
 	readsFlags: func(a asm.Instruction) bool {
 		switch a.Mnemonic {
 		case "csel", "cset", "csetm", "csinc", "csinv", "csneg", "cneg", "cinc", "cinv", "fcsel", "ccmp", "ccmn":
@@ -519,8 +579,51 @@ var rv64Target = &target{
 		}
 		return asm.Instruction{Mnemonic: "mv", Operands: []asm.Operand{dst, src}, Line: line}
 	},
-	clobber:    rv64Register,
-	pure:       rv64Pure,
+	clobber: rv64Register,
+	pure:    rv64Pure,
+	increment: func(a asm.Instruction) (Reg, int64, bool) {
+		if (a.Mnemonic != "addi" && a.Mnemonic != "addiw") || len(a.Operands) != 3 {
+			return Reg{}, 0, false
+		}
+		dst, ok1 := a.Operands[0].(asm.Register)
+		src, ok2 := a.Operands[1].(asm.Register)
+		imm, ok3 := a.Operands[2].(asm.Immediate)
+		if !ok1 || !ok2 || !ok3 || dst.Num != src.Num || dst.Class != asm.ClassRV64X || dst.Num == 0 || dst.Num == 2 {
+			return Reg{}, 0, false
+		}
+		return Reg{GPR, dst.Num}, imm.Value, true
+	},
+	constant: func(a asm.Instruction) (int64, bool) {
+		if len(a.Operands) != 2 {
+			return 0, false
+		}
+		switch a.Mnemonic {
+		case "li":
+			if imm, ok := a.Operands[1].(asm.Immediate); ok {
+				return imm.Value, true
+			}
+		case "mv":
+			if r, ok := a.Operands[1].(asm.Register); ok && r.ZeroRegister() {
+				return 0, true
+			}
+		}
+		return 0, false
+	},
+	exitTest: func(a asm.Instruction) ([]Reg, int64, bool, bool) {
+		switch a.Mnemonic {
+		case "beq", "bne", "blt", "bge", "bltu", "bgeu", "bgt", "ble", "bgtu", "bleu":
+			if len(a.Operands) != 3 {
+				return nil, 0, false, false
+			}
+			x, ok1 := a.Operands[0].(asm.Register)
+			y, ok2 := a.Operands[1].(asm.Register)
+			if !ok1 || !ok2 || x.Class != asm.ClassRV64X || y.Class != asm.ClassRV64X || x.Num == 0 || y.Num == 0 {
+				return nil, 0, false, false
+			}
+			return []Reg{{GPR, x.Num}, {GPR, y.Num}}, 0, false, true
+		}
+		return nil, 0, false, false
+	},
 	readsFlags: func(asm.Instruction) bool { return false },
 	frame: frameShape{
 		isPairSave: func(a asm.Instruction) (int64, bool) {

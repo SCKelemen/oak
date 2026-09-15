@@ -141,6 +141,127 @@ set_option maxHeartbeats 2000000 in
 /-- The addition form of the same check. -/
 theorem addFlags_v_w5 : ∀ l r : BitVec 5, (addFlags l r).v = (addFlagsOf l r).v := by decide
 
+/-- The signed integer represented by a nonempty bit-vector's complement,
+    plus Arm's carry-in, is the negation of the original signed integer.
+    This is the bridge from `AddWithCarry(x, NOT(y), 1)` to mathematical
+    subtraction; the intermediate integer is intentionally not truncated. -/
+theorem toInt_not_add_one {w : Nat} (hw : 0 < w) (x : BitVec w) :
+    (~~~x).toInt + 1 = -x.toInt := by
+  have hxlt := x.isLt
+  have hxle : x.toNat + 1 ≤ 2 ^ w := by omega
+  have hnat : 2 ^ w - 1 - x.toNat = 2 ^ w - (x.toNat + 1) := by omega
+  rw [BitVec.toInt_eq_msb_cond, BitVec.toInt_eq_msb_cond]
+  simp only [BitVec.msb_not, BitVec.toNat_not, hnat]
+  cases h : x.msb <;> simp [hw]
+  all_goals push_cast [hxle]
+  all_goals omega
+
+/-- Arm's signed-sum mismatch bit is exactly signed-addition overflow at
+    every width. -/
+theorem addFlags_v_overflow {w : Nat} (l r : BitVec w) :
+    (addFlags l r).v = l.saddOverflow r := by
+  have hresult := AddWithCarry_add_result l r
+  simp only [AddWithCarry, Bool.toNat_false, Nat.add_zero] at hresult
+  simp only [addFlags, AddWithCarry, Bool.toNat_false, Nat.add_zero,
+    Int.natCast_zero, Int.add_zero]
+  simp only [hresult]
+  apply Bool.eq_iff_iff.mpr
+  simp only [decide_eq_true_eq]
+  constructor
+  · intro hne
+    by_cases hover : l.saddOverflow r
+    · simpa using hover
+    · exact False.elim (hne (BitVec.toInt_add_of_not_saddOverflow hover))
+  · intro hover heq
+    have hrange :
+        2 ^ (w - 1) ≤ l.toInt + r.toInt ∨
+          l.toInt + r.toInt < -2 ^ (w - 1) := by
+      simpa [BitVec.saddOverflow, Bool.or_eq_true] using hover
+    have hlo := BitVec.le_toInt (l + r)
+    have hhi := BitVec.toInt_lt (x := l + r)
+    rw [heq] at hlo hhi
+    omega
+
+/-- Arm's signed-sum mismatch bit is exactly signed-subtraction overflow
+    for every nonempty width. -/
+theorem subFlags_v_overflow {w : Nat} (hw : 0 < w) (l r : BitVec w) :
+    (subFlags l r).v = l.ssubOverflow r := by
+  have hresult := AddWithCarry_sub_result l r
+  simp only [AddWithCarry, Bool.toNat_true] at hresult
+  have hsigned : l.toInt + (~~~r).toInt + 1 = l.toInt - r.toInt := by
+    rw [show l.toInt + (~~~r).toInt + 1 = l.toInt + ((~~~r).toInt + 1) by omega,
+      toInt_not_add_one hw]
+    omega
+  simp only [subFlags, AddWithCarry, Bool.toNat_true, Int.natCast_one]
+  simp only [hresult, hsigned]
+  apply Bool.eq_iff_iff.mpr
+  simp only [decide_eq_true_eq]
+  constructor
+  · intro hne
+    by_cases hover : l.ssubOverflow r
+    · simpa using hover
+    · exact False.elim (hne (BitVec.toInt_sub_of_not_ssubOverflow hover))
+  · intro hover heq
+    have hrange :
+        2 ^ (w - 1) ≤ l.toInt - r.toInt ∨
+          l.toInt - r.toInt < -2 ^ (w - 1) := by
+      simpa [BitVec.ssubOverflow, Bool.or_eq_true] using hover
+    have hlo := BitVec.le_toInt (l - r)
+    have hhi := BitVec.toInt_lt (x := l - r)
+    rw [heq] at hlo hhi
+    omega
+
+/-- **V agrees with Arm's at every nonempty width.** The standard library's
+    overflow characterizations reduce both readings to the operand and
+    result sign bits. -/
+theorem addFlags_v {w : Nat} (l r : BitVec w) :
+    (addFlags l r).v = (addFlagsOf l r).v := by
+  rw [addFlags_v_overflow, BitVec.saddOverflow_eq]
+  simp only [addFlagsOf]
+  cases l.msb <;> cases r.msb <;> cases (l + r).msb <;> decide
+
+theorem subFlags_v {w : Nat} (hw : 0 < w) (l r : BitVec w) :
+    (subFlags l r).v = (flagsOf l r).v := by
+  rw [subFlags_v_overflow hw, BitVec.ssubOverflow_eq]
+  simp only [flagsOf]
+  cases l.msb <;> cases r.msb <;> cases (l - r).msb <;> decide
+
+/-- The two AArch64 general-register widths as direct corollaries. -/
+theorem subFlags_v_w32 (l r : BitVec 32) :
+    (subFlags l r).v = (flagsOf l r).v := subFlags_v (by decide) l r
+
+theorem addFlags_v_w32 (l r : BitVec 32) :
+    (addFlags l r).v = (addFlagsOf l r).v := addFlags_v l r
+
+theorem subFlags_v_w64 (l r : BitVec 64) :
+    (subFlags l r).v = (flagsOf l r).v := subFlags_v (by decide) l r
+
+theorem addFlags_v_w64 (l r : BitVec 64) :
+    (addFlags l r).v = (addFlagsOf l r).v := addFlags_v l r
+
+/-- The complete NZCV records agree. Subtraction needs a nonempty word for
+    the complement-plus-carry identity; AArch64's register views are all
+    nonempty. -/
+theorem subFlags_eq_flagsOf {w : Nat} (hw : 0 < w) (l r : BitVec w) :
+    subFlags l r = flagsOf l r := by
+  have hn := subFlags_n l r
+  have hz := subFlags_z l r
+  have hc := subFlags_c l r
+  have hv := subFlags_v hw l r
+  cases hs : subFlags l r
+  cases hf : flagsOf l r
+  simp_all
+
+theorem addFlags_eq_addFlagsOf {w : Nat} (l r : BitVec w) :
+    addFlags l r = addFlagsOf l r := by
+  have hn := addFlags_n l r
+  have hz := addFlags_z l r
+  have hc := addFlags_c l r
+  have hv := addFlags_v l r
+  cases hs : addFlags l r
+  cases hf : addFlagsOf l r
+  simp_all
+
 /-- Arm's `ConditionHolds`, Sail text:
 ```
 function ConditionHolds cond = {
@@ -225,13 +346,52 @@ def conditionalCompare {w : Nat} (cond : BitVec 4) (prior : Flags) (l r : BitVec
     (if subOp then AddWithCarry l (~~~r) true else AddWithCarry l r false).2
   else imm
 
-/-- `ccmp` reads through Arm's definition, up to the flag equalities above
-    (N, Z, C proved at every width, V at width 8). -/
+/-- `ccmp` reads through Arm's definition. Its complete NZCV result agrees
+    at every nonempty width, including AArch64's 32- and 64-bit views. -/
 theorem ccmp_asl_n {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags) :
     (ccmpFlags c prior l r imm).n = (conditionalCompare (Cond.encode c) prior l r imm true).n := by
   simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
   split
   · exact (subFlags_n l r).symm
+  · rfl
+
+theorem ccmp_asl_z {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags) :
+    (ccmpFlags c prior l r imm).z = (conditionalCompare (Cond.encode c) prior l r imm true).z := by
+  simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
+  split
+  · exact (subFlags_z l r).symm
+  · rfl
+
+theorem ccmp_asl_c {w : Nat} (c : Cond) (prior : Flags) (l r : BitVec w) (imm : Flags) :
+    (ccmpFlags c prior l r imm).c = (conditionalCompare (Cond.encode c) prior l r imm true).c := by
+  simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
+  split
+  · exact (subFlags_c l r).symm
+  · rfl
+
+theorem ccmp_asl_v_w32 (c : Cond) (prior : Flags) (l r : BitVec 32) (imm : Flags) :
+    (ccmpFlags c prior l r imm).v = (conditionalCompare (Cond.encode c) prior l r imm true).v := by
+  simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
+  split
+  · exact (subFlags_v_w32 l r).symm
+  · rfl
+
+theorem ccmp_asl_v_w64 (c : Cond) (prior : Flags) (l r : BitVec 64) (imm : Flags) :
+    (ccmpFlags c prior l r imm).v = (conditionalCompare (Cond.encode c) prior l r imm true).v := by
+  simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
+  split
+  · exact (subFlags_v_w64 l r).symm
+  · rfl
+
+/-- **The complete `ccmp` NZCV result is Arm's conditional compare** at
+    every nonempty width, including both AArch64 general-register views. -/
+theorem ccmp_asl {w : Nat} (hw : 0 < w) (c : Cond) (prior : Flags)
+    (l r : BitVec w) (imm : Flags) :
+    ccmpFlags c prior l r imm =
+      conditionalCompare (Cond.encode c) prior l r imm true := by
+  simp only [ccmpFlags, conditionalCompare, ← holds_eq_ConditionHolds]
+  split
+  · exact (subFlags_eq_flagsOf hw l r).symm
   · rfl
 
 /-- Arm's flag setting for the logical instructions (`ands`, `bics`, `tst`):

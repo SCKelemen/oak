@@ -426,6 +426,219 @@ func (graph *ArtifactGraph) Run(ctx context.Context, cache ArtifactCache, target
 	return run, nil
 }
 
+type parallelArtifactResult struct {
+	key   ArtifactKey
+	value any
+	err   error
+}
+
+// RunParallel computes independent ready artifacts concurrently, with at most
+// workers computations in flight. Scheduling proceeds in deterministic waves:
+// a wave is selected in key order, all of its computations finish, and none of
+// its private results are published unless the entire wave succeeds. Execution
+// and cache-hit evidence remains in canonical graph order regardless of worker
+// completion order.
+func (graph *ArtifactGraph) RunParallel(ctx context.Context, cache ArtifactCache, workers int, targets ...ArtifactKey) (ArtifactRun, error) {
+	order, err := graph.topologicalOrder()
+	if err != nil {
+		return ArtifactRun{}, err
+	}
+	if ctx == nil {
+		return ArtifactRun{}, errors.New("opt: parallel artifact graph run has nil context")
+	}
+	if workers <= 0 {
+		return ArtifactRun{}, fmt.Errorf("opt: parallel artifact graph run has invalid worker count %d", workers)
+	}
+
+	needed := map[ArtifactKey]bool{}
+	preloaded := map[ArtifactKey]any{}
+	work := append([]ArtifactKey(nil), targets...)
+	for len(work) > 0 {
+		last := len(work) - 1
+		key := work[last]
+		work = work[:last]
+		if needed[key] {
+			continue
+		}
+		task, exists := graph.tasks[key]
+		if !exists {
+			return ArtifactRun{}, fmt.Errorf("opt: requested missing artifact %s", key)
+		}
+		needed[key] = true
+		if value, exists := cacheGet(cache, key); exists {
+			preloaded[key] = value
+			continue
+		}
+		work = append(work, task.Dependencies...)
+	}
+
+	run := ArtifactRun{artifacts: map[ArtifactKey]Artifact{}}
+	executed := map[ArtifactKey]bool{}
+	cacheHits := map[ArtifactKey]bool{}
+	for _, key := range order {
+		if value, exists := preloaded[key]; exists && needed[key] {
+			run.artifacts[key] = Artifact{Key: key, Value: value}
+			cacheHits[key] = true
+		}
+	}
+
+	unresolved := map[ArtifactKey]int{}
+	dependents := map[ArtifactKey][]ArtifactKey{}
+	pending := 0
+	for _, key := range order {
+		if !needed[key] {
+			continue
+		}
+		if _, cached := preloaded[key]; cached {
+			continue
+		}
+		pending++
+		task := graph.tasks[key]
+		for _, dependency := range task.Dependencies {
+			if !needed[dependency] {
+				return run, &ArtifactTaskError{Key: key, Err: fmt.Errorf("dependency %s is outside target closure", dependency)}
+			}
+			dependents[dependency] = append(dependents[dependency], key)
+			if _, complete := run.artifacts[dependency]; !complete {
+				unresolved[key]++
+			}
+		}
+	}
+	for key := range dependents {
+		sortArtifactKeys(dependents[key])
+	}
+
+	ready := &artifactKeyHeap{}
+	heap.Init(ready)
+	for _, key := range order {
+		if needed[key] && preloadedMissing(preloaded, key) && unresolved[key] == 0 {
+			heap.Push(ready, key)
+		}
+	}
+
+	completed := 0
+	for completed < pending {
+		if err := ctx.Err(); err != nil {
+			key := firstPendingArtifact(order, needed, preloaded, executed)
+			finalizeParallelEvidence(&run, order, executed, cacheHits)
+			return run, &ArtifactTaskError{Key: key, Err: err}
+		}
+		if ready.Len() == 0 {
+			key := firstPendingArtifact(order, needed, preloaded, executed)
+			finalizeParallelEvidence(&run, order, executed, cacheHits)
+			return run, &ArtifactTaskError{Key: key, Err: errors.New("no ready artifact in acyclic target closure")}
+		}
+
+		count := workers
+		if count > ready.Len() {
+			count = ready.Len()
+		}
+		batch := make([]ArtifactTask, count)
+		dependencies := make([][]Artifact, count)
+		for index := range batch {
+			key := heap.Pop(ready).(ArtifactKey)
+			batch[index] = graph.tasks[key]
+			dependencies[index] = make([]Artifact, len(batch[index].Dependencies))
+			for dependencyIndex, dependency := range batch[index].Dependencies {
+				artifact, exists := run.artifacts[dependency]
+				if !exists {
+					finalizeParallelEvidence(&run, order, executed, cacheHits)
+					return run, &ArtifactTaskError{Key: key, Err: fmt.Errorf("dependency %s produced no artifact", dependency)}
+				}
+				dependencies[index][dependencyIndex] = artifact
+			}
+		}
+
+		results := make([]parallelArtifactResult, len(batch))
+		var wait sync.WaitGroup
+		wait.Add(len(batch))
+		for index, task := range batch {
+			index, task := index, task
+			go func() {
+				defer wait.Done()
+				value, err := task.Compute(ctx, dependencies[index])
+				results[index] = parallelArtifactResult{key: task.Key, value: value, err: err}
+			}()
+		}
+		wait.Wait()
+
+		contextError := ctx.Err()
+		failed := -1
+		for index := range results {
+			if results[index].err == nil && contextError != nil {
+				results[index].err = contextError
+			}
+			if failed == -1 && results[index].err != nil {
+				failed = index
+			}
+		}
+		if failed != -1 {
+			finalizeParallelEvidence(&run, order, executed, cacheHits)
+			return run, &ArtifactTaskError{Key: results[failed].key, Err: results[failed].err}
+		}
+
+		for _, result := range results {
+			artifact := Artifact{Key: result.key, Value: result.value}
+			run.artifacts[result.key] = artifact
+			executed[result.key] = true
+			completed++
+			if cache != nil {
+				cache.Put(result.key, result.value)
+			}
+		}
+		for _, result := range results {
+			for _, dependent := range dependents[result.key] {
+				unresolved[dependent]--
+				if unresolved[dependent] == 0 {
+					heap.Push(ready, dependent)
+				}
+			}
+		}
+	}
+
+	finalizeParallelEvidence(&run, order, executed, cacheHits)
+	uniqueTargets := map[ArtifactKey]bool{}
+	for _, key := range targets {
+		uniqueTargets[key] = true
+	}
+	orderedTargets := make([]ArtifactKey, 0, len(uniqueTargets))
+	for key := range uniqueTargets {
+		orderedTargets = append(orderedTargets, key)
+	}
+	sortArtifactKeys(orderedTargets)
+	for _, key := range orderedTargets {
+		run.Targets = append(run.Targets, run.artifacts[key])
+	}
+	return run, nil
+}
+
+func preloadedMissing(preloaded map[ArtifactKey]any, key ArtifactKey) bool {
+	_, exists := preloaded[key]
+	return !exists
+}
+
+func firstPendingArtifact(order []ArtifactKey, needed map[ArtifactKey]bool, preloaded map[ArtifactKey]any, executed map[ArtifactKey]bool) ArtifactKey {
+	for _, key := range order {
+		if needed[key] && preloadedMissing(preloaded, key) && !executed[key] {
+			return key
+		}
+	}
+	return ArtifactKey{}
+}
+
+func finalizeParallelEvidence(run *ArtifactRun, order []ArtifactKey, executed, cacheHits map[ArtifactKey]bool) {
+	run.Executed = run.Executed[:0]
+	run.CacheHits = run.CacheHits[:0]
+	for _, key := range order {
+		if executed[key] {
+			run.Executed = append(run.Executed, key)
+		}
+		if cacheHits[key] {
+			run.CacheHits = append(run.CacheHits, key)
+		}
+	}
+}
+
 func cacheGet(cache ArtifactCache, key ArtifactKey) (any, bool) {
 	if cache == nil {
 		return nil, false

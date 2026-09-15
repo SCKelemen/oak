@@ -106,3 +106,17 @@ func TestLoopWitnessInputsVectorLanesAndLongSpans(t *testing.T) {
 		t.Fatalf("wide elements stay small (%d) and bytes keep the mix", elementValue("starts", 12, 32))
 	}
 }
+
+// Sibling loop events created out of layout order — a fork's first side
+// summarizing the loop past the meeting point before the other side's
+// loop — are what send the executor back to run with joins.
+func TestLoopsInLayoutOrder(t *testing.T) {
+	x := &pathExecutor{loops: []*loopEvent{{index: 1, at: 10}, {index: 2, parent: 1, at: 12}, {index: 3, at: 40}, {index: 4, at: 25}}}
+	if x.loopsInLayoutOrder() {
+		t.Fatal("a top-level loop at 25 created after one at 40 is out of order")
+	}
+	x.loops = []*loopEvent{{index: 1, at: 10}, {index: 2, parent: 1, at: 12}, {index: 3, at: 25}, {index: 4, parent: 3, at: 30}, {index: 5, parent: 3, at: 30}, {index: 6, at: 40}}
+	if !x.loopsInLayoutOrder() {
+		t.Fatal("siblings in increasing order, a call's loops at one place, are in order")
+	}
+}

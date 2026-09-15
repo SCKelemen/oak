@@ -9,18 +9,19 @@ import (
 )
 
 const (
+	optIRAnalysisWorkers       = 3
 	optIRSCCPRevision          = "oak.optir.sccp.v1"
 	optIRLoopStructureRevision = "oak.optir.loop-structure.v1"
 	optIRLoopsRevision         = "oak.optir.loops.v2"
-	optIRCSEDCERevision        = "oak.optir.cse-dce.v1"
+	optIRGVNDCERevision        = "oak.optir.gvn-dce.v1"
 	optIRCleanupCFGRevision    = "oak.optir.cleanup-cfg.v1"
 	optIRPreservationRevision  = "oak.optir.preservation.v1"
 	optIRLICMRevision          = "oak.optir.licm.v1"
 )
 
-type optIRCSEDCEArtifact struct {
+type optIRGVNDCEArtifact struct {
 	CFG    optir.CFG
-	Report optir.CSEDCEReport
+	Report optir.GVNDCEReport
 }
 
 type optIRLICMArtifact struct {
@@ -44,7 +45,7 @@ type optIRAnalysisArtifacts struct {
 	constants      optir.SCCPResult
 	loops          optir.LoopAnalysis
 	simplified     optir.CFG
-	simplification optir.CSEDCEReport
+	simplification optir.GVNDCEReport
 	loopInvariant  optir.CFG
 	loopMotion     optir.LICMReport
 	run            opt.ArtifactRun
@@ -56,7 +57,7 @@ func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
-	run, err := graph.Run(context.Background(), nil, keys.sccp, keys.loopsV0, keys.cleanup, keys.licm)
+	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, keys.sccp, keys.loopsV0, keys.cleanup, keys.licm)
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
@@ -68,7 +69,7 @@ func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
-	cleanup, err := optIRRunValue[optIRCSEDCEArtifact](run, keys.cleanup)
+	cleanup, err := optIRRunValue[optIRGVNDCEArtifact](run, keys.cleanup)
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
@@ -98,9 +99,9 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactKeys
 	keys.sccp = derivedOptIRKey(opt.ArtifactAnalysis, "optir.sccp", optIRSCCPRevision, keys.cfgV0)
 	keys.loopStructureV0 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loop-structure.v0", optIRLoopStructureRevision, keys.cfgV0)
 	keys.loopsV0 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v0", optIRLoopsRevision, keys.cfgV0, keys.loopStructureV0)
-	keys.cleanup = derivedOptIRKey(opt.ArtifactCandidate, "optir.cse-dce", optIRCSEDCERevision, keys.cfgV0)
+	keys.cleanup = derivedOptIRKey(opt.ArtifactCandidate, "optir.gvn-dce", optIRGVNDCERevision, keys.cfgV0)
 	keys.cfgV1 = derivedOptIRKey(opt.ArtifactIR, "optir.cfg.v1", optIRCleanupCFGRevision, keys.cleanup)
-	keys.preservation = derivedOptIRKey(opt.ArtifactAdmission, "optir.cse-dce.preservation", optIRPreservationRevision, keys.cfgV0, keys.cfgV1)
+	keys.preservation = derivedOptIRKey(opt.ArtifactAdmission, "optir.gvn-dce.preservation", optIRPreservationRevision, keys.cfgV0, keys.cfgV1)
 	keys.loopsV1 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v1", optIRLoopsRevision, keys.cfgV1, keys.loopStructureV0, keys.preservation)
 	keys.licm = derivedOptIRKey(opt.ArtifactCandidate, "optir.licm", optIRLICMRevision, keys.cfgV1, keys.loopsV1)
 
@@ -156,15 +157,15 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactKeys
 				if err != nil {
 					return nil, err
 				}
-				result, report, err := optir.SimplifyCSEDCE(input)
-				return optIRCSEDCEArtifact{CFG: result, Report: report}, err
+				result, report, err := optir.SimplifyGVNDCE(input)
+				return optIRGVNDCEArtifact{CFG: result, Report: report}, err
 			},
 		},
 		{
 			Key:          keys.cfgV1,
 			Dependencies: []opt.ArtifactKey{keys.cleanup},
 			Compute: func(_ context.Context, dependencies []opt.Artifact) (any, error) {
-				cleanup, err := optIRDependencyValue[optIRCSEDCEArtifact](dependencies, 0)
+				cleanup, err := optIRDependencyValue[optIRGVNDCEArtifact](dependencies, 0)
 				if err != nil {
 					return nil, err
 				}

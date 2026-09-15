@@ -43,6 +43,9 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	if keys.cleanup.Name != "optir.gvn-dce" || keys.preservation.Name != "optir.gvn-dce.preservation" {
+		t.Fatalf("GVN/DCE artifact keys = %s, %s", keys.cleanup, keys.preservation)
+	}
 	wantOrder, err := graph.TopologicalOrder()
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +63,7 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	if !certificate.Preserves(optir.LoopStructureAnalysisRequirements()) {
-		t.Fatalf("CSE/DCE did not prove loop-structure preservation: %+v", certificate.Checks())
+		t.Fatalf("GVN/DCE did not prove loop-structure preservation: %+v", certificate.Checks())
 	}
 }
 

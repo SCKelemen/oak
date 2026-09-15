@@ -70,6 +70,45 @@ type loopShape struct {
 	entryStart, entryEnd int
 }
 
+// globalStateValue is a package cell's value in a symbolic state: a write on
+// the path, or the declared entry value when the sparse state has no entry.
+func globalStateValue(globals map[string]Global, state map[string]*term, name string) (*term, bool) {
+	global, declared := globals[name]
+	if !declared {
+		return nil, false
+	}
+	if value, written := state[name]; written {
+		return value, true
+	}
+	return cellEntry(name, global), true
+}
+
+// differingGlobalState reports the first declared package cell whose value
+// differs between two sparse symbolic states. Names are sorted so a rejected
+// proof has a deterministic reason.
+func differingGlobalState(globals map[string]Global, before, after map[string]*term) (string, bool) {
+	names := map[string]bool{}
+	for name := range before {
+		names[name] = true
+	}
+	for name := range after {
+		names[name] = true
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		a, aKnown := globalStateValue(globals, before, name)
+		b, bKnown := globalStateValue(globals, after, name)
+		if !aKnown || !bKnown || !equalTerms(a, b) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // invariantEntryTests finds the entry-only tests before end: the longest
 // run of `cmp` and conditional branches to the exit label ending at end,
 // beginning at a compare or a compare-and-branch, none reading a register
@@ -688,6 +727,11 @@ type loopEvent struct {
 	// couples its counter's register on the inputs where ok holds, where
 	// the register's header value is what the path made it.
 	reached *term
+	// at is the event's place in the layout: the loop header's item
+	// index, or the call's for a callee's loops. Sibling events out of
+	// layout order mean the paths ran the sides of a fork in another
+	// order than the Oak body lowers them (loopsInLayoutOrder).
+	at int
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -799,6 +843,23 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			headerWritten[dest.Num] = true
 		}
 	}
+	// A register's own spill: `str xN, [sp, #off]` in the body, reloaded
+	// by `ldr xN, [sp, #off]`. The reload restores the value the register
+	// held, so it is no write of its own — in particular no 64-bit one: a
+	// register the body otherwise writes as w stays a 32-bit variable
+	// across a spill around a call, on every path alike.
+	spills := map[string]bool{}
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || !isFrameSpill(instr) || !(isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0) || len(instr.Operands) < 2 {
+			continue
+		}
+		if src, isReg := instr.Operands[0].(Register); isReg {
+			if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem {
+				spills[fmt.Sprintf("%d:%d", src.Num, mem.Offset)] = true
+			}
+		}
+	}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
 		instr, isInstr := x.items[i].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || len(instr.Operands) == 0 {
@@ -807,6 +868,11 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		dest, isReg := instr.Operands[0].(Register)
 		if !isReg || dest.ZeroRegister() || dest.Class == ClassV {
 			continue // the vector file is carried separately below
+		}
+		if isFrameSpill(instr) && len(instr.Operands) >= 2 {
+			if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && spills[fmt.Sprintf("%d:%d", dest.Num, mem.Offset)] {
+				continue // the register's own spill reloaded
+			}
 		}
 		if !written[dest.Num] {
 			allW[dest.Num] = true
@@ -895,7 +961,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 		}
 	}
-	ev := &loopEvent{index: eventIndex, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: state.pathCondition()}
+	ev := &loopEvent{index: eventIndex, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: state.pathCondition(), at: shape.header}
 	if n := len(x.loopStack); n > 0 {
 		ev.parent = x.loopStack[n-1]
 	}
@@ -994,6 +1060,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			continue
 		}
 		if width == 32 && !upperClear(value, x.declared) {
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify %s: loop %d: %s written as w only but its header value is not known zero-extended: %s\n", x.fn.Name, ev.index, name, value)
+			}
 			width = 64
 			fresh = paramTerm(ev.freshName(name), width)
 		}
@@ -1095,20 +1164,12 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// stores layer on it; the Oak side marks the same parameters from the
 	// same signature (loopEvent).
 	storedSpans := map[string]bool{}
-	writtenSpans := writableSpanParams(x.fn, x.spans)
+	writtenSpans := writableSpanMemories(x.fn, x.spans, x.recordSpans)
 	for _, span := range writtenSpans {
 		storedSpans[span] = true
 	}
 	ev.entry = map[string][]*spanWrite{}
 	for _, span := range writtenSpans {
-		if arg, isRecord := x.recordSpans[span]; isRecord {
-			// A span of records: one marker per leaf memory.
-			for _, memory := range arg.memories(span) {
-				ev.entry[memory] = freshState.writes[memory]
-				freshState.writes = appendMarker(freshState.writes, memory, ev.index)
-			}
-			continue
-		}
 		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
 	}
@@ -1125,6 +1186,14 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]
 	if !ok {
 		return nil, reason + " (in a loop body)", false
+	}
+	// Loop events model registers, frame slots, and span memories, but not
+	// package cells. A cell may be written before or after the loop; changing
+	// one in an iteration remains outside the theorem and fails closed.
+	for _, end := range ends {
+		if name, differs := differingGlobalState(x.globals, freshState.globals, end.state.globals); differs {
+			return nil, fmt.Sprintf("a store to package global %s in a loop body", name), false
+		}
 	}
 	// The iteration's stores, each path's under its condition, in path
 	// order; the state past the loop keeps the marker alone (the loop's
@@ -1235,6 +1304,55 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	freshState.flags = nil
 	if prior != nil {
+		// A register carried on one path and scratch on the other — it
+		// held a value at one path's header and nothing at the other's —
+		// whose header value the body never reads (a temporary the body
+		// rewrites before reading: its symbol appears in no condition,
+		// other variable's next value, or store) is scratch on both:
+		// dropped from the summary that carried it, unbound past the
+		// loop on this path. The two summaries then have one shape.
+		demote := func(owner *loopEvent, name string) bool {
+			if !strings.HasPrefix(name, "r") || owner.mentionsElsewhere(name) {
+				return false
+			}
+			reg, err := strconv.Atoi(name[1:])
+			if err != nil {
+				return false
+			}
+			kept := owner.vars[:0:0]
+			for _, v := range owner.vars {
+				if v != name {
+					kept = append(kept, v)
+				}
+			}
+			owner.vars = kept
+			delete(owner.next, name)
+			delete(owner.header, name)
+			delete(owner.fresh, name)
+			delete(owner.width, name)
+			if owner == ev {
+				delete(freshState.regs, reg)
+			}
+			return true
+		}
+		has := func(owner *loopEvent, name string) bool {
+			for _, v := range owner.vars {
+				if v == name {
+					return true
+				}
+			}
+			return false
+		}
+		for _, name := range append([]string(nil), ev.vars...) {
+			if !has(prior, name) {
+				demote(ev, name)
+			}
+		}
+		for _, name := range append([]string(nil), prior.vars...) {
+			if !has(ev, name) {
+				demote(prior, name)
+			}
+		}
 		merged, reason, ok := mergeLoopEvents(state.pathCondition(), ev, prior)
 		if !ok {
 			return nil, reason, false
@@ -1244,6 +1362,73 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		x.sites[site] = rec
 	}
 	return freshState, "", true
+}
+
+// exitReadSymbols reports, for the loop symbols of a side's events, the
+// ones some other event's terms or the result term read: the variables
+// whose value at the loop's exit flows on.
+func exitReadSymbols(events []*loopEvent, result *term) map[string]bool {
+	count := map[string]int{}
+	own := make([]map[string]bool, len(events))
+	for k, ev := range events {
+		mentioned := map[string]bool{}
+		collectParams(ev.cond, mentioned)
+		collectParams(ev.reached, mentioned)
+		for _, t := range ev.header {
+			collectParams(t, mentioned)
+		}
+		for _, t := range ev.next {
+			collectParams(t, mentioned)
+		}
+		for _, stores := range ev.writes {
+			for _, store := range stores {
+				collectParams(store.index, mentioned)
+				collectParams(store.value, mentioned)
+				collectParams(store.guard, mentioned)
+			}
+		}
+		own[k] = mentioned
+		for name := range mentioned {
+			count[name]++
+		}
+	}
+	if result != nil {
+		mentioned := map[string]bool{}
+		collectParams(result, mentioned)
+		for name := range mentioned {
+			count[name]++
+		}
+	}
+	read := map[string]bool{}
+	for k, ev := range events {
+		for _, name := range ev.vars {
+			symbol := ev.freshName(name)
+			n := count[symbol]
+			if own[k][symbol] {
+				n--
+			}
+			read[symbol] = n > 0
+		}
+	}
+	return read
+}
+
+// loopsInLayoutOrder reports whether sibling events (one parent) were
+// created in layout order. The paths run a fork's sides one after the
+// other; without a join the first side runs on past the fork's meeting
+// point and summarizes the loops there before the other side's loops,
+// where the Oak body lowers the sides then what follows — the events'
+// numbering, which the coupling pairs by, then disagrees. A run merging
+// at the joins restores the order (executeBodyChunk).
+func (x *pathExecutor) loopsInLayoutOrder() bool {
+	last := map[int]int{}
+	for _, ev := range x.loops {
+		if prev, seen := last[ev.parent]; seen && ev.at < prev {
+			return false
+		}
+		last[ev.parent] = ev.at
+	}
+	return true
 }
 
 // loopSite is the range of loop event indices a site created — base is
@@ -1267,6 +1452,45 @@ func (site loopSite) diverged(path *pathNode) bool {
 	return true
 }
 
+// mentionsElsewhere reports whether the variable's fresh symbol is read
+// by the event's other fields: its continue condition, the other
+// variables' next values, its stores — a symbol read nowhere but its own
+// next value is a temporary the body rewrites before reading.
+func (ev *loopEvent) mentionsElsewhere(name string) bool {
+	symbol := ev.fresh[name]
+	if symbol == nil {
+		return false
+	}
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termParam && t.name == symbol.name {
+			return true
+		}
+		return walk(t.cond) || walk(t.left) || walk(t.right)
+	}
+	if walk(ev.cond) {
+		return true
+	}
+	for other, next := range ev.next {
+		if other != name && walk(next) {
+			return true
+		}
+	}
+	for _, stores := range ev.writes {
+		for _, store := range stores {
+			if walk(store.index) || walk(store.value) || walk(store.guard) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // mergeLoopEvents joins the summaries two paths made of one loop site:
 // the path with condition cond summarized it as fresh, an earlier path
 // as prior. The loop's shape — its variables, their widths and symbols,
@@ -1280,11 +1504,23 @@ func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, b
 	if cond == nil {
 		return nil, "a loop summarized twice on one path", false
 	}
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if fresh.index != prior.index || fresh.parent != prior.parent || fresh.oakDerived != prior.oakDerived || len(fresh.vars) != len(prior.vars) {
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: loop merge: shape differs — fresh index %d parent %d oak-derived %v vars %v; prior index %d parent %d oak-derived %v vars %v\n", fresh.index, fresh.parent, fresh.oakDerived, fresh.vars, prior.index, prior.parent, prior.oakDerived, prior.vars)
+			for _, ev := range []*loopEvent{fresh, prior} {
+				for _, name := range ev.vars {
+					fmt.Fprintf(os.Stderr, "  event %p %s: header %s, next %s, symbol read elsewhere %v\n", ev, name, ev.header[name], ev.next[name], ev.mentionsElsewhere(name))
+				}
+			}
+		}
 		return nil, "a loop whose shape differs between two paths", false
 	}
 	for k, name := range fresh.vars {
 		if prior.vars[k] != name || fresh.width[name] != prior.width[name] || fresh.floats[name] != prior.floats[name] {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify: loop merge: variables differ at %d — fresh %v (width %d, header %s) prior %v (width %d, header %s)\n", k, fresh.vars, fresh.width[name], fresh.header[name], prior.vars, prior.width[prior.vars[k]], prior.header[prior.vars[k]])
+			}
 			return nil, "a loop whose loop-carried variables differ between two paths", false
 		}
 		if f, p := fresh.fresh[name], prior.fresh[name]; f == nil || p == nil || f.name != p.name || f.width != p.width {
@@ -1298,7 +1534,7 @@ func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, b
 		}
 		return iteTerm(cond, a, b)
 	}
-	merged := &loopEvent{index: fresh.index, parent: fresh.parent, vars: fresh.vars, header: map[string]*term{}, fresh: fresh.fresh, width: fresh.width, next: map[string]*term{}, floats: fresh.floats, oakDerived: fresh.oakDerived}
+	merged := &loopEvent{index: fresh.index, parent: fresh.parent, vars: fresh.vars, header: map[string]*term{}, fresh: fresh.fresh, width: fresh.width, next: map[string]*term{}, floats: fresh.floats, oakDerived: fresh.oakDerived, at: prior.at}
 	for _, name := range fresh.vars {
 		merged.header[name] = select_(fresh.header[name], prior.header[name])
 		merged.next[name] = select_(fresh.next[name], prior.next[name])
@@ -1312,10 +1548,9 @@ func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, b
 	return merged, "", true
 }
 
-// writableSpanParams names the function's writable span parameters
-// (`[*]T`) that the executor knows as spans, sorted: the spans a loop's
-// body may store through, which take the loop's memory marker.
-func writableSpanParams(fn *Function, spans map[string]int64) []string {
+// writableSpanParams names the function's writable span parameters (`[*]T`)
+// that the executor knows as scalar or record spans, sorted.
+func writableSpanParams(fn *Function, spans map[string]int64, recordSpans map[string]recordSpanArg) []string {
 	var out []string
 	if fn == nil || fn.Signature == nil {
 		return out
@@ -1324,9 +1559,27 @@ func writableSpanParams(fn *Function, spans map[string]int64) []string {
 		if param == nil || param.Name == nil || !isWritableSpan(param.Type) {
 			continue
 		}
-		if _, known := spans[param.Name.Value]; known {
+		_, scalar := spans[param.Name.Value]
+		_, record := recordSpans[param.Name.Value]
+		if scalar || record {
 			out = append(out, param.Name.Value)
 		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// writableSpanMemories flattens writable parameters to the memory names the
+// executor logs: a scalar span is one memory, while a record span has one
+// memory per scalar leaf or array field.
+func writableSpanMemories(fn *Function, spans map[string]int64, recordSpans map[string]recordSpanArg) []string {
+	var out []string
+	for _, span := range writableSpanParams(fn, spans, recordSpans) {
+		if arg, record := recordSpans[span]; record {
+			out = append(out, arg.memories(span)...)
+			continue
+		}
+		out = append(out, span)
 	}
 	sort.Strings(out)
 	return out
@@ -1337,7 +1590,7 @@ func writableSpanParams(fn *Function, spans map[string]int64) []string {
 // with memory effects (stores through spans, package cells) is refused,
 // since the loop summary carries registers and frame slots, not memories.
 func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState) (string, bool) {
-	cellsBefore := len(st.globals)
+	cellsBefore := st.clone().globals
 	reason, ok := x.summarizeCall(instr, st)
 	if !ok {
 		return reason, false
@@ -1345,8 +1598,8 @@ func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState)
 	// A callee's stores through the caller's spans join the iteration's
 	// write log (the loop's memory); a callee writing package cells is
 	// refused, since the loop summary carries no cells.
-	if len(st.globals) != cellsBefore {
-		return "a call writing package state in a loop", false
+	if name, differs := differingGlobalState(x.globals, cellsBefore, st.globals); differs {
+		return fmt.Sprintf("a call writing package global %s in a loop", name), false
 	}
 	return "", true
 }
@@ -2030,6 +2283,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 			case "bl", "call":
 				// A program function in the body: summarized on the path's
 				// state, its result a term over the fresh symbols.
+				x.callAt = pc
 				if reason, ok := x.summarizeCallInLoop(instr, st); !ok {
 					return nil, reason, false
 				}
@@ -2184,6 +2438,26 @@ func upperClear(t *term, declared map[string]int) bool {
 	return false
 }
 
+// recordSpanAtRoot finds the record-span shape currently in scope for a
+// caller-rooted span. In an inlined callee the shape is keyed by the callee's
+// parameter while writes and loop memory are keyed by spanRoot(parameter).
+// Multiple aliases of one root must agree on the shape; otherwise lowering
+// fails closed instead of choosing one by map iteration order.
+func (lo *oakLowering) recordSpanAtRoot(root string) (recordSpanArg, string, bool) {
+	var found recordSpanArg
+	has := false
+	for name, arg := range lo.recordSpans {
+		if lo.spanRoot(name) != root {
+			continue
+		}
+		if has && !reflect.DeepEqual(found, arg) {
+			return recordSpanArg{}, fmt.Sprintf("incompatible record-span aliases of %s", root), false
+		}
+		found, has = arg, true
+	}
+	return found, "", has
+}
+
 // loopEvent summarizes the Oak `while` whose condition did not fold, then
 // leaves the locals at their fresh symbols for the code after the loop.
 func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
@@ -2230,6 +2504,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		if !isLocal {
 			if _, isSpan := lo.spans[name]; isSpan {
 				continue // a store through a span: the loop's memory, below
+			}
+			if _, isRecordSpan := lo.recordSpans[name]; isRecordSpan {
+				continue // a store through a record span: its leaf memories, below
 			}
 			return fmt.Sprintf("an assignment to %s (not a local)", name), false
 		}
@@ -2278,7 +2555,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	storedSpans := make([]string, 0, len(lo.writableSpans))
 	contracts := map[string]spanContract{}
 	for span := range lo.writableSpans {
-		if arg, isRecord := lo.recordSpans[span]; isRecord {
+		arg, reason, isRecord := lo.recordSpanAtRoot(span)
+		if reason != "" {
+			return reason, false
+		}
+		if isRecord {
 			// A span of records: one marker per leaf memory, at the leaf's width.
 			for memory, width := range arg.memoryWidths(span) {
 				contracts[memory] = spanContract{elemWidth: width}
@@ -2725,8 +3006,23 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return trusted(fmt.Sprintf("the asm body has %d data-dependent loops, the Oak body %d", len(asmLoops), len(oakLoops)))
 	}
+	if len(asmLoops) > loopEventBudget {
+		// The events of several summarized calls add up past what one
+		// body may hold (loopEventBudget bounds each summary, not their
+		// sum): the coupling search over twenty-one events ran for an
+		// hour in `add_bits` and decided nothing.
+		return trusted(fmt.Sprintf("more data-dependent loops than the verifier's budget (%d, with the callees' summarized)", len(asmLoops)))
+	}
 	for k := range asmLoops {
 		if asmLoops[k].parent != oakLoops[k].parent {
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				for _, ev := range asmLoops {
+					fmt.Fprintf(os.Stderr, "verify %s: asm loop event %d (parent %d, oak-derived %v): vars %v\n", fn.Name, ev.index, ev.parent, ev.oakDerived, ev.vars)
+				}
+				for _, ev := range oakLoops {
+					fmt.Fprintf(os.Stderr, "verify %s: oak loop event %d (parent %d): vars %v\n", fn.Name, ev.index, ev.parent, ev.vars)
+				}
+			}
 			return trusted("the data-dependent loops nest differently on the two sides")
 		}
 	}
@@ -2782,6 +3078,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		// memory) — a wrong store in a loop body is refuted here.
 		if span, index, got, want, differ := concreteMemoriesDiffer(asmRun.writes, concrete.writes, lowering, env); differ {
 			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents) in the span %s at index %d: asm leaves %d, Oak leaves %d", fn.Name, describeEnv(names, env), span, index, got, want)}
+		}
+		if cell, got, want, differ := concreteCellsDiffer(asmRun, concrete, env); differ {
+			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents) in package global %s: asm leaves %d, Oak leaves %d", fn.Name, describeEnv(names, env), cell, got, want)}
 		}
 		checked++
 	}
@@ -2845,6 +3144,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// holds the lanes packed, lane k at bits k*w, so the coupling pairs the
 	// pack of the group with the symbol (asm/verify_vector.go packLanes).
 	slots := laneSlots(oakLoops, asmLoops)
+	// exitRead marks the loop symbols read past their own event: by an
+	// enclosing event's next values, a later event's header, a store, or
+	// the result — the variables whose value after the loop matters. A
+	// variable the body reads after the loop pairs with a register read
+	// after the loop; an accumulator's spill slot, reloaded past the loop,
+	// rather than the register that held it inside the body, which the
+	// header values (both zero) cannot tell apart.
+	exitReadAsm := exitReadSymbols(asmLoops, asmTerm)
+	exitReadOak := exitReadSymbols(oakLoops, oakTerm)
 	// Slots whose one-iteration value mentions fewer of the event's own
 	// variables come first: their register's value after one iteration then
 	// mentions only coupled symbols as soon as they are paired, so a wrong
@@ -3017,9 +3325,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					case a == 1 && equalTerms(hr, hx):
 						b = constTerm(0, hr.width) // equality: the header values are one term
 					case a == 1:
-						b = binaryTerm("sub", hr, hx)
+						// The offset in its canonical spelling: the two
+						// headers may be one value spelled apart (`start
+						// > n ? n : start` read at 32 bits through a
+						// 64-bit mask on the machine side), whose
+						// difference canonicalizes to zero.
+						b = canonical(binaryTerm("sub", hr, hx))
 					default:
-						b = binaryTerm("add", hr, hx)
+						b = canonical(binaryTerm("add", hr, hx))
 					}
 					if lf := b.linearAt(b.width); lf != nil && len(lf.coeffs) == 0 {
 						// The header values differ by a constant once
@@ -3061,8 +3374,17 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		inCond := map[string]bool{}
 		collectParams(asmEv.cond, inCond)
+		oakRead := false
+		for _, local := range s.locals {
+			if exitReadOak[oakEv.freshName(local)] {
+				oakRead = true
+			}
+		}
 		rank := func(c coupling) int {
 			r := 0
+			if exitReadAsm[asmEv.freshName(c.reg)] != oakRead {
+				r += 4
+			}
 			if !inCond[asmEv.freshName(c.reg)] {
 				r += 2
 			}
@@ -3410,6 +3732,39 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence("the results after the loops were not proven equal")
 		}
 	}
+	// Package cells written before or after the loops are ordinary final
+	// effects. The loop summarizer rejected any per-iteration cell change, so
+	// compare these under the same coupling and exit premise as the result.
+	oakCells := lowering.writtenCells()
+	cellSet := map[string]bool{}
+	for name := range exec.cells {
+		cellSet[name] = true
+	}
+	for name := range oakCells {
+		cellSet[name] = true
+	}
+	writtenCells := make([]string, 0, len(cellSet))
+	for name := range cellSet {
+		writtenCells = append(writtenCells, name)
+	}
+	sort.Strings(writtenCells)
+	for _, name := range writtenCells {
+		global, declared := exec.globals[name]
+		if !declared {
+			return trusted(fmt.Sprintf("a store through undeclared package global %s", name))
+		}
+		asmCell, asmWritten := exec.cells[name]
+		if !asmWritten {
+			asmCell = cellEntry(name, global)
+		}
+		oakCell, oakWritten := oakCells[name]
+		if !oakWritten {
+			oakCell = cellEntry(name, global)
+		}
+		if equal, decided := implies(premise, oakCell, substitute(asmCell, sigma)); !decided || !equal {
+			return evidence(fmt.Sprintf("the package global %s after the loops was not proven equal", name))
+		}
+	}
 	// The span memories after the loops: the final element at a fresh
 	// index over the entry memory, as decideSpans compares them, here under
 	// the coupling and the exit premise.
@@ -3426,11 +3781,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	sort.Strings(writtenSpans)
 	for _, name := range writtenSpans {
-		contract, isSpan := lowering.spans[name]
+		elemWidth, isSpan := lowering.spanMemoryWidth(name)
 		if !isSpan {
 			return trusted(fmt.Sprintf("a store through %s, which the Oak signature does not declare as a span", name))
 		}
-		elemWidth := contract.elemWidth
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
 		entry := selectTerm(name, at, elemWidth)
@@ -3446,6 +3800,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	memoryNote := ""
 	if len(writtenSpans) > 0 {
 		memoryNote = " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
+	}
+	cellNote := ""
+	if len(writtenCells) > 0 {
+		cellNote = " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
 	}
 	var notes []string
 	for k, inv := range invariants {
@@ -3472,7 +3830,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if asmTerm == nil {
 		witnessNote = ""
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, witnessNote)}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, cellNote, witnessNote)}
 }
 
 // coupledWrites checks that one iteration of loop k stores alike on both
@@ -3499,7 +3857,10 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 		if len(oakWrites) != len(asmWrites) {
 			return fmt.Sprintf("one iteration of loop %d stores through %s %d times on the Oak side and %d on the asm side", k+1, span, len(oakWrites), len(asmWrites)), false
 		}
-		contract := lowering.spans[span]
+		elemWidth, isSpan := lowering.spanMemoryWidth(span)
+		if !isSpan {
+			return fmt.Sprintf("loop %d stores through %s, which the signature does not declare as a span", k+1, span), false
+		}
 		for i := range oakWrites {
 			o, a := oakWrites[i], asmWrites[i]
 			if o.memory != "" || a.memory != "" {
@@ -3510,7 +3871,7 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 				if equal, decided := implies(premise, truncate(o.index, 32), substitute(truncate(a.index, 32), sigma)); !decided || !equal {
 					return fmt.Sprintf("store %d of loop %d through %s: the indices were not proven equal", i+1, k+1, span), false
 				}
-				if equal, decided := implies(premise, truncate(o.value, contract.elemWidth), substitute(truncate(a.value, contract.elemWidth), sigma)); !decided || !equal {
+				if equal, decided := implies(premise, truncate(o.value, elemWidth), substitute(truncate(a.value, elemWidth), sigma)); !decided || !equal {
 					return fmt.Sprintf("store %d of loop %d through %s: the values were not proven equal", i+1, k+1, span), false
 				}
 			}
@@ -3555,13 +3916,13 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 		if len(oakLog) == 0 && len(asmLog) == 0 {
 			continue // both the entry memory itself
 		}
-		contract, isSpan := lowering.spans[span]
+		elemWidth, isSpan := lowering.spanMemoryWidth(span)
 		if !isSpan {
 			return fmt.Sprintf("loop %d marks %s, which the signature does not declare as a span", k+1, span), false
 		}
 		lowering.fresh[spanIndexName(span)] = 32
 		at := paramTerm(spanIndexName(span), 32)
-		entry := selectTerm(span, at, contract.elemWidth)
+		entry := selectTerm(span, at, elemWidth)
 		oakMemory := memoryAt(oakLog, at, entry)
 		asmMemory := substitute(memoryAt(asmLog, at, entry), sigma)
 		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
@@ -3593,13 +3954,13 @@ func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*
 	}
 	sort.Strings(names)
 	for _, span := range names {
-		contract, isSpan := lowering.spans[span]
+		elemWidth, isSpan := lowering.spanMemoryWidth(span)
 		if !isSpan {
 			return fmt.Sprintf("loop %d stores through %s, which the signature does not declare as a span", k+1, span), false
 		}
 		lowering.fresh[spanIndexName(span)] = 32
 		at := paramTerm(spanIndexName(span), 32)
-		unknown := selectTerm(loopMemoryName(oakEv.index, span), at, contract.elemWidth)
+		unknown := selectTerm(loopMemoryName(oakEv.index, span), at, elemWidth)
 		oakMemory := memoryAt(oakEv.writes[span], at, unknown)
 		asmMemory := substitute(memoryAt(asmEv.writes[span], at, unknown), sigma)
 		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
@@ -3631,7 +3992,7 @@ func concreteMemoriesDiffer(asmLogs, oakLogs map[string][]*spanWrite, lowering *
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		contract, isSpan := lowering.spans[name]
+		elemWidth, isSpan := lowering.spanMemoryWidth(name)
 		if !isSpan {
 			continue
 		}
@@ -3651,7 +4012,7 @@ func concreteMemoriesDiffer(asmLogs, oakLogs map[string][]*spanWrite, lowering *
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 		for _, k := range sorted {
 			at := constTerm(k, 32)
-			entry := constTerm(elementValue(name, k, contract.elemWidth), contract.elemWidth)
+			entry := constTerm(elementValue(name, k, elemWidth), elemWidth)
 			a := memoryAt(asmLogs[name], at, entry).eval(env)
 			o := memoryAt(oakLogs[name], at, entry).eval(env)
 			if a != o {
@@ -3660,6 +4021,44 @@ func concreteMemoriesDiffer(asmLogs, oakLogs map[string][]*spanWrite, lowering *
 		}
 	}
 	return "", 0, 0, 0, false
+}
+
+// concreteCellsDiffer is the concrete witness counterpart of the final cell
+// proof: every package cell either has its path's final write or its entry
+// value, and both are evaluated on the witness environment.
+func concreteCellsDiffer(exec *pathExecutor, lowering *oakLowering, env map[string]uint64) (cell string, got, want uint64, differ bool) {
+	oakCells := lowering.writtenCells()
+	names := map[string]bool{}
+	for name := range exec.cells {
+		names[name] = true
+	}
+	for name := range oakCells {
+		names[name] = true
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		global, declared := exec.globals[name]
+		if !declared {
+			return name, 0, 0, true
+		}
+		asmCell, asmWritten := exec.cells[name]
+		if !asmWritten {
+			asmCell = cellEntry(name, global)
+		}
+		oakCell, oakWritten := oakCells[name]
+		if !oakWritten {
+			oakCell = cellEntry(name, global)
+		}
+		a, o := asmCell.eval(env), oakCell.eval(env)
+		if a != o {
+			return name, a, o, true
+		}
+	}
+	return "", 0, 0, false
 }
 
 // substitute replaces parameters by terms (the asm loop symbols by their
@@ -3716,7 +4115,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 // loopTermNodeBudget bounds the distinct nodes of the loop events' terms
 // (headers, conditions, next values, stores) the coupling search works
 // over.
-const loopTermNodeBudget = 100000
+const loopTermNodeBudget = 250000
 
 // loopTermNodes counts the distinct term nodes of every event's terms on
 // both sides.
@@ -3755,7 +4154,10 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 // its implications (loopProofNodeBudget): a coupling search that keeps
 // failing candidates near the per-decision budget ends as evidence rather
 // than running for minutes.
-type nodeBudget struct{ remaining int }
+type nodeBudget struct {
+	remaining int // diagram nodes the proof may still spend
+	calls     int // implications tried so far (implicationCallLimit)
+}
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
 // loopDecisionNodeBudget bounds each of its implications.
@@ -3785,6 +4187,32 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if budget == nil {
+		// A decision that arrives without a budget (decideEqual on a
+		// chunk's terms) still ends: the case splits and the congruence
+		// rule recurse over the operands of both sides, each pair pruned
+		// and blasted anew, and over a hash block's term that walk ran
+		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
+		// implication budget). One decision's allowance bounds it; past
+		// the allowance the implication is undecided, not unending.
+		budget = &nodeBudget{remaining: loopDecisionNodeBudget}
+	}
+	if budget != nil {
+		// Each implication costs a call from the proof's allowance, and
+		// terms too large to blast cost a failed diagram's nodes, before
+		// they are canonicalized, pruned, or substituted: those walks are
+		// linear, and a body whose write coupling tries thousands of
+		// implications over a memory's selects (`add_bits`) would spend
+		// hours in them alone.
+		budget.calls++
+		if budget.calls > implicationCallLimit {
+			return false, false
+		}
+		if dagNodesExceed(implicationNodeLimit, premise, a, b) {
+			budget.remaining -= blastNodeBudget
+			return false, false
+		}
+	}
 	if depth == 0 {
 		premise, a, b = canonical(premise), canonical(a), canonical(b)
 	}
@@ -3798,7 +4226,10 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// The premise settles branches on both sides (a loop guard, a case
 		// split's condition): with those pruned the sides may be one term.
 		pruned := pruneUnder(premise, []*term{a, b}, widthOf)
-		a, b = pruned[0], pruned[1]
+		// Pruning rebuilds the branches it settles; the rebuilt terms
+		// take the canonical spelling again, or the rules the sides met
+		// under (a negation, a cset) are lost to the arm rule below.
+		a, b = canonical(pruned[0]), canonical(pruned[1])
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
 		}
@@ -4220,6 +4651,37 @@ func termSize(t *term, memo map[*term]int) int {
 
 const termSizeCap = 1 << 40
 
+// implicationNodeLimit bounds the distinct term nodes an implication's
+// three terms may hold before the decider gives up on the diagrams;
+// implicationCallLimit bounds the implications one loop proof may try.
+const (
+	implicationNodeLimit = 1 << 16
+	implicationCallLimit = 2048
+)
+
+// dagNodesExceed reports whether the terms hold more than limit distinct
+// nodes between them, stopping the count there.
+func dagNodesExceed(limit int, terms ...*term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if len(seen) > limit {
+			return true
+		}
+		return walk(t.cond) || walk(t.left) || walk(t.right)
+	}
+	for _, t := range terms {
+		if walk(t) {
+			return true
+		}
+	}
+	return false
+}
+
 // abbreviate cuts a rendering for a trace line.
 func abbreviate(s string, n int) string {
 	if len(s) <= n {
@@ -4295,6 +4757,9 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 	if a.kind != b.kind || a.width != b.width {
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: congruence: shapes differ\n  a: %s\n  b: %s\n", spineOf(a, 4), spineOf(b, 4))
+			if termSize(a, map[*term]int{})+termSize(b, map[*term]int{}) < 60 {
+				fmt.Fprintf(os.Stderr, "  a in full: %s\n  b in full: %s\n", a, b)
+			}
 		}
 		return false, false
 	}
@@ -4674,6 +5139,32 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 			rounds = 8
 		}
 	}
+	// The premise's own bindings: a conjunct comparing a symbol with a
+	// term (`g = (total + 15) >> 4`, an inner loop's exit fact; `off <
+	// len - 66`, a guard) is satisfied by the symbol taking the term's
+	// value (its neighbor for a strict comparison), so each valuation is
+	// settled through them before the premise is evaluated — a premise
+	// of exit facts over a dozen loop counters is otherwise satisfied by
+	// no random valuation, and an obligation over two distinct symbols
+	// (`off = found`, a wrong pairing) goes undecided instead of refuted.
+	bindings := premiseBindings(premise)
+	settle := func(env map[string]uint64, pinned string) {
+		for pass := 0; pass < 3 && len(bindings) > 0; pass++ {
+			for _, bind := range bindings {
+				if bind.name == pinned {
+					continue
+				}
+				value := evaluator.evaluate(bind.value, env)
+				switch bind.op {
+				case "lo", "lt":
+					value--
+				case "hi", "gt":
+					value++
+				}
+				env[bind.name] = value & mask(widths[bind.name])
+			}
+		}
+	}
 	for _, target := range targets {
 		for _, delta := range []uint64{0, 1, ^uint64(0)} {
 			env := map[string]uint64{}
@@ -4681,6 +5172,7 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 				env[name] = random() & mask(widths[name])
 			}
 			env[target.name] = (target.value + delta) & mask(widths[target.name])
+			settle(env, target.name)
 			if evaluator.evaluate(premise, env) != 0 && evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
 				return true
 			}
@@ -4705,6 +5197,9 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 			}
 			env[name] = value & mask(widths[name])
 		}
+		if round%2 == 1 {
+			settle(env, "")
+		}
 		if evaluator.evaluate(premise, env) == 0 {
 			continue
 		}
@@ -4713,6 +5208,84 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 		}
 	}
 	return false
+}
+
+// A premiseBinding is a premise conjunct comparing a symbol with a term:
+// the symbol, the term, and the comparison (its negation folded in).
+type premiseBinding struct {
+	name  string
+	value *term
+	op    string
+}
+
+// premiseBindings collects the conjuncts of a premise that compare a
+// symbol (possibly masked) with a term not mentioning it, as bindings a
+// valuation can settle: `x = t`, `x < t`, `x ≤ t`, `x ≥ t`, `x > t`, or
+// the negation of one. Disjunctions and conditionals are not looked into.
+func premiseBindings(premise *term) []premiseBinding {
+	var out []premiseBinding
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t == nil {
+			return
+		}
+		if t.kind == termBinary && t.op == "and" && t.width == 1 {
+			walk(t.left)
+			walk(t.right)
+			return
+		}
+		negated := false
+		if t.kind == termBinary && t.op == "xor" && t.right.kind == termConst && t.right.value == 1 {
+			negated, t = true, t.left
+		}
+		if t.kind != termCmp {
+			return
+		}
+		op := t.op
+		if negated {
+			op = negatedCondition[op]
+		}
+		symbol := func(side *term) (string, bool) {
+			for side != nil && side.kind == termBinary && side.op == "and" && side.right.kind == termConst && isLowMask(side.right.value) {
+				side = side.left
+			}
+			if side != nil && side.kind == termParam {
+				return side.name, true
+			}
+			return "", false
+		}
+		flip := map[string]string{"eq": "eq", "lo": "hi", "ls": "hs", "hs": "ls", "hi": "lo", "lt": "gt", "le": "ge", "ge": "le", "gt": "lt"}
+		if name, isSymbol := symbol(t.left); isSymbol && !mentions(t.right, name) {
+			if _, known := flip[op]; known {
+				out = append(out, premiseBinding{name: name, value: t.right, op: op})
+			}
+			return
+		}
+		if name, isSymbol := symbol(t.right); isSymbol && !mentions(t.left, name) {
+			if flipped, known := flip[op]; known {
+				out = append(out, premiseBinding{name: name, value: t.left, op: flipped})
+			}
+		}
+	}
+	walk(premise)
+	return out
+}
+
+// mentions reports whether the term reads the named symbol.
+func mentions(t *term, name string) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termParam && t.name == name {
+			return true
+		}
+		return walk(t.cond) || walk(t.left) || walk(t.right)
+	}
+	return walk(t)
 }
 
 // A comparisonTarget is a symbol compared with a constant somewhere in an

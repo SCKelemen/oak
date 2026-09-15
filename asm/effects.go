@@ -519,16 +519,11 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	}
 	sort.Strings(sorted)
 	for _, name := range sorted {
-		var width int
-		if leafWidth, isLeaf := lowering.recordLeafWidth(name); isLeaf {
-			// A record span's leaf memory (`v.f`): the leaf's width.
-			width = leafWidth
-		} else {
-			contract, isSpan := lowering.spans[name]
-			if !isSpan {
-				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}
-			}
-			width = contract.elemWidth
+		width, isSpan := lowering.spanMemoryWidth(name)
+		if !isSpan {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}
+		}
+		if _, isScalar := lowering.spans[name]; isScalar {
 			if elem := exec.spans[name]; int(elem)*8 != width {
 				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the span %s has %d-byte elements in the contract and %d-bit ones in the Oak signature) — trusted per docs/spec/94-assembler.md §5", fn.Name, name, elem, width)}
 			}

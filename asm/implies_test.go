@@ -1,6 +1,9 @@
 package asm
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // The premise `p < 16` bounds p to four bits for the decision; `q <= 255`
 // to eight; a bound by another parameter narrows nothing.
@@ -154,5 +157,60 @@ func TestCanonicalBooleanValued(t *testing.T) {
 	machine := cmpTerm("ne", iteTerm(binaryTerm("or", zeroExtend(cmpTerm("ne", l1, constTerm(0, 8)), 32), zeroExtend(cmpTerm("ne", l0, constTerm(0, 8)), 32)), constTerm(1, 32), constTerm(0, 32)), constTerm(0, 32))
 	if !equalReductions(oak, truncate(machine, 1)) || !equalReductions(oak, truncate(canonical(machine), 1)) {
 		t.Fatalf("any spelled both ways: %s vs %s", oak, canonical(machine))
+	}
+}
+
+// A premise of exit facts binding a dozen symbols to terms (`g = (total +
+// 15) >> 4`) is satisfied by no random valuation; settled through its
+// bindings, a valuation refutes an obligation over two distinct symbols
+// (a wrong pairing's `off = found`) instead of leaving it to a diagram.
+func TestRefutedByValuationSettlesPremiseBindings(t *testing.T) {
+	total, g, off, found := paramTerm("total", 32), paramTerm("loop16.g", 32), paramTerm("loop15.off", 32), paramTerm("loop15.found", 32)
+	groups := binaryTerm("shr", binaryTerm("add", total, constTerm(15, 32)), constTerm(4, 32))
+	premise := binaryTerm("and", truncate(cmpTerm("ls", g, groups), 1), truncate(cmpTerm("hs", g, groups), 1))
+	for k := 0; k < 12; k++ {
+		x := paramTerm(fmt.Sprintf("loop%d.j", 17+k), 32)
+		premise = binaryTerm("and", premise, binaryTerm("and", truncate(cmpTerm("ls", x, g), 1), truncate(cmpTerm("hs", x, g), 1)))
+	}
+	premise = binaryTerm("and", premise, notTerm(cmpTerm("lo", off, binaryTerm("sub", paramTerm("len(bytes)", 32), constTerm(66, 32)))))
+	names := []string{"total", "loop16.g", "loop15.off", "loop15.found", "len(bytes)"}
+	widths := map[string]int{}
+	for _, name := range names {
+		widths[name] = 32
+	}
+	for k := 0; k < 12; k++ {
+		name := fmt.Sprintf("loop%d.j", 17+k)
+		names = append(names, name)
+		widths[name] = 32
+	}
+	if bindings := premiseBindings(premise); len(bindings) != 2+12*2+1 {
+		t.Fatalf("bindings: %d", len(bindings))
+	}
+	if !refutedByValuation(premise, off, found, names, widths) {
+		t.Fatal("off = found under the exit facts must be refuted by a settled valuation")
+	}
+	// The same premise does not refute what holds under it.
+	if refutedByValuation(premise, g, groups, names, widths) {
+		t.Fatal("g = groups holds under the premise")
+	}
+}
+
+// The machine's `eor w, w, #1` of a 1/0 word, its bit taken and negated
+// again, is the word's own or of lane tests: the truncation distributes
+// over the bitwise combination and the double negation folds, so the
+// reductions meet as one shape.
+func TestCanonicalBitOfBooleanCombination(t *testing.T) {
+	l0, l1 := paramTerm("l0", 8), paramTerm("l1", 8)
+	any32 := binaryTerm("or", zeroExtend(cmpTerm("ne", l0, constTerm(0, 8)), 32), zeroExtend(cmpTerm("ne", l1, constTerm(0, 8)), 32))
+	machine := binaryTerm("xor", truncate(binaryTerm("xor", any32, constTerm(1, 32)), 1), constTerm(1, 1))
+	got := canonical(machine)
+	oak := binaryTerm("or", truncate(cmpTerm("ne", l0, constTerm(0, 8)), 1), truncate(cmpTerm("ne", l1, constTerm(0, 8)), 1))
+	if !equalTerms(got, oak) && !equalReductions(got, oak) {
+		t.Fatalf("machine any: %s, want %s", got, oak)
+	}
+	// A truncation of a sum is not distributed: a sum is not a 1/0 value.
+	x, y := paramTerm("x", 32), paramTerm("y", 32)
+	if got := canonical(truncate(binaryTerm("add", x, y), 1)); got.kind != termBinary || got.op != "and" {
+		t.Fatalf("bit of a sum: %s", got)
 	}
 }

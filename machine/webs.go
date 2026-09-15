@@ -114,12 +114,6 @@ func (f *Function) Webs() ([]*Web, error) {
 	for i := range f.Blocks {
 		in[i], out[i] = rd{}, rd{}
 	}
-	if len(f.Blocks) > 0 {
-		in[0] = rd{}
-		for r, s := range entry {
-			in[0][r] = map[int]bool{s: true}
-		}
-	}
 	changed := true
 	for iter := 0; changed; iter++ {
 		if iter > 10000 {
@@ -127,25 +121,27 @@ func (f *Function) Webs() ([]*Web, error) {
 		}
 		changed = false
 		for i, b := range f.Blocks {
-			if i > 0 && len(b.Preds) == 0 {
-				// Unreachable as the flow reads, or reached in a way the
-				// lift does not see: every register may hold anything,
-				// as at entry.
-				in[i] = clone(in[0])
-			} else if i > 0 {
-				merged := rd{}
-				for _, p := range b.Preds {
-					for r, set := range out[p.Index] {
-						if merged[r] == nil {
-							merged[r] = map[int]bool{}
-						}
-						for k := range set {
-							merged[r][k] = true
-						}
+			merged := rd{}
+			if i == 0 || len(b.Preds) == 0 {
+				// The entry holds every register's entry value; so, as far
+				// as the lift can tell, does a block the flow never
+				// reaches. A loop whose header is the entry block merges
+				// its back edges below as well.
+				for r, s := range entry {
+					merged[r] = map[int]bool{s: true}
+				}
+			}
+			for _, p := range b.Preds {
+				for r, set := range out[p.Index] {
+					if merged[r] == nil {
+						merged[r] = map[int]bool{}
+					}
+					for k := range set {
+						merged[r][k] = true
 					}
 				}
-				in[i] = merged
 			}
+			in[i] = merged
 			next := through(b, in[i])
 			if !sameRD(next, out[i]) {
 				out[i] = next

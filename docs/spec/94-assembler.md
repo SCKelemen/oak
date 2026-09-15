@@ -268,7 +268,16 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   under `wI < wB` with `wB <= wL >> s` and `k <= s` proves the slack fact
   `wD + 2^k <= len` (`Oak.Assembler.shifted_index_slack`) — the binary
   search reads its midpoint, and the page probe its page's keys, with no
-  guard of their own. An access admits an index guarded below a register
+  guard of their own. At a label the index facts meet (`meetIdx`): a fact
+  both paths state survives, and so does a register bound one path states
+  (`wI < wB`) when the other states the index below a constant that `wB`
+  holds at least on that path (`wI < K`, `wB = K' >= K`) — the entry of a
+  bottom-tested probe loop compares the index against a bound register
+  still holding its initial constant, which the compare records as an
+  immediate, while the back edge compares it against the narrowed
+  register; the register form holds on both (2026-09-16, the page
+  probe's inner loop rotates with its key read unguarded). An access
+  admits an index guarded below a register
   whose upper chain ends at a register holding the span's length, proven
   equal to one, or holding a constant no larger than one such holds
   (`Oak.Assembler.index_under_upper`). A label's state is the whole
@@ -658,13 +667,19 @@ and the `adds` form `l + r` (`AddWithCarry_sub_result`/`_add_result`); its
 N, Z, and C flags are our `flagsOf`/`addFlagsOf` at every width
 (`subFlags_n/z/c`, `addFlags_n/z/c` — C is the "no borrow" reading, `r ≤
 l`), and V — Arm's `SInt` overflow against our sign-bit formula — is
-checked exhaustively by the kernel at width 5 and by the silicon
-differential at 32 and 64 bits; `ConditionHolds` on the A64 condition-code
+proved at every nonempty width for subtraction and every width for addition
+(`subFlags_v`/`addFlags_v`): the proof identifies Arm's untruncated signed
+sum mismatch with Lean's signed-overflow predicates and then with the operand
+and result sign bits. The width-5 exhaustive check remains as an executable
+cross-check, and 32-/64-bit corollaries name the AArch64 register views;
+`ConditionHolds` on the A64 condition-code
 encodings is our `Cond.holds` for every code and every flag pattern
 (`holds_eq_ConditionHolds`); the conditional-select family is Arm's
 `integer_conditional_select` with its `else_inv`/`else_inc` switches
-(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); `ccmp`'s flags are
-Arm's `integer_conditional_compare` (`ccmp_asl_n`); `tst`'s flags are the
+(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); the complete NZCV
+record produced by `ccmp` is Arm's `integer_conditional_compare`
+(`ccmp_asl`, with component theorems for N, Z, C and architectural-width
+V); `tst`'s flags are the
 logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
 are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
 The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
@@ -1238,9 +1253,65 @@ extends back as the parameter (the Oak lowering's convention, its own
 masks beside it: `u32(a)` for a `u8` parameter is `(a and 255)`), so
 stripping the mask there would forget it (the twelve-diamond join test
 refuted the first attempt). With these `step_first` is **proven**,
-thirteen loops coupled like `step_count`'s. `count` (its step loop's callee loops nest differently
-on the two sides) and `find_from` (a loop reached on two paths with
-different carried variables) stay trusted.
+thirteen loops coupled like `step_count`'s.
+
+**count and find_from (2026-09-15).** The scanner's entry points — a
+fork over the group count whose two sides each run a step loop (one
+with the tables loaded once, one with a group loop inside), then the
+tail loop both sides reach — were trusted for loops that "nest
+differently" or whose "carried variables differ between two paths".
+Behind the messages stood four things. The **executor ran a fork's
+taken side first**, and on its first run (joins are for the rerun past
+the path budget) the first side ran on through the shared tail and
+summarized it before the other side's loop: the machine's events came
+A, tail, B where the Oak body lowers A, B, tail, and the coupling pairs
+the k-th event of each side. Now the fall-through side runs first at a
+forward fork (the layout's order, the Oak body's: `c ? then | else`
+lays the then block after the branch; a loop body's worklist already
+did), each event records **its place in the layout** (`loopEvent.at`,
+the header's index or the call's), and a run whose sibling events are
+out of that order **runs again merging at the joins**
+(`loopsInLayoutOrder`; the merged state then selects `then : else`
+under the Oak body's own condition). For the joins to exist, a **guard's
+trap path no longer counts**: `joinPoints` reads a conditional branch to
+a trap block as falling through (`isGuardBranch`), since a side that
+can trap has no post-dominator otherwise. A **register carried on one
+path and scratch on the other** — bound at one path's header, nothing
+at the other's, its header value never read by the body
+(`mentionsElsewhere`) — is scratch on both before the summaries merge.
+A **register reloaded from its own spill slot** (`str x14, [sp, #576]`
+… `ldr x14`) is no 64-bit write of it: a register the body otherwise
+writes as w stays a 32-bit variable on every path. With the loops
+paired, both functions reached the coupling and ended undecided, for
+one reason: `found` and `off` both start at zero, so either register
+fits either variable at the header, and the wrong pairing could not be
+refuted — no random valuation satisfied a premise of a dozen inner
+loops' exit facts (`g = (total + 15) >> 4`, …), so the obligation went
+to a diagram past its budget. **Valuations settle through the premise's
+own bindings** (`premiseBindings`: a conjunct comparing a symbol with a
+term, its negation folded, is satisfied by the symbol taking the term's
+value or its neighbor), and the wrong pairing falls in a step; the
+**candidates prefer a register read past the loop when the Oak variable
+is** (`exitReadSymbols`: an accumulator's spill slot reloaded after the
+loop over the register that held it inside), and a coupling's **offset
+takes its canonical spelling** (`start > n ? n : start` read at 32 bits
+through a 64-bit mask, against the Oak body's own conditional, is one
+term once the mask is pushed and the comparison is at one bit — a
+conditional's comparison canonicalizes to one bit, a wide unsigned
+comparison of zero-extended values to their width,
+`narrowComparison`). Pruning under the premise rebuilds branches, so
+the sides take the canonical spelling again after it; and the low bit
+of a bitwise combination of 1/0 values is the combination of the bits
+(`eor w, w, #1` then the bit is the negation of the bit). With these
+`count` and `find_from` are **proven**, thirty-two nested loops each
+(the two step loops with `step_count`'s or `step_first`'s thirteen
+inside, the group loop, and the tail's three), in under seven seconds;
+the coupling's term budget is 250,000 nodes (their terms hold 168,000).
+The optimization search's other forms of the two (hoisted, rotated,
+reallocated) stay evidence or trusted, and are not the form emitted. A
+diagnostic switch, `OAK_VERIFY_ONLY=<function>`, verifies one function
+and trusts the rest without a look (its verdicts are never cached), so
+a module's one function is a fifteen-second probe under the trace.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -3061,13 +3132,20 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The fifty-ninth increment is vector block loads (§9 "Vector block
+loads"): the vector loads of one basic block read off a single element
+address at immediate offsets, dropping an index add and an address add
+each. The `u32` reduction's main loop goes from eighteen instructions to
+eleven; the checker and the verifier already admitted the form.
+
 The fifty-eighth increment is reduction vectorization (§9 "Reduction
-vectorization"): the recognized integer reduction's eight accumulators as
-the lanes of fixed vectors, licensed by the same law at eight
-accumulators (`Oak.Reduction.vector8_eq`), with the verifier's vector
-load gaining the element-address form the wider lanes use. A `u32`
-reduction runs at 1.6× the scalar unrolling; a `u64` one keeps the scalar
-form on cost.
+vectorization"): the recognized integer reduction's accumulators as the
+lanes of four fixed vectors, licensed by the same law at as many
+accumulators as the shape has lanes (`Oak.Reduction.vector16_eq`,
+`vector8_eq`), with the verifier's vector load gaining the
+element-address form the wider lanes use and the cost model's assumed
+trip count calibrated from the measurement. A `u32` reduction runs at
+2.6× the scalar unrolling, a `u64` one at 1.4×, both proven.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3950,12 +4028,27 @@ memories' write logs (the effects model above), one memory per scalar
 leaf and one per array field, guarded by the path condition, marked at a
 data-dependent loop, and the verdict compares each written memory at a
 fresh index — so writers of spans of records are proven too, and a store
-into the wrong field is a mismatch A span of records passed
+into the wrong field is a mismatch. Counted loops past the 64-trip
+unrolling limit use the same per-leaf markers on both sides; the Oak
+lowering treats the record-span root as memory rather than a carried
+local, and an inlined callee's parameter resolves through its alias to
+the caller's writable root. A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's
 V1: `stage2` and `addr_space` enter the proof chain, readers, writers,
-and the functions that call them).
+and the functions that call them). A view or span of an array field of
+one element passed to a callee — `total(view(&stages[k].coeffs))`,
+`fill(span(&stages[k].state), v)` (`50-borrowing.md` §2) — binds the
+callee's span parameter as an alias of that field's leaf memory
+(`stages.coeffs`) at the linear offset `k·N` with the field's constant
+length, a derived span like `subslice`'s: the executor reads it off the
+argument's base (the element address plus the field's offset) and
+length, the Oak lowering off the expression, and a constant element of
+the leaf memory is named as the record span names it (`stages[3].coeffs`),
+so the two meet in one unknown. The SIMD pilot's span-of-record kernels
+are proven through the callees they hand a stage's coefficients to
+(`compiler/e2e_native_field_view_proof_test.go`).
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
@@ -3976,8 +4069,12 @@ unit function that only writes state is proven in its cells alone. A
 calls: a callee's summary starts from the cells as the caller's path
 holds them and its writes return to the path, a unit callee is
 summarized for its writes alone, and on the Oak side the inlined callee
-shares the caller's cell locals; only state written around a
-data-dependent loop stays trusted. The C emitter gives
+shares the caller's cell locals. One call-derived data-dependent loop may
+be surrounded by scalar-cell writes: the loop summarizer first rejects
+any cell change inside an iteration, concrete witnesses compare the final
+cells, and the coupling proof compares them under the loop's exit premise.
+Cell state around a native loop or multiple loop events, and a callee that
+writes a cell inside an iteration, stay trusted. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations
@@ -4255,35 +4352,71 @@ body; a use of the index after the loop reads `len(v)` on both sides.
 
 **Reduction vectorization (2026-09-16, AArch64 lane;
 `nativegen/vector_reduction.go`, the `vectorize-reductions` candidate).**
-The same recognized reduction, vectorized: eight elements an iteration
-whose eight accumulators are the lanes of fixed vectors — two
-`simd.U32x4` for a `u32` accumulator, four `simd.U64x2` for a `u64` one —
-under the same slack guard, the remainder loop as written, and a combine
+The same recognized reduction, vectorized: four vector accumulators —
+four `simd.U32x4` over sixteen elements an iteration, four `simd.U64x2`
+over eight — under the same slack guard, the remainder loop as written, and a combine
 that folds the vector accumulators pairwise in the vector domain, stores
 the one vector left into a frame array of its lanes, and adds the lanes
 to the scalar as a balanced tree. The lanes reach the scalar through
 memory because the integer vectors have no lane `extract` in v1
 (`93-simd.md` §1.2a reserves it with the comparison masks); the round
-trip runs once after the loops. The license is the same law at eight
-accumulators (`Oak.Reduction.vector8_eq`, `vector8_sum`), and the
-verifier proves the assembly against the rewritten body, the lanes
-coupled as packs to the halves of their registers.
+trip runs once after the loops. The license is the same law at as many
+accumulators as the shape has lanes (`Oak.Reduction.vector16_eq` over
+`u32` lanes, `vector8_eq` over `u64` ones, with their `_sum` corollaries),
+and the verifier proves the assembly against the rewritten body, the
+lanes coupled as packs to the halves of their registers.
 
-Eight elements an iteration, not four, because a single vector
-accumulator is one loop-carried chain: measured over 2^20 `u32`
-elements, one `simd.U32x4` accumulator runs at 0.18 ns an element against
-the scalar unrolling's 0.14, and two accumulators at 0.08 —
-1.6× the scalar form, which is what the search selects
-(`benchmarks/native/README.md`). A `u64` reduction keeps the scalar
-unrolling: two lanes to a vector means four accumulators and an address
-register per 128-bit load, and the cost model prices that above the four
-scalar accumulators with their pair loads — the candidates line records
-both. The vector loads are the form §8's `loadVector` gained with this
-increment: `add xE, xB, wI, uxtw #s` then `ldr q, [xE]`, the address the
-lowering forms for lanes wider than a byte, read as the span's elements
-from `wI` (`asm/verify_vector_test.go`), where before only the
-byte-lane form `[base, wI, uxtw]` was modeled and a wider-lane vector
-kernel was trusted.
+Four accumulators, not one, because a single vector accumulator is one
+loop-carried chain: measured over 2^20 `u32` elements, one `simd.U32x4`
+runs at 0.18 ns an element against the scalar unrolling's 0.16, two at
+0.11, and four at 0.063 — 2.6× the scalar form. A `u64` reduction's four
+`simd.U64x2` run at 1.4× (`benchmarks/native/README.md`). The combine
+folds the accumulators pairwise in the vector domain before storing,
+which is both proven and cheaper than storing each accumulator into a
+wider frame array: that form is witnessed, the verifier not equating the
+results after the loops.
+
+Two things had to give first. The vector loads are the form §8's
+`loadVector` gained with this increment — `add xE, xB, wI, uxtw #s` then
+`ldr q, [xE]`, the address the lowering forms for lanes wider than a
+byte, read as the span's elements from `wI`
+(`asm/verify_vector_test.go`) — where before only the byte-lane form
+`[base, wI, uxtw]` was modeled and every wider-lane vector kernel was
+trusted. And the cost model's assumed trip count, 32, made a
+sixteen-element main loop's fifteen-trip remainder half the work, so no
+strided form could pay for its tail; it is 256 now, calibrated from
+these rows (`opt/cost.go`, §16 of `90-backend.md`).
+
+**Vector block loads (2026-09-16, AArch64 lane;
+`nativegen/vector_blocks.go`).** For lanes wider than a byte the lowering
+forms a vector load's address in a register (`vecAddress`), so the
+vectorized reduction's four loads each paid an index add and an address
+add. Within one basic block, a vector load whose address is `add xA, xB,
+wJ, uxtw #s` with `wJ` the group's index — directly, through a copy
+(`mov wJ, wI`, before the late cleanup forwards it), or at an offset
+(`add wJ, wI, #k`) — reads the same span at element `wI + k`, so it is
+the first load's address at the byte offset `k << s`, and the address and
+index instructions it owned are dropped. The pass requires that nothing
+between the two loads writes the base, the index, or the kept address,
+and that the dropped registers are dead after the load, which the
+whole-function liveness of the general registers answers (the cleanup
+pass's `liveAfter`). The offset must be a multiple of sixteen inside the
+`ldr q` immediate's range.
+
+Neither the seam checker nor the verifier needed extending: the slack
+guard that admits the first load marks a region of its bound's elements
+(`elementRegionOf`; sixteen `u32` elements is 64 bytes) and
+`regionAdmits` takes every offset inside it, while the verifier reads a
+vector load through an element address at a non-zero offset as the span's
+elements from that index (`loadVector`, §8). The `u32` reduction's main
+loop is eleven instructions for sixteen elements where it was eighteen —
+one address, four `ldr q`, four `add v.4s`, the index step, the test —
+and stays proven. Measured: no change on a 4 MiB stream, which is
+bandwidth-bound at 0.057 ns an element either way, and about eight
+percent on a 16 KiB array that fits L1 (0.039–0.042 against
+0.044–0.047); the instructions are what the increment buys, which is
+where a core with less spare issue than an M4 — the RV64 lane, an MCU —
+would feel it.
 
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
@@ -5497,7 +5630,31 @@ forty trips still unroll. The theorem decider takes neither rule: with
 no machine side to couple with, a summarized loop is a law left open
 (the lattice laws' loops over loops, `dnf_product_denotes`, went "Go
 open, Oak decided" under the loop-over-loop rule), so it unrolls every
-counted loop. Prover build (per body, the optimizer's
+counted loop.
+
+**Bounded decisions (2026-09-16).** Three walks without a bound came to
+light when the natively built prover took hours to build under load.
+The mask-pushing rule's walk over a conditional's arms had no memo and
+went exponential on a merge of many paths (a body spent twenty minutes
+in it); it visits each arm once now. A body's summarized callees add
+their loop events past what one body may hold (`loopEventBudget` bounds
+each summary, not the sum): `add_bits` gathered twenty-one and its
+coupling searched for an hour, so the coupling refuses more events than
+the budget. And an implication's terms were canonicalized, pruned, and
+substituted — linear walks — before any diagram budget applied, over
+thousands of implications of a write coupling on a memory's selects:
+each implication now costs a call from the proof's allowance
+(`implicationCallLimit`, 2048) first, and terms over
+`implicationNodeLimit` distinct nodes (65536) are undecided at once,
+charged a failed diagram. `add_bits` is evidence in two minutes a
+candidate. The native prover's shell on `adts.oak`, which ran three
+hours and three quarters without finishing in the root suite, agrees on
+7 of 7 rows once its build completes. Prover build per body: proven
+551, evidence 136, trusted 265, no disagreement — the backend's
+small-helper expansion (#486) now inlines thirty-two of the bodies the
+earlier count proved separately (`append_byte`, `bitset_set`,
+`buffer_reset`), so the counts are not comparable body for body.
+ Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
 

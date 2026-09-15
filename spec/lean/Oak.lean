@@ -8,6 +8,7 @@ import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
 import Oak.AArch64Memory
+import Oak.AArch64WeakMemory
 import Oak.AArch64Barrier
 import Oak.AArch64Mmio
 import Oak.AArch64SysReg
