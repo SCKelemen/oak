@@ -965,6 +965,74 @@ func (bc *BorrowChecker) extractOwnerName(expr ast.Expression) string {
 	return ""
 }
 
+// elementFieldBase recognizes `&s[i].field` (and `&s[i].f.g`, any chain
+// of fields below the element): the sequence binding s whose element's
+// owned-array field the borrow names (docs/spec/50-borrowing.md section
+// 8). Field hops above the element (`&r.items[i].f`) are not recognized:
+// the storage there is the record r's, and `&r.items` names it.
+func elementFieldBase(expr ast.Expression) (string, bool) {
+	prefix, isPrefix := expr.(*ast.PrefixExpression)
+	if !isPrefix || prefix.Operator != "&" {
+		return "", false
+	}
+	path, isPath := prefix.Right.(*ast.IndexExpression)
+	if !isPath || !path.Dot {
+		return "", false
+	}
+	// Down the field chain to the element access.
+	cur := path.Left
+	for {
+		next, isIndex := cur.(*ast.IndexExpression)
+		if !isIndex {
+			return "", false
+		}
+		if !next.Dot {
+			base, isIdent := next.Left.(*ast.Identifier)
+			if !isIdent {
+				return "", false
+			}
+			return base.Value, true
+		}
+		cur = next.Left
+	}
+}
+
+// checkElementFieldBorrow admits `view(&s[i].field)` / `span(&s[i].field)`:
+// through an owned array of records s, the borrow is of s (the whole
+// array, as `&record.field` borrows the record); through a span or view
+// binding s, it is a reborrow of s — a derived borrow like `subslice`,
+// so a writable field span from a read-only view is refused and two
+// live writable reborrows of one span are checked for overlap (region
+// unknown: they conflict). Reports whether the argument had this shape.
+func (bc *BorrowChecker) checkElementFieldBorrow(call *ast.InvocationExpression, kind borrowKind, targetVar string) bool {
+	base, ok := elementFieldBase(call.Arguments[0])
+	if !ok {
+		return false
+	}
+	if _, isOwner := bc.ownerStates[base]; isOwner {
+		if targetVar != "" {
+			if kind == BorrowSpan {
+				bc.createSpanBorrowWithRegion(base, targetVar, nil, call)
+			} else {
+				bc.createViewBorrowWithRegion(base, targetVar, nil, call)
+			}
+		}
+		return true
+	}
+	source, tracked := bc.activeBorrows[base]
+	if !tracked {
+		return false
+	}
+	if kind == BorrowSpan && source.kind != BorrowSpan {
+		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("span() of %s: %q is a read-only view; a writable field span needs a span", call.Arguments[0].String(), base))
+		return true
+	}
+	if targetVar != "" {
+		bc.createSubsliceWithRegion(base, targetVar, nil, call)
+	}
+	return true
+}
+
 // consumeBuffer moves a buffer owner out of the program's hands — a custody
 // transition, a move into a record — or reports why it cannot: the owner
 // was already moved or handed back, or a borrow of it is live. Through a
@@ -1345,7 +1413,10 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("view() argument %s must be &owner of an owned array, or &record.field naming an owned-array field", call.Arguments[0].String()))
+		if bc.checkElementFieldBorrow(call, BorrowView, targetVar) {
+			return
+		}
+		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("view() argument %s must be &owner of an owned array, &record.field naming an owned-array field, or &s[i].field through a span, view, or array of records", call.Arguments[0].String()))
 		return
 	}
 
@@ -1375,7 +1446,10 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("span() argument %s must be &owner of an owned array, or &record.field naming an owned-array field", call.Arguments[0].String()))
+		if bc.checkElementFieldBorrow(call, BorrowSpan, targetVar) {
+			return
+		}
+		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("span() argument %s must be &owner of an owned array, &record.field naming an owned-array field, or &s[i].field through a span or array of records", call.Arguments[0].String()))
 		return
 	}
 

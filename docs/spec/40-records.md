@@ -186,6 +186,18 @@ This algorithm is not a claim that every target ABI uses this layout. Packed rec
 
 The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
 
+A fixed 128-bit vector field (`simd.F32x4`, `simd.U8x16`, …; `93-simd.md`
+§1.1, §1.2a) is placed as its lane array — the `struct { T lanes[N]; }`
+the C backend emits for every realization (portable loop, NEON, RVV):
+sixteen bytes at the lane type's alignment, so a record holding one has
+the same shape everywhere and the emitted `sizeof`/`offsetof` assertions
+ratify it. The native lane loads and stores such a field whole (`ldr`/`str
+qN`) and keeps a record holding one out of by-value signatures (AAPCS64
+flattens the lane array into the composite's members — a lone `F32x4`
+field is a homogeneous floating-point aggregate); such a function stays
+with the C backend, reported. Arrays of vectors and the RV64 lane's
+records of vectors stay with the C backend as before.
+
 ## 6a. Declared layout specs: `struct(packed)`, `struct(align: N)`, `struct(no_padding)`
 
 A struct declaration may carry an explicit layout spec as a parenthesized
