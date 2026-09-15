@@ -159,10 +159,7 @@ var arm64Only = map[string]bool{asm.ArchArm64: true}
 var bothLanes = map[string]bool{asm.ArchArm64: true, asm.ArchRV64: true}
 
 // Transforms are the lane's transforms in the order they compose within
-// their phases: a transform sees the proposals of the transforms before
-// it in its phase, so the reduction unrolling, which rewrites the loop
-// into the strided shape, comes before the invariant hoisting and the
-// rotation that improve that shape.
+// their phases.
 func Transforms() []opt.Transform {
 	return []opt.Transform{
 		&laneTransform{
@@ -208,6 +205,10 @@ func Transforms() []opt.Transform {
 			// (nativegen/reduction.go): a source rewrite licensed by the
 			// operator's associativity (Oak.Reduction.unrolled4_eq); the
 			// verifier judges the lowering against the rewritten body.
+			// First of the loop phase: the machine passes after it (the
+			// invariant pass, the rotation) see the unrolled shape — its
+			// slack test is theirs to peel and rotate — where a candidate
+			// they fire on nothing would never meet the unrolling.
 			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
 			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
 			arches:  bothLanes,

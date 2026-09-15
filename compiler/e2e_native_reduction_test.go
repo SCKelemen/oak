@@ -119,10 +119,11 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 				firstEnd = i
 				break
 			}
+			// The back edge: the unconditional jump, or a bottom-tested
+			// loop's conditional branch to the header (docs/spec/94-assembler.md
+			// §9 "Bottom-tested loops").
 			instruction, ok := item.(asm.Instruction)
-			// The back edge: unconditional, or the conditional one of a
-			// bottom-tested loop (§9 "Bottom-tested loops").
-			if !ok || (instruction.Mnemonic != "b" && instruction.Mnemonic != "b." && instruction.Mnemonic != "j" && instruction.Mnemonic != "bltu" && instruction.Mnemonic != "bgeu" && instruction.Mnemonic != "bne") || len(instruction.Operands) == 0 {
+			if !ok || len(instruction.Operands) == 0 {
 				continue
 			}
 			if symbol, ok := instruction.Operands[len(instruction.Operands)-1].(asm.Symbol); ok && symbol.Name == firstName && i >= firstStart {

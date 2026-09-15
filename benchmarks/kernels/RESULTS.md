@@ -561,6 +561,30 @@ return. That is the order of the next increments: the slot reload and
 the Bool compare in the byte loop, the result built in the `x8` area,
 by-reference arguments passed as the caller's own storage when the
 callee reads them in place, and pair copies for aggregates.
+## The register budget, 2026-09-16
+
+With the single-use span local forwarded into its call
+(docs/spec/94-assembler.md §9 "The register budget"), the aggregate
+helpers fold: `sha256_update`'s loop no longer calls `sha256_compress`
+and `sha256_block` but the FEAT_SHA256 dispatch itself (`bl
+sha256_block_hw` twice in the body, once per loop), the chaining value
+and the block copied by pairs around it. Over every open branch merged
+(#473–#488, a fresh measurement tree from `specification`), the dbs
+frame scan's native build stands at 121–143 ms against the C build's
+118–122 ms under the suites' load, and at 94–112 ms against 88–105 ms
+once the load fell (five interleaved runs each; best 93.6 against 88.3)
+— parity within five percent, from 1.8× at the start of the day — with the chain
+hash agreeing, 70 bodies left to C (89 at the start), 384 proven and no
+refutation. The byte loop is ten instructions and its control two;
+clang's is ten and three. What the dump still shows, in order: the loop
+invariants' form was rejected for `sha256_update` because both forms
+verify as trusted and the policy keeps the plain one on a tie
+(`keeps its loop invariants in place`), so `add x11, x22, #32` is
+rebuilt each byte; `sha256_block`'s `true ? { … }` scope lowers as `movz
+w11, #1; cbz w11`, a constant condition not folded; and the per-block
+path copies the block into a temp for the callee's `view(&block)`, as
+the source asks. The next increments are those three, then a
+bottom-tested loop shape for the verifier's recognizer.
 
 
 ## The native backend after the day's increments, 2026-09-16 (evening)
@@ -601,20 +625,20 @@ value position), so 1.18× is this run's noise floor; `dot`, `sha256`,
   (`machine: line N: operand of an unknown kind`, across `bench_sum`,
   `bench_dot`, `bench_page_probe`, `bench_sha256`, the CRC chunk and
   update, the SHA rounds, and the deque helpers).
-- **`sum` 1.7×** is the strided header. The unrolled loop was fourteen
+- **`sum` 1.7×** was the strided header. The unrolled loop was fourteen
   instructions per four elements, five of them the header
   `cmp w20, #4; b.lo done; sub w9, w20, #4; cmp w3, w9; b.hi done` —
   `len(v) >= 4` and `len(v) - 4` are loop-invariant, but the
-  loop-invariant pass reported no site on this shape (it scanned the
-  body, not the header, and ran before the unrolling in its phase) and
-  rotation left the same count. Landed the same evening
-  (`94-assembler.md` §9 "Loop invariants"): the header's `sub` hoists
-  into a fresh register before the loop, the unrolling composes before
-  the hoisting and the rotation, and the selected `sum` body is the
-  eight-instruction body under a four-instruction bottom test — twelve
-  per four elements, proven. The invariant guard `len(v) >= 4` is the
-  remaining two: peeling it needs the verifier's coupling to read the
-  peeled fact as a premise of the continue condition.
+  loop-invariant pass scanned the body, not the header, and ran before
+  the unrolling in its phase, so it reported no site. The register-budget
+  increment landed the same evening (`94-assembler.md` §9 "Loop
+  invariants": the exit tests as groups, an invariant group peeled before
+  the header, a setup instruction hoisted under a new name, the unrolling
+  first in the loop phase) and the selected `sum` body is the
+  eight-instruction body under `cmp w3, w14; b.ls` — ten per four
+  elements, proven, against clang's NEON loop at about six per four. The
+  remaining gap is the vector form of the same reduction
+  (`compiler/e2e_native_header_hoist_test.go` pins the shape).
 
 **The search itself**, read off the report over the 49 natively lowered
 functions: 15 select the identity; the rest select one to five

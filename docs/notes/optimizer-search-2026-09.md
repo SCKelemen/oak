@@ -32,7 +32,11 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   against a fake lane.
 - `nativegen/opt.go` — the native lane's side: the six transforms the
   lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
-  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `hoist-invariants`, `vector-homes`, `unroll-reductions` — the
+  unrolling first in the loop phase since 2026-09-16, so the invariant
+  pass and `rotate-loops` are applied to the unrolled shape: a transform
+  that fires on nothing leaves the frontier, so one that fires only on
+  another's output must follow it), then
   `reallocate` and the first transform written for the registry,
   `late-cleanup` (§11 "Machine", late copy/branch cleanup:
   `nativegen/cleanup.go`, a block-local peephole under a whole-function
