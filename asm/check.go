@@ -20,7 +20,7 @@ import (
 //   - reads only of bound, written, sp, or zero registers (no uninitialized
 //     reads); writes only to bound registers, the result register, or
 //     declared clobbers; callee-saved registers refused in v1;
-//   - flags consumers dominated by a producer (labels and calls invalidate);
+//   - flags consumers dominated by a producer on every path (calls and entries invalidate; a label keeps flags every predecessor arrives with);
 //   - memory only through the declared sp frame, offsets bounds-checked
 //     against `frame N` with the static sp displacement tracked through
 //     pre/post-index and sp arithmetic, consistent at every label;
@@ -82,6 +82,12 @@ type guardState struct {
 	// loop bound hoisted into a callee-saved register — kept where every
 	// predecessor agrees on the value.
 	consts map[int]int64
+	// flags: NZCV was produced on every path arriving here (a cmp, subs,
+	// adds, or another producer with no call or entry between), so a
+	// b.cond right after the label consumes flags a dominating producer
+	// set — the compare a conditional chain's else arm repeats is reused
+	// (docs/spec/94-assembler.md §9 "Condition selection").
+	flags bool
 }
 
 func newGuardState() *guardState {
@@ -104,6 +110,7 @@ func (c *checker) guardSnapshot() *guardState {
 	for reg, k := range c.constFacts {
 		gs.consts[reg] = k
 	}
+	gs.flags = c.flagsValid
 	return gs
 }
 
@@ -129,6 +136,7 @@ func (c *checker) applyGuards(gs *guardState) {
 		c.constFacts[reg] = k
 	}
 	c.pendingCmp = cmpFact{}
+	c.flagsValid = gs.flags
 }
 
 // meetGuards is the intersection of two states: a length bound holds after
@@ -163,6 +171,7 @@ func meetGuards(a, b *guardState) *guardState {
 			out.consts[reg] = kA
 		}
 	}
+	out.flags = a.flags && b.flags
 	return out
 }
 
@@ -180,7 +189,7 @@ func guardStatesEqual(a, b map[string]*guardState) bool {
 	}
 	for name, ga := range a {
 		gb, ok := b[name]
-		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) || len(ga.consts) != len(gb.consts) {
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) || len(ga.consts) != len(gb.consts) || ga.flags != gb.flags {
 			return false
 		}
 		for reg, k := range ga.consts {
@@ -1019,7 +1028,14 @@ func (c *checker) enterLabel(label Label) {
 		c.disp = 0
 	}
 	c.labelDisp[label.Name] = c.disp
-	c.flagsValid = false
+	// Flags at the label: the fixpoint's assumption, as the guard facts
+	// below — valid only when every predecessor arrives with flags a
+	// producer set; the first pass carries the fall-through's over (a
+	// label reached by branches alone starts with none), the conservative
+	// fallback knows none.
+	if c.unreachable || c.forgetAtLabels {
+		c.flagsValid = false
+	}
 	c.unreachable = false
 	// Guard facts at the label: the fixpoint's assumption for it — the meet
 	// of every predecessor's facts — or, on the first pass (no assumption
@@ -1035,6 +1051,7 @@ func (c *checker) enterLabel(label Label) {
 			c.applyGuards(assumed)
 		} else {
 			c.forgetGuards() // no predecessor reached it: unreachable label
+			c.flagsValid = false
 		}
 	}
 }

@@ -3593,6 +3593,50 @@ compares canonical (sign-extended) values while the guard fact needs the
 zero-extended index, so its guards stay until the index representation
 changes; the C backend elides through `IndexProven` as before.
 
+*The fallback is per source line (2026-09-15).* A refused elision no
+longer costs the body every guard: the checker's finding names the line
+of the access it could not admit (`function:line:`), the compiler adds
+that line to the lane's `GuardLines` and lowers the body again with the
+guards of those lines kept, and repeats — at most eight rounds, a finding
+without a line or on a line already kept falling back to every guard as
+before — so the accesses the checker does admit stay elided. A binary
+search reads `probes[p]` under `while p < len(probes)` (admitted off the
+exit test) and `keys[mid]` under `mid < hi ≤ len(keys)` (proven by the
+decreasing-bound law, which the checker cannot read at the seam): the
+probe read is now unguarded and the key read keeps its guard, where
+before both were guarded (`compiler/e2e_native_guard_lines_test.go`;
+`bench_search` and `bench_page_probe` each lose one guard, their verdicts
+unchanged, `benchmarks/native/README.md`). The optimizer still decides
+nothing about safety: every unguarded access is one the checker admitted.
+
+**Condition selection (2026-09-15, AArch64 lane).** Four selections in
+the lowering of conditions and compares, each the mechanical layer's
+(`90-backend.md` §16 rule 2) and each gated by the verifier as every body
+is: a negation in condition position inverts the branch instead of
+materializing a Bool (`!found` was `mov; eor #1; cbz`, is `cbnz` on the
+variable's own register); a Bool variable homed in a register is tested
+where it lives, no copy; a small constant on a comparison's right — a
+literal, a folded conversion, a named constant — or in a match arm's
+literal pattern is the compare's immediate (`movz w10, #1; cmp w9, w10`
+is `cmp w9, #1`); and a bitwise `and`, `orr`, or `eor` with a constant
+inside the type's mask is not masked again (`and w9, w5, #7; and w6, w9,
+#255` is the first alone). On the kernels (`OAK_NATIVE_DUMP=1`):
+`bench_dispatch` 68 to 60 instructions (seven `movz` gone from its match
+chain), `bench_search` 57 to 54, `bench_page_probe` 93 to 90, the verdicts
+unchanged (`compiler/e2e_native_condition_test.go` asserts the shapes and
+the value against the C backend). A fifth, the same day: the second
+`cmp` of a conditional chain (`k == t ? … | k < t ? …`) repeated the
+first with no flag writer between them, but a label lay between and the
+checker's flags fact did not cross labels. The checker now carries flag
+validity through the same label fixpoint as its guard facts
+(`guardState.flags`: valid at a label when every predecessor arrives
+with flags a producer set), and the lowering reuses a compare at an else
+label whose every transfer is that compare's branch and which nothing
+falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
+reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
+else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
+90, verdicts unchanged.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
