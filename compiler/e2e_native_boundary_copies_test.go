@@ -25,12 +25,19 @@ Big: type = struct {
 }
 
 // A by-reference parameter read in place; the result built in the area.
+// The loop keeps step a callee of its own: a small aggregate helper
+// without one expands at its calls (§9 "Aggregate helpers"), and then
+// there is no boundary to observe.
 step: (s: Big, by: u64): Big {
   next: Big = s
   next.a = next.a + by
   next.b = next.b + next.a
   next.d = next.d + u32(1)
-  next.tag[next.d] = u8(7)
+  i: u32 = 0
+  while i <= next.d {
+    next.tag[i] = u8(7)
+    i = i + u32(1)
+  }
   next
 }
 
@@ -133,10 +140,24 @@ func TestNativeShapesBoundaryCopies(t *testing.T) {
 	if !ok {
 		t.Fatal("twice was not lowered natively")
 	}
-	// y and z receive the callee's result directly and are passed on as
-	// their own addresses: no frame load copies them anywhere.
-	// (One load is the spill of total(y) across the second call.)
-	if loads := spMemory(twice, "ldr"); loads > 1 {
-		t.Errorf("twice must pass its locals by their own addresses and receive results in place; got %d slot loads:\n%s", loads, fmt.Sprint(twice.Items))
+	// step is called twice — the boundary is real — and y and z receive
+	// the callee's result directly (written through x8 into their own
+	// slots) and are read in place: no frame store copies them anywhere.
+	// total expands at its calls (§9 "Aggregate helpers") and reads the
+	// fields from the slots directly; the one store allowed is the spill
+	// of total(y) across the second call.
+	calls := 0
+	for _, item := range twice.Items {
+		if ins, isIns := item.(asm.Instruction); isIns && ins.Mnemonic == "bl" {
+			if sym, isSym := ins.Operands[0].(asm.Symbol); isSym && sym.Name == "step" {
+				calls++
+			}
+		}
+	}
+	if calls != 2 {
+		t.Errorf("twice must call step twice (the helper with a loop is not expanded); got %d calls:\n%s", calls, fmt.Sprint(twice.Items))
+	}
+	if stores := spMemory(twice, "str") + spMemory(twice, "stp"); stores > 1 {
+		t.Errorf("twice must receive results in place, copying nothing; got %d slot stores:\n%s", stores, fmt.Sprint(twice.Items))
 	}
 }
