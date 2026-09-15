@@ -1369,7 +1369,12 @@ bridge's "`simd.store`" remainder has its verifier half, and the tally of
 the native simd corpora is: every function proven (`asm/effects_vector_test.go`:
 a byte increment stored back proven, the wrong increment refuted, a store
 forwarded to a reload, a float negation stored through an element
-address proven and `fabs` for `fneg` refuted, on both lanes).
+address proven and `fabs` for `fneg` refuted, on both lanes). A scalar
+float's store through a span (`str sN`, `str hN`, as `str dN` already)
+is the one-lane case of the same rule — the register's low lane at the
+element's width — so `ys[i] = ys[i] * k` over a `[*]f32` in a loop body
+is proven up to the IEEE operations rather than trusted
+(`asm/float_span_store_test.go`, `compiler/e2e_native_float_span_store_test.go`).
 
 **The RV64 lane's floating-point and vector files (ninth increment,
 2026-09-14; `asm/rv64_verify_float.go`, `asm/rv64_verify_vector.go`).**
