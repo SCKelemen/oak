@@ -175,6 +175,36 @@ by `Float32.ofBits`. -/
 def abs32 (x : Float32) : Float32 :=
   Float32.ofBits (x.toBits &&& 0x7FFFFFFF)
 
+/-- IEEE binary32 equality from the interchange bits: NaNs are unequal to
+everything, while both encodings of zero are equal. -/
+def eq32 (a b : Float32) : Bool :=
+  let ab := a.toBits.toNat
+  let bb := b.toBits.toNat
+  !(binary32.isNaN ab || binary32.isNaN bb) &&
+    (decide (ab = bb) || (binary32.isZero ab && binary32.isZero bb))
+
+def ne32 (a b : Float32) : Bool := !eq32 a b
+
+/-- IEEE binary32 strict order from the interchange bits. NaNs and two zeros
+are unordered; negative values reverse the magnitude comparison. -/
+def lt32 (a b : Float32) : Bool :=
+  let ab := a.toBits.toNat
+  let bb := b.toBits.toNat
+  let nan := binary32.isNaN ab || binary32.isNaN bb
+  let bothZero := binary32.isZero ab && binary32.isZero bb
+  let sa := binary32.sign ab
+  let sb := binary32.sign bb
+  let ma := ab % binary32.signBit
+  let mb := bb % binary32.signBit
+  !nan && !bothZero &&
+    ((sa && !sb) ||
+      (sa && sb && decide (mb < ma)) ||
+      (!sa && !sb && decide (ma < mb)))
+
+def gt32 (a b : Float32) : Bool := lt32 b a
+def le32 (a b : Float32) : Bool := lt32 a b || eq32 a b
+def ge32 (a b : Float32) : Bool := lt32 b a || eq32 a b
+
 def fma64 (a b c : Float) : Float :=
   Float.ofBits (UInt64.ofNat (binary64.fma a.toBits.toNat b.toBits.toNat c.toBits.toNat))
 
