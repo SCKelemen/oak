@@ -284,10 +284,13 @@ shapes are pinned to `oakLowering.lower` by
 `a * b + c` and the sign-mask forms. `lowerCondition_eval` adds all six IEEE
 comparisons over those expressions; the bit-level predicates make NaN
 unordered and signed zeros equal, and the production render pins include the
-verifier's complete `floatCompare` expansions. This is deliberately still a
-first slice: decimal parsing into the literal bits, conversions, spans, control
-flow, calls, `f64`, and vector operations remain related to the extraction by
-tests rather than this theorem.
+verifier's complete `floatCompare` expansions. `lowerValueConditional_eval`
+then composes that guard theorem with both arm theorems for one value-position
+Bool conditional, matching the verifier's `iteTerm` and extraction's Lean
+`if`. This is deliberately still a first slice: decimal parsing into the
+literal bits, conversions, spans, statement or nested control flow, calls,
+`f64`, and vector operations remain related to the extraction by tests rather
+than this theorem.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -360,8 +363,10 @@ for a workload):
    render pins cover those shapes and a multiply followed by an add.
    `lowerCondition_eval` covers `==`, `!=`, `<`, `<=`, `>`, and `>=` over the
    same expressions and pins the verifier's bit-level comparison expansion.
-   Decimal parsing, conversions, memory, control flow, calls, and the rest of
-   the float/vector edge stay open.
+   `lowerValueConditional_eval` composes a comparison guard and two such arms
+   for one value-position conditional. Decimal parsing, conversions, memory,
+   statement or nested control flow, calls, and the rest of the float/vector
+   edge stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

@@ -322,6 +322,58 @@ theorem lowerCondition_eval (condition : Condition) (ρ : SourceEnv) :
   exact lowerConditionWith_eval condition ρ ρ parameterTerms
     (parameterTerms_agree ρ)
 
+/-- One value-position Bool conditional in the source. Its guard and both
+arms may contain any straight-line expression covered above. -/
+structure SourceConditional where
+  guard : Condition
+  whenTrue : Expr
+  whenFalse : Expr
+  deriving Repr
+
+/-- The verifier's `iteTerm` together with its lowered guard and arms. -/
+structure VerifierConditional where
+  guard : BoolTerm
+  whenTrue : Term
+  whenFalse : Term
+  deriving Repr
+
+def SourceConditional.eval (branch : SourceConditional) (ρ : SourceEnv) : Float32 :=
+  bif branch.guard.eval ρ then branch.whenTrue.eval ρ else branch.whenFalse.eval ρ
+
+def VerifierConditional.eval (branch : VerifierConditional)
+    (ρ : SourceEnv) : Float32 :=
+  bif branch.guard.eval ρ then branch.whenTrue.eval ρ else branch.whenFalse.eval ρ
+
+/-- The value-position `MatchExpression` path in `oakLowering.lower`: lower
+the Bool scrutinee, lower both value arms in the incoming symbolic scope, and
+join them with `iteTerm`. -/
+def lowerValueConditionalWith (branch : SourceConditional)
+    (σ : TermEnv) : VerifierConditional := {
+  guard := lowerConditionWith branch.guard σ
+  whenTrue := lowerWith branch.whenTrue σ
+  whenFalse := lowerWith branch.whenFalse σ
+}
+
+/-- The verifier select and the extraction's Lean `if` choose equal float
+values in every agreeing scope. -/
+theorem lowerValueConditionalWith_eval (branch : SourceConditional)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerValueConditionalWith branch σ).eval parameters = branch.eval current := by
+  simp only [lowerValueConditionalWith, VerifierConditional.eval,
+    SourceConditional.eval]
+  rw [lowerConditionWith_eval branch.guard parameters current σ hσ,
+      lowerWith_eval branch.whenTrue parameters current σ hσ,
+      lowerWith_eval branch.whenFalse parameters current σ hσ]
+
+def lowerValueConditional (branch : SourceConditional) : VerifierConditional :=
+  lowerValueConditionalWith branch parameterTerms
+
+theorem lowerValueConditional_eval (branch : SourceConditional) (ρ : SourceEnv) :
+    (lowerValueConditional branch).eval ρ = branch.eval ρ := by
+  exact lowerValueConditionalWith_eval branch ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
+
 private def a : Expr := .param "a"
 private def b : Expr := .param "b"
 private def c : Expr := .param "c"
@@ -346,6 +398,15 @@ example : lowerCondition (.compare .gt a b) =
     .compare .gt (.param "a") (.param "b") := rfl
 example : lowerCondition (.compare .ge a b) =
     .compare .ge (.param "a") (.param "b") := rfl
+example : lowerValueConditional {
+    guard := .compare .lt a b
+    whenTrue := .binary .add a (.literal 0x3F800000)
+    whenFalse := .binary .mul b (.literal 0x40000000)
+  } = {
+    guard := .compare .lt (.param "a") (.param "b")
+    whenTrue := .float .fadd (.param "a") (.literal 0x3F800000)
+    whenFalse := .float .fmul (.param "b") (.literal 0x40000000)
+  } := rfl
 example : lowerF (.binary .add (.binary .mul a b) c) =
     .float .fadd (.float .fmul (.param "a") (.param "b")) (.param "c") := rfl
 example : lowerF (.binary .add a (.literal 0x3FC00000)) =

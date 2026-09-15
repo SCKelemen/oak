@@ -189,7 +189,10 @@ and random operands—arithmetic against the host, sign operations against their
 exact bit transforms under the canonical-NaN carrier, and comparisons against
 the host's IEEE predicates. The default mode is unchanged, so an extraction
 that never states a rounding or bit-level comparison fact keeps Lean's
-operators.
+operators. A value-position Bool conditional over these expressions keeps the
+same carriers in its guard and arms and renders as Lean `if`; this is the first
+control-flow slice of `Oak.FloatLoweringRefinement`, not yet a claim about
+statement branches or nested float control flow.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
