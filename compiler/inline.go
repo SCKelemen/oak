@@ -610,11 +610,25 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	prefix := "__inl" + strconv.Itoa(in.counter) + "_"
 	context := helperContext(cand.fn.Name.Token.SemanticContext, fmt.Sprintf("inline:%s:%d", cand.fn.Name.Value, in.counter))
 	rename := map[string]string{}
+	substitute := map[string]ast.Expression{}
 	var stmts []ast.Statement
 	for i, p := range cand.fn.Parameters {
 		arg := call.Arguments[i]
 		if ident, isIdent := arg.(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] {
 			rename[p.Name.Value] = ident.Value
+			continue
+		}
+		if literal, isLiteral := literalArgument(arg, p.Type); isLiteral && !cand.assigned[p.Name.Value] {
+			// A literal argument to a parameter the callee never assigns
+			// substitutes directly, as an identifier does: the merged body
+			// then reads `v[u32(0) + u32(3)]` under `len(v) >= u32(0) + u32(8)`,
+			// constants the extents checker folds and proves (a temporary
+			// would leave `len(v) >= t + 8`, which proves nothing about
+			// `v[t + 3]` since the sum may have wrapped). The literal is
+			// cloned at every use after the renaming below.
+			temp := prefix + "arg" + strconv.Itoa(i)
+			rename[p.Name.Value] = temp
+			substitute[temp] = literal
 			continue
 		}
 		// Arguments take the segment "arg", renamed locals the segment "l_"
@@ -632,6 +646,9 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	body := cloneExpression(cand.body).(*ast.BlockExpression)
 	stampSemanticContext(reflect.ValueOf(body), context)
 	renameBindings(reflect.ValueOf(body), rename)
+	if len(substitute) > 0 {
+		substituteBindings(reflect.ValueOf(body), substitute)
+	}
 	bodyStmts := body.Block.Statements
 	var tail ast.Expression
 	if last, ok := bodyStmts[len(bodyStmts)-1].(*ast.ExpressionStatement); ok && !last.Discard {
@@ -823,6 +840,107 @@ func indexRoot(e ast.Expression) *ast.Identifier {
 		}
 	}
 	return nil
+}
+
+// literalArgument recognizes an argument the inliner substitutes for a
+// parameter of scalar type typ instead of copying it into a temporary: an
+// integer literal, wrapped in the parameter's type so the merged body types
+// it as the callee did (`0` for `at: u32` becomes `u32(0)`), or a scalar
+// conversion of one (`u32(0)` as written). The parameter's type is a plain
+// scalar name (scalarTypeSyntax), so the wrapping conversion exists.
+func literalArgument(arg ast.Expression, typ ast.Expression) (ast.Expression, bool) {
+	typeName, isName := typ.(*ast.Identifier)
+	if !isName {
+		return nil, false
+	}
+	switch a := arg.(type) {
+	case *ast.IntegerLiteral:
+		if a.Wide || a.Value < 0 {
+			return nil, false
+		}
+		return &ast.InvocationExpression{Token: a.Token, Function: identifierAt(a.Token, typeName.Value), Arguments: []ast.Expression{a}}, true
+	case *ast.InvocationExpression:
+		conv, isIdent := a.Function.(*ast.Identifier)
+		if !isIdent || len(a.Arguments) != 1 || conv.Value != typeName.Value {
+			return nil, false
+		}
+		if lit, isLit := a.Arguments[0].(*ast.IntegerLiteral); isLit && !lit.Wide && lit.Value >= 0 {
+			return a, true
+		}
+	}
+	return nil, false
+}
+
+// substituteBindings replaces every identifier occurrence in expression
+// position that names a key of subst with a fresh copy of its expression.
+// Names appear in expression position as the dynamic value of an
+// Expression-typed field or slice element; declarations, patterns, member
+// labels, and field accessors hold identifiers in typed fields and are
+// left alone, as renameBindings leaves them.
+func substituteBindings(v reflect.Value, subst map[string]ast.Expression) {
+	expressionType := reflect.TypeOf((*ast.Expression)(nil)).Elem()
+	var walk func(v reflect.Value)
+	replace := func(slot reflect.Value) bool {
+		if slot.Kind() != reflect.Interface || slot.Type() != expressionType || slot.IsNil() {
+			return false
+		}
+		ident, isIdent := slot.Interface().(*ast.Identifier)
+		if !isIdent {
+			return false
+		}
+		expr, named := subst[ident.Value]
+		if !named || !slot.CanSet() {
+			return false
+		}
+		slot.Set(reflect.ValueOf(cloneExpression(expr)))
+		return true
+	}
+	walk = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch n := v.Interface().(type) {
+			case *ast.FieldAccessorExpression:
+				return
+			case *ast.IndexExpression:
+				if n.Dot {
+					// `rec.field`: the label after the dot is not a binding.
+					walk(reflect.ValueOf(&n.Left).Elem())
+					return
+				}
+			case *ast.VariantPattern:
+				return
+			}
+			walk(v.Elem())
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if !v.Type().Field(i).IsExported() {
+					continue
+				}
+				field := v.Field(i)
+				if replace(field) {
+					continue
+				}
+				walk(field)
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				elem := v.Index(i)
+				if replace(elem) {
+					continue
+				}
+				walk(elem)
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				walk(iter.Value())
+			}
+		}
+	}
+	walk(v)
 }
 
 // renameBindings applies rename to every identifier occurrence that names a
