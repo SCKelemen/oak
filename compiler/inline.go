@@ -353,7 +353,19 @@ func (in *inliner) inlineStatement(stmt ast.Statement, scope *callerScope) []ast
 		if s.Value == nil {
 			return []ast.Statement{s}
 		}
-		hoisted := in.hoistOperands(&s.Value, scope)
+		// The target's operands first — a helper computing the element
+		// index (`pages[cell(t, j)] = u64(0)`) is spliced before the
+		// statement like one in the value, so neither backend keeps the
+		// call in the loop — then the value's, in evaluation order.
+		var hoisted []ast.Statement
+		if s.Target != nil {
+			var target ast.Expression = s.Target
+			hoisted = append(hoisted, in.hoistOperands(&target, scope)...)
+			if rewritten, isIndex := target.(*ast.IndexExpression); isIndex {
+				s.Target = rewritten
+			}
+		}
+		hoisted = append(hoisted, in.hoistOperands(&s.Value, scope)...)
 		return append(hoisted, s)
 	case *ast.ExpressionStatement:
 		if s.Expression == nil {
