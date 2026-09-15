@@ -105,11 +105,12 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
-	// The rv64 lane has the law-licensed unrolling and check elision.
+	// The rv64 lane has the law-licensed unrolling, check elision, and
+	// strength reduction.
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide) {
+		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}
