@@ -1727,3 +1727,61 @@ independent proof / semantic validation
 ```
 
 LLVM supplies decades of optimization techniques and architectural lessons. Oak's opportunity is to combine them with semantic facts LLVM usually has to infer and with a validation boundary that lets the proposal machinery remain aggressive, replaceable, and maintainable.
+
+## 30. Wikipedia's taxonomy, mapped
+
+Wikipedia's compiler-optimization navbox names the classical passes by
+their textbook names. Each maps to a section above, or is named here as
+not applicable to Oak's lanes, so a reader arriving with the textbook
+vocabulary finds the catalog's entry.
+
+| Wikipedia | Catalog | Note |
+| --- | --- | --- |
+| Basic block | §2, §3.1–3.2 | the unit of the dominator and post-dominator trees; the verifier's `joinPoints` is the post-dominator computation on the emitted items |
+| Peephole optimization | §15.2 | the late machine peepholes; the checker's rewrite rules are the landed instances |
+| Local value numbering | §6.4, §6.5 | Early CSE is the block-local numbering, GVN the global one |
+| Automatic parallelization | — | not applicable: v1 has no threads in the verified subset; the vector lane (§10) is the parallelism Oak offers |
+| Automatic vectorization | §10 | Oak VPlan, map-loops, reductions, SLP |
+| Induction variable | §9.3, §4.1 | recognition is the recurrence analysis; elimination is IV simplification and loop strength reduction (§9.4) |
+| Loop fusion | §9.10 | |
+| Loop-invariant code motion | §9.1 | landed as hoisting on the native lane |
+| Loop inversion | §9.2 | loop rotation: the bottom-tested form the backend already emits for counted loops |
+| Loop interchange | §9.12 | |
+| Loop nest optimization | §9.6, §9.13 | unroll-and-jam and flattening; tiling waits for a cache model (§17) |
+| Loop splitting | §9.7, §9.11, §9.14 | peeling, distribution, and versioning are its three forms |
+| Loop unrolling | §9.5 | landed as reduction unrolling, law-backed (`Oak.Reduction.unrolled4_eq`) |
+| Loop unswitching | §9.8 | |
+| Software pipelining | §14.4 | |
+| Strength reduction | §9.4 | landed for constant arithmetic (`Oak.StrengthReduction`) |
+| Available expression | §6.4 | the dataflow name for what Early CSE computes |
+| Common subexpression elimination | §6.4, §6.5, §11.8 | local, global, and across pure calls |
+| Constant folding | §6.1 | the term constructors fold today (`asm/verify.go`), the rewrite layer will |
+| Dead store elimination | §8.3 | |
+| Induction variable recognition and elimination | §9.3 | |
+| Live-variable analysis | §13.2 | live intervals; `nativegen/liveness.go` is the landed instance |
+| Upwards exposed uses, use-define chain, reaching definitions | §3.3 | the SSA form makes the three implicit: a use names its one definition |
+| Global value numbering | §6.5 | |
+| Sparse conditional constant propagation | §6.3, §11.3 | intra- and interprocedural |
+| Instruction scheduling | §14 | |
+| Instruction selection | §12.4 | |
+| Register allocation | §13 | the machine IR's reallocator is a candidate (`nativegen/machine`) |
+| Rematerialization | §13.6 | |
+| Deforestation | §9.10 | the functional name for fusing a producer loop into its consumer; Oak's map-loops over spans are the case |
+| Tail-call elimination | §7, verifier | the backend emits loops for Oak's tail recursion where it can; the verifier reads a tail-recursive body as its loop (`tailRecursionAsLoop`) |
+| Interprocedural optimization | §11 | |
+| Bounds-checking elimination | §4.3, §4.4 | the checker's proven-extent elision (`Lane.ElideProven`) and the loop facts are the landed forms; the range and constraint analyses generalize them |
+| Compile-time function execution | §6.1, §11.7 | folding a pure call with constant arguments, and specialization for the rest |
+| Dead-code elimination | §6.6, §11.11 | |
+| Expression templates | — | a C++ idiom for fusing operator chains at the source level; Oak's helper expansion (§9.y of the assembler spec) and reassociation (§6.7) are the compiler-side forms |
+| Inline expansion | §11.1, §11.2 | landed as verified helper expansion, law-backed as substitution |
+| Jump threading | §7.2 | |
+| Partial evaluation | §11.7 | function specialization on constant arguments |
+| Profile-guided optimization | §16 | |
+| Alias analysis, pointer analysis | §5 | not LLVM's: regions and borrows give the disjointness statically (§5.1, §23.3–23.4) |
+| Array-access analysis, dependence analysis | §4.1, §10.7, §10.10 | recurrences over the index, interleaved groups, and the runtime pointer checks that remain |
+| Control-flow analysis | §3 | |
+| Data-flow analysis | §3.3, §4, §5.3 | over SSA and MemorySSA rather than bit-vector frameworks |
+| Escape analysis | §5.4 | |
+| Shape analysis | — | heap shapes; not applicable while the verified subset has no heap pointers — regions (§5.3) carry what shape analysis would infer |
+| Value range analysis | §4.3 | |
+

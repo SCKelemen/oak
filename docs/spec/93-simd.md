@@ -209,11 +209,15 @@ exactly `(l0 + l1) + (l2 + l3)` (`Oak.Simd.neon_reduce4`), one scalar
 a float vector takes the vector register contract like the integer ones;
 its C shim converts through `vld1q_f32`/`vst1q_f32`. The native program
 agrees bit for bit with the C backend and the portable loops
-(`compiler/e2e_native_float_simd_test.go`). What the native lowering
-leaves to the C backend, reported as such: vectors inside records or
-arrays, a shift or `prev` count that is not a literal, a lane index that
-is not a literal (the C backend's run-time check), `movemask` over wider
-lanes. The verifier trusts a body with a floating-point instruction (its
+(`compiler/e2e_native_float_simd_test.go`). A record may hold a vector
+field (`40-records.md` §6): the native lane reads and writes it whole
+through a `q` register, in the frame or through a span of such records
+(`compiler/e2e_simd_record_fields_test.go`). What the native lowering
+leaves to the C backend, reported as such: a record holding a vector
+passed or returned by value (the lane array flattens into AAPCS64
+members), arrays of vectors, a shift or `prev` count that is not a
+literal, a lane index that is not a literal (the C backend's run-time
+check), `movemask` over wider lanes. The verifier trusts a body with a floating-point instruction (its
 terms are integers), so the float vector functions carry the checker's
 guarantees and the differential against the C backend, not a proof.
 

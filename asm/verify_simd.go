@@ -415,9 +415,11 @@ func (lo *oakLowering) simdStore(call *ast.InvocationExpression) (handled bool, 
 	if len(call.Arguments) != 3 {
 		return true, fmt.Sprintf("simd.%s with %d operands", member, len(call.Arguments)), false
 	}
-	if len(lo.loopStack) > 0 {
-		return true, "a vector store in a data-dependent loop body", false
-	}
+	// In a loop body the store is the iteration's: an owned array's
+	// elements take the lanes as an indexed assignment would (a body-local
+	// array, or a loop-carried one's leaves), and a span's elements join
+	// the iteration's write log under the path, as assignIndexed appends
+	// them (the coupling proof compares the two sides' stores).
 	bits := laneWidth(shape)
 	lanes, reason, okLanes := lo.vectorLanes(call.Arguments[2], shape)
 	if !okLanes {
@@ -434,9 +436,9 @@ func (lo *oakLowering) simdStore(call *ast.InvocationExpression) (handled bool, 
 			if !isConst || offset < 0 || offset+int64(shape.Lanes) > local.agg.typ.length {
 				return true, "a vector store into an owned array at an index that is not a constant inside it", false
 			}
-			if lo.path != nil {
-				return true, "a conditional vector store into an owned array", false
-			}
+			// Under a conditional the arm runs on a snapshot of the locals
+			// and the statement merges the array's leaves on the condition
+			// (lowerConditionalStatement), so the store is the arm's.
 			for k, lane := range lanes {
 				local.agg.elems[offset+int64(k)].scalar = lane
 			}

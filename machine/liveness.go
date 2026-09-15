@@ -162,3 +162,13 @@ func (w *Web) crosses(pos int) bool {
 	}
 	return false
 }
+
+// liveAt reports whether the web is live at a position.
+func (w *Web) liveAt(pos int) bool {
+	for _, s := range w.Segs {
+		if s.from <= pos && pos <= s.to {
+			return true
+		}
+	}
+	return false
+}

@@ -12,8 +12,9 @@ import (
 // Frame-slot forwarding and compare-and-branch on a computed operand
 // (docs/spec/94-assembler.md §9 "Slot forwarding"): the byte loop of a
 // SHA-256-style absorber keeps a record field's increment in the register
-// it computed it in (`ldr; add; str` with no reload), and tests `filled ==
-// 64` as `cmp; b.ne` rather than `cmp; cset; cbz`. The C backend's
+// it computed it in (`ldr; add; str` with no reload — or, once the field
+// is promoted to a callee-saved register, `add` alone), and tests `filled
+// == 64` as `cmp; b.ne` rather than `cmp; cset; cbz`. The C backend's
 // realization of the same program is the oracle.
 const nativeForwardingProgram = `
 Acc: type = struct {
@@ -114,11 +115,14 @@ func TestNativeShapesForwarding(t *testing.T) {
 				t.Errorf("a slot is reloaded right after its store: %s; %s", fmt.Sprint(body[i-1]), fmt.Sprint(ins))
 			}
 		}
-		// The `== 64` test reads the register the increment was stored from.
-		if ins.Mnemonic == "cmp" && i > 0 && body[i-1].Mnemonic == "str" {
-			stored, _ := body[i-1].Operands[0].(asm.Register)
+		// The `== 64` test reads the register the increment was stored
+		// from — or, with the field promoted to a register (§9 "Fields in
+		// registers", nativegen/fields.go), the register the increment
+		// was computed in, with no store at all.
+		if ins.Mnemonic == "cmp" && i > 0 && (body[i-1].Mnemonic == "str" || body[i-1].Mnemonic == "add") {
+			written, _ := body[i-1].Operands[0].(asm.Register)
 			compared, _ := ins.Operands[0].(asm.Register)
-			if stored.Text == compared.Text {
+			if written.Text == compared.Text {
 				forwarded = true
 			}
 		}
