@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 )
 
@@ -39,22 +40,169 @@ type inliner struct {
 // inlineBody returns fn's body with the vector helpers it calls expanded,
 // or the body itself when nothing applies.
 func inlineBody(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) ast.Expression {
-	if fn.Body == nil || !mentionsVectorCall(fn.Body, functions) {
+	if fn.Body == nil || !mentionsInlinableCall(fn.Body, functions) {
 		return fn.Body
 	}
 	in := &inliner{functions: functions, root: fn.Name.Value}
 	return in.expr(cloneNode(fn.Body).(ast.Expression))
 }
 
-func mentionsVectorCall(body ast.Node, functions map[string]*ast.FunctionStatement) bool {
+// mentionsInlinableCall reports a call to a vector helper or to a small
+// aggregate helper (aggregateHelper) anywhere in the body.
+func mentionsInlinableCall(body ast.Node, functions map[string]*ast.FunctionStatement) bool {
 	found := false
 	walk(body, func(n ast.Node) {
 		if call, ok := n.(*ast.InvocationExpression); ok {
 			if ident, isIdent := call.Function.(*ast.Identifier); isIdent {
-				if callee, declared := functions[ident.Value]; declared && VectorContract(callee) {
+				if callee, declared := functions[ident.Value]; declared && (VectorContract(callee) || aggregateHelper(callee)) {
 					found = true
 				}
 			}
+		}
+	})
+	return found
+}
+
+// aggregateHelper reports a small helper that takes or returns a record or
+// an owned array — the shape the source-level inliner leaves alone, since
+// an aggregate temporary is a binding of its own there — expanded on the
+// native lane only (docs/spec/94-assembler.md §9 "Aggregate helpers"): a
+// body of at most aggregateInlineStatements statements and no loop, every
+// parameter a scalar, record, owned array, span, or view, the result a
+// scalar, record, or owned array (or unit), no dispatch, no effects row.
+// The call's copies and the callee's prologue and epilogue go; the
+// verifier still compares against the body as written, the callee taken
+// at its Oak body.
+func aggregateHelper(fn *ast.FunctionStatement) bool {
+	if fn == nil || fn.Body == nil || fn.Name == nil || fn.Name.Value == "main" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.ExternSymbol != "" || fn.AsmBacked || len(fn.Dispatch) > 0 || len(fn.Effects) > 0 || fn.EffectsDeclared || len(fn.Forbids) > 0 || fn.Kernel || fn.Theorem {
+		return false
+	}
+	aggregate := false
+	for _, p := range fn.Parameters {
+		if p == nil || p.Variadic || p.Type == nil || p.Name == nil {
+			return false
+		}
+		switch {
+		case isScalarSyntax(p.Type):
+		case isAggregateSyntax(p.Type):
+			aggregate = true
+		case isSpanSyntax(p.Type):
+		default:
+			return false
+		}
+	}
+	if fn.ReturnType != nil && fn.ReturnType.String() != "()" {
+		switch {
+		case isScalarSyntax(fn.ReturnType):
+		case isAggregateSyntax(fn.ReturnType):
+			aggregate = true
+		default:
+			return false
+		}
+	}
+	if !aggregate {
+		return false
+	}
+	statements := 1
+	if block, isBlock := fn.Body.(*ast.BlockExpression); isBlock {
+		if block.Block == nil {
+			return false
+		}
+		statements = len(block.Block.Statements)
+	}
+	if statements > aggregateInlineStatements {
+		return false
+	}
+	loops := false
+	walk(fn.Body, func(n ast.Node) {
+		switch n.(type) {
+		case *ast.WhileStatement, *ast.FunctionLiteral:
+			loops = true
+		}
+	})
+	return !loops
+}
+
+// aggregateInlineStatements bounds the body of an aggregate helper the
+// native lane expands.
+const aggregateInlineStatements = 8
+
+// isScalarSyntax reports a type spelling a builtin scalar.
+func isScalarSyntax(typ ast.Expression) bool {
+	_, ok := scalarOf(typ)
+	return ok
+}
+
+// isAggregateSyntax reports a type spelling a record or union by name (any
+// identifier that is not a scalar; the lowering refuses a name it cannot
+// place) or an owned array `[N]T`.
+func isAggregateSyntax(typ ast.Expression) bool {
+	if isScalarSyntax(typ) {
+		return false
+	}
+	if _, isName := typ.(*ast.Identifier); isName {
+		return true
+	}
+	if _, ok := asm.TypeApplicationName(typ); ok {
+		if index, isIndex := typ.(*ast.IndexExpression); !isIndex || index.Dot {
+			return true
+		}
+	}
+	index, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
+	}
+	n, isLit := index.Index.(*ast.IntegerLiteral)
+	return isLit && n.Value > 0
+}
+
+// isSpanSyntax reports `[]T` or `[*]T`.
+func isSpanSyntax(typ ast.Expression) bool {
+	index, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
+	}
+	marker, isMarker := index.Index.(*ast.Identifier)
+	return isMarker && (marker.Value == "" || marker.Value == "*")
+}
+
+// writableSpanParam reports a parameter of span type `[*]T`, through which
+// a callee reaches the caller's memory.
+func writableSpanParam(fn *ast.FunctionStatement) bool {
+	for _, p := range fn.Parameters {
+		if index, isIndex := p.Type.(*ast.IndexExpression); isIndex && !index.Dot {
+			if marker, isMarker := index.Index.(*ast.Identifier); isMarker && marker.Value == "*" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fieldPath reports an argument that is a field path rooted at a local:
+// `next.h`, `a.b.c` (no element index along the way), and the root's name.
+func fieldPath(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			if !e.Dot {
+				return "", false
+			}
+			expr = e.Left
+		default:
+			return "", false
+		}
+	}
+}
+
+// mentionsName reports a free mention of a name anywhere in a node.
+func mentionsIdentifier(node ast.Node, name string) bool {
+	found := false
+	walk(node, func(n ast.Node) {
+		if id, isIdent := n.(*ast.Identifier); isIdent && id.Value == name {
+			found = true
 		}
 	})
 	return found
@@ -66,7 +214,7 @@ func (in *inliner) inlinable(name string) (*ast.FunctionStatement, bool) {
 	if !declared || callee.Body == nil || callee.Receiver != nil || len(callee.TypeParams) > 0 || callee.ExternSymbol != "" || callee.AsmBacked {
 		return nil, false
 	}
-	if !VectorContract(callee) || name == in.root || len(in.stack) >= inlineDepth {
+	if (!VectorContract(callee) && !aggregateHelper(callee)) || name == in.root || len(in.stack) >= inlineDepth {
 		return nil, false
 	}
 	for _, active := range in.stack {
@@ -220,10 +368,21 @@ func (in *inliner) expand(callee *ast.FunctionStatement, call *ast.InvocationExp
 		}
 	})
 	rename := map[string]string{}
+	substitute := map[string]ast.Expression{}
 	var declared []*ast.VariableDeclaration
 	for i, p := range callee.Parameters {
 		if arg, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !assigned[p.Name.Value] {
 			rename[p.Name.Value] = arg.Value
+			continue
+		}
+		if root, isPath := fieldPath(call.Arguments[i]); isPath && isAggregateSyntax(p.Type) && !recordParamTouched(callee, p.Name.Value) && !writableSpanParam(callee) && !mentionsIdentifier(callee.Body, root) {
+			// A field path (`next.h`) to a parameter the callee never
+			// assigns, borrows, or addresses, with no writable span
+			// through which the callee could reach the path's storage:
+			// the path stands for the parameter at every use (§9
+			// "Aggregate helpers"; Oak.Inlining.eval_subst), no copy.
+			rename[p.Name.Value] = prefix + p.Name.Value
+			substitute[prefix+p.Name.Value] = call.Arguments[i]
 			continue
 		}
 		rename[p.Name.Value] = prefix + p.Name.Value
@@ -235,6 +394,9 @@ func (in *inliner) expand(callee *ast.FunctionStatement, call *ast.InvocationExp
 		}
 	})
 	renameBound(body, rename)
+	if len(substitute) > 0 {
+		substituteBound(body, substitute)
+	}
 	block := &ast.BlockExpression{Token: call.Token, Block: &ast.BlockStatement{Token: call.Token}}
 	for _, d := range declared {
 		block.Block.Statements = append(block.Block.Statements, d)
@@ -273,6 +435,57 @@ func renameBound(node ast.Node, rename map[string]string) {
 				visit(reflect.ValueOf(access.Left), false)
 				visit(reflect.ValueOf(access.Index), access.Dot)
 				return
+			}
+			visit(v.Elem(), false)
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					visit(v.Field(i), false)
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				visit(v.Index(i), false)
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				visit(iter.Value(), false)
+			}
+		}
+	}
+	visit(reflect.ValueOf(node), false)
+}
+
+// substituteBound replaces every expression-position identifier naming a
+// key of subst with a fresh copy of its expression; field names (`p.x`) and
+// binding positions (typed *ast.Identifier fields) are left alone.
+func substituteBound(node ast.Node, subst map[string]ast.Expression) {
+	var visit func(v reflect.Value, fieldOfDot bool)
+	visit = func(v reflect.Value, fieldOfDot bool) {
+		switch v.Kind() {
+		case reflect.Interface:
+			if v.IsNil() {
+				return
+			}
+			if id, ok := v.Interface().(*ast.Identifier); ok {
+				if to, bound := subst[id.Value]; bound && !fieldOfDot && v.CanSet() {
+					v.Set(reflect.ValueOf(cloneNode(to)))
+				}
+				return
+			}
+			if access, ok := v.Interface().(*ast.IndexExpression); ok {
+				visit(reflect.ValueOf(access).Elem().FieldByName("Left"), false)
+				visit(reflect.ValueOf(access).Elem().FieldByName("Index"), access.Dot)
+				return
+			}
+			visit(v.Elem(), false)
+		case reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			if _, ok := v.Interface().(*ast.Identifier); ok {
+				return // a typed identifier field: a binding or a field name
 			}
 			visit(v.Elem(), false)
 		case reflect.Struct:

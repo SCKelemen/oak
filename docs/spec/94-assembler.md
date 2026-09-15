@@ -2759,9 +2759,22 @@ into the back edge (`b endif; endif: b loop`) both demote a proven loop to
 evidence. They wait on a loop summary that admits break paths.
 
 The forty-fifth increment is the verified reduction unrolling (§9
+"Reductions"): the first rewrite licensed by a type — integer addition
+wraps and reassociates, so the plain reduction becomes four accumulators
+and a remainder loop before lowering, the verifier proving the assembly
+against the rewritten body and Lean proving the rewrite
+(`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
+(`asm.Function.Body`) so the verifier and the verdict cache judge the
+right one.
+
 The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
+
+The fifty-third increment is aggregate helpers (§9 "Aggregate helpers"):
+the native lane expands small record- and array-typed helpers at their
+calls, a field-path argument standing for a read-only parameter without
+a copy (`Oak.Inlining.eval_subst`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3942,6 +3955,37 @@ verifier reads a pair load as two loads of the register width, in a
 straight path and in a loop body alike. The unrolled reduction's four
 loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
 four elements.
+
+**Aggregate helpers (2026-09-16, AArch64 lane; `nativegen/inline.go`,
+`spec/lean/Oak/Inlining.lean`).** The native lane's helper inliner, so far
+the vector helpers' (§9 "Vector helpers expanded"), also expands a small
+helper that takes or returns a record or an owned array — the shape the
+source-level inliner leaves alone, since an aggregate temporary is a
+binding of its own there: a body of at most eight statements and no loop,
+every parameter a scalar, record, owned array, span, or view, the result a
+scalar, record, owned array, or unit, no dispatch and no effects row
+(`aggregateHelper`). The call's argument copies, the callee's prologue,
+epilogue, and result copy go with the `bl`. Binding: an identifier
+argument to a parameter the callee never assigns substitutes as before; a
+field-path argument — `next.h`, `acc.h` — to a parameter the callee never
+assigns, borrows, or addresses (`recordParamTouched`), when no parameter of
+the callee is a writable span (through which it could reach the path's
+storage) and the callee does not mention the path's root, stands for the
+parameter at every use with no copy (`substituteBound`); every other
+argument is declared as a copy under a fresh name. A record- or
+array-valued call in expression position becomes a block expression, which
+the record lowering evaluates as its statements then its tail
+(`recordValueAs`); a record local the tail names keeps its storage past
+the block's scope. The verifier still compares against the body as written,
+the callees taken at their Oak bodies. The theorem is the substitution
+lemma over a small expression language: evaluating the body with the
+parameter replaced by the argument equals evaluating it in the environment
+that binds the parameter to the argument's value, the declared copy
+(`Oak.Inlining.eval_subst`). `TestNativeShapesAggregateInline` pins
+`absorb`, whose loop drives `acc.h = step(acc.h, k)` and `fold(acc.h)`
+with no `bl`; `TestE2ENativeAggregateInline` agrees with the C backend.
+On the SHA-256 path, `sha256_compress` and `sha256_block` fold into
+`sha256_update`'s loop once owned arrays travel as values (#472).
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
