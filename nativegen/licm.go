@@ -375,6 +375,12 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			if readsGeneral(ins, old) && requireClass && !readsOnlyAsClass(ins, old, cls) {
 				return false
 			}
+			if ins.Mnemonic == "movk" && writesGeneral(ins, old) {
+				// A movk extends the register it reads: the old value is
+				// still being built here, so it cannot be renamed away
+				// (a constant's chain hoists whole or not at all).
+				return false
+			}
 			if writesGeneral(ins, old) {
 				return true
 			}
@@ -452,18 +458,27 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		if !allInvariant {
 			continue
 		}
-		// A movz followed by movk into the same register: the pair moves.
-		pair := -1
-		if ins.Mnemonic == "movz" && i+1 < len(body) {
-			if k, isIns := body[i+1].(asm.Instruction); isIns && k.Mnemonic == "movk" {
-				if kd, ok := k.Operands[0].(asm.Register); ok && kd.Num == dest.Num && kd.Class == dest.Class {
-					pair = i + 1
+		// A movz followed by movk into the same register: the whole
+		// chain moves (a 64-bit constant is up to four instructions; the
+		// first two alone would leave the later movk extending a register
+		// the loop now writes for something else).
+		var chain []int
+		if ins.Mnemonic == "movz" {
+			for j := i + 1; j < len(body); j++ {
+				k, isIns := body[j].(asm.Instruction)
+				if !isIns || k.Mnemonic != "movk" {
+					break
 				}
+				kd, ok := k.Operands[0].(asm.Register)
+				if !ok || kd.Num != dest.Num || kd.Class != dest.Class {
+					break
+				}
+				chain = append(chain, j)
 			}
 		}
 		from := i + 1
-		if pair >= 0 {
-			from = pair + 1
+		if len(chain) > 0 {
+			from = chain[len(chain)-1] + 1
 		}
 		if !canRename(from, dest.Num, dest.Class, false) {
 			continue
@@ -488,13 +503,13 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		preheader = append(preheader, hoisted)
 		moved = append(moved, movedItem{at: i, item: hoisted})
 		removed[i] = true
-		if pair >= 0 {
-			k := body[pair].(asm.Instruction)
+		for _, at := range chain {
+			k := body[at].(asm.Instruction)
 			k.Operands = append([]asm.Operand(nil), k.Operands...)
 			k.Operands[0] = renamed
 			preheader = append(preheader, k)
-			moved = append(moved, movedItem{at: pair, item: k})
-			removed[pair] = true
+			moved = append(moved, movedItem{at: at, item: k})
+			removed[at] = true
 		}
 		renameUses(from, dest.Num, dest.Class, renamed, false)
 	}
