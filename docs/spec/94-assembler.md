@@ -4049,8 +4049,15 @@ A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
 add :lo12:`) leaves a loop that stores to no global's address and calls
 nothing: a span cannot alias a scalar global — its elements lie in arrays
 and aggregates — so the loop's span stores leave it alone, a fact the
-type system gives and C's aliasing rules do not. Other loads stay (a span
-the loop stores through may alias one it reads), as do stores and calls.
+type system gives and C's aliasing rules do not. A register is the
+global's address from the `add :lo12:` that forms it until the loop
+writes it again — the lowering reuses a spent temporary's register for
+an element base — so whether a store or a load goes through a global's
+address is read at the instruction, straight back to the register's last
+write; a write the walk cannot see (past a label, or before the header)
+leaves it uncertain, and then a store counts as the global's and a load
+stays. Other loads stay (a span the loop stores through may alias one it
+reads), as do stores and calls.
 The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
 of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
