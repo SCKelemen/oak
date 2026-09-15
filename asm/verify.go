@@ -4946,6 +4946,48 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.InfixExpression:
+		// A sum or product of two literals converted to one unsigned type
+		// (`u32(0) + u32(3)`, an inlined helper's constant offsets) folds
+		// when the result fits the type, as the extents checker folds it;
+		// a wrapping `u8(200) + u8(100)` is lowered as the operation.
+		if e.Operator != "+" && e.Operator != "*" {
+			return 0, false
+		}
+		typeName := ""
+		for _, side := range []ast.Expression{e.Left, e.Right} {
+			call, isCall := side.(*ast.InvocationExpression)
+			if !isCall || len(call.Arguments) != 1 {
+				return 0, false
+			}
+			conv, isIdent := call.Function.(*ast.Identifier)
+			if !isIdent || (typeName != "" && conv.Value != typeName) {
+				return 0, false
+			}
+			typeName = conv.Value
+		}
+		width := map[string]int{"u8": 8, "u16": 16, "u32": 32, "u64": 64}[typeName]
+		if width == 0 {
+			return 0, false
+		}
+		left, leftConst := lo.constantIndexValue(e.Left)
+		right, rightConst := lo.constantIndexValue(e.Right)
+		if !leftConst || !rightConst || left < 0 || right < 0 {
+			return 0, false
+		}
+		var value uint64
+		if e.Operator == "+" {
+			value = uint64(left) + uint64(right)
+		} else {
+			if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
+				return 0, false
+			}
+			value = uint64(left) * uint64(right)
+		}
+		if width < 64 && value >= uint64(1)<<uint(width) || value >= 1<<32 {
+			return 0, false
+		}
+		return int64(value), true
 	case *ast.Identifier:
 		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
 			return int64(local.value.value), true
