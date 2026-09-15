@@ -1174,6 +1174,13 @@ type symbolicState struct {
 type frameSlot struct {
 	value *term
 	width int // bytes
+	// vec, on the low half of a whole q-register store, is the vector
+	// value stored, and hi the term written to the high half: a whole
+	// reload gives the value back lane for lane while both halves stand
+	// (vectorFrameAccessAt), so a vector kept in a caller-saved home and
+	// saved around a call keeps its lane structure for the proof.
+	vec *vecValue
+	hi  *term
 }
 
 // pathNotes is what every path of one execution reports back to the
@@ -1822,6 +1829,13 @@ func compositeLeaves(comps map[string]Composite, typeName, prefix string, base i
 			stride := field.Size / field.Length
 			for k := int64(0); k < field.Length; k++ {
 				elemName := fmt.Sprintf("%s.%s[%d]", prefix, field.Name, k)
+				if field.Name == "" {
+					// An owned array as a value (docs/spec/94-assembler.md
+					// §9, forty-eighth increment): the composite is the
+					// array itself, its leaves the elements `p[k]`, as the
+					// Oak side names them (aggregateFrom).
+					elemName = fmt.Sprintf("%s[%d]", prefix, k)
+				}
 				if field.ElemType != "" {
 					nested, reason, ok := compositeLeaves(comps, field.ElemType, elemName, at+k*stride, fieldGuards)
 					if !ok {

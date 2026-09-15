@@ -165,6 +165,41 @@ func wholeV(n int) asm.Register {
 	return asm.Register{Text: "v" + strconv.Itoa(n), Class: asm.ClassV, Num: n, Vec: "", Lane: -1}
 }
 
+// vecOperand is a vector operand where it lies: a vector variable in its
+// own register is read in place (fixed: the caller must not write it or
+// release it), anything else is evaluated into a scratch. The counterpart
+// of operand for the vector file: before it, every vector variable read
+// was an orr copy into a scratch and every result an orr copy back, so
+// `or(or(a, b), or(c, d))` cost eight instructions where the machine
+// needs three (the UTF-8 validator's loop, benchmarks/native/README.md).
+func (g *generator) vecOperand(arg ast.Expression, shape scalar) (int, bool, error) {
+	if ident, isIdent := arg.(*ast.Identifier); isIdent {
+		if v, inReg := g.regs[ident.Value]; inReg && v >= vecBase {
+			if t, ok := g.types[ident.Value]; ok && t == shape {
+				return v, true, nil
+			}
+		}
+	}
+	r, err := g.expr(arg, &shape)
+	return r, false, err
+}
+
+// vecDest is the register an operation writes: the operand's own scratch
+// when it was one, a fresh scratch when the operand is a variable's home.
+func (g *generator) vecDest(a int, fixed bool, shape scalar) (int, error) {
+	if !fixed {
+		return a, nil
+	}
+	return g.alloc(shape)
+}
+
+// vecRelease releases an operand vecOperand evaluated into a scratch.
+func (g *generator) vecRelease(r int, fixed bool) {
+	if !fixed {
+		g.release(r)
+	}
+}
+
 // vmove copies a vector register (orr, the move of the vector file).
 func (g *generator) vmove(dst, src int) {
 	if dst == src {
@@ -228,6 +263,17 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 	switch op {
 	case "splat":
 		elem := scalars[shape.laneName()]
+		if k, isConst := g.constantOperand(args[0], elem); isConst && !shape.laneFloat && (k == 0 || (shape.laneBits == 8 && k <= 255)) {
+			// A literal lane value the vector immediate move spells: zero
+			// in any arrangement, a byte in every byte lane — instead of a
+			// scalar movz, a mask, and a dup through a general register.
+			v, err := g.alloc(shape)
+			if err != nil {
+				return 0, err
+			}
+			g.emit("movi", vreg(v-vecBase, "16b"), imm(int64(k)))
+			return v, nil
+		}
 		r, err := g.expr(args[0], &elem)
 		if err != nil {
 			return 0, err
@@ -297,7 +343,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if sp.elem.name != shape.laneName() {
 			return 0, unsupported("simd.%s over a span of %s", member, sp.elem.name)
 		}
-		v, err := g.expr(args[2], &shape)
+		v, vfixed, err := g.vecOperand(args[2], shape)
 		if err != nil {
 			return 0, err
 		}
@@ -312,7 +358,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		g.emit("str", qreg(v-vecBase), addr)
 		g.release(idx)
 		g.releaseAddr(addrReg)
-		g.release(v)
+		g.vecRelease(v, vfixed)
 		return -1, nil
 	case "add", "sub", "and", "or", "xor", "min", "max", "eq", "subs", "mul", "div":
 		mnemonic := map[string]string{"add": "add", "sub": "sub", "and": "and", "or": "orr", "xor": "eor", "min": "umin", "max": "umax", "eq": "cmeq", "subs": "uqsub"}[op]
@@ -324,11 +370,15 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if (op == "min" || op == "max") && shape.laneBits == 64 && !shape.laneFloat {
 			return 0, unsupported("simd.%s (NEON has no 64-bit lane form)", member)
 		}
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
-		b, err := g.expr(args[1], &shape)
+		b, bfixed, err := g.vecOperand(args[1], shape)
+		if err != nil {
+			return 0, err
+		}
+		out, err := g.vecDest(a, afixed, shape)
 		if err != nil {
 			return 0, err
 		}
@@ -336,36 +386,47 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if op == "and" || op == "or" || op == "xor" {
 			arr = "16b"
 		}
-		g.emit(mnemonic, vreg(a-vecBase, arr), vreg(a-vecBase, arr), vreg(b-vecBase, arr))
-		g.release(b)
-		return a, nil
+		g.emit(mnemonic, vreg(out-vecBase, arr), vreg(a-vecBase, arr), vreg(b-vecBase, arr))
+		g.vecRelease(b, bfixed)
+		return out, nil
 	case "fma":
 		// fma(a, b, c) = a*b + c in one rounding: fmla accumulates into
 		// its destination, so c's register receives the result.
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
-		b, err := g.expr(args[1], &shape)
+		b, bfixed, err := g.vecOperand(args[1], shape)
 		if err != nil {
 			return 0, err
 		}
-		c, err := g.expr(args[2], &shape)
+		c, cfixed, err := g.vecOperand(args[2], shape)
 		if err != nil {
 			return 0, err
 		}
-		g.emit("fmla", vreg(c-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), vreg(b-vecBase, shape.arr()))
-		g.release(a)
-		g.release(b)
-		return c, nil
+		out, err := g.vecDest(c, cfixed, shape)
+		if err != nil {
+			return 0, err
+		}
+		if cfixed {
+			g.vmove(out-vecBase, c-vecBase) // fmla accumulates into its destination
+		}
+		g.emit("fmla", vreg(out-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), vreg(b-vecBase, shape.arr()))
+		g.vecRelease(a, afixed)
+		g.vecRelease(b, bfixed)
+		return out, nil
 	case "sqrt", "neg", "abs":
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
+		if err != nil {
+			return 0, err
+		}
+		out, err := g.vecDest(a, afixed, shape)
 		if err != nil {
 			return 0, err
 		}
 		mnemonic := map[string]string{"sqrt": "fsqrt", "neg": "fneg", "abs": "fabs"}[op]
-		g.emit(mnemonic, vreg(a-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()))
-		return a, nil
+		g.emit(mnemonic, vreg(out-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()))
+		return out, nil
 	case "extract":
 		// A literal lane index is checked here against the lane count; a
 		// non-literal one needs the C backend's run-time check.
@@ -376,7 +437,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if k < 0 || k >= int64(shape.lanes) {
 			return 0, unsupported("simd.%s at lane %d (the index reaches the lane count and traps)", member, k)
 		}
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
@@ -386,7 +447,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 			return 0, err
 		}
 		g.emit("mov", reg(r, elem), laneReg(a-vecBase, shape.laneView(), k))
-		g.release(a)
+		g.vecRelease(a, afixed)
 		return r, nil
 	case "insert":
 		k, isConst := constantValue(args[1])
@@ -396,25 +457,32 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if k < 0 || k >= int64(shape.lanes) {
 			return 0, unsupported("simd.%s at lane %d (the index reaches the lane count and traps)", member, k)
 		}
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
+		}
+		out, err := g.vecDest(a, afixed, shape)
+		if err != nil {
+			return 0, err
+		}
+		if afixed {
+			g.vmove(out-vecBase, a-vecBase) // the lane insert writes into the whole
 		}
 		elem := scalars[shape.laneName()]
 		x, err := g.expr(args[2], &elem)
 		if err != nil {
 			return 0, err
 		}
-		g.emit("mov", laneReg(a-vecBase, shape.laneView(), k), laneReg(x-vecBase, shape.laneView(), 0))
+		g.emit("mov", laneReg(out-vecBase, shape.laneView(), k), laneReg(x-vecBase, shape.laneView(), 0))
 		g.release(x)
-		return a, nil
+		return out, nil
 	case "reduce_add":
 		// The pairwise tree of docs/spec/93-simd.md section 1.2a: faddp
 		// over the four lanes leaves (l0+l1, l2+l3, l0+l1, l2+l3), and
 		// the scalar faddp over the low pair adds them — exactly
 		// (l0 + l1) + (l2 + l3) (Oak.Simd.pairwise_reduce); two lanes are
 		// one scalar faddp.
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
@@ -425,12 +493,19 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		}
 		n := a - vecBase
 		if shape.lanes == 4 {
-			g.emit("faddp", vreg(n, "4s"), vreg(n, "4s"), vreg(n, "4s"))
-			g.emit("faddp", reg(r, elem), vreg(n, "2s"))
+			// The pairwise step writes a vector: a fixed operand's home is
+			// read only, the pairs land in a scratch.
+			t, err := g.vecDest(a, afixed, shape)
+			if err != nil {
+				return 0, err
+			}
+			g.emit("faddp", vreg(t-vecBase, "4s"), vreg(n, "4s"), vreg(n, "4s"))
+			g.emit("faddp", reg(r, elem), vreg(t-vecBase, "2s"))
+			g.release(t)
 		} else {
 			g.emit("faddp", reg(r, elem), vreg(n, "2d"))
+			g.vecRelease(a, afixed)
 		}
-		g.release(a)
 		return r, nil
 	case "shr":
 		count, isConst := constantValue(args[1])
@@ -440,50 +515,68 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if count < 0 || count >= int64(shape.laneBits) {
 			return 0, unsupported("simd.%s by %d (the count reaches the lane width and traps)", member, count)
 		}
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
+		if err != nil {
+			return 0, err
+		}
+		out, err := g.vecDest(a, afixed, shape)
 		if err != nil {
 			return 0, err
 		}
 		if count > 0 {
-			g.emit("ushr", vreg(a-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), imm(count))
+			g.emit("ushr", vreg(out-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), imm(count))
+		} else if afixed {
+			g.vmove(out-vecBase, a-vecBase)
 		}
-		return a, nil
+		return out, nil
 	case "any", "all":
-		a, err := g.expr(args[0], &shape)
+		a, afixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
+		// The reduction writes a vector register: a fixed operand's home
+		// is read only, the compare and the maximum land in a scratch.
+		t, err := g.vecDest(a, afixed, shape)
+		if err != nil {
+			return 0, err
+		}
+		src := a
 		if op == "all" {
 			// every lane nonzero <=> no lane equal to zero
-			g.emit("cmeq", vreg(a-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), imm(0))
+			g.emit("cmeq", vreg(t-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), imm(0))
+			src = t
 		}
 		// umaxv over the bytes: nonzero iff some byte, so some lane, is nonzero
-		g.emit("umaxv", breg(a-vecBase), vreg(a-vecBase, "16b"))
+		g.emit("umaxv", breg(t-vecBase), vreg(src-vecBase, "16b"))
 		r, err := g.alloc(scalars["Bool"])
 		if err != nil {
 			return 0, err
 		}
-		g.emit("umov", wr(r), laneB0(a-vecBase))
+		g.emit("umov", wr(r), laneB0(t-vecBase))
 		g.emit("cmp", wr(r), imm(0))
 		if op == "all" {
 			g.emit("cset", wr(r), asm.Condition{Code: "eq"})
 		} else {
 			g.emit("cset", wr(r), asm.Condition{Code: "ne"})
 		}
-		g.release(a)
+		g.release(t)
 		return r, nil
 	case "tbl":
-		t, err := g.expr(args[0], &shape)
+		t, tfixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
-		i, err := g.expr(args[1], &shape)
+		i, ifixed, err := g.vecOperand(args[1], shape)
 		if err != nil {
 			return 0, err
 		}
-		g.emit("tbl", vreg(t-vecBase, "16b"), asm.RegisterList{Regs: []asm.Register{vreg(t-vecBase, "16b")}}, vreg(i-vecBase, "16b"))
-		g.release(i)
-		return t, nil
+		out, err := g.vecDest(t, tfixed, shape)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("tbl", vreg(out-vecBase, "16b"), asm.RegisterList{Regs: []asm.Register{vreg(t-vecBase, "16b")}}, vreg(i-vecBase, "16b"))
+		g.vecRelease(i, ifixed)
+		return out, nil
 	case "prev":
 		n, isConst := constantValue(args[2])
 		if !isConst {
@@ -492,26 +585,44 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if n < 0 || n > 16 {
 			return 0, unsupported("simd.%s by %d (above sixteen traps)", member, n)
 		}
-		prev, err := g.expr(args[0], &shape)
+		prev, prevfixed, err := g.vecOperand(args[0], shape)
 		if err != nil {
 			return 0, err
 		}
-		cur, err := g.expr(args[1], &shape)
+		cur, curfixed, err := g.vecOperand(args[1], shape)
 		if err != nil {
 			return 0, err
 		}
 		switch n {
 		case 0:
-			g.release(prev)
-			return cur, nil
+			g.vecRelease(prev, prevfixed)
+			out, err := g.vecDest(cur, curfixed, shape)
+			if err != nil {
+				return 0, err
+			}
+			if curfixed {
+				g.vmove(out-vecBase, cur-vecBase)
+			}
+			return out, nil
 		case 16:
-			g.release(cur)
-			return prev, nil
+			g.vecRelease(cur, curfixed)
+			out, err := g.vecDest(prev, prevfixed, shape)
+			if err != nil {
+				return 0, err
+			}
+			if prevfixed {
+				g.vmove(out-vecBase, prev-vecBase)
+			}
+			return out, nil
+		}
+		out, err := g.vecDest(prev, prevfixed, shape)
+		if err != nil {
+			return 0, err
 		}
 		// the sixteen bytes ending n before the end of prev ++ cur
-		g.emit("ext", vreg(prev-vecBase, "16b"), vreg(prev-vecBase, "16b"), vreg(cur-vecBase, "16b"), imm(16-n))
-		g.release(cur)
-		return prev, nil
+		g.emit("ext", vreg(out-vecBase, "16b"), vreg(prev-vecBase, "16b"), vreg(cur-vecBase, "16b"), imm(16-n))
+		g.vecRelease(cur, curfixed)
+		return out, nil
 	case "movemask":
 		return g.simdMovemask(shape, args[0])
 	}
