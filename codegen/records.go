@@ -27,40 +27,13 @@ func recordDefinitionShape(adt *ast.ADTType) (*ast.RecordLiteral, bool) {
 	return recordLit, ok
 }
 
-// fixedFieldRepresentations maps the field types the v1 record backend can
-// place: the fixed-width integers (and their aliases). Everything else is
-// either a nested declared record (resolved via the registry) or
-// unsupported (fail closed).
-var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
-	"u8": {Size: 1, Alignment: 1}, "i8": {Size: 1, Alignment: 1},
-	"u16": {Size: 2, Alignment: 2}, "i16": {Size: 2, Alignment: 2},
-	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4},
-	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8},
-	// unsigned __int128 on every LP64 ABI Oak targets: 16 bytes, 16-aligned
-	// (docs/spec/20-types.md section 11); the emitted sizeof/_Alignof
-	// assertions ratify it.
-	"u128": {Size: 16, Alignment: 16},
-	"byte": {Size: 1, Alignment: 1}, "rune": {Size: 4, Alignment: 4},
-	// Bool lowers to a C enum, int-sized on the recorded ILP32/LP64 target
-	// model (docs/spec/92-ffi.md section 2.4); the emitted sizeof/offsetof
-	// assertions verify this against the actual ABI at C compile time.
-	"Bool": {Size: 4, Alignment: 4},
-	// Floating-point fields (docs/spec/20-types.md section 11.3.1): the IEEE
-	// binary32 and binary64 formats at their natural LP64 alignment, and the
-	// f16/bf16 storage formats in their uint16_t carriers (section 11.3.8).
-	"f32": {Size: 4, Alignment: 4}, "f64": {Size: 8, Alignment: 8},
-	"f16": {Size: 2, Alignment: 2}, "bf16": {Size: 2, Alignment: 2},
-	"f8e4m3": {Size: 1, Alignment: 1}, "f8e5m2": {Size: 1, Alignment: 1},
-	// The fixed 128-bit vectors (docs/spec/93-simd.md section 1.1, 1.2a)
-	// are placed as their lane arrays — the `struct { T lanes[N]; }` the
-	// C backend emits (codegen/simd.go): 16 bytes at the lane's
-	// alignment, so a record holding one has the same shape on every
-	// realization (portable loop, NEON, RVV); the emitted assertions
-	// ratify it. The native lane loads and stores such a field whole.
-	"simd.U8x16": {Size: 16, Alignment: 1}, "simd.U16x8": {Size: 16, Alignment: 2},
-	"simd.U32x4": {Size: 16, Alignment: 4}, "simd.U64x2": {Size: 16, Alignment: 8},
-	"simd.F32x4": {Size: 16, Alignment: 4}, "simd.F64x2": {Size: 16, Alignment: 8},
-}
+// fixedFieldRepresentations is the shared primitive placement table
+// (semir.FieldRepresentations): the fixed-width integers and their aliases,
+// Bool, the floating-point formats, and the fixed vectors. Everything else
+// is either a nested declared record (resolved via the registry) or
+// unsupported (fail closed). The emitted assertions make cc ratify every
+// number the table claims.
+var fixedFieldRepresentations = semir.FieldRepresentations
 
 // fieldRepresentation resolves one field's size and alignment, reporting
 // failure for types the v1 table cannot place. A declared per-field
