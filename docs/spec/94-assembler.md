@@ -4433,7 +4433,12 @@ scaling, and any other division to the uninterpreted quotient with the
 zero divisor as a trap obligation — which a constant nonzero divisor
 discharges. So each reduced body proves equal to its Oak body by the
 same canonical forms as before, and the compiler reports it: `N constant
-operation(s) strength-reduced, proven`. Should the seam checker refuse a
+operation(s) strength-reduced, proven`. The laws the models rest on are
+`Oak.StrengthReduction`: at 8, 16, and 32 bits, for every shift count
+`k` — at or past the width included — `x * (1 << k) = x << k`,
+`x / (1 << k) = x >> k`, and `x % (1 << k) = x & ((1 << k) - 1)`, by
+`bv_decide`; the 64-bit case exceeds the tactic's budget and is carried
+by the verifier per body. Should the seam checker refuse a
 reduced body, or the verifier return less than proven for it, the
 compiler lowers the body again without the reduction and keeps the plain
 form when that one proves (`compiler/native_bodies.go`; the diagnostic
