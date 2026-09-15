@@ -241,6 +241,68 @@ theorem shifted_index_element (i len k j : Nat) (hslack : i * 2 ^ k + 2 ^ k ≤ 
     i * 2 ^ k + j < len := by
   omega
 
+/-! ### If-conversion (nativegen/select.go, docs/spec/94-assembler.md §9)
+
+A conditional chain over one comparison lowers as one compare and a select
+per assigned variable. The comparison has three outcomes; an operator
+accepts a set of them; an arm fires on the outcomes its operator accepts
+less those the arms before it accept, so the arms' conditions are disjoint
+and the nested selects, from the last arm to the first, equal the first
+matching arm. The checker's rule: a select of two bounded values is bounded. -/
+
+/-- The outcomes of one integer comparison: below, equal, above. -/
+inductive Outcome where
+  | below | equal | above
+  deriving DecidableEq
+
+/-- An operator accepts a set of outcomes; an arm carries its acceptance
+    and the value it assigns. -/
+abbrev Accepts := Outcome → Bool
+
+/-- The chain's meaning: the value of the first arm whose operator accepts
+    the outcome, or the variable's old value. -/
+def firstArm (arms : List (Accepts × Nat)) (o : Outcome) (old : Nat) : Nat :=
+  match arms with
+  | [] => old
+  | (m, v) :: rest => if m o then v else firstArm rest o old
+
+/-- An arm's exclusive condition: its operator's outcomes less the earlier
+    arms' (`outcomeMasks[op] &^ seen`). -/
+def exclusive (seen m : Accepts) (o : Outcome) : Bool := m o && !seen o
+
+/-- The lowered chain: `csel` under each arm's exclusive condition, the
+    first arm outermost, the old value innermost. -/
+def selectChain (arms : List (Accepts × Nat)) (seen : Accepts) (o : Outcome) (old : Nat) : Nat :=
+  match arms with
+  | [] => old
+  | (m, v) :: rest => if exclusive seen m o then v else selectChain rest (fun o' => seen o' || m o') o old
+
+/-- **If-conversion is the chain**: with nothing seen before the first
+    arm, the selects equal the first matching arm. -/
+theorem selectChain_firstArm (arms : List (Accepts × Nat)) (seen : Accepts) (o : Outcome) (old : Nat)
+    (h : seen o = false) : selectChain arms seen o old = firstArm arms o old := by
+  induction arms generalizing seen with
+  | nil => rfl
+  | cons a rest ih =>
+    obtain ⟨m, v⟩ := a
+    simp only [selectChain, firstArm, exclusive, h, Bool.not_false, Bool.and_true]
+    by_cases hm : m o = true
+    · simp [hm]
+    · simp only [Bool.not_eq_true] at hm
+      simp only [hm, Bool.false_eq_true, ↓reduceIte]
+      exact ih _ (by simp [h, hm])
+
+/-- **A select of bounded values is bounded** (the checker's `csel` rule,
+    asm/bounds_arith.go): both sources at most the referent, the result is. -/
+theorem select_upper (c : Bool) (a b bound : Nat) (ha : a ≤ bound) (hb : b ≤ bound) :
+    (if c then a else b) ≤ bound := by
+  cases c <;> simp [ha, hb]
+
+/-- The same for an index fact: both sources below the bound. -/
+theorem select_index (c : Bool) (a b bound : Nat) (ha : a < bound) (hb : b < bound) :
+    (if c then a else b) < bound := by
+  cases c <;> simp [ha, hb]
+
 /-- Every byte of an admitted span access lies inside the span. -/
 theorem span_access_bytes (elem minLen len off size b : Nat)
     (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)

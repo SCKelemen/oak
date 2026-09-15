@@ -93,3 +93,21 @@ func TestCheckRegisterStateAtLabels(t *testing.T) {
 		t.Fatalf("the copied base walked by index must be admitted: %v", findings)
 	}
 }
+
+// The if-converted binary search (nativegen/select.go): `hi = mid` and `lo
+// = mid + 1` as selects under one compare. `csel wHi, wMid, wHi, hi` keeps
+// hi at most the length — both sources are (Oak.Assembler.select_upper) —
+// so the next iteration's midpoint read is admitted.
+func TestCheckSelectKeepsUpperBound(t *testing.T) {
+	decl := "search: (keys: []u64, target: u64) -> u32"
+	body := "  bind x0, w1 = keys\n  bind x2 = target\n  clobber x9, x10, x11, x12, x13\n  mov w9, wzr\n  mov w10, w1\nloop:\n  cmp w9, w10\n  b.hs done\n  sub w11, w10, w9\n  lsr w11, w11, #1\n  add w12, w9, w11\n  ldr x11, [x0, w12, uxtw #3]\n  add w13, w12, #1\n  cmp x11, x2\n  csel w9, w13, w9, lo\n  csel w10, w12, w10, hi\n  b loop\ndone:\n  mov w0, w9\n  ret"
+	if findings := checkBody(t, decl, body); len(findings) != 0 {
+		t.Fatalf("the select-form search must be admitted: %v", findings)
+	}
+	// A select whose other source is unbounded is not a bound.
+	unbounded := strings.Replace(body, "  csel w10, w12, w10, hi\n", "  csel w10, w12, w13, hi\n", 1)
+	findings := checkBody(t, decl, unbounded)
+	if len(findings) == 0 || !strings.Contains(findings[0], "not this span's length register") {
+		t.Fatalf("hi selected from mid + 1 is not below the length, got %v", findings)
+	}
+}

@@ -1269,6 +1269,8 @@ type generator struct {
 	flagsTo    map[string]string
 	liveFlags  string
 	reused     int
+	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
+	selected int
 	// elided counts the guards left out under elide (reported).
 	elided int
 	// strength lowers constant multiplications, divisions, and remainders
@@ -4462,6 +4464,11 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 }
 
 func (g *generator) lowerIf(s *ast.IfStatement) error {
+	if arms, final, isChain := ifArms(s); isChain {
+		if chain, ok := g.recognizeSelectChain(arms, final); ok {
+			return g.lowerSelectChain(chain)
+		}
+	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 	if err := g.condition(s.Condition, elseLabel); err != nil {
 		return err
@@ -4501,6 +4508,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	whenTrue, whenFalse, ok := statementConditional(match)
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
+	}
+	// If-conversion (nativegen/select.go): a chain over one comparison
+	// whose arms only assign lowers as compare and select.
+	if arms, final, isChain := conditionalArms(match); isChain {
+		if chain, ok := g.recognizeSelectChain(arms, final); ok {
+			return g.lowerSelectChain(chain)
+		}
 	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
@@ -6934,22 +6948,30 @@ func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) 
 		g.releaseTemps(target.sc.temps)
 		return nil
 	case target.rec != nil:
-		if target.rec.readOnly {
-			return unsupported("a store into %s through a read-only view", s.Target.String())
-		}
 		src, err := g.recordValueAs(s.Value, target.rec.layout)
 		if err != nil {
 			return err
 		}
-		if src.layout != target.rec.layout {
-			return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), target.rec.layout.name)
-		}
-		err = g.copyBytes(target.rec.loc(), src.loc(), target.rec.layout.size)
-		g.releaseTemps(src.temps)
-		g.releaseTemps(target.rec.temps)
-		return err
+		return g.storeRecordToPlace(target, src, s)
 	}
 	return unsupported("a store to the array %s", s.Target.String())
+}
+
+// storeRecordToPlace copies an evaluated record value into a record place.
+func (g *generator) storeRecordToPlace(target place, src *recordLocal, s *ast.IndexAssignmentStatement) error {
+	if target.rec == nil {
+		return unsupported("a store to the array %s", s.Target.String())
+	}
+	if target.rec.readOnly {
+		return unsupported("a store into %s through a read-only view", s.Target.String())
+	}
+	if src.layout != target.rec.layout {
+		return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), target.rec.layout.name)
+	}
+	err := g.copyBytes(target.rec.loc(), src.loc(), target.rec.layout.size)
+	g.releaseTemps(src.temps)
+	g.releaseTemps(target.rec.temps)
+	return err
 }
 
 // element lowers `v[i]`: a guarded, whole-element load through the bound
@@ -7154,10 +7176,26 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		return nil
 	}
 	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
-		// `pool[i] = r`: a record element replaced.
+		// `pool[i] = r`: a record element replaced. A value that calls is
+		// evaluated before the place: a `bl` clobbers the scratch
+		// registers and, to the checker, the element address's provenance
+		// (a reload from the spill slot is no element region), so the
+		// address is formed after the call — `out[0] =
+		// time.time_source_native()` in the dbs pilot's time source.
+		var early *recordLocal
+		if g.callsProgramFunction(s.Value) && !g.callsProgramFunction(s.Target.Index) {
+			src, err := g.recordValueAs(s.Value, layout)
+			if err != nil {
+				return err
+			}
+			early = src
+		}
 		target, err := g.placeOf(s.Target)
 		if err != nil {
 			return err
+		}
+		if early != nil {
+			return g.storeRecordToPlace(target, early, s)
 		}
 		return g.storeToPlace(target, s)
 	}
