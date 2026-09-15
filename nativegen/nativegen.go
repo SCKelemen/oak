@@ -1666,7 +1666,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			return nil, unsupported("%v", rerr)
 		}
 		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	case asm.ArchRV64:
@@ -1679,7 +1679,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			return nil, unsupported("%v", rerr)
 		}
 		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	}

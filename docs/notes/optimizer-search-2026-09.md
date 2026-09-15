@@ -171,9 +171,30 @@ written), and the `sd ra`/`sd s1`… prologue for callee-saved growth. The
 vector extension's registers refuse the lift for now. The `reallocate`
 transform runs on both lanes.
 
+### Phase C, first increment: analyses and cleanups over the lifted IR
+
+`machine.Dominators` builds the dominator tree (Cooper–Harvey–Kennedy
+over a reverse postorder) and `Loops` the natural loops from its back
+edges — headers, latches, bodies, preheaders, nesting — as analyses for
+the passes to come (machine-level LICM and induction detection). Two
+global cleanups use the webs and the liveness segments (`Simplify`, run
+inside reallocation before allocation): copy propagation reads a copied
+value from its source wherever the source has one definition and is
+still live (so another web of the same register — a call's result, a
+later assignment — cannot have taken the register in between), and
+dead-code elimination removes an instruction whose every result no one
+reads when the lane's table says it is pure (no store, call, branch,
+compare or flag write, atomic, or system effect; loads only from the
+frame) and it writes no callee-saved or reserved register (a restore).
+Both refused wrong forms in their first tests — a propagation across a
+call's clobber, an elided callee-saved restore — before the liveness and
+the restore rule were added; the checker would have refused the bodies,
+but the pass should not propose them.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, and scheduling.
+directly, scheduling, machine-level LICM on the loop tree, and the
+recurrence analysis.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
