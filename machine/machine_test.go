@@ -435,11 +435,78 @@ func TestPromoteRefusesEscapedAndCrossingSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// x19 is busy across the call (it holds w2), so nothing is free: the
-	// slot stays. The save slot of x19 itself is never promoted (its load
-	// is a restore with no reader).
-	if alloc.Promoted != 0 || !strings.Contains(text(out.Items), "[sp,#16]") || !strings.Contains(text(out.Items), "ldr x19, [sp,#32]") {
-		t.Fatalf("promoted %d:\n%s", alloc.Promoted, text(out.Items))
+	// x19 is busy across the call (it holds w2), so x20 is saved beside it
+	// — the next slot of the save area, [sp, #40] — and the value moves
+	// there; the save slot of x19 itself is never promoted (its load is a
+	// restore with no reader).
+	got := text(out.Items)
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#16]") || !strings.Contains(got, "str x20, [sp,#40]") || !strings.Contains(got, "ldr x20, [sp,#40]") || !strings.Contains(got, "ldr x19, [sp,#32]") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, got)
+	}
+	// The restore precedes the pair's, the save follows x19's.
+	if strings.Index(got, "ldr x20, [sp,#40]") > strings.Index(got, "ldp x29, x30") || strings.Index(got, "str x20, [sp,#40]") < strings.Index(got, "str x19, [sp,#32]") {
+		t.Fatalf("save/restore placement:\n%s", got)
+	}
+}
+
+func TestGrowCalleeSavedRefusals(t *testing.T) {
+	// The would-be save slot [sp, #40] is used by another value: no growth.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", x(19), mem(sp(), 32)),
+		ins("mov", w(19), w(2)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("str", x(3), mem(sp(), 40)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("ldr", x(11), mem(sp(), 40)),
+		ins("add", x(0), x(10), x(11)),
+		ins("add", w(0), w(0), w(19)),
+		ins("ldr", x(19), mem(sp(), 32)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(11), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d (%v)", alloc.Promoted, err)
+	}
+	// Two returns: no growth.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("cbz", w(0), sym("zero_1")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+		label("zero_1"),
+		ins("ldr", w(0), mem(sp(), 16)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d with two returns (%v)", alloc.Promoted, err)
+	}
+	// No [x29, x30] pair (the shape of a leaf): no growth.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d without a pair (%v)", alloc.Promoted, err)
 	}
 }
 

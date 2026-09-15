@@ -210,6 +210,9 @@ type SemanticModel struct {
 	// reads both (verifiedProfile).
 	NativeVerdicts  map[string]asm.Verdict
 	NativeFallbacks map[string]string
+	// Optimizations records passed, missed, and analyzed candidates with their
+	// checked basis. It is output-only: no remark can authorize a transform.
+	Optimizations OptimizationReport
 }
 
 // LoweredProgram is the executable-oriented AST plus its semantic model.
@@ -491,28 +494,61 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// Small private helpers are inlined at the source level for the
 		// code-emitting stages (compiler/inline.go), after the units are
 		// stitched so a declaration a unit realizes keeps its calls.
+		optimizations := OptimizationReport{}
 		if comp.options.InlineHelpers {
-			inlineHelpers(tree.Root, Protocols(tree))
+			optimizations = optimizeBeforeSpecialization(tree.Root, Protocols(tree))
 		}
-		env := object.NewEnvironment()
-		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
-		if tree.Modules != nil {
-			tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
-			tc.SetPackageExports(tree.Modules.Exports)
-			tc.SetSealedOpaque(tree.Modules.SealedOpaque)
-			tc.SetAbstractTypes(tree.Modules.Abstract)
+		newTypeChecker := func() *typechecker.TypeChecker {
+			tc := typechecker.NewWithPlatformSizes(object.NewEnvironment(), comp.options.IntSize, comp.options.PtrSize)
+			if tree.Modules != nil {
+				tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
+				tc.SetPackageExports(tree.Modules.Exports)
+				tc.SetSealedOpaque(tree.Modules.SealedOpaque)
+				tc.SetAbstractTypes(tree.Modules.Abstract)
+			}
+			// The spliced bootstrap library is stamped `std` (compiler/stdlib.go)
+			// and is a package of its own for scoping purposes.
+			tc.AddPackagePaths("std")
+			return tc
 		}
-		// The spliced bootstrap library is stamped `std` (compiler/stdlib.go)
-		// and is a package of its own for scoping purposes.
-		tc.AddPackagePaths("std")
-		tc.CheckProgram(tree.Root)
-		if tree.Modules != nil {
-			// Sealed-import member types (docs/spec/83-modules.md section 6.3).
-			tc.CheckSignatureObligations(tree.Modules.Obligations)
-			tc.CheckParameterObligations(tree.Modules.Parameters)
+		checkTypes := func(tc *typechecker.TypeChecker, program *ast.Program) {
+			tc.CheckProgram(program)
+			if tree.Modules != nil {
+				// Sealed-import member types (docs/spec/83-modules.md section 6.3).
+				tc.CheckSignatureObligations(tree.Modules.Obligations)
+				tc.CheckParameterObligations(tree.Modules.Parameters)
+			}
 		}
+		tc := newTypeChecker()
+		checkTypes(tc, tree.Root)
 		if err := comp.gate("typecheck", tc.Diagnostics(), tree.Modules); err != nil {
 			return nil, err
+		}
+		// Generic specialization happens during the first checked pass. Cheap
+		// canonicalization can now use concrete bodies and authoritative Bool
+		// resolutions without multiplying generic IR. A fresh checker validates
+		// the rewritten monomorphic tree. The specializing checker remains the
+		// semantic-fact authority: only it carries template-to-specialization
+		// ownership/resource provenance, and every canonical replacement reuses
+		// one of the expression nodes it already typed.
+		if comp.options.InlineHelpers {
+			post := optimizeAfterSpecialization(tree.Root, tc)
+			if len(post.Remarks) != 0 {
+				candidate, ok := cloneSyntax(reflect.ValueOf(tree.Root)).Interface().(*ast.Program)
+				if !ok || candidate == nil {
+					return nil, fmt.Errorf("compiler: cannot clone the post-specialization optimization candidate")
+				}
+				addPostSpecializationValidationTypes(candidate, tc)
+				checked := newTypeChecker()
+				checkTypes(checked, candidate)
+				if errors := diagnosticErrors(checked.Diagnostics()); len(errors) != 0 {
+					if err := comp.gate("optimizer", errors, tree.Modules); err != nil {
+						return nil, err
+					}
+					return nil, fmt.Errorf("compiler: post-specialization optimizer produced an invalid program")
+				}
+				optimizations = mergeOptimizationReports(optimizations, post)
+			}
 		}
 		// Operator definitions (docs/spec/10-syntax.md section 14): every
 		// infix expression the checker resolved through a binding becomes
@@ -532,9 +568,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 				return nil, err
 			}
 			asmFunctions = append(asmFunctions, native.Functions...)
+			if native.Report != nil {
+				optimizations = mergeOptimizationReports(optimizations, optimizationReport(native.Report.Remarks))
+			}
 		}
 
-		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: native.Data, NativeVerdicts: native.Verdicts, NativeFallbacks: native.Fallbacks}
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: native.Data, NativeVerdicts: native.Verdicts, NativeFallbacks: native.Fallbacks, Optimizations: optimizations}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 

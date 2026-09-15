@@ -495,6 +495,40 @@ and recognize the rotate as `ror` (the next increment), the loop
 invariants (pending, PR #471) for the frame and table addresses, a lower
 bound for the induction variable in the checker so the schedule's back
 references need no guard, pair copies for array values.
+## Slot forwarding and copies at the boundary, 2026-09-16
+
+Measured together over #472 and #473 (a local merge; the machine under
+the compiler suites, C and native interleaved), the dbs frame scan's
+native build stands at 232–269 ms against the C build's 116–145 ms, and
+the twenty-scan loop at 7.9 s against 3.2–4.7 s. The byte loop of
+`sha256_update` reads as the two increments say (docs/spec/94-assembler.md
+§9 "Slot forwarding", "Copies at the boundary"): `next` is the caller's
+result area behind `x22`, its `filled` increment is `ldr; add; str` with
+the `== 64` test on the stored register (`cmp w9, #64; b.ne`), and
+`next.h` goes to `sha256_compress` as `add x9, x22, #0` — the caller's
+storage — where before forty loads and stores filled two temps. What
+remains per byte is fourteen instructions to clang's ten: the block's
+address rebuilt each iteration (`add x9, x22, #32`; the loop invariants,
+#471), a second load of `filled` through the record's register (the
+forwarding is keyed on `sp` slots in this build; its extension to any
+base register follows #474), and the load at the loop head, which clang
+also makes. Per block the chain `sha256_compress` → `sha256_block` →
+`sha256_block_hw` → the unit is three calls with prologues and two
+copies of `h` where clang inlines the chain to the unit call and moves
+the bytes as `ldp`/`stp` of `q` registers; `next.block` still copies,
+since `sha256_compress` takes `view(&block)` of its parameter. The
+increments in order: the loop invariants, forwarding through any base,
+pair copies, the inlining of small record-returning callees, and the
+promotion of a loop's record field to a register with write-back at
+calls and exits — which is what takes the loop below clang's ten.
+
+The measurement also caught the increment's one defect before it
+landed: the first build scanned the segment to a wrong chain hash. A
+returned local initialized from a call (`st: Sha256State = f(…)` as a
+function's tail) received the callee's result at `add x8, sp, #off` — the
+frame slot the local no longer occupied — instead of the area this
+function itself returns; `TestNativeShapesBoundaryCopies` now carries
+`relay` for the shape, and the scan's chain agrees again.
 
 ## Rotates, 2026-09-16
 

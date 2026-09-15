@@ -2,6 +2,7 @@
 // Hash collisions contribute to false positives. This mixer is not cryptographic.
 package filters
 
+import("bitset")
 
 pub FilterError: type = InvalidConfig | StorageTooSmall | CounterOverflow | NotPresent | Incompatible
 pub BloomConfig: type = struct { cells: u32, probes: u32, seed: u64, blocked: Bool }
@@ -36,7 +37,7 @@ pub filter_index: (config: BloomConfig, hash: u64, probe: u32): u32 {
 
 pub bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
-    len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
+    len(storage) < bitset.storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
       changed: Bool = false
       p: u32 = 0
       while p < config.probes {
@@ -54,7 +55,7 @@ pub bloom_insert: (storage: [*]u8, config: BloomConfig, hash: u64): Result[Bool,
 
 pub bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
-    len(storage) < bitset_storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
+    len(storage) < bitset.storage_bytes(config.cells) ? { .Err(.StorageTooSmall) } | {
       present: Bool = true
       p: u32 = 0
       while p < config.probes && present {
@@ -70,7 +71,7 @@ pub bloom_query: (storage: []u8, config: BloomConfig, hash: u64): Result[Bool, F
 
 pub bloom_clear: (storage: [*]u8, config: BloomConfig): Result[Bool, FilterError] {
   !filter_config_valid(config) ? { .Err(.InvalidConfig) } | {
-    n: u32 = bitset_storage_bytes(config.cells)
+    n: u32 = bitset.storage_bytes(config.cells)
     len(storage) < n ? { .Err(.StorageTooSmall) } | {
       i: u32 = 0
       while i < n {

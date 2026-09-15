@@ -54,9 +54,31 @@ forced-inline emission of the same shape and the hot codec helpers,
 tail-recursion to loops and mutual tail groups to trampolines, constant
 globals folded to `static const` so `/` and `%` become shifts, byte-pack
 recognition, protocol tables. No expression folding, CSE, LICM, strength
-reduction, or dead-code elimination of Oak's own: the C compiler does
-that layer, and `-opt 0` against `-opt 2` measures how much of it there
-was to do.
+reduction, or dead-code elimination of Oak's own was present in the initial
+survey. The first target-independent expression increment landed on
+2026-09-15: after type-driven monomorphization,
+`source.canonical.bool.v1` removes redundant built-in Boolean identities for
+every backend; `source.canonical.integer.v1` removes fixed-width `+ 0`, `- 0`,
+`* 1`, `/ 1`, `| 0`, `^ 0`, and shifts by zero when the retained operand has
+the exact checked result type. The changed program is checked again. Both
+deliberately keep every non-literal operand; widening expressions, CSE, SCCP, and
+dead-path removal wait for OptIR to carry effects and traps explicitly. Literal
+negation also waits for typed OptIR so canonicalization never mutates a source
+token that keys checked facts. The independent validation clone receives only
+the concrete generic ADT declarations recorded by the specializing checker;
+they are rebuilt through checked type substitution and never enter emission. `-opt
+0` against `-opt 2` still measures how much generic scalar work the C compiler
+has left to do.
+
+The first target-neutral middle-end substrate now lives in `optir/`. It keeps
+structured conditionals and pre-test loops with explicit loop-carried SSA
+values, operation effects, attributes, and proof facts, while also projecting
+deterministically to a typed block-argument CFG. Its independent verifier
+rejects undefined or non-dominating values, invalid same-block order,
+unreachable blocks, malformed edges and terminators, non-Bool conditions, and
+wrong returns. No backend consumes this IR yet; this increment establishes the
+fail-closed representation and analysis boundary before compiler projection or
+SCCP/CSE/DCE can affect emitted code.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar

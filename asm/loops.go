@@ -51,6 +51,13 @@ type loopShape struct {
 	// internal are the header's forward branches to labels inside the
 	// header (a short-circuit's skip): they fork the header's paths.
 	internal []int
+	// The exit tests' item range, walked for the continue condition
+	// (headerCondition): [header+1, bodyStart) for a top-tested loop; the
+	// tail test [bodyEnd, back] for a bottom-tested one, whose body starts
+	// right after the header label and whose back edge is the tail test's
+	// conditional branch — taken to continue (tail).
+	testStart, testEnd int
+	tail               bool
 }
 
 // findLoops recognizes loops by their back edges, keyed by the exit branch.
@@ -83,7 +90,28 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 	}
 	for back, item := range items {
 		branch, isBranch := item.(Instruction)
-		if !isBranch || !isUnconditionalJump(branch.Mnemonic) {
+		if !isBranch {
+			continue
+		}
+		if isConditionalBranch(branch.Mnemonic) && len(branch.Operands) > 0 {
+			// A conditional back edge: a bottom-tested loop (the native
+			// backend's rotated `while`), recognized by its shape.
+			if sym, isSym := branch.Operands[len(branch.Operands)-1].(Symbol); isSym {
+				if header, isLabel := labels[sym.Name]; isLabel && header < back {
+					shape, why, ok := tailLoopShape(items, labels, innerHeaders, header, back, branch, summarizable)
+					if !ok {
+						reject(back, why)
+						continue
+					}
+					for _, at := range shape.exits {
+						loops[at] = shape // the executor summarizes at the first undecided entry branch
+					}
+					innerHeaders[header] = back
+				}
+			}
+			continue
+		}
+		if !isUnconditionalJump(branch.Mnemonic) {
 			continue
 		}
 		header, ok := labels[branch.Operands[0].(Symbol).Name]
@@ -232,7 +260,7 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 			reject(back, bodyWhy)
 			continue
 		}
-		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal}
+		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart}
 		for _, at := range exits {
 			loops[at] = shape // an undecided branch at any exit test summarizes the loop
 		}
@@ -242,6 +270,172 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 		innerHeaders[header] = back
 	}
 	return loops
+}
+
+// tailInverse pairs each condition code with its complement, for the
+// peeled entry test of a bottom-tested loop.
+var tailInverse = map[string]string{
+	"eq": "ne", "ne": "eq", "hs": "lo", "cs": "cc", "lo": "hs", "cc": "cs", "mi": "pl", "pl": "mi",
+	"vs": "vc", "vc": "vs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt",
+}
+
+// tailLoopShape recognizes a bottom-tested loop by its conditional back
+// edge at back (docs/spec/94-assembler.md §9 "Bottom-tested loops"):
+//
+//	cmp wI, wL; b.hs exit; cbnz wB, exit     the entry test, leaving to exit
+//	header:
+//	  body
+//	cmp wI, wL; b.hs exit; cbz wB, header    the tail test: the same run,
+//	exit:                                     its last branch complemented
+//
+// The tail test is a run of compares and conditional branches — every
+// branch but the last leaving to the exit label, the last the back edge —
+// with no other instruction among them; the entry test right before the
+// header label is the same run with its last branch to the exit label
+// under the complementary condition; and nothing else branches to the
+// header. The loop then iterates the body exactly as the top-tested loop
+// with that test at its header would — the entry test is the first
+// iteration's, the tail test every later one's — so the shape is the
+// top-tested one with its test range at the tail (headerCondition walks
+// it over the header state, the back edge taken as the continue
+// condition) and its exit keyed at the entry branch, where the executor
+// meets the loop with the entry state.
+func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int, header, back int, branch Instruction, summarizable func(Instruction) bool) (loopShape, string, bool) {
+	headerName := items[header].(Label).Name
+	if branch.Mnemonic != "b." && branch.Mnemonic != "cbz" && branch.Mnemonic != "cbnz" {
+		return loopShape{}, "a conditional back edge that is not b.cond, cbz, or cbnz", false
+	}
+	// The exit label: the entry test's target, every tail exit's target.
+	if header < 1 {
+		return loopShape{}, "a bottom-tested loop without an entry test", false
+	}
+	entryLast, isEntry := items[header-1].(Instruction)
+	if !isEntry || !isConditionalBranch(entryLast.Mnemonic) || len(entryLast.Operands) == 0 {
+		return loopShape{}, "a bottom-tested loop whose entry is not a conditional branch", false
+	}
+	exitSym, isSym := entryLast.Operands[len(entryLast.Operands)-1].(Symbol)
+	exitLabel, isLabel := labels[exitSym.Name]
+	if !isSym || !isLabel || exitLabel <= back {
+		return loopShape{}, "a bottom-tested loop whose entry test does not leave past the back edge", false
+	}
+	// The tail run: back to the first instruction that is not a compare
+	// or a branch to the exit label.
+	tailStart := back
+	for tailStart > header+1 {
+		instr, isInstr := items[tailStart-1].(Instruction)
+		if !isInstr {
+			break
+		}
+		if instr.Mnemonic == "cmp" {
+			tailStart--
+			continue
+		}
+		if isConditionalBranch(instr.Mnemonic) && len(instr.Operands) > 0 {
+			if sym, ok := instr.Operands[len(instr.Operands)-1].(Symbol); ok && sym.Name == exitSym.Name {
+				tailStart--
+				continue
+			}
+		}
+		break
+	}
+	if branch.Mnemonic == "b." && (tailStart == back || items[back-1].(Instruction).Mnemonic != "cmp") {
+		return loopShape{}, "a conditional back edge whose test is not a compare", false
+	}
+	if header+1 >= tailStart {
+		return loopShape{}, "a bottom-tested loop without a body", false
+	}
+	// The entry run mirrors the tail run instruction for instruction, the
+	// last branch complemented and leaving to the exit label.
+	n := back + 1 - tailStart
+	if header-n < 0 {
+		return loopShape{}, "a bottom-tested loop whose entry test is shorter than its tail test", false
+	}
+	for k := 0; k < n; k++ {
+		tail, isTail := items[tailStart+k].(Instruction)
+		entry, isEntryInstr := items[header-n+k].(Instruction)
+		if !isTail || !isEntryInstr {
+			return loopShape{}, "a bottom-tested loop whose entry test holds a label", false
+		}
+		if k < n-1 {
+			if tail.Mnemonic != entry.Mnemonic || tail.Cond != entry.Cond || describeOperands(tail.Operands) != describeOperands(entry.Operands) {
+				return loopShape{}, "a bottom-tested loop whose entry test differs from its tail test", false
+			}
+			continue
+		}
+		// The last: the back edge against the entry's exit branch.
+		switch tail.Mnemonic {
+		case "b.":
+			if entry.Mnemonic != "b." || tailInverse[tail.Cond] != entry.Cond {
+				return loopShape{}, "a bottom-tested loop whose entry condition is not the tail condition's complement", false
+			}
+		default:
+			opposite := map[string]string{"cbz": "cbnz", "cbnz": "cbz"}[tail.Mnemonic]
+			if entry.Mnemonic != opposite || len(entry.Operands) != 2 || len(tail.Operands) != 2 || describeOperands(entry.Operands[:1]) != describeOperands(tail.Operands[:1]) {
+				return loopShape{}, "a bottom-tested loop whose entry test is not the complement of its tail test", false
+			}
+		}
+	}
+	// Nothing but the back edge branches to the header.
+	for i, item := range items {
+		instr, isInstr := item.(Instruction)
+		if !isInstr || i == back || len(instr.Operands) == 0 {
+			continue
+		}
+		if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym && sym.Name == headerName {
+			return loopShape{}, "a bottom-tested loop whose header another branch reaches", false
+		}
+	}
+	// The body: no call or return outside the program's functions, no
+	// branch leaving the loop but a guard's to the trap block, no backward
+	// branch but a recognized inner loop's back edge.
+	for i := header + 1; i < tailStart; i++ {
+		instr, isInstr := items[i].(Instruction)
+		if !isInstr {
+			continue
+		}
+		switch instr.Mnemonic {
+		case "bl", "ret", "eret", "jal", "jalr", "auipc", "jr", "call":
+			if summarizable(instr) {
+				continue
+			}
+			return loopShape{}, "the body calls or returns (" + instr.Mnemonic + ")", false
+		case "b", "j", "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
+			target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
+			if !ok || target >= tailStart {
+				if !ok || !isTrapBlock(items, target) || isUnconditionalJump(instr.Mnemonic) {
+					return loopShape{}, "the body leaves the loop (" + instr.Mnemonic + " past the tail test)", false
+				}
+			} else if target <= i {
+				if innerBack, isInner := innerHeaders[target]; !isInner || innerBack != i || target <= header {
+					return loopShape{}, "the body has a backward branch that is not a recognized inner loop", false
+				}
+			}
+		}
+	}
+	cmpIndex := -1
+	if branch.Mnemonic == "b." {
+		cmpIndex = back - 1
+	}
+	// Every branch of the entry run is an exit the executor may meet
+	// undecided first (an earlier one decided by a constant — a flag
+	// cleared before the loop — falls through to the next), and so is
+	// every branch of the tail run: when the whole entry test is decided
+	// the executor runs the first iteration and meets the loop at its
+	// tail, where the state before the back edge is the next header's, as
+	// a top-tested loop's second header visit is.
+	var exits []int
+	for k := header - n; k < header; k++ {
+		if instr, isInstr := items[k].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
+			exits = append(exits, k)
+		}
+	}
+	for k := tailStart; k <= back; k++ {
+		if instr, isInstr := items[k].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
+			exits = append(exits, k)
+		}
+	}
+	shape := loopShape{header: header, cmp: cmpIndex, exit: exits[0], exitLabel: exitLabel, bodyStart: header + 1, bodyEnd: tailStart, exits: exits, testStart: tailStart, testEnd: back + 1, tail: true}
+	return shape, "", true
 }
 
 // isTrapBlock reports a label whose first instruction is `brk` (or
@@ -1038,7 +1232,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 		cond  *term
 		state *symbolicState
 	}
-	work := []headerPath{{pc: shape.header + 1, cond: constTerm(1, 1), state: fresh.clone()}}
+	work := []headerPath{{pc: shape.testStart, cond: constTerm(1, 1), state: fresh.clone()}}
 	var cont *term
 	var fallThroughStates []*symbolicState
 	paths := 0
@@ -1046,7 +1240,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 		cur := work[len(work)-1]
 		work = work[:len(work)-1]
 		pc, cond, st := cur.pc, cur.cond, cur.state
-		for pc < shape.bodyStart {
+		for pc < shape.testEnd {
 			instr, isInstr := x.items[pc].(Instruction)
 			if !isInstr {
 				pc++
@@ -1063,6 +1257,12 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 				}
 				taken = truncate(taken, 1)
 				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
+				if shape.tail && target == shape.header {
+					// The tail test's back edge: taken is the continue.
+					cond = binaryTerm("and", cond, taken)
+					pc++
+					continue
+				}
 				if target < shape.bodyStart {
 					if paths+len(work)+1 > headerPathBudget {
 						return nil, nil, "more header paths than the verifier's budget", false

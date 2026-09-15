@@ -107,7 +107,7 @@ func Promote(fn *asm.Function) (*asm.Function, int, error) {
 				uninitialized = true
 			}
 		}
-		if uninitialized {
+		if uninitialized || isSaveSlot(lifted, w) {
 			continue
 		}
 		s := slots[int64(w.Reg.Num)]
@@ -118,6 +118,15 @@ func Promote(fn *asm.Function) (*asm.Function, int, error) {
 			}
 		}
 		r, ok := slotRegister(s, w, crossing, written, regWebs, taken)
+		if !ok && crossing && s.class == GPR {
+			// No saved callee-saved register is free: save another in the
+			// prologue's save area and restore it in the epilogue, when the
+			// lowering's shapes allow (growCalleeSaved).
+			r, ok = growCalleeSaved(lifted, w, written, regWebs, taken, accesses, escaped, blocked, fn.Frame)
+			if ok {
+				written[r] = true
+			}
+		}
 		if !ok {
 			continue
 		}
@@ -355,3 +364,173 @@ func slotCopy(r Reg, reg asm.Register, s slot, store bool, line int) asm.Instruc
 
 // String spells a slot for the report.
 func (s slot) String() string { return fmt.Sprintf("[sp, #%d] (%d bits)", s.offset, s.bits) }
+
+// growCalleeSaved saves one more callee-saved register for a value live
+// across a call: the next of x19–x28 the body does not write, at the next
+// slot of the prologue's save area — the lowering saves x19, x20, ... at
+// consecutive eight-byte slots after the [x29, x30] pair (nativegen's
+// saveBase) — with `str xR, [sp, #slot]` after the last save and `ldr xR,
+// [sp, #slot]` before the epilogue restores the pair. It refuses when the
+// prologue or the single epilogue has another shape, the slot would leave
+// the frame or overlap another frame access, or the register is busy
+// over the web's range.
+func growCalleeSaved(f *Function, w *Web, written map[Reg]bool, regWebs []*Web, taken map[Reg][]*Web, accesses []slotAccess, escaped []int64, blocked [][2]int64, frame int64) (Reg, bool) {
+	if len(f.Blocks) == 0 || len(f.Blocks[0].Instrs) == 0 {
+		return Reg{}, false
+	}
+	// The prologue: [sub sp] [stp x29, x30] then the saves of x19, x20, ...
+	entry := f.Blocks[0]
+	pairAt, lastSave, saveBase, saved := -1, -1, int64(-1), 0
+	for i, ins := range entry.Instrs {
+		a := ins.Asm
+		m, isMem := lastOperandMemory(a)
+		if !isMem || m.Base.Class != asm.ClassSP {
+			if i == 0 && a.Mnemonic == "sub" {
+				continue
+			}
+			break
+		}
+		regs := storedRegisters(a)
+		switch {
+		case a.Mnemonic == "stp" && len(regs) == 2 && regs[0] == (Reg{GPR, 29}) && regs[1] == (Reg{GPR, 30}):
+			pairAt = i
+		case (a.Mnemonic == "stp" || a.Mnemonic == "str") && len(regs) >= 1 && regs[0] == (Reg{GPR, 19 + saved}):
+			if saveBase < 0 {
+				saveBase = m.Offset - int64(8*saved)
+			}
+			saved += len(regs)
+			lastSave = i
+		default:
+			if pairAt >= 0 {
+				break
+			}
+			return Reg{}, false
+		}
+		if lastSave >= 0 && i > lastSave && pairAt >= 0 && i > pairAt {
+			break
+		}
+	}
+	if pairAt < 0 {
+		return Reg{}, false // no calls, or another prologue shape
+	}
+	if saveBase < 0 {
+		pair, _ := lastOperandMemory(entry.Instrs[pairAt].Asm)
+		saveBase = pair.Offset + 16
+	}
+	if saved >= 10 {
+		return Reg{}, false
+	}
+	r := Reg{GPR, 19 + saved}
+	if written[r] {
+		return Reg{}, false
+	}
+	slotOff := saveBase + int64(8*saved)
+	if slotOff < 0 || slotOff+8 > frame {
+		return Reg{}, false
+	}
+	for _, e := range escaped {
+		if slotOff+8 > e {
+			return Reg{}, false
+		}
+	}
+	for _, b := range blocked {
+		if slotOff < b[1] && b[0] < slotOff+8 {
+			return Reg{}, false
+		}
+	}
+	for _, a := range accesses {
+		if slotOff < a.offset+int64(a.bits/8) && a.offset < slotOff+8 {
+			return Reg{}, false
+		}
+	}
+	for _, other := range regWebs {
+		if other.Reg == r && overlaps(other, w) {
+			return Reg{}, false
+		}
+	}
+	for _, other := range taken[r] {
+		if overlaps(other, w) {
+			return Reg{}, false
+		}
+	}
+	// The single epilogue: the block of the one ret, restoring the pair
+	// before the sp adjustment.
+	var epilogue *Block
+	rets := 0
+	for _, ins := range f.Instrs {
+		if ins.Ret {
+			rets++
+			epilogue = ins.Block
+		}
+	}
+	if rets != 1 {
+		return Reg{}, false
+	}
+	restoreAt := -1
+	for i, ins := range epilogue.Instrs {
+		regs := storedRegisters(ins.Asm)
+		if ins.Asm.Mnemonic == "ldp" && len(regs) == 2 && regs[0] == (Reg{GPR, 29}) && regs[1] == (Reg{GPR, 30}) {
+			restoreAt = i
+		}
+	}
+	if restoreAt < 0 {
+		return Reg{}, false
+	}
+	x := func(n int) asm.Register {
+		return asm.Register{Text: "x" + itoa(n), Class: asm.ClassX, Num: n, Lane: -1}
+	}
+	slotMem := asm.Memory{Base: asm.Register{Text: "sp", Class: asm.ClassSP, Num: -1, Lane: -1}, Offset: slotOff}
+	after := lastSave
+	if after < 0 {
+		after = pairAt
+	}
+	line := entry.Instrs[after].Asm.Line
+	save := &Instr{Asm: asm.Instruction{Mnemonic: "str", Operands: []asm.Operand{x(r.Num), slotMem}, Line: line}, Block: entry}
+	entry.Instrs = append(entry.Instrs[:after+1], append([]*Instr{save}, entry.Instrs[after+1:]...)...)
+	restore := &Instr{Asm: asm.Instruction{Mnemonic: "ldr", Operands: []asm.Operand{x(r.Num), slotMem}, Line: epilogue.Instrs[restoreAt].Asm.Line}, Block: epilogue}
+	epilogue.Instrs = append(epilogue.Instrs[:restoreAt], append([]*Instr{restore}, epilogue.Instrs[restoreAt:]...)...)
+	return r, true
+}
+
+// lastOperandMemory reads a memory operand in the last position.
+func lastOperandMemory(a asm.Instruction) (asm.Memory, bool) {
+	if len(a.Operands) == 0 {
+		return asm.Memory{}, false
+	}
+	m, ok := a.Operands[len(a.Operands)-1].(asm.Memory)
+	return m, ok
+}
+
+// storedRegisters lists the general registers a store or load names
+// before its memory operand.
+func storedRegisters(a asm.Instruction) []Reg {
+	var out []Reg
+	for i, op := range a.Operands {
+		if i == len(a.Operands)-1 {
+			break
+		}
+		reg, ok := op.(asm.Register)
+		if !ok || (reg.Class != asm.ClassX && reg.Class != asm.ClassW) {
+			return nil
+		}
+		out = append(out, Reg{GPR, reg.Num})
+	}
+	return out
+}
+
+// isSaveSlot reports a slot the prologue saves a callee-saved register
+// into: its store sits in the entry block and stores a callee-saved
+// register. Moving the save into another callee-saved register would only
+// move the obligation.
+func isSaveSlot(f *Function, w *Web) bool {
+	for _, d := range w.Defs {
+		if d.Instr == nil || d.Instr.Block != f.Blocks[0] {
+			continue
+		}
+		reg := regAt(d.Instr.Asm, d.Access)
+		if r, _, _, ok, err := regOf(reg); err == nil && ok && calleeSaved(r) {
+			return true
+		}
+	}
+	return false
+}
