@@ -182,4 +182,5 @@ import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.RVWMO
 import Oak.Reduction
+import Oak.SpanForward
 import Oak.ArrayValues

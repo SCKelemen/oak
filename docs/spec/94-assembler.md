@@ -2773,6 +2773,11 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The fifty-fifth increment is the register budget (§9 "The register
+budget"): a single-use span local is forwarded into its call, and the
+loop invariants' reserve yields to a declaration that would otherwise
+refuse the body (`Oak.SpanForward.let_forward`).
+
 The forty-seventh increment is vector operands in place (§9,
 `nativegen/simd.go` `vecOperand`). A vector variable in its own register
 is read where it lies by every simd operation; the operation writes a
@@ -4018,6 +4023,31 @@ records; that summary is the next step for the SHA-256 path, whose
 `sha256_rounds`, `sha256_compress`, `sha256_block`, `sha256_compress_view`,
 `sha256_init`, `sha256_update`, and `sha256_final` this increment moves
 from the C backend to the native lane.
+
+**The register budget (2026-09-16, AArch64 lane; `nativegen/span_forward.go`,
+`spec/lean/Oak/SpanForward.lean`).** Two rules against the callee-saved
+file running out, which is what left the SHA-256 chain a call after the
+aggregate helpers could have folded it (RESULTS.md "Aggregate helpers").
+A span or view local used exactly once, in the statement that follows its
+declaration, as an argument of a call to a program function — `hs: [*]u32
+= span(&state); sha256_block_hw(hs, block, k)`, `w: []u8 = subslice(a, i,
+u32(4)); total = total + sum4(w)` — is forwarded: the declaration goes and
+the argument is the span expression itself, which the call evaluates into
+a fresh pair for the call alone (`forwardSingleUseSpans`), so no
+callee-saved pair is taken for the local's whole scope (a span local's
+pair is never returned to the pool). The expression is pure — an address,
+a length, a subslice's guard — so `let x = a in f x` is `f a`
+(`Oak.SpanForward.let_forward`); a lowering the rewrite makes unsupported
+falls back to the body before it, and the verifier reads the body as
+written. And the callee-saved registers the second lowering pass reserves
+for the loop invariants (up to four) yield to a declaration that would
+otherwise refuse the body or fall to a slot: a span local's pair, an
+overflowing scratch, a scalar's home take them back (`reclaimReserve`,
+`takeCalleePair`), and the pass hoists into what remains.
+`TestE2ENativeRegisterBudget` pins a loop with three span parameters, a
+real call, and a span local that refused as "the callee-saved registers
+are exhausted" and now lowers natively; the C backend agrees. The RV64
+lane keeps its own pools.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

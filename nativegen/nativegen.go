@@ -1363,6 +1363,10 @@ type generator struct {
 	flagsTo    map[string]string
 	liveFlags  string
 	reused     int
+	// licmReserve: callee-saved registers held for the loop-invariant pass,
+	// handed back to declarations that would otherwise refuse the body
+	// (reclaimReserve).
+	licmReserve []int
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// elided counts the guards left out under elide (reported).
@@ -1658,6 +1662,19 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// being its own theorem. A lowering the rewrite makes unsupported falls
 	// back to the body before it.
 	inlined := inlineBody(fn, functions)
+	// Single-use span locals fold into the call that uses them
+	// (nativegen/span_forward.go): the body needs no callee-saved pair for
+	// them. A lowering the rewrite makes unsupported falls back to the
+	// body before it.
+	if forwarded, changed := forwardSingleUseSpans(cloneNode(inlined).(ast.Expression)); changed {
+		expanded := *fn
+		expanded.Body = forwarded
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
+	}
 	if unrolled, changed := unrollReductions(fn, inlined); changed && unroll {
 		expanded := *fn
 		expanded.Body = unrolled
@@ -1963,9 +1980,8 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Callee-saved registers reserved for the loop-invariant pass, saved
 	// and restored with the variables' (the count the first lowering
 	// wanted; the epilogue and the prologue read usedCallee after this).
-	var licmReserve []int
 	for k := 0; k < reserve && g.usedCallee < calleeHigh-calleeLow+1; k++ {
-		licmReserve = append(licmReserve, calleeLow+g.usedCallee)
+		g.licmReserve = append(g.licmReserve, calleeLow+g.usedCallee)
 		g.usedCallee++
 	}
 	body, err := g.lowerBody(fn.Body)
@@ -2119,7 +2135,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
 		var hoistedInto []int
 		var moved int
-		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, licmReserve, g.globals, g.trap)
+		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, g.licmReserve, g.globals, g.trap)
 		hoistedLoops[out] = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
@@ -3417,6 +3433,9 @@ func (g *generator) overflowScratch() (int, bool) {
 		return r, true
 	}
 	if g.usedCallee >= calleeHigh-calleeLow+1 {
+		if r, ok := g.reclaimReserve(); ok {
+			return r, true
+		}
 		return 0, false
 	}
 	if g.saveArea == 0 {
@@ -3729,11 +3748,10 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 	if s.Value == nil {
 		return unsupported("the span local %s without an initializer", s.Name.Value)
 	}
-	if g.usedCallee+2 > calleeHigh-calleeLow+1 {
+	baseReg, lenReg, ok := g.takeCalleePair()
+	if !ok {
 		return unsupported("the span local %s: the callee-saved registers are exhausted", s.Name.Value)
 	}
-	baseReg, lenReg := calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
-	g.usedCallee += 2
 	value, owned, err := g.spanValue(s.Value, &target, baseReg, lenReg)
 	if err != nil {
 		return err
@@ -4177,6 +4195,10 @@ func (g *generator) declare(name string, s scalar) int64 {
 		case g.usedCallee < calleeHigh-calleeLow+1:
 			r = calleeLow + g.usedCallee
 			g.usedCallee++
+		case len(g.licmReserve) > 0:
+			// The loop-invariant pass's reserve yields to a variable that
+			// would otherwise take a caller-saved home or a slot.
+			r, _ = g.reclaimReserve()
 		case len(g.callerHomes) > 0:
 			r = g.callerHomes[0]
 			g.callerHomes = g.callerHomes[1:]
@@ -4337,6 +4359,42 @@ func (g *generator) liveHomes() map[int]bool {
 		}
 	}
 	return homes
+}
+
+// reclaimReserve hands back the last callee-saved register reserved for
+// the loop-invariant pass (docs/spec/94-assembler.md §9 "The register
+// budget"): a declaration that would otherwise refuse the body, or fall to
+// a slot, takes it, and the pass hoists into what remains. The register
+// is already counted in usedCallee, so the prologue saves it either way.
+func (g *generator) reclaimReserve() (int, bool) {
+	if len(g.licmReserve) == 0 {
+		return 0, false
+	}
+	r := g.licmReserve[len(g.licmReserve)-1]
+	g.licmReserve = g.licmReserve[:len(g.licmReserve)-1]
+	return r, true
+}
+
+// takeCalleePair claims two callee-saved registers for a span local's
+// base and length: the unclaimed ones, then the invariant pass's reserve.
+func (g *generator) takeCalleePair() (base, length int, ok bool) {
+	if g.usedCallee+2 <= calleeHigh-calleeLow+1 {
+		base, length = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
+		g.usedCallee += 2
+		return base, length, true
+	}
+	if g.usedCallee+1 <= calleeHigh-calleeLow+1 && len(g.licmReserve) >= 1 {
+		base = calleeLow + g.usedCallee
+		g.usedCallee++
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	if len(g.licmReserve) >= 2 {
+		base, _ = g.reclaimReserve()
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	return 0, 0, false
 }
 
 // declareAt binds a scalar variable to a given register: a leaf's
