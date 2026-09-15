@@ -1,0 +1,170 @@
+import(std)
+import(testing)
+
+// Security resource proof-of-concepts.
+//
+// These are semantic plumbing experiments, not cryptographic primitives. A
+// SecretHandle contains only an opaque numeric handle in this POC: key bytes
+// are deliberately not part of its public representation.
+
+IdentityKeyKind: type = struct { marker: u8 }
+EphemeralKeyKind: type = struct { marker: u8 }
+ChainKeyKind: type = struct { marker: u8 }
+MessageKeyKind: type = struct { marker: u8 }
+SigningKeyKind: type = struct { marker: u8 }
+
+SecretHandle[K]: type = struct {
+  id: u32
+}
+
+Nonce: type = struct {
+  value: u64
+}
+
+Signature: type = struct {
+  tag: u64
+}
+
+// --------------------------------------------------------------------------
+// 1. One-use secret authority as static typestate.
+//
+// A protocol without `resource` projects a linear state-indexed handle. The
+// `use` transition consumes OneUseSecret[OneUseSecretAvailable] and returns a
+// OneUseSecret[OneUseSecretSpent]. Reusing the old handle is therefore a
+// resource-flow error rather than a run-time check.
+// --------------------------------------------------------------------------
+
+OneUseSecret: protocol = {
+  initial Available
+  use: Available -> Spent
+}
+
+TestOneUseSecretTypestate: (): () {
+  available: OneUseSecret[OneUseSecretAvailable] = one_use_secret_handle()
+  spent: OneUseSecret[OneUseSecretSpent] = one_use_secret_use(available)
+  // The value is intentionally only kept to establish the target typestate.
+  test_check(spent.at_ == spent.at_, u32(7240))
+}
+
+// --------------------------------------------------------------------------
+// 2. Ratchet chain: derive exactly one message-key authority at a time.
+//
+// This protocol deliberately models lifecycle only. The KDF itself is an
+// idealized boundary; a future crypto verifier must establish its security.
+// --------------------------------------------------------------------------
+
+RatchetKey: protocol = {
+  data {
+    generation: u16,
+    message_live: Bool
+  }
+  init {
+    generation: u16(0),
+    message_live: false
+  }
+  initial ChainReady
+
+  derive: ChainReady -> MessageReady when !data.message_live && data.generation < u16(65535) then {
+    data.generation = data.generation + u16(1)
+    data.message_live = true
+  }
+  consume: MessageReady -> ChainReady when data.message_live then {
+    data.message_live = false
+  }
+  close: ChainReady -> Destroyed then {
+    data.message_live = false
+  }
+}
+
+ratchet_key_live_iff_message_state: theorem (s: RatchetKeyState, d: RatchetKeyData) {
+  (s == .MessageReady) == d.message_live
+}
+
+ratchet_key_destroyed_has_no_message: theorem (s: RatchetKeyState, d: RatchetKeyData) {
+  !(s == .Destroyed) || !d.message_live
+}
+
+TestRatchetKeyLifecycle: (): () {
+  store: [1]RatchetKeyData
+  data: [*]RatchetKeyData = span(&store)
+  data[0] = ratchet_key_initial_data()
+  s: RatchetKeyState = ratchet_key_initial()
+
+  s = ratchet_key_next(s, data, .Derive)
+  test_check(s == .MessageReady && data[0].message_live, u32(7241))
+  test_check(data[0].generation == u16(1), u32(7242))
+  s = ratchet_key_next(s, data, .Consume)
+  test_check(s == .ChainReady && !data[0].message_live, u32(7243))
+}
+
+// --------------------------------------------------------------------------
+// 3. Challenge-bound authorization evidence.
+//
+// The challenge is a value, not a Bool. Authorization records the challenge
+// generation and can only be consumed once before returning to Locked.
+// --------------------------------------------------------------------------
+
+Authorization: protocol = {
+  data {
+    challenge: u16,
+    authenticated: Bool,
+    bound: Bool,
+    authorized: Bool
+  }
+  init {
+    challenge: u16(0),
+    authenticated: false,
+    bound: false,
+    authorized: false
+  }
+  initial Locked
+
+  authenticate(ok: Bool): Locked -> Authenticated when ok then {
+    data.authenticated = true
+  }
+  bind(challenge: u16): Authenticated -> Bound when data.authenticated then {
+    data.challenge = challenge
+    data.bound = true
+  }
+  authorize: Bound -> Authorized when data.authenticated && data.bound then {
+    data.authorized = true
+  }
+  consume: Authorized -> Locked when data.authorized then {
+    data.authenticated = false
+    data.bound = false
+    data.authorized = false
+  }
+  expire: Authenticated -> Locked then {
+    data.authenticated = false
+    data.bound = false
+    data.authorized = false
+  }
+  expire: Bound -> Locked then {
+    data.authenticated = false
+    data.bound = false
+    data.authorized = false
+  }
+}
+
+authorization_requires_bound_auth: theorem (s: AuthorizationState, d: AuthorizationData) {
+  !(s == .Authorized) || (d.authenticated && d.bound && d.authorized)
+}
+
+authorization_locked_has_no_live_evidence: theorem (s: AuthorizationState, d: AuthorizationData) {
+  !(s == .Locked) || !d.authorized
+}
+
+TestChallengeBoundAuthorization: (): () {
+  store: [1]AuthorizationData
+  data: [*]AuthorizationData = span(&store)
+  data[0] = authorization_initial_data()
+  s: AuthorizationState = authorization_initial()
+
+  s = authorization_next(s, data, .Authenticate(true))
+  s = authorization_next(s, data, .Bind(u16(77)))
+  test_check(data[0].challenge == u16(77) && data[0].bound, u32(7244))
+  s = authorization_next(s, data, .Authorize)
+  test_check(s == .Authorized && data[0].authorized, u32(7245))
+  s = authorization_next(s, data, .Consume)
+  test_check(s == .Locked && !data[0].authorized, u32(7246))
+}
