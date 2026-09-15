@@ -4671,15 +4671,10 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 				}
 				return lo.aggregateValue(whenFalse, typ)
 			}
-			restore := lo.underPath(cond)
-			t, reason, ok := lo.aggregateValue(whenTrue, typ)
-			restore()
-			if !ok {
-				return nil, reason, false
-			}
-			restore = lo.underPath(notTerm(cond))
-			f, reason, ok := lo.aggregateValue(whenFalse, typ)
-			restore()
+			var t, f *oakValue
+			reason, ok = lo.forkLocals(cond,
+				func() (reason string, ok bool) { t, reason, ok = lo.aggregateValue(whenTrue, typ); return },
+				func() (reason string, ok bool) { f, reason, ok = lo.aggregateValue(whenFalse, typ); return })
 			if !ok {
 				return nil, reason, false
 			}
@@ -5551,16 +5546,44 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 // condition, merged leaf-wise into the fallback.
 func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Expression) (*oakValue, string, bool)) (*oakValue, string, bool) {
 	values := map[int]*oakValue{}
+	// Every arm runs on a copy of the locals before the match, and the
+	// locals after are the arms' outcomes selected by the arms' conditions
+	// (as lowerMatchStatement merges them): an arm's block may assign.
+	before := lo.snapshotLocals()
+	outcomes := map[int]map[string]localSnapshot{}
 	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression) (string, bool) {
+		lo.restoreLocals(before)
 		value, reason, ok := body(armBody)
 		if !ok {
 			return reason, false
 		}
 		values[index] = value
+		outcomes[index] = lo.snapshotLocals()
 		return "", true
 	})
 	if !ok {
 		return nil, reason, false
+	}
+	lo.restoreLocals(before)
+	for name, local := range lo.locals {
+		if _, existed := before[name]; !existed {
+			continue
+		}
+		if local.agg != nil {
+			merged := outcomes[fallback][name].agg
+			for i := len(cases) - 1; i >= 0; i-- {
+				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
+			}
+			local.agg = merged
+			continue
+		}
+		merged := outcomes[fallback][name].value
+		for i := len(cases) - 1; i >= 0; i-- {
+			if v := outcomes[cases[i].index][name].value; v != merged {
+				merged = iteTerm(cases[i].cond, v, merged)
+			}
+		}
+		local.value = merged
 	}
 	result := values[fallback]
 	for i := len(cases) - 1; i >= 0; i-- {
@@ -6143,9 +6166,22 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 		}
 		return lo.lowerArm(whenFalse)
 	}
+	return lo.forkLocals(cond,
+		func() (string, bool) { return lo.lowerArm(whenTrue) },
+		func() (string, bool) { return lo.lowerArm(whenFalse) })
+}
+
+// forkLocals runs the two arms of a Bool conditional from the same locals
+// — the true arm under cond, the false arm under its negation, each on a
+// snapshot of the locals before — and leaves every local (a package cell
+// among them) either arm assigned as a select on the condition. The
+// statement conditional and the value-position conditionals (a scalar, an
+// aggregate) share it: an arm's block may assign before its value, and an
+// assignment that escaped the merge would stand unconditionally.
+func (lo *oakLowering) forkLocals(cond *term, whenTrue, whenFalse func() (string, bool)) (string, bool) {
 	before := lo.snapshotLocals()
 	restore := lo.underPath(cond)
-	reason, ok = lo.lowerArm(whenTrue)
+	reason, ok := whenTrue()
 	restore()
 	if !ok {
 		return reason, false
@@ -6153,11 +6189,18 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 	afterTrue := lo.snapshotLocals()
 	lo.restoreLocals(before)
 	restore = lo.underPath(notTerm(cond))
-	reason, ok = lo.lowerArm(whenFalse)
+	reason, ok = whenFalse()
 	restore()
 	if !ok {
 		return reason, false
 	}
+	lo.mergeLocals(cond, afterTrue)
+	return "", true
+}
+
+// mergeLocals selects, for every local both arms know, the true arm's
+// outcome (afterTrue) over the false arm's (the locals as they stand).
+func (lo *oakLowering) mergeLocals(cond *term, afterTrue map[string]localSnapshot) {
 	for name, local := range lo.locals {
 		snap, seen := afterTrue[name]
 		if !seen {
@@ -6176,7 +6219,6 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 			local.value = iteTerm(truncate(cond, 1), snap.value, local.value)
 		}
 	}
-	return "", true
 }
 
 // lowerMatchStatement executes a statement-position match: every arm runs
@@ -7422,16 +7464,14 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return lo.lower(whenFalse, width)
 		}
-		restore := lo.underPath(cond)
-		left, reason, okL := lo.lower(whenTrue, width)
-		restore()
-		if !okL {
-			return nil, reason, false
-		}
-		restore = lo.underPath(notTerm(cond))
-		right, reason, okR := lo.lower(whenFalse, width)
-		restore()
-		if !okR {
+		// Each arm on the locals before it, the locals after selected on
+		// the condition (forkLocals): an arm's block may assign a local or
+		// a package cell before its value.
+		var left, right *term
+		reason, ok = lo.forkLocals(cond,
+			func() (reason string, ok bool) { left, reason, ok = lo.lower(whenTrue, width); return },
+			func() (reason string, ok bool) { right, reason, ok = lo.lower(whenFalse, width); return })
+		if !ok {
 			return nil, reason, false
 		}
 		return iteTerm(cond, left, right), "", true
@@ -7975,13 +8015,8 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
-				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-			}
-			// The package cells and span memories are compared under the loop
-			// coupling for one call-derived loop; summarizeLoop has rejected cell
-			// writes in its iteration. Native and multiple-loop cell proofs remain
-			// outside the subset.
+			// The span memories and the package cells are the comparison,
+			// under the loop coupling.
 			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
 		}
 		if verdict, refuted := trapClaim(); refuted {
@@ -8000,9 +8035,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-		}
+
 		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 		verdict.Callees = exec.summarized
 		return verdict
@@ -9013,6 +9046,19 @@ func (lo *oakLowering) recordSpanField(e *ast.IndexExpression) (t *term, width i
 	}
 	entry := recordFieldTerm(place.span, place.index, place.leafName, place.width, lo.concrete != nil)
 	return memoryAt(lo.writes[place.memory], place.index, entry), place.width, true, "", true
+}
+
+// memoryContract is the element contract of a memory a body stores
+// through: a span parameter's own, or — a span of records' leaf memory
+// (`s.pages`) — the leaf's width (docs/spec/94-assembler.md §9).
+func (lo *oakLowering) memoryContract(memory string) (spanContract, bool) {
+	if contract, isSpan := lo.spans[memory]; isSpan {
+		return contract, true
+	}
+	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+		return spanContract{elemWidth: width}, true
+	}
+	return spanContract{}, false
 }
 
 // recordLeafWidth is the width of a record span's leaf named by a
