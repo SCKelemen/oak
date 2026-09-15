@@ -815,12 +815,18 @@ The existing native optimizations should be migrated into the candidate interfac
 ### Machine
 
 - addressing-mode selection;
-- multiply-add/select forms — **in progress (2026-09-16, the oak session
-  at ~/oakmcu/oak)**: `a + b * c` lowers to `mul` then `add` where
-  `madd` is one instruction, `a - b * c` to `mul` then `sub` where
-  `msub` is one, and `0 - b * c` where `mneg` is one; the verifier
-  already models all three. Integers only — `fmla` is one rounding where
-  Oak's `a + b * c` is two (`-ffp-contract=off`);
+- multiply-add forms — **landed 2026-09-16** (`multiply-add`,
+  `nativegen/multiply_add.go`): `a + b * c` as `madd`, `a - b * c` as
+  `msub`, `T(0) - b * c` as `mneg`, the verifier needing no extension.
+  Integers only — `fmla` is one rounding where Oak's expression is two
+  (`-ffp-contract=off`) — and a constant operand is left to the strength
+  reduction's shift. Measured neutral on an integer dot product
+  (seven instructions an element become six, 0.39–0.46 ns either way): the third increment in a row
+  whose instruction saving an M4's spare issue slots absorb, which is
+  itself worth recording — the static cost model counts instructions,
+  and on this core that is not what the clock counts. A port-pressure or
+  dependency-chain term (item 26) is what would tell these apart;
+- select forms;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent

@@ -156,11 +156,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 11 {
+	if got := len(registry.Transforms()); got != 12 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, VectorReductions: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.VectorReductions || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true})
+	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.VectorReductions || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -173,7 +173,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.VectorReductions || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.MultiplyAdd || lane.VectorReductions || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
