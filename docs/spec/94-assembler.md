@@ -5147,3 +5147,28 @@ body's verdict. An earlier reading of this change credited it with 34
 bodies moving from trusted to proven; those came from the verifier work
 that landed upstream between the two snapshots compared, not from this.
 
+### 9.af A leaf's vector locals in the argument registers (2026-09-15)
+
+The third increment of the optimization system (`90-backend.md` §16),
+read off the flattened UTF-8 validator (`benchmarks/native/utf8_valid.oak`):
+its sixty-four-byte loop stored and reloaded five vector temporaries of
+the expanded `check_blocks` on every step — forty q-register frame
+accesses an iteration — because declaration order had spent the leaf's
+twenty vector homes (v8–v15 and the twelve scratch registers past
+`vecTempReserve`) on the locals declared before them. A leaf now homes
+its vector locals in the argument registers no parameter occupies as
+well, v1–v7 past the vector and float parameters, which arrive in v0
+upward — the scalar leaf homes in x2–x7 (§9, the twenty-second
+increment) for the vector file; v0 is left for the result. Nothing is
+saved: a leaf makes no call. A home released at a local's last use
+returns to its pool. The registers taken are declared as clobbers and
+`Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+
+The validator's loop goes from forty q-register frame accesses to none,
+its whole body from forty-one to one, and both bodies still prove (the
+three data-dependent loops coupled inductively as before). The fixture
+(`compiler/e2e_native_vector_homes_test.go`, `wide_leaf`) holds
+twenty-four vector locals live at once and reports the ones the argument
+registers took. The timing row waits for a quiet host
+(`benchmarks/native/README.md`); the instruction count is the result.
+

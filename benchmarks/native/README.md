@@ -148,6 +148,17 @@ match scrutinee compared from its own register, `bench_dispatch` 58.
 Verdicts unchanged (`dispatch` proven, `search`
 witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
 
+**A leaf's vector locals in the argument registers (2026-09-15,
+`docs/spec/94-assembler.md` §9.ae).** The flattened `valid` and
+`valid_with` spilled five vector temporaries of the expanded
+`check_blocks` to frame slots: forty `str q`/`ldr q` per sixty-four-byte
+step of the main loop, forty-one in the body. Declaration order had spent
+the leaf's twenty vector homes before the temporaries were declared. With
+v1–v7 as homes too the loop has no q-register frame access and the body
+one; both bodies prove as before. The timing row is not updated here (the
+host's load average stayed above 90 all day); the protocol is `run.sh`,
+best of five, against the 0.28 ns/byte row below.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

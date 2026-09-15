@@ -157,6 +157,16 @@ reads and result retargeting the scalar path has; with them and literal
 splats as `movi`, the body is 330 lines from 611 and the validator 1.2×
 the C backend from 1.65× in one alternated run. The five spilled locals
 are the allocator's case above.
+3. **A leaf's vector locals in the argument registers** (landed
+   2026-09-15, `94-assembler.md` §9.af): v1–v7 past the vector
+   parameters as homes, the scalar leaf scheme for the vector file. The
+   validator's loop goes from forty q-register frame accesses to none,
+   its body from forty-one to one, both bodies still proven. The
+   liveness allocator proper — registers reused across disjoint live
+   ranges beyond the last-use release, spills chosen by use count — is
+   still ahead for bodies wider than twenty-seven vector locals; the
+   validator no longer needs it. Target: UTF-8 (5×) measured on a quiet
+   host, then inlining pays instead of hurting.
 3. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;

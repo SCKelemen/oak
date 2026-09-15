@@ -68,6 +68,40 @@ many: (b: []u8, n: u32) -> u32 {
   simd.movemask_u8x16(simd.eq_u8x16(simd.or_u8x16(s, t), simd.splat_u8x16(u8(7)))) + k
 }
 
+// A leaf with twenty-four vector locals live at once: past the eight
+// callee-saved and twelve scratch homes, the argument registers v1–v7 no
+// parameter occupies take the rest (docs/spec/94-assembler.md §9.ad).
+wide_leaf: (b: []u8) -> u32 {
+  a0: simd.U8x16 = simd.load_u8x16(b, u32(0))
+  a1: simd.U8x16 = simd.load_u8x16(b, u32(1))
+  a2: simd.U8x16 = simd.load_u8x16(b, u32(2))
+  a3: simd.U8x16 = simd.load_u8x16(b, u32(3))
+  a4: simd.U8x16 = simd.load_u8x16(b, u32(4))
+  a5: simd.U8x16 = simd.load_u8x16(b, u32(5))
+  a6: simd.U8x16 = simd.load_u8x16(b, u32(6))
+  a7: simd.U8x16 = simd.load_u8x16(b, u32(7))
+  a8: simd.U8x16 = simd.load_u8x16(b, u32(8))
+  a9: simd.U8x16 = simd.load_u8x16(b, u32(9))
+  a10: simd.U8x16 = simd.load_u8x16(b, u32(10))
+  a11: simd.U8x16 = simd.load_u8x16(b, u32(11))
+  a12: simd.U8x16 = simd.load_u8x16(b, u32(12))
+  a13: simd.U8x16 = simd.load_u8x16(b, u32(13))
+  a14: simd.U8x16 = simd.load_u8x16(b, u32(14))
+  a15: simd.U8x16 = simd.load_u8x16(b, u32(15))
+  a16: simd.U8x16 = simd.load_u8x16(b, u32(16))
+  a17: simd.U8x16 = simd.splat_u8x16(u8(1))
+  a18: simd.U8x16 = simd.splat_u8x16(u8(2))
+  a19: simd.U8x16 = simd.splat_u8x16(u8(4))
+  a20: simd.U8x16 = simd.splat_u8x16(u8(8))
+  a21: simd.U8x16 = simd.splat_u8x16(u8(16))
+  a22: simd.U8x16 = simd.splat_u8x16(u8(32))
+  a23: simd.U8x16 = simd.splat_u8x16(u8(64))
+  s: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(simd.or_u8x16(a0, a1), simd.or_u8x16(a2, a3)), simd.or_u8x16(simd.or_u8x16(a4, a5), simd.or_u8x16(a6, a7)))
+  t: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(simd.or_u8x16(a8, a9), simd.or_u8x16(a10, a11)), simd.or_u8x16(simd.or_u8x16(a12, a13), simd.or_u8x16(a14, a15)))
+  u: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(simd.or_u8x16(a16, a17), simd.or_u8x16(a18, a19)), simd.or_u8x16(simd.or_u8x16(a20, a21), simd.or_u8x16(a22, a23)))
+  simd.movemask_u8x16(simd.eq_u8x16(simd.or_u8x16(simd.or_u8x16(s, t), u), simd.splat_u8x16(u8(127))))
+}
+
 main: (): i32 {
   buf: [32]u8
   i: u32 = u32(0)
@@ -81,6 +115,7 @@ main: (): i32 {
   assert(carried(b, u32(4)) == u32(1))
   assert(carried(b, u32(0)) == u32(0))
   assert(many(b, u32(0)) == u32(0xFFFF) + u32(1))
+  assert(wide_leaf(b) == u32(0xFFFF))
   42
 }
 `
@@ -98,7 +133,7 @@ func TestE2ENativeVectorHomes(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native vector homes: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, fn := range []string{"live_across", "dead_before", "carried", "many"} {
+	for _, fn := range []string{"live_across", "dead_before", "carried", "many", "wide_leaf"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
@@ -110,6 +145,9 @@ func TestE2ENativeVectorHomes(t *testing.T) {
 	}
 	if !strings.Contains(joined, "many: ") || !strings.Contains(joined, "vector local(s) kept in registers across calls") {
 		t.Errorf("many must keep some vector locals in registers and the rest in slots; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "wide_leaf: ") || !strings.Contains(joined, "vector local(s) homed in the argument registers") {
+		t.Errorf("wide_leaf must home vector locals in the argument registers; diagnostics:\n%s", joined)
 	}
 	if strings.Contains(joined, "keeps its vector slots") {
 		t.Errorf("no body may fall back to slots; diagnostics:\n%s", joined)

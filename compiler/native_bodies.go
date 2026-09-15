@@ -208,7 +208,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			findings = asm.Check(asmFn, source, symbols)
 		}
-		if len(findings) != 0 && lane.VectorHomes && nativegen.VectorHomes(asmFn) > 0 {
+		if len(findings) != 0 && lane.VectorHomes && nativegen.VectorHomes(asmFn)+nativegen.LeafVectorHomes(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector slots (the checker did not admit the vector homes: %s)", fn.Name.Value, findings[0])))
 			lane.VectorHomes = false
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -286,7 +286,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				}
 			}
 		}
-		if verdict.Kind != asm.VerdictProven && lane.VectorHomes && nativegen.VectorHomes(asmFn) > 0 {
+		if verdict.Kind != asm.VerdictProven && lane.VectorHomes && nativegen.VectorHomes(asmFn)+nativegen.LeafVectorHomes(asmFn) > 0 {
 			// The body with vector homes did not prove: the slot form is
 			// lowered and verified too, and kept when it proves.
 			slotLane := lane
@@ -316,6 +316,8 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 		} else if kept := nativegen.VectorHomes(asmFn); kept > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
+		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) homed in the argument registers", fn.Name.Value, homed)))
 		}
 		if verdict.Kind != asm.VerdictProven && lane.Strength && nativegen.Reduced(asmFn) > 0 {
 			// The reduced form did not prove: the plain arithmetic is
