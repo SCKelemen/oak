@@ -103,9 +103,40 @@ allocation restarts, so at worst every web keeps the lowering's coloring.
 on the vector-homes test bodies the verifier proves every reallocated
 form and the search selects it, two to seventeen copies fewer per body.
 
+Second increment: frame-slot promotion (`machine.Promote`), the inverse
+of spilling. A frame slot every access of which is a plain load or store
+of one width and class, that overlaps no other frame access, whose
+address is never taken, that lies within the declared frame, and whose
+every read a store reaches, joins the web machinery as a pseudo-register;
+its value moves into a register free over its live range (a saved
+callee-saved one when the range crosses a call, never v8–v15 for a wide
+vector), the store and the loads become copies, and reallocation
+coalesces them. The allocation pool also gains the caller-saved registers
+the body never wrote, for ranges that cross no call. On the vector-homes
+test bodies the general promotion now does what the hand-written
+`vector-homes` transform did and the search selects the cheaper of the
+two forms; the test asserts the outcome (the locals' slot traffic) rather
+than the mechanism, and the compiler reports promoted slots beside kept
+homes.
+
+Two rules this increment forced. A trusted verdict is the absence of a
+check, so when no candidate is judged (the verifier cannot yet follow a
+body — a call returning an array, say) a transform that ships only on a
+verdict (`opt.Gated`) is set aside for the cheapest form without it, at
+worst the plain lowering, whatever the cost model says; the lane's
+long-standing transforms ship on the checker's admission as they did
+before the search, and `reallocate` is gated until it earns that standing
+(`opt.Search`, docs/spec/90-backend.md §16 rule 3). The rule came
+from a real miscompile the tests caught: promotion had treated a `u32`
+element stored as a word inside a chunk the body reads whole as a slot of
+its own, and the two affected bodies were exactly the trusted ones. The
+overlap test now weighs every access at a neighboring offset at its own
+width, with a regression test.
+
 Not in this increment: spilling and live-range splitting (the pool never
-grows the frame), a lowering that emits virtual registers directly,
-scheduling, and the RV64 lane.
+grows the frame: a slot across a call moves only into a callee-saved
+register the prologue already saves), a lowering that emits virtual
+registers directly, scheduling, and the RV64 lane.
 
 Not yet: OptIR and the analyses (Phase C), OptIR and the analyses
 (Phase C), vector plans (Phase D), and the proof-obligation service of
