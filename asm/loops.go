@@ -4623,9 +4623,14 @@ type decisionKey struct {
 type decisionResult struct{ holds, decided bool }
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
-// loopDecisionNodeBudget bounds each of its implications.
+// loopDecisionNodeBudget bounds each of its implications. Three failed
+// diagrams end the proof: a coupling that fails three implications at
+// the per-decision budget is not about to succeed, and each such failure
+// is four orders of two million nodes raced — a minute or more — so the
+// eight of before let a body with sixty-four-way selects (`count_leading_
+// zeros`) spend seven minutes a candidate deciding nothing.
 const (
-	loopProofNodeBudget    = 8 * blastNodeBudget
+	loopProofNodeBudget    = 3 * blastNodeBudget
 	loopDecisionNodeBudget = blastNodeBudget
 )
 
