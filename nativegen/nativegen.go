@@ -1270,7 +1270,7 @@ type generator struct {
 	liveFlags  string
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
-	held map[int64]heldSlot
+	held map[heldKey]heldSlot
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// elided counts the guards left out under elide (reported).

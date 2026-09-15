@@ -3876,8 +3876,10 @@ body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
 
 **Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
-`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per frame slot
-addressed from `sp`, the integer register whose value the slot holds: a
+`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per memory word
+addressed as a constant offset from a base register — a frame slot from
+`sp`, a field of a record behind a register (an in-place parameter, the
+`x8` result area) — the integer register whose value the word holds: a
 store records the register it stored, a load the register it loaded into.
 A later load of the same slot at the same width, while that register has
 not been written since, is the register's value already — the load
@@ -3885,11 +3887,13 @@ becomes a `mov`, or nothing when its destination is that register. So
 the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
 str w9, [sp, #304]`, followed by the field's test, no longer reloads what
 it just stored (`sha256_update`'s `next.filled`). Every write of a
-register drops the slots it held; a label (paths meet), a call (the
-callee owns the scratch registers and may write frame memory through a
-span), a store through a base other than `sp` (frame memory reached by
-address), an `sp` move, a truncation of the emitted items, and the
-retargeting of an emitted instruction's destination drop them all. The
+register drops the words it held and the words addressed through it; a
+store drops the words under every other base (two bases may address the
+same memory) and the words its extent overlaps under its own; a label
+(paths meet), a call (the callee owns the scratch registers and may write
+memory through a span), an `sp` move, an indexed store, a truncation of
+the emitted items, and the retargeting of an emitted instruction's
+destination drop them all. The
 rule is the frame's write-then-read (`Oak.Forwarding.load_store`,
 `forward`), and a store elsewhere leaves a held slot in place
 (`held_survives`) — the generator forgets exactly the slots a store's
