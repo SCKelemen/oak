@@ -2763,6 +2763,27 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The forty-seventh increment is vector operands in place (§9,
+`nativegen/simd.go` `vecOperand`). A vector variable in its own register
+is read where it lies by every simd operation; the operation writes a
+fresh scratch when its first operand is a variable's home (its own
+scratch otherwise); the result retargets to the assigned variable's
+register as scalar results do (`retargetLast`, the arrangement `v16.16b`
+renamed to the home's), the operations that accumulate into or insert
+into their destination (`fmla`, a lane `mov`) copying a home first; and a
+literal splat is one `movi` (zero in any arrangement, a byte in the byte
+lanes) instead of `movz`, a mask and `dup` through a general register.
+Before it every vector read was an `orr` copy into a scratch and every
+result an `orr` copy back — the UTF-8 validator's `or(or(a, b), or(c, d))`
+was eight instructions for three, its body 611 lines with fifty copies
+and fifty frame-slot accesses; it is 330 lines with no copies and
+thirty-six slot accesses, every unit proven at the bit level, at
+0.12–0.14 ns per byte against the previous lowering's 0.17–0.18 and the
+C backend's 0.10–0.11 in one alternated run (`benchmarks/native/README.md`).
+The verifier's model of `eor vD, vN, vN` had read it as the vector move
+`orr vD, vN, vN` is; it is zero (`asm/verify_vector_test.go`), and the
+in-place `xor(v, v)` was the first body to spell it.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3851,7 +3872,7 @@ The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
 of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
-did not reach; the C backend under clang runs it in five.
+did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
 
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares
@@ -5031,6 +5052,50 @@ peephole and a liveness allocator, with def-use chains computed on demand).
 A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
+
+### 9.ad Vector homes across calls (2026-09-15)
+
+The second increment of the optimization system (`90-backend.md` §16).
+A function that makes calls keeps its vector locals in the caller-saved
+vector registers v16–v31 rather than in sixteen-byte frame slots reloaded
+at every use (`Lane.VectorHomes`). The pool is what the deepest
+expression (`vecTempReserve`) and the widest call's vector and float
+arguments leave of the sixteen; a local takes the next home, and a home
+released at its last use returns to the pool. A home is saved before a
+call and reloaded after it only when its variable is live after the call
+(`callerHomesLive`, the liveness pre-pass of the scalar homes), as a
+whole q register in a sixteen-aligned spill slot; a home dead after the
+call costs nothing. Past the pool, locals take slots as before. Scalar
+locals already lived in x19–x28 across calls; leaves keep their vector
+locals in v8–v15 and the scratch registers, unchanged.
+
+Two seams learned the shape. The seam checker forgets every vector
+register but the low halves of v8–v15 at a `bl` — it forgot v0–v7 alone
+before, so a value read from v16–v31 after a call without a reload went
+unrefused, a gap the increment closes whether or not homes are on. The
+verifier models a whole q-register store as its two sixty-four-bit
+halves; a reload gave the halves back as a two-lane value, and a
+sixteen-lane vector saved around a call lost its lane structure to the
+proof, exceeding the diagram budget. The low half's frame slot now
+remembers the vector value stored and the term written to the high half,
+and a whole reload returns the value lane for lane while both halves
+still stand — sound because the halves are the value's, and exact.
+
+The compiler reports `N vector local(s) kept in registers across calls`
+when the body proves; a body the checker refuses is lowered again with
+slots (`keeps its vector slots`); a body that proves less than the slot
+form keeps the slot form, and one where neither form proves keeps the
+homes and says so (`compiler/native_bodies.go`). Read off the fixture
+(`compiler/e2e_native_vector_homes_test.go`): a vector dead before its
+function's call goes from one store and one load to none; a loop-carried
+vector across a call from three and three to two and two; fourteen
+locals across a call from sixteen and sixteen to fifteen and fifteen,
+twelve of them in homes; a vector used once after a call is one store
+and one load either way. The kernel package has no calling vector body
+left — the helper expansion (§9.y) flattens them — so the increment moves
+no kernel row today; it stands for bodies the expansion refuses and for
+the allocator the flattened kernels need next, where forty vector locals
+meet thirty-two registers and only liveness among them decides who spills.
 
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 
