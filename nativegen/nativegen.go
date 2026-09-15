@@ -741,9 +741,30 @@ func (g *generator) variantTypeName(e *ast.VariantExpression, expected *recordLa
 // local, `r.f` on a record place (a scalar, nested record, or array field),
 // recursively. An expression that is no such chain is the zero place.
 func (g *generator) placeOf(expr ast.Expression) (place, error) {
+	return g.resolvePlace(expr, true)
+}
+
+// resolvePlace is placeOf; whole marks a use of the resolved record as a
+// whole (its memory read or written), which writes its register-resident
+// fields back first; a descent into a field passes false.
+func (g *generator) resolvePlace(expr ast.Expression, whole bool) (place, error) {
+	if index, isIndex := expr.(*ast.IndexExpression); isIndex {
+		if _, _, isPromoted := g.promotedFieldOf(index); isPromoted {
+			// A promoted field reached as a place (its address taken by a
+			// path the pre-scan let through): its memory, made current.
+			if err := g.flushPromoted(index.Left.(*ast.Identifier).Value); err != nil {
+				return place{}, err
+			}
+		}
+	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		if rec, isRecord := g.records[e.Value]; isRecord {
+			if whole {
+				if err := g.flushPromoted(e.Value); err != nil {
+					return place{}, err
+				}
+			}
 			return place{rec: rec}, nil
 		}
 		if arr, isArray := g.arrays[e.Value]; isArray {
@@ -770,7 +791,7 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 					return g.spanRecordElement(sp, e.Index)
 				}
 			}
-			base, err := g.placeOf(e.Left)
+			base, err := g.resolvePlace(e.Left, false)
 			if err != nil {
 				return place{}, err
 			}
@@ -779,7 +800,7 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 			}
 			return g.recordElement(base.arr, e.Index)
 		}
-		base, err := g.placeOf(e.Left)
+		base, err := g.resolvePlace(e.Left, false)
 		if err != nil {
 			return place{}, err
 		}
@@ -1269,6 +1290,10 @@ type generator struct {
 	flagsTo    map[string]string
 	liveFlags  string
 	reused     int
+	// promotable/promoted: record fields kept in registers (nativegen/fields.go).
+	promotable    map[string][]string
+	promoted      map[string]*promotedRecord
+	promotedCount int
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// elided counts the guards left out under elide (reported).
@@ -1806,6 +1831,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		}
 	}
 	g.head = g.newLabel("head")
+	g.promotable = g.promotableFields(fn)
 	body, err := g.lowerBody(fn.Body)
 	if err != nil {
 		return nil, 0, err
@@ -3446,6 +3472,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 	delete(g.regs, name)
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	g.promoteFields(name, rec)
 	return rec
 }
 
@@ -3621,6 +3648,15 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 // without an initializer is left to the C backend, which leaves it
 // uninitialized — no semantics are invented here.
 func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName string) error {
+	if err := g.lowerRecordDeclarationInto(s, typeName); err != nil {
+		return err
+	}
+	// The record's memory is initialized: its register-resident fields
+	// take their values from it (nativegen/fields.go).
+	return g.reloadPromoted(s.Name.Value)
+}
+
+func (g *generator) lowerRecordDeclarationInto(s *ast.VariableDeclaration, typeName string) error {
 	layout, err := g.layoutOf(typeName)
 	if err != nil {
 		return err
@@ -4297,7 +4333,7 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 				return err
 			}
 			g.releaseTemps(from.temps)
-			return nil
+			return g.reloadPromoted(s.Name.Value)
 		}
 		typ, ok := g.types[s.Name.Value]
 		if !ok {
@@ -4697,6 +4733,12 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 // 4096, possibly under a widening constructor.
 func (g *generator) simpleOperand(expr ast.Expression, typ scalar, allowImm bool) (asm.Operand, bool) {
 	switch e := expr.(type) {
+	case *ast.IndexExpression:
+		if hidden, elem, isPromoted := g.promotedFieldOf(e); isPromoted && !elem.isFloat && elem.wide() == typ.wide() {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
+				return reg(v, typ), true
+			}
+		}
 	case *ast.Identifier:
 		if v, inReg := g.regs[e.Value]; inReg && v >= 0 && !typ.isFloat {
 			if t, ok := g.types[e.Value]; ok && !t.isFloat && t.wide() == typ.wide() {
@@ -5457,6 +5499,11 @@ func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) 
 	}
 	if index, isIndex := expr.(*ast.IndexExpression); isIndex && !typ.isVec {
 		if hidden, elem, isScalar := g.scalarElement(index); isScalar && elem == typ {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
+				return v, true, nil
+			}
+		}
+		if hidden, elem, isPromoted := g.promotedFieldOf(index); isPromoted && elem == typ {
 			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
 				return v, true, nil
 			}
@@ -7017,6 +7064,15 @@ func (g *generator) storeRecordToPlace(target place, src *recordLocal, s *ast.In
 // element lowers `v[i]`: a guarded, whole-element load through the bound
 // base, zero- or sign-extending as the element type reads in C.
 func (g *generator) element(e *ast.IndexExpression) (int, error) {
+	if hidden, typ, isPromoted := g.promotedFieldOf(e); isPromoted {
+		// A field in its register (nativegen/fields.go): read as a local.
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		g.put(g.loadVar(hidden, r))
+		return r, nil
+	}
 	if e.Dot {
 		sc, err := g.fieldOperand(e)
 		if err != nil {
@@ -7129,6 +7185,16 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 // The place is computed once to learn its type — that computation is
 // rolled back — then again after the value.
 func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
+	if hidden, typ, isPromoted := g.promotedFieldOf(s.Target); isPromoted {
+		// A field in its register: assigned as a local (nativegen/fields.go).
+		r, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		g.assignVar(hidden, r)
+		g.killLoopFacts(hidden)
+		return nil
+	}
 	if !mentionsCall(s.Value) {
 		target, err := g.placeOf(s.Target)
 		if err != nil {
