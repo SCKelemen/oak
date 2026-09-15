@@ -1447,7 +1447,7 @@ type generator struct {
 	liveFlags  string
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
-	held map[int64]heldSlot
+	held map[heldKey]heldSlot
 	// promotable/promoted: record fields kept in registers (nativegen/fields.go).
 	promotable    map[string][]string
 	promoted      map[string]*promotedRecord

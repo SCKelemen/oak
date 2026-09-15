@@ -3004,6 +3004,11 @@ local live in callee-saved registers, flushed where the record is used
 whole and reloaded where it is written whole
 (`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
 
+The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
+frame slot's value is read from the register that stored or loaded it
+while that register stands, and a comparison on a computed operand
+branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -4431,6 +4436,40 @@ retargeting then lands the computation in the variable's home
 w9`). A function whose result is a variable in its home register moves it
 to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
 w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
+**Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
+`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per memory word
+addressed as a constant offset from a base register — a frame slot from
+`sp`, a field of a record behind a register (an in-place parameter, the
+`x8` result area) — the integer register whose value the word holds: a
+store records the register it stored, a load the register it loaded into.
+A later load of the same word at the same width — or a 32-bit load of a
+word a 64-bit register was stored to, which reads that register's low
+half — while that register has not been written since, is the register's
+value already: the load becomes a `mov`, or nothing when its destination
+is that register. So
+the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
+str w9, [sp, #304]`, followed by the field's test, no longer reloads what
+it just stored (`sha256_update`'s `next.filled`). Every write of a
+register drops the words it held and the words addressed through it; a
+store drops the words under every other base (two bases may address the
+same memory) and the words its extent overlaps under its own; a label
+(paths meet), a call (the callee owns the scratch registers and may write
+memory through a span), an `sp` move, an indexed store, a truncation of
+the emitted items, and the retargeting of an emitted instruction's
+destination drop them all. The
+rule is the frame's write-then-read (`Oak.Forwarding.load_store`,
+`forward`), and a store elsewhere leaves a held slot in place
+(`held_survives`) — the generator forgets exactly the slots a store's
+extent overlaps. Alongside it, a comparison whose left operand is
+computed — a record field, `next.filled == u32(64)` — evaluates it into
+a scratch and branches on the compare, `cmp w9, #64; b.ne`, where before
+the Bool was materialized and tested (`cmp; cset; cbz`;
+`Oak.Forwarding.cbz_cset`, `cbnz_cset`); the flags such a compare leaves
+are not offered for reuse at the else label, since a scratch's spelling
+names no operand. `TestNativeShapesForwarding` pins the byte loop of an
+absorber: no `cset`, no reload after a store, the `== 64` test on the
+register the increment was stored from; `TestE2ENativeForwarding` agrees
+with the C backend. The RV64 lane is untouched.
 
 **The register budget (2026-09-16, AArch64 lane; `nativegen/span_forward.go`,
 `spec/lean/Oak/SpanForward.lean`).** Two rules against the callee-saved
