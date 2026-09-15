@@ -528,3 +528,62 @@ the Bool compare in the byte loop, the result built in the `x8` area,
 by-reference arguments passed as the caller's own storage when the
 callee reads them in place, and pair copies for aggregates.
 
+
+## The native backend after the day's increments, 2026-09-16 (evening)
+
+The ten kernels through both backends at revision `a449cf2a` (every
+increment above in place: strength reduction, elision, if-conversion,
+select forms, unrolling, LICM, rotation, pair loads, arrays as values,
+vector operands in place, the word fusion, the inliner's literals, the
+late cleanup, the register reallocator) on the M4 Max at load average
+40–50 — the quietest the host has been this week, so these ratios are the
+first since the baseline that are worth reading against each other. Two
+alternated rounds of three samples over three inner rounds, 1 MiB per
+kernel; checksums equal on every row.
+
+| Kernel | C backend | oak-native | native / C | Selected body (instructions, through sp) | Verdict |
+| --- | ---: | ---: | ---: | --- | --- |
+| crc32c | 186 µs | 185 µs | 0.99× | 11, 4 | trusted (table) |
+| dispatch | 11.7 ms | 10.0 ms | 0.85× | 55, 2 | proven |
+| sha256 | 798 µs | 832 µs | 1.04× | 22, 6 | trusted (table) |
+| dot | 1,045 µs | 1,147 µs | 1.10× | 32, 6 | proven |
+| search | 13.2 ms | 15.1 ms | 1.14× | 44, 8 | witnessed |
+| tiled | 209 µs | 247 µs | 1.18× | 88, 10 | witnessed |
+| bitmap | 225 µs | 266 µs | 1.18× | C on both sides | — |
+| page_probe | 13.5 ms | 18.1 ms | 1.35× | 78, 10 | witnessed |
+| sum | 136 µs | 231 µs | 1.70× | 38, 2 | proven |
+| blake3 | 3.28 ms | 10.9 ms | 3.33× | partly native | trusted |
+
+`bitmap` is the C backend on both rows (its `cnt64` is a C helper in
+value position), so 1.18× is this run's noise floor; `dot`, `sha256`,
+`crc32c`, and `dispatch` are inside it. Two gaps remain above it:
+
+- **`blake3` 3.3×** is frame traffic. Of the package's 5,101 selected
+  instructions, 3,002 are loads and stores, and 2,104 of those go through
+  `sp` — `blake3_final` 773, `blake3_init` 620, `blake3_start_flag` 409,
+  `blake3_compress` 318. The state arrays live in frame slots; this is
+  the reallocator's and the frame-slot promotion's case (§9.ag onward),
+  and the reallocator does not lower 21 of the package's candidates yet
+  (`machine: line N: operand of an unknown kind`, across `bench_sum`,
+  `bench_dot`, `bench_page_probe`, `bench_sha256`, the CRC chunk and
+  update, the SHA rounds, and the deque helpers).
+- **`sum` 1.7×** is the strided header. The unrolled loop is fourteen
+  instructions per four elements, five of them the header
+  `cmp w20, #4; b.lo done; sub w9, w20, #4; cmp w3, w9; b.hi done` —
+  `len(v) >= 4` and `len(v) - 4` are loop-invariant, but the
+  loop-invariant pass reports no site on this shape and rotation leaves
+  the same count. Hoisting the peelable guard and the limit needs the
+  checker to carry the slack fact `i <= len - 4` across the loop's
+  label as it carries the proven minimum; that is the next lever for
+  every strided loop (the SIMD kernels' `len >= N && off <= len - N`
+  headers included), worth three of fourteen instructions here.
+
+**The search itself**, read off the report over the 49 natively lowered
+functions: 15 select the identity; the rest select one to five
+transforms (`reallocate` and `late-cleanup` most often, together or
+alone). The validation budget of three cut a candidate on 12 functions;
+the cut candidate was in every case a costlier variant of the selected
+one, so the budget affected verdict strength, not shape. A beam of eight
+against the default four changes one selection (`blake3_final`, to a
+five-transform form the model prices 3.5 percent lower), so beam
+pressure is not yet a constraint at eight transforms.
