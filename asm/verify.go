@@ -6060,11 +6060,13 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
 	case *ast.InfixExpression:
-		// A sum or product of two literals converted to one unsigned type
-		// (`u32(0) + u32(3)`, an inlined helper's constant offsets) folds
+		// A sum, product, or difference of two literals converted to one
+		// unsigned type (`u32(0) + u32(3)`, an inlined helper's constant
+		// offsets; `u32(32) - u32(7)`, an inlined rotate's count) folds
 		// when the result fits the type, as the extents checker folds it;
-		// a wrapping `u8(200) + u8(100)` is lowered as the operation.
-		if e.Operator != "+" && e.Operator != "*" {
+		// a wrapping `u8(200) + u8(100)` or `u32(1) - u32(2)` is lowered
+		// as the operation.
+		if e.Operator != "+" && e.Operator != "*" && e.Operator != "-" {
 			return 0, false
 		}
 		typeName := ""
@@ -6089,9 +6091,15 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 			return 0, false
 		}
 		var value uint64
-		if e.Operator == "+" {
+		switch e.Operator {
+		case "+":
 			value = uint64(left) + uint64(right)
-		} else {
+		case "-":
+			if left < right {
+				return 0, false
+			}
+			value = uint64(left - right)
+		default:
 			if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
 				return 0, false
 			}

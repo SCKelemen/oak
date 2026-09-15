@@ -1387,6 +1387,7 @@ type generator struct {
 	leafHomesV    []int
 	leafPoolBuilt bool
 	leafVecHomes  int
+	rotated       int
 }
 
 type slotBinding struct {
@@ -1641,6 +1642,12 @@ var vectorHomesOf = map[*asm.Function]int{}
 func LeafVectorHomes(fn *asm.Function) int { return leafVectorHomesOf[fn] }
 
 var leafVectorHomesOf = map[*asm.Function]int{}
+
+// Rotated reports how many shift-spelled rotations a lowering emitted as
+// `ror` (docs/spec/94-assembler.md §9 "Rotates").
+func Rotated(fn *asm.Function) int { return rotatedOps[fn] }
+
+var rotatedOps = map[*asm.Function]int{}
 
 // pressured marks a lowering in which some scalar variable had to take a
 // caller-saved home or a frame slot: the second pass is worth its cost.
@@ -2247,6 +2254,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.leafVecHomes > 0 {
 		leafVectorHomesOf[out] = g.leafVecHomes
+	}
+	if g.rotated > 0 {
+		rotatedOps[out] = g.rotated
 	}
 	if g.reused > 0 {
 		reusedCompares[out] = g.reused
@@ -5575,6 +5585,23 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.emit("cset", wr(out), asm.Condition{Code: code})
 		return out, nil
 	}
+	if x, count, isRotate := g.rotate(e, typ); isRotate {
+		// `(x >> k) | (x << (W - k))` is one `ror` (docs/spec/94-assembler.md
+		// §9 "Rotates"; Oak.AssemblerSemantics.ror_spelling).
+		l, lfixed, err := g.operand(x, typ)
+		if err != nil {
+			return 0, err
+		}
+		out := l
+		if lfixed {
+			if out, err = g.alloc(typ); err != nil {
+				return 0, err
+			}
+		}
+		g.emit("ror", reg(out, typ), reg(l, typ), imm(count))
+		g.rotated++
+		return out, nil
+	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec && !g.reducesMultiply(e, typ) {
 		return g.directInfix(e, typ, mnemonic)
 	}
@@ -5906,6 +5933,44 @@ func (g *generator) sameOperand(e *ast.InfixExpression) bool {
 	return e.Left.String() == e.Right.String() && !g.callsProgramFunction(e.Left)
 }
 
+// rotate recognizes a rotation spelled with shifts — `(x >> k) | (x << (W -
+// k))` or `(x << k) | (x >> (W - k))` over an unsigned x of 32 or 64 bits,
+// both counts constant and summing to the width, the operand one pure
+// expression — and reports the operand and the right-rotate count. The
+// AArch64 lane lowers it to `ror`; a rotation's result is normalized
+// whenever its operand is, so no mask follows.
+func (g *generator) rotate(e *ast.InfixExpression, typ scalar) (ast.Expression, int64, bool) {
+	if e.Operator != "|" || g.rvLane || typ.signed || typ.isFloat || typ.isVec || typ.isBool || (typ.bits != 32 && typ.bits != 64) {
+		return nil, 0, false
+	}
+	left, leftIsShift := e.Left.(*ast.InfixExpression)
+	right, rightIsShift := e.Right.(*ast.InfixExpression)
+	if !leftIsShift || !rightIsShift {
+		return nil, 0, false
+	}
+	if left.Operator == "<<" && right.Operator == ">>" {
+		left, right = right, left
+	}
+	if left.Operator != ">>" || right.Operator != "<<" {
+		return nil, 0, false
+	}
+	rightCount, rightConst := constantValue(left.Right)
+	leftCount, leftConst := constantValue(right.Right)
+	if !rightConst || !leftConst || rightCount <= 0 || rightCount >= int64(typ.bits) || rightCount+leftCount != int64(typ.bits) {
+		return nil, 0, false
+	}
+	x := left.Left
+	if _, isLiteral := x.(*ast.IntegerLiteral); isLiteral || x.String() != right.Left.String() || g.callsProgramFunction(x) {
+		return nil, 0, false
+	}
+	for _, shift := range []*ast.InfixExpression{left, right} {
+		if t, err := g.typeOf(shift, &typ); err != nil || t != typ {
+			return nil, 0, false
+		}
+	}
+	return x, rightCount, true
+}
+
 func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
 	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isVec {
 		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
@@ -6097,11 +6162,14 @@ func constantValue(expr ast.Expression) (int64, bool) {
 	return 0, false
 }
 
-// foldLiteralPair folds `T(a) + T(b)` and `T(a) * T(b)` for an unsigned
-// integer type T when the result fits T, reading each side with value; a
-// wrapping result, a signed or mixed type, or a bare literal is not folded.
+// foldLiteralPair folds `T(a) + T(b)`, `T(a) * T(b)`, and `T(a) - T(b)` for
+// an unsigned integer type T when the result fits T (a difference when it
+// does not go below zero), reading each side with value; a wrapping
+// result, a signed or mixed type, or a bare literal is not folded. The
+// difference is the shift count of an inlined rotate, `u32(32) - u32(7)`
+// (docs/spec/94-assembler.md §9 "Rotates").
 func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, bool)) (int64, bool) {
-	if e.Operator != "+" && e.Operator != "*" {
+	if e.Operator != "+" && e.Operator != "*" && e.Operator != "-" {
 		return 0, false
 	}
 	typeName := ""
@@ -6126,9 +6194,15 @@ func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, 
 		return 0, false
 	}
 	var result uint64
-	if e.Operator == "+" {
+	switch e.Operator {
+	case "+":
 		result = uint64(left) + uint64(right)
-	} else {
+	case "-":
+		if left < right {
+			return 0, false
+		}
+		result = uint64(left - right)
+	default:
 		if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
 			return 0, false
 		}
