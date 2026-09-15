@@ -317,7 +317,8 @@ func TestE2ENativeStage2AllocTableProven(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)") {
+	// Every leaf memory the loop marks is compared after it, written or not.
+	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.free_stack, s.high_water, s.pages, s.pool_base, s.root)") {
 		t.Errorf("alloc_table must be proven with its cell and leaf memories:\n%s", joined)
 	}
 	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
