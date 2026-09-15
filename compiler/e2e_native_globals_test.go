@@ -50,14 +50,43 @@ reset_and_sum: (seed: u32): u64 {
   sum_state() + u64(bump())
 }
 
+count_to: (n: u32): u32 {
+  i: u32 = u32(0)
+  while i < n {
+    i = i + u32(1)
+  }
+  i
+}
+
+// Package cells outside a call-derived loop are final effects, not
+// loop-carried state. They are compared under the loop's exit premise.
+around_loop: (n: u32): u32 {
+  st = n
+  i: u32 = count_to(n)
+  st = st + u32(1)
+  i + st
+}
+
+// A package-cell change inside an iteration remains outside the loop theorem
+// and must stay trusted rather than being promoted by around_loop's support.
+write_in_loop: (n: u32): u32 {
+  i: u32 = u32(0)
+  while i < n {
+    st = i
+    i = i + u32(1)
+  }
+  st
+}
+
 main: (): i32 {
   set_state(u32(7), u64(100))
   a: u64 = read_state()   // 107 + 7 + 7 = 121
   b: u32 = bump()         // 8
   set_state(u32(0), u64(5))
   c: u64 = read_state()   // walk_null: 1000
-  // 121 + 8 + 1000 = 1129; the exit code carries the low byte, 105.
-  i32_bits_u32(u32_trunc_u64(a) + b + u32_trunc_u64(c))
+  d: u32 = around_loop(u32(3)) // 3 + (3 + 1) = 7
+  // 121 + 8 + 1000 + 7 = 1136; the exit code carries the low byte, 112.
+  i32_bits_u32(u32_trunc_u64(a) + b + u32_trunc_u64(c) + d)
 }
 `
 
@@ -71,8 +100,8 @@ func TestE2ENativeGlobals(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_globals", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 1129%256 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1129%256, joined)
+	if abnormal || code != 1136%256 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1136%256, joined)
 	}
 	for _, fn := range []string{"set_state", "sum_state", "read_state", "bump", "reset_and_sum"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
@@ -98,8 +127,14 @@ func TestE2ENativeGlobals(t *testing.T) {
 	if !strings.Contains(joined, "asm unit reset_and_sum: proven") || !strings.Contains(joined, "reset_and_sum: proven equal to its Oak body") {
 		t.Errorf("reset_and_sum (calls set_state and sum_state and bump) must be proven; diagnostics:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1129%256 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1129%256)
+	if !strings.Contains(joined, "asm unit around_loop: proven") || !strings.Contains(joined, "package state it writes (st)") {
+		t.Errorf("around_loop must prove its result and pre/post-loop cell writes; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit write_in_loop: not verified") || !strings.Contains(joined, "store in a loop body") {
+		t.Errorf("write_in_loop must remain trusted because loop events do not model cell writes; diagnostics:\n%s", joined)
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1136%256 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1136%256)
 	}
 	// Inline-asm mode (`oak build -native -o`, the OS pilot's object path):
 	// the native bodies go into the C as top-level assembly blocks, whose
@@ -111,8 +146,8 @@ func TestE2ENativeGlobals(t *testing.T) {
 			inlineInfos = append(inlineInfos, d.Message)
 		}
 	})
-	if _, code, abnormal := buildAndRunFrom(t, "native_globals_inline", inlineComp); abnormal || code != 1129%256 {
-		t.Fatalf("inline-asm mode: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1129%256, strings.Join(inlineInfos, "\n"))
+	if _, code, abnormal := buildAndRunFrom(t, "native_globals_inline", inlineComp); abnormal || code != 1136%256 {
+		t.Fatalf("inline-asm mode: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1136%256, strings.Join(inlineInfos, "\n"))
 	}
 	if !strings.Contains(strings.Join(inlineInfos, "\n"), "asm unit set_state:") {
 		t.Errorf("set_state must lower natively in inline-asm mode too; diagnostics:\n%s", strings.Join(inlineInfos, "\n"))

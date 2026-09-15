@@ -129,6 +129,24 @@ func IsSubtype(t1, t2 Type) bool {
 	return true
 }
 
+// latticeSubtypeWithoutRepresentation reports the semantic lattice steps that
+// are also valid at an ordinary value-flow boundary today. Semantic inclusion
+// alone does not choose a runtime representation: in particular, `T <= any`
+// and `T <= T | U` must not silently introduce boxing, tags, allocation, or
+// RTTI. Exact types need no conversion, and never needs no representation
+// because it produces no value. Feature-specific representation-preserving
+// relations such as numeric widening, refinement erasure, record-shape
+// satisfaction, and alignment are composed by TypeChecker.isAssignable.
+func latticeSubtypeWithoutRepresentation(valueType, targetType Type) bool {
+	if !IsSubtype(valueType, targetType) {
+		return false
+	}
+	if _, isNever := valueType.(*NeverType); isNever {
+		return true
+	}
+	return valueType.Equals(targetType)
+}
+
 // Join computes the least upper bound (join) of types
 // For union types: join(A, B) = A | B (when defined)
 // For our minimal lattice:
@@ -136,7 +154,7 @@ func IsSubtype(t1, t2 Type) bool {
 // - join(T, any) = any
 // - join(T, never) = T
 // - join(A, B) = A | B for union types
-// - join(T1, T2) where T1 != T2 and neither is any/never/union = any (incomparable)
+// - join(T1, T2) where T1 != T2 and neither is any/never = T1 | T2
 // weakestAlignment is the join of structurally equal view or span types
 // under the alignment fact's order (docs/spec/50-borrowing.md section 2a):
 // a value from any arm must satisfy the fact, so the joined type carries
@@ -228,7 +246,7 @@ func Join(types ...Type) Type {
 // - meet(T, never) = never
 // - meet(T, any) = T
 // - meet(A, B) = A & B for intersection types
-// - meet(T1, T2) where T1 != T2 and neither is never/any/intersection = never (incomparable)
+// - meet(T1, T2) where T1 != T2 and neither is never/any = T1 & T2
 func Meet(types ...Type) Type {
 	if len(types) == 0 {
 		return &AnyType{} // Empty meet is top

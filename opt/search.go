@@ -50,9 +50,14 @@ type Verdict struct {
 // candidate's configuration into a body, identifies and measures the
 // body, and validates it. The search never inspects a body itself.
 type Driver interface {
+	// MaterializationKey identifies the complete lowering recipe before a
+	// body exists: the backend configuration, checked source inputs, target
+	// facts, and producer revision. Equal keys must materialize equal bodies.
+	MaterializationKey(c *Candidate) (string, error)
 	// Materialize lowers c.Config into c.Body. An error means the
 	// configuration does not lower (the lane does not support the form);
-	// the candidate is dropped with a remark.
+	// the candidate is dropped with a remark. It may replace c.Body, but
+	// must not mutate shared values reachable through the candidate.
 	Materialize(c *Candidate) error
 	// Key identifies the materialized body so equal bodies are one
 	// candidate.
@@ -147,12 +152,12 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 	}
 	artifacts := map[*Candidate]candidateArtifactKeys{}
 	sel := &Selection{Identity: identity, Considered: 1}
-	if err := d.Materialize(identity); err != nil {
+	identityArtifacts, err := pipeline.materialize(identity)
+	if err != nil {
 		return nil, err
 	}
 	sel.Materialized++
-	identity.Key = d.Key(identity)
-	identityArtifacts, findings, err := s.check(function, identity, d, pipeline, rounds)
+	identityArtifacts, findings, err := s.check(function, identity, pipeline, identityArtifacts, rounds)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +191,8 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				}
 				sel.Considered++
 				next.Facts = append(next.Facts, used...)
-				if err := d.Materialize(next); err != nil {
+				nextArtifacts, err := pipeline.materialize(next)
+				if err != nil {
 					s.Report.Missed(function, t.Name(), fmt.Sprintf("the %s form did not lower: %v", next.Name(), err))
 					continue
 				}
@@ -197,7 +203,6 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 					}
 					continue
 				}
-				next.Key = d.Key(next)
 				if prev, dup := seen[next.Key]; dup {
 					if parent.IsIdentity() {
 						s.Report.Missed(function, t.Name(), "the same body as "+prev.Name())
@@ -205,7 +210,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 					continue
 				}
 				seen[next.Key] = next
-				nextArtifacts, findings, err := s.check(function, next, d, pipeline, rounds)
+				nextArtifacts, findings, err := s.check(function, next, pipeline, nextArtifacts, rounds)
 				if err != nil {
 					return nil, err
 				}
@@ -327,11 +332,7 @@ func (s *Search) discharge(function string, t Transform, facts *Facts) ([]Fact, 
 // on the finding; the candidate is updated in place through its
 // configuration and body. It returns the final candidate artifacts and the
 // findings that remain.
-func (s *Search) check(function string, c *Candidate, d Driver, pipeline *candidateArtifactPipeline, rounds int) (candidateArtifactKeys, []string, error) {
-	nodes, err := pipeline.add(c)
-	if err != nil {
-		return candidateArtifactKeys{}, nil, err
-	}
+func (s *Search) check(function string, c *Candidate, pipeline *candidateArtifactPipeline, nodes candidateArtifactKeys, rounds int) (candidateArtifactKeys, []string, error) {
 	findings, err := pipeline.admit(nodes)
 	if err != nil {
 		return candidateArtifactKeys{}, nil, err
@@ -344,15 +345,12 @@ func (s *Search) check(function string, c *Candidate, d Driver, pipeline *candid
 		if !ok {
 			break
 		}
-		if err := d.Materialize(refined); err != nil {
+		refinedNodes, err := pipeline.materialize(refined)
+		if err != nil {
 			break
 		}
-		refined.Key = d.Key(refined)
 		*c = *refined
-		nodes, err = pipeline.add(c)
-		if err != nil {
-			return candidateArtifactKeys{}, nil, err
-		}
+		nodes = refinedNodes
 		findings, err = pipeline.admit(nodes)
 		if err != nil {
 			return candidateArtifactKeys{}, nil, err

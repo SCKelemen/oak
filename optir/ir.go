@@ -157,7 +157,7 @@ type Block struct {
 	Terminator Terminator
 }
 
-// CFG is the deterministic projection used by dominator, SCCP, CSE, and loop
+// CFG is the deterministic projection used by dominator, SCCP, GVN, and loop
 // analyses. It remains target independent.
 type CFG struct {
 	Name    string

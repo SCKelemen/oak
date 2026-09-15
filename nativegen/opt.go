@@ -44,6 +44,7 @@ const (
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
 	TransformVecBlocks   = "vector-blocks"
+	TransformMultiplyAdd = "multiply-add"
 	TransformReallocate  = "reallocate"
 	TransformRotate      = "rotate-loops"
 )
@@ -281,6 +282,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}},
+		multiplyAddTransform,
 		vecBlocksTransform,
 		cleanupTransform,
 	}
@@ -297,6 +299,20 @@ var cleanupTransform = &laneTransform{
 	applied: func(l Lane) bool { return l.Cleanup },
 	apply:   func(l Lane) Lane { l.Cleanup = true; return l },
 	fired:   CleanedCopies,
+}
+
+// multiplyAddTransform lowers a product and its addend in one instruction
+// (nativegen/multiply_add.go).
+var multiplyAddTransform = &laneTransform{
+	// Multiply-add forms (docs/spec/94-assembler.md §9 "Multiply-add
+	// forms"): `a + b * c` as madd, `a - b * c` as msub, `0 - b * c` as
+	// mneg — the machine's own arithmetic, judged by the verifier, which
+	// reads all three as the product and its term.
+	name: TransformMultiplyAdd, phase: opt.PhaseCanonical, proof: opt.Canonical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.MultiplyAdd },
+	apply:   func(l Lane) Lane { l.MultiplyAdd = true; return l },
+	fired:   FusedMultiplies,
 }
 
 // vecBlocksTransform reads a block's vector loads off one element address
@@ -331,6 +347,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
+	lane.MultiplyAdd = false
 	lane.Reallocate = false
 	lane.VectorReductions = false
 	lane.NoReductions = true
@@ -560,7 +577,10 @@ func Metrics(fn *asm.Function) opt.Metrics {
 			}
 		}
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
-			if sh := shapes[label.Name]; sh != nil {
+			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
+				// The analysis found the index: its stride and bound
+				// replace the heuristic's; a loop it could not read keeps
+				// the heuristic's reading.
 				body.Stride = sh.Stride
 				if sh.MaxTrips > 0 {
 					body.MaxTrips = sh.MaxTrips

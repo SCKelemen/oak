@@ -230,6 +230,17 @@ when the lift refuses a body. The first test body exposed a reaching-
 definitions slip: a loop whose header is the entry block never saw its
 back-edge definitions; the entry now merges its predecessors too.
 
+Fourth increment: the lift admits the extended- and shifted-register
+operands of address arithmetic (`add x9, x19, w3, uxtw #2`), which had
+kept reallocation off every body with a scaled index; and the lowering
+records the aggregates it places in the frame (`nativegen.FrameObjects`),
+so promotion blocks only the object whose address is taken rather than
+everything above it (`machine.PromoteWith`). An exit bound computed in
+the header from invariants (`sub w9, w20, #16`) counts as invariant for
+the recurrence analysis, and a loop the analysis cannot read keeps the
+heuristic's stride rather than losing it — the vectorized reduction's
+sixteen-element trips were priced at stride one for one test run.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, scheduling, and exact trip counts against register bounds.
@@ -257,14 +268,16 @@ exact constants plus executable blocks and edges. Integer folding follows Oak's
 fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
 it does not rewrite the CFG or authorize emission.
 
-The first generic transformation candidate is also connected. CSE uses exact
-operation identity and dominance, and DCE removes the resulting unused pure
-chains to a fixed point. Both are restricted to a closed vocabulary of total
-scalar operations: missing effect metadata never makes calls, traps, memory, or
-unknown operations removable. Proof facts are remapped only where they remain
-valid. Input and output pass the independent verifier, and
-`Compilation.OptIR()` retains the original CFG beside the simplified candidate
-and its deterministic report.
+The first generic transformation candidate is also connected. GVN numbers
+plain copies alike, canonicalizes exact commutative integer/equality operations
+and inverse order comparisons, then shares a congruent expression only from a
+dominating definition. DCE removes the exposed unused pure chains and copies to
+a fixed point. Both are restricted to a closed vocabulary of total scalar
+operations: missing effect metadata never makes calls, traps, memory, or
+unknown operations removable, and an unknown attribute disables algebraic
+normalization. Proof facts are remapped only where they remain valid. Input and
+output pass the independent verifier, and `Compilation.OptIR()` retains the
+original CFG beside the simplified candidate and its deterministic report.
 
 OptIR also has its semantic loop analysis: reverse postorder and immediate
 dominators; natural loops with back edges, latches, exits, canonical preheaders,
@@ -276,7 +289,7 @@ and wrapping boundaries retain only the facts actually established. These
 results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
 meaning, while MachineIR owns eventual layout and scheduling.
 
-Its first loop transform is analysis-only LICM. After CSE/DCE it moves a closed
+Its first loop transform is analysis-only LICM. After GVN/DCE it moves a closed
 total-pure operation to a canonical preheader only when all operands are
 available there. Potential traps, effects, calls, memory, unknown operations,
 noncanonical entries, and facts other than the definition-local checked type
@@ -284,26 +297,27 @@ fact pin the operation. The cloned result passes the independent verifier and
 is retained with deterministic movement evidence; emission consumes neither.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
-remains linear, and native candidate proposal and materialization still branch
+remains linear, and native candidate proposal enumeration still branches
 internally. The generic OptIR chain is migrated. Immutable, exact-version nodes
-hold CFG v0, SCCP, loop structure/facts, CSE/DCE, CFG v1, checked preservation,
+hold CFG v0, SCCP, loop structure/facts, GVN/DCE, CFG v1, checked preservation,
 recomputed induction facts, and LICM. CFGs have canonical content fingerprints.
 Analyses declare a closed set of topology, SSA, operation, effect, type, fact,
-and layout aspects. CSE/DCE's admission node independently compares per-aspect
+and layout aspects. GVN/DCE's admission node independently compares per-aspect
 digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
 and natural loops while recomputing recurrence facts from v1. No certificate is
-an equivalence verdict or emission license. Native materialized bodies now have
-typed candidate → admission → metrics → cost artifacts; every attempted
-semantic check is a verdict artifact, and selection depends on candidate,
-clean admission, cost, and verdict for every possible result. Validation stays
-sequential to retain the budget and proof early-stop. The executor runs bounded
-deterministic ready waves, and OptIR uses three workers for its independent
-analysis fan-out. Canonically keyed native materialization remains. The
+an equivalence verdict or emission license. Every native proposal has a
+canonical checked-input recipe and materializes through candidate → admission
+→ metrics → cost artifacts; every attempted semantic check is a verdict
+artifact, and selection depends on candidate, clean admission, cost, and
+verdict for every possible result. Validation stays sequential to retain the
+budget and proof early-stop. The executor runs bounded deterministic ready
+waves, and OptIR uses three workers for its independent analysis fan-out. The
 complete design is `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: equivalence-validated emission of the candidate, available-expression
-and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
-unrolling and further loop transforms, native materialization in the artifact DAG,
+Not yet: equivalence-validated emission of the candidate, join/loop-parameter
+value congruence, region-aware memory SSA and the dead stores it would license,
+non-affine and symbolic trip-count proofs,
+unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
@@ -804,12 +818,18 @@ The existing native optimizations should be migrated into the candidate interfac
 ### Machine
 
 - addressing-mode selection;
-- multiply-add/select forms — **in progress (2026-09-16, the oak session
-  at ~/oakmcu/oak)**: `a + b * c` lowers to `mul` then `add` where
-  `madd` is one instruction, `a - b * c` to `mul` then `sub` where
-  `msub` is one, and `0 - b * c` where `mneg` is one; the verifier
-  already models all three. Integers only — `fmla` is one rounding where
-  Oak's `a + b * c` is two (`-ffp-contract=off`);
+- multiply-add forms — **landed 2026-09-16** (`multiply-add`,
+  `nativegen/multiply_add.go`): `a + b * c` as `madd`, `a - b * c` as
+  `msub`, `T(0) - b * c` as `mneg`, the verifier needing no extension.
+  Integers only — `fmla` is one rounding where Oak's expression is two
+  (`-ffp-contract=off`) — and a constant operand is left to the strength
+  reduction's shift. Measured neutral on an integer dot product
+  (seven instructions an element become six, 0.39–0.46 ns either way): the third increment in a row
+  whose instruction saving an M4's spare issue slots absorb, which is
+  itself worth recording — the static cost model counts instructions,
+  and on this core that is not what the clock counts. A port-pressure or
+  dependency-chain term (item 26) is what would tell these apart;
+- select forms;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent

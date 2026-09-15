@@ -144,7 +144,7 @@ func TestMemoryEffectAspectTreatsUnknownOperationsAsObservable(t *testing.T) {
 	}
 }
 
-func TestCSEDCECertificatePreservesTopologyAndEffectTraceOnlyWhenChecked(t *testing.T) {
+func TestGVNDCECertificatePreservesTopologyAndEffectTraceOnlyWhenChecked(t *testing.T) {
 	before := CFG{
 		Name:    "cleanup_preservation",
 		Entry:   0,
@@ -161,7 +161,7 @@ func TestCSEDCECertificatePreservesTopologyAndEffectTraceOnlyWhenChecked(t *test
 			Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}},
 		}},
 	}
-	after, _, err := SimplifyCSEDCE(before)
+	after, _, err := SimplifyGVNDCE(before)
 	if err != nil {
 		t.Fatal(err)
 	}

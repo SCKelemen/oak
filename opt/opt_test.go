@@ -70,15 +70,23 @@ type fakeDriver struct {
 	verdicts  map[string]Outcome  // by body key; absent means Proven
 	findings  map[string][]string // by body key; absent means admitted
 	unlowered map[string]bool     // bodies that do not lower
+	lowerErrs map[string]error    // exact lowering errors used by artifact tests
 	validated []string
 	checked   []string
 	measured  []string
 	lowered   []string
 }
 
+func (d *fakeDriver) MaterializationKey(c *Candidate) (string, error) {
+	return "fake:" + c.Config.(config).key(), nil
+}
+
 func (d *fakeDriver) Materialize(c *Candidate) error {
 	key := c.Config.(config).key()
 	d.lowered = append(d.lowered, key)
+	if err := d.lowerErrs[key]; err != nil {
+		return err
+	}
 	if d.unlowered[key] {
 		return errors.New("unsupported form")
 	}

@@ -289,11 +289,26 @@ func accesses(t *target, ins *Instr) error {
 					ins.Uses = append(ins.Uses, acc)
 				}
 			}
+		case asm.Extended:
+			if r, bits, lane, ok, err := t.regOf(o.Reg); err != nil {
+				return err
+			} else if ok {
+				ins.Uses = append(ins.Uses, Access{Op: i, Part: partReg, Reg: r, Bits: bits, Lane: lane})
+			}
+		case asm.Shifted:
+			if r, bits, lane, ok, err := t.regOf(o.Reg); err != nil {
+				return err
+			} else if ok {
+				ins.Uses = append(ins.Uses, Access{Op: i, Part: partReg, Reg: r, Bits: bits, Lane: lane})
+			}
 		case asm.Immediate, asm.FloatImmediate, asm.Symbol, asm.Condition, asm.Option:
 		case asm.SysReg, asm.TileSlice:
 			return fmt.Errorf("operand %s", op.(interface{ operandKind() string }).operandKind())
 		default:
-			return fmt.Errorf("operand of an unknown kind")
+			if kinded, ok := op.(interface{ operandKind() string }); ok {
+				return fmt.Errorf("operand of kind %q", kinded.operandKind())
+			}
+			return fmt.Errorf("operand of an unknown kind (%T)", op)
 		}
 	}
 	if ins.Call {
@@ -399,6 +414,10 @@ func regAt(a asm.Instruction, acc Access) asm.Register {
 		return o.Base
 	case asm.RegisterList:
 		return o.Regs[acc.Part-partList]
+	case asm.Extended:
+		return o.Reg
+	case asm.Shifted:
+		return o.Reg
 	}
 	return asm.Register{}
 }
@@ -420,6 +439,12 @@ func (t *target) setRegAt(a *asm.Instruction, acc Access, to Reg) {
 		regs := append([]asm.Register(nil), o.Regs...)
 		regs[acc.Part-partList] = t.spell(regs[acc.Part-partList], to)
 		a.Operands[acc.Op] = asm.RegisterList{Regs: regs}
+	case asm.Extended:
+		o.Reg = t.spell(o.Reg, to)
+		a.Operands[acc.Op] = o
+	case asm.Shifted:
+		o.Reg = t.spell(o.Reg, to)
+		a.Operands[acc.Op] = o
 	}
 }
 

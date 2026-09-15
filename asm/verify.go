@@ -112,7 +112,15 @@ func quantifierBound(name string) bool { return strings.Contains(name, "@q") }
 // uninterpreted value shared by selects with the same index.
 func selectTerm(span string, index *term, width int) *term {
 	if index.kind == termConst {
-		return paramTerm(spanElemName(span, int64(index.value&mask(32))), width)
+		k := int64(index.value & mask(32))
+		if dot := strings.IndexByte(span, '.'); dot > 0 {
+			// A record span's leaf memory (`v.a`): its constant element is
+			// the parameter `v[k].a`, the name recordFieldTerm gives it, so
+			// a read through a derived alias of the leaf and a read through
+			// the record span meet in one unknown.
+			return paramTerm(spanElemName(span[:dot], k)+span[dot:], width)
+		}
+		return paramTerm(spanElemName(span, k), width)
 	}
 	return &term{kind: termSelect, width: width, name: span, left: canonicalIndex(index)}
 }
@@ -4807,15 +4815,10 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 				}
 				return lo.aggregateValue(whenFalse, typ)
 			}
-			restore := lo.underPath(cond)
-			t, reason, ok := lo.aggregateValue(whenTrue, typ)
-			restore()
-			if !ok {
-				return nil, reason, false
-			}
-			restore = lo.underPath(notTerm(cond))
-			f, reason, ok := lo.aggregateValue(whenFalse, typ)
-			restore()
+			var t, f *oakValue
+			reason, ok = lo.forkLocals(cond,
+				func() (reason string, ok bool) { t, reason, ok = lo.aggregateValue(whenTrue, typ); return },
+				func() (reason string, ok bool) { f, reason, ok = lo.aggregateValue(whenFalse, typ); return })
 			if !ok {
 				return nil, reason, false
 			}
@@ -5687,16 +5690,44 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 // condition, merged leaf-wise into the fallback.
 func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Expression) (*oakValue, string, bool)) (*oakValue, string, bool) {
 	values := map[int]*oakValue{}
+	// Every arm runs on a copy of the locals before the match, and the
+	// locals after are the arms' outcomes selected by the arms' conditions
+	// (as lowerMatchStatement merges them): an arm's block may assign.
+	before := lo.snapshotLocals()
+	outcomes := map[int]map[string]localSnapshot{}
 	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression) (string, bool) {
+		lo.restoreLocals(before)
 		value, reason, ok := body(armBody)
 		if !ok {
 			return reason, false
 		}
 		values[index] = value
+		outcomes[index] = lo.snapshotLocals()
 		return "", true
 	})
 	if !ok {
 		return nil, reason, false
+	}
+	lo.restoreLocals(before)
+	for name, local := range lo.locals {
+		if _, existed := before[name]; !existed {
+			continue
+		}
+		if local.agg != nil {
+			merged := outcomes[fallback][name].agg
+			for i := len(cases) - 1; i >= 0; i-- {
+				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
+			}
+			local.agg = merged
+			continue
+		}
+		merged := outcomes[fallback][name].value
+		for i := len(cases) - 1; i >= 0; i-- {
+			if v := outcomes[cases[i].index][name].value; v != merged {
+				merged = iteTerm(cases[i].cond, v, merged)
+			}
+		}
+		local.value = merged
 	}
 	result := values[fallback]
 	for i := len(cases) - 1; i >= 0; i-- {
@@ -6279,9 +6310,22 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 		}
 		return lo.lowerArm(whenFalse)
 	}
+	return lo.forkLocals(cond,
+		func() (string, bool) { return lo.lowerArm(whenTrue) },
+		func() (string, bool) { return lo.lowerArm(whenFalse) })
+}
+
+// forkLocals runs the two arms of a Bool conditional from the same locals
+// — the true arm under cond, the false arm under its negation, each on a
+// snapshot of the locals before — and leaves every local (a package cell
+// among them) either arm assigned as a select on the condition. The
+// statement conditional and the value-position conditionals (a scalar, an
+// aggregate) share it: an arm's block may assign before its value, and an
+// assignment that escaped the merge would stand unconditionally.
+func (lo *oakLowering) forkLocals(cond *term, whenTrue, whenFalse func() (string, bool)) (string, bool) {
 	before := lo.snapshotLocals()
 	restore := lo.underPath(cond)
-	reason, ok = lo.lowerArm(whenTrue)
+	reason, ok := whenTrue()
 	restore()
 	if !ok {
 		return reason, false
@@ -6289,11 +6333,18 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 	afterTrue := lo.snapshotLocals()
 	lo.restoreLocals(before)
 	restore = lo.underPath(notTerm(cond))
-	reason, ok = lo.lowerArm(whenFalse)
+	reason, ok = whenFalse()
 	restore()
 	if !ok {
 		return reason, false
 	}
+	lo.mergeLocals(cond, afterTrue)
+	return "", true
+}
+
+// mergeLocals selects, for every local both arms know, the true arm's
+// outcome (afterTrue) over the false arm's (the locals as they stand).
+func (lo *oakLowering) mergeLocals(cond *term, afterTrue map[string]localSnapshot) {
 	for name, local := range lo.locals {
 		snap, seen := afterTrue[name]
 		if !seen {
@@ -6312,7 +6363,6 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 			local.value = iteTerm(truncate(cond, 1), snap.value, local.value)
 		}
 	}
-	return "", true
 }
 
 // lowerMatchStatement executes a statement-position match: every arm runs
@@ -6759,6 +6809,45 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
 				continue
 			}
+			if root, indexExpr, path, isField := elementFieldOperand(arg); isField {
+				if recordArg, isRecordSpan := lo.recordSpans[root]; isRecordSpan {
+					if _, shadowed := lo.locals[root]; !shadowed {
+						// `view(&s[i].f)` / `span(&s[i].f)` over a span of
+						// records: the callee's parameter is an alias of the
+						// field's leaf memory (`s.f`) at the offset i·N with
+						// the field's length (docs/spec/50-borrowing.md §2),
+						// as the asm side binds it (summarizeCall).
+						var count int64
+						width := 0
+						for _, leaf := range recordArg.leaves {
+							if strings.HasPrefix(leaf.name, path+"[") {
+								count++
+								width = leaf.width
+							}
+						}
+						if count == 0 {
+							return nil, fmt.Sprintf("a call to %s: %s is not an array field of %s's element", name, path, root), false
+						}
+						elem, _, _ := spanShape(param.Type)
+						if int(elem)*8 != width {
+							return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, arg.String(), width, elem*8), false
+						}
+						idx, reason, ok := lo.lower(indexExpr, 32)
+						if !ok {
+							return nil, reason, false
+						}
+						if lo.concrete != nil {
+							lo.addTrap(cmpTerm("hs", idx, lo.spanLenTerm(root, 32)))
+						}
+						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+						calleeSpans[param.Name.Value] = spanContract{elemWidth: width, signed: strings.HasPrefix(elemType, "i")}
+						calleeAlias[param.Name.Value] = lo.spanRoot(root) + path
+						calleeOffset[param.Name.Value] = binaryTerm("mul", idx, constTerm(uint64(count), 32))
+						calleeLen[param.Name.Value] = constTerm(uint64(count), 32)
+						continue
+					}
+				}
+			}
 			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
 				// A span parameter passed on: the callee's parameter is an
 				// alias of the caller's span, sharing its memory
@@ -6932,6 +7021,45 @@ func isBorrowType(expr ast.Expression) bool {
 
 // addressOfOperand names the local a `span(&x)` / `view(&x)` argument
 // borrows, or a bare span local passed on.
+// elementFieldOperand recognizes `view(&s[i].f…)` / `span(&s[i].f…)`: the
+// sequence s, the element index, and the field path below the element
+// (`.f`, `.f.g`) as a record span's leaf prefix.
+func elementFieldOperand(arg ast.Expression) (root string, index ast.Expression, path string, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return "", nil, "", false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || (fn.Value != "span" && fn.Value != "view") {
+		return "", nil, "", false
+	}
+	prefix, isPrefix := call.Arguments[0].(*ast.PrefixExpression)
+	if !isPrefix || prefix.Operator != "&" {
+		return "", nil, "", false
+	}
+	cur, isIndex := prefix.Right.(*ast.IndexExpression)
+	if !isIndex || !cur.Dot {
+		return "", nil, "", false
+	}
+	for cur.Dot {
+		field, isName := cur.Index.(*ast.Identifier)
+		if !isName {
+			return "", nil, "", false
+		}
+		path = "." + field.Value + path
+		next, isNext := cur.Left.(*ast.IndexExpression)
+		if !isNext {
+			return "", nil, "", false
+		}
+		cur = next
+	}
+	base, isBase := cur.Left.(*ast.Identifier)
+	if !isBase {
+		return "", nil, "", false
+	}
+	return base.Value, cur.Index, path, true
+}
+
 func addressOfOperand(arg ast.Expression) string {
 	if call, isCall := arg.(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
 		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && (fn.Value == "span" || fn.Value == "view") {
@@ -7480,16 +7608,14 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return lo.lower(whenFalse, width)
 		}
-		restore := lo.underPath(cond)
-		left, reason, okL := lo.lower(whenTrue, width)
-		restore()
-		if !okL {
-			return nil, reason, false
-		}
-		restore = lo.underPath(notTerm(cond))
-		right, reason, okR := lo.lower(whenFalse, width)
-		restore()
-		if !okR {
+		// Each arm on the locals before it, the locals after selected on
+		// the condition (forkLocals): an arm's block may assign a local or
+		// a package cell before its value.
+		var left, right *term
+		reason, ok = lo.forkLocals(cond,
+			func() (reason string, ok bool) { left, reason, ok = lo.lower(whenTrue, width); return },
+			func() (reason string, ok bool) { right, reason, ok = lo.lower(whenFalse, width); return })
+		if !ok {
 			return nil, reason, false
 		}
 		return iteTerm(cond, left, right), "", true
@@ -8033,10 +8159,8 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
-				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-			}
-			// The span memories are the comparison, under the loop coupling.
+			// The span memories and the package cells are the comparison,
+			// under the loop coupling.
 			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
 		}
 		if verdict, refuted := trapClaim(); refuted {
@@ -8055,9 +8179,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-		}
+
 		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 		verdict.Callees = exec.summarized
 		return verdict
@@ -8312,9 +8434,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.loopStack = append([]int(nil), x.loopStack...)
 	lo.writableSpans = map[string]bool{}
 	lo.rootContracts = map[string]spanContract{}
-	for _, span := range writableSpanParams(x.fn, x.spans) {
+	for _, span := range writableSpanParams(x.fn, x.spans, x.recordSpans) {
 		lo.writableSpans[span] = true
-		lo.rootContracts[span] = spanContract{elemWidth: int(x.spans[span]) * 8}
+		if elem, scalar := x.spans[span]; scalar {
+			lo.rootContracts[span] = spanContract{elemWidth: int(elem) * 8}
+		}
 	}
 	// The arguments by the shared layout (asm/abi.go): registers while
 	// they fit, then the caller's outgoing area — slots of this path's
@@ -8513,6 +8637,34 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 							lo.spanOffset[param.Name.Value] = offset
 						}
 						lo.spanLen[param.Name.Value] = truncate(length, 32)
+						break
+					}
+				}
+			}
+			if !whole && hasBase && hasLen {
+				// A view or span of an array field of a record span's
+				// element (`view(&stages[k].coeffs)`, docs/spec/50-borrowing.md
+				// §2): the base is the element's address plus the field's
+				// offset, the length the field's constant element count —
+				// the callee's parameter is an alias of the field's leaf
+				// memory (`stages.coeffs`) at the linear offset k·N.
+				if span, index, offset, isElement := x.recordElementOf(base, 0); isElement {
+					if recordArg, isRecordSpan := x.recordSpans[span]; isRecordSpan {
+						prefix, count, stride, isField := recordArg.arrayFieldAt(offset)
+						if !isField || stride != arg.elem || length.kind != termConst || int64(length.value) != count {
+							return fmt.Sprintf("a call to %s: the span argument %s borrows %s's element at offset %d, which is not an array field of %d-byte elements passed whole", name, param.Name.Value, span, offset, arg.elem), false
+						}
+						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+						lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+						if lo.spanAlias == nil {
+							lo.spanAlias = map[string]string{}
+						}
+						lo.spanAlias[param.Name.Value] = span + prefix
+						if lo.spanOffset == nil {
+							lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+						}
+						lo.spanOffset[param.Name.Value] = binaryTerm("mul", truncate(index, 32), constTerm(uint64(count), 32))
+						lo.spanLen[param.Name.Value] = constTerm(uint64(count), 32)
 						break
 					}
 				}
@@ -9040,6 +9192,19 @@ func (lo *oakLowering) recordSpanField(e *ast.IndexExpression) (t *term, width i
 	return memoryAt(lo.writes[place.memory], place.index, entry), place.width, true, "", true
 }
 
+// memoryContract is the element contract of a memory a body stores
+// through: a span parameter's own, or — a span of records' leaf memory
+// (`s.pages`) — the leaf's width (docs/spec/94-assembler.md §9).
+func (lo *oakLowering) memoryContract(memory string) (spanContract, bool) {
+	if contract, isSpan := lo.spans[memory]; isSpan {
+		return contract, true
+	}
+	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+		return spanContract{elemWidth: width}, true
+	}
+	return spanContract{}, false
+}
+
 // recordLeafWidth is the width of a record span's leaf named by a
 // parameter `v[k].f` (elementParam folds it to the memory `v.f`).
 func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
@@ -9048,7 +9213,7 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 		return 0, false
 	}
 	span := lo.spanRoot(memory[:dot])
-	arg, isRecord := lo.recordSpans[span]
+	arg, _, isRecord := lo.recordSpanAtRoot(span)
 	if !isRecord {
 		return 0, false
 	}
@@ -9063,6 +9228,17 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// spanMemoryWidth is the element width of a scalar span memory or one of a
+// record span's per-leaf memories. Proof code uses this single lookup so both
+// kinds receive the same final-memory and loop-coupling checks.
+func (lo *oakLowering) spanMemoryWidth(memory string) (int, bool) {
+	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+		return width, true
+	}
+	contract, isSpan := lo.spans[memory]
+	return contract.elemWidth, isSpan
 }
 
 // declareCells gives every global the body addresses a local at its entry
@@ -9433,18 +9609,30 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 					// The arms are canonical already (children first); the
 					// mask is applied to each without re-entering the
 					// canonicalizer, a nested conditional arm by arm.
+					// Memoized over the arms: the conditional is a DAG whose
+					// arms share subterms (a merge of many paths), and the
+					// walk must visit each once.
+					arms := map[*term]*term{}
 					var arm func(x *term) *term
 					arm = func(x *term) *term {
+						if done, seen := arms[x]; seen {
+							return done
+						}
+						var masked *term
 						if x.kind == termIte {
-							return iteTerm(x.cond, arm(x.left), arm(x.right))
+							masked = iteTerm(x.cond, arm(x.left), arm(x.right))
+						} else {
+							switch {
+							case right.value == mask(left.width) && left.width < t.width:
+								masked = zeroExtend(adaptWidth(x, left.width), t.width)
+							case right.value == mask(t.width):
+								masked = adaptWidth(x, t.width)
+							default:
+								masked = adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+							}
 						}
-						switch {
-						case right.value == mask(left.width) && left.width < t.width:
-							return zeroExtend(adaptWidth(x, left.width), t.width)
-						case right.value == mask(t.width):
-							return adaptWidth(x, t.width)
-						}
-						return adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+						arms[x] = masked
+						return masked
 					}
 					out = iteTerm(left.cond, arm(left.left), arm(left.right))
 				case right.value == mask(t.width) && left.width > t.width:

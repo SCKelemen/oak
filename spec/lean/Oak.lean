@@ -8,6 +8,7 @@ import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
 import Oak.AArch64Memory
+import Oak.AArch64WeakMemory
 import Oak.AArch64Barrier
 import Oak.AArch64Mmio
 import Oak.AArch64SysReg
@@ -81,6 +82,7 @@ import Oak.ArmASL
 import Oak.Extents
 import Oak.ExtentsRefinement
 import Oak.CheckerRefinement
+import Oak.CheckerMeetRefinement
 import Oak.Dispatch
 import Oak.Discharge
 import Oak.FloatBits
@@ -104,6 +106,7 @@ import Oak.CheckedArithmeticRefinement
 import Oak.ConversionRefinement
 import Oak.LiteralFitRefinement
 import Oak.LoweringRefinement
+import Oak.FloatLoweringRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.TrapArms

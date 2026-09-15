@@ -36,8 +36,12 @@ type Allocation struct {
 //
 // The result is a new function value with the rewritten items and the
 // clobbers it needs; the input is not modified.
-func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
-	promotedFn, promoted, err := Promote(fn)
+func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) { return ReallocateWith(fn, nil) }
+
+// ReallocateWith is Reallocate with the lowering's frame layout, when
+// known (PromoteWith).
+func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Allocation, error) {
+	promotedFn, promoted, err := PromoteWith(fn, objects)
 	if err != nil {
 		return nil, nil, err
 	}

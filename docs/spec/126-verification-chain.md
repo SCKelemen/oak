@@ -126,6 +126,15 @@ agrees, **trusted** when the unit reaches outside the decided subset
 labeled. Then the assembler encodes the words itself (§9) and writes the
 companion object; the object format and lane are those of `Oak.Target`.
 
+The seam checker's join rule for index bounds is **refined**:
+`Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s
+per-register equality/reconciliation decision, and `meetFact_sound` proves
+that every retained bound holds on both predecessor register states. The Go
+decision table is pinned to executable Lean examples by
+`asm/check_meet_test.go`. This closes that join rule only; it does not turn
+the whole seam checker or semantic verifier into a certificate-checked
+implementation.
+
 ### 2.6 Object → binary
 
 Linking is the C compiler's driver (`compileC`), static for Linux cross
@@ -137,7 +146,7 @@ QEMU where present.
 
 | Target | Source → C | C → object | Asm/native lane | ISA semantics the lane is held to | Encoding | Execution check |
 | --- | --- | --- | --- | --- | --- | --- |
-| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); every trusted-core helper translation-validated through the verifier, as clang builds it at armv8.0, at armv8.1-a and for the Apple cores (73 proven, 20 witnessed) | arm64: verifier proof/evidence/trusted; atomics and division decided under the sequential model | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics`; the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc` | silicon **differential** (181 bodies × 60 inputs on the host core) |
+| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); every trusted-core helper translation-validated through the verifier, as clang builds it at armv8.0, at armv8.1-a and for the Apple cores (73 proven, 20 witnessed) | arm64: verifier proof/evidence/trusted; atomics and division decided under the sequential model | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics` (including complete NZCV equality for addition, subtraction, and `ccmp`; signed overflow is proved generically with direct 32-/64-bit corollaries); the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc`; proof against Arm's decoder remains open | silicon **differential** (181 bodies × 60 inputs on the host core) |
 | linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); every trusted-core helper translation-validated through the verifier (75 proven, 18 witnessed) | rv64: same verifier, RISC-V semantics (`Oak.RiscV`); loads, stores and the A extension's `lr`/`sc`/`amo*` through spans decided under the sequential model | **bridged to the Sail RISC-V model**: `spec/lean-sail` builds against the export itself (Sail from git, sail-riscv 497209b9) — 53 semantics theorems (every integer instruction the verifier decides, the pure parts of loads and stores) and 30 encoding theorems; `Oak.SailRiscVBridge` keeps the R/W/B subset checkable without the export; the memory monad stays audited | own encoder (`rv64_encodings_gen`, RV64IMAFD + the V and C subsets) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
 | linux/amd64, darwin/amd64, freestanding/amd64 | refined core + differential | trusted (cc) | **none** (`Oak.Target.lane = none`) | **none**: no Oak semantics of x86-64 and no bridge to a machine-readable x86 specification | none | host execution (differential) |
 | freestanding/arm (Cortex-M), freestanding/riscv32 | refined core + differential; ILP32 proved | trusted (cc) | none | none (Arm's M-profile ASL is not public; `docs/notes/oak-cortex-m-deferred`) | none | cross build only |
@@ -260,9 +269,22 @@ same terms. A data-dependent loop is covered up to the meaning of its
 fresh symbols: the theorem holds for every parameter assignment that
 reads them as the exit values, which is what the symbols stand for, and
 the event's condition and body are instances of the same theorem over any
-iteration's values. Outside the subset — floats and the vector operations
-— the verifier's lowering is still the Go's alone, related to the
-extraction by tests.
+iteration's values.
+
+The first float seam is `Oak.FloatLoweringRefinement` (2026-09-15). Its
+`lowerF_eval` proves, for every straight-line expression over `f32` parameters,
+post-rounding bit-pattern literals, and local declarations or rebindings using
+`+`, `-`, and `*`, plus unary negation, `abs`, and `copysign`, that the
+extraction's exact `Oak.FloatOps` reading equals the verifier term's matching
+arithmetic or sign-bit reading. The generalized `lowerWith_eval` maintains
+the agreement invariant while the verifier substitutes a local's lowered
+initializer. The operation map, operand order, literal bits, and substitution
+shapes are pinned to `oakLowering.lower` by
+`asm/lowering_refinement_test.go`, including the non-contraction of
+`a * b + c` and the sign-mask forms. This is deliberately still a first slice:
+decimal parsing into the literal bits, comparisons, conversions, spans,
+control flow, calls, `f64`, and vector operations remain related to the
+extraction by tests rather than this theorem.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -323,12 +345,18 @@ for a workload):
    What the native bodies use is covered, data-dependent loops included
    (`whileEvent`: the carried locals as fresh symbols after the loop, the
    theorem under assignments where the symbols denote the exit values);
-   what remains is at the edges: floats and vectors — so `lowerT_eval`
-   covers the
-   bodies `oak build -native` actually verifies rather than their
+   what remains is at the edges: most floats and vectors — so `lowerT_eval`
+   covers the bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
-   functions on arm64.
+   functions on arm64. **First float slice (2026-09-15):**
+   `Oak.FloatLoweringRefinement.lowerF_eval` connects exact `f32` `+`, `-`,
+   `*`, unary negation, `abs`, and `copysign` over parameters, post-rounding
+   literal bits, and straight-line local declaration/rebinding to the verifier's
+   width-32 operation/sign-bit terms and local substitution; the production
+   render pins cover those shapes and a multiply followed by an add. Decimal
+   parsing, comparisons, conversions, memory, control flow, calls, and the rest
+   of the float/vector edge stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

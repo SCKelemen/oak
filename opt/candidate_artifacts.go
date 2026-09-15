@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -11,10 +12,15 @@ import (
 // candidateArtifactKeys are the typed gates for one exact materialized body.
 // A verdict is added only when the bounded search elects to validate the body.
 type candidateArtifactKeys struct {
+	input     ArtifactKey
 	candidate ArtifactKey
 	admission ArtifactKey
 	metrics   ArtifactKey
 	cost      ArtifactKey
+}
+
+type candidateMaterializationValue struct {
+	candidate *Candidate
 }
 
 type candidateArtifactValue struct {
@@ -82,17 +88,29 @@ func newCandidateArtifactPipeline(function string, driver Driver, costs CostMode
 	}, nil
 }
 
-// add records the candidate, admission, metrics, and cost recipes for one
-// already-materialized body. Materialization remains the dynamic proposal
-// search's responsibility until backend configurations have canonical keys.
-func (pipeline *candidateArtifactPipeline) add(candidate *Candidate) (candidateArtifactKeys, error) {
+// materialize records and executes the complete lowering-to-cost recipe. The
+// driver's canonical recipe key lets the graph identify the candidate before
+// its body exists.
+func (pipeline *candidateArtifactPipeline) materialize(candidate *Candidate) (candidateArtifactKeys, error) {
+	recipe, err := pipeline.driver.MaterializationKey(candidate)
+	if err != nil {
+		return candidateArtifactKeys{}, err
+	}
+	if recipe == "" {
+		return candidateArtifactKeys{}, errors.New("opt: candidate materialization has an empty recipe key")
+	}
+	input := ArtifactKey{
+		Kind:    ArtifactChecked,
+		Name:    "search.materialization-input",
+		Version: candidateMaterializationVersion(pipeline.function, recipe, candidate),
+	}
 	key := ArtifactKey{
 		Kind:    ArtifactCandidate,
 		Name:    "search.candidate",
-		Version: candidateArtifactVersion(pipeline.function, candidate),
+		Version: DeriveArtifactVersion("oak.search.materialize.v1", input),
 	}
 	if nodes, exists := pipeline.nodes[key]; exists {
-		return nodes, nil
+		return pipeline.materializedCandidate(candidate, nodes)
 	}
 
 	snapshot := freezeCandidate(candidate)
@@ -111,13 +129,32 @@ func (pipeline *candidateArtifactPipeline) add(candidate *Candidate) (candidateA
 		Name:    "search.cost",
 		Version: DeriveArtifactVersion("oak.search.cost.v1:"+pipeline.costs.Name(), metrics),
 	}
-	nodes := candidateArtifactKeys{candidate: key, admission: admission, metrics: metrics, cost: cost}
+	nodes := candidateArtifactKeys{input: input, candidate: key, admission: admission, metrics: metrics, cost: cost}
 
 	tasks := []ArtifactTask{
 		{
-			Key: key,
+			Key: input,
 			Compute: func(context.Context, []Artifact) (any, error) {
-				return candidateArtifactValue{candidate: snapshot}, nil
+				return candidateMaterializationValue{candidate: snapshot}, nil
+			},
+		},
+		{
+			Key:          key,
+			Dependencies: []ArtifactKey{input},
+			Compute: func(ctx context.Context, dependencies []Artifact) (any, error) {
+				plan, err := candidateDependencyValue[candidateMaterializationValue](dependencies, 0)
+				if err != nil {
+					return nil, err
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				materialized := freezeCandidate(plan.candidate)
+				if err := pipeline.driver.Materialize(materialized); err != nil {
+					return nil, err
+				}
+				materialized.Key = pipeline.driver.Key(materialized)
+				return candidateArtifactValue{candidate: freezeCandidate(materialized)}, nil
 			},
 		},
 		{
@@ -178,6 +215,26 @@ func (pipeline *candidateArtifactPipeline) add(candidate *Candidate) (candidateA
 		}
 	}
 	pipeline.nodes[key] = nodes
+	return pipeline.materializedCandidate(candidate, nodes)
+}
+
+func (pipeline *candidateArtifactPipeline) materializedCandidate(candidate *Candidate, nodes candidateArtifactKeys) (candidateArtifactKeys, error) {
+	run, err := pipeline.graph.Run(context.Background(), pipeline.cache, nodes.candidate)
+	if err != nil {
+		var failure *ArtifactTaskError
+		if errors.As(err, &failure) && failure.Key == nodes.candidate {
+			return candidateArtifactKeys{}, failure.Err
+		}
+		return candidateArtifactKeys{}, err
+	}
+	value, err := candidateRunValue[candidateArtifactValue](run, nodes.candidate)
+	if err != nil {
+		return candidateArtifactKeys{}, err
+	}
+	if value.candidate == nil {
+		return candidateArtifactKeys{}, fmt.Errorf("opt: materialization produced a nil candidate for %s", nodes.candidate)
+	}
+	*candidate = *freezeCandidate(value.candidate)
 	return nodes, nil
 }
 
@@ -380,14 +437,32 @@ func (pipeline *candidateArtifactPipeline) choose(validated []Validated, order [
 	return candidateRunValue[candidateSelectionValue](run, key)
 }
 
-func candidateArtifactVersion(function string, candidate *Candidate) string {
+func candidateMaterializationVersion(function, recipe string, candidate *Candidate) string {
 	digest := sha256.New()
-	writeArtifactDigestPart(digest, "oak.search.candidate.v1")
+	writeArtifactDigestPart(digest, "oak.search.materialization-input.v1")
+	writeArtifactDigestPart(digest, "function")
 	writeArtifactDigestPart(digest, function)
-	writeArtifactDigestPart(digest, candidate.Key)
+	writeArtifactDigestPart(digest, "recipe")
+	writeArtifactDigestPart(digest, recipe)
+	writeArtifactDigestPart(digest, "refined")
 	writeArtifactDigestPart(digest, strconv.Itoa(candidate.Refined))
+	writeArtifactDigestPart(digest, "applied")
+	writeArtifactDigestPart(digest, strconv.Itoa(len(candidate.Applied)))
 	for _, transform := range candidate.Applied {
 		writeArtifactDigestPart(digest, transform)
+	}
+	writeArtifactDigestPart(digest, "facts")
+	writeArtifactDigestPart(digest, strconv.Itoa(len(candidate.Facts)))
+	for _, fact := range candidate.Facts {
+		writeArtifactDigestPart(digest, "fact")
+		writeArtifactDigestPart(digest, fact.Proposition.Kind)
+		writeArtifactDigestPart(digest, strconv.Itoa(len(fact.Proposition.Terms)))
+		for _, term := range fact.Proposition.Terms {
+			writeArtifactDigestPart(digest, term)
+		}
+		writeArtifactDigestPart(digest, strconv.Itoa(int(fact.Provenance)))
+		writeArtifactDigestPart(digest, fact.Source)
+		writeArtifactDigestPart(digest, fact.Scope)
 	}
 	return hex.EncodeToString(digest.Sum(nil))
 }
@@ -410,6 +485,9 @@ func freezeCandidate(candidate *Candidate) *Candidate {
 	clone := *candidate
 	clone.Applied = append([]string(nil), candidate.Applied...)
 	clone.Facts = append([]Fact(nil), candidate.Facts...)
+	for index := range clone.Facts {
+		clone.Facts[index].Proposition.Terms = append([]string(nil), candidate.Facts[index].Proposition.Terms...)
+	}
 	clone.Metrics = freezeMetrics(candidate.Metrics)
 	return &clone
 }
