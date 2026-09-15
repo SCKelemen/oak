@@ -191,10 +191,25 @@ call's clobber, an elided callee-saved restore — before the liveness and
 the restore rule were added; the checker would have refused the bodies,
 but the pass should not propose them.
 
+Second increment: machine-level loop-invariant code motion on the loop
+tree (`machine.HoistInvariants`). Innermost loop first, an instruction
+moves to the loop's unique preheader when it is pure and reads no
+condition flags, defines one register whose web has that single
+definition and is neither pinned nor reserved, has every input defined
+outside the loop, loads from the frame only when the loop neither stores
+through sp nor calls, and clobbers no other web of its register anywhere
+from the preheader to the loop's end — a hoisted value read inside the
+loop is live around every trip, which the first refusal test caught when
+the check stopped at the last use. One instruction moves at a time with
+the webs and liveness recomputed, so every decision reads current
+ranges; an inner loop's invariant climbs again with the outer loop in the
+next round. The lowering's own hoisting (nativegen/licm.go) runs first as
+its own transform; this pass takes what remains after every other
+transform, inside reallocation, and the verifier judges the result.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, scheduling, machine-level LICM on the loop tree, and the
-recurrence analysis.
+directly, scheduling, and the recurrence analysis.
 
 ### Phase C, checked projection and first analysis: `optir/`
 

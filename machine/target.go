@@ -58,6 +58,10 @@ type target struct {
 	// system effect, and no load from anywhere but the frame. Such an
 	// instruction may go when no one reads its results.
 	pure func(asm.Instruction) bool
+	// readsFlags reports an instruction whose result depends on the
+	// condition flags (csel, cset, ...): pure, but not movable past the
+	// compare that sets them.
+	readsFlags func(asm.Instruction) bool
 	// frame is the lowering's prologue and epilogue shape (growCalleeSaved).
 	frame frameShape
 }
@@ -168,6 +172,13 @@ var arm64Target = &target{
 		return asm.Register{Text: "x" + itoa(r.Num), Class: asm.ClassX, Num: r.Num, Lane: -1}
 	},
 	pure: arm64Pure,
+	readsFlags: func(a asm.Instruction) bool {
+		switch a.Mnemonic {
+		case "csel", "cset", "csetm", "csinc", "csinv", "csneg", "cneg", "cinc", "cinv", "fcsel", "ccmp", "ccmn":
+			return true
+		}
+		return false
+	},
 	frame: frameShape{
 		isPairSave: func(a asm.Instruction) (int64, bool) {
 			regs, off, ok := gprStore(a, "stp")
@@ -508,8 +519,9 @@ var rv64Target = &target{
 		}
 		return asm.Instruction{Mnemonic: "mv", Operands: []asm.Operand{dst, src}, Line: line}
 	},
-	clobber: rv64Register,
-	pure:    rv64Pure,
+	clobber:    rv64Register,
+	pure:       rv64Pure,
+	readsFlags: func(asm.Instruction) bool { return false },
 	frame: frameShape{
 		isPairSave: func(a asm.Instruction) (int64, bool) {
 			regs, off, ok := gprStore(a, "sd")
