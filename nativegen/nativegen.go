@@ -1447,7 +1447,7 @@ type generator struct {
 	liveFlags  string
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
-	held map[int64]heldSlot
+	held map[heldKey]heldSlot
 	// promotable/promoted: record fields kept in registers (nativegen/fields.go).
 	promotable    map[string][]string
 	promoted      map[string]*promotedRecord
@@ -1514,6 +1514,12 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
+	// VectorReductions rewrites the plain u64 and u32 reductions into
+	// vector-accumulator loops (nativegen/vector_reduction.go) instead of
+	// the scalar unrolling; the verifier judges the lowering against the
+	// rewritten body, the search keeps the scalar forms where it does not
+	// prove.
+	VectorReductions bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1708,7 +1714,7 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops)
+		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorReductions)
 		if err != nil {
 			return out, err
 		}
@@ -1753,7 +1759,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false)
 }
 
 // Reallocated reports how many webs a lowering recolored and copies it
@@ -1821,14 +1827,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vectorize bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, strength) {
+	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -2603,6 +2609,27 @@ func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (
 		return g.fillRecord(layout, e, "")
 	case *ast.InvocationExpression:
 		return g.callRecord(e)
+	case *ast.BlockExpression:
+		// An expanded aggregate helper (nativegen/inline.go): its
+		// statements, then its tail as the value. A record local the tail
+		// names keeps its storage past the scope (popScope frees no
+		// record's slots).
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return nil, unsupported("an empty block in record position")
+		}
+		stmts := e.Block.Statements
+		tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+		if !isExpr || tail.Discard {
+			return nil, unsupported("a block whose last statement is not its record value")
+		}
+		g.pushScope()
+		if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], tail); err != nil {
+			g.popScope()
+			return nil, err
+		}
+		rec, err := g.recordValueAs(tail.Expression, expected)
+		g.popScope()
+		return rec, err
 	}
 	return nil, unsupported("a record value %s", expr.String())
 }
@@ -3913,6 +3940,22 @@ func (g *generator) bindArrayParamRef(name string, rp *recordParam, elem scalar,
 // address_of), or calls the function itself (a tail self-call rebinds the
 // parameters) — the uses under which the parameter needs a copy of its own.
 func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
+	// A read-only borrow, `view(&p…)`, reads the parameter and nothing
+	// else: it leaves the parameter untouched (docs/spec/94-assembler.md §9
+	// "Read-only borrows"; Oak.ReadOnlyBorrow.view_of_copy). A writable
+	// span, `span(&p…)`, and the address taken by any other call touch it.
+	readOnly := map[*ast.PrefixExpression]bool{}
+	walk(fn.Body, func(n ast.Node) {
+		call, isCall := n.(*ast.InvocationExpression)
+		if !isCall || len(call.Arguments) != 1 {
+			return
+		}
+		if fnName, isIdent := call.Function.(*ast.Identifier); isIdent && fnName.Value == "view" {
+			if borrow, isBorrow := call.Arguments[0].(*ast.PrefixExpression); isBorrow && borrow.Operator == "&" {
+				readOnly[borrow] = true
+			}
+		}
+	})
 	touched := false
 	walk(fn.Body, func(n ast.Node) {
 		switch e := n.(type) {
@@ -3925,7 +3968,7 @@ func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
 				touched = true
 			}
 		case *ast.PrefixExpression:
-			if e.Operator == "&" {
+			if e.Operator == "&" && !readOnly[e] {
 				if root, ok := pathRoot(e.Right); ok && root == name {
 					touched = true
 				}
@@ -7817,6 +7860,19 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 	// GuardLines is keyed by the line the emitted instructions carry (the
 	// statement's, g.line), the line a checker finding names.
 	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && (g.tc.IndexProven(*tok) || rewriteProvenIndex(*tok)) {
+		// A constant index the typechecker proved (`state[0]` under
+		// `assert(len(state) == u32(1))`, `src[3]` under `len(src) >= 4`):
+		// the constant in a register with no guard; the checker knows the
+		// register's value and admits the access from the span's proven
+		// minimum (Oak.Assembler.constant_index_bound, exact_length_min).
+		if k, isConst := constantValue(index); isConst && k >= 0 && k < 1<<32 {
+			r, err := g.indexValue(index)
+			if err != nil {
+				return 0, err
+			}
+			g.elided++
+			return r, nil
+		}
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {

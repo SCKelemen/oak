@@ -160,6 +160,7 @@ var setAside = map[string]string{
 	nativegen.TransformUnroll:      "keeps its plain reduction",
 	nativegen.TransformVectorHomes: "keeps its vector slots",
 	nativegen.TransformCleanup:     "keeps its copies",
+	nativegen.TransformVectorize:   "keeps its scalar reduction",
 	nativegen.TransformReallocate:  "keeps its register assignment",
 }
 

@@ -275,6 +275,54 @@ build skips). At 30ca36eb the kernel lowers, is witnessed on nineteen
 inputs, agrees with the C backend's checksum, and runs at 2.8× the C
 backend's time — the same scalar-loop gap as `sum` and `dot`.
 
+## Reduction vectorization, 2026-09-16
+
+The integer reduction's accumulators as vector lanes
+(`docs/spec/94-assembler.md` §9 "Reduction vectorization"), measured over
+2^20 elements, best of seven rounds of two hundred calls, alternated with
+the baseline on a host at load average 90–115; each row is the body the
+candidate search selected for that configuration, and every row's
+checksum agrees.
+
+| Form of the `u32` reduction | ns/element | verdict |
+| --- | ---: | --- |
+| four scalar accumulators (the unrolling, the baseline) | 0.127–0.162 | proven |
+| one `simd.U32x4` accumulator, four elements an iteration | 0.174–0.198 | proven |
+| two `simd.U32x4`, eight elements an iteration (**selected**) | 0.076–0.101 | proven |
+| four `simd.U32x4`, sixteen elements an iteration | 0.045–0.058 | witnessed |
+
+| Form of the `u64` reduction | ns/element | verdict |
+| --- | ---: | --- |
+| four scalar accumulators (the unrolling, **selected**) | 0.136–0.196 | proven |
+| four `simd.U64x2`, eight elements an iteration | 0.118–0.121 | proven |
+
+What the rows say:
+
+- **One vector accumulator is slower than four scalar ones**, though it
+  is fewer instructions (six per four elements against ten) and the
+  static model prices it cheaper. A 128-bit lane-wise add is one
+  loop-carried chain where four scalar adds are four; the interleave, not
+  the vector width, is what breaks the chain. The first shape this
+  increment tried was the four-element one, and measuring it is what sent
+  the rewrite to eight.
+- **Sixteen elements an iteration is faster still** (2.4× the baseline)
+  but only witnessed: the verifier does not prove the results after two
+  loops equal with four vector accumulators and a sixteen-lane combine.
+  The search will not take a weaker verdict than the plain lowering earns,
+  so it is not selected; proving that shape is the next step for this
+  plan.
+- **The `u64` vector form is proven and slightly faster** but is not
+  selected: the cost model prices it above the scalar unrolling, because
+  two lanes to a vector means four accumulators and, for lanes wider than
+  a byte, an address register per 128-bit load. The measured difference
+  (0.118 against 0.136–0.196) is inside this host's spread, so the model
+  is not clearly wrong; a quieter host would settle it, and the
+  `candidates` line of the optimization report is where to read the two
+  prices.
+- The `u64` rows also show the host's noise: the same body timed 0.136 and
+  0.196 in one alternated run, so only the `u32` ratio (1.6×, consistent
+  across three runs) is read as a result here.
+
 ## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a

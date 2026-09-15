@@ -3851,6 +3851,9 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
+	if holds, decided := impliesEqualCongruent(premise, a, b, widthOf, budget, depth); decided {
+		return holds, true
+	}
 	blasters := equalityBlasters(names, widths, a, b)
 	var stop atomic.Bool
 	type attempt struct{ holds, decided bool }
@@ -4260,7 +4263,11 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 	if a.kind != termIte || b.kind != termIte {
 		return false, false
 	}
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth); !decided || !holds {
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: arm rule: conditions not proven equal (holds=%v decided=%v; a.cond %d nodes, b.cond %d nodes)\n", holds, decided, termSize(a.cond, map[*term]int{}), termSize(b.cond, map[*term]int{}))
+		}
 		// The conditions may be each other's negation with the arms
 		// swapped (`x == 0 ? p : q` against `x != 0 ? q : p`, a branch
 		// taken on the other side): the arms are compared crosswise under
@@ -4273,15 +4280,92 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 	return impliesEqualArms(premise, a, b, widthOf, budget, depth)
 }
 
+// impliesEqualCongruent proves premise → (a = b) for two terms of one
+// shape by their operands: the same operation over operands proven equal
+// pairwise (a commutative one also with the operands crossed), the same
+// comparison, or a read of the same span at indices proven equal. Like
+// the arm rule it proves and never refutes — different operands may give
+// one value — so a part that fails leaves the decision to the whole. A
+// sum of a selected value and a call's result on both sides, each side
+// a diagram beyond any budget, is two small decisions.
+func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if a.kind != b.kind || a.width != b.width {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: congruence: shapes differ\n  a: %s\n  b: %s\n", spineOf(a, 4), spineOf(b, 4))
+		}
+		return false, false
+	}
+	pair := func(x, y *term) bool {
+		if x == nil || y == nil {
+			return x == y
+		}
+		holds, decided := impliesEqualDepth(premise, x, y, widthOf, budget, depth)
+		return decided && holds
+	}
+	switch a.kind {
+	case termBinary:
+		if a.op != b.op || a.left.width != b.left.width || a.right.width != b.right.width {
+			return false, false
+		}
+		if pair(a.left, b.left) && pair(a.right, b.right) {
+			return true, true
+		}
+		switch a.op {
+		case "add", "and", "or", "xor", "mul":
+			if a.left.width == b.right.width && a.right.width == b.left.width && pair(a.left, b.right) && pair(a.right, b.left) {
+				return true, true
+			}
+		}
+	case termCmp:
+		if a.op == b.op && pair(a.left, b.left) && pair(a.right, b.right) {
+			return true, true
+		}
+	case termSelect:
+		if a.name == b.name && pair(a.left, b.left) {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// spineOf renders a term's operator spine to the given depth (trace).
+func spineOf(t *term, depth int) string {
+	if t == nil {
+		return "-"
+	}
+	if depth == 0 {
+		return fmt.Sprintf("…%d", termSize(t, map[*term]int{}))
+	}
+	switch t.kind {
+	case termConst:
+		return fmt.Sprintf("%d", t.value)
+	case termParam:
+		return t.name
+	case termSelect:
+		return t.name + "[" + spineOf(t.left, depth-1) + "]"
+	case termIte:
+		return fmt.Sprintf("ite(%s, %s, %s)", spineOf(t.cond, depth-1), spineOf(t.left, depth-1), spineOf(t.right, depth-1))
+	case termCmp:
+		return fmt.Sprintf("(%s %s %s)", spineOf(t.left, depth-1), t.op, spineOf(t.right, depth-1))
+	}
+	return fmt.Sprintf("%s%d(%s, %s)", t.op, t.width, spineOf(t.left, depth-1), spineOf(t.right, depth-1))
+}
+
 // impliesEqualArms is the arms' half of impliesEqualByArms: a's condition
 // already proven b's, each pair of arms under it or its negation.
 func impliesEqualArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	taken := binaryTerm("and", premise, truncate(a.cond, 1))
 	if holds, decided := impliesEqualDepth(taken, a.left, b.left, widthOf, budget, depth); !decided || !holds {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: arm rule: taken arms not proven equal (holds=%v decided=%v; %d vs %d nodes)\n", holds, decided, termSize(a.left, map[*term]int{}), termSize(b.left, map[*term]int{}))
+		}
 		return false, false
 	}
 	other := binaryTerm("and", premise, notTerm(a.cond))
 	if holds, decided := impliesEqualDepth(other, a.right, b.right, widthOf, budget, depth); !decided || !holds {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: arm rule: other arms not proven equal (holds=%v decided=%v; %d vs %d nodes)\n", holds, decided, termSize(a.right, map[*term]int{}), termSize(b.right, map[*term]int{}))
+		}
 		return false, false
 	}
 	return true, true

@@ -62,10 +62,11 @@ func TestE2ENativeLiteralsVerdicts(t *testing.T) {
 	// merge at their joins and the calls' loops are summarized, so the
 	// loops couple and the witnesses agree (a proof waits on the classify
 	// results spelled alike on both sides).
-	for _, fn := range []string{"step_count_neon_abi", "step_first_neon_abi"} {
-		if !strings.Contains(joined, "asm unit "+fn+": proven") && !strings.Contains(joined, "asm unit "+fn+": agrees with its Oak body on") {
-			t.Errorf("%s must be proven or witnessed; diagnostics:\n%s", fn, joined)
-		}
+	if !strings.Contains(joined, "asm unit step_count_neon_abi: proven equal to its Oak body at the bit level — 13 nested data-dependent loops coupled inductively") {
+		t.Errorf("step_count must be proven by coupling its thirteen loops; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit step_first_neon_abi: proven") && !strings.Contains(joined, "asm unit step_first_neon_abi: agrees with its Oak body on") {
+		t.Errorf("step_first must be proven or witnessed; diagnostics:\n%s", joined)
 	}
 	if strings.Contains(joined, "left to the C backend") {
 		t.Errorf("every function of the module must be taken by the native backend; diagnostics:\n%s", joined)

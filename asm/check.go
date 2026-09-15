@@ -90,6 +90,7 @@ type guardState struct {
 	pages    map[int]string
 	addrs    map[int]string
 	slack    map[int]slackFact
+	slotIdx  map[int64]idxFact
 	le       map[int]int
 	diff     map[int]diffFact
 	sub      map[int]subFact
@@ -120,7 +121,7 @@ func (img *spanImage) equal(other *spanImage) bool {
 }
 
 func newGuardState() *guardState {
-	return &guardState{spans: map[int]*spanImage{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}, regions: map[int]region{}, pages: map[int]string{}, addrs: map[int]string{}, slack: map[int]slackFact{}, le: map[int]int{}, diff: map[int]diffFact{}, sub: map[int]subFact{}, lenEqual: map[int]int{}, sums: map[int]sumFact{}, upper: map[int]upperFact{}, mid: map[int]midFact{}}
+	return &guardState{spans: map[int]*spanImage{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}, regions: map[int]region{}, pages: map[int]string{}, addrs: map[int]string{}, slack: map[int]slackFact{}, slotIdx: map[int64]idxFact{}, le: map[int]int{}, diff: map[int]diffFact{}, sub: map[int]subFact{}, lenEqual: map[int]int{}, sums: map[int]sumFact{}, upper: map[int]upperFact{}, mid: map[int]midFact{}}
 }
 
 func (c *checker) guardSnapshot() *guardState {
@@ -129,6 +130,7 @@ func (c *checker) guardSnapshot() *guardState {
 		gs.spans[base] = &spanImage{lenReg: fact.lenReg, elem: fact.elem, writable: fact.writable, hasMin: fact.hasMin, minLen: fact.minLen, lens: copyMap(fact.lenRegs)}
 	}
 	gs.idx = copyMap(c.idxFacts)
+	gs.slotIdx = copyMap(c.slotIdx)
 	gs.frame = copyMap(c.frameAddrs)
 	gs.consts = copyMap(c.constFacts)
 	gs.regions = copyMap(c.regions)
@@ -153,6 +155,7 @@ func (c *checker) applyGuards(gs *guardState) {
 		c.spans[base] = &spanFact{lenReg: img.lenReg, elem: img.elem, writable: img.writable, hasMin: img.hasMin, minLen: img.minLen, lenRegs: copyMap(img.lens)}
 	}
 	c.idxFacts = copyMap(gs.idx)
+	c.slotIdx = copyMap(gs.slotIdx)
 	// A materialized condition is not carried through the meet: a
 	// boolean tested after a label proves nothing (the join's other
 	// predecessors may have written it).
@@ -224,6 +227,7 @@ func meetGuards(a, b *guardState) *guardState {
 	out.pages = meetMap(a.pages, b.pages)
 	out.addrs = meetMap(a.addrs, b.addrs)
 	out.slack = meetMap(a.slack, b.slack)
+	out.slotIdx = meetMap(a.slotIdx, b.slotIdx)
 	out.le = meetMap(a.le, b.le)
 	out.diff = meetMap(a.diff, b.diff)
 	out.sub = meetMap(a.sub, b.sub)
@@ -296,7 +300,7 @@ func (gs *guardState) equal(other *guardState) bool {
 	}
 	return equalMap(gs.idx, other.idx) && equalMap(gs.frame, other.frame) && equalMap(gs.consts, other.consts) &&
 		equalMap(gs.regions, other.regions) && equalMap(gs.pages, other.pages) && equalMap(gs.addrs, other.addrs) &&
-		equalMap(gs.slack, other.slack) && equalMap(gs.le, other.le) && equalMap(gs.diff, other.diff) && equalMap(gs.sub, other.sub) &&
+		equalMap(gs.slack, other.slack) && equalMap(gs.slotIdx, other.slotIdx) && equalMap(gs.le, other.le) && equalMap(gs.diff, other.diff) && equalMap(gs.sub, other.sub) &&
 		equalMap(gs.lenEqual, other.lenEqual) && equalMap(gs.sums, other.sums) && equalMap(gs.upper, other.upper) && equalMap(gs.mid, other.mid)
 }
 
@@ -335,6 +339,20 @@ type checker struct {
 	idxFacts   map[int]idxFact
 	slackFacts map[int]slackFact
 	condFacts  map[int]condFact
+	// slotIdx: the index fact of the value a 4-byte frame slot holds, by
+	// entry-relative address — the guard of a value stored there or loaded
+	// from it. A reload of the slot carries the fact, since the value is
+	// the same one the guard tested (Oak.Assembler.guard_through_slot):
+	// the lowering loads a record field once to guard it and again to
+	// index by it. Dropped when the slot is written, when any store the
+	// checker cannot place runs, at labels the fixpoint's meet does not
+	// carry it to, and at calls.
+	slotIdx map[int64]idxFact
+	// loadedFrom: the 4-byte frame slot a w register was loaded from and
+	// which nothing has written since, so the register still holds the
+	// slot's value. A guard on the register is therefore a guard on the
+	// slot's value (slotIdx), which the next load of it carries.
+	loadedFrom map[int]int64
 	// frameAddrs: register -> the frame address it holds, relative to the
 	// entry sp (`add xN, sp, #imm`): the base of an owned array in the
 	// frame. Memory through it is checked against the declared frame like
@@ -726,6 +744,8 @@ func (c *checker) bindContract() {
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
 	c.condFacts = map[int]condFact{}
+	c.slotIdx = map[int64]idxFact{}
+	c.loadedFrom = map[int]int64{}
 	c.spanParams = map[string]spanParam{}
 	c.compositeParams = map[string]compositeParam{}
 	c.regions = map[int]region{}
@@ -1209,6 +1229,17 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 			}
 		}
 	}
+	// `cmp wL, #K` then `b.ne fail`: the fall-through path has len == K, so
+	// len >= K (Oak.Extents.exact_length_min) — `assert(len(v) == u32(K))`
+	// and `len(v) == u32(K) ? …` as the lowering spells them.
+	if guard.valid && guard.rightReg < 0 && cond == "ne" && guard.imm >= 0 {
+		for _, fact := range c.spans {
+			if fact.holdsLen(guard.left) && (!fact.hasMin || fact.minLen < guard.imm) {
+				fact.hasMin = true
+				fact.minLen = guard.imm
+			}
+		}
+	}
 	// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
 	// path knows wI < len / wI < K — the index guard of a loop walking
 	// a span (Oak.Assembler.index_access).
@@ -1219,9 +1250,9 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 			// under len >= K gives wI + K <= len as well
 			// (Oak.Assembler.slack_guard_strict) — the wrap-free
 			// remaining guard `i < len(v) - K` before reads at i + k, k < K.
-			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+			c.recordIdxFact(guard.left, idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k})
 		} else {
-			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+			c.recordIdxFact(guard.left, idxFact{boundReg: guard.rightReg, bound: guard.imm})
 		}
 	}
 	// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
@@ -1229,7 +1260,7 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// vector access at wI (Oak.Assembler.index_access, K lanes).
 	if guard.valid && guard.rightReg >= 0 && cond == "hi" {
 		if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
-			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+			c.recordIdxFact(guard.left, idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k})
 		}
 	}
 	// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
@@ -1288,6 +1319,8 @@ func (c *checker) forgetGuards() {
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
 	c.condFacts = map[int]condFact{}
+	c.slotIdx = map[int64]idxFact{}
+	c.loadedFrom = map[int]int64{}
 	c.frameAddrs = map[int]int64{}
 	c.globalPages = map[int]string{}
 	c.globalAddrs = map[int]string{}
@@ -2067,6 +2100,12 @@ func (c *checker) forgetRegisterFacts(num int) {
 			delete(c.condFacts, reg)
 		}
 	}
+	for addr, fact := range c.slotIdx {
+		if fact.boundReg == num {
+			delete(c.slotIdx, addr)
+		}
+	}
+	delete(c.loadedFrom, num)
 	delete(c.frameAddrs, num)
 	delete(c.regions, num)
 	delete(c.globalPages, num)
@@ -2164,8 +2203,21 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 		if dest.Class != ClassW || len(instr.Operands) != 2 {
 			return
 		}
+		// The constant a `movz`/`mov` leaves in the register, and with it
+		// the index bound k < k + 1 (Oak.Assembler.constant_index_bound):
+		// a constant element read the typechecker proved needs no compare
+		// of its own, the span's proven minimum admitting it. Zero is
+		// spelled `mov wD, wzr`, the lowering's form for it.
+		value, known := int64(0), false
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Shift >= 0 && imm.Shift < 32 && imm.Shift%16 == 0 {
-			c.constFacts[dest.Num] = imm.Value << uint(imm.Shift)
+			value, known = imm.Value<<uint(imm.Shift), true
+		}
+		if src, isReg := instr.Operands[1].(Register); isReg && src.ZeroRegister() {
+			value, known = 0, true
+		}
+		if known {
+			c.constFacts[dest.Num] = value
+			c.idxFacts[dest.Num] = idxFact{boundReg: -1, bound: value + 1}
 		}
 	case "add":
 		if dest.Class != ClassX || len(instr.Operands) != 3 {
@@ -2362,6 +2414,14 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		return
 	}
 	isStore := isStoreMnemonic(instr.Mnemonic)
+	if isStore && (mem.Base.Class != ClassSP || mem.Index != nil) {
+		// A store the checker cannot place by slot address — through a
+		// span, a region, a frame array, or a global — may reach a frame
+		// slot (a span over an owned array aliases the frame), so every
+		// slot fact goes.
+		c.slotIdx = map[int64]idxFact{}
+		c.loadedFrom = map[int]int64{}
+	}
 	for _, reg := range regs {
 		if isStore || isPrefetch(instr.Mnemonic) {
 			c.read(instr, reg)
@@ -2437,10 +2497,23 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 				state.slot = slotBase + int64(i)*width
 			}
 		}
+		// The slot takes the stored value's index fact, and loses any it
+		// held (slotIdx): a guarded index spilled to its home is still
+		// guarded when it is loaded back.
+		c.storeSlotFacts(slotBase, size, regs, width)
 		return
 	}
 	for i, reg := range regs {
 		c.write(instr, reg)
+		// A 4-byte load of a slot whose value a guard bounded carries the
+		// bound (Oak.Assembler.guard_through_slot): the same value.
+		if width == 4 && reg.Class == ClassW {
+			addr := slotBase + int64(i)*width
+			if fact, held := c.slotIdx[addr]; held {
+				c.idxFacts[reg.Num] = fact
+			}
+			c.loadedFrom[reg.Num] = addr
+		}
 		// Loading a callee-saved register back from its own slot restores it.
 		if state := c.calleeSavedState(reg); state != nil && state.saved && state.slot == slotBase+int64(i)*width {
 			state.restored = true
@@ -2671,6 +2744,45 @@ func lastRegister(operands []Operand) (Register, bool) {
 		}
 	}
 	return Register{}, false
+}
+
+// recordIdxFact records an index guard on a register and, when the
+// register holds a frame slot's value unchanged since its load
+// (loadedFrom), on the slot as well: the next load of that slot reads the
+// same value, so the guard bounds it too
+// (Oak.Assembler.guard_through_slot).
+func (c *checker) recordIdxFact(reg int, fact idxFact) {
+	c.idxFacts[reg] = fact
+	if addr, fromSlot := c.loadedFrom[reg]; fromSlot {
+		c.slotIdx[addr] = fact
+	}
+}
+
+// storeSlotFacts records what a frame store leaves in its slots: the
+// stored value's index fact on a 4-byte w store, and nothing on any slot
+// the store overlaps otherwise.
+func (c *checker) storeSlotFacts(slotBase, size int64, regs []Register, width int64) {
+	for addr := range c.slotIdx {
+		if addr+4 > slotBase && addr < slotBase+size {
+			delete(c.slotIdx, addr)
+		}
+	}
+	for reg, addr := range c.loadedFrom {
+		if addr+4 > slotBase && addr < slotBase+size {
+			delete(c.loadedFrom, reg)
+		}
+	}
+	if width != 4 {
+		return
+	}
+	for i, reg := range regs {
+		if reg.Class != ClassW {
+			continue
+		}
+		if fact, guarded := c.idxFacts[reg.Num]; guarded {
+			c.slotIdx[slotBase+int64(i)*width] = fact
+		}
+	}
 }
 
 // clobberCallerSaved: after a call or an exception, x0–x17, v0–v7, and the
