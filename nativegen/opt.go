@@ -42,6 +42,7 @@ const (
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
 	TransformReallocate  = "reallocate"
+	TransformRotate      = "rotate-loops"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -210,6 +211,19 @@ func Transforms() []opt.Transform {
 			fired:   Hoisted,
 		},
 		&laneTransform{
+			// Bottom-tested loops (nativegen/rotate.go; §9 "Bottom-tested
+			// loops"): a loop over a conjunction of simple tests runs its
+			// test at the tail as a conditional back edge, one branch an
+			// iteration; machine shape only, the verifier recognizing the
+			// shape. After the invariant pass, whose loop finder reads the
+			// top-tested shape.
+			name: TransformRotate, phase: opt.PhaseLoop, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.RotateLoops },
+			apply:   func(l Lane) Lane { l.RotateLoops = true; return l },
+			fired:   RotatedLoops,
+		},
+		&laneTransform{
 			// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
 			// calling function's vector locals in v16–v31, saved around a
 			// call only when live after it, instead of sixteen-byte slots;
@@ -275,6 +289,7 @@ func PlainLane(lane Lane) Lane {
 	lane.GuardLines = nil
 	lane.ReuseFlags = false
 	lane.HoistInvariants = false
+	lane.RotateLoops = false
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.Reallocate = false

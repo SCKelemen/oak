@@ -4,12 +4,43 @@ package stdlib
 import (
 	_ "embed"
 	"regexp"
+	"strings"
 )
 
 // baseSource is the opt-in bootstrap module loaded by import(std).
 //
 //go:embed std.oak
 var baseSource string
+
+// bytes is the first freestanding foundation package cut out of the flat
+// bootstrap prelude. The compatibility flat import is derived below.
+//
+//go:embed bytes.oak
+var bytesSource string
+
+// bitset is the second freestanding foundation package cut out of the flat
+// bootstrap prelude. Its compatibility spelling is derived below.
+//
+//go:embed bitset.oak
+var bitsetSource string
+
+// endian is the fixed-width integer codec over caller-owned byte storage.
+// The compatibility flat import is derived below.
+//
+//go:embed endian.oak
+var endianSource string
+
+// buffer is the allocation-free contiguous byte queue and value-state builder.
+// The compatibility flat import is derived below.
+//
+//go:embed buffer.oak
+var bufferSource string
+
+// array_list is the allocation-free bounded vector over caller storage.
+// The compatibility flat import is derived below.
+//
+//go:embed array_list.oak
+var arrayListSource string
 
 // The host compiler composes bounded frontier helpers into import(std).
 // Generated target code keeps no runtime module descriptor.
@@ -261,9 +292,10 @@ var NativeShims = map[string]NativeShim{
 	"ionative": {File: "oak_io_host.c", Source: ioHostShimSource},
 }
 
-// Prelude is the core library (std.oak): Option, Result, Overflow, byte and
-// ring helpers. Every standard library package builds on it unqualified, and
-// the loader splices it into any program that imports a library package.
+// Prelude is the bootstrap core (std.oak): Option, Result, Overflow, and the
+// helpers not yet cut into qualified packages. Every standard library package
+// builds on it unqualified, and the loader splices it into any program that
+// imports a library package.
 var Prelude = baseSource
 
 // Source is the legacy flat prelude of `import(std)`: the core plus every
@@ -271,10 +303,10 @@ var Prelude = baseSource
 // cross-references de-qualified — in dependency order. Library sources are
 // written once as real packages (docs/spec/83-modules.md section 9); the
 // flat spelling is derived here so the two views cannot drift.
-var Source = baseSource + "\n" + flatten(causalFrontierSource) + "\n" + flatten(unicodeSource) + "\n" +
-	flatten(stringsSource) + "\n" + flatten(jsonSource) + "\n" + flatten(filtersSource) + "\n" +
-	flatten(hashTableSource) + "\n" + flatten(bitsetAlgebraSource) + "\n" + flatten(encodingSource) + "\n" +
-	flatten(sortSource) + "\n" + flatten(varintSource) + "\n" + flatten(randomSource) + "\n" + flatten(urlSource) + "\n" + flatten(uuidSource) + "\n" + flatten(pathSource) + "\n" + flatten(graphemeSource) + "\n" + flatten(floatSource) + "\n" + flatten(normalizeSource)
+var Source = baseSource + "\n" + flattenBytes(bytesSource) + "\n" + flattenBitset(bitsetSource) + "\n" + flattenEndian(endianSource) + "\n" + flattenBuffer(bufferSource) + "\n" + flattenArrayList(arrayListSource) + "\n" + flattenLegacy(causalFrontierSource) + "\n" + flattenLegacy(unicodeSource) + "\n" +
+	flattenLegacy(stringsSource) + "\n" + flattenLegacy(jsonSource) + "\n" + flattenLegacy(filtersSource) + "\n" +
+	flattenLegacy(hashTableSource) + "\n" + flattenLegacy(bitsetAlgebraSource) + "\n" + flattenLegacy(encodingSource) + "\n" +
+	flattenLegacy(sortSource) + "\n" + flattenLegacy(varintSource) + "\n" + flattenLegacy(randomSource) + "\n" + flattenLegacy(urlSource) + "\n" + flattenLegacy(uuidSource) + "\n" + flattenLegacy(pathSource) + "\n" + flattenLegacy(graphemeSource) + "\n" + flattenLegacy(floatSource) + "\n" + flattenLegacy(normalizeSource)
 
 var (
 	clauseLine = regexp.MustCompile(`(?m)^package [a-z_]+\n`)
@@ -282,7 +314,14 @@ var (
 	// A package qualifier is only a qualifier when nothing precedes it: after
 	// a `.` it is a field named like a package (the `Url` record's `path`), so
 	// the leading context is kept and only the qualifier is dropped.
-	qualification = regexp.MustCompile(`(^|[^.\w])(unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme|float|normalize)\.`)
+	qualification     = regexp.MustCompile(`(^|[^.\w])(bytes|bitset|endian|buffer|array_list|unicode|strings|json|filters|hash_table|bitset_algebra|causal_frontier|encoding|sort|varint|random|url|uuid|path|grapheme|float|normalize)\.`)
+	bytesFlatName     = regexp.MustCompile(`\b(RangeError|range_fits|copy_into|equal|find|fill|copy_at|move_within|compare)\b`)
+	bitsetFlatName    = regexp.MustCompile(`\b(Error|storage_bytes|contains|set|count_ones)\b`)
+	endianFlatName    = regexp.MustCompile(`\b(Error|read_u16_le|write_u16_le|read_u16_be|write_u16_be|read_u32_le|write_u32_le|read_u32_be|write_u32_be|read_u64_le|write_u64_le|read_u64_be|write_u64_be)\b`)
+	bufferFlatType    = regexp.MustCompile(`\b(Cursor|Error|Builder)\b`)
+	bufferFlatFunc    = regexp.MustCompile(`\b(check|live_len|tail_space|append|peek_into|consume|read_into|compact|reset|finish)\b`)
+	arrayListFlatType = regexp.MustCompile(`\b(Cursor|Error)\b`)
+	arrayListFlatFunc = regexp.MustCompile(`\b(check|push|get|set|pop|insert|remove|swap_remove|clear)\b`)
 )
 
 // flatten derives the prelude spelling of a library package: no clause, no
@@ -292,6 +331,138 @@ func flatten(text string) string {
 	text = clauseLine.ReplaceAllString(text, "")
 	text = importLine.ReplaceAllString(text, "")
 	return qualification.ReplaceAllString(text, "$1")
+}
+
+// flattenLegacy preserves collision-resistant foundation names when deriving
+// import(std). Generic flattening keeps the short names for extraction and
+// other internal package composition.
+func flattenLegacy(text string) string {
+	// Qualified foundation packages deliberately use short Go-shaped names.
+	// Preserve the older collision-resistant spellings only in import(std).
+	text = strings.NewReplacer(
+		"bytes.RangeError", "ByteRangeError",
+		"bytes.range_fits", "bytes_range_fits",
+		"bytes.copy_into", "bytes_copy_into",
+		"bytes.equal", "bytes_equal",
+		"bytes.find", "bytes_find",
+		"bytes.fill", "bytes_fill",
+		"bytes.copy_at", "bytes_copy_at",
+		"bytes.move_within", "bytes_move_within",
+		"bytes.compare", "bytes_compare",
+		"bitset.Error", "BitSetError",
+		"bitset.storage_bytes", "bitset_storage_bytes",
+		"bitset.contains", "bitset_contains",
+		"bitset.set", "bitset_set",
+		"bitset.count_ones", "bitset_count",
+		"endian.Error", "EndianError",
+		"endian.read_u16_le", "bytes_read_u16_le",
+		"endian.write_u16_le", "bytes_write_u16_le",
+		"endian.read_u16_be", "bytes_read_u16_be",
+		"endian.write_u16_be", "bytes_write_u16_be",
+		"endian.read_u32_le", "bytes_read_u32_le",
+		"endian.write_u32_le", "bytes_write_u32_le",
+		"endian.read_u32_be", "bytes_read_u32_be",
+		"endian.write_u32_be", "bytes_write_u32_be",
+		"endian.read_u64_le", "bytes_read_u64_le",
+		"endian.write_u64_le", "bytes_write_u64_le",
+		"endian.read_u64_be", "bytes_read_u64_be",
+		"endian.write_u64_be", "bytes_write_u64_be",
+		"buffer.Cursor", "ByteBufferCursor",
+		"buffer.Error", "BufferError",
+		"buffer.live_len", "buffer_len",
+		"buffer.tail_space", "buffer_tail_space",
+		"buffer.append", "buffer_append",
+		"buffer.peek_into", "buffer_peek_into",
+		"buffer.consume", "buffer_consume",
+		"buffer.read_into", "buffer_read_into",
+		"buffer.compact", "buffer_compact",
+		"buffer.reset", "buffer_reset",
+		"buffer.Builder", "ByteBuilder",
+		"buffer.builder", "byte_builder",
+		"buffer.finish", "finish_bytes",
+	).Replace(text)
+	return flatten(text)
+}
+
+// flattenBytes derives the collision-resistant legacy declarations without
+// adding the package's short Go-shaped names to import(std).
+func flattenBytes(text string) string {
+	text = flatten(text)
+	return bytesFlatName.ReplaceAllStringFunc(text, func(name string) string {
+		if name == "RangeError" {
+			return "ByteRangeError"
+		}
+		return "bytes_" + name
+	})
+}
+
+// flattenBitset derives the legacy type and function declarations without
+// reserving Error, storage_bytes, contains, set, or count_ones in import(std).
+func flattenBitset(text string) string {
+	text = flatten(text)
+	return bitsetFlatName.ReplaceAllStringFunc(text, func(name string) string {
+		if name == "Error" {
+			return "BitSetError"
+		}
+		if name == "count_ones" {
+			return "bitset_count"
+		}
+		return "bitset_" + name
+	})
+}
+
+// flattenEndian derives the older bytes_read/write spellings while the real
+// package exposes the shorter read/write names behind its qualifier.
+func flattenEndian(text string) string {
+	text = flattenLegacy(text)
+	return endianFlatName.ReplaceAllStringFunc(text, func(name string) string {
+		if name == "Error" {
+			return "EndianError"
+		}
+		return "bytes_" + name
+	})
+}
+
+// flattenBuffer keeps the established byte-buffer and builder names in the
+// compatibility prelude without reserving the package's short API names.
+func flattenBuffer(text string) string {
+	text = flatten(text)
+	text = bufferFlatType.ReplaceAllStringFunc(text, func(name string) string {
+		switch name {
+		case "Cursor":
+			return "ByteBufferCursor"
+		case "Error":
+			return "BufferError"
+		default:
+			return "ByteBuilder"
+		}
+	})
+	text = bufferFlatFunc.ReplaceAllStringFunc(text, func(name string) string {
+		switch name {
+		case "live_len":
+			return "buffer_len"
+		case "finish":
+			return "finish_bytes"
+		default:
+			return "buffer_" + name
+		}
+	})
+	return strings.Replace(text, "pub builder:", "pub byte_builder:", 1)
+}
+
+// flattenArrayList preserves the original flat collection API. The qualified
+// package has the narrow errors its operations can return; import(std) already
+// declares the broader CollectionError shared with intrusive collections.
+func flattenArrayList(text string) string {
+	text = strings.Replace(text, "pub Error: type = Full | Empty | OutOfBounds\n\n", "", 1)
+	text = flatten(text)
+	text = arrayListFlatType.ReplaceAllStringFunc(text, func(name string) string {
+		if name == "Cursor" {
+			return "ArrayListCursor"
+		}
+		return "CollectionError"
+	})
+	return arrayListFlatFunc.ReplaceAllString(text, "array_list_$1")
 }
 
 //go:embed testing.oak
@@ -319,6 +490,11 @@ var TestingSource = testingSource + "\n" + simStorageSource + "\n" + simSchedSou
 // declarations of strings.oak as `strings.member`. The views share the flat
 // bootstrap prelude, which the loader splices in alongside them.
 var Packages = map[string]string{
+	"bytes":           bytesSource,
+	"bitset":          bitsetSource,
+	"endian":          endianSource,
+	"buffer":          bufferSource,
+	"array_list":      arrayListSource,
 	"iosim":           iosimSource,
 	"ionative":        ionativeSource,
 	"objsim":          objsimSource,
@@ -357,6 +533,21 @@ var Packages = map[string]string{
 	"slab":            slabSource,
 	"rings":           ringsSource,
 	"objc":            objcSource,
+}
+
+// CompatibilityName relates a generated or legacy flat spelling to the real
+// exported member of one qualified package. The module loader installs an
+// alias only when that package is actually loaded; this table never widens a
+// package's exports or emits a second implementation.
+type CompatibilityName struct {
+	Name   string
+	Member string
+}
+
+// CompatibilityNames are the flat spellings compiler-generated library sugar
+// may still use while the bootstrap prelude is being split into packages.
+var CompatibilityNames = map[string][]CompatibilityName{
+	"bytes": {{Name: "bytes_range_fits", Member: "range_fits"}},
 }
 
 // Flatten derives the prelude spelling of one library package's text: no

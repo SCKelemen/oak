@@ -1,0 +1,140 @@
+// Explicit fixed-width integer encoding over caller-owned byte storage.
+package endian
+
+import("bytes")
+
+pub Error: type = | BufferTooSmall
+
+pub read_u16_le: (src: []u8, offset: u32): Result[u16, Error] {
+  bytes.range_fits(len(src), offset, u32(2)) ? {
+    value: u16 = 0
+    value = value | (u16(src[offset + u32(0)]) << u16(0))
+    value = value | (u16(src[offset + u32(1)]) << u16(8))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u16_le: (dst: [*]u8, offset: u32, value: u16): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(2)) ? {
+    dst[offset + u32(0)] = u8_trunc_u16(value >> u16(0))
+    dst[offset + u32(1)] = u8_trunc_u16(value >> u16(8))
+    .Ok(u32(2))
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub read_u16_be: (src: []u8, offset: u32): Result[u16, Error] {
+  bytes.range_fits(len(src), offset, u32(2)) ? {
+    value: u16 = 0
+    value = value | (u16(src[offset + u32(0)]) << u16(8))
+    value = value | (u16(src[offset + u32(1)]) << u16(0))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u16_be: (dst: [*]u8, offset: u32, value: u16): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(2)) ? {
+    dst[offset + u32(0)] = u8_trunc_u16(value >> u16(8))
+    dst[offset + u32(1)] = u8_trunc_u16(value >> u16(0))
+    .Ok(u32(2))
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub read_u32_le: (src: []u8, offset: u32): Result[u32, Error] {
+  bytes.range_fits(len(src), offset, u32(4)) ? {
+    value: u32 = 0
+    value = value | (u32(src[offset + u32(0)]) << u32(0))
+    value = value | (u32(src[offset + u32(1)]) << u32(8))
+    value = value | (u32(src[offset + u32(2)]) << u32(16))
+    value = value | (u32(src[offset + u32(3)]) << u32(24))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u32_le: (dst: [*]u8, offset: u32, value: u32): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(4)) ? {
+    dst[offset + u32(0)] = u8_trunc_u32(value >> u32(0))
+    dst[offset + u32(1)] = u8_trunc_u32(value >> u32(8))
+    dst[offset + u32(2)] = u8_trunc_u32(value >> u32(16))
+    dst[offset + u32(3)] = u8_trunc_u32(value >> u32(24))
+    .Ok(u32(4))
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub read_u32_be: (src: []u8, offset: u32): Result[u32, Error] {
+  bytes.range_fits(len(src), offset, u32(4)) ? {
+    value: u32 = 0
+    value = value | (u32(src[offset + u32(0)]) << u32(24))
+    value = value | (u32(src[offset + u32(1)]) << u32(16))
+    value = value | (u32(src[offset + u32(2)]) << u32(8))
+    value = value | (u32(src[offset + u32(3)]) << u32(0))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u32_be: (dst: [*]u8, offset: u32, value: u32): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(4)) ? {
+    dst[offset + u32(0)] = u8_trunc_u32(value >> u32(24))
+    dst[offset + u32(1)] = u8_trunc_u32(value >> u32(16))
+    dst[offset + u32(2)] = u8_trunc_u32(value >> u32(8))
+    dst[offset + u32(3)] = u8_trunc_u32(value >> u32(0))
+    .Ok(u32(4))
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub read_u64_le: (src: []u8, offset: u32): Result[u64, Error] {
+  bytes.range_fits(len(src), offset, u32(8)) ? {
+    value: u64 = 0
+    value = value | (u64(src[offset + u32(0)]) << u64(0))
+    value = value | (u64(src[offset + u32(1)]) << u64(8))
+    value = value | (u64(src[offset + u32(2)]) << u64(16))
+    value = value | (u64(src[offset + u32(3)]) << u64(24))
+    value = value | (u64(src[offset + u32(4)]) << u64(32))
+    value = value | (u64(src[offset + u32(5)]) << u64(40))
+    value = value | (u64(src[offset + u32(6)]) << u64(48))
+    value = value | (u64(src[offset + u32(7)]) << u64(56))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u64_le: (dst: [*]u8, offset: u32, value: u64): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(8)) ? {
+    dst[offset + u32(0)] = u8_trunc_u64(value >> u64(0))
+    dst[offset + u32(1)] = u8_trunc_u64(value >> u64(8))
+    dst[offset + u32(2)] = u8_trunc_u64(value >> u64(16))
+    dst[offset + u32(3)] = u8_trunc_u64(value >> u64(24))
+    dst[offset + u32(4)] = u8_trunc_u64(value >> u64(32))
+    dst[offset + u32(5)] = u8_trunc_u64(value >> u64(40))
+    dst[offset + u32(6)] = u8_trunc_u64(value >> u64(48))
+    dst[offset + u32(7)] = u8_trunc_u64(value >> u64(56))
+    .Ok(u32(8))
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub read_u64_be: (src: []u8, offset: u32): Result[u64, Error] {
+  bytes.range_fits(len(src), offset, u32(8)) ? {
+    value: u64 = 0
+    value = value | (u64(src[offset + u32(0)]) << u64(56))
+    value = value | (u64(src[offset + u32(1)]) << u64(48))
+    value = value | (u64(src[offset + u32(2)]) << u64(40))
+    value = value | (u64(src[offset + u32(3)]) << u64(32))
+    value = value | (u64(src[offset + u32(4)]) << u64(24))
+    value = value | (u64(src[offset + u32(5)]) << u64(16))
+    value = value | (u64(src[offset + u32(6)]) << u64(8))
+    value = value | (u64(src[offset + u32(7)]) << u64(0))
+    .Ok(value)
+  } | { .Err(.BufferTooSmall) }
+}
+
+pub write_u64_be: (dst: [*]u8, offset: u32, value: u64): Result[u32, Error] {
+  bytes.range_fits(len(dst), offset, u32(8)) ? {
+    dst[offset + u32(0)] = u8_trunc_u64(value >> u64(56))
+    dst[offset + u32(1)] = u8_trunc_u64(value >> u64(48))
+    dst[offset + u32(2)] = u8_trunc_u64(value >> u64(40))
+    dst[offset + u32(3)] = u8_trunc_u64(value >> u64(32))
+    dst[offset + u32(4)] = u8_trunc_u64(value >> u64(24))
+    dst[offset + u32(5)] = u8_trunc_u64(value >> u64(16))
+    dst[offset + u32(6)] = u8_trunc_u64(value >> u64(8))
+    dst[offset + u32(7)] = u8_trunc_u64(value >> u64(0))
+    .Ok(u32(8))
+  } | { .Err(.BufferTooSmall) }
+}
