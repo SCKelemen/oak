@@ -5908,6 +5908,67 @@ Candidates the report still shows losing: an index reloaded from a frame
 slot (`append_byte`) and a bound through another register
 (`json_key_decoded_equal`, `text_equal_ascii_fold`), as §9.ad lists.
 
+
+**Constant span indices (2026-09-15).** The typechecker's new facts from
+`assert`, exact lengths, and length aliases (`50-borrowing.md`) prove
+constant reads such as `state[0]` under `assert(len(state) == u32(1))` and
+`src[3]` under `n >= u32(4)`, but the lane still guarded them: the
+elision hook read the index's inferred type, which a bare literal fails.
+A proven constant index is now the constant in a register with no guard
+(`guardedIndexAt`), and the checker admits the read from two facts it
+now records: a register that `movz` fills with `k` is an index below
+`k + 1` (`Oak.Assembler.constant_index_bound`), and `cmp wL, #K; b.ne`
+— the compare an assert or a `len(v) == u32(K)` test spells — leaves the
+span's proven minimum at `K` (`Oak.Extents.exact_length_min`), beside the
+`b.lo` form it already read. The proven minimum then admits the read
+(`TestCheckerGuardFacts`, `TestE2ENativeConstantIndexElision`). Finding
+it took a detour worth recording: the lowering spells the constant zero
+as `mov wD, wzr`, and the checker's constant rule read only an immediate
+operand, so a proven `state[0]` carried no bound, the elided read was
+refused, and the per-line fallback put the guard back — the zero register
+is now read as the constant it is. On the stdlib-bearing program the rule
+elides 15 more guards, all of them in `text_bom`, whose five byte-order
+tests read `src[0]` through `src[3]` under `n >= u32(4)`: that body drops
+from 15 trap branches to none and from 125 instructions to 94, and no
+other body changes.
+
+**An index reloaded from a frame slot (2026-09-15).** The remaining
+refusal the optimizer's report named was the standard library's builders:
+`storage[state.length] = value` under `state.length < len(storage)`, where
+`state.length` is a record field the lowering loads from its frame slot
+once for the guard and again for the index, leaving the store's index
+register with no fact. The checker now carries an index guard through the
+slot, both ways: a 4-byte `w` load records the slot it came from
+(`loadedFrom`), and a guard on such a register records the fact on the
+slot as well (`slotIdx`, `recordIdxFact`) — the value is the one the guard
+tested, so it bounds the reload (`Oak.Assembler.guard_through_slot`); a
+store to the slot carries a guarded value's fact into it, and any store
+the checker cannot place by slot address — through a span, a region, a
+frame array, or a global, since a span over an owned array aliases the
+frame — drops every slot fact, as a write to a fact's bound register and
+a call do. The facts join the label fixpoint's meet, so a slot guarded on
+every path into a label stays guarded after it
+(`TestCheckerGuardFacts`: the spill-and-reload shape accepted, a slot
+overwritten with an unguarded value and a bound register rewritten
+refused; `TestE2ENativeSlotIndexElision` end to end).
+
+Measured on the stdlib-bearing program against the exact commit this work
+merged (the head moves hourly; pinning the base is what makes the diff
+this change and nothing else, with the verdict cache off): 56 bodies
+elide 129 guards where 54 elided 113, the bodies' `b.hs trap` branches
+fall from 746 to 730, their instructions from 28,733 to 28,700, and
+**exactly two bodies change** — `text_bom` by the constant-index rule and
+`append_byte` by the slot rule (1 trap branch and 2 instructions). No
+verdict moves in either direction (280 proven). The slot rule's reach is
+small here because slot forwarding (§9 "Slot forwarding") already removes
+most reloads before the checker sees them; it pays where the reload
+survives, as the builders' store does.
+
+An earlier reading of this change credited it with 203 changed bodies and
+285 more instructions, and a lost proof in `json_copy_run`. That was the
+stale-base confound: the branch had been measured against a head carrying
+work the branch did not have, so the diff showed their improvements as
+regressions. The rule is to pin the base to the commit the branch merged.
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 
 The RV64 lane kept every guard: its values are canonical (a u32
