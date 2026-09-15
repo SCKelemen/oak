@@ -537,7 +537,9 @@ sha256_block_hw` twice in the body, once per loop), the chaining value
 and the block copied by pairs around it. Over every open branch merged
 (#473–#488, a fresh measurement tree from `specification`), the dbs
 frame scan's native build stands at 121–143 ms against the C build's
-118–122 ms — parity, from 1.8× at the start of the day — with the chain
+118–122 ms under the suites' load, and at 94–112 ms against 88–105 ms
+once the load fell (five interleaved runs each; best 93.6 against 88.3)
+— parity within five percent, from 1.8× at the start of the day — with the chain
 hash agreeing, 70 bodies left to C (89 at the start), 384 proven and no
 refutation. The byte loop is ten instructions and its control two;
 clang's is ten and three. What the dump still shows, in order: the loop
