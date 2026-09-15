@@ -7623,6 +7623,19 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 	// GuardLines is keyed by the line the emitted instructions carry (the
 	// statement's, g.line), the line a checker finding names.
 	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && (g.tc.IndexProven(*tok) || rewriteProvenIndex(*tok)) {
+		// A constant index the typechecker proved (`state[0]` under
+		// `assert(len(state) == u32(1))`, `src[3]` under `len(src) >= 4`):
+		// the constant in a register with no guard; the checker knows the
+		// register's value and admits the access from the span's proven
+		// minimum (Oak.Assembler.constant_index_bound, exact_length_min).
+		if k, isConst := constantValue(index); isConst && k >= 0 && k < 1<<32 {
+			r, err := g.indexValue(index)
+			if err != nil {
+				return 0, err
+			}
+			g.elided++
+			return r, nil
+		}
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {
