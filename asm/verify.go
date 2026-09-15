@@ -7975,10 +7975,13 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
-				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+			if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
+				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 			}
-			// The span memories are the comparison, under the loop coupling.
+			// The package cells and span memories are compared under the loop
+			// coupling for one call-derived loop; summarizeLoop has rejected cell
+			// writes in its iteration. Native and multiple-loop cell proofs remain
+			// outside the subset.
 			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
 		}
 		if verdict, refuted := trapClaim(); refuted {
@@ -7997,8 +8000,8 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
 		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 		verdict.Callees = exec.summarized
@@ -8254,9 +8257,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.loopStack = append([]int(nil), x.loopStack...)
 	lo.writableSpans = map[string]bool{}
 	lo.rootContracts = map[string]spanContract{}
-	for _, span := range writableSpanParams(x.fn, x.spans) {
+	for _, span := range writableSpanParams(x.fn, x.spans, x.recordSpans) {
 		lo.writableSpans[span] = true
-		lo.rootContracts[span] = spanContract{elemWidth: int(x.spans[span]) * 8}
+		if elem, scalar := x.spans[span]; scalar {
+			lo.rootContracts[span] = spanContract{elemWidth: int(elem) * 8}
+		}
 	}
 	// The arguments by the shared layout (asm/abi.go): registers while
 	// they fit, then the caller's outgoing area — slots of this path's
@@ -9018,7 +9023,7 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 		return 0, false
 	}
 	span := lo.spanRoot(memory[:dot])
-	arg, isRecord := lo.recordSpans[span]
+	arg, _, isRecord := lo.recordSpanAtRoot(span)
 	if !isRecord {
 		return 0, false
 	}
@@ -9033,6 +9038,17 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// spanMemoryWidth is the element width of a scalar span memory or one of a
+// record span's per-leaf memories. Proof code uses this single lookup so both
+// kinds receive the same final-memory and loop-coupling checks.
+func (lo *oakLowering) spanMemoryWidth(memory string) (int, bool) {
+	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+		return width, true
+	}
+	contract, isSpan := lo.spans[memory]
+	return contract.elemWidth, isSpan
 }
 
 // declareCells gives every global the body addresses a local at its entry

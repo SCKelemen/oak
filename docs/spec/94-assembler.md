@@ -667,13 +667,19 @@ and the `adds` form `l + r` (`AddWithCarry_sub_result`/`_add_result`); its
 N, Z, and C flags are our `flagsOf`/`addFlagsOf` at every width
 (`subFlags_n/z/c`, `addFlags_n/z/c` — C is the "no borrow" reading, `r ≤
 l`), and V — Arm's `SInt` overflow against our sign-bit formula — is
-checked exhaustively by the kernel at width 5 and by the silicon
-differential at 32 and 64 bits; `ConditionHolds` on the A64 condition-code
+proved at every nonempty width for subtraction and every width for addition
+(`subFlags_v`/`addFlags_v`): the proof identifies Arm's untruncated signed
+sum mismatch with Lean's signed-overflow predicates and then with the operand
+and result sign bits. The width-5 exhaustive check remains as an executable
+cross-check, and 32-/64-bit corollaries name the AArch64 register views;
+`ConditionHolds` on the A64 condition-code
 encodings is our `Cond.holds` for every code and every flag pattern
 (`holds_eq_ConditionHolds`); the conditional-select family is Arm's
 `integer_conditional_select` with its `else_inv`/`else_inc` switches
-(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); `ccmp`'s flags are
-Arm's `integer_conditional_compare` (`ccmp_asl_n`); `tst`'s flags are the
+(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); the complete NZCV
+record produced by `ccmp` is Arm's `integer_conditional_compare`
+(`ccmp_asl`, with component theorems for N, Z, C and architectural-width
+V); `tst`'s flags are the
 logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
 are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
 The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
@@ -4022,7 +4028,11 @@ memories' write logs (the effects model above), one memory per scalar
 leaf and one per array field, guarded by the path condition, marked at a
 data-dependent loop, and the verdict compares each written memory at a
 fresh index — so writers of spans of records are proven too, and a store
-into the wrong field is a mismatch. A span of records passed
+into the wrong field is a mismatch. Counted loops past the 64-trip
+unrolling limit use the same per-leaf markers on both sides; the Oak
+lowering treats the record-span root as memory rather than a carried
+local, and an inlined callee's parameter resolves through its alias to
+the caller's writable root. A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's
@@ -4059,8 +4069,12 @@ unit function that only writes state is proven in its cells alone. A
 calls: a callee's summary starts from the cells as the caller's path
 holds them and its writes return to the path, a unit callee is
 summarized for its writes alone, and on the Oak side the inlined callee
-shares the caller's cell locals; only state written around a
-data-dependent loop stays trusted. The C emitter gives
+shares the caller's cell locals. One call-derived data-dependent loop may
+be surrounded by scalar-cell writes: the loop summarizer first rejects
+any cell change inside an iteration, concrete witnesses compare the final
+cells, and the coupling proof compares them under the loop's exit premise.
+Cell state around a native loop or multiple loop events, and a callee that
+writes a cell inside an iteration, stay trusted. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations
@@ -6399,4 +6413,3 @@ shim, against the C build; `TestE2ENativeSimd`'s `nine` and `ninth`, left
 to C the day before, are proven. The nineteen-parameter body itself is
 witnessed, not proven: its nine-word sum beside a call summary over ten
 vectors exceeds the diagram budget under every order.
-
