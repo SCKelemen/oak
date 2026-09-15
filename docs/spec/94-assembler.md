@@ -5392,6 +5392,27 @@ and runs (`TestE2ENativeSelectDoesNotSpeculateAGuardedShift`). Prover
 build after the fix: proven 565, evidence 154, trusted 311, no
 disagreement.
 
+**Long counted loops inducted (2026-09-16).** A counted loop unrolled
+whatever its trip count, and a loop clearing or copying a table of two
+thousand words (`set_clear`, `set_copy`, `clear_depth`) unrolled into a
+write log no decision affords — guarded at every iteration, it met the
+path budget first. The counted loop's exception (`summarizeCounted`, both
+sides: a loop over a loop past four trips is summarized rather than
+unrolled) now takes any counted loop past sixty-four trips
+(`countedTripLimit`), loop inside or not: both sides read the same
+constant bound from the loop's compare, summarize the loop at its first
+iteration, and the coupling proves it inductively — a store per
+iteration, the loop memory equal — where the unrolling could not.
+Sixty-four: above it the unrolled copies cost more than the induction
+(`step_binding` took five minutes unrolled, under a second inducted);
+four bodies of 128 and 512 trips proved unrolled where their coupling
+does not yet (`intern_long`, `positional_arms_ahead`).
+`TestVerifyLongCountedLoopInducted`: eighty trips are inducted and
+proven, a wrong store is refuted on a witness input long enough, and
+forty trips still unroll. Prover build (per body, the optimizer's
+candidates aside): proven 565 → 577, evidence 141 → 147, trusted
+266 → 253, no disagreement.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
