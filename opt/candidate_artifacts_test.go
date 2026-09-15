@@ -1,6 +1,7 @@
 package opt
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,15 +10,11 @@ import (
 func TestCandidateArtifactPipelineHasExplicitGates(t *testing.T) {
 	driver := &fakeDriver{}
 	candidate := Identity(config{})
-	if err := driver.Materialize(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Key = driver.Key(candidate)
 	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := pipeline.add(candidate)
+	nodes, err := pipeline.materialize(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +43,10 @@ func TestCandidateArtifactPipelineHasExplicitGates(t *testing.T) {
 		t.Fatalf("choice = %+v", choice)
 	}
 
+	candidateTask := pipeline.graph.tasks[nodes.candidate]
+	if nodes.input.Kind != ArtifactChecked || !reflect.DeepEqual(candidateTask.Dependencies, []ArtifactKey{nodes.input}) {
+		t.Fatalf("materialization edge = %s -> %v", nodes.input, candidateTask.Dependencies)
+	}
 	verdictKey := pipeline.verdicts[nodes.candidate]
 	verdictTask := pipeline.graph.tasks[verdictKey]
 	wantVerdictDependencies := []ArtifactKey{nodes.candidate, nodes.admission, nodes.metrics, nodes.cost}
@@ -70,15 +71,11 @@ func TestCandidateArtifactPipelineHasExplicitGates(t *testing.T) {
 func TestCandidateArtifactRefusalClosesCostAndVerdictPaths(t *testing.T) {
 	driver := &fakeDriver{findings: map[string][]string{"": {"f: refused"}}}
 	candidate := Identity(config{})
-	if err := driver.Materialize(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Key = driver.Key(candidate)
 	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := pipeline.add(candidate)
+	nodes, err := pipeline.materialize(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,17 +103,21 @@ func TestCandidateArtifactRefusalClosesCostAndVerdictPaths(t *testing.T) {
 func TestCandidateArtifactVerdictExecutesOnce(t *testing.T) {
 	driver := &fakeDriver{}
 	candidate := Identity(config{})
-	if err := driver.Materialize(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Key = driver.Key(candidate)
 	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := pipeline.add(candidate)
+	nodes, err := pipeline.materialize(candidate)
 	if err != nil {
 		t.Fatal(err)
+	}
+	duplicate := Identity(config{})
+	duplicateNodes, err := pipeline.materialize(duplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicateNodes != nodes || duplicate.Key != candidate.Key || len(driver.lowered) != 1 {
+		t.Fatalf("materialization cache: nodes %+v / %+v, keys %q / %q, lowered %v", nodes, duplicateNodes, candidate.Key, duplicate.Key, driver.lowered)
 	}
 	if _, err := pipeline.admit(nodes); err != nil {
 		t.Fatal(err)
@@ -137,18 +138,73 @@ func TestCandidateArtifactVerdictExecutesOnce(t *testing.T) {
 	}
 }
 
-func TestCandidateArtifactSelectionRequiresVerdict(t *testing.T) {
+func TestCandidateArtifactIdentityIncludesAndFreezesFacts(t *testing.T) {
 	driver := &fakeDriver{}
-	candidate := Identity(config{})
-	if err := driver.Materialize(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Key = driver.Key(candidate)
 	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := pipeline.add(candidate)
+	fact := Fact{Proposition: Prop("aligned", "p", "16"), Provenance: Checked, Source: "typechecker", Scope: "f"}
+	candidate := &Candidate{Config: config{}, Facts: []Fact{fact}}
+	nodes, err := pipeline.materialize(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Facts[0].Proposition.Terms[0] = "mutated"
+
+	duplicate := &Candidate{Config: config{}, Facts: []Fact{fact}}
+	duplicateNodes, err := pipeline.materialize(duplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicateNodes != nodes || duplicate.Facts[0].Proposition.Terms[0] != "p" || len(driver.lowered) != 1 {
+		t.Fatalf("frozen duplicate: nodes %+v / %+v, facts %+v, lowered %v", nodes, duplicateNodes, duplicate.Facts, driver.lowered)
+	}
+
+	different := &Candidate{Config: config{}, Facts: []Fact{{Proposition: Prop("aligned", "q", "16"), Provenance: Checked, Source: "typechecker", Scope: "f"}}}
+	differentNodes, err := pipeline.materialize(different)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differentNodes == nodes || len(driver.lowered) != 2 {
+		t.Fatalf("distinct facts reused materialization: nodes %+v / %+v, lowered %v", nodes, differentNodes, driver.lowered)
+	}
+}
+
+func TestCandidateArtifactFailedMaterializationIsNotPublished(t *testing.T) {
+	loweringError := errors.New("sentinel lowering failure")
+	driver := &fakeDriver{lowerErrs: map[string]error{"a": loweringError}}
+	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		candidate := &Candidate{Applied: []string{"a"}, Config: config{switches: []string{"a"}}}
+		if _, err := pipeline.materialize(candidate); err != loweringError {
+			t.Fatalf("attempt %d error = %v", attempt, err)
+		}
+	}
+	if !reflect.DeepEqual(driver.lowered, []string{"a", "a"}) {
+		t.Fatalf("failed materialization was cached: lowered %v", driver.lowered)
+	}
+	for key := range pipeline.graph.tasks {
+		if key.Kind != ArtifactCandidate {
+			continue
+		}
+		if _, published := pipeline.cache.Get(key); published {
+			t.Fatalf("failed materialization published %s", key)
+		}
+	}
+}
+
+func TestCandidateArtifactSelectionRequiresVerdict(t *testing.T) {
+	driver := &fakeDriver{}
+	candidate := Identity(config{})
+	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := pipeline.materialize(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,15 +228,11 @@ func TestCandidateArtifactSelectionRequiresVerdict(t *testing.T) {
 func TestCandidateArtifactWeakGatedChoiceRequiresUngatedFallback(t *testing.T) {
 	driver := &fakeDriver{verdicts: map[string]Outcome{"a": Trusted}}
 	candidate := &Candidate{Applied: []string{"a"}, Config: config{switches: []string{"a"}}}
-	if err := driver.Materialize(candidate); err != nil {
-		t.Fatal(err)
-	}
-	candidate.Key = driver.Key(candidate)
 	pipeline, err := newCandidateArtifactPipeline("f", driver, AArch64Costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes, err := pipeline.add(candidate)
+	nodes, err := pipeline.materialize(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}

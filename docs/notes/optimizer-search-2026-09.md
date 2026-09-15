@@ -295,7 +295,7 @@ fact pin the operation. The cloned result passes the independent verifier and
 is retained with deterministic movement evidence; emission consumes neither.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
-remains linear, and native candidate proposal and materialization still branch
+remains linear, and native candidate proposal enumeration still branches
 internally. The generic OptIR chain is migrated. Immutable, exact-version nodes
 hold CFG v0, SCCP, loop structure/facts, CSE/DCE, CFG v1, checked preservation,
 recomputed induction facts, and LICM. CFGs have canonical content fingerprints.
@@ -303,18 +303,18 @@ Analyses declare a closed set of topology, SSA, operation, effect, type, fact,
 and layout aspects. CSE/DCE's admission node independently compares per-aspect
 digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
 and natural loops while recomputing recurrence facts from v1. No certificate is
-an equivalence verdict or emission license. Native materialized bodies now have
-typed candidate → admission → metrics → cost artifacts; every attempted
-semantic check is a verdict artifact, and selection depends on candidate,
-clean admission, cost, and verdict for every possible result. Validation stays
-sequential to retain the budget and proof early-stop. The executor runs bounded
-deterministic ready waves, and OptIR uses three workers for its independent
-analysis fan-out. Canonically keyed native materialization remains. The
+an equivalence verdict or emission license. Every native proposal has a
+canonical checked-input recipe and materializes through candidate → admission
+→ metrics → cost artifacts; every attempted semantic check is a verdict
+artifact, and selection depends on candidate, clean admission, cost, and
+verdict for every possible result. Validation stays sequential to retain the
+budget and proof early-stop. The executor runs bounded deterministic ready
+waves, and OptIR uses three workers for its independent analysis fan-out. The
 complete design is `optimizer-artifact-dag-2026-09.md`.
 
 Not yet: equivalence-validated emission of the candidate, available-expression
 and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
-unrolling and further loop transforms, native materialization in the artifact DAG,
+unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
 requirement/fact matching here.
