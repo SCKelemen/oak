@@ -1191,15 +1191,31 @@ when zero; and the decision's canonical spelling puts a **product's
 constant first and a sum's last**, drops an or or xor with zero and an
 and with a full mask (`canonical`, upstream's shift rule beside them).
 The loop event budget is thirty-two. With these the step functions'
-loops couple and their witnesses agree — evidence on 21 inputs each, no
-longer trusted — and `verify_first` and `verify_count` stay proven
-through the joins. What keeps the step functions from proof is the
-`found` obligation: the four `classify` results, inlined on the Oak side
-and summarized from the expanded body on the machine side, spell their
-sixteen lane lookups in different orders, and the diagram of four
-`check_block`-scale terms is beyond any budget — the next step is one
-spelling for a vector reduction's lanes on both sides. `count` (its
-step loop's callee loops nest differently on the two sides) and
+loops couple and their witnesses agree, and `verify_first` and
+`verify_count` stay proven through the joins. Their `found` obligation
+then fell to three more rules. **Congruence** (`impliesEqualCongruent`):
+two terms of one shape — the same operation, comparison, or span read —
+are proven by their operands pairwise (a commutative operation also
+crossed), a proof-only rule like the arm rule, so `found + hits` against
+the machine's sum is two small decisions where the diagram of the sum,
+four `classify` results inside it, is beyond any budget. The canonical
+spelling **pushes a mask over a conditional into its arms** and reads a
+full mask at a narrower width over a wider operand as the truncation:
+the machine's `w17` read of a merged 64-bit select is
+`add32(and32(ite64, mask), hits)` where the Oak body spells
+`add32(ite32, hits)`, and after the push both are one conditional of
+masked arms. And **an element parameter keeps its declared width**
+through a zero-extension or truncation (`term.declared`): the fixed
+memory's value of a byte element read at a word's width was the hash at
+32 bits where the Oak body's read at 8 bits saw the byte — the valuation
+refuter then refuted two equal terms, which the pushed masks first made
+visible (`TestElementParameterKeepsItsDeclaredWidth`). With these
+`step_count` is **proven** — thirteen nested loops coupled inductively:
+the group loop and, four times, `verify_count`'s two loops and
+`literal_at`'s — in under eight seconds. `step_first` stays evidence:
+its `here < found ? here : found` over four conditional results is a
+select under a case split whose sides run past a million nodes. `count`
+(its step loop's callee loops nest differently on the two sides) and
 `find_from` (a loop reached on two paths with different carried
 variables) stay trusted.
 

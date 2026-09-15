@@ -479,6 +479,11 @@ func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memo
 type term struct {
 	kind  termKind
 	width int
+	// declared is a parameter's declared width when the term reads it at
+	// another (a zero-extension or truncation copies the parameter at the
+	// use width): an element parameter's fixed-memory value is its
+	// declared width's, whatever width it is read at. Zero: the width.
+	declared int
 	// id is the term's index in the termEvaluator that last numbered it,
 	// one-based; zero before any numbering. Only the witness pass sets it,
 	// before the variable orders' goroutines start reading the terms.
@@ -716,7 +721,16 @@ func constTerm(value uint64, width int) *term {
 }
 
 func paramTerm(name string, width int) *term {
-	return &term{kind: termParam, width: width, name: name}
+	return &term{kind: termParam, width: width, name: name, declared: width}
+}
+
+// declaredWidth is a parameter term's declared width: the width it was
+// created at, carried through re-widthed copies.
+func (t *term) declaredWidth() int {
+	if t.declared > 0 {
+		return t.declared
+	}
+	return t.width
 }
 
 func binaryTerm(op string, left, right *term) *term {
@@ -826,7 +840,7 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		// An element parameter outside the witness environment reads the
 		// fixed memory, consistently with symbolic selects.
 		if span, k, isElement := elementParam(t.name); isElement {
-			return elementValue(span, k, t.width) & m
+			return elementValue(span, k, t.declaredWidth()) & m
 		}
 		return 0
 	case termConst:
@@ -1338,7 +1352,7 @@ func truncate(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value, width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name}
+		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
@@ -1379,7 +1393,7 @@ func zeroExtend(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value&mask(t.width), width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name}
+		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
@@ -9097,6 +9111,38 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))
 				case left.kind == termConst && left.value != 0 && left.value&(left.value-1) == 0 && right.width == t.width:
 					out = binaryTerm("shl", right, constTerm(uint64(bits.TrailingZeros64(left.value)), t.width))
+				}
+			}
+			if out == nil && t.op == "and" && right.kind == termConst && isLowMask(right.value) {
+				switch {
+				case left.kind == termIte:
+					// A mask over a conditional is a conditional of masked
+					// arms (pushMask's rule): the two sides' arms then meet
+					// arm for arm where one side masks the whole.
+					// The arms are canonical already (children first); the
+					// mask is applied to each without re-entering the
+					// canonicalizer, a nested conditional arm by arm.
+					var arm func(x *term) *term
+					arm = func(x *term) *term {
+						if x.kind == termIte {
+							return iteTerm(x.cond, arm(x.left), arm(x.right))
+						}
+						switch {
+						case right.value == mask(left.width) && left.width < t.width:
+							return zeroExtend(adaptWidth(x, left.width), t.width)
+						case right.value == mask(t.width):
+							return adaptWidth(x, t.width)
+						}
+						return adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+					}
+					out = iteTerm(left.cond, arm(left.left), arm(left.right))
+				case right.value == mask(t.width) && left.width > t.width:
+					// A full mask at the term's width over a wider operand is
+					// its truncation, which folds a zero-extension away; a
+					// truncation that only wraps the operand again is left.
+					if tr := truncate(left, t.width); !(tr.kind == termBinary && tr.op == "and" && tr.left == left) {
+						out = canonicalMemo(tr, memo)
+					}
 				}
 			}
 			if out == nil && left.width == right.width {

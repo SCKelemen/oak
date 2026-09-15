@@ -199,7 +199,7 @@ func placedLane(t *term, bits int) (*term, bool) {
 	inner := t.left
 	switch inner.kind {
 	case termParam:
-		return &term{kind: termParam, width: bits, name: inner.name}, true // zeroExtend re-widthed the parameter
+		return &term{kind: termParam, width: bits, name: inner.name, declared: inner.declaredWidth()}, true // zeroExtend re-widthed the parameter
 	case termCmp:
 		return &term{kind: termCmp, width: bits, op: inner.op, left: inner.left, right: inner.right}, true
 	case termBinary:
