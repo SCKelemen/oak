@@ -24,6 +24,14 @@ func TestIndexedSpanAccess(t *testing.T) {
 	if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
 		t.Fatalf("the guarded walk must be accepted: %v", findings)
 	}
+	// The taken side of `b.lo` carries the same fact (a bottom-tested
+	// loop's back edge): the body reached by it is admitted.
+	taken := "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.lo body\n  b fail\nbody:\n  ldr w0, [x0, w9, uxtw #2]\n  ret\nfail:\n  mov w0, #0\n  ret"
+	if takenUnit, errs := ParseUnit("t.oakasm", decl+" = {\n"+taken+"\n}\n"); len(errs) != 0 {
+		t.Fatal(errs)
+	} else if findings := Check(takenUnit.Functions[0], sig, nil); len(findings) != 0 {
+		t.Fatalf("the taken side of b.lo must admit the access: %v", findings)
+	}
 	// Emission spells the operand back exactly.
 	if text := renderOperand(unit.Functions[0].Items[5].(Instruction).Operands[1], nil, nil, nil); text != "[x0, w9, uxtw #2]" {
 		t.Fatalf("indexed operand renders as %q", text)
@@ -37,7 +45,7 @@ func TestIndexedSpanAccess(t *testing.T) {
 		{"wrong scale", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  ldr w0, [x0, w9, uxtw #1]\n  ret\ndone:\n  mov w0, #0\n  ret", "whole elements"},
 		{"wrong width", "  bind x0, w1 = v\n  clobber w9, x10\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  ldr x10, [x0, w9, uxtw #3]\n  mov w0, w10\n  ret\ndone:\n  mov w0, #0\n  ret", "whole elements"},
 		{"constant bound above proven length", "  bind x0, w1 = v\n  clobber w9\n  cmp w1, #2\n  b.lo short\n  mov w9, #0\n  cmp w9, #4\n  b.hs short\n  ldr w0, [x0, w9, uxtw #2]\n  ret\nshort:\n  mov w0, #0\n  ret", "proven minimum length is 2"},
-		{"wrong branch sense", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.lo body\n  b fail\nbody:\n  ldr w0, [x0, w9, uxtw #2]\n  ret\nfail:\n  mov w0, #0\n  ret", "without a dominating index guard"},
+		{"wrong branch sense", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs body\n  b fail\nbody:\n  ldr w0, [x0, w9, uxtw #2]\n  ret\nfail:\n  mov w0, #0\n  ret", "without a dominating index guard"},
 		{"store through view", "  bind x0, w1 = v\n  clobber w9\n  mov w9, #0\n  cmp w9, w1\n  b.hs done\n  str w9, [x0, w9, uxtw #2]\n  mov w0, #0\n  ret\ndone:\n  mov w0, #0\n  ret", "read-only view"},
 		{"indexed frame access", "  bind x0, w1 = v\n  clobber w9\n  frame 16\n  mov w9, #0\n  ldr w0, [sp, w9, uxtw #2]\n  ret", "walks a span, not the frame"},
 	}

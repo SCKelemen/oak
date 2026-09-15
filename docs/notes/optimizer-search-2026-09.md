@@ -4,9 +4,10 @@ Status: design note, September 2026.
 
 This note proposes the architecture for Oak's optimizing native backend after the first verified optimization increments in `nativegen/`: strength reduction, condition selection and if-conversion, aggregate promotion, wide-load fusion, reduction unrolling, and pair loads. It complements `docs/notes/optimization-2026-09.md`, `docs/notes/native-optimization-2026-09.md`, `docs/spec/90-backend.md` §16, and the semantic verifier in `docs/spec/94-assembler.md` §9.
 
-Two companion catalogs feed this architecture:
+Three companion catalogs feed this architecture:
 
 - `docs/notes/llvm-optimization-catalog-2026-09.md` records conventional compiler analyses, transforms, vectorization, IPO, register allocation, scheduling, and target-cost patterns worth adapting from LLVM;
+- `docs/notes/mojo-futhark-optimization-2026-09.md` records staged specialization, structured and algebraic planning, index properties, destination forwarding, storage coloring, and compile-time/runtime candidate versioning;
 - `docs/notes/proof-guided-optimization-2026-09.md` records Oak-native optimizations enabled by checked type facts, ownership, effects, refinements, extents, typestate/protocol models, declared laws, proof infrastructure, and semantic verification down to the selected assembly body.
 
 The central rule is:
@@ -41,7 +42,9 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   typechecker's proved indices and the language's integer associativity
   laws into facts; `Metrics` over a lowered body (instruction classes,
   guards, and per loop the counts, the stride read off the index
-  register's increment, and the trip bound of a remainder loop after a
+  register's increment (the register a test compares and the loop
+  writes only there: a scratch register a guard compares and the body
+  reloads before adding a constant is not the index), and the trip bound of a remainder loop after a
   strided one); `Registry`, `PlainLane`, `FindingLine`.
 - The cost model (`opt.TargetCosts`) is static and per class: straight-line
   code at weight one, each loop body at `LoopWeight` trips divided by its
@@ -61,6 +64,14 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   phrasing; `-opt-report` / `OAK_OPT_REPORT=1` print the report;
   `OAK_OPT_BEAM` overrides the beam for experiments. `-opt` keeps its
   one meaning (the C compiler's level).
+- The executable-oriented source pipeline has an explicit specialization
+  boundary. Conservative private-leaf inlining runs before specialization;
+  built-in Bool identities and exact fixed-width integer zero/one identities
+  run after concrete types are known. A fresh checker validates every changed
+  monomorphic program. Its validation clone receives only generic ADT
+  declarations recorded by the specializing checker, rebuilt through the same
+  checked substitution used by native lowering; those declarations never enter
+  emission. Source and native remarks share `opt.Report`.
 
 Policy as landed: the identity is the fallback and is verified last, so
 an admitted transformed body is preferred to the plain lowering even when
@@ -133,14 +144,60 @@ its own, and the two affected bodies were exactly the trusted ones. The
 overlap test now weighs every access at a neighboring offset at its own
 width, with a regression test.
 
-Not in this increment: spilling and live-range splitting (the pool never
-grows the frame: a slot across a call moves only into a callee-saved
-register the prologue already saves), a lowering that emits virtual
-registers directly, scheduling, and the RV64 lane.
+Third increment: the callee-saved pool grows. A slot live across a call
+with no saved callee-saved register free takes the next of x19–x28 the
+body does not write, and the promotion adds its save after the prologue's
+last save and its restore before the epilogue restores the frame pair, at
+the next eight-byte slot of the lowering's save area — when the prologue
+and the single epilogue have the lowering's shapes, the slot lies within
+the frame, and it overlaps no other frame access (`growCalleeSaved`). A
+callee-saved register's own save slot is never promoted: that would only
+move the obligation. The checker's save/restore obligations judge the
+edited prologue and epilogue like any other body.
 
-Not yet: OptIR and the analyses (Phase C), OptIR and the analyses
-(Phase C), vector plans (Phase D), and the proof-obligation service of
-the proof-guided note §26 beyond the requirement/fact matching here.
+Fourth increment: the RV64 lane. What the package knows of a lane — the
+instruction shapes, the register files and their spellings, the
+procedure-call contract, the copies, the frame-slot accesses it may
+promote, and the lowering's prologue and epilogue — is a target
+descriptor (`machine/target.go`), and the RV64 one lifts the lowering's
+`mv`/`fmv.d` copies, `ld`/`sd` and `fld`/`fsd` slots (only whole words:
+`sw`/`lw` extend on the way back, which a copy would not), the `call`
+contract (a0–a7 and fa0–fa7 read; ra, t0–t6, a0–a7, and the ft/fa files
+written), and the `sd ra`/`sd s1`… prologue for callee-saved growth. The
+vector extension's registers refuse the lift for now. The `reallocate`
+transform runs on both lanes.
+
+Not in this increment: live-range splitting, vector callee-saved growth
+(d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
+directly, and scheduling.
+
+### Phase C, checked projection and first analysis: `optir/`
+
+The target-neutral structured representation now exists independently of
+emission. It retains typed scalar operations, effects, attributes, proof facts,
+conditionals, and pre-test loops with explicit loop-carried values. Its
+deterministic projection introduces typed block arguments at joins, loop
+headers, bodies, and exits. An independent verifier checks structured
+arity/types and CFG definitions, same-block order, dominance, reachability,
+terminators, exact edge types, Bool branches, and returns.
+
+`Compilation.OptIR()` now starts from the ordinary checked semantic model and
+projects each supported concrete scalar function into that representation. The
+initial subset covers fixed-width integers, Bool, unit, locals, assignments,
+structured branches and short-circuiting, exhaustive Bool matches, pre-test
+loops, value-preserving integer widening, and effect-marked calls. Unsupported
+memory and richer language forms are deterministic per-function refusals; a
+projection or verification inconsistency fails the complete analysis request.
+
+Analysis-only SCCP independently validates its operation vocabulary and computes
+exact constants plus executable blocks and edges. Integer folding follows Oak's
+fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
+it does not rewrite the CFG or authorize emission.
+
+Not yet: OptIR transformation with equivalence-validated emission, CSE/DCE and
+loop analyses beyond explicit recurrence shape, vector plans (Phase D), and the
+proof-obligation service of the proof-guided note §26 beyond the
+requirement/fact matching here.
 
 ## 1. Why this architecture
 

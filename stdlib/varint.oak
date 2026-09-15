@@ -6,6 +6,8 @@
 // canonical form.
 package varint
 
+import("bytes")
+
 pub VarintError: type = Truncated | Overlong | DestinationTooSmall
 
 pub VarintValue: type = struct { value: u64, next: u32 }
@@ -25,7 +27,7 @@ pub varint_size: (value: u64): u32 {
 // varint_encode writes value at offset; returns the bytes written.
 pub varint_encode: (dst: [*]u8, offset: u32, value: u64): Result[u32, VarintError] {
   n: u32 = varint_size(value)
-  !bytes_range_fits(len(dst), offset, n) ? { .Err(.DestinationTooSmall) } | {
+  !bytes.range_fits(len(dst), offset, n) ? { .Err(.DestinationTooSmall) } | {
     rest: u64 = value
     i: u32 = u32(0)
     while i < n {

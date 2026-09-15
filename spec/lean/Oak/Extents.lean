@@ -11,6 +11,11 @@ constrains but never fixes.
 
 namespace Oak.Extents
 
+
+/-- An exact length is a minimum: `len(v) == K` (an `assert`, a match)
+    leaves `K ≤ len(v)`, under which a constant index below `K` is in
+    range (constant_under_min_length). -/
+theorem exact_length_min (len K : Nat) (h : len = K) : K ≤ len := by omega
 /-- A constant index below a min-length bound is in range for every
     length the fact admits: from `K ≤ len` and `c < K`, `c < len`
     (`recordIndexProof`, factMinLen). -/

@@ -135,7 +135,7 @@ shape the loop misses — the condition, the bound, a missing or doubled
 advance, or a non-constant step:
 
 ```text
-warning[OAK-D0103]: stdlib.oak:348:7: loop in bytes_move_within has no statically evident bound
+warning[OAK-D0103]: bytes.oak:80:7: loop in move_within has no statically evident bound
   = primary: the step is not `i = i + k` with k a positive constant
 ```
 
