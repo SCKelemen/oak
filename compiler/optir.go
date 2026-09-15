@@ -20,6 +20,7 @@ type OptIRFunction struct {
 	Structured     optir.Function
 	CFG            optir.CFG
 	Constants      optir.SCCPResult
+	Loops          optir.LoopAnalysis
 	Simplified     optir.CFG
 	Simplification optir.CSEDCEReport
 }
@@ -79,6 +80,10 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR SCCP of %s failed: %w", function.Name.Value, err)
 		}
+		loops, err := optir.AnalyzeLoops(cfg)
+		if err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR loop analysis of %s failed: %w", function.Name.Value, err)
+		}
 		simplified, simplification, err := optir.SimplifyCSEDCE(cfg)
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR CSE/DCE of %s failed: %w", function.Name.Value, err)
@@ -88,6 +93,7 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			Structured:     structured,
 			CFG:            cfg,
 			Constants:      constants,
+			Loops:          loops,
 			Simplified:     simplified,
 			Simplification: simplification,
 		})

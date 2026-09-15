@@ -103,6 +103,19 @@ with the definition. Both transforms clone their input and independently verify
 input and output. `Compilation.OptIR()` exposes the simplified CFG and a
 deterministic report, but emission still consumes neither.
 
+The generic control-flow analysis now gives that CFG a reusable semantic loop
+model. It reports reverse postorder, immediate dominators, back edges, natural
+loop blocks/latches/exits, canonical preheaders, and nesting. For each header
+parameter it follows only all-path-preserving block arguments and copies, then
+accepts an affine recurrence only when every latch supplies the same
+fixed-width `current + constant` or `current - constant` update. A unique loop
+exit comparison is normalized to `induction relation bound`, independent of
+operand order and which branch continues. Constant bounds produce an exact
+trip count only when mathematical monotonicity and the final update prove that
+no Oak fixed-width wrap occurs; otherwise the recurrence remains useful but the
+count is absent. `Compilation.OptIR()` exposes these facts on the original CFG.
+They authorize no transform or emission yet.
+
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
 locals take homes by a liveness pre-pass: a caller-saved register when

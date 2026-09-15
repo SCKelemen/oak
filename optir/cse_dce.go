@@ -42,7 +42,7 @@ type operationLocation struct {
 // in the closed, total, pure Oak vocabulary below and only when the retained
 // definition dominates the removed definition. The caller's CFG is unchanged.
 func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
-	if err := validateTransformCFG(cfg); err != nil {
+	if err := validateAnalysisCFG(cfg); err != nil {
 		return CFG{}, CSEReport{}, err
 	}
 	result := cloneCFG(cfg)
@@ -150,7 +150,7 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 		block.Operations = kept
 	}
 	sort.Slice(report.Replacements, func(i, j int) bool { return report.Replacements[i].From < report.Replacements[j].From })
-	if err := validateTransformCFG(result); err != nil {
+	if err := validateAnalysisCFG(result); err != nil {
 		return CFG{}, CSEReport{}, fmt.Errorf("optir: CSE produced invalid CFG: %w", err)
 	}
 	return result, report, nil
@@ -160,7 +160,7 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 // whose complete result tuple has no external SSA use. It iterates so deleting
 // a dead consumer can expose its producers. The caller's CFG is unchanged.
 func EliminateDeadCode(cfg CFG) (CFG, DCEReport, error) {
-	if err := validateTransformCFG(cfg); err != nil {
+	if err := validateAnalysisCFG(cfg); err != nil {
 		return CFG{}, DCEReport{}, err
 	}
 	result := cloneCFG(cfg)
@@ -193,7 +193,7 @@ func EliminateDeadCode(cfg CFG) (CFG, DCEReport, error) {
 		}
 	}
 	sort.Slice(report.EliminatedValues, func(i, j int) bool { return report.EliminatedValues[i] < report.EliminatedValues[j] })
-	if err := validateTransformCFG(result); err != nil {
+	if err := validateAnalysisCFG(result); err != nil {
 		return CFG{}, DCEReport{}, fmt.Errorf("optir: DCE produced invalid CFG: %w", err)
 	}
 	return result, report, nil
@@ -214,7 +214,7 @@ func SimplifyCSEDCE(cfg CFG) (CFG, CSEDCEReport, error) {
 	return dead, CSEDCEReport{CSE: cse, DCE: dce}, nil
 }
 
-func validateTransformCFG(cfg CFG) error {
+func validateAnalysisCFG(cfg CFG) error {
 	if err := Verify(cfg); err != nil {
 		return err
 	}

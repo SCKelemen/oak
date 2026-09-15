@@ -228,10 +228,21 @@ valid. Input and output pass the independent verifier, and
 `Compilation.OptIR()` retains the original CFG beside the simplified candidate
 and its deterministic report.
 
+OptIR also has its semantic loop analysis: reverse postorder and immediate
+dominators; natural loops with back edges, latches, exits, canonical preheaders,
+parents, and depths; and typed affine recurrences over explicit loop-carried
+block arguments. It normalizes the unique continuation predicate and proves an
+exact constant trip count only when a monotone fixed-width recurrence reaches
+the exit without wrapping. Symbolic bounds, multiple exits, latch disagreement,
+and wrapping boundaries retain only the facts actually established. These
+results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
+meaning, while MachineIR owns eventual layout and scheduling.
+
 Not yet: equivalence-validated emission of the candidate, available-expression
-and GVN generalization, dead stores, loop analyses beyond explicit recurrence
-shape, vector plans (Phase D), and the proof-obligation service of the
-proof-guided note §26 beyond the requirement/fact matching here.
+and GVN generalization, dead stores, non-affine and symbolic trip-count proofs,
+LICM/unrolling transforms that consume the loop facts, vector plans (Phase D),
+and the proof-obligation service of the proof-guided note §26 beyond the
+requirement/fact matching here.
 
 ## 1. Why this architecture
 

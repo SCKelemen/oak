@@ -706,9 +706,15 @@ operation code, types, operands, and ordered attributes must agree; proof facts
 move only when valid at the dominating definition. Calls, traps, memory,
 synchronization, unknown operations, and every explicitly effectful operation
 remain roots. `Compilation.OptIR()` returns the original CFG, SCCP evidence, the
-simplified candidate, and its report. This substrate is not yet an emission
-path: no backend consumes either OptIR CFG, and no OptIR transform can authorize
-a code-generation change until equivalence validation is connected.
+simplified candidate, and its report. Its loop analysis reports dominators,
+back edges, natural-loop structure and nesting, canonical preheaders, and typed
+affine loop-carried recurrences. A unique continuation comparison is normalized
+around the induction value; an exact constant trip count is reported only when
+fixed-width range reasoning proves that every update through loop exit avoids
+wrap. Symbolic, multi-exit, and wrapping cases remain unproved rather than
+borrowing mathematical-integer semantics. This substrate is not yet an
+emission path: no backend consumes either OptIR CFG, and no OptIR transform can
+authorize a code-generation change until equivalence validation is connected.
 
 1. **Licensed removals only.** The compiler removes a check, a guard, a
    copy, a reload, or a trap only on a fact it has proved: an index under
