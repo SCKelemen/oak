@@ -15,6 +15,66 @@ The central rule is:
 
 Optimization should therefore grow as a library of small transforms and planning rules, not as one correctness-critical sequence of mutually dependent compiler rewrites.
 
+## 0. Status (2026-09-15): Phase A landed
+
+The planning substrate of §16 Phase A is implemented on `specification`:
+
+- `opt/` — the target-independent substrate: `Fact`/`Proposition`/
+  `Provenance`/`Requirement` (proof-carrying facts, §4 and the
+  proof-guided note §1), `Transform`/`Registry`/`Phase`/`ProofKind`
+  (§2, §4), `Candidate` (§3), `Metrics`/`CostModel`/`TargetCosts` (§8,
+  §9), `Report`/`Remark` (§9), and `Search` — the bounded beam search
+  with checker-driven refinement, cost-ordered validation under a
+  validation budget, and the identity as the last candidate (§6, §15).
+  `opt/opt_test.go` covers selection, fallback, requirement gating,
+  pruning of unchanged and duplicate bodies, refinement, and budgets
+  against a fake lane.
+- `nativegen/opt.go` — the native lane's side: the five transforms the
+  lane already performed (`strength-reduce`, `elide-guards`,
+  `reuse-flags`, `hoist-invariants`, `unroll-reductions`) as
+  `opt.Transform`s over `Lane` configurations, each with its phase,
+  proof kind, and requirements; `FunctionFacts` reading the
+  typechecker's proved indices and the language's integer associativity
+  laws into facts; `Metrics` over a lowered body (instruction classes,
+  guards, and per loop the counts, the stride read off the index
+  register's increment, and the trip bound of a remainder loop after a
+  strided one); `Registry`, `PlainLane`, `FindingLine`.
+- The cost model (`opt.TargetCosts`) is static and per class: straight-line
+  code at weight one, each loop body at `LoopWeight` trips divided by its
+  stride and bounded by its shape's trips, so a four-way unrolled
+  reduction is priced per element against the plain loop and its
+  remainder loop as its expected few trips. The weights are uncalibrated
+  heuristics (§8); the report's `candidates` line lists every admitted
+  candidate with its cost and shape so a wrong estimate is visible. The
+  first thing the report found: without the stride the static count
+  priced the unrolled reduction above the plain loop, and the search
+  would have verified the plain loop first.
+- `compiler/native_search.go` and `compiler/native_bodies.go` — the
+  hand-written fallback ladder (elide, then hoist, then reuse, then
+  strength, then the plain reduction) is replaced by one search per
+  body with a `Driver` that lowers, keys, measures, checks, and verifies
+  through the verdict cache. The compiler's diagnostics keep their
+  phrasing; `-opt-report` / `OAK_OPT_REPORT=1` print the report;
+  `OAK_OPT_BEAM` overrides the beam for experiments. `-opt` keeps its
+  one meaning (the C compiler's level).
+
+Policy as landed: the identity is the fallback and is verified last, so
+an admitted transformed body is preferred to the plain lowering even when
+the static model prices it slightly higher (the model cannot see register
+residency); among transformed bodies the model decides. The first case
+where that mattered: before the vector operands moved in place (#484),
+`vector-homes` on an accumulator carried through a call inside a loop
+saved and reloaded it around the call exactly as the slot form stored and
+loaded it, plus two moves per trip, and the search kept the hoisted slot
+form; after #484 the home form is the cheaper and is selected. What a
+vector move and a frame-slot round trip cost, and whether residency
+transforms deserve a tie-break, is calibration work for the benchmarks
+(§8); the report's `candidates` line is where to read it.
+
+Not yet: MachineIR and the allocator (Phase B), OptIR and the analyses
+(Phase C), vector plans (Phase D), and the proof-obligation service of
+the proof-guided note §26 beyond the requirement/fact matching here.
+
 ## 1. Why this architecture
 
 A conventional optimizer tends to evolve as a long destructive pipeline:

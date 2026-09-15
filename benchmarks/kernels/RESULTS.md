@@ -462,6 +462,39 @@ next item for this shape.
 (bit-exact against its oracle); it is an emitter, not a kernel, and has
 no timing.
 
+## Arrays as values, 2026-09-16
+
+Owned arrays of scalars now cross the native boundary as values
+(docs/spec/94-assembler.md §9 "Arrays as values"), which moves the whole
+SHA-256 path of the dbs frame scan — `sha256_rounds`, `sha256_compress`,
+`sha256_block`, `sha256_compress_view`, `sha256_init`, `sha256_update`,
+`sha256_final` — from the C backend to the native lane: the scan's
+`oak build -native` leaves 74 bodies to C where it left 89, the chain
+hash agrees, and every array-valued body runs under the trusted verdict
+(the verifier stops at a result returned through memory, arrays as
+records). The scan itself got slower, not faster: interleaved with the
+C build under a loaded machine (the compiler suites running), the native
+binary scanned the 64 MiB segment in 187–353 ms against C's 99–122 ms,
+where the C-hashed native binary before this change stood at 131.7 ms
+under the pending loop-invariant work. The reason is in the dump of
+`sha256_rounds`, and it is codegen, not the feature. Each `rotr32(x,
+u32(7))` — `(x >> n) | (x << (u32(32) - n))` inlined with a literal `n` —
+is eight instructions: `lsr w9, w3, #7`, then `mov w10, w3; movz w11,
+#32; sub w11, w11, #7; cmp w11, #32; b.hs trap; lsl w10, w10, w11; orr
+w5, w9, w10`, because `u32(32) - u32(7)` is not folded (the folder covers
+`+` and `*`), so the left shift takes a variable amount with its trap
+guard. Clang emits one `ror w5, w3, #7`. Six rotates per round, 64
+rounds per block, a million blocks: the difference alone is the gap. The
+message-schedule loop also recomputes `add x10, sp, #80` before each of
+its five element accesses and guards `w[i - u32(15)]` under `i < 64`
+without a lower bound for `i`, the round loop rebuilds `adrl x10,
+data_SHA256_K; add x12, x10, #0` each iteration and rotates eight
+working variables through seven `mov`s, and the 256-byte copy of
+`w_in` is 32 `ldr`/`str` pairs through one register. In order: fold `-`
+and recognize the rotate as `ror` (the next increment), the loop
+invariants (pending, PR #471) for the frame and table addresses, a lower
+bound for the induction variable in the checker so the schedule's back
+references need no guard, pair copies for array values.
 ## Aggregate helpers, 2026-09-16
 
 The native lane's inliner now expands small record- and array-typed

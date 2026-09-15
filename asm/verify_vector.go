@@ -532,7 +532,11 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 		if !okL || !okR {
 			return "unbound vector register read", false
 		}
-		if instr.Mnemonic == "mov" || n.Num == m.Num {
+		if instr.Mnemonic == "mov" || (n.Num == m.Num && (instr.Mnemonic == "orr" || instr.Mnemonic == "and")) {
+			// The vector move: orr/and of a register with itself. eor and
+			// bic of a register with itself are zero, not a move — the
+			// backend spells `xor(v, v)` as `eor vD, vN, vN` once it reads
+			// v in place — so they fall through to the lane-wise operation.
 			state.writeVec(d.Num, left)
 			return "", true
 		}
@@ -802,6 +806,10 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 			if size == 16 {
 				state.storeSlot(offset, halves[0], 8)
 				state.storeSlot(offset+8, halves[1], 8)
+				whole := value
+				low := state.frame[offset]
+				low.vec, low.hi = &whole, halves[1]
+				state.frame[offset] = low
 			} else {
 				state.storeSlot(offset, narrowLane(halves[0], int(size)*8), size)
 			}
@@ -813,6 +821,15 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 				return state.opaqueSlot(at, width)
 			}
 			if size == 16 {
+				// A whole vector stored here and untouched since: the same
+				// value, lane for lane, rather than its two halves.
+				if lowSlot, ok := state.frame[offset]; ok && lowSlot.vec != nil && lowSlot.width == 8 {
+					if highSlot, okH := state.frame[offset+8]; okH && highSlot.width == 8 && highSlot.value == lowSlot.hi {
+						state.writeVec(reg.Num, *lowSlot.vec)
+						offset += size
+						continue
+					}
+				}
 				low, okL := slot(offset, 8)
 				high, okH := slot(offset+8, 8)
 				if !okL || !okH {

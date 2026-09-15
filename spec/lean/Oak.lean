@@ -183,3 +183,4 @@ import Oak.Tseitin
 import Oak.RVWMO
 import Oak.Reduction
 import Oak.Inlining
+import Oak.ArrayValues
