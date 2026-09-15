@@ -492,16 +492,12 @@ type term struct {
 	// use width): an element parameter's fixed-memory value is its
 	// declared width's, whatever width it is read at. Zero: the width.
 	declared int
-	// id is the term's index in the termEvaluator that last numbered it,
-	// one-based; zero before any numbering. Only the witness pass sets it,
-	// before the variable orders' goroutines start reading the terms.
-	id    int32
-	name  string // termParam
-	value uint64 // termConst (already masked to width)
-	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
-	left  *term
-	right *term
-	cond  *term // termIte
+	name     string // termParam
+	value    uint64 // termConst (already masked to width)
+	op       string // termBinary: add sub and or xor shl shr; termCmp: condition code
+	left     *term
+	right    *term
+	cond     *term // termIte
 	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
 	kbDone  bool
 	kbValue uint64
