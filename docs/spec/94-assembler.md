@@ -2855,6 +2855,17 @@ its constant element count takes the span-parameter alias, and `len` over
 the callee's parameter resolves through the alias to the table's count, so
 `table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
+An owned frame array of records passed the same way (`span(&t)` over `t:
+[2]Table`, `view(&stages)` over an array of stages) binds each element's
+leaves from the frame at their offsets inside the element — the layout
+the checker and the backend share (`compositeLeaves`), as a record
+argument in the frame is read — and a writable span's final leaves are
+stored back leaf by leaf at those offsets (a `Bool` leaf into its 4-byte
+cell), so a `main` that hands its table of records to a writer and then
+reads the fields the writer changed is proven through its callees rather
+than trusted for "elements without a scalar model at the span's width"
+(`compiler/e2e_native_frame_record_span_test.go`).
+
 **Thirty-seventh increment — unit bodies without effects (2026-09-15;
 `asm/effects.go` decideEffects, `Oak.UnitBodies`).** A unit function whose
 body has no effect the model tracks — `check_all`, an assert over a call,
