@@ -374,6 +374,101 @@ theorem lowerValueConditional_eval (branch : SourceConditional) (ρ : SourceEnv)
   exact lowerValueConditionalWith_eval branch ρ ρ parameterTerms
     (parameterTerms_agree ρ)
 
+/-- A pure call in this slice: ordered callee parameter names paired with
+argument expressions evaluated in the caller, and a straight-line callee body.
+Parameter uniqueness is a frontend invariant. -/
+structure Call where
+  arguments : List (String × Expr)
+  body : Expr
+  deriving Repr
+
+/-- Unbound names cannot occur in a checked callee. Giving both semantic
+readings the same zero default makes that frontend invariant irrelevant to the
+refinement proof. -/
+def emptySourceEnv : SourceEnv := fun _ => Float32.ofBits 0
+def emptyTermEnv : TermEnv := fun _ => .literal 0
+
+@[simp] theorem emptyEnvs_agree (parameters : SourceEnv) :
+    Agree parameters emptySourceEnv emptyTermEnv := by
+  intro name
+  rfl
+
+/-- Bind arguments from left to right. Every argument is evaluated in the
+unchanged caller scope, never in the partially built callee scope. -/
+def bindSourceArgumentsFrom (caller base : SourceEnv) :
+    List (String × Expr) → SourceEnv
+  | [] => base
+  | (name, argument) :: rest =>
+      bindSourceArgumentsFrom caller
+        (base.set name (argument.eval caller)) rest
+
+/-- Verifier counterpart: lower every argument in the unchanged caller term
+scope and bind its term to the corresponding callee parameter. -/
+def bindTermArgumentsFrom (caller : TermEnv) (base : TermEnv) :
+    List (String × Expr) → TermEnv
+  | [] => base
+  | (name, argument) :: rest =>
+      bindTermArgumentsFrom caller
+        (base.set name (lowerWith argument caller)) rest
+
+theorem bindArgumentsFrom_agree (arguments : List (String × Expr))
+    (parameters current baseSource : SourceEnv) (caller baseTerm : TermEnv)
+    (hcaller : Agree parameters current caller)
+    (hbase : Agree parameters baseSource baseTerm) :
+    Agree parameters
+      (bindSourceArgumentsFrom current baseSource arguments)
+      (bindTermArgumentsFrom caller baseTerm arguments) := by
+  induction arguments generalizing baseSource baseTerm with
+  | nil => exact hbase
+  | cons binding rest ih =>
+      rcases binding with ⟨name, argument⟩
+      simp only [bindSourceArgumentsFrom, bindTermArgumentsFrom]
+      exact ih
+        (baseSource.set name (argument.eval current))
+        (baseTerm.set name (lowerWith argument caller))
+        (agree_set parameters baseSource baseTerm name
+          (argument.eval current) (lowerWith argument caller) hbase
+          (lowerWith_eval argument parameters current caller hcaller))
+
+def bindSourceArguments (caller : SourceEnv)
+    (arguments : List (String × Expr)) : SourceEnv :=
+  bindSourceArgumentsFrom caller emptySourceEnv arguments
+
+def bindTermArguments (caller : TermEnv)
+    (arguments : List (String × Expr)) : TermEnv :=
+  bindTermArgumentsFrom caller emptyTermEnv arguments
+
+theorem bindArguments_agree (arguments : List (String × Expr))
+    (parameters current : SourceEnv) (caller : TermEnv)
+    (hcaller : Agree parameters current caller) :
+    Agree parameters
+      (bindSourceArguments current arguments)
+      (bindTermArguments caller arguments) := by
+  exact bindArgumentsFrom_agree arguments parameters current emptySourceEnv
+    caller emptyTermEnv hcaller (emptyEnvs_agree parameters)
+
+def Call.eval (call : Call) (caller : SourceEnv) : Float32 :=
+  call.body.eval (bindSourceArguments caller call.arguments)
+
+/-- The pure-f32 portion of `inlineCall`: bind lowered arguments to the
+callee's parameters and lower its body in that new symbolic scope. -/
+def lowerCallWith (call : Call) (caller : TermEnv) : Term :=
+  lowerWith call.body (bindTermArguments caller call.arguments)
+
+theorem lowerCallWith_eval (call : Call) (parameters current : SourceEnv)
+    (caller : TermEnv) (hcaller : Agree parameters current caller) :
+    (lowerCallWith call caller).eval parameters = call.eval current := by
+  exact lowerWith_eval call.body parameters
+    (bindSourceArguments current call.arguments)
+    (bindTermArguments caller call.arguments)
+    (bindArguments_agree call.arguments parameters current caller hcaller)
+
+def lowerCall (call : Call) : Term := lowerCallWith call parameterTerms
+
+theorem lowerCall_eval (call : Call) (ρ : SourceEnv) :
+    (lowerCall call).eval ρ = call.eval ρ := by
+  exact lowerCallWith_eval call ρ ρ parameterTerms (parameterTerms_agree ρ)
+
 private def a : Expr := .param "a"
 private def b : Expr := .param "b"
 private def c : Expr := .param "c"
@@ -407,6 +502,15 @@ example : lowerValueConditional {
     whenTrue := .float .fadd (.param "a") (.literal 0x3F800000)
     whenFalse := .float .fmul (.param "b") (.literal 0x40000000)
   } := rfl
+example : lowerCall {
+    arguments := [("x", .binary .add a b), ("y", b)]
+    body := .binary .add (.binary .mul (.param "x") (.param "y"))
+      (.literal 0x3F800000)
+  } = .float .fadd
+    (.float .fmul
+      (.float .fadd (.param "a") (.param "b"))
+      (.param "b"))
+    (.literal 0x3F800000) := rfl
 example : lowerF (.binary .add (.binary .mul a b) c) =
     .float .fadd (.float .fmul (.param "a") (.param "b")) (.param "c") := rfl
 example : lowerF (.binary .add a (.literal 0x3FC00000)) =

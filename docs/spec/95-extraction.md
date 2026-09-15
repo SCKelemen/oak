@@ -192,7 +192,10 @@ that never states a rounding or bit-level comparison fact keeps Lean's
 operators. A value-position Bool conditional over these expressions keeps the
 same carriers in its guard and arms and renders as Lean `if`; this is the first
 control-flow slice of `Oak.FloatLoweringRefinement`, not yet a claim about
-statement branches or nested float control flow.
+statement branches or nested float control flow. Pure `f32` calls compose too:
+arguments are evaluated in the caller scope, bound by the callee's ordered
+parameter list, and the straight-line callee body uses the same bit-level
+carriers. Borrowing, recursion, and effectful calls are outside this slice.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

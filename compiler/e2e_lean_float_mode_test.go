@@ -24,11 +24,13 @@ gt: (a: f32, b: f32): Bool = a > b
 ge: (a: f32, b: f32): Bool = a >= b
 lt64: (a: f64, b: f64): Bool = a < b
 choose: (a: f32, b: f32): f32 = a < b ? a + 1.0 | b * 2.0
+scale: (x: f32, y: f32): f32 = x * y + 1.0
+via_call: (a: f32, b: f32): f32 = scale(a + b, b)
 
 main: (): i32 = 0
 `
 	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
-	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose"}).Get()
+	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +48,15 @@ main: (): i32 = 0
 		"(Oak.FloatOps.ge32 a b)",
 		"(decide (a < b))",
 		"(if (Oak.FloatOps.lt32 a b) then (Oak.FloatOps.add32 a (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/)) else (Oak.FloatOps.mul32 b (Float32.ofBits (0x40000000 : UInt32) /- 2.0 -/)))",
+		"def scale",
+		"(Oak.FloatOps.add32 (Oak.FloatOps.mul32 x y) (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
+		"scale (Oak.FloatOps.add32 a b) b fuel",
 	} {
 		if !strings.Contains(bits, want) {
 			t.Fatalf("missing %q in:\n%s", want, bits)
 		}
 	}
-	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose"}).Get()
+	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose", "via_call"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}

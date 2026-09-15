@@ -106,6 +106,9 @@ var loweringRenders = []struct {
 var loweringProgramRenders = []struct {
 	program, want string
 }{
+	// A pure f32 call (FloatLoweringRefinement.lowerCall): arguments lower in
+	// the caller scope, bind to the callee parameters, and its body inlines.
+	{"g: (x, y: f32) -> f32 = x * y + 1.0\n\nf: (a, b: f32) -> f32 = g(a + b, b)\n", "fadd32(fmul32(fadd32(a, b), b), 1065353216)"},
 	// Exact-f32 locals (FloatLoweringRefinement.lowerWith): declaration and
 	// rebinding substitute the initializer term into the remaining body.
 	{"f: (a: f32) -> f32 = {\n  y: f32 = a + 1.5\n  y * y\n}\n", "fmul32(fadd32(a, 1069547520), fadd32(a, 1069547520))"},
