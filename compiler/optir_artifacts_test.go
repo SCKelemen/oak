@@ -39,10 +39,11 @@ main: (): i32 = 0
 	if !reflect.DeepEqual(first.keys, second.keys) || !reflect.DeepEqual(first.constants, second.constants) || !reflect.DeepEqual(first.loops, second.loops) || !reflect.DeepEqual(first.simplified, second.simplified) || !reflect.DeepEqual(first.loopInvariant, second.loopInvariant) {
 		t.Fatal("OptIR artifact analysis is not deterministic")
 	}
-	graph, keys, err := newOptIRAnalysisGraph(function.CFG)
+	graph, references, err := newOptIRAnalysisGraph(function.CFG)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := references.keys()
 	if keys.cleanup.Name != "optir.gvn-dce" || keys.preservation.Name != "optir.gvn-dce.preservation" {
 		t.Fatalf("GVN/DCE artifact keys = %s, %s", keys.cleanup, keys.preservation)
 	}
@@ -58,7 +59,7 @@ main: (): i32 = 0
 			t.Fatalf("artifact graph did not produce %s", key)
 		}
 	}
-	certificate, err := optIRRunValue[optir.PreservationCertificate](first.run, keys.preservation)
+	certificate, err := references.preservation.Value(first.run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +80,11 @@ main: (): i32 = 0
 	if !exists {
 		t.Fatalf("answer was not projected: %+v", module.Refusals)
 	}
-	graph, keys, err := newOptIRAnalysisGraph(function.CFG)
+	graph, references, err := newOptIRAnalysisGraph(function.CFG)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := references.keys()
 	targets := []opt.ArtifactKey{keys.sccp, keys.loopsV0, keys.cleanup, keys.licm}
 	cache := opt.NewMemoryArtifactCache()
 	first, err := graph.Run(context.Background(), cache, targets...)
@@ -99,10 +101,11 @@ main: (): i32 = 0
 
 	changed := function.CFG
 	changed.Name += ".changed"
-	changedGraph, changedKeys, err := newOptIRAnalysisGraph(changed)
+	changedGraph, changedReferences, err := newOptIRAnalysisGraph(changed)
 	if err != nil {
 		t.Fatal(err)
 	}
+	changedKeys := changedReferences.keys()
 	before := []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.loopStructureV0, keys.loopsV0, keys.cleanup, keys.cfgV1, keys.preservation, keys.loopsV1, keys.licm}
 	after := []opt.ArtifactKey{changedKeys.cfgV0, changedKeys.sccp, changedKeys.loopStructureV0, changedKeys.loopsV0, changedKeys.cleanup, changedKeys.cfgV1, changedKeys.preservation, changedKeys.loopsV1, changedKeys.licm}
 	for index := range before {

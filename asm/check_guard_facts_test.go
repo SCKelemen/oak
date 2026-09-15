@@ -47,6 +47,12 @@ func TestCheckerGuardFacts(t *testing.T) {
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w1, #4\n  b.lo trap\n  movz w9, #3\n  ldrb w0, [x0, w9, uxtw]\n  ret" + epilogue},
 		{"a guarded index spilled to a slot is guarded when it is loaded back (Oak.Assembler.guard_through_slot)",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  cmp w2, w1\n  b.hs trap\n  str w2, [sp, #8]\n  ldr w9, [sp, #8]\n  ldrb w0, [x0, w9, uxtw]\n  add sp, sp, #16\n  ret" + epilogue},
+		// Block versioning by fact context (docs/spec/94-assembler.md): the
+		// guard holds on the path that reaches the access, and the other
+		// path into the join cannot reach it, so the meet's loss of the
+		// fact is not a refusal.
+		{"a guard lost at a join is admitted per arriving context",
+			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, lo\n  cbz w9, skip\n  b body\nbody:\n  ldrb w0, [x0, w2, uxtw]\n  ret\nskip:\n  mov w0, wzr\n  ret"},
 		{"proven minimum survives a call with the span",
 			callPrologue + "  cmp w20, #2\n  b.lo trap\n  bl helper\n  ldrb w0, [x19, #1]" + callEpilogue},
 	}
@@ -101,6 +107,9 @@ func TestCheckerGuardFacts(t *testing.T) {
 			"proven minimum length"},
 		{"a slot fact dies with the length register it names",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  cmp w2, w1\n  b.hs trap\n  str w2, [sp, #8]\n  mov w1, #0\n  ldr w9, [sp, #8]\n  ldrb w0, [x0, w9, uxtw]\n  add sp, sp, #16\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"a join whose other path reaches the access unguarded is refused",
+			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, lo\n  cbz w9, body\n  b body\nbody:\n  ldrb w0, [x0, w2, uxtw]\n  ret",
 			"without a dominating index guard"},
 		{"guard on a caller-saved index dies at a call",
 			callPrologue + "  mov w9, w21\n  cmp w9, w20\n  b.hs trap\n  bl helper\n  ldrb w0, [x19, w9, uxtw]" + callEpilogue,

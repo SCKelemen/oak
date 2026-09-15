@@ -82,3 +82,124 @@ func TestIsSubtype_BottomAndTop(t *testing.T) {
 		t.Fatal("an inhabited atom must not subtype bottom")
 	}
 }
+
+func TestAssignableComposesLatticeWithRepresentationRules(t *testing.T) {
+	tc := setupTypeChecker("")
+	u8 := &PrimitiveType{Name: "u8"}
+	u16 := &PrimitiveType{Name: "u16"}
+	refinedU16 := &PrimitiveType{Name: "u16", Refinement: "Small"}
+	any := &AnyType{}
+	union := &UnionType{Types: []Type{u8, &BoolType{}}}
+	intersection := &IntersectionType{Types: []Type{u8, &BoolType{}}}
+
+	tests := []struct {
+		name   string
+		value  Type
+		target Type
+		want   bool
+	}{
+		{name: "bottom enters an ordinary type", value: &NeverType{}, target: u8, want: true},
+		{name: "bottom enters restricted top without a value", value: &NeverType{}, target: any, want: true},
+		{name: "top does not invent a runtime box", value: u8, target: any, want: false},
+		{name: "join does not invent a runtime tag", value: u8, target: union, want: false},
+		{name: "meet projection needs a representation", value: intersection, target: u8, want: false},
+		{name: "same lattice type retains its representation", value: union, target: union, want: true},
+		{name: "numeric widening", value: u8, target: u16, want: true},
+		{name: "numeric narrowing", value: u16, target: u8, want: false},
+		{name: "refinement erases to its base", value: refinedU16, target: u16, want: true},
+		{name: "base requires checked refinement construction", value: u16, target: refinedU16, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := tc.isAssignable(test.value, test.target); got != test.want {
+				t.Fatalf("isAssignable(%s, %s) = %v, want %v", test.value, test.target, got, test.want)
+			}
+		})
+	}
+}
+
+func TestAssignableKeepsStructuralAndAlignmentRelationsSeparate(t *testing.T) {
+	tc := setupTypeChecker("")
+	u8 := &PrimitiveType{Name: "u8"}
+	source := &RecordType{Fields: map[string]Type{"x": u8, "y": u8}}
+	target := &RecordType{Fields: map[string]Type{"x": u8}, Open: true}
+	missing := &RecordType{Fields: map[string]Type{"z": u8}, Open: true}
+	if !tc.isAssignable(source, target) || tc.isAssignable(source, missing) {
+		t.Fatal("open-record shape satisfaction did not remain directional")
+	}
+
+	plain := &ArrayType{ElementType: u8, IsSpan: true}
+	aligned := &ArrayType{ElementType: u8, IsSpan: true, Align: 64}
+	if !tc.isAssignable(aligned, plain) || tc.isAssignable(plain, aligned) {
+		t.Fatal("span alignment assignability did not remain directional")
+	}
+}
+
+func TestIsSubtypeExhaustiveAgainstThreeAtomSemantics(t *testing.T) {
+	atoms := []Type{
+		&PrimitiveType{Name: "u8"},
+		&BoolType{},
+		&StringType{},
+	}
+	bySize := map[int][]Type{
+		1: {&NeverType{}, &AnyType{}, atoms[0], atoms[1], atoms[2]},
+	}
+	for size := 3; size <= 5; size += 2 {
+		for leftSize := 1; leftSize < size; leftSize += 2 {
+			rightSize := size - leftSize - 1
+			for _, left := range bySize[leftSize] {
+				for _, right := range bySize[rightSize] {
+					bySize[size] = append(bySize[size],
+						&UnionType{Types: []Type{left, right}},
+						&IntersectionType{Types: []Type{left, right}},
+					)
+				}
+			}
+		}
+	}
+	formulas := append(append(append([]Type{}, bySize[1]...), bySize[3]...), bySize[5]...)
+	for _, left := range formulas {
+		for _, right := range formulas {
+			want := true
+			for valuation := uint8(0); valuation < 1<<len(atoms); valuation++ {
+				if latticeFormulaHolds(left, atoms, valuation) && !latticeFormulaHolds(right, atoms, valuation) {
+					want = false
+					break
+				}
+			}
+			if got := IsSubtype(left, right); got != want {
+				t.Fatalf("IsSubtype(%s, %s) = %v, pointwise containment = %v", left, right, got, want)
+			}
+		}
+	}
+}
+
+func latticeFormulaHolds(formula Type, atoms []Type, valuation uint8) bool {
+	switch typ := formula.(type) {
+	case *NeverType:
+		return false
+	case *AnyType:
+		return true
+	case *UnionType:
+		for _, member := range typ.Types {
+			if latticeFormulaHolds(member, atoms, valuation) {
+				return true
+			}
+		}
+		return false
+	case *IntersectionType:
+		for _, member := range typ.Types {
+			if !latticeFormulaHolds(member, atoms, valuation) {
+				return false
+			}
+		}
+		return true
+	default:
+		for index, atom := range atoms {
+			if formula.Equals(atom) {
+				return valuation&(1<<index) != 0
+			}
+		}
+		panic("test lattice formula contains an unknown atom: " + formula.String())
+	}
+}

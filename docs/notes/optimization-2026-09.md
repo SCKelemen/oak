@@ -133,9 +133,13 @@ output are independently verified, and `Compilation.OptIR()` exposes the
 post-GVN/DCE LICM candidate and a deterministic movement report. Emission still
 consumes neither.
 
-The whole compiler does not yet run as one artifact DAG: source stages remain
-linear and native proposal enumeration remains dynamic. The
-generic OptIR chain does. Exact-version immutable nodes now represent CFG v0,
+The compiler deliberately uses a hybrid pipeline/artifact architecture: source
+stages and private local cleanup remain linear, while reusable, branching,
+independently verifiable, proof-gating, or expensive results receive exact
+artifact identities. The generic OptIR chain does. Typed artifact references
+and root/unary/binary/ternary builders derive its keys and extract payloads, so
+pass code no longer owns dependency indexes and type assertions. Exact-version
+immutable nodes represent CFG v0,
 SCCP, loop structure and recurrences, GVN/DCE, CFG v1, preservation evidence,
 and LICM. Analyses declare the topology, SSA, operation, effect, type, fact,
 and layout aspects they read. GVN/DCE's checked certificate proves

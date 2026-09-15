@@ -1199,7 +1199,21 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// order; the state past the loop keeps the marker alone (the loop's
 	// memory is the iteration's unknown memory, which the coupling proof
 	// identifies with the Oak side's).
+	// The memories the iteration may store into: a scalar span's own, a
+	// span of records' per-leaf memories (`s.pages`, `s.free_count`) — the
+	// Oak side's loopEvent marks and collects the same names.
+	var storedMemories []string
 	for _, span := range writtenSpans {
+		if arg, isRecord := x.recordSpans[span]; isRecord {
+			for _, memory := range arg.memories(span) {
+				storedSpans[memory] = true
+				storedMemories = append(storedMemories, memory)
+			}
+			continue
+		}
+		storedMemories = append(storedMemories, span)
+	}
+	for _, span := range storedMemories {
 		before := len(freshState.writes[span])
 		var stores []*spanWrite
 		for _, end := range ends {
@@ -2582,6 +2596,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for _, span := range storedSpans {
 		ev.entry[span] = lo.writes[span]
 		lo.writes = appendMarker(lo.writes, span, ev.index)
+		if lo.path != nil {
+			// A loop inside a conditional's arm: past the conditional the
+			// memory is the loop's on the paths that ran it and the entry
+			// memory on the others — the guard the asm side's join gives
+			// its marker (mergeWrites).
+			log := lo.writes[span]
+			log[len(log)-1].guard = lo.path
+		}
 		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
@@ -3686,6 +3708,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if oakEv.parent > 0 {
 			entryPremise = bodyPremise(oakEv.parent-1, sigma, true)
 		}
+		if reached := asmEv.reached; reached != nil {
+			// The machine reached the loop on this path's condition, and
+			// its stores before the loop are unguarded there; the Oak
+			// side's carry the arm's condition as their guard (`ok ? {
+			// s[dom].free_count = …; while … }`), so the entry memories
+			// agree only under it.
+			entryPremise = binaryTerm("and", entryPremise, truncate(substitute(reached, sigma), 1))
+		}
 		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies); !ok {
 			return evidence(reason)
 		}
@@ -3732,9 +3762,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence("the results after the loops were not proven equal")
 		}
 	}
-	// Package cells written before or after the loops are ordinary final
-	// effects. The loop summarizer rejected any per-iteration cell change, so
-	// compare these under the same coupling and exit premise as the result.
+	// The package cells after the loops, under the coupling and the exit
+	// premise, as decideEffects compares them in a body without loops: a
+	// cell written before or after a loop (`st = u8(0)` around the
+	// table-zeroing loop of the OS pilot's reset) meets its entry value or
+	// the other side's write; a cell the body writes inside a loop the
+	// coupling has not modeled leaves the comparison undecided — evidence.
 	oakCells := lowering.writtenCells()
 	cellSet := map[string]bool{}
 	for name := range exec.cells {
@@ -3753,6 +3786,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if !declared {
 			return trusted(fmt.Sprintf("a store through undeclared package global %s", name))
 		}
+		cellBits := cellWidth(global)
 		asmCell, asmWritten := exec.cells[name]
 		if !asmWritten {
 			asmCell = cellEntry(name, global)
@@ -3761,7 +3795,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if !oakWritten {
 			oakCell = cellEntry(name, global)
 		}
-		if equal, decided := implies(premise, oakCell, substitute(asmCell, sigma)); !decided || !equal {
+		asmCell = substitute(truncate(asmCell, cellBits), sigma)
+		oakCell = truncate(oakCell, cellBits)
+		if equal, decided := implies(premise, oakCell, asmCell); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: cell %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakCell, asmCell)
+			}
 			return evidence(fmt.Sprintf("the package global %s after the loops was not proven equal", name))
 		}
 	}
@@ -3798,8 +3837,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	memoryNote := ""
+	if len(writtenCells) > 0 {
+		memoryNote += " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
+	}
 	if len(writtenSpans) > 0 {
-		memoryNote = " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
+		memoryNote += " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
 	}
 	cellNote := ""
 	if len(writtenCells) > 0 {
@@ -4187,6 +4229,16 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if budget == nil {
+		// A decision that arrives without a budget (decideEqual on a
+		// chunk's terms) still ends: the case splits and the congruence
+		// rule recurse over the operands of both sides, each pair pruned
+		// and blasted anew, and over a hash block's term that walk ran
+		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
+		// implication budget). One decision's allowance bounds it; past
+		// the allowance the implication is undecided, not unending.
+		budget = &nodeBudget{remaining: loopDecisionNodeBudget}
+	}
 	if budget != nil {
 		// Each implication costs a call from the proof's allowance, and
 		// terms too large to blast cost a failed diagram's nodes, before

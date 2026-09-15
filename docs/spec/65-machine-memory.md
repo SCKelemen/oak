@@ -379,13 +379,13 @@ Acceptance spans the whole executable stack:
 | checked, saturating, trapping arithmetic and checked shifts | refinement: `Oak.CheckedArithmeticRefinement` proves the helper decisions against 20-types §11.1a over the overflow builtins' contract; `codegen/checked_arithmetic_refinement_test.go` pins the text |
 | explicit integer conversions | refinement: `Oak.ConversionRefinement` proves the `oak_conv_*` bodies to 20-types §11.1 for every admitted pair; pinned by `codegen/conversion_refinement_test.go` and `compiler/e2e_conversion_refinement_test.go` |
 | C/ISA refinement of atomics and ordering | partial: the native AArch64 lowering (§7a) is checked at the seam and differentially tested against the C backend; `Oak.AArch64WeakMemory` proves MP/SB/IRIW/full-DMB outcomes from the official Arm model's projected `bob`/`obs`/`ob` consequences; C/LLVM refinement and a mechanical CAT bridge remain open |
-| AArch64 weak-memory litmus suite | language-level executable cases and matching Lean machine-projection theorems landed; pinned Herd runs against Arm's official CAT model remain the next layer |
+| AArch64 weak-memory litmus suite | language-level executable cases, matching Lean machine-projection theorems, and MP/SB/LB/IRIW runs against Arm's official CAT model at pinned Herdtools7 commit `76d5bd259d4c4b553a0f52158b9638559b79a5b5` gate CI |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
 
 The next work is no longer to invent additional language-level memory-order
 semantics. It is to **finish and mechanically validate the projection**:
-generated C, emitted AArch64 instructions, pinned official-CAT litmus outcomes,
-and the CAT-to-Lean seam (target lock-free
+generated C, emitted AArch64 instructions, and pinned official-CAT litmus outcomes
+are gated; the remaining closure is the mechanical CAT-to-Lean seam (target lock-free
 admission is in place, §6). Higher-level SPSC/MPSC proofs should consume that demonstrated
 compiler-to-machine contract rather than re-specifying atomics locally.
 

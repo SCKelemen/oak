@@ -57,6 +57,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"vector-blocks", lane.VectorBlocks},
+		{"multiply-add", lane.MultiplyAdd},
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},

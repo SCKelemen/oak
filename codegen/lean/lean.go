@@ -30,7 +30,7 @@ import (
 
 // Options select the extraction's modeling choices a driver may vary.
 type Options struct {
-	// BitFloats renders f32 addition, subtraction, and multiplication
+	// BitFloats renders the supported f32 arithmetic and sign operations
 	// through Oak.FloatOps' bit-level operations instead of Lean's opaque
 	// Float32 operators (docs/spec/95-extraction.md section 3).
 	BitFloats bool
@@ -1806,6 +1806,10 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 			if isFloatLean(typ) {
 				// Negation flips the sign bit (section 11.3.5); `0 - x` would
 				// give +0 for x = +0.
+				if em.options.BitFloats && typ == "Float32" {
+					em.usesFloatOps = true
+					return "(Oak.FloatOps.neg32 " + inner + ")", nil
+				}
 				return "(-" + inner + ")", nil
 			}
 			return "(0 - " + inner + ")", nil
@@ -2921,6 +2925,10 @@ func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, w
 	inner, err := em.expr(call.Arguments[0], width)
 	if err != nil {
 		return "", err
+	}
+	if em.options.BitFloats && width == "Float32" && name == "abs" {
+		em.usesFloatOps = true
+		return fmt.Sprintf("(Oak.FloatOps.abs32 %s)", inner), nil
 	}
 	return fmt.Sprintf("(%s.%s %s)", width, leanName, inner), nil
 }
