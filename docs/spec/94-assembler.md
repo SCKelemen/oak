@@ -4022,7 +4022,12 @@ memory on both sides (`s.pages`, `s.entry_count` — the loop's marker per
 leaf, the coupling proof per leaf at its width), so the table-zeroing
 loops of the OS pilot's `reset` and `alloc_table` are proven rather than
 trusted for "a store through a span that is not a writable parameter",
-and a loop that assigns through the span carries no local for it. A span of records passed
+and a loop that assigns through the span carries no local for it. The
+induction's base — the two sides' memories at the loop's entry — is
+compared under the machine's condition for reaching the loop: a store
+before a loop inside an arm (`ok ? { s[dom].free_count = …; while … }`)
+is unguarded on the machine's path and guarded by `ok` on the Oak side,
+and the two agree exactly there (the OS pilot's `alloc_table`). A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's

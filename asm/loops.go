@@ -3618,6 +3618,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if oakEv.parent > 0 {
 			entryPremise = bodyPremise(oakEv.parent-1, sigma, true)
 		}
+		if reached := asmEv.reached; reached != nil {
+			// The machine reached the loop on this path's condition, and
+			// its stores before the loop are unguarded there; the Oak
+			// side's carry the arm's condition as their guard (`ok ? {
+			// s[dom].free_count = …; while … }`), so the entry memories
+			// agree only under it.
+			entryPremise = binaryTerm("and", entryPremise, truncate(substitute(reached, sigma), 1))
+		}
 		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies); !ok {
 			return evidence(reason)
 		}

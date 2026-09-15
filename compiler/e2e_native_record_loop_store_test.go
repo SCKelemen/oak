@@ -232,3 +232,98 @@ func TestE2ENativeCellsAroundLoopProven(t *testing.T) {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}
 }
+
+// The OS pilot's alloc_table shape at its inducted size: a store before an
+// inducted loop inside the arm `ok ? { s[dom].free_count = …; while j <
+// entries { … } }`. The machine reached the loop under `ok` and its store
+// is unguarded there; the Oak side's store carries `ok` as its guard, so
+// the induction's base — the memories at the loop's entry — is compared
+// under the machine's reaching condition. reset's three loops are
+// inducted (2048 entries here scaled to 128, still past the unroll bound).
+const nativeStage2AllocProgram = `max_pages: u16 = u16(2)
+entries: u32 = u32(128)
+
+Regime: type = struct {
+  pages: [256]u64
+  free_stack: [2]u16
+  free_count: u16
+  high_water: u16
+  entry_count: [2]u16
+  root: u16
+  pool_base: u64
+}
+
+st: u8
+
+cell: (table: u16, idx: u32): u32 { u32(table) * entries + idx }
+
+reset: (s: [*]Regime, dom: u32, pool_base: u64): () {
+  s[dom].pool_base = pool_base
+  i: u16 = u16(0)
+  while i < max_pages {
+    j: u32 = u32(0)
+    while j < entries {
+      s[dom].pages[cell(i, j)] = u64(0)
+      j = j + u32(1)
+    }
+    s[dom].free_stack[u32(i)] = max_pages - u16(1) - i
+    s[dom].entry_count[u32(i)] = u16(0)
+    i = i + u16(1)
+  }
+  s[dom].free_count = max_pages
+  s[dom].high_water = u16(0)
+  st = u8(0)
+  s[dom].root = alloc_table(s, dom)
+}
+
+alloc_table: (s: [*]Regime, dom: u32): u16 {
+  idx: u16 = u16(0)
+  none: Bool = s[dom].free_count == u16(0)
+  none ? {
+    st = u8(1)
+  } | {
+  }
+  ok: Bool = st == u8(0)
+  ok ? {
+    s[dom].free_count = s[dom].free_count - u16(1)
+    idx = s[dom].free_stack[u32(s[dom].free_count)]
+    j: u32 = u32(0)
+    while j < entries {
+      s[dom].pages[cell(idx, j)] = u64(0)
+      j = j + u32(1)
+    }
+    s[dom].entry_count[u32(idx)] = u16(0)
+    iu: u16 = max_pages - s[dom].free_count
+    hw: Bool = iu > s[dom].high_water
+    hw ? {
+      s[dom].high_water = iu
+    } | {
+    }
+  } | {
+  }
+  idx
+}
+
+main: (): i32 {
+  r: [1]Regime
+  reset(span(&r), u32(0), u64(65536))
+  (r[0].root == u16(0) && r[0].free_count == u16(1) && r[0].high_water == u16(1) && r[0].pages[3] == u64(0) && st == u8(0)) ? 42 | 1
+}
+`
+
+func TestE2ENativeStage2AllocTableProven(t *testing.T) {
+	requireArm64Host(t)
+	code, abnormal, joined := nativeVerdicts(t, "stage2_alloc", nativeStage2AllocProgram)
+	if abnormal || code != 42 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
+	}
+	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the package state it writes (st) and the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)") {
+		t.Errorf("alloc_table must be proven with its cell and leaf memories:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
+		t.Errorf("reset's inducted loops must be proven:\n%s", joined)
+	}
+	if strings.Contains(joined, "disagrees") {
+		t.Errorf("a false mismatch:\n%s", joined)
+	}
+}
