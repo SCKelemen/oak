@@ -161,7 +161,7 @@ func Transforms() []opt.Transform {
 			// equalities of the fixed-width semantics with their theorems
 			// in Oak.StrengthReduction (spec/lean/Oak/StrengthReduction.lean).
 			name: TransformStrength, phase: opt.PhaseCanonical, proof: opt.Canonical,
-			arches:  arm64Only,
+			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Strength },
 			apply:   func(l Lane) Lane { l.Strength = true; return l },
 			fired:   Reduced,
