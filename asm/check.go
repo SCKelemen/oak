@@ -2,6 +2,8 @@ package asm
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -46,7 +48,7 @@ func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) [
 			return c.errors // signature errors: nothing to iterate
 		}
 		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
-			return c.errors
+			return dischargeByVersion(fn, decl, symbols, labelIn, c)
 		}
 		labelIn = c.labelArrive
 	}
@@ -65,6 +67,7 @@ func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool,
 		return c
 	}
 	c.labelArrive = map[string]*guardState{}
+	c.labelVersions = map[string][]*guardState{}
 	c.bindContract()
 	c.declareClobbers()
 	c.walk()
@@ -268,12 +271,138 @@ func (gs *guardState) holdsUpper(reg int, u upperFact) bool {
 	return false
 }
 
-// arrive records a state reaching a label.
+// arrive records a state reaching a label: the meet, which the fixpoint
+// iterates on, and the distinct arriving states themselves, up to
+// maxLabelVersions of them, which block versioning by fact context reads
+// (docs/notes/implementation-literature-2026-09.md §5).
 func (c *checker) arrive(label string) {
 	if c.labelArrive == nil {
 		return
 	}
-	c.labelArrive[label] = meetGuards(c.labelArrive[label], c.guardSnapshot())
+	state := c.guardSnapshot()
+	c.labelArrive[label] = meetGuards(c.labelArrive[label], state)
+	if c.labelVersions == nil {
+		return
+	}
+	held := c.labelVersions[label]
+	for _, seen := range held {
+		if seen.equal(state) {
+			return
+		}
+	}
+	if len(held) < maxLabelVersions {
+		c.labelVersions[label] = append(held, state)
+	}
+}
+
+// maxLabelVersions caps the arriving states kept per label, and
+// maxVersionPasses the extra checker passes block versioning may run for
+// one body: the passes only ever discharge findings, so the caps cost
+// reach, never soundness.
+const (
+	maxLabelVersions = 3
+	maxVersionPasses = 6
+)
+
+// dischargeByVersion is the second chance for a body the meet refused
+// (docs/spec/94-assembler.md, "Block versioning by fact context"). The
+// meet at a label keeps only what every predecessor carries, so a fact
+// that holds on one path into a join is lost and an access after it is
+// refused. For each label that more than one distinct state reaches, the
+// body is checked again once per state, entering that label with it; a
+// finding absent from every one of those passes held only under the meet,
+// and is discharged. Findings are only ever removed, so a body the meet
+// admits is unaffected, and one the versions admit is admissible under
+// every state that actually arrives.
+func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, stable *checker) []string {
+	findings := stable.errors
+	if os.Getenv("OAK_CHECK_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "DBG %s: meet findings %v\n", fn.Name, findings)
+		for label, versions := range stable.labelVersions {
+			fmt.Fprintf(os.Stderr, "DBG   label %s has %d version(s)\n", label, len(versions))
+		}
+	}
+	if len(findings) == 0 || len(stable.labelVersions) == 0 {
+		return findings
+	}
+	labels := make([]string, 0, len(stable.labelVersions))
+	for label, versions := range stable.labelVersions {
+		if len(versions) > 1 {
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	passes := 0
+	for _, label := range labels {
+		versions := stable.labelVersions[label]
+		if passes+len(versions) > maxVersionPasses {
+			break
+		}
+		perVersion := make([][]string, 0, len(versions))
+		for _, version := range versions {
+			passes++
+			perVersion = append(perVersion, runVersionPass(fn, decl, symbols, labelIn, label, version).errors)
+		}
+		if os.Getenv("OAK_CHECK_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "DBG   %s: per-version findings %v\n", label, perVersion)
+		}
+		findings = dischargeAbsent(findings, perVersion)
+		if len(findings) == 0 {
+			return findings
+		}
+	}
+	return findings
+}
+
+// dischargeAbsent keeps a finding when some version pass also reports one
+// at the same place, and discharges it when none does. The place, not the
+// wording, is what matters: a context with more facts may refuse the same
+// access for a different reason, and that is still a refusal. A place no
+// version pass reports is either admissible under every arriving state or
+// unreachable under each of them, and either way the meet alone refused
+// it.
+func dischargeAbsent(findings []string, perVersion [][]string) []string {
+	refused := map[string]bool{}
+	for _, version := range perVersion {
+		for _, finding := range version {
+			refused[findingPlace(finding)] = true
+		}
+	}
+	kept := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		if refused[findingPlace(finding)] {
+			kept = append(kept, finding)
+		}
+	}
+	return kept
+}
+
+// findingPlace is a finding's `function:line` prefix, the place it names.
+func findingPlace(finding string) string {
+	first := strings.Index(finding, ":")
+	if first < 0 {
+		return finding
+	}
+	second := strings.Index(finding[first+1:], ":")
+	if second < 0 {
+		return finding
+	}
+	return finding[:first+1+second]
+}
+
+// runVersionPass checks the body with one label entered at one of the
+// states that reach it, rather than at the meet, and with the regions
+// this context cannot reach left unchecked (contextDead).
+func runVersionPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, label string, version *guardState) *checker {
+	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, pinnedLabel: label, pinnedState: version}
+	c.checkSignature(decl)
+	if len(c.errors) != 0 {
+		return c
+	}
+	c.bindContract()
+	c.declareClobbers()
+	c.walk()
+	return c
 }
 
 func guardStatesEqual(a, b map[string]*guardState) bool {
@@ -421,7 +550,15 @@ type checker struct {
 	// The label fixpoint: assumed guard states entering each label (nil on
 	// the first, optimistic pass), the meet of the states arriving there
 	// during this pass, and the conservative fallback that forgets all.
-	labelIn        map[string]*guardState
+	labelIn       map[string]*guardState
+	labelVersions map[string][]*guardState
+	// pinnedLabel and pinnedState are block versioning's context: the
+	// label this pass enters with one arriving state instead of the meet.
+	// contextDead marks a region this context cannot reach, whose items
+	// are not checked (a branch this context decides).
+	pinnedLabel    string
+	pinnedState    *guardState
+	contextDead    bool
 	labelArrive    map[string]*guardState
 	forgetAtLabels bool
 	// calleeSaved tracks x19–x30: the caller's state, readable on entry,
@@ -1131,6 +1268,13 @@ func (c *checker) walk() {
 			c.flagsValid = false
 			terminated = false
 		case Instruction:
+			if c.contextDead {
+				// Block versioning: a branch this context decides left
+				// this region unreachable, so its items are not checked
+				// (the meet pass checks them under the meet, and the other
+				// contexts under theirs).
+				continue
+			}
 			if c.unreachable {
 				c.errorf(it.Line, "unreachable instruction after an unconditional transfer; start a label")
 				c.unreachable = false
@@ -1140,7 +1284,7 @@ func (c *checker) walk() {
 		}
 	}
 	c.closeRegion(0)
-	if !terminated {
+	if !terminated && !c.contextDead {
 		c.errorf(c.fn.Line, "control falls off the end of %s: end with ret, b, or eret", c.fn.Name)
 	}
 	for name := range c.pendingDisp {
@@ -1190,7 +1334,13 @@ func (c *checker) enterLabel(label Label) {
 	// of every predecessor's facts — or, on the first pass (no assumption
 	// yet) the optimistic carry-over, or under the conservative fallback
 	// nothing at all.
+	c.contextDead = false
 	switch {
+	case c.pinnedState != nil && label.Name == c.pinnedLabel:
+		// Block versioning: this pass enters the label with one of the
+		// states that reach it, not the meet of them all.
+		c.forgetGuards()
+		c.applyGuards(c.pinnedState)
 	case c.forgetAtLabels:
 		c.forgetGuards()
 	case c.labelIn == nil:
@@ -1524,7 +1674,30 @@ func (c *checker) instruction(instr Instruction) bool {
 				c.errorf(instr.Line, "%s: bit %d is outside %s", instr.Mnemonic, imm.Value, reg.Text)
 			}
 		}
-		c.branch(instr, false)
+		if instr.Mnemonic == "cbz" && reg.Class == ClassW {
+			// The taken edge knows the register is zero: recorded with the
+			// arrival so a version of the target can read it (and decide a
+			// later test of the same register).
+			prior, had := c.constFacts[reg.Num]
+			c.constFacts[reg.Num] = 0
+			c.branch(instr, false)
+			if had {
+				c.constFacts[reg.Num] = prior
+			} else {
+				delete(c.constFacts, reg.Num)
+			}
+		} else {
+			c.branch(instr, false)
+		}
+		// A context that knows the register's value decides the branch:
+		// when it is always taken the fall-through is unreachable here.
+		if c.pinnedState != nil && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {
+			if value, known := c.constFacts[reg.Num]; known {
+				if (instr.Mnemonic == "cbz") == (value == 0) {
+					c.contextDead = true
+				}
+			}
+		}
 		if fact, has := c.condFacts[reg.Num]; has && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {
 			// `cbz wB` leaves when the condition failed, so its
 			// fall-through has the condition: read as `b.<not cond>`;
