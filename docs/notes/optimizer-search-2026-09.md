@@ -804,7 +804,12 @@ The existing native optimizations should be migrated into the candidate interfac
 ### Machine
 
 - addressing-mode selection;
-- multiply-add/select forms;
+- multiply-add/select forms — **in progress (2026-09-16, the oak session
+  at ~/oakmcu/oak)**: `a + b * c` lowers to `mul` then `add` where
+  `madd` is one instruction, `a - b * c` to `mul` then `sub` where
+  `msub` is one, and `0 - b * c` where `mneg` is one; the verifier
+  already models all three. Integers only — `fmla` is one rounding where
+  Oak's `a + b * c` is two (`-ffp-contract=off`);
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
@@ -940,7 +945,19 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization;
+24. map/zip vectorization — **surveyed 2026-09-16, blocked on the
+    verifier**: a hand-written vector map (`simd.store_u32x4(dst, i,
+    simd.add_u32x4(simd.load_u32x4(a, i), kv))` under
+    `len(dst) == len(a)` and the slack guard) is admitted by the seam
+    checker and modeled by the verifier lane by lane, but comes out
+    *witnessed*: "the memory of the span dst after the loops was not
+    proven equal". The scalar map is proven with its span memory, so
+    what is missing is coupling a span's memory across two loops — the
+    vector main loop and the scalar remainder. Two notes for whoever
+    takes it: an index guarded against two spans keeps only the last
+    bound, so the equal-length shape (`len(dst) == len(a)`) is the one
+    the checker admits; and a map needs no reassociation at all, so the
+    law is far weaker than the reduction's and floats vectorize too;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was
