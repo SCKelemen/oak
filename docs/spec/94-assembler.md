@@ -2998,6 +2998,12 @@ aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
 
+The fifty-third increment is fields in registers (§9 "Fields in
+registers"): the scalar fields a loop touches of a top-level record
+local live in callee-saved registers, flushed where the record is used
+whole and reloaded where it is written whole
+(`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -4097,8 +4103,15 @@ A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
 add :lo12:`) leaves a loop that stores to no global's address and calls
 nothing: a span cannot alias a scalar global — its elements lie in arrays
 and aggregates — so the loop's span stores leave it alone, a fact the
-type system gives and C's aliasing rules do not. Other loads stay (a span
-the loop stores through may alias one it reads), as do stores and calls.
+type system gives and C's aliasing rules do not. A register is the
+global's address from the `add :lo12:` that forms it until the loop
+writes it again — the lowering reuses a spent temporary's register for
+an element base — so whether a store or a load goes through a global's
+address is read at the instruction, straight back to the register's last
+write; a write the walk cannot see (past a label, or before the header)
+leaves it uncertain, and then a store counts as the global's and a load
+stays. Other loads stay (a span the loop stores through may alias one it
+reads), as do stores and calls.
 The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
 of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
@@ -4460,6 +4473,43 @@ model is the conditional itself (`Oak.ConstantConditions.select_true`,
 `scope` and `pick` — no branch, select, or conditional label —
 `TestE2ENativeConstantConditions` proves both and agrees with the C
 backend.
+
+**Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
+`spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
+the body's top level whose scalar fields a loop reads or writes keeps
+those fields in callee-saved registers, as hidden locals named
+`record.field` — the fields of a loop's accumulator record are then the
+loop's variables. A field read is the register (in place for compares
+and operands, as a local's home is), a field store writes it
+(`assignVar`), and the record's memory sees the values only where the
+record is used whole — copied, passed to a callee by address or by
+chunks, returned, or reached as a place by any other path — when the
+homes are written back first (`flushPromoted`, at `placeOf` of the
+record as a whole); a whole write of the record — an assignment from
+another record, an initialization by copy, literal, call, or zero —
+reloads the homes from memory afterward (`reloadPromoted`). Between,
+register and memory may differ, and every read goes to the register.
+Promoted: 32- and 64-bit integer and Bool fields, most-touched first,
+while callee-saved registers remain beyond a reserve of two for the
+locals declared after the record. Not promoted: fields whose address is
+taken (`&r.f`, `&r`, or a deeper path under `r`), fields of records
+declared more than once or inside a loop, of parameters, of tagged
+unions, and float or narrow fields. The theorem: along any sequence of
+stores, flushes, and whole writes, the register reads what the
+memory-resident field would hold (`Oak.FieldPromotion.promoted_reads`),
+at a flush the memory holds it too (`flushed_memory`), and after a whole
+write the register holds what memory holds (`reloaded`).
+An index in its own register — a local's home or a promoted field's —
+is guarded and read where it lies (`indexHome`: `cmp w21, #64; b.hs
+trap; strb w9, [x10, w21, uxtw]`), where before it was copied into a
+scratch first. `TestNativeShapesFieldPromotion` pins the byte loop of an
+absorber whose `filled`, `blocks`, and `total` live in `w21`, `w22`,
+`x23`: the loop's only memory operations are the byte load from the view
+and the byte store into the block — `sha256_update`'s loop, with the pending
+increments, comes to ten instructions where clang's is thirteen.
+`TestE2ENativeFieldPromotion` agrees with the C backend, including a
+record assigned whole inside its loop (`a = seed`, the homes reloading).
+The RV64 lane is untouched.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

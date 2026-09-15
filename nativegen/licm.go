@@ -213,9 +213,14 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 	// global (its elements lie in arrays and aggregates), so the loop's
 	// span stores leave it alone (docs/spec/94-assembler.md §9). The
 	// global-address registers the loop forms, and whether any store
-	// goes through one.
+	// goes through one. A register is a global's address from the
+	// `add rD, rD, :lo12:sym` that forms it until the loop writes it
+	// again — the lowering reuses a spent temporary's register for an
+	// element base — so the binding is read at the instruction, straight
+	// back to the register's last write. A write the walk cannot see
+	// (past a label, or before the header) leaves the binding uncertain:
+	// a store then counts as a global's, a load is not hoisted.
 	globalAddr := map[int]string{}
-	storesGlobal := false
 	for i := h; i <= b; i++ {
 		ins, isIns := items[i].(asm.Instruction)
 		if !isIns {
@@ -229,20 +234,49 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			}
 		}
 	}
+	// globalBaseAt is the global whose address reg holds at items[i]:
+	// "" when the straight line before i rewrote it as something else,
+	// and certain when that line reaches the write.
+	globalBaseAt := func(i, reg int) (sym string, certain bool) {
+		sym, formed := globalAddr[reg]
+		if !formed {
+			return "", true
+		}
+		for j := i - 1; j > h; j-- {
+			ins, isIns := items[j].(asm.Instruction)
+			if !isIns {
+				return sym, false
+			}
+			if !writesGeneral(ins, reg) {
+				continue
+			}
+			if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
+				if s, isSym := ins.Operands[2].(asm.Symbol); isSym && s.Lo12 {
+					return s.Name, true
+				}
+			}
+			return "", true
+		}
+		if !written[reg] {
+			return sym, true // formed before the loop (a hoisted formation's fresh register) and held throughout
+		}
+		return sym, false
+	}
+	storesGlobal := false
 	for i := h; i <= b; i++ {
 		ins, isIns := items[i].(asm.Instruction)
 		if !isIns || !strings.HasPrefix(ins.Mnemonic, "st") || len(ins.Operands) == 0 {
 			continue
 		}
 		if mem, isMem := ins.Operands[len(ins.Operands)-1].(asm.Memory); isMem {
-			if _, isGlobal := globalAddr[mem.Base.Num]; isGlobal {
+			if sym, _ := globalBaseAt(i, mem.Base.Num); sym != "" {
 				storesGlobal = true
 			}
 		}
 	}
 	// scalarGlobalLoad reports a load of a scalar global through an
 	// address the loop formed, hoistable when nothing writes globals.
-	scalarGlobalLoad := func(ins asm.Instruction) bool {
+	scalarGlobalLoad := func(i int, ins asm.Instruction) bool {
 		if hasCall || storesGlobal || !isPlainLoadMnemonic(ins.Mnemonic) || ins.Mnemonic == "ldp" || len(ins.Operands) != 2 {
 			return false
 		}
@@ -250,8 +284,8 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		if !isMem || mem.Index != nil || mem.Mode != asm.MemOffset || mem.Offset != 0 {
 			return false
 		}
-		sym, isGlobal := globalAddr[mem.Base.Num]
-		if !isGlobal {
+		sym, certain := globalBaseAt(i, mem.Base.Num)
+		if sym == "" || !certain {
 			return false
 		}
 		global, known := globals[sym]
@@ -569,7 +603,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		if !isIns || removed[i] {
 			continue
 		}
-		if (!pureInvariantMnemonics[ins.Mnemonic] && !scalarGlobalLoad(ins)) || len(ins.Operands) < 2 {
+		if (!pureInvariantMnemonics[ins.Mnemonic] && !scalarGlobalLoad(bodyStart+i, ins)) || len(ins.Operands) < 2 {
 			continue
 		}
 		dest, isReg := ins.Operands[0].(asm.Register)
@@ -666,8 +700,10 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		hoisted := ins
 		hoisted.Operands = append([]asm.Operand(nil), ins.Operands...)
 		hoisted.Operands[0] = renamed
-		if sym, isGlobal := globalAddr[dest.Num]; isGlobal {
-			globalAddr[renamed.Num] = sym // the global's address under its new name
+		if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
+			if s, isSym := ins.Operands[2].(asm.Symbol); isSym && s.Lo12 {
+				globalAddr[renamed.Num] = s.Name // the global's address under its new name
+			}
 		}
 		preheader = append(preheader, hoisted)
 		moved = append(moved, movedItem{at: i, item: hoisted})
