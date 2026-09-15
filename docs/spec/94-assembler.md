@@ -6281,3 +6281,89 @@ to C the day before, are proven. The nineteen-parameter body itself is
 witnessed, not proven: its nine-word sum beside a call summary over ten
 vectors exceeds the diagram budget under every order.
 
+### 9.ai Block versioning by fact context (2026-09-15)
+
+Every guard the checker reads is a fact about a register at a program
+point, and every fact dies where control merges: the label fixpoint keeps
+at a label exactly what all of its predecessors carry (`meetGuards`), so a
+fact that holds on one path into a join is not available after it. That
+single limitation is what four of this month's elision increments each
+worked around — the fixpoint built for the RV64 lane, the condition
+materialized into a boolean whose provenance is lost at the join, the
+per-line guard fallback that exists because one refused access costs a
+body its elision, and the frame address that differs between two paths so
+the meet holds neither.
+
+The remedy is the one basic block versioning uses for types (Chevalier-
+Boisvert and Feeley; `docs/notes/implementation-literature-2026-09.md`
+§5), applied to facts and moved into the checker rather than the lowering:
+check a region once per incoming fact context instead of once against
+their meet. Nothing is duplicated in the emitted code, so the verifier
+sees the same body it saw before and no program grows.
+
+- Each label keeps the distinct states that reach it, up to
+  `maxLabelVersions`, beside the meet the fixpoint iterates on (`arrive`).
+  The meet still decides the fixpoint, so a body the checker admits today
+  is checked exactly as it was and keeps its verdict.
+- A body the meet refuses gets a second chance (`dischargeByVersion`).
+  For each label more than one state reaches, the body is checked again
+  once per state, entering that label with it (`runVersionPass`), up to
+  `maxVersionPasses` extra passes for the body.
+- A version pass prunes what its context cannot reach: where the context
+  knows the register a `cbz` or `cbnz` tests, the branch is decided, and
+  the items after it on the not-taken side are not checked until the next
+  label (`contextDead`). The taken edge of a `cbz` also records that the
+  register is zero, which is how the boolean of a short-circuit reaches
+  the join as a fact rather than as an unknown.
+- A finding that no version pass reports **at the same place** is
+  discharged. The place, not the wording, is what counts: a context with
+  more facts may refuse the same access for a more specific reason, and
+  that is still a refusal. A surviving finding keeps the meet's wording,
+  which is also what the per-line fallback reads.
+
+Soundness is the conjunction. A finding is discharged only when every
+state that actually arrives at the label either admits the access or
+cannot reach it, and every path through that label arrives with one of
+those states. The other labels in a version pass keep their meets, which
+are weaker than any of their own arrivals, so an admission under a version
+pass is an admission under a weaker assumption than the path really
+provides. Findings are only ever removed, never added, so no body that
+passes today can begin to fail, and the caps cost reach rather than
+soundness. `OAK_CHECK_TRACE=1` prints the meet's findings, the versions
+per label, and each version pass's findings.
+
+Measured on the stdlib-bearing program against the commit this work
+merged, with the verdict cache off: **nothing changed** — the same 55
+bodies elide the same 126 guards, the same 743 trap branches remain, and
+all 283 proven bodies keep their verdicts. The trace says why, and the
+answer corrects the premise this increment was built on. Of the 89 bodies
+the checker refuses there, the findings are 218 writes to an undeclared
+register, 198 reads of an uninitialized one, and 101 memory operands
+through a base the checker cannot place — bodies outside the subset, whose
+refusal no context changes. The elision-relevant findings number about 85,
+and for every one of them each arriving state reports the same refusal:
+the fact is missing on every path, not lost at the join. The largest
+single class, 50 findings of `without a dominating constant index guard`,
+is an index the typechecker proved through `Oak.Extents.scaled_under_bound`
+— `at = low * 5` under `low < len / 5` — for which the checker has no
+fact at all. That, not the meet, is the limit on elision reach here.
+
+So the mechanism lands gated: the extra passes run only for a body whose
+findings are ones a lost guard could explain (`anyJoinSensitive`), which
+is a small minority, and never for the structural refusals above. What it
+buys today is the shapes its tests state — a frame address that differs
+between two paths, and a guard whose join the other path cannot reach —
+and a place to stand when the missing fact rules arrive, since each new
+rule is worth more once a fact that holds on one path is no longer lost
+at the next label.
+
+What versioning does not do: it does not invent facts, so a path that
+genuinely reaches an access without a guard is still refused
+(`TestCheckerFrameArrays`, `TestCheckerGuardFacts`, and the index cases
+each carry the accepted and the refused shape). It is also not the
+multi-versioning of implementations that
+`docs/notes/mojo-futhark-optimization-2026-09.md` §8 records: that chooses
+between whole implementations of one operation and may defer the choice to
+run time, while this chooses nothing at all — it only checks the one
+implementation more carefully.
+

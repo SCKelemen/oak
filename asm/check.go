@@ -322,7 +322,14 @@ func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[s
 			fmt.Fprintf(os.Stderr, "DBG   label %s has %d version(s)\n", label, len(versions))
 		}
 	}
-	if len(findings) == 0 || len(stable.labelVersions) == 0 {
+	if len(findings) == 0 || len(stable.labelVersions) == 0 || !anyJoinSensitive(findings) {
+		// Only a guard the meet could have lost is worth re-checking. A
+		// body refused for its shape — an undeclared write, an
+		// uninitialized read, a base the checker cannot place — is refused
+		// in every context, and measuring said so: on the stdlib-bearing
+		// program those are the overwhelming majority of findings, so the
+		// extra passes run on the few bodies they can help and nowhere
+		// else.
 		return findings
 	}
 	labels := make([]string, 0, len(stable.labelVersions))
@@ -352,6 +359,30 @@ func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[s
 		}
 	}
 	return findings
+}
+
+// joinSensitiveFindings are the refusals a guard lost at a join can
+// explain: an access whose index or length fact is missing or belongs to
+// another register, and a base whose region the meet dropped.
+var joinSensitiveFindings = []string{
+	"without a dominating index guard",
+	"without a dominating constant index guard",
+	"which is not this span's length register",
+	"proven minimum length",
+	"go through the declared sp frame or a bound span base",
+	"outside the declared",
+	"past the declared",
+}
+
+func anyJoinSensitive(findings []string) bool {
+	for _, finding := range findings {
+		for _, kind := range joinSensitiveFindings {
+			if strings.Contains(finding, kind) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dischargeAbsent keeps a finding when some version pass also reports one

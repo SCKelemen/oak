@@ -143,7 +143,20 @@ path stay available along it. The cost is code size, which is why the versions
 must be bounded and chosen by the cost model, and the gate is unchanged — each
 version is a candidate the seam checker admits and the verifier proves, or it
 is not selected. This is the one item in this note that is Oak-specific rather
-than borrowed, and it is the largest remaining lever on elision reach.
+than borrowed.
+
+**Measured, 2026-09-15, and the claim above was wrong.** It was written
+here that this is the largest remaining lever on elision reach. It is not.
+The mechanism was built (`94-assembler.md` §9.ai) and changed nothing on
+the stdlib-bearing program: of the 89 bodies the checker refuses, the
+findings are dominated by structural refusals no context affects, and
+every elision-relevant refusal reports the same missing fact under each
+arriving state. The limit is missing fact rules — the largest class by far
+is an index the typechecker proved by `scaled_under_bound` that the
+checker has no rule for — and the join is not where the reach is lost.
+The mechanism is kept, gated to the findings a lost guard could explain,
+because the shapes it does fix are real and because each new fact rule is
+worth more when a fact that holds on one path survives the next label.
 
 It is not the multi-versioning that `mojo-futhark-optimization-2026-09.md` §8
 already records from Futhark's incremental flattening, and the two should not
