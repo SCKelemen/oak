@@ -9,11 +9,13 @@ import (
 )
 
 const (
-	optIRSCCPRevision       = "oak.optir.sccp.v1"
-	optIRLoopsRevision      = "oak.optir.loops.v1"
-	optIRCSEDCERevision     = "oak.optir.cse-dce.v1"
-	optIRCleanupCFGRevision = "oak.optir.cleanup-cfg.v1"
-	optIRLICMRevision       = "oak.optir.licm.v1"
+	optIRSCCPRevision          = "oak.optir.sccp.v1"
+	optIRLoopStructureRevision = "oak.optir.loop-structure.v1"
+	optIRLoopsRevision         = "oak.optir.loops.v2"
+	optIRCSEDCERevision        = "oak.optir.cse-dce.v1"
+	optIRCleanupCFGRevision    = "oak.optir.cleanup-cfg.v1"
+	optIRPreservationRevision  = "oak.optir.preservation.v1"
+	optIRLICMRevision          = "oak.optir.licm.v1"
 )
 
 type optIRCSEDCEArtifact struct {
@@ -27,13 +29,15 @@ type optIRLICMArtifact struct {
 }
 
 type optIRArtifactKeys struct {
-	cfgV0   opt.ArtifactKey
-	sccp    opt.ArtifactKey
-	loopsV0 opt.ArtifactKey
-	cleanup opt.ArtifactKey
-	cfgV1   opt.ArtifactKey
-	loopsV1 opt.ArtifactKey
-	licm    opt.ArtifactKey
+	cfgV0           opt.ArtifactKey
+	sccp            opt.ArtifactKey
+	loopStructureV0 opt.ArtifactKey
+	loopsV0         opt.ArtifactKey
+	cleanup         opt.ArtifactKey
+	cfgV1           opt.ArtifactKey
+	preservation    opt.ArtifactKey
+	loopsV1         opt.ArtifactKey
+	licm            opt.ArtifactKey
 }
 
 type optIRAnalysisArtifacts struct {
@@ -92,10 +96,12 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactKeys
 	keys := optIRArtifactKeys{}
 	keys.cfgV0 = opt.ArtifactKey{Kind: opt.ArtifactIR, Name: "optir.cfg.v0", Version: fingerprint}
 	keys.sccp = derivedOptIRKey(opt.ArtifactAnalysis, "optir.sccp", optIRSCCPRevision, keys.cfgV0)
-	keys.loopsV0 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v0", optIRLoopsRevision, keys.cfgV0)
+	keys.loopStructureV0 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loop-structure.v0", optIRLoopStructureRevision, keys.cfgV0)
+	keys.loopsV0 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v0", optIRLoopsRevision, keys.cfgV0, keys.loopStructureV0)
 	keys.cleanup = derivedOptIRKey(opt.ArtifactCandidate, "optir.cse-dce", optIRCSEDCERevision, keys.cfgV0)
 	keys.cfgV1 = derivedOptIRKey(opt.ArtifactIR, "optir.cfg.v1", optIRCleanupCFGRevision, keys.cleanup)
-	keys.loopsV1 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v1", optIRLoopsRevision, keys.cfgV1)
+	keys.preservation = derivedOptIRKey(opt.ArtifactAdmission, "optir.cse-dce.preservation", optIRPreservationRevision, keys.cfgV0, keys.cfgV1)
+	keys.loopsV1 = derivedOptIRKey(opt.ArtifactAnalysis, "optir.loops.v1", optIRLoopsRevision, keys.cfgV1, keys.loopStructureV0, keys.preservation)
 	keys.licm = derivedOptIRKey(opt.ArtifactCandidate, "optir.licm", optIRLICMRevision, keys.cfgV1, keys.loopsV1)
 
 	tasks := []opt.ArtifactTask{
@@ -117,14 +123,29 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactKeys
 			},
 		},
 		{
-			Key:          keys.loopsV0,
+			Key:          keys.loopStructureV0,
 			Dependencies: []opt.ArtifactKey{keys.cfgV0},
 			Compute: func(_ context.Context, dependencies []opt.Artifact) (any, error) {
 				input, err := optIRDependencyValue[optir.CFG](dependencies, 0)
 				if err != nil {
 					return nil, err
 				}
-				return optir.AnalyzeLoops(input)
+				return optir.AnalyzeLoopStructure(input)
+			},
+		},
+		{
+			Key:          keys.loopsV0,
+			Dependencies: []opt.ArtifactKey{keys.cfgV0, keys.loopStructureV0},
+			Compute: func(_ context.Context, dependencies []opt.Artifact) (any, error) {
+				input, err := optIRDependencyValue[optir.CFG](dependencies, 0)
+				if err != nil {
+					return nil, err
+				}
+				structure, err := optIRDependencyValue[optir.LoopStructure](dependencies, 1)
+				if err != nil {
+					return nil, err
+				}
+				return optir.AnalyzeLoopsWithStructure(input, structure)
 			},
 		},
 		{
@@ -151,14 +172,49 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactKeys
 			},
 		},
 		{
+			Key:          keys.preservation,
+			Dependencies: []opt.ArtifactKey{keys.cfgV0, keys.cfgV1},
+			Compute: func(_ context.Context, dependencies []opt.Artifact) (any, error) {
+				before, err := optIRDependencyValue[optir.CFG](dependencies, 0)
+				if err != nil {
+					return nil, err
+				}
+				after, err := optIRDependencyValue[optir.CFG](dependencies, 1)
+				if err != nil {
+					return nil, err
+				}
+				return optir.CheckCFGPreservation(
+					keys.cfgV0,
+					before,
+					keys.cfgV1,
+					after,
+					optir.AspectCFGTopology,
+					optir.AspectSSAIdentity,
+					optir.AspectOperationSemantics,
+					optir.AspectMemoryEffects,
+					optir.AspectTypes,
+					optir.AspectProofFacts,
+					optir.AspectLayout,
+				)
+			},
+		},
+		{
 			Key:          keys.loopsV1,
-			Dependencies: []opt.ArtifactKey{keys.cfgV1},
+			Dependencies: []opt.ArtifactKey{keys.cfgV1, keys.loopStructureV0, keys.preservation},
 			Compute: func(_ context.Context, dependencies []opt.Artifact) (any, error) {
 				input, err := optIRDependencyValue[optir.CFG](dependencies, 0)
 				if err != nil {
 					return nil, err
 				}
-				return optir.AnalyzeLoops(input)
+				structure, err := optIRDependencyValue[optir.LoopStructure](dependencies, 1)
+				if err != nil {
+					return nil, err
+				}
+				certificate, err := optIRDependencyValue[optir.PreservationCertificate](dependencies, 2)
+				if err != nil {
+					return nil, err
+				}
+				return optir.AnalyzeLoopsWithPreservedStructure(input, structure, certificate)
 			},
 		},
 		{

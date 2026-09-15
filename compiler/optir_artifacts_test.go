@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 )
 
 func TestOptIRAnalysesExecuteAsOneExactVersionedArtifactDAG(t *testing.T) {
@@ -49,10 +50,17 @@ main: (): i32 = 0
 	if !reflect.DeepEqual(first.run.Executed, wantOrder) || len(first.run.CacheHits) != 0 {
 		t.Fatalf("artifact execution = %v, cache hits = %v, want order %v", first.run.Executed, first.run.CacheHits, wantOrder)
 	}
-	for _, key := range []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.loopsV0, keys.cleanup, keys.cfgV1, keys.loopsV1, keys.licm} {
+	for _, key := range []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.loopStructureV0, keys.loopsV0, keys.cleanup, keys.cfgV1, keys.preservation, keys.loopsV1, keys.licm} {
 		if _, exists := first.run.Artifact(key); !exists {
 			t.Fatalf("artifact graph did not produce %s", key)
 		}
+	}
+	certificate, err := optIRRunValue[optir.PreservationCertificate](first.run, keys.preservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !certificate.Preserves(optir.LoopStructureAnalysisRequirements()) {
+		t.Fatalf("CSE/DCE did not prove loop-structure preservation: %+v", certificate.Checks())
 	}
 }
 
@@ -82,7 +90,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Executed) != 7 || len(second.Executed) != 0 || len(second.CacheHits) != len(targets) {
+	if len(first.Executed) != 9 || len(second.Executed) != 0 || len(second.CacheHits) != len(targets) {
 		t.Fatalf("cache evidence: first=%+v second=%+v", first, second)
 	}
 
@@ -92,8 +100,8 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.loopsV0, keys.cleanup, keys.cfgV1, keys.loopsV1, keys.licm}
-	after := []opt.ArtifactKey{changedKeys.cfgV0, changedKeys.sccp, changedKeys.loopsV0, changedKeys.cleanup, changedKeys.cfgV1, changedKeys.loopsV1, changedKeys.licm}
+	before := []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.loopStructureV0, keys.loopsV0, keys.cleanup, keys.cfgV1, keys.preservation, keys.loopsV1, keys.licm}
+	after := []opt.ArtifactKey{changedKeys.cfgV0, changedKeys.sccp, changedKeys.loopStructureV0, changedKeys.loopsV0, changedKeys.cleanup, changedKeys.cfgV1, changedKeys.preservation, changedKeys.loopsV1, changedKeys.licm}
 	for index := range before {
 		if before[index] == after[index] {
 			t.Fatalf("CFG change did not invalidate artifact %s", before[index])
@@ -103,7 +111,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changedRun.Executed) != 7 || len(changedRun.CacheHits) != 0 {
+	if len(changedRun.Executed) != 9 || len(changedRun.CacheHits) != 0 {
 		t.Fatalf("changed CFG reused stale artifacts: %+v", changedRun)
 	}
 }
