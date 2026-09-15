@@ -272,17 +272,6 @@ func unrolledReduction(red reductionLoop) []ast.Statement {
 	return out
 }
 
-// mentionsName reports whether the node names the identifier.
-func mentionsName(node ast.Node, name string) bool {
-	found := false
-	mentionIdents(node, func(ident string) {
-		if ident == name {
-			found = true
-		}
-	})
-	return found
-}
-
 // rewriteContext marks the tokens the rewrite makes: no source token
 // carries it, so a proven position never collides with a program's.
 const rewriteContext = "oak.native.reduction"
