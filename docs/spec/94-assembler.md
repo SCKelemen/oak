@@ -5630,7 +5630,31 @@ forty trips still unroll. The theorem decider takes neither rule: with
 no machine side to couple with, a summarized loop is a law left open
 (the lattice laws' loops over loops, `dnf_product_denotes`, went "Go
 open, Oak decided" under the loop-over-loop rule), so it unrolls every
-counted loop. Prover build (per body, the optimizer's
+counted loop.
+
+**Bounded decisions (2026-09-16).** Three walks without a bound came to
+light when the natively built prover took hours to build under load.
+The mask-pushing rule's walk over a conditional's arms had no memo and
+went exponential on a merge of many paths (a body spent twenty minutes
+in it); it visits each arm once now. A body's summarized callees add
+their loop events past what one body may hold (`loopEventBudget` bounds
+each summary, not the sum): `add_bits` gathered twenty-one and its
+coupling searched for an hour, so the coupling refuses more events than
+the budget. And an implication's terms were canonicalized, pruned, and
+substituted — linear walks — before any diagram budget applied, over
+thousands of implications of a write coupling on a memory's selects:
+each implication now costs a call from the proof's allowance
+(`implicationCallLimit`, 2048) first, and terms over
+`implicationNodeLimit` distinct nodes (65536) are undecided at once,
+charged a failed diagram. `add_bits` is evidence in two minutes a
+candidate. The native prover's shell on `adts.oak`, which ran three
+hours and three quarters without finishing in the root suite, agrees on
+7 of 7 rows once its build completes. Prover build per body: proven
+551, evidence 136, trusted 265, no disagreement — the backend's
+small-helper expansion (#486) now inlines thirty-two of the bodies the
+earlier count proved separately (`append_byte`, `bitset_set`,
+`buffer_reset`), so the counts are not comparable body for body.
+ Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
 

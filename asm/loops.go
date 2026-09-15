@@ -4154,7 +4154,10 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 // its implications (loopProofNodeBudget): a coupling search that keeps
 // failing candidates near the per-decision budget ends as evidence rather
 // than running for minutes.
-type nodeBudget struct{ remaining int }
+type nodeBudget struct {
+	remaining int // diagram nodes the proof may still spend
+	calls     int // implications tried so far (implicationCallLimit)
+}
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
 // loopDecisionNodeBudget bounds each of its implications.
@@ -4184,6 +4187,22 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if budget != nil {
+		// Each implication costs a call from the proof's allowance, and
+		// terms too large to blast cost a failed diagram's nodes, before
+		// they are canonicalized, pruned, or substituted: those walks are
+		// linear, and a body whose write coupling tries thousands of
+		// implications over a memory's selects (`add_bits`) would spend
+		// hours in them alone.
+		budget.calls++
+		if budget.calls > implicationCallLimit {
+			return false, false
+		}
+		if dagNodesExceed(implicationNodeLimit, premise, a, b) {
+			budget.remaining -= blastNodeBudget
+			return false, false
+		}
+	}
 	if depth == 0 {
 		premise, a, b = canonical(premise), canonical(a), canonical(b)
 	}
@@ -4621,6 +4640,37 @@ func termSize(t *term, memo map[*term]int) int {
 }
 
 const termSizeCap = 1 << 40
+
+// implicationNodeLimit bounds the distinct term nodes an implication's
+// three terms may hold before the decider gives up on the diagrams;
+// implicationCallLimit bounds the implications one loop proof may try.
+const (
+	implicationNodeLimit = 1 << 16
+	implicationCallLimit = 2048
+)
+
+// dagNodesExceed reports whether the terms hold more than limit distinct
+// nodes between them, stopping the count there.
+func dagNodesExceed(limit int, terms ...*term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if len(seen) > limit {
+			return true
+		}
+		return walk(t.cond) || walk(t.left) || walk(t.right)
+	}
+	for _, t := range terms {
+		if walk(t) {
+			return true
+		}
+	}
+	return false
+}
 
 // abbreviate cuts a rendering for a trace line.
 func abbreviate(s string, n int) string {
