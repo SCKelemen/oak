@@ -358,6 +358,19 @@ theorem slack_guard (len i K : Nat) (hmin : K ≤ len) (hle : i ≤ len - K) : i
 theorem slack_guard_strict (len i K : Nat) (hmin : K ≤ len) (hlt : i < len - K) : i + K ≤ len := by
   omega
 
+/-- A masked index is bounded by its mask: `and wD, wS, #M` leaves `wD ≤ M`,
+    so `wD < M + 1` — the constant guard the checker records for it, under
+    which a table or frame array of at least `M + 1` elements admits the
+    access (`regionAdmits`, `frameArrayAdmits`). -/
+theorem masked_index_bound (x M : Nat) : x &&& M < M + 1 :=
+  Nat.lt_succ_of_le (Nat.and_le_right)
+
+/-- A byte or halfword loaded or extended into a register is below its
+    width's bound: the constant guard `ldrb`, `ldrh`, `uxtb`, `uxth` leave
+    on their destination, under which a table of 256 or 65536 entries
+    admits the access without a compare. -/
+theorem narrow_value_bound (w : Nat) (x : BitVec w) : x.toNat < 2 ^ w := x.isLt
+
 /-- A condition materialized and tested: `cset wB, cond` writes 1 when the
     compare's condition held and 0 otherwise, so the fall-through of
     `cbz wB, L` has the condition and that of `cbnz wB, L` its negation —

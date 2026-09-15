@@ -7413,7 +7413,7 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 // `cmp wI, #N; b.hs trap` — the checker's frame-array idiom. The returned
 // registers are released by the caller (the index may be spent as the
 // load's destination, so it is returned separately).
-func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
+func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *token.Token) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
 		// A constant element: its place — rebased through a temporary when
@@ -7429,7 +7429,19 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
 	}
-	return g.arrayAddressReg(arr, r)
+	// Check elision over an owned array or a constant table (docs/spec/
+	// 94-assembler.md §9 "Check elision"): an index the typechecker proved
+	// in range — a masked index into a 256-entry table, a constant under
+	// a static length — is lowered without its constant guard, and the
+	// checker admits the access from the facts on the path (the mask's
+	// bound, Oak.Assembler.masked_index_bound) or the compiler keeps this
+	// line's guards.
+	guard := true
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+		guard = false
+		g.elided++
+	}
+	return g.arrayAddressAt(arr, r, guard)
 }
 
 // arrayAddressReg is arrayAddress over an index already evaluated into
@@ -7437,6 +7449,12 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 // its expression calls — the call's clobber must precede the place's
 // facts, docs/spec/94-assembler.md §9).
 func (g *generator) arrayAddressReg(arr *arrayLocal, r int) (address asm.Memory, indexReg, baseReg int, err error) {
+	return g.arrayAddressAt(arr, r, true)
+}
+
+// arrayAddressAt forms the element address from the index in r, with the
+// constant guard unless the access was elided (arrayAddress).
+func (g *generator) arrayAddressAt(arr *arrayLocal, r int, guard bool) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	base, err := g.alloc(scalars["u64"])
 	if err != nil {
@@ -7451,8 +7469,10 @@ func (g *generator) arrayAddressReg(arr *arrayLocal, r int) (address asm.Memory,
 	} else {
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 	}
-	if err := g.constantGuard(r, arr.length); err != nil {
-		return asm.Memory{}, 0, 0, err
+	if guard {
+		if err := g.constantGuard(r, arr.length); err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
 	}
 	idx := wr(r)
 	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, base, nil
@@ -7498,20 +7518,20 @@ func (g *generator) constantGuard(r int, length int64) error {
 }
 
 // arrayElement lowers a load from an owned array local.
-func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, error) {
-	return g.arrayElementReg(arr, index, -1)
+func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression, tok *token.Token) (int, error) {
+	return g.arrayElementReg(arr, index, -1, tok)
 }
 
 // arrayElementReg is arrayElement over an index already in register r
 // (r < 0: evaluate index here).
-func (g *generator) arrayElementReg(arr *arrayLocal, index ast.Expression, r int) (int, error) {
+func (g *generator) arrayElementReg(arr *arrayLocal, index ast.Expression, r int, tok *token.Token) (int, error) {
 	var address asm.Memory
 	var idx, base int
 	var err error
 	if r >= 0 {
 		address, idx, base, err = g.arrayAddressReg(arr, r)
 	} else {
-		address, idx, base, err = g.arrayAddress(arr, index)
+		address, idx, base, err = g.arrayAddress(arr, index, tok)
 	}
 	if err != nil {
 		return 0, err
@@ -7620,7 +7640,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 			if arr == nil {
 				return 0, unsupported("an index into %s (not an array)", e.Left.String())
 			}
-			return g.arrayElementReg(arr, e.Index, r)
+			return g.arrayElementReg(arr, e.Index, r, &e.Token)
 		}
 	}
 	if hidden, elem, isScalar := g.scalarElement(e); isScalar {
@@ -7637,7 +7657,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		return 0, err
 	}
 	if arr != nil {
-		return g.arrayElement(arr, e.Index)
+		return g.arrayElement(arr, e.Index, &e.Token)
 	}
 	sp, err := g.spanOperand(e.Left)
 	if err != nil {
@@ -7645,7 +7665,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	}
 	if sp.array != nil && sp.elemLayout == nil {
 		// A local view of an owned array: the array's own element idiom.
-		return g.arrayElement(sp.array, e.Index)
+		return g.arrayElement(sp.array, e.Index, &e.Token)
 	}
 	r, err := g.guardedIndexAt(sp, e.Index, &e.Token)
 	if err != nil {
@@ -7860,7 +7880,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if idxReg >= 0 {
 			address, idx, base, err = g.arrayAddressReg(arr, idxReg)
 		} else {
-			address, idx, base, err = g.arrayAddress(arr, s.Target.Index)
+			address, idx, base, err = g.arrayAddress(arr, s.Target.Index, &s.Target.Token)
 		}
 		if err != nil {
 			return err

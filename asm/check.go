@@ -1504,6 +1504,19 @@ func (c *checker) instruction(instr Instruction) bool {
 
 	if spec.memory {
 		c.memoryAccess(instr, matched)
+		// A byte or halfword loaded zero-extended is below 2^8 or 2^16: the
+		// constant guard a table indexed by a loaded byte carries without a
+		// compare (Oak.Assembler.narrow_value_bound; the typechecker proves
+		// `TABLE[u32(unit)]` for a u8 over a 256-entry table).
+		if (instr.Mnemonic == "ldrb" || instr.Mnemonic == "ldrh") && len(instr.Operands) == 2 {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassW && !dest.ZeroRegister() {
+				bound := int64(256)
+				if instr.Mnemonic == "ldrh" {
+					bound = 65536
+				}
+				c.idxFacts[dest.Num] = idxFact{boundReg: -1, bound: bound}
+			}
+		}
 		return false
 	}
 	// csel/cset consume flags under the same dominance rule as b.cond.
@@ -1619,6 +1632,33 @@ func (c *checker) instruction(instr Instruction) bool {
 	var slack *slackFact
 	var carried *idxFact
 	var sum *sumFact
+	// `and wD, wS, #M`: the result is at most M, so wD < M + 1 — the
+	// constant guard a masked table or array index carries without a
+	// compare (Oak.Assembler.masked_index_bound; the typechecker's
+	// masked_under_length). A mask in a register the checker knows as a
+	// constant counts too.
+	if (instr.Mnemonic == "uxtb" || instr.Mnemonic == "uxth") && dest.Class == ClassW && len(instr.Operands) == 2 {
+		// A zero-extended byte or halfword is below 2^8 or 2^16
+		// (Oak.Assembler.narrow_value_bound).
+		bound := int64(256)
+		if instr.Mnemonic == "uxth" {
+			bound = 65536
+		}
+		carried = &idxFact{boundReg: -1, bound: bound}
+	}
+	if instr.Mnemonic == "and" && dest.Class == ClassW && len(instr.Operands) == 3 {
+		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
+			mask, isImm := instr.Operands[2].(Immediate)
+			if mreg, isMReg := instr.Operands[2].(Register); isMReg && mreg.Class == ClassW {
+				if value, known := c.constFacts[mreg.Num]; known {
+					mask, isImm = Immediate{Value: value}, true
+				}
+			}
+			if isImm && mask.Shift == 0 && mask.Value >= 0 && mask.Value < 1<<31 {
+				carried = &idxFact{boundReg: -1, bound: mask.Value + 1}
+			}
+		}
+	}
 	if (instr.Mnemonic == "sub" || instr.Mnemonic == "add") && dest.Class == ClassW && len(instr.Operands) == 3 {
 		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
 			// The constant: an immediate, or a register a movz just filled
