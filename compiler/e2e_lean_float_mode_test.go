@@ -27,11 +27,12 @@ choose: (a: f32, b: f32): f32 = a < b ? a + 1.0 | b * 2.0
 scale: (x: f32, y: f32): f32 = x * y + 1.0
 via_call: (a: f32, b: f32): f32 = scale(a + b, b)
 guard: (a: f32, b: f32): Bool = !(a < b) || a == b && b != 0.0
+nested: (a: f32, b: f32): f32 = a < b ? (a == 0.0 ? a + 1.0 | b - 1.0) | b * 2.0
 
 main: (): i32 = 0
 `
 	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
-	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard"}).Get()
+	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,12 +54,13 @@ main: (): i32 = 0
 		"(Oak.FloatOps.add32 (Oak.FloatOps.mul32 x y) (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
 		"scale (Oak.FloatOps.add32 a b) b fuel",
 		"((!(Oak.FloatOps.lt32 a b)) || ((Oak.FloatOps.eq32 a b) && (Oak.FloatOps.ne32 b (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/))))",
+		"(if (Oak.FloatOps.lt32 a b) then (if (Oak.FloatOps.eq32 a (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/)) then (Oak.FloatOps.add32 a (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/)) else (Oak.FloatOps.sub32 b (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))) else (Oak.FloatOps.mul32 b (Float32.ofBits (0x40000000 : UInt32) /- 2.0 -/)))",
 	} {
 		if !strings.Contains(bits, want) {
 			t.Fatalf("missing %q in:\n%s", want, bits)
 		}
 	}
-	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose", "via_call", "guard"}).Get()
+	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose", "via_call", "guard", "nested"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}

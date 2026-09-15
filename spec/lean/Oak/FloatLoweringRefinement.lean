@@ -21,7 +21,9 @@ third adds the total sign operations: negation, absolute value, and copysign,
 under that same result-level NaN quotient. Payload-observing bitcasts are not
 part of this theorem. The fourth adds IEEE equality and ordering: NaNs are
 unordered and the two signed zeros are equal. The comparison leaves compose
-through pure Boolean literals, negation, conjunction, and disjunction.
+through pure Boolean literals, negation, conjunction, and disjunction. The
+fifth increment closes arbitrarily nested value-position conditionals over
+those guards and straight-line float leaves.
 Decimal parsing itself, conversions, spans, control flow, calls, binary64, and
 SIMD remain outside this theorem.
 -/
@@ -407,6 +409,57 @@ theorem lowerValueConditional_eval (branch : SourceConditional) (ρ : SourceEnv)
   exact lowerValueConditionalWith_eval branch ρ ρ parameterTerms
     (parameterTerms_agree ρ)
 
+/-- Pure float value expressions with arbitrarily nested Bool conditionals.
+Each leaf is the straight-line subset and every guard is the pure condition
+subset above. -/
+inductive FlowExpr
+  | leaf (value : Expr)
+  | branch (guard : Condition) (whenTrue whenFalse : FlowExpr)
+  deriving Repr
+
+/-- The corresponding recursive tree of verifier `iteTerm`s. -/
+inductive FlowTerm
+  | leaf (value : Term)
+  | branch (guard : BoolTerm) (whenTrue whenFalse : FlowTerm)
+  deriving Repr
+
+def FlowExpr.eval : FlowExpr → SourceEnv → Float32
+  | .leaf value, ρ => value.eval ρ
+  | .branch guard whenTrue whenFalse, ρ =>
+      bif guard.eval ρ then whenTrue.eval ρ else whenFalse.eval ρ
+
+def FlowTerm.eval : FlowTerm → SourceEnv → Float32
+  | .leaf value, ρ => value.eval ρ
+  | .branch guard whenTrue whenFalse, ρ =>
+      bif guard.eval ρ then whenTrue.eval ρ else whenFalse.eval ρ
+
+def lowerFlowWith : FlowExpr → TermEnv → FlowTerm
+  | .leaf value, σ => .leaf (lowerWith value σ)
+  | .branch guard whenTrue whenFalse, σ =>
+      .branch (lowerConditionWith guard σ)
+        (lowerFlowWith whenTrue σ) (lowerFlowWith whenFalse σ)
+
+/-- Every finite nest of pure value conditionals preserves the source value.
+This is the recursive form of `lowerValueConditionalWith_eval`. -/
+theorem lowerFlowWith_eval (flow : FlowExpr)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerFlowWith flow σ).eval parameters = flow.eval current := by
+  induction flow generalizing parameters current σ with
+  | leaf value => exact lowerWith_eval value parameters current σ hσ
+  | branch guard whenTrue whenFalse ihTrue ihFalse =>
+      simp only [lowerFlowWith, FlowTerm.eval, FlowExpr.eval]
+      rw [lowerConditionWith_eval guard parameters current σ hσ,
+          ihTrue parameters current σ hσ,
+          ihFalse parameters current σ hσ]
+
+def lowerFlow (flow : FlowExpr) : FlowTerm :=
+  lowerFlowWith flow parameterTerms
+
+theorem lowerFlow_eval (flow : FlowExpr) (ρ : SourceEnv) :
+    (lowerFlow flow).eval ρ = flow.eval ρ := by
+  exact lowerFlowWith_eval flow ρ ρ parameterTerms (parameterTerms_agree ρ)
+
 /-- A pure call in this slice: ordered callee parameter names paired with
 argument expressions evaluated in the caller, and a straight-line callee body.
 Parameter uniqueness is a frontend invariant. -/
@@ -546,6 +599,17 @@ example : lowerValueConditional {
     whenTrue := .float .fadd (.param "a") (.literal 0x3F800000)
     whenFalse := .float .fmul (.param "b") (.literal 0x40000000)
   } := rfl
+example : lowerFlow
+    (.branch (.compare .lt a b)
+      (.branch (.compare .eq a (.literal 0))
+        (.leaf (.binary .add a (.literal 0x3F800000)))
+        (.leaf (.binary .sub b (.literal 0x3F800000))))
+      (.leaf (.binary .mul b (.literal 0x40000000)))) =
+    .branch (.compare .lt (.param "a") (.param "b"))
+      (.branch (.compare .eq (.param "a") (.literal 0))
+        (.leaf (.float .fadd (.param "a") (.literal 0x3F800000)))
+        (.leaf (.float .fsub (.param "b") (.literal 0x3F800000))))
+      (.leaf (.float .fmul (.param "b") (.literal 0x40000000))) := rfl
 example : lowerCall {
     arguments := [("x", .binary .add a b), ("y", b)]
     body := .binary .add (.binary .mul (.param "x") (.param "y"))

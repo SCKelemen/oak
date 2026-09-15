@@ -61,6 +61,8 @@ var loweringRenders = []struct {
 	// One value-position Bool conditional composes the comparison and float
 	// expression refinements, matching the verifier's iteTerm.
 	{"f: (a, b: f32) -> f32", "a < b ? a + 1.0 | b * 2.0", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fadd32(a, 1065353216) : fmul32(b, 1073741824))"},
+	// Arbitrary nesting recursively composes verifier iteTerm nodes.
+	{"f: (a, b: f32) -> f32", "a < b ? (a == 0.0 ? a + 1.0 | b - 1.0) | b * 2.0", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? (((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or 0) xor 1) and ((a eq 0) or (((a and 2147483647) or 0) eq 0))) ? fadd32(a, 1065353216) : fsub32(b, 1065353216)) : fmul32(b, 1073741824))"},
 	// A float literal is rounded to its binary32 bits before it enters the
 	// term language.  1.5 is 0x3fc00000 (1069547520).
 	{"f: (a: f32) -> f32", "a + 1.5", "fadd32(a, 1069547520)"},
