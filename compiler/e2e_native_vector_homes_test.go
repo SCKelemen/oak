@@ -138,10 +138,19 @@ func TestE2ENativeVectorHomes(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, want := range []string{"live_across: 1 vector local(s) kept in registers across calls", "dead_before: 1 vector local(s) kept in registers across calls", "carried: 1 vector local(s) kept in registers across calls"} {
+	for _, want := range []string{"live_across: 1 vector local(s) kept in registers across calls", "dead_before: 1 vector local(s) kept in registers across calls"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("want %q; diagnostics:\n%s", want, joined)
 		}
+	}
+	// The candidate search (compiler/native_search.go) keeps `carried` in
+	// slots: its accumulator is carried through the call inside the loop,
+	// so the vector-home form saves and reloads it around the call exactly
+	// as the slot form stores and loads it, plus two register moves per
+	// trip — the cost model prices it above the hoisted slot form, and the
+	// report says so (-opt-report). Neither form is set aside by a verdict.
+	if strings.Contains(joined, "carried: 1 vector local(s) kept in registers across calls") {
+		t.Errorf("carried's vector-home form costs more than its slot form and must not be selected; diagnostics:\n%s", joined)
 	}
 	if !strings.Contains(joined, "many: ") || !strings.Contains(joined, "vector local(s) kept in registers across calls") {
 		t.Errorf("many must keep some vector locals in registers and the rest in slots; diagnostics:\n%s", joined)

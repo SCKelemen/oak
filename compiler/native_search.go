@@ -55,6 +55,11 @@ func (d *nativeDriver) Materialize(c *opt.Candidate) error {
 	// (asm.Function.Callees, docs/spec/94-assembler.md §8).
 	fn.Callees = d.functions
 	c.Body = fn
+	if os.Getenv("OAK_NATIVE_DUMP") == "candidates" {
+		// A debugging aid: every candidate body as lowered, before the
+		// checker and the cost model see it.
+		fmt.Fprintf(os.Stderr, "// candidate %s of %s\n%s", c.Name(), fn.Name, nativegen.Describe(fn))
+	}
 	return nil
 }
 
