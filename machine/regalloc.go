@@ -10,9 +10,10 @@ import (
 // Allocation is what reallocation did to a body.
 type Allocation struct {
 	Webs []*Web
-	// Renamed counts the webs that changed register; Coalesced the copies
-	// removed because their source and destination share a register.
-	Renamed, Coalesced int
+	// Promoted counts the frame slots moved into registers (Promote);
+	// Renamed the webs that changed register; Coalesced the copies removed
+	// because their source and destination share a register.
+	Promoted, Renamed, Coalesced int
 	// Pool lists the registers allocation may use: the ones the lowering
 	// already wrote (so every callee-saved one among them is saved and
 	// restored by the prologue and epilogue as emitted).
@@ -33,7 +34,11 @@ type Allocation struct {
 // The result is a new function value with the rewritten items and the
 // clobbers it needs; the input is not modified.
 func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
-	lifted, err := Lift(cloneFunction(fn))
+	promotedFn, promoted, err := Promote(fn)
+	if err != nil {
+		return nil, nil, err
+	}
+	lifted, err := Lift(promotedFn)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -42,13 +47,21 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 		return nil, nil, err
 	}
 	lifted.Liveness(webs)
-	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}}
+	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted}
 	for _, ins := range lifted.Instrs {
 		for _, d := range ins.Defs {
 			if !d.Implicit && !reserved(d.Reg) {
 				alloc.Pool[d.Reg] = true
 			}
 		}
+	}
+	// The caller-saved registers the body leaves alone are free for
+	// ranges that cross no call (allocation declares what it writes).
+	for n := 9; n <= 17; n++ {
+		alloc.Pool[Reg{GPR, n}] = true
+	}
+	for n := 16; n <= 31; n++ {
+		alloc.Pool[Reg{VEC, n}] = true
 	}
 	// A web that finds no register keeps its own — pinned — and allocation
 	// starts over, so at worst every web keeps the lowering's coloring.

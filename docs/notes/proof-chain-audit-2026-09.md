@@ -43,7 +43,10 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
   `longest`: frame arrays read at the loop index, nested loops calling
   `literal_at`, a table span written in a loop — is **proved** the same
   way (2026-09-15), the equality of its conditionals decided by their
-  parts and its written memory compared at a fresh index. What remains open one layer lower
+  parts and its written memory compared at a fresh index; `classify`, ten
+  vectors with the last two on the stack, is **proved** on both halves once
+  the argument layout carries the vector class (2026-09-15), and the
+  scanner's entry points are native (trusted, past the path budget). What remains open one layer lower
   is the meaning of the instructions themselves: the verifier states that
   `tbl`, `ext`, `cmeq`, `uqsub`, `umaxv`, `sshr`, `addv` are `Oak.Simd`'s
   `tbl`, `prev`, `eqMask`, `subSat`, `anyLane`, `shr`, `movemask` as Go

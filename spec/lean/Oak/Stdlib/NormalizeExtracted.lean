@@ -221,7 +221,7 @@ def normalize_compose_pair (first : UInt32) (second : UInt32) (fuel : Nat) : Opt
 def text_result_ok (result : Result_u32_TextError) (fuel : Nat) : Option (Bool) := do
   pure (match result with | (.Ok value) => true | (.Err reason) => false)
 
-def bytes_range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
+def range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
   pure (if (decide (offset > length)) then false else (decide (width <= (length - offset))))
 
 def unicode_is_scalar (value : UInt32) (fuel : Nat) : Option (Bool) := do
@@ -248,7 +248,7 @@ def utf8_encode (dst : Array UInt8) (offset : UInt32) (value : UInt32) (fuel : N
     else (do
       let r3 ← utf8_width value fuel
       let width : UInt32 := r3
-      let r4 ← bytes_range_fits (dst.size.toUInt32) offset width fuel
+      let r4 ← range_fits (dst.size.toUInt32) offset width fuel
       let (r5, dst) ← (
         if (!r4) then (do
           pure ((Result_u32_TextError.Err TextError.DestinationTooSmall), dst))

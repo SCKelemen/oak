@@ -1,0 +1,115 @@
+package bytes
+
+// Byte sequences over caller-owned storage. No operation allocates.
+pub CopyError: type = | DestinationTooSmall
+pub RangeError: type = | OutOfBounds
+
+// Subtraction is evaluated only after validating offset, so offset + width
+// never needs to be formed and cannot wrap.
+pub range_fits: (length: u32, offset: u32, width: u32): Bool {
+  offset > length ? false | width <= length - offset
+}
+
+// Copies the whole source or leaves the destination unchanged.
+pub copy_into: (dst: [*]u8, src: []u8): Result[u32, CopyError] {
+  n: u32 = len(src)
+  len(dst) < n ? {
+    .Err(.DestinationTooSmall)
+  } | {
+    i: u32 = 0
+    while i < n {
+      dst[i] = src[i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  }
+}
+
+// Ordinary byte equality. This makes no constant-time claim.
+pub equal: (left: []u8, right: []u8): Bool {
+  n: u32 = len(left)
+  n == len(right) ? {
+    same: Bool = true
+    i: u32 = 0
+    while i < n {
+      same = same && left[i] == right[i]
+      i = i + u32(1)
+    }
+    same
+  } | {
+    false
+  }
+}
+
+// Returns the first matching byte position.
+pub find: (src: []u8, needle: u8): Option[u32] {
+  n: u32 = len(src)
+  index: u32 = n
+  i: u32 = 0
+  while i < n {
+    index == n && src[i] == needle ? { index = i }
+    i = i + u32(1)
+  }
+  index == n ? { .None } | { .Some(index) }
+}
+
+pub fill: (dst: [*]u8, value: u8): () {
+  i: u32 = 0
+  while i < len(dst) {
+    dst[i] = value
+    i = i + u32(1)
+  }
+}
+
+// Copies at a fixed destination offset or leaves every destination byte
+// unchanged when the complete range does not fit.
+pub copy_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, RangeError] {
+  n: u32 = len(src)
+  range_fits(len(dst), offset, n) ? {
+    i: u32 = 0
+    while i < n {
+      dst[offset + i] = src[i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  } | { .Err(.OutOfBounds) }
+}
+
+// A single exclusive span permits overlapping ranges. Copy backward when the
+// destination begins inside or after the source, and forward otherwise.
+pub move_within: (storage: [*]u8, dst: u32, src: u32, count: u32): Result[u32, RangeError] {
+  valid: Bool = range_fits(len(storage), dst, count) && range_fits(len(storage), src, count)
+  valid ? {
+    dst > src ? {
+      remaining: u32 = count
+      while remaining > u32(0) {
+        remaining = remaining - u32(1)
+        storage[dst + remaining] = storage[src + remaining]
+      }
+    } | {
+      i: u32 = 0
+      while i < count {
+        storage[dst + i] = storage[src + i]
+        i = i + u32(1)
+      }
+    }
+    .Ok(count)
+  } | { .Err(.OutOfBounds) }
+}
+
+// Unsigned-byte lexicographic order, with a shorter equal prefix first.
+pub compare: (left: []u8, right: []u8): i32 {
+  limit: u32 = len(left) < len(right) ? len(left) | len(right)
+  order: i32 = 0
+  i: u32 = 0
+  while i < limit && order == 0 {
+    left[i] < right[i] ? { order = -1 }
+    left[i] > right[i] ? { order = 1 }
+    i = i + u32(1)
+  }
+  order == 0 ? {
+    len(left) < len(right) ? { order = -1 }
+    len(left) > len(right) ? { order = 1 }
+  }
+  order
+}

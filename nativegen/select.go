@@ -400,11 +400,37 @@ func (g *generator) speculable(expr ast.Expression) bool {
 		return g.speculable(e.Arguments[0])
 	case *ast.InfixExpression:
 		switch e.Operator {
-		case "+", "-", "*", "&", "|", "^", "<<", ">>":
+		case "+", "-", "*", "&", "|", "^":
 			return g.speculable(e.Left) && g.speculable(e.Right)
+		case "<<", ">>":
+			// A shift traps at the width (docs/spec/10-syntax.md §3b), and
+			// the lowering guards a variable count before shifting: the
+			// arm not taken may hold a count past the width — the other
+			// arm's arithmetic, `(k - 8) * 8` under `k < 8` — so only a
+			// literal count, in range by the typechecker, is speculable.
+			return g.speculable(e.Left) && literalShiftCount(e.Right)
 		}
 	case *ast.PrefixExpression:
 		return (e.Operator == "-" || e.Operator == "!") && g.speculable(e.Right)
+	}
+	return false
+}
+
+// literalShiftCount reports a shift count spelled as an integer literal,
+// bare or under a conversion (`u64(8)`).
+func literalShiftCount(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return true
+	case *ast.InvocationExpression:
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent || len(e.Arguments) != 1 {
+			return false
+		}
+		if _, isConversion := scalars[ident.Value]; !isConversion {
+			return false
+		}
+		return literalShiftCount(e.Arguments[0])
 	}
 	return false
 }
@@ -634,6 +660,7 @@ func (g *generator) retargetSelect(r, v int, typ scalar, from int) bool {
 	operands[0] = reg(v, typ)
 	ins.Operands = operands
 	g.items[at] = ins
+	g.forgetAll()
 	return true
 }
 

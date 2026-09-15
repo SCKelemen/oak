@@ -402,3 +402,51 @@ func TestSearchWeighsLoopStride(t *testing.T) {
 		t.Fatalf("unrolled cost %.1f not below identity %.1f", sel.Candidate.Cost, sel.Identity.Cost)
 	}
 }
+
+// gatedToggle ships only on a verdict.
+type gatedToggle struct{ toggle }
+
+func (g *gatedToggle) NeedsVerdict() bool { return true }
+
+func TestSearchTrustedVerdictNeedsUngatedForm(t *testing.T) {
+	// The verifier could judge neither form. A transform that ships only
+	// on a verdict is set aside for the plain lowering, priced higher or
+	// not; a transform that ships on the checker's admission stays.
+	report := &Report{}
+	s := newSearch(report, &gatedToggle{toggle{name: "a", phase: PhaseCanonical, fires: true}})
+	d := &fakeDriver{
+		metrics:  map[string]Metrics{"a": {Instructions: 5}},
+		verdicts: map[string]Outcome{"a": Trusted, "": Trusted},
+	}
+	sel, err := s.Run("f", Identity(config{}), NewFacts(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sel.Candidate.IsIdentity() || sel.Verdict.Outcome != Trusted {
+		t.Fatalf("selected %s (%s)", sel.Candidate.Name(), sel.Verdict.Outcome)
+	}
+	if !strings.Contains(report.String(), "ships only on a verdict") {
+		t.Errorf("report:\n%s", report.String())
+	}
+	s = newSearch(nil, &toggle{name: "b", phase: PhaseCanonical, fires: true})
+	d = &fakeDriver{metrics: map[string]Metrics{"b": {Instructions: 5}}, verdicts: map[string]Outcome{"b": Trusted, "": Trusted}}
+	sel, _ = s.Run("f", Identity(config{}), NewFacts(), d)
+	if sel.Candidate.Name() != "b" {
+		t.Fatalf("selected %s: an ungated transform ships on the checker's admission", sel.Candidate.Name())
+	}
+	// Both together: the gated one goes, the ungated form is kept.
+	report = &Report{}
+	s = newSearch(report, &toggle{name: "b", phase: PhaseCanonical, fires: true}, &gatedToggle{toggle{name: "a", phase: PhaseMachine, fires: true}})
+	d = &fakeDriver{metrics: map[string]Metrics{"b": {Instructions: 6}, "a": {Instructions: 6}, "b+a": {Instructions: 4}}, verdicts: map[string]Outcome{"b+a": Trusted, "a": Trusted, "b": Trusted, "": Trusted}}
+	sel, _ = s.Run("f", Identity(config{}), NewFacts(), d)
+	if sel.Candidate.Name() != "b" {
+		t.Fatalf("selected %s, want b:\n%s", sel.Candidate.Name(), report.String())
+	}
+	// A witnessed transformed form is evidence and may ship.
+	s = newSearch(nil, &gatedToggle{toggle{name: "a", phase: PhaseCanonical, fires: true}})
+	d = &fakeDriver{metrics: map[string]Metrics{"a": {Instructions: 5}}, verdicts: map[string]Outcome{"a": Witnessed, "": Witnessed}}
+	sel, _ = s.Run("f", Identity(config{}), NewFacts(), d)
+	if sel.Candidate.Name() != "a" {
+		t.Fatalf("selected %s", sel.Candidate.Name())
+	}
+}

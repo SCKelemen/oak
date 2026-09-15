@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 // Verified reduction unrolling (docs/spec/94-assembler.md §9 "Reductions";
@@ -104,23 +105,39 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s was not lowered natively:\n%s", name, strings.Join(infos, "\n"))
 		}
-		inFirst := false
-		for _, item := range fn.Items {
-			switch it := item.(type) {
-			case asm.Label:
-				if strings.HasPrefix(it.Name, "loop") {
-					count++
-					inFirst = count == 1
-				} else {
-					inFirst = false
+		firstName, firstStart, firstEnd := "", -1, len(fn.Items)
+		for i, item := range fn.Items {
+			if label, ok := item.(asm.Label); ok && strings.HasPrefix(label.Name, "loop_") {
+				count++
+				if firstStart < 0 {
+					firstName, firstStart = label.Name, i+1
 				}
-			case asm.Instruction:
-				if inFirst && (it.Mnemonic == "ldr" || it.Mnemonic == "ldrb") {
-					loads++
-				}
-				if inFirst && it.Mnemonic == "ldp" {
-					pairs++
-				}
+			}
+		}
+		for i, item := range fn.Items {
+			if label, ok := item.(asm.Label); ok && label.Name == "check_"+firstName {
+				firstEnd = i
+				break
+			}
+			instruction, ok := item.(asm.Instruction)
+			if !ok || (instruction.Mnemonic != "b" && instruction.Mnemonic != "j") || len(instruction.Operands) == 0 {
+				continue
+			}
+			if symbol, ok := instruction.Operands[len(instruction.Operands)-1].(asm.Symbol); ok && symbol.Name == firstName && i >= firstStart {
+				firstEnd = i
+				break
+			}
+		}
+		for _, item := range fn.Items[firstStart:firstEnd] {
+			instruction, ok := item.(asm.Instruction)
+			if !ok {
+				continue
+			}
+			if instruction.Mnemonic == "ldr" || instruction.Mnemonic == "ldrb" {
+				loads++
+			}
+			if instruction.Mnemonic == "ldp" {
+				pairs++
 			}
 		}
 		return count, loads, pairs
@@ -142,9 +159,12 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	// for the loop as written too), so the unrolled form is kept — the
 	// verdict is not weakened — and the wrapping sum agrees with the C
 	// backend below.
-	// Byte loads have no pair form: the four stay.
-	if count, loads, _ := loops("sum8"); count != 2 || loads != 4 {
-		t.Errorf("sum8 must unroll as sum does (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
+	// Byte loads have no pair form: the four stay — or, both forms being
+	// evidence, the cost model keeps the cheaper bottom-tested plain loop
+	// (docs/spec/94-assembler.md §9 "Bottom-tested loops"): one loop, one
+	// load, a conditional back edge.
+	if count, loads, _ := loops("sum8"); !(count == 2 && loads == 4) && !(count == 1 && loads == 1 && nativegen.RotatedLoops(units["sum8"]) == 1) {
+		t.Errorf("sum8 must unroll as sum does or keep its rotated plain loop (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
 	}
 	if !strings.Contains(joined, "asm unit sum8: agrees with its Oak body") {
 		t.Errorf("sum8 must keep at least the evidence verdict of its plain form; diagnostics:\n%s", joined)

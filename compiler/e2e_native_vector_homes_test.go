@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"github.com/SCKelemen/oak/asm"
 	"strings"
 	"testing"
 
@@ -138,23 +139,47 @@ func TestE2ENativeVectorHomes(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// live_across holds one vector local across one call and reads it
-	// once after: the home form saves and reloads it around the call
-	// exactly as the slot form stores and loads it, so the candidate search
-	// (compiler/native_search.go) prices the reallocated slot form lower
-	// and selects it; the report says so (-opt-report). dead_before and
-	// carried gain registers for their reads between the calls and keep
-	// their homes.
-	for _, want := range []string{"dead_before: 1 vector local(s) kept in registers across calls", "carried: 1 vector local(s) kept in registers across calls"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("want %q; diagnostics:\n%s", want, joined)
+	// The outcome, whichever transform the candidate search selected
+	// (compiler/native_search.go; -opt-report says which): the vector
+	// locals leave their frame slots. A local dead before the call and a
+	// leaf's locals need no slot at all; a local live across one call is
+	// saved and reloaded around it, two accesses; many locals leave at
+	// least half their traffic behind. The vector-homes transform, the
+	// machine package's slot promotion, or both may do it — the diagnostics
+	// name what happened.
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotTraffic := func(name string) int {
+		for _, fn := range model.AsmFunctions {
+			if fn.Name != name {
+				continue
+			}
+			n := 0
+			for _, item := range fn.Items {
+				ins, ok := item.(asm.Instruction)
+				if !ok || (ins.Mnemonic != "ldr" && ins.Mnemonic != "str") || len(ins.Operands) != 2 {
+					continue
+				}
+				reg, isReg := ins.Operands[0].(asm.Register)
+				m, isMem := ins.Operands[1].(asm.Memory)
+				if isReg && isMem && reg.Class == asm.ClassV && m.Base.Class == asm.ClassSP {
+					n++
+				}
+			}
+			return n
+		}
+		t.Fatalf("%s not lowered", name)
+		return -1
+	}
+	for name, most := range map[string]int{"dead_before": 0, "wide_leaf": 0, "live_across": 2, "carried": 2, "many": 30} {
+		if got := slotTraffic(name); got > most {
+			t.Errorf("%s: %d vector slot accesses, want at most %d; diagnostics:\n%s", name, got, most, joined)
 		}
 	}
-	if !strings.Contains(joined, "many: ") || !strings.Contains(joined, "vector local(s) kept in registers across calls") {
-		t.Errorf("many must keep some vector locals in registers and the rest in slots; diagnostics:\n%s", joined)
-	}
-	if !strings.Contains(joined, "wide_leaf: ") || !strings.Contains(joined, "vector local(s) homed in the argument registers") {
-		t.Errorf("wide_leaf must home vector locals in the argument registers; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "many: ") || !(strings.Contains(joined, "vector local(s) kept in registers across calls") || strings.Contains(joined, "frame slot(s) promoted to registers")) {
+		t.Errorf("many must move vector locals out of their slots; diagnostics:\n%s", joined)
 	}
 	if strings.Contains(joined, "keeps its vector slots") {
 		t.Errorf("no body may fall back to slots; diagnostics:\n%s", joined)

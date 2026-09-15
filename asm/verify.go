@@ -1549,6 +1549,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			case spans[binding.Param] != 0:
 				state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
 				state.storeSlot(binding.Stack+8, input(spanLenName(binding.Param), 32), 4)
+			case vectors[binding.Param].Lanes != 0:
+				// A vector past v0–v7: its sixteen bytes in the outgoing
+				// area, the lanes packed as the register would hold them,
+				// two eight-byte slots the body's `ldr q` reads whole.
+				halves := vectorParamValue(binding.Param, vectors[binding.Param], input).halves()
+				state.storeSlot(binding.Stack, halves[0], 8)
+				state.storeSlot(binding.Stack+8, halves[1], 8)
+			case params[binding.Param] == ClassV:
+				// A float past v0–v7: its bit pattern at its own size.
+				bits := declared[binding.Param]
+				state.storeSlot(binding.Stack, input(binding.Param, bits), int64(bits)/8)
 			case params[binding.Param] == ClassX:
 				state.storeSlot(binding.Stack, input(binding.Param, 64), 8)
 			case boolParams[binding.Param]:
@@ -7984,8 +7995,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if arg.problem != "" {
 			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, arg.param.Name.Value), false
 		}
-		if arg.kind == argVector {
-			ints = append(ints, -1)
+		if arg.kind == argVector && x.arch == ArchRV64 {
+			ints = append(ints, -1) // RV64: v8–v23 by count, outside the layout
 			continue
 		}
 		ints = append(ints, len(classes))
@@ -8033,12 +8044,14 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				if !has {
 					return "unbound floating-point register read", false
 				}
-			} else {
-				if nextVec >= vecArgs {
-					return fmt.Sprintf("a call to %s with floating-point arguments beyond the registers", name), false
+			} else if place := places[ints[i]]; place.OnStack {
+				// Past v0–v7: its bit pattern in the outgoing area.
+				value, has = word(place, 0, int64(floatWidth)/8)
+				if !has {
+					return "unbound stack argument read", false
 				}
-				vec, bound := state.readVec(nextVec)
-				nextVec++
+			} else {
+				vec, bound := state.readVec(place.Reg)
 				if !bound {
 					return "unbound vector register read", false
 				}
@@ -8050,13 +8063,34 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 		if arg.kind == argVector {
 			shape, _ := vectorShape(param.Type)
-			if nextVec >= vecArgs {
-				return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
-			}
-			value, has := state.readVec(vecArg0 + nextVec)
-			nextVec++
-			if !has {
-				return "unbound vector register read", false
+			var value vecValue
+			switch {
+			case x.arch == ArchRV64:
+				if nextVec >= vecArgs {
+					return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
+				}
+				var has bool
+				value, has = state.readVec(vecArg0 + nextVec)
+				nextVec++
+				if !has {
+					return "unbound vector register read", false
+				}
+			case places[ints[i]].OnStack:
+				// Past v0–v7: sixteen bytes in the outgoing area, the two
+				// eight-byte words the caller's `str q` left.
+				place := places[ints[i]]
+				lo64, hasLo := word(place, 0, 8)
+				hi64, hasHi := word(place, 1, 8)
+				if !hasLo || !hasHi {
+					return "unbound stack argument read", false
+				}
+				value = vecOfLanes([]*term{lo64, hi64}, 64)
+			default:
+				var has bool
+				value, has = state.readVec(places[ints[i]].Reg)
+				if !has {
+					return "unbound vector register read", false
+				}
 			}
 			lanes := value.lanesAt(laneWidth(shape))[:shape.Lanes]
 			lo.locals[param.Name.Value] = &oakLocal{agg: vectorOfLanes(lanes, lo.vectorType(shape))}

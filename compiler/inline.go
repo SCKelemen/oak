@@ -26,10 +26,12 @@ package compiler
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/discipline"
+	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/token"
 )
 
@@ -65,6 +67,13 @@ type inliner struct {
 	// a transition at its call, so the call must remain.
 	transitions map[string]bool
 	counter     int
+	caller      string
+	applied     map[inlineEdge]int
+}
+
+type inlineEdge struct {
+	caller string
+	callee string
 }
 
 // inlineHelpers rewrites every call to an inlinable helper in program. The
@@ -77,11 +86,12 @@ type inliner struct {
 // protocols are the program's protocol declarations (compiler/protocols.go
 // lowers them out of the tree before this pass and keeps them beside it,
 // Protocols(tree)); their via callables stay calls.
-func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
+func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) (decisions []OptimizationDecision) {
 	if program == nil {
-		return
+		return nil
 	}
-	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}}
+	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}, applied: map[inlineEdge]int{}}
+	defer func() { decisions = in.decisions() }()
 	duplicates := map[string]bool{}
 	for _, stmt := range program.Statements {
 		switch decl := stmt.(type) {
@@ -118,7 +128,7 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
 			}
 		}
 		if len(in.candidates) == 0 {
-			return
+			return nil
 		}
 		before := in.counter
 		for _, stmt := range program.Statements {
@@ -135,6 +145,7 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
 				// helper call, not an expansion the Metal emitter never sees.
 				continue
 			}
+			in.caller = fn.Name.Value
 			body, wrapped := functionBlock(fn)
 			if body == nil || body.Block == nil {
 				continue
@@ -150,9 +161,45 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
 			}
 		}
 		if in.counter == before {
-			return
+			return nil
 		}
 	}
+	return nil
+}
+
+func (in *inliner) record(cand *inlineCandidate) {
+	if cand == nil || cand.fn == nil || cand.fn.Name == nil || in.caller == "" {
+		return
+	}
+	in.applied[inlineEdge{caller: in.caller, callee: cand.fn.Name.Value}]++
+}
+
+func (in *inliner) decisions() []OptimizationDecision {
+	edges := make([]inlineEdge, 0, len(in.applied))
+	for edge := range in.applied {
+		edges = append(edges, edge)
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].caller == edges[j].caller {
+			return edges[i].callee < edges[j].callee
+		}
+		return edges[i].caller < edges[j].caller
+	})
+	out := make([]OptimizationDecision, 0, len(edges))
+	for _, edge := range edges {
+		count := in.applied[edge]
+		out = append(out, OptimizationDecision{
+			Kind:      opt.Passed,
+			Transform: OptimizationInlineLeaf,
+			Function:  edge.caller,
+			Message:   fmt.Sprintf("inlined %s %d time(s); optimized program re-typechecked", edge.callee, count),
+			Facts: []string{
+				"private leaf helper within the inline shape bound",
+				"effect, evaluation-order, and borrow shape preserved",
+			},
+		})
+	}
+	return out
 }
 
 // functionBlock is a function's body as a block: the block itself, or an
@@ -411,6 +458,7 @@ func (in *inliner) rewriteSlot(slot *ast.Expression, scope *callerScope, stateme
 			if !ok || (!statement && containsBlock(tail)) {
 				return hoisted, false
 			}
+			in.record(cand)
 			hoisted = append(hoisted, stmts...)
 			if tail == nil {
 				return hoisted, true
@@ -497,6 +545,7 @@ func (h *hoister) walk(slot *ast.Expression) {
 			h.blocked = true
 			return
 		}
+		h.in.record(cand)
 		name := h.in.resultName()
 		result := &ast.VariableDeclaration{
 			Token: e.Token,

@@ -472,11 +472,12 @@ type compositeParam struct {
 // stackParam is a parameter placed in the caller's outgoing area.
 type stackParam struct {
 	name     string
-	bytes    int64 // the argument's size there (a span 16, a reference 8)
+	bytes    int64 // the argument's size there (a span 16, a reference 8, a vector 16)
 	span     *spanParam
 	comp     *compositeParam
 	scalar   bool
 	scalarSz int64
+	vector   bool // a vector-class parameter past v0–v7: loaded whole by a q load
 }
 
 type region struct {
@@ -767,12 +768,19 @@ func (c *checker) bindContract() {
 		case argVector:
 			c.paramClass[param.Name.Value] = ClassV
 			c.paramView[param.Name.Value] = floatView(param.Type)
-			if nextVector > 7 {
-				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
+			if c.fn.Arch == ArchRV64 {
+				if nextVector > 7 {
+					c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
+					continue
+				}
+				c.paramRegister[param.Name.Value] = nextVector
+				nextVector++
 				continue
 			}
-			c.paramRegister[param.Name.Value] = nextVector
-			nextVector++
+			// AArch64: the vector class shares the layout — v0–v7 while they
+			// fit, then the caller's outgoing area (a 128-bit vector sixteen
+			// bytes, sixteen-aligned), read whole by a q load.
+			ints = append(ints, intParam{param: param, class: arg.class})
 		default:
 			class, _ := contractClass(param.Type)
 			c.paramClass[param.Name.Value] = class
@@ -791,11 +799,10 @@ func (c *checker) bindContract() {
 		place := places[i]
 		if place.OnStack {
 			c.paramRegister[name] = -1
-			sp := stackParam{name: name, bytes: ip.class.Bytes, scalarSz: ip.scalarSz}
-			if !c.fn.PackedStackArgs {
-				sp.bytes = int64(ip.class.Words) * 8
-			}
+			sp := stackParam{name: name, bytes: stackSize(c.fn.PackedStackArgs, ip.class), scalarSz: ip.scalarSz}
 			switch {
+			case ip.class.Vector:
+				sp.vector = true
 			case ip.span != nil:
 				sp.span = ip.span
 			case ip.comp != nil:
@@ -965,13 +972,23 @@ func (c *checker) incomingRead(instr Instruction, mem Memory, regs []Register, s
 		return true
 	}
 	dest := regs[0]
-	if dest.Class != ClassW && dest.Class != ClassX {
-		c.errorf(instr.Line, "%s: an incoming argument loads into a general register", instr.Mnemonic)
-		return true
-	}
 	for off, sp := range c.stackParams {
 		if addr < off || addr+size > off+sp.bytes {
 			continue
+		}
+		if sp.vector {
+			// A vector parameter past v0–v7: its sixteen bytes load whole
+			// into a vector register (`ldr qN`), the parameter's value.
+			if dest.Class != ClassV || addr != off || size != sp.bytes {
+				c.errorf(instr.Line, "%s reads the vector parameter %s other than whole into a vector register", instr.Mnemonic, sp.name)
+				return true
+			}
+			c.write(instr, dest)
+			return true
+		}
+		if dest.Class != ClassW && dest.Class != ClassX {
+			c.errorf(instr.Line, "%s: an incoming argument loads into a general register", instr.Mnemonic)
+			return true
 		}
 		c.write(instr, dest)
 		switch {
@@ -1174,6 +1191,13 @@ func (c *checker) enterLabel(label Label) {
 // leaves on `cond`, so the path after it has its negation. The same
 // reading serves `b.cond` itself and a condition materialized by `cset`
 // and tested by `cbz`/`cbnz` (condFacts, Oak.Assembler.cset_cbz).
+// conditionInverse pairs each condition code with its complement: the
+// taken path of `b.cond` is the fall-through of `b.inverse`.
+var conditionInverse = map[string]string{
+	"eq": "ne", "ne": "eq", "hs": "lo", "cs": "cc", "lo": "hs", "cc": "cs", "mi": "pl", "pl": "mi",
+	"vs": "vc", "vc": "vs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt",
+}
+
 func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
 	// len >= N for every span whose length register is wL.
@@ -1340,7 +1364,33 @@ func (c *checker) instruction(instr Instruction) bool {
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
-		c.branch(instr, false)
+		if inverse, known := conditionInverse[instr.Cond]; known && guard.valid {
+			// The taken path knows what the fall-through of the
+			// complementary branch would: `cmp wI, wL; b.lo header` carries
+			// wI < wL to the header — a bottom-tested loop's back edge
+			// (Oak.Assembler.index_access, the same fact as `b.hs exit`'s
+			// fall-through). The facts are applied for the arrival alone.
+			savedIdx := map[int]idxFact{}
+			for reg, fact := range c.idxFacts {
+				savedIdx[reg] = fact
+			}
+			savedMins := map[*spanFact][2]int64{}
+			for _, fact := range c.spans {
+				has := int64(0)
+				if fact.hasMin {
+					has = 1
+				}
+				savedMins[fact] = [2]int64{has, fact.minLen}
+			}
+			c.guardFacts(guard, inverse)
+			c.branch(instr, false)
+			c.idxFacts = savedIdx
+			for fact, saved := range savedMins {
+				fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
+			}
+		} else {
+			c.branch(instr, false)
+		}
 		c.guardFacts(guard, instr.Cond)
 		return false
 	case "retaa", "retab":
@@ -1504,6 +1554,19 @@ func (c *checker) instruction(instr Instruction) bool {
 
 	if spec.memory {
 		c.memoryAccess(instr, matched)
+		// A byte or halfword loaded zero-extended is below 2^8 or 2^16: the
+		// constant guard a table indexed by a loaded byte carries without a
+		// compare (Oak.Assembler.narrow_value_bound; the typechecker proves
+		// `TABLE[u32(unit)]` for a u8 over a 256-entry table).
+		if (instr.Mnemonic == "ldrb" || instr.Mnemonic == "ldrh") && len(instr.Operands) == 2 {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassW && !dest.ZeroRegister() {
+				bound := int64(256)
+				if instr.Mnemonic == "ldrh" {
+					bound = 65536
+				}
+				c.idxFacts[dest.Num] = idxFact{boundReg: -1, bound: bound}
+			}
+		}
 		return false
 	}
 	// csel/cset consume flags under the same dominance rule as b.cond.
@@ -1619,6 +1682,33 @@ func (c *checker) instruction(instr Instruction) bool {
 	var slack *slackFact
 	var carried *idxFact
 	var sum *sumFact
+	// `and wD, wS, #M`: the result is at most M, so wD < M + 1 — the
+	// constant guard a masked table or array index carries without a
+	// compare (Oak.Assembler.masked_index_bound; the typechecker's
+	// masked_under_length). A mask in a register the checker knows as a
+	// constant counts too.
+	if (instr.Mnemonic == "uxtb" || instr.Mnemonic == "uxth") && dest.Class == ClassW && len(instr.Operands) == 2 {
+		// A zero-extended byte or halfword is below 2^8 or 2^16
+		// (Oak.Assembler.narrow_value_bound).
+		bound := int64(256)
+		if instr.Mnemonic == "uxth" {
+			bound = 65536
+		}
+		carried = &idxFact{boundReg: -1, bound: bound}
+	}
+	if instr.Mnemonic == "and" && dest.Class == ClassW && len(instr.Operands) == 3 {
+		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
+			mask, isImm := instr.Operands[2].(Immediate)
+			if mreg, isMReg := instr.Operands[2].(Register); isMReg && mreg.Class == ClassW {
+				if value, known := c.constFacts[mreg.Num]; known {
+					mask, isImm = Immediate{Value: value}, true
+				}
+			}
+			if isImm && mask.Shift == 0 && mask.Value >= 0 && mask.Value < 1<<31 {
+				carried = &idxFact{boundReg: -1, bound: mask.Value + 1}
+			}
+		}
+	}
 	if (instr.Mnemonic == "sub" || instr.Mnemonic == "add") && dest.Class == ClassW && len(instr.Operands) == 3 {
 		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
 			// The constant: an immediate, or a register a movz just filled
