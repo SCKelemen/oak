@@ -41,6 +41,10 @@ structure IdxFact where
   boundReg : Int
   bound : Int
   slack : Bool
+  /-- The minimum length under which a slack fact is exact: the `K` of the
+      `sub wT, wL, #K` behind it, carried unchanged when an offset lowers
+      `bound` (`Oak.Assembler.slack_guard` needs `K ≤ len`). -/
+  need : Int
   deriving Repr, DecidableEq
 
 /-- `asm.spanFact`: a span base's element size, writability, proven
@@ -78,9 +82,9 @@ def frameElement (frame addr : Int) (bound : IdxFact) (size : Int) : Option Regi
     holding the length, or an immediate bound under the proven minimum,
     yields one element. -/
 def spanElement (fact : SpanFact) (bound : IdxFact) (size : Int) : Option Region :=
-  if bound.slack = true ∧ bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true ∧ fact.hasMin = true ∧ bound.bound ≤ fact.minLen then
+  if bound.slack = true ∧ bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true ∧ fact.hasMin = true ∧ bound.need ≤ fact.minLen then
     some ⟨size * bound.bound, fact.writable⟩
-  else if (bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true) ∨ (bound.boundReg < 0 ∧ fact.hasMin = true ∧ bound.bound ≤ fact.minLen) then
+  else if (bound.slack = false ∧ bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true) ∨ (bound.boundReg < 0 ∧ fact.hasMin = true ∧ bound.bound ≤ fact.minLen) then
     some ⟨size, fact.writable⟩
   else none
 
@@ -190,12 +194,8 @@ theorem spanElement_sound (fact : SpanFact) (bound : IdxFact) (size len : Int) (
       simp only [Option.some.injEq] at h
       subst h
       have hlt : i < len := by
-        rcases hin with ⟨hge, hholds⟩ | ⟨hneg, hhas, hle⟩
-        · have hm := hreg hge hholds
-          cases hs : bound.slack
-          · exact hm.1 hs
-          · have := hm.2 hs
-            omega
+        rcases hin with ⟨hs, hge, hholds⟩ | ⟨hneg, hhas, hle⟩
+        · exact (hreg hge hholds).1 hs
         · exact Int.lt_of_lt_of_le (himm hneg) (Int.le_trans hle (hmin hhas))
       exact span_element size len i hi hsize hlt
     · simp at h
@@ -302,25 +302,25 @@ Each line is one case of `asm/checker_refinement_test.go`, rendered by the
 Go decision and checked here by `decide`; the test fails when a rendering
 is missing, `lake build` when a rendering is wrong. -/
 
-example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨(-1), 4, false⟩) 4 = some ⟨4, true⟩ := by decide
-example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨(-1), 5, false⟩) 4 = none := by decide
-example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨1, 0, false⟩) 4 = none := by decide
-example : elementRegion 0 ⟨none, (some ⟨8, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false⟩) 8 = some ⟨8, true⟩ := by decide
-example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 4, false⟩) 8 = some ⟨8, false⟩ := by decide
-example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 5, false⟩) 8 = none := by decide
-example : elementRegion 0 ⟨none, (some ⟨1, true, true, 16, [1]⟩), none⟩ (some ⟨1, 16, true⟩) 1 = some ⟨16, true⟩ := by decide
-example : elementRegion 0 ⟨none, (some ⟨4, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false⟩) 8 = none := by decide
-example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 32, false⟩) 1 = some ⟨1, false⟩ := by decide
-example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 33, false⟩) 1 = none := by decide
+example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨(-1), 4, false, 0⟩) 4 = some ⟨4, true⟩ := by decide
+example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨(-1), 5, false, 0⟩) 4 = none := by decide
+example : elementRegion 16 ⟨(some (-16)), none, none⟩ (some ⟨1, 0, false, 0⟩) 4 = none := by decide
+example : elementRegion 0 ⟨none, (some ⟨8, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false, 0⟩) 8 = some ⟨8, true⟩ := by decide
+example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 4, false, 0⟩) 8 = some ⟨8, false⟩ := by decide
+example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 5, false, 0⟩) 8 = none := by decide
+example : elementRegion 0 ⟨none, (some ⟨1, true, true, 16, [1]⟩), none⟩ (some ⟨1, 16, true, 0⟩) 1 = some ⟨16, true⟩ := by decide
+example : elementRegion 0 ⟨none, (some ⟨4, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false, 0⟩) 8 = none := by decide
+example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 32, false, 0⟩) 1 = some ⟨1, false⟩ := by decide
+example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 33, false, 0⟩) 1 = none := by decide
 example : regionAdmits ⟨12, true⟩ false 4 4 none = true := by decide
 example : regionAdmits ⟨12, true⟩ false 12 4 none = false := by decide
 example : regionAdmits ⟨12, false⟩ true 0 4 none = false := by decide
-example : regionAdmits ⟨32, false⟩ false 0 1 (some ⟨(-1), 32, false⟩) = true := by decide
-example : regionAdmits ⟨12, true⟩ false 0 4 (some ⟨(-1), 4, false⟩) = false := by decide
+example : regionAdmits ⟨32, false⟩ false 0 1 (some ⟨(-1), 32, false, 0⟩) = true := by decide
+example : regionAdmits ⟨12, true⟩ false 0 4 (some ⟨(-1), 4, false, 0⟩) = false := by decide
 example : frameArrayAdmits 16 (-16) 4 4 none = true := by decide
 example : frameArrayAdmits 16 (-16) 12 8 none = false := by decide
-example : frameArrayAdmits 16 (-16) 0 4 (some ⟨(-1), 4, false⟩) = true := by decide
-example : frameArrayAdmits 16 (-16) 0 4 (some ⟨(-1), 5, false⟩) = false := by decide
-example : frameArrayAdmits 16 (-16) 0 4 (some ⟨1, 0, false⟩) = false := by decide
+example : frameArrayAdmits 16 (-16) 0 4 (some ⟨(-1), 4, false, 0⟩) = true := by decide
+example : frameArrayAdmits 16 (-16) 0 4 (some ⟨(-1), 5, false, 0⟩) = false := by decide
+example : frameArrayAdmits 16 (-16) 0 4 (some ⟨1, 0, false, 0⟩) = false := by decide
 
 end Oak.CheckerRefinement

@@ -145,6 +145,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// round, falls back to every guard as before.
 		var kept []int
 		for round := 0; len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0; round++ {
+			if os.Getenv("OAK_NATIVE_DUMP") != "" {
+				// The refused form, for reading the checker's gap
+				// (docs/spec/94-assembler.md §9.ad).
+				fmt.Fprintf(os.Stderr, "// refused elided form of %s (round %d): %s\n%s", fn.Name.Value, round, findings[0], nativegen.Describe(asmFn))
+			}
 			line, hasLine := findingLine(findings[0], fn.Name.Value)
 			if round >= 8 || !hasLine || lane.GuardLines[line] {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
