@@ -1068,6 +1068,90 @@ The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
 implication, each order's node count and the stage it exceeded at, and
 under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
 
+**The literal scanner's kernel, whole (2026-09-15).** The same day,
+`verify_count` and `build` followed, and the module's witnesses came
+back. `verify_count` had more loops than the event budget: its outer
+loop counts to sixteen, so both sides unrolled it — sixteen copies of a
+body that summarizes an inner loop and a call to `literal_at`, thirty-two
+events. **A counted loop over a loop is summarized**, not unrolled, on
+both sides alike once its trip count passes four (`countedUnrollLimit`):
+the executor at a decided exit of a recognized loop whose body holds a
+loop's exit or a call to a function whose body has a loop (`loopsInside`;
+a call to a loop-free callee does not count, so the sides agree whether
+the backend expanded it or called it), the flags comparing the counter
+with its bound, both constant; and `lowerWhile` at `i < c` or `i <= c`
+over constants, the body `bodyHasLoop` — the induction is one body, not
+sixteen. Below the limit the loop unrolls as before: the copies are few,
+and a two-sided body (`side == 0 ? a : b` before an inner loop, the
+prover's `sat_resolve`) keeps an inner event per side on the machine,
+whose paths fork before the inner loop, where the Oak side merges the
+sides into one select before it — summarized, the two would not match.
+A fork over a register's zero test now binds the register on each side
+(below), and with the register exact the loop under `ok ? {…}` is
+reached on one path only — where before a contradictory second path
+(the register zero yet tested nonzero again) reached it too and, merged,
+happened to spell the header value as the Oak side's `a && b`. The
+machine's summary therefore records **the path condition at the loop's
+entry** (`loopEvent.reached`, the disjunction when a loop is reached on
+several paths), and the coupling proof's body premise assumes it: the
+counter's register couples on the inputs where `ok` holds, where its
+header value is what the path made it (the prover's
+`sr_bool_conditional`). A call in an **assert's condition** that reaches
+a loop is lowered on this side for its loop events and stores, the
+condition's truth dropped as before: the machine side executes the call and summarizes its loops,
+and a `main` asserting on `fields(view(&buf))` had those events on one
+side only. `build` asserts inside its loop body: **an assert in a loop
+body** is the no-op it is elsewhere on this side (the machine's trap arm
+leaves the body's path). Its `assert(a && b)`
+then showed three things about forks in the executor. A `cset` tested
+twice — `cbz` to skip the second test, `cbz` to the trap — forked at the
+first test without learning the register was zero on the taken side, and
+the contradictory path summarized every later loop a second time: **a
+fork over a register's zero test binds the register** on each side
+(`bindZeroTest`: zero where the test says so, one where a one-bit value
+is nonzero). A loop body path that **jumps out of the body to the trap
+block is dropped** (`runBody` had recorded it as an end, holding the
+counter at its header value — a spurious arm in the counter's next). And
+a fork whose taken side **reaches the trap through branches the taking
+decides** (`trapAhead`) is a guard like a branch to the trap itself:
+forked, the first test stayed in the path condition and so in the
+iteration's store guards, which the Oak side, its assert a no-op, does
+not carry. With these `build` is **proven** — two loops coupled, and the
+memory of `tables` after one iteration equal at a fresh index — and
+`verify_count` like `verify_first`. **The witnesses**: every concrete
+input of the module had trapped or forked past its budget, for two
+reasons. A vector parameter was one name in the witness environment
+while the lowering reads its lanes (`cand[k]`), so the lanes were
+symbolic and every loop over them undecided: a vector parameter's
+witnesses are its lanes, all zero but one (`loopWitnessInputs`), so a
+body over the set lanes runs one inner loop. And a body that indexes its
+spans by its scalars (`starts[j + 1]`, `bytes[base + l]`) trapped when
+lengths and scalars came from one small set: a second family holds every
+span long (forty) and varies the scalars alone, and a wide element of
+the fixed memory — an index or a count into another span, in the bodies
+that read it — stays below twenty-three (`elementValue`; bytes keep the
+whole mix). A witness run is bounded on its own — 256 iterations of a
+loop, 8K instructions — since a body chasing the fixed memory's small
+elements around a cycle (the prover's unique-table chains) would
+otherwise run the whole unrolling budget on each of its hundreds of
+inputs. And the coupling search's bound no longer depends on the
+witnesses: it was eight times larger for a body with them, when only the
+bodies whose inputs never trapped had any, and once the witnesses reached
+the bodies indexing their spans by their scalars, the ones whose coupling
+has no solution spent minutes under the larger bound (the prover's
+`tuple_type_acc`, 5 s to 165 s). The bound is 1024 nodes for every body,
+measured: the deepest proof on the prover and the kernels needs 291
+(`valid_with`), and the seven prover bodies past 512 all end as
+evidence. `verify_first` and `verify_count` now agree on 106 inputs each,
+`literal_at` on 90, `which_at` on 116. The module stands: every
+scalar and vector body the backend takes is proven (`bucket_bit`,
+`groups_of`, `build`, `literal_at`, `which_at`, `verify_count`,
+`verify_first`, `longest`); `carry` (a record result returned through
+memory), `joined_at` and `feed` (record parameters holding vectors) are
+trusted; `classify` and its callers stay with C for their vector
+parameters beyond eight. `TestE2ENativeLiteralsVerdicts` asserts the
+proofs and the witnesses.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
