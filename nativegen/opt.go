@@ -206,7 +206,7 @@ func Transforms() []opt.Transform {
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.VectorHomes },
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
-			fired:   VectorHomes,
+			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
