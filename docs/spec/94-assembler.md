@@ -5532,6 +5532,43 @@ no kernel row today; it stands for bodies the expansion refuses and for
 the allocator the flattened kernels need next, where forty vector locals
 meet thirty-two registers and only liveness among them decides who spills.
 
+### 9.ah Masked and narrow indices into tables and arrays (2026-09-15)
+
+The candidate search's report on the stdlib-bearing program showed 65
+AArch64 bodies with a guard-elision candidate and 52 selecting it; of the
+13 that did not, ten were constant-table lookups — `hex_digit`,
+`base64_symbol`, `base32_symbol`, the grapheme and normalization classes —
+whose index the typechecker proves by `masked_under_length` (`SYMBOLS[value
+& u32(63)]` over 64 entries) or by the width of a loaded byte
+(`VALUES[u32(unit)]` for a `u8` over 256), yet whose lowering kept the
+constant guard: the owned-array and table path (`arrayAddress`) had no
+elision hook, and the checker no fact to admit the access without the
+compare. Both are in place:
+
+- The lowering elides the constant guard of a proven access to an owned
+  array or a constant table as it does a span's (`arrayAddress`,
+  `IndexProven`, the per-line fallback), the address forming directly.
+- The checker records a constant bound from the instructions that make a
+  narrow value: `and wD, wS, #M` (or a mask in a register it knows as a
+  constant) leaves `wD < M + 1` (`Oak.Assembler.masked_index_bound`);
+  `ldrb`, `ldrh`, `uxtb`, `uxth` leave their destination below 2⁸ or 2¹⁶
+  (`Oak.Assembler.narrow_value_bound`). A frame array or table region of
+  at least that many elements then admits the access through the rules it
+  already had (`frameArrayAdmits`, `regionAdmits`), and a wider mask or a
+  halfword into a byte-sized table is refused (`TestCheckerGuardFacts`).
+
+Measured on the stdlib-bearing program, like for like with the verdict
+cache off: 57 bodies elide 136 guards where 52 elided 110, the bodies'
+`b.hs` trap branches fall from 950 to 896, one body moves from trusted to
+proven and none regress. The whole gain is the mask rule's — the symbol
+tables of the encoders and the class tables of the text passes; the
+byte-load and extension rules fired on no body here (a `u8` widened to
+`u32` is spelled without an instruction where the lowering knows the
+value narrow, so no fact arises) and stand for the units that spell them.
+Candidates the report still shows losing: an index reloaded from a frame
+slot (`append_byte`) and a bound through another register
+(`json_key_decoded_equal`, `text_equal_ascii_fold`), as §9.ad lists.
+
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 
 The RV64 lane kept every guard: its values are canonical (a u32
