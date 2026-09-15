@@ -171,7 +171,7 @@ Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and scheduling.
 
-### Phase C, first substrate: `optir/`
+### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
 emission. It retains typed scalar operations, effects, attributes, proof facts,
@@ -181,9 +181,23 @@ headers, bodies, and exits. An independent verifier checks structured
 arity/types and CFG definitions, same-block order, dominance, reachability,
 terminators, exact edge types, Bool branches, and returns.
 
-Not yet: checked Oak-to-OptIR projection, OptIR analyses and validated emission,
-vector plans (Phase D), and the proof-obligation service of the proof-guided
-note §26 beyond the requirement/fact matching here.
+`Compilation.OptIR()` now starts from the ordinary checked semantic model and
+projects each supported concrete scalar function into that representation. The
+initial subset covers fixed-width integers, Bool, unit, locals, assignments,
+structured branches and short-circuiting, exhaustive Bool matches, pre-test
+loops, value-preserving integer widening, and effect-marked calls. Unsupported
+memory and richer language forms are deterministic per-function refusals; a
+projection or verification inconsistency fails the complete analysis request.
+
+Analysis-only SCCP independently validates its operation vocabulary and computes
+exact constants plus executable blocks and edges. Integer folding follows Oak's
+fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
+it does not rewrite the CFG or authorize emission.
+
+Not yet: OptIR transformation with equivalence-validated emission, CSE/DCE and
+loop analyses beyond explicit recurrence shape, vector plans (Phase D), and the
+proof-obligation service of the proof-guided note §26 beyond the
+requirement/fact matching here.
 
 ## 1. Why this architecture
 
