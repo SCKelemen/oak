@@ -9,6 +9,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -459,6 +460,17 @@ func Metrics(fn *asm.Function) opt.Metrics {
 	}
 	m.Instructions, m.Branches, m.Loads, m.Stores, m.Guards = whole.Instructions, whole.Branches, whole.Loads, whole.Stores, whole.Guards
 	m.LoopInstructions, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards = inLoops.Instructions, inLoops.Branches, inLoops.Loads, inLoops.Stores, inLoops.Guards
+	// The recurrence analysis (machine.LoopShapes) reads each loop's
+	// index, stride, and trip bound off the lifted body; a body the lift
+	// refuses keeps the register-increment heuristic below.
+	shapes := map[string]*machine.LoopShape{}
+	if analyzed, err := machine.LoopShapes(fn); err == nil {
+		for _, sh := range analyzed {
+			if sh.Header != "" {
+				shapes[sh.Header] = sh
+			}
+		}
+	}
 	indices := make([]int, len(loops)) // each loop's index register, -1 when unknown
 	for k, loop := range loops {
 		var body opt.LoopMetrics
@@ -496,6 +508,14 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		if k > 0 && body.Stride == 1 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from {
 			if prev := m.LoopBodies[k-1]; prev.Stride > 1 {
 				body.MaxTrips = prev.Stride - 1
+			}
+		}
+		if label, ok := fn.Items[loop.from].(asm.Label); ok {
+			if sh := shapes[label.Name]; sh != nil {
+				body.Stride = sh.Stride
+				if sh.MaxTrips > 0 {
+					body.MaxTrips = sh.MaxTrips
+				}
 			}
 		}
 		m.LoopBodies = append(m.LoopBodies, body)

@@ -207,9 +207,27 @@ next round. The lowering's own hoisting (nativegen/licm.go) runs first as
 its own transform; this pass takes what remains after every other
 transform, inside reallocation, and the verifier judges the result.
 
+Third increment: the recurrence analysis (`machine.Shapes`,
+`LoopShapes`), Oak's ScalarEvolution scoped to what the planners need.
+For each natural loop it finds the basic induction variables — a
+general-register web with exactly one definition inside the loop, an
+add or subtract of an immediate to itself whose block dominates every
+latch, every other definition outside — with the step, the start when
+its one outside definition materializes a constant, and the exit test:
+a compare in a block dominating the latches between an induction and an
+invariant register or an immediate. A trip bound follows only where the
+arithmetic cannot wrap (a known start against an immediate bound with a
+positive step, in int64, withheld otherwise), and the remainder loop
+after a strided loop over the same induction web and bound runs fewer
+than the stride's trips. The cost model's stride and trip hints now come
+from this analysis, the register-increment heuristic standing in only
+when the lift refuses a body. The first test body exposed a reaching-
+definitions slip: a loop whose header is the entry block never saw its
+back-edge definitions; the entry now merges its predecessors too.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, scheduling, and the recurrence analysis.
+directly, scheduling, and exact trip counts against register bounds.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
