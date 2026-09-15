@@ -51,6 +51,9 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 		}
 	}
 	write("verdict-cache-1", asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
+	if asmFn.Body != nil {
+		write("lowered-body", asmFn.Body.String()) // a verified rewrite: the body the verdict judged
+	}
 	globals := make([]string, 0, len(asmFn.Globals))
 	for name, global := range asmFn.Globals {
 		globals = append(globals, fmt.Sprintf("%s=%s/%d", name, global.Type, global.Bits))
