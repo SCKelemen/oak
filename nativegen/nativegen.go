@@ -3953,12 +3953,28 @@ func (g *generator) declare(name string, s scalar) int64 {
 	return offset
 }
 
-// liveHomes is the set of general registers the variables in scope live in.
+// liveHomes is the set of general registers the variables in scope live
+// in: scalar homes, a span local's base and length registers (the length
+// register is also the checker's fact carrier for the span), and a record
+// local parked in a register.
 func (g *generator) liveHomes() map[int]bool {
 	homes := map[int]bool{}
 	for _, r := range g.regs {
 		if r >= 0 && r < vecBase {
 			homes[r] = true
+		}
+	}
+	for _, sp := range g.spans {
+		if sp.baseReg >= 0 {
+			homes[sp.baseReg] = true
+		}
+		if sp.lenReg >= 0 {
+			homes[sp.lenReg] = true
+		}
+	}
+	for _, rec := range g.records {
+		if rec != nil && rec.inReg && rec.reg >= 0 && rec.reg < vecBase {
+			homes[rec.reg] = true
 		}
 	}
 	return homes
