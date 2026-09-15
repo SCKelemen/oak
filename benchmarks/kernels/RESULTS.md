@@ -462,3 +462,30 @@ next item for this shape.
 (bit-exact against its oracle); it is an emitter, not a kernel, and has
 no timing.
 
+## Aggregate helpers, 2026-09-16
+
+The native lane's inliner now expands small record- and array-typed
+helpers at their calls (docs/spec/94-assembler.md §9 "Aggregate
+helpers"); `absorb`'s loop in `TestNativeShapesAggregateInline` drives
+`acc.h = step(acc.h, k)` and `fold(acc.h)` with no `bl`, the path
+`acc.h` standing for the read-only parameter. Two things the increment
+found. First, a defect it exposed rather than made: with
+`json_block_lanes` expanded into `json_string_scan`'s loop, the verifier
+refuted the lowering (asm 43 against Oak 30 at `len(src)=63`), and the
+cause was the loop invariants hoisting a 64-bit constant's `movz` with
+its first `movk` only — fixed in #481, which hoists a chain whole; the
+scan agrees again on 190 witnesses. Second, on the dbs frame scan the
+chain `sha256_compress` → `sha256_block` does not yet fold into
+`sha256_update`'s loop: the expanded body declares `sha256_block`'s
+`hs: [*]u32 = span(&state)`, a span local that takes a callee-saved pair,
+and by then the pair is not there — the `src` view, the parked result
+register, the promoted `filled` and `blocks`, the loop counter, and the
+loop invariants' reserve hold the file — so the lowering keeps the call,
+as the fallback intends (the scan's chain agrees; 70 bodies left to C
+where 71 were, 384 proven). The register budget, not the inliner, is the
+next lever there: a span local whose pair the body needs across no call
+of its own could take scratch registers, and the invariants' reserve
+could yield to a declaration that would otherwise refuse the body.
+Timings this round are not read: the machine ran other sessions' test
+suites throughout (the C build itself moved from 100 to 326 ms).
+
