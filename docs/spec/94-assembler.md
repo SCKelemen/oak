@@ -2760,6 +2760,11 @@ against the rewritten body and Lean proving the rewrite
 (`asm.Function.Body`) so the verifier and the verdict cache judge the
 right one.
 
+The forty-eighth increment is rotates (§9 "Rotates"): a rotation spelled
+with shifts is one `ror` once the literal folder folds the difference
+that is its second count, proven by `Oak.AssemblerSemantics.ror_spelling`
+and `rol_spelling`.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3869,6 +3874,32 @@ a float accumulator (its addition does not reassociate), a loop with any
 other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
+
+**Rotates (2026-09-16, AArch64 lane; `Oak.AssemblerSemantics.ror_spelling`).**
+A rotation spelled with shifts — `(x >> k) | (x << (W - k))` or the
+mirrored `(x << k) | (x >> (W - k))` over an unsigned `x` of 32 or 64
+bits, both counts constant and summing to the width, the operand one pure
+expression — lowers to one `ror`: `rotr32(x, u32(7))` from the hash
+library, inlined with its literal count, was `lsr w9, w3, #7; mov w10,
+w3; movz w11, #32; sub w11, w11, #7; cmp w11, #32; b.hs trap; lsl w10,
+w10, w11; orr w5, w9, w10` and is `ror w5, w3, #7`. Two rules meet. The
+literal folder (`constantValue`, the extents checker's `constantIndex`,
+and the verifier's `constantIndexValue`, kept in step) now folds a
+difference of two literals of one unsigned type when it does not go
+below zero, so `u32(32) - u32(7)` is the constant `25` and a shift by it
+takes an immediate with no trap guard (a difference that would wrap,
+`u32(1) - u32(2)`, is lowered as the operation, as a wrapping sum is).
+The rotate recognizer then reads the two shifts as the rotation the
+theorem states: for `k < w`, `(a >>> k) ||| (a <<< (w - k))` is
+`a.rotateRight k` (`ror_spelling`), and the left form is the right
+rotation by `w - k` (`rol_spelling`). A rotation's result is normalized
+whenever its operand is, so no mask follows. The verifier executes `ror`
+by its ISA semantics and proves each body against the shift spelling
+(`sigma0`, `mix64` in `TestE2ENativeRotates`, both proven; the diagnostic
+counts "N rotation(s) lowered to ror"). The RV64 lane keeps the shifts
+(`rori` is Zbb, outside its base contract). SHA-256's compression has six
+rotations per round: the saving is forty-two instructions a round, and
+the trap guards leave the loop with them.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
