@@ -137,11 +137,19 @@ column unchanged or improved.
    instruction level — `search`'s loop three instructions shorter and
    without the divide, `page_probe` without its three divides and two
    multiplies — with the timing rows deferred to a quiet host.
-2. **Vector locals in registers across calls**, then a liveness-based
-   allocator for the flattened kernels: the thirty-two vector registers
-   hold a flattened kernel's forty vector locals only with liveness.
-   Target: UTF-8 (5×), then inlining pays instead of hurting. (Scalar
-   locals already live in callee-saved registers across calls.)
+2. **Vector locals in registers across calls** (landed 2026-09-15,
+   `94-assembler.md` §9.ad): homes in v16–v31 saved around a call only
+   when live after it; the checker now forgets v16–v31 at a call (a gap
+   closed) and the verifier reloads a saved vector lane for lane. Read
+   off the fixture, not the kernels: the helper expansion has flattened
+   every calling vector body in the kernel package, so the row that
+   remains is the flattened one — forty vector locals against
+   thirty-two registers, where the leaf path hands out twenty homes and
+   the rest spill. The next step is therefore **a liveness-based
+   allocator for leaves**: registers reused across disjoint live ranges
+   (the last-use release exists; the pool must be sized by simultaneous
+   liveness, not by declaration count) and spills chosen by use count.
+   Target: UTF-8 (5×), then inlining pays instead of hurting.
 3. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;
