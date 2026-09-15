@@ -5014,6 +5014,42 @@ its three `udiv`, two `mul`, and three zero tests. The timing rows wait
 for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
 `compiler/e2e_native_strength_test.go`.
 
+**On the RV64 lane too (2026-09-15).** The same reduction in the RV64
+lowering (`rvGenerator.infix`): a multiplication by a power of two is
+`slliw` for a 32-bit type (the W form keeps the canonical
+sign-extension) or `slli` with the narrow type re-normalized, an unsigned
+division by one `srliw`/`srli`, a remainder `andi` when the mask fits the
+12-bit immediate and `li; and` otherwise, and a nonzero constant divisor
+its `divu`/`rem`/… without the `beqz` to the trap. The transform runs on
+both lanes in the candidate search (`nativegen/opt.go`, `bothLanes`), the
+verifier judging each candidate as on AArch64
+(`TestE2ENativeRV64StrengthReduction`: the four reduced bodies proven,
+the variable divisor keeping its test). Doing this by hand a second time
+is the case for the shared item-level layer below.
+
+**Where the optimizer's layers should live (decision, 2026-09-15).** Three
+layers, split by where the proofs live rather than by the textbook line
+between machine-independent and machine-dependent. The AST, shared, for
+anything a proof licenses (inlining, reduction unrolling, the elision
+decision, no-alias reordering to come): the typechecker's facts are keyed
+to source positions and a rewrite below this point carries provenance by
+hand. The emitted item list, shared over a per-ISA instruction table
+(defs, uses, kills, memory effect, purity, the move, branch and label
+predicates, the trap symbol): copy propagation, dead moves, address CSE,
+liveness and a global allocator, loop-invariant motion — one pass, two
+tables; today these are written per lane (`licm.go` names AArch64
+mnemonics throughout) or gated to one (this reduction was, until the
+paragraph above). Per ISA and per core, below that: selection and fusion
+(`madd`, `csel`; `sh2add` and `zext.w` under Zba), addressing modes, the
+RV64 canonical-form rewrites, and scheduling against the `-cpu` model's
+latencies. Across all three the seam checker and the verifier stay the
+gate, and the checker reads ISA-specific idioms (`cmp; b.hs`, `bgeu z,
+norm`): a shared pass must treat a guard idiom as one unit or the checker
+must be taught the rewritten form with its law — the cost that favors few
+well-understood shared transforms over a catalog. The candidate-search
+substrate (`docs/notes/optimizer-search-2026-09.md`) is the item-level
+layer's home; the instruction table is its next piece, and the allocator
+that note plans should be built over it.
 ### 9.ad Proof-guided elision: the guards the checker carries (2026-09-15)
 
 The native lowering elides an element guard the typechecker proved
