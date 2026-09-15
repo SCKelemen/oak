@@ -4728,8 +4728,7 @@ length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second 
 above (`json_value_boundary`, `url_parse`); and index arithmetic the
 typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
 `normalize_find`: `at = low * 5` under `low < len / 5`), which the
-checker has no fact for. On the RV64 lane elision stays off until its
-index representation admits it.
+checker has no fact for. The RV64 lane elides too, since §9.ae.
 
 **Where optimizing passes live (decision, 2026-09-15).** Two levels carry
 proofs and admit passes: the AST, where the typechecker's facts are keyed
@@ -4740,4 +4739,55 @@ peephole and a liveness allocator, with def-use chains computed on demand).
 A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
+
+### 9.ae Check elision on the RV64 lane (2026-09-15)
+
+The RV64 lane kept every guard: its values are canonical (a u32
+sign-extended from bit 31) and the loop's exit test compared them so —
+`sext.w t, norm; bgeu i, t` — while the checker's index fact wants the
+zero-extended index compared with the normalized length, so the exit test
+proved nothing the element access could use. The lane now lowers the
+guard `i < len(v)` at the head of a `while`, an `if`, or a statement
+conditional — `i` a u32 variable in a register, `v` a span — as `slli z,
+i, 32; srli z, z, 32; bgeu z, norm, exit` (`indexLengthTest`): the index
+zero-extended into a register the construct's body keeps, compared with
+the normalized length, which is the u32 comparison exactly (both operands
+are the 32-bit values as 64-bit numbers). The checker reads `bgeu z, norm`
+as its index fact on `z` (Oak.RiscV.index_guard). An element access in
+the body that the typechecker proved (`IndexProven`) and that indexes by
+that variable then reads `z` scaled through the base — `slli t, z, s; add
+t, base, t` or `add t, base, z` for bytes — with no guard of its own
+(`guardedAddress`), and the checker admits it from the fact through the
+scaled-index and element-region rules it already had for GCC's shape
+(`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
+that line's guards. Outside the mechanism, and still guarded: a
+conjunction (`while i < len(v) && cond`), a bound that is not `len(v)`,
+an index that is not the tested variable, and an access after a label
+inside the body (the RV64 checker forgets index facts at labels).
+
+Two verifier gaps opened by the new shape were closed, and both pay on the
+AArch64 lane too. First, a header temporary the body reads — here `z` —
+started the body as a fresh symbol: the loop's iteration ran from the
+fresh header state, not from the state after the exit test's setup
+instructions, so the body's address was unrelated to the index and no
+pairing of the accumulator survived. When the header falls through on one
+path, the body now starts from that path's values for the registers the
+header wrote (`headerCondition` returns the fall-through states;
+`loopEvent` carries them over). Second, the model of `(x << 32) >> 32`
+folded it to `x`'s own term for any symbol, right when the symbol is
+declared 32 bits wide (the length as bound, a normalized copy) and wrong
+for a loop's fresh 64-bit symbol holding a canonical u32 with its upper
+half set; the fold now asks `upperClear` and otherwise masks. The old
+lowering had hidden this behind its guard, whose fall-through premise
+excluded the offending values.
+
+Measured on the stdlib-bearing program: on the RV64 lane 8 bodies elide 8
+guards where none did (the mechanism's reach today), and the verified
+profile moves 13 bodies from trusted to proven and 16 from trusted to
+witnessed with no body losing its proof; on the AArch64 lane, from the
+verifier changes alone, 21 bodies move from trusted to proven and 10 from
+trusted to witnessed, none regress, while the guards elided fall from 134
+to 105 because the compiler keeps the plain form where the elided form
+proves less (§9 "Check elision") — the verifier proves a guard's shape
+more readily than a loop condition's, the next gap to close there.
 
