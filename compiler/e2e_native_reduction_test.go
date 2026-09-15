@@ -146,10 +146,13 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 		return count, loads, pairs
 	}
 	joined := strings.Join(infos, "\n")
-	// The four 8-byte loads of the main loop are two pair loads off one
-	// block address (nativegen/pair_loads.go).
-	if count, loads, pairs := loops("sum"); count != 2 || loads != 0 || pairs != 2 {
-		t.Errorf("sum must lower as a main loop of two pair loads and a remainder loop, got %d loop(s), %d load(s), %d pair(s) in the first", count, loads, pairs)
+	// A u64 accumulator's main loop is four `ldr q` over four simd.U64x2
+	// accumulators since the reduction vectorized (§9 "Reduction
+	// vectorization"), which the search prices below the scalar
+	// unrolling's two pair loads (nativegen/pair_loads.go) — either shape
+	// is a main loop and a remainder loop, and both are proven.
+	if count, loads, pairs := loops("sum"); count != 2 || !(loads == 4 && pairs == 0) && !(loads == 0 && pairs == 2) {
+		t.Errorf("sum must lower as a main loop over four vector accumulators (or the scalar unrolling's two pair loads) and a remainder loop, got %d loop(s), %d load(s), %d pair(s) in the first", count, loads, pairs)
 	}
 	if units["sum"].Body == nil {
 		t.Error("sum must record the rewritten body for the verifier")

@@ -135,7 +135,7 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	// takes the loop when asked; the scalar unrolling otherwise.
 	if vectorize {
 		if vectorized, changed := vectorizeReductions(fn, body); changed {
-			sites = append(sites, RewriteSite{Rewrite: "reduction vectorization", Law: "Oak.Reduction.vector8_eq", Detail: "the lanes of fixed vectors as eight strided accumulators, the remainder into the scalar; integer addition reassociates at every width", Line: fn.Token.Line})
+			sites = append(sites, RewriteSite{Rewrite: "reduction vectorization", Law: "Oak.Reduction.vector16_eq, vector8_eq", Detail: "the lanes of four fixed vectors as sixteen strided accumulators over u32 lanes, eight over u64 ones, the remainder into the scalar; integer addition reassociates at every width", Line: fn.Token.Line})
 			body = vectorized
 			judged = true
 			push()

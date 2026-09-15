@@ -11,15 +11,13 @@ import (
 
 // Reduction vectorization (docs/spec/94-assembler.md §9 "Reductions";
 // nativegen/vector_reduction.go, the `vectorize-reductions` candidate).
-// A u32 reduction's four accumulators are the lanes of two simd.U32x4
-// vectors, eight elements an iteration: the main loop is two `ldr q` and
-// two `add v.4s`, the lanes fold in the vector domain and reach the
-// scalar through a four-element frame array, and the body is proven
-// against the rewritten source. A u64 reduction keeps the scalar
-// unrolling: only two lanes to a vector and an address register per
-// load, which the cost model prices above the four scalar accumulators.
-// A float accumulator is never rewritten — its addition does not
-// reassociate.
+// A reduction's accumulators are the lanes of four fixed vectors: a u32
+// accumulator's main loop is four `ldr q` and four `add v.4s` over
+// sixteen elements an iteration, a u64 one's the same over eight, the
+// lanes fold in the vector domain and reach the scalar through a frame
+// array of one vector's lanes, and both bodies are proven against the
+// rewritten source. A float accumulator is never rewritten — its
+// addition does not reassociate.
 const nativeVectorReductionProgram = `
 sum32: (v: []u32): u32 {
   acc: u32 = 0
@@ -110,28 +108,25 @@ func TestE2ENativeVectorReduction(t *testing.T) {
 			t.Errorf("%s must be proven; diagnostics:\n%s", name, joined)
 		}
 	}
-	// The u32 reduction's main loop: vector loads and lane-wise adds, no
+	// Each main loop: four vector loads and four lane-wise adds, no
 	// scalar element load.
-	vecLoads, vecAdds, scalarLoads := 0, 0, 0
-	for _, ins := range mainLoopOf(units["sum32"]) {
-		dst, isReg := ins.Operands[0].(asm.Register)
-		switch {
-		case ins.Mnemonic == "ldr" && isReg && dst.Vec == "q":
-			vecLoads++
-		case ins.Mnemonic == "add" && isReg && dst.Vec == "4s":
-			vecAdds++
-		case ins.Mnemonic == "ldr" || ins.Mnemonic == "ldp":
-			scalarLoads++
+	for _, shape := range []struct {
+		unit, arrangement string
+	}{{"sum32", "4s"}, {"sum64", "2d"}} {
+		vecLoads, vecAdds, scalarLoads := 0, 0, 0
+		for _, ins := range mainLoopOf(units[shape.unit]) {
+			dst, isReg := ins.Operands[0].(asm.Register)
+			switch {
+			case ins.Mnemonic == "ldr" && isReg && dst.Vec == "q":
+				vecLoads++
+			case ins.Mnemonic == "add" && isReg && dst.Vec == shape.arrangement:
+				vecAdds++
+			case ins.Mnemonic == "ldr" || ins.Mnemonic == "ldp":
+				scalarLoads++
+			}
 		}
-	}
-	if vecLoads != 2 || vecAdds != 2 || scalarLoads != 0 {
-		t.Errorf("sum32's main loop must be two vector loads and two lane-wise adds, got %d, %d, and %d scalar loads:\n%s", vecLoads, vecAdds, scalarLoads, nativegen.Describe(units["sum32"]))
-	}
-	// The u64 reduction keeps the four scalar accumulators.
-	for _, ins := range mainLoopOf(units["sum64"]) {
-		if dst, isReg := ins.Operands[0].(asm.Register); isReg && dst.Class == asm.ClassV {
-			t.Errorf("sum64 must keep its scalar unrolling (the vector form is priced above it):\n%s", nativegen.Describe(units["sum64"]))
-			break
+		if vecLoads != 4 || vecAdds != 4 || scalarLoads != 0 {
+			t.Errorf("%s's main loop must be four vector loads and four lane-wise adds, got %d, %d, and %d scalar loads:\n%s", shape.unit, vecLoads, vecAdds, scalarLoads, nativegen.Describe(units[shape.unit]))
 		}
 	}
 	// The float accumulator is never rewritten: one load, one fadd.
