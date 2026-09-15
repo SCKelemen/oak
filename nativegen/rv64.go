@@ -51,9 +51,11 @@ package nativegen
 
 import (
 	"math"
+	"math/bits"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -133,9 +135,17 @@ func rvMem(offset int64) asm.Memory {
 // method that emits an instruction.
 type rvGenerator struct {
 	generator
-	regIndex  int  // integer argument registers the parameters occupy (the hidden result pointer included)
-	fregIndex int  // floating-point argument registers the parameters occupy
-	softFloat bool // the target has no F/D calling convention
+	// zextIdx: for a u32 variable whose `< len(v)` test a construct's
+	// condition compiled as `bgeu z, norm`, the register z holding its
+	// zero-extension — valid through that construct's body and read by
+	// the elided element access (docs/spec/94-assembler.md §9.ae);
+	// captureZext is set while such a condition is compiled.
+	zextIdx     map[string]int
+	zextStack   []zextEntry
+	captureZext bool
+	regIndex    int  // integer argument registers the parameters occupy (the hidden result pointer included)
+	fregIndex   int  // floating-point argument registers the parameters occupy
+	softFloat   bool // the target has no F/D calling convention
 	// twoChunk names the callees whose record result comes back in a0 and
 	// a1 (asm.Function.TwoChunkResults: the checker's latitude for a1).
 	twoChunk map[string]bool
@@ -152,7 +162,34 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool) (*asm.Function, error) {
+// zextEntry is one captured zero-extension: the variable, its register,
+// and the register (or -1) the name held before, restored when the
+// construct ends.
+type zextEntry struct {
+	name  string
+	reg   int
+	prior int
+	had   bool
+}
+
+// zextMark and zextRelease bracket a guarded construct: the conditions
+// compiled between them may capture zero-extensions, released here.
+func (g *rvGenerator) zextMark() int { return len(g.zextStack) }
+
+func (g *rvGenerator) zextRelease(mark int) {
+	for len(g.zextStack) > mark {
+		e := g.zextStack[len(g.zextStack)-1]
+		g.zextStack = g.zextStack[:len(g.zextStack)-1]
+		g.release(e.reg)
+		if e.had {
+			g.zextIdx[e.name] = e.prior
+		} else {
+			delete(g.zextIdx, e.name)
+		}
+	}
+}
+
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -161,7 +198,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if unrolled, changed := unrollReductions(fn, fn.Body); changed && unroll {
 		expanded := *fn
 		expanded.Body = unrolled
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false); err == nil {
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, strength); err == nil {
 			out.Body = unrolled
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
@@ -171,6 +208,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	g.vector = vector
+	g.elide = elide
+	g.guardLines = guardLines
+	g.strength = strength
+	g.zextIdx = map[string]int{}
 	usesFloat := rvMentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
 		return nil, unsupported("floating point on a soft-float target (freestanding/riscv64 carries no F/D calling convention; build for linux/riscv64)")
@@ -562,6 +603,12 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 				}
 			}
 		}
+	}
+	if g.elided > 0 {
+		elidedGuards[out] = g.elided
+	}
+	if g.reduced > 0 {
+		reducedOps[out] = g.reduced
 	}
 	return out, nil
 }
@@ -1105,17 +1152,22 @@ func (g *rvGenerator) effect(expr ast.Expression) error {
 func (g *rvGenerator) lowerWhile(loop *ast.WhileStatement) error {
 	head, end := g.newLabel("loop"), g.newLabel("done")
 	g.label(head)
-	if err := g.condition(loop.Condition, end); err != nil {
+	mark := g.zextMark()
+	g.captureZext = true
+	err := g.condition(loop.Condition, end)
+	g.captureZext = false
+	if err != nil {
 		return err
 	}
 	g.loops = append(g.loops, end)
 	g.pushScope()
-	err := g.lowerStatements(loop.Body.Statements, false)
+	err = g.lowerStatements(loop.Body.Statements, false)
 	g.popScope()
 	g.loops = g.loops[:len(g.loops)-1]
 	if err != nil {
 		return err
 	}
+	g.zextRelease(mark)
 	g.jump(head)
 	g.label(end)
 	return nil
@@ -1123,7 +1175,11 @@ func (g *rvGenerator) lowerWhile(loop *ast.WhileStatement) error {
 
 func (g *rvGenerator) lowerIf(s *ast.IfStatement) error {
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
-	if err := g.condition(s.Condition, elseLabel); err != nil {
+	mark := g.zextMark()
+	g.captureZext = true
+	err := g.condition(s.Condition, elseLabel)
+	g.captureZext = false
+	if err != nil {
 		return err
 	}
 	if s.Consequence != nil {
@@ -1134,6 +1190,7 @@ func (g *rvGenerator) lowerIf(s *ast.IfStatement) error {
 			return err
 		}
 	}
+	g.zextRelease(mark)
 	g.jump(end)
 	g.label(elseLabel)
 	switch alt := s.Alternative.(type) {
@@ -1163,12 +1220,17 @@ func (g *rvGenerator) lowerConditionalStatement(match *ast.MatchExpression) erro
 		return g.lowerMatch(match, g.lowerArm)
 	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
-	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
+	mark := g.zextMark()
+	g.captureZext = true
+	err := g.condition(match.Scrutinee, elseLabel)
+	g.captureZext = false
+	if err != nil {
 		return err
 	}
 	if err := g.lowerArm(whenTrue); err != nil {
 		return err
 	}
+	g.zextRelease(mark)
 	if whenFalse == nil {
 		g.label(elseLabel)
 		return nil
@@ -1218,6 +1280,59 @@ var rvBranchWhenFalse = map[string][2]string{
 	"<=": {"bltu", "blt"}, ">": {"bgeu", "bge"},
 }
 
+// indexLengthTest compiles the guard `i < len(v)` — a u32 variable in a
+// register against a span's length, at the head of a construct whose body
+// may read `v[i]` — as `slli z, i, 32; srli z, z, 32; bgeu z, norm, target`:
+// the index zero-extended into a register the body keeps, compared with
+// the normalized length (the u32 comparison exactly: both operands are the
+// 32-bit values as 64-bit numbers). The fall-through path then carries
+// the checker's index fact on z (`bgeu idx, len` against a normalized
+// length register, Oak.RiscV.index_guard), and an element access the
+// typechecker proved under this test reads z scaled, with no guard of its
+// own (guardedAddress; docs/spec/94-assembler.md §9.ae). Only under
+// elision, and only for `<`: the other operators give the checker nothing
+// to read.
+func (g *rvGenerator) indexLengthTest(infix *ast.InfixExpression, target string, jumpIfFalse bool) (bool, error) {
+	if !g.elide || !g.captureZext || infix.Operator != "<" {
+		return false, nil
+	}
+	ident, isIdent := infix.Left.(*ast.Identifier)
+	if !isIdent {
+		return false, nil
+	}
+	home, inReg := g.regs[ident.Value]
+	typ, known := g.types[ident.Value]
+	if !inReg || home < 0 || !known || typ.signed || typ.isBool || typ.isFloat || typ.isVec || typ.wide() {
+		return false, nil
+	}
+	call, isCall := infix.Right.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return false, nil
+	}
+	if fn, isName := call.Function.(*ast.Identifier); !isName || fn.Value != "len" {
+		return false, nil
+	}
+	if _, _, _, isArray := g.staticArrayOf(call.Arguments[0]); isArray {
+		return false, nil
+	}
+	sp, err := g.spanOperand(call.Arguments[0])
+	if err != nil || sp.norm < 0 {
+		return false, nil
+	}
+	z, err := g.alloc(scalars["u32"])
+	if err != nil {
+		return false, err
+	}
+	Z := rvReg(z)
+	g.emit("slli", Z, rvReg(home), imm(32))
+	g.emit("srli", Z, Z, imm(32))
+	g.emit(pick(jumpIfFalse, "bgeu", "bltu"), Z, rvReg(sp.norm), asm.Symbol{Name: target})
+	prior, had := g.zextIdx[ident.Value]
+	g.zextStack = append(g.zextStack, zextEntry{name: ident.Value, reg: z, prior: prior, had: had})
+	g.zextIdx[ident.Value] = z
+	return true, nil
+}
+
 // condition evaluates a Bool expression and branches to target when false.
 func (g *rvGenerator) condition(expr ast.Expression, target string) error {
 	return g.conditionBranch(expr, target, true)
@@ -1229,6 +1344,9 @@ func (g *rvGenerator) condition(expr ast.Expression, target string) error {
 // test is one instruction over the variables' registers.
 func (g *rvGenerator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
 	if infix, ok := expr.(*ast.InfixExpression); ok {
+		if done, err := g.indexLengthTest(infix, target, jumpIfFalse); done || err != nil {
+			return err
+		}
 		if _, isComparison := conditionCodes[infix.Operator]; isComparison {
 			operand, err := g.operandType(infix)
 			if err == nil && !operand.isFloat {
@@ -1654,6 +1772,66 @@ func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.release(r)
 		g.normalize(l, typ)
 		return l, nil
+	}
+	// Strength reduction (Lane.Strength, docs/spec/90-backend.md §16): a
+	// constant right operand of *, /, or % lowers to the instruction the
+	// constant licenses — a power of two as a shift (or a mask for %), a
+	// nonzero divisor without the zero test — as on the AArch64 lane, with
+	// the W forms keeping a 32-bit type canonical and the narrow types
+	// re-normalized (Oak.StrengthReduction: mul_pow_two, udiv_pow_two,
+	// umod_pow_two, nonzero_divisor_no_trap). The verifier proves the body
+	// against the Oak semantics or the search keeps the plain lowering.
+	if g.strength && !typ.isFloat && !typ.isVec && (e.Operator == "*" || e.Operator == "/" || e.Operator == "%") {
+		if c, isConst := g.constantOperand(e.Right, typ); isConst {
+			c &= mask64(typ.bits)
+			power := c != 0 && c&(c-1) == 0
+			k := int64(bits.TrailingZeros64(c))
+			wide := typ.bits != 32
+			switch {
+			case e.Operator == "*" && power && k > 0:
+				g.emit(pick(wide, "slli", "slliw"), L, L, imm(k))
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "/" && power && !typ.signed:
+				if k > 0 {
+					g.emit(pick(wide, "srli", "srliw"), L, L, imm(k))
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "%" && power && !typ.signed:
+				switch {
+				case k == 0:
+					g.emit("li", L, imm(0))
+				case c-1 <= 2047:
+					g.emit("andi", L, L, imm(int64(c-1)))
+				default:
+					m, err := g.alloc(scalars["u64"])
+					if err != nil {
+						return 0, err
+					}
+					g.emit("li", rvReg(m), imm(int64(c-1)))
+					g.emit("and", L, L, rvReg(m))
+					g.release(m)
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case (e.Operator == "/" || e.Operator == "%") && c != 0:
+				// A nonzero constant divisor cannot trap: the quotient or
+				// remainder without the zero test.
+				r, err := g.exprAs(e.Right, typ)
+				if err != nil {
+					return 0, err
+				}
+				g.emit(rvALU(e.Operator, typ), L, L, rvReg(r))
+				g.reduced++
+				g.release(r)
+				g.normalize(l, typ)
+				return l, nil
+			}
+		}
 	}
 	r, err := g.exprAs(e.Right, typ)
 	if err != nil {
@@ -2384,13 +2562,38 @@ func rvStoreOf(s scalar) string {
 // does, `slli` by the element size's log, then `add` to the bound base —
 // the fall-through path carries the facts the checker admits the access
 // under.
-func (g *rvGenerator) guardedAddress(sp span, index ast.Expression) (int, error) {
+func (g *rvGenerator) guardedAddress(sp span, index ast.Expression, tok *token.Token) (int, error) {
 	idxType, err := g.typeOf(index, nil)
 	if err != nil {
 		return 0, err
 	}
 	if idxType.isBool || idxType.isFloat || (idxType.signed && idxType.bits != 32) {
 		return 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
+	}
+	// Check elision on the RV64 lane (docs/spec/94-assembler.md §9.ae): an
+	// access the typechecker proved in range, indexed by a variable whose
+	// `< len(v)` test this construct compiled as `bgeu z, norm`
+	// (indexLengthTest), reads z scaled through the base with no guard;
+	// the checker admits it from the test's fact or the compiler keeps
+	// this line's guards (Lane.GuardLines).
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+		if ident, isIdent := index.(*ast.Identifier); isIdent {
+			if z, captured := g.zextIdx[ident.Value]; captured {
+				r, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return 0, err
+				}
+				R := rvReg(r)
+				if shift := log2Bytes(sp.elem.bits / 8); shift > 0 {
+					g.emit("slli", R, rvReg(z), imm(int64(shift)))
+					g.emit("add", R, rvReg(sp.baseReg), R)
+				} else {
+					g.emit("add", R, rvReg(sp.baseReg), rvReg(z))
+				}
+				g.elided++
+				return r, nil
+			}
+		}
 	}
 	r, err := g.expr(index, &idxType)
 	if err != nil {
@@ -2457,7 +2660,7 @@ func (g *rvGenerator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	r, err := g.guardedAddress(sp, e.Index)
+	r, err := g.guardedAddress(sp, e.Index, &e.Token)
 	if err != nil {
 		return 0, err
 	}
@@ -2596,7 +2799,7 @@ func (g *rvGenerator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if err != nil {
 		return err
 	}
-	r, err := g.guardedAddress(sp, s.Target.Index)
+	r, err := g.guardedAddress(sp, s.Target.Index, &s.Target.Token)
 	if err != nil {
 		return err
 	}
