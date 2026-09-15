@@ -7247,6 +7247,13 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool) {
 	infix, isInfix := expr.(*ast.InfixExpression)
 	if !isInfix {
+		// A literal condition (`true ? { … }`, a scope idiom): its bit.
+		if lit, isLit := expr.(*ast.Boolean); isLit {
+			if lit.Value {
+				return constTerm(1, 1), "", true
+			}
+			return constTerm(0, 1), "", true
+		}
 		// A Bool value in condition position: a parameter, local, or field
 		// (its 1/0 representation), or its negation.
 		if prefix, isNot := expr.(*ast.PrefixExpression); isNot && prefix.Operator == "!" {
