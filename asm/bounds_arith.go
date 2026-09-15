@@ -146,11 +146,77 @@ func (c *checker) canonical(n, avoid int) int {
 // fact on dest.
 func (c *checker) rooted(reg, dest int) (upperFact, bool) {
 	root, shift := c.resolveUpper(reg)
+	return c.refFor(root, shift, dest)
+}
+
+// refFor names the referent of the bound value <= root >> shift for a
+// fact on dest: the primary length register of a span root holds the
+// length of; else, when root holds a constant no larger than a constant a
+// length register holds, that register (value <= root >> shift <= len >>
+// shift); else root itself, or a register proven equal to it when root is
+// dest. The choice is the same on every path into a label, so the fact
+// survives the meet.
+func (c *checker) refFor(root int, shift uint8, dest int) (upperFact, bool) {
+	if ref := c.constBoundedLen(root, dest); ref >= 0 {
+		return upperFact{ref: ref, shift: shift}, true
+	}
 	ref := c.canonical(root, dest)
 	if ref < 0 || ref == dest {
 		return upperFact{}, false
 	}
 	return upperFact{ref: ref, shift: shift}, true
+}
+
+// constBoundedLen returns the canonical length register whose constant is
+// at least the constant n holds, -1 when n holds none or no length
+// register holds a constant (`b = 512` against a 512-element page).
+func (c *checker) constBoundedLen(n, dest int) int {
+	k, isConst := c.constFacts[n]
+	if !isConst {
+		return -1
+	}
+	for _, fact := range c.spans {
+		if fact.holdsLen(n) {
+			return -1 // a length register itself: canonical names it
+		}
+	}
+	best := -1
+	for _, fact := range c.spans {
+		for reg := range fact.lenRegs {
+			if kl, known := c.constFacts[reg]; known && k <= kl && reg != dest {
+				if ref := c.canonical(reg, dest); ref >= 0 && ref != dest && (best < 0 || ref < best) {
+					best = ref
+				}
+			}
+		}
+	}
+	return best
+}
+
+// atMostRef names, for a fact on dest, the canonical referent register n
+// is at most: through its upper chain, through the bound of its index
+// fact, or itself when it holds a span's length.
+func (c *checker) atMostRef(n, dest int) (upperFact, bool) {
+	if _, has := c.upper[n]; has {
+		return c.rooted(n, dest)
+	}
+	if f, has := c.idxFacts[n]; has && atMost(f) {
+		return c.rooted(f.boundReg, dest)
+	}
+	for _, fact := range c.spans {
+		if fact.holdsLen(n) {
+			if ref := c.canonical(n, dest); ref >= 0 && ref != dest {
+				return upperFact{ref: ref}, true
+			}
+			return upperFact{}, false
+		}
+	}
+	// A constant no larger than a constant a length register holds (the
+	// bound `b = 512` of a search inside a 512-element page).
+	if ref := c.constBoundedLen(n, dest); ref >= 0 {
+		return upperFact{ref: ref}, true
+	}
+	return upperFact{}, false
 }
 
 // atMost reports whether an index fact bounds its register's value by the
@@ -253,6 +319,24 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 		}
 		if belowHi {
 			newMid = &midFact{lo: lo, hi: hi}
+		}
+	case "csel":
+		// A select of two bounded values is bounded (Oak.Assembler
+		// .select_upper, select_index): the if-converted arms keep the
+		// facts their variables had (nativegen/select.go).
+		if len(regs) != 3 || regs[1].Class != ClassW || regs[2].Class != ClassW {
+			return
+		}
+		a, b := regs[1].Num, regs[2].Num
+		if ua, okA := c.atMostRef(a, dest.Num); okA {
+			if ub, okB := c.atMostRef(b, dest.Num); okB && ua == ub {
+				newUpper = &ua
+			}
+		}
+		if fa, hasA := c.idxFacts[a]; hasA {
+			if fb, hasB := c.idxFacts[b]; hasB && fa == fb && fa.boundReg != dest.Num {
+				newIdx = &fa
+			}
 		}
 	case "add":
 		if len(regs) != 3 || len(instr.Operands) != 3 || regs[1].Class != ClassW || regs[2].Class != ClassW {

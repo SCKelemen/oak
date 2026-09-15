@@ -229,3 +229,8 @@ func accessBytes(mnemonic string, class operandClass) int64 {
 	}
 	return memorySize(mnemonic, regClass)
 }
+
+// SetsFlags reports whether the AArch64 mnemonic writes NZCV — the
+// generator's if-conversion keeps a compare's flags live across the arm
+// evaluations only when none of them does (nativegen/select.go).
+func SetsFlags(mnemonic string) bool { return instructionTable[mnemonic].setsFlags }
