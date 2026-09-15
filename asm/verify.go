@@ -1780,6 +1780,8 @@ type pathExecutor struct {
 	ends []pathEnd
 	// loopsInsideMemo caches loopsInside per loop shape (by its body's start).
 	loopsInsideMemo map[int]bool
+	outgoingMemo    *int64      // outgoingArea, once computed
+	bodyJoinsMemo   map[int]int // bodyJoins, once computed
 	paths           int
 	steps           int
 	// records: record and union parameters by name (their leaves), env the
@@ -9090,6 +9092,29 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))
 				case left.kind == termConst && left.value != 0 && left.value&(left.value-1) == 0 && right.width == t.width:
 					out = binaryTerm("shl", right, constTerm(uint64(bits.TrailingZeros64(left.value)), t.width))
+				}
+			}
+			if out == nil && left.width == right.width {
+				// One operand order for a product or a sum with a constant
+				// — the constant first in a product (`96 * g`, as the Oak
+				// body writes it, against the machine's `g * 96`), last in
+				// a sum (`x + 1`); an or or xor with zero is its operand (a
+				// fold from zero starts `0 | x`), an and with a full mask
+				// too. The two sides then spell one term where they meant
+				// one, and meet in equalTerms rather than in a diagram.
+				switch {
+				case t.op == "mul" && right.kind == termConst && left.kind != termConst:
+					out = adaptWidth(binaryTerm("mul", right, left), t.width)
+				case t.op == "add" && left.kind == termConst && right.kind != termConst:
+					out = adaptWidth(binaryTerm("add", right, left), t.width)
+				case (t.op == "or" || t.op == "xor") && left.kind == termConst && left.value == 0 && right.width == t.width:
+					out = right
+				case (t.op == "or" || t.op == "xor") && right.kind == termConst && right.value == 0 && left.width == t.width:
+					out = left
+				case t.op == "and" && right.kind == termConst && right.value == mask(t.width) && left.width == t.width:
+					out = left
+				case t.op == "and" && left.kind == termConst && left.value == mask(t.width) && right.width == t.width:
+					out = right
 				}
 			}
 			if out == nil {

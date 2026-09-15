@@ -174,7 +174,20 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 			return false
 		}
 		sym, isSym := instr.Operands[0].(Symbol)
-		return isSym && callees[sym.Name] != nil
+		if !isSym {
+			return false
+		}
+		if callees[sym.Name] != nil {
+			return true
+		}
+		// A vector-contract callee is reached at its native entry, the Oak
+		// name under the lane's suffix (summarizeCall reads it the same way).
+		for _, arch := range []string{ArchArm64, ArchRV64} {
+			if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(arch)); suffixed && callees[base] != nil {
+				return true
+			}
+		}
+		return false
 	}
 	loops := map[int]loopShape{}
 	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
@@ -827,6 +840,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 				return nil, "a frame access moving sp in a loop body", false
 			}
 			addr := -state.disp + mem.Offset
+			if addr < -state.disp+x.outgoingArea() {
+				// The outgoing argument area at the bottom of the frame: a
+				// store there is a call's argument, read by the call that
+				// follows on the same path (summarizeCall), not a slot the
+				// loop carries — two callees' layouts may well overlap in it.
+				continue
+			}
 			for _, reg := range registerOperands(instr.Operands[:len(instr.Operands)-1]) {
 				size := int64(rv64Stores[instr.Mnemonic])
 				if size == 0 {
@@ -1443,7 +1463,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 }
 
 // loopEventBudget bounds the data-dependent loops one body may hold.
-const loopEventBudget = 16
+const loopEventBudget = 32
 
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
@@ -1529,6 +1549,113 @@ func (x *pathExecutor) hasInnerLoopOrCall(shape loopShape) bool {
 		}
 	}
 	return false
+}
+
+// flattenSelects rewrites, in every value the merged state holds, a
+// select whose one arm is a select with the same other arm as one select
+// on the conjunction (or disjunction) of the conditions: a fork nested in
+// a fork's side and merged first, `c1 ? (c2 ? x : y) : y`, is the Oak
+// side's `c1 && c2 ? x : y` — one conditional over one condition, which
+// the coupling proof's arm rule (impliesEqualByArms) then compares
+// condition to condition, where the nested select's outer condition
+// alone matches nothing. Machine-side only: the Oak lowering's spelling
+// stays the Lean transliteration's.
+func flattenSelects(s *symbolicState) {
+	for reg, value := range s.regs {
+		s.regs[reg] = flattenSelect(value)
+	}
+	for addr, slot := range s.frame {
+		s.frame[addr] = frameSlot{value: flattenSelect(slot.value), width: slot.width}
+	}
+	for reg, value := range s.vregs {
+		lanes := make([]*term, len(value.lanes))
+		for k, lane := range value.lanes {
+			lanes[k] = flattenSelect(lane)
+		}
+		s.vregs[reg] = vecValue{bits: value.bits, lanes: lanes}
+	}
+	for reg, value := range s.fregs {
+		s.fregs[reg] = flattenSelect(value)
+	}
+}
+
+// flattenSelect is flattenSelects on one term: `c1 ? (c2 ? x : y) : y` to
+// `c1 ∧ c2 ? x : y`, and `c1 ? x : (c2 ? x : y)` to `c1 ∨ c2 ? x : y`,
+// repeated while a shape matches.
+func flattenSelect(t *term) *term {
+	if t == nil {
+		return nil
+	}
+	for t.kind == termIte {
+		switch {
+		case t.left.kind == termIte && equalTerms(t.left.right, t.right):
+			t = iteTerm(binaryTerm("and", truncate(t.cond, 1), truncate(t.left.cond, 1)), t.left.left, t.right)
+		case t.right.kind == termIte && equalTerms(t.right.left, t.left):
+			t = iteTerm(binaryTerm("or", truncate(t.cond, 1), truncate(t.right.cond, 1)), t.left, t.right.right)
+		default:
+			return t
+		}
+	}
+	return t
+}
+
+// bodyJoins is the function's join points (joinPoints) for the loop
+// bodies' forks, computed once; the executor's own joins (x.joins) are
+// set only on its second run past the path budget, and this leaves that
+// choice to it.
+func (x *pathExecutor) bodyJoins() map[int]int {
+	if x.bodyJoinsMemo == nil {
+		joins := joinPoints(x.items, x.labels)
+		if joins == nil {
+			joins = map[int]int{}
+		}
+		x.bodyJoinsMemo = joins
+	}
+	return x.bodyJoinsMemo
+}
+
+// outgoingArea is the size of the function's outgoing argument area — the
+// largest stack area any call in the body passes its arguments through
+// (asm.LayoutArguments over the callee's signature, as the backend sizes
+// it) — at the bottom of the frame, from the moved sp. Zero when no call
+// passes arguments on the stack. Memoized.
+func (x *pathExecutor) outgoingArea() int64 {
+	if x.outgoingMemo != nil {
+		return *x.outgoingMemo
+	}
+	most := int64(0)
+	if x.fn != nil && x.arch != ArchRV64 {
+		for _, item := range x.items {
+			instr, isInstr := item.(Instruction)
+			if !isInstr || (instr.Mnemonic != "bl" && instr.Mnemonic != "call") || len(instr.Operands) == 0 {
+				continue
+			}
+			sym, isSym := instr.Operands[0].(Symbol)
+			if !isSym {
+				continue
+			}
+			callee := x.fn.Callees[sym.Name]
+			if callee == nil {
+				if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
+					callee = x.fn.Callees[base]
+				}
+			}
+			if callee == nil {
+				continue
+			}
+			var classes []ArgClass
+			for _, arg := range classifyArguments(callee.Parameters, x.fn.Composites) {
+				if arg.problem == "" {
+					classes = append(classes, arg.class)
+				}
+			}
+			if _, bytes := LayoutArguments(classes, x.fn.PackedStackArgs); bytes > most {
+				most = bytes
+			}
+		}
+	}
+	x.outgoingMemo = &most
+	return most
 }
 
 // loopsInside reports a loop inside the shape's body: an inner loop's
@@ -1681,17 +1808,104 @@ const bodyPathBudget = 64
 // runBody executes a loop body from its first instruction to the back edge
 // along every path.
 func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd, string, bool) {
+	// A fork whose two sides meet again inside the body (their immediate
+	// post-dominator, joinPoints) runs each side to the join, where the
+	// paths park; the parked states merge into one continuation (the
+	// executor's mergeStates: each register, slot, and vector a select on
+	// the path condition) — linear in the forks where running each side
+	// to the back edge is exponential (a body testing four vectors for
+	// any set lane before four conditional calls: eighty-one paths).
+	type joinGroup struct {
+		join    int
+		pending int // sides still running toward the join
+		parked  []*symbolicState
+		conds   []*term
+		takens  []bool
+		parent  *pathNode  // the path before the fork
+		outer   *joinGroup // the enclosing join, if any
+	}
 	type frontier struct {
 		pc    int
 		cond  *term
 		state *symbolicState
+		group *joinGroup // the join this path runs toward, nil for the back edge
+		taken bool       // the fork's taken side (the select's first arm at the merge)
 	}
 	work := []frontier{{pc: shape.bodyStart, cond: constTerm(1, 1), state: state}}
 	var ends []bodyEnd
+	// arrived settles a path of a join group: parked at the join, or gone
+	// (a trap); when every side has arrived, the group merges and its
+	// continuation joins the work.
+	arrived := func(g *joinGroup) {
+		g.pending--
+		if g.pending > 0 {
+			return
+		}
+		if len(g.parked) == 0 {
+			return
+		}
+		// The merge selects on each side's condition relative to the fork
+		// (conditionBelow: the path above it is shared), the fall-through
+		// side the select's first arm — the backend lays a conditional's
+		// first arm on the fall-through and branches to the other, so
+		// `c ? then : else` reads `ite(c, fallthrough, taken)`, the shape
+		// the Oak side spells and the coupling proof matches term for
+		// term (the ends of an unjoined body merged in the same order).
+		// The taken sides stand, the fall-through ones select over them.
+		order := make([]int, 0, len(g.parked))
+		for i := range g.parked {
+			if !g.takens[i] {
+				order = append(order, i)
+			}
+		}
+		for i := range g.parked {
+			if g.takens[i] {
+				order = append(order, i)
+			}
+		}
+		acc := g.parked[order[len(order)-1]]
+		cond := g.conds[order[len(order)-1]]
+		var below *term
+		if rel := acc.path.conditionBelow(g.parent); rel != nil {
+			below = rel
+		}
+		mergeable := true
+		for k := len(order) - 2; k >= 0; k-- {
+			i := order[k]
+			side := g.parked[i]
+			rel := side.path.conditionBelow(g.parent)
+			if rel == nil {
+				rel = constTerm(1, 1)
+			}
+			merged, ok := x.mergeTwo(rel, side, acc)
+			if !ok {
+				mergeable = false
+				break
+			}
+			flattenSelects(merged)
+			acc = merged
+			cond = binaryTerm("or", g.conds[i], cond)
+			if below != nil {
+				below = binaryTerm("or", rel, below)
+			}
+		}
+		if !mergeable {
+			for i, parkedState := range g.parked {
+				work = append(work, frontier{pc: g.join, cond: g.conds[i], state: parkedState, group: g.outer})
+			}
+			return
+		}
+		if below == nil {
+			below = constTerm(1, 1)
+		}
+		acc.path = &pathNode{parent: g.parent, cond: below}
+		work = append(work, frontier{pc: g.join, cond: cond, state: acc, group: g.outer})
+	}
 	for len(work) > 0 {
 		cur := work[len(work)-1]
 		work = work[:len(work)-1]
 		pc, cond, st := cur.pc, cur.cond, cur.state
+		parked := false
 		// A jump out of the body's range: to the trap block (a decided
 		// guard, an assert's failing side), which delivers no iteration
 		// and is dropped — left as an end it would hold the counter at its
@@ -1708,7 +1922,15 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 			}
 			return true, "a branch out of a loop body"
 		}
-		for pc < shape.bodyEnd && !dropped {
+		for pc < shape.bodyEnd && !dropped && !parked {
+			if cur.group != nil && pc == cur.group.join {
+				// This side reached the join: parked for the merge.
+				cur.group.parked = append(cur.group.parked, st)
+				cur.group.conds = append(cur.group.conds, cond)
+				cur.group.takens = append(cur.group.takens, cur.taken)
+				parked = true
+				break
+			}
 			instr, isInstr := x.items[pc].(Instruction)
 			if !isInstr {
 				pc++
@@ -1784,13 +2006,25 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				taken := truncate(branch, 1)
 				notTaken := binaryTerm("xor", taken, constTerm(1, 1))
 				fork := &forkMark{pc: pc}
+				parent := st.path
 				takenState := st.clone()
 				takenState.assume(taken, fork, true)
 				bindZeroTest(instr, takenState, true)
-				work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: takenState})
 				bindZeroTest(instr, st, false)
-				cond = binaryTerm("and", cond, notTaken)
 				st.assume(notTaken, fork, false)
+				if join, hasJoin := x.bodyJoins()[pc]; hasJoin && target > pc && join > pc && join < shape.bodyEnd && (cur.group == nil || join <= cur.group.join) {
+					// Both sides run to the join and park there.
+					g := &joinGroup{join: join, pending: 2, parent: parent, outer: cur.group}
+					work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: takenState, group: g, taken: true})
+					work = append(work, frontier{pc: pc + 1, cond: binaryTerm("and", cond, notTaken), state: st, group: g})
+					parked = true // this frontier continues as the group's sides
+					break
+				}
+				work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: takenState, group: cur.group, taken: cur.taken})
+				if cur.group != nil {
+					cur.group.pending++ // a side more toward the enclosing join
+				}
+				cond = binaryTerm("and", cond, notTaken)
 				pc++
 				continue
 			case "bl", "call":
@@ -1895,8 +2129,22 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 			}
 			pc++
 		}
-		if dropped {
+		if parked {
+			if cur.group != nil && pc == cur.group.join {
+				arrived(cur.group)
+			}
 			continue
+		}
+		if dropped {
+			if cur.group != nil {
+				arrived(cur.group) // a side gone into the trap arrives with nothing
+			}
+			continue
+		}
+		if cur.group != nil {
+			// A side reaching the back edge before its join (a join past
+			// the body's range would not have been taken): an end.
+			arrived(cur.group)
 		}
 		ends = append(ends, bodyEnd{cond: cond, state: st})
 	}
@@ -2773,6 +3021,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					default:
 						b = binaryTerm("add", hr, hx)
 					}
+					if lf := b.linearAt(b.width); lf != nil && len(lf.coeffs) == 0 {
+						// The header values differ by a constant once
+						// normalized (`16 * g` against `g * 16`, `x + 1 - 1`):
+						// the offset is that constant, and an equality when
+						// zero — a candidate the search then spells and
+						// decides as one, not as a difference of two terms
+						// through every obligation's diagram.
+						b = constTerm(lf.constant, b.width)
+					}
 					mentioned := map[string]bool{}
 					collectParams(b, mentioned)
 					own := fmt.Sprintf("loop%d.", oakEv.index)
@@ -3570,6 +3827,27 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if refutedByValuation(premise, a, b, names, widths) {
 		return false, true
 	}
+	if premise.kind != termConst && termSize(a, map[*term]int{})+termSize(b, map[*term]int{}) <= smallSides {
+		// Small sides may agree without any premise (`g < n` against
+		// `¬(g ≥ n)`, a loop's continue conditions): decided on their own
+		// diagram first, where the premise — a conjunction of the inner
+		// loops' exit facts over their element reads — costs every order
+		// its budget for nothing.
+		if holds, decided := impliesEqualDepth(constTerm(1, 1), a, b, widthOf, budget, depth); decided && holds {
+			return true, true
+		}
+	}
+	if relevant, dropped := relevantPremise(premise, a, b); dropped {
+		// The premise's conjuncts that share no symbol with the sides,
+		// even through other conjuncts (an inner loop's exit facts over
+		// its own symbols, a callee's summary), weigh on every diagram
+		// and decide nothing: the implication is tried first under the
+		// conjuncts that can bear on it — a weaker premise, so a proof
+		// under it is a proof — and under the whole only when that fails.
+		if holds, decided := impliesEqualDepth(relevant, a, b, widthOf, budget, depth); decided && holds {
+			return true, true
+		}
+	}
 	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
@@ -3983,8 +4261,21 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 		return false, false
 	}
 	if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth); !decided || !holds {
+		// The conditions may be each other's negation with the arms
+		// swapped (`x == 0 ? p : q` against `x != 0 ? q : p`, a branch
+		// taken on the other side): the arms are compared crosswise under
+		// the proven negation, once.
+		if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), notTerm(b.cond), widthOf, budget, depth); decided && holds {
+			return impliesEqualArms(premise, a, iteTerm(notTerm(b.cond), b.right, b.left), widthOf, budget, depth)
+		}
 		return false, false
 	}
+	return impliesEqualArms(premise, a, b, widthOf, budget, depth)
+}
+
+// impliesEqualArms is the arms' half of impliesEqualByArms: a's condition
+// already proven b's, each pair of arms under it or its negation.
+func impliesEqualArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	taken := binaryTerm("and", premise, truncate(a.cond, 1))
 	if holds, decided := impliesEqualDepth(taken, a.left, b.left, widthOf, budget, depth); !decided || !holds {
 		return false, false
@@ -4059,6 +4350,94 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 		}
 		t = largest
 	}
+}
+
+// smallSides is the size, in term nodes, up to which an implication's two
+// sides are first decided without the premise.
+const smallSides = 64
+
+// relevantPremise keeps the premise's conjuncts that can bear on a = b:
+// those mentioning a symbol of a or b, and, to a fixpoint, those sharing
+// a symbol with a kept conjunct. Reports whether any conjunct was
+// dropped (nothing to gain otherwise). Element reads of the same span
+// count as sharing its name.
+func relevantPremise(premise, a, b *term) (*term, bool) {
+	var conjuncts []*term
+	var split func(t *term)
+	split = func(t *term) {
+		if t.kind == termBinary && t.op == "and" && t.width == 1 {
+			split(t.left)
+			split(t.right)
+			return
+		}
+		conjuncts = append(conjuncts, t)
+	}
+	split(premise)
+	if len(conjuncts) < 2 {
+		return premise, false
+	}
+	symbolsOf := func(t *term) map[string]bool {
+		names := map[string]bool{}
+		collectParams(t, names)
+		out := map[string]bool{}
+		for name := range names {
+			if span, _, isElement := elementParam(name); isElement {
+				name = span
+			}
+			out[rootParam(name)] = true
+		}
+		return out
+	}
+	live := symbolsOf(a)
+	for name := range symbolsOf(b) {
+		live[name] = true
+	}
+	kept := make([]bool, len(conjuncts))
+	symbols := make([]map[string]bool, len(conjuncts))
+	for i, c := range conjuncts {
+		symbols[i] = symbolsOf(c)
+	}
+	for changed := true; changed; {
+		changed = false
+		for i, c := range conjuncts {
+			if kept[i] || c.kind == termConst {
+				continue
+			}
+			shares := false
+			for name := range symbols[i] {
+				if live[name] {
+					shares = true
+					break
+				}
+			}
+			if !shares {
+				continue
+			}
+			kept[i], changed = true, true
+			for name := range symbols[i] {
+				live[name] = true
+			}
+		}
+	}
+	var out *term
+	dropped := false
+	for i, c := range conjuncts {
+		if !kept[i] {
+			if c.kind != termConst || c.value != 1 {
+				dropped = true
+			}
+			continue
+		}
+		if out == nil {
+			out = c
+		} else {
+			out = binaryTerm("and", out, c)
+		}
+	}
+	if out == nil {
+		out = constTerm(1, 1)
+	}
+	return out, dropped
 }
 
 // narrowByPremise bounds the parameters' widths under the premise: a

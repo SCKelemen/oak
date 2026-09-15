@@ -1153,6 +1153,56 @@ trusted; `classify` and its callers stay with C for their vector
 parameters beyond eight. `TestE2ENativeLiteralsVerdicts` asserts the
 proofs and the witnesses.
 
+**The scanner's step functions (2026-09-15).** `step_count` and
+`step_first` — a loop over groups calling `classify` four times and
+`verify_count` or `verify_first` under four conditions — were trusted
+for "more paths than the verifier's budget", and behind that message
+stood six obstacles, taken in order. The loop finder refused a body
+calling a **vector-contract entry** (`classify_neon_abi`: the Oak name
+under the lane's suffix, which `summarizable` now strips as
+`summarizeCall` does). The body's stores into the **outgoing argument
+area** — a call's arguments, read by the `bl` that follows on the same
+path — were read as loop-carried frame slots, and two callees' layouts
+overlap there (`outgoingArea`, sized as the backend sizes it, marks
+them call scratch). On the Oak side a **vector store in a loop body**
+and a **conditional store into a local array** were refused: the first
+is the iteration's store like an indexed assignment, the second an arm's
+on the snapshot the statement conditional merges leaf by leaf. The
+body's **forks now merge at their joins** (`runBody`, the executor's
+`joinPoints` and `mergeTwo`): each side runs to the fork's immediate
+post-dominator inside the body and parks, the parked states merge into
+one continuation — the fall-through side the select's first arm, the
+shape `c ? then : else` the backend lays out and the Oak side spells — and
+a select nested in a select's arm with the other arm shared,
+`c1 ? (c2 ? x : y) : y` from a fork inside a fork's side, flattens to
+`c1 ∧ c2 ? x : y` (`flattenSelects`), the one condition the arm rule
+compares. The arm rule itself takes conditions that are each other's
+**negation** with the arms swapped (`x == 0 ? p : q` against
+`x != 0 ? q : p`, a branch taken on the other side). And three
+economies of the decision: **small sides are decided without the
+premise first** (`g < n` against `¬(g ≥ n)` under a conjunction of four
+inner loops' exit facts over their element reads, which cost every order
+its budget for nothing); the premise's **conjuncts sharing no symbol**
+with the sides, even through other conjuncts, are dropped for a first
+attempt (`relevantPremise`, a weaker premise so a proof under it is a
+proof); a coupling's **offset that normalizes to a constant**
+(`linearAt`: `16 * g` against `g * 16`) is that constant, an equality
+when zero; and the decision's canonical spelling puts a **product's
+constant first and a sum's last**, drops an or or xor with zero and an
+and with a full mask (`canonical`, upstream's shift rule beside them).
+The loop event budget is thirty-two. With these the step functions'
+loops couple and their witnesses agree — evidence on 21 inputs each, no
+longer trusted — and `verify_first` and `verify_count` stay proven
+through the joins. What keeps the step functions from proof is the
+`found` obligation: the four `classify` results, inlined on the Oak side
+and summarized from the expanded body on the machine side, spell their
+sixteen lane lookups in different orders, and the diagram of four
+`check_block`-scale terms is beyond any budget — the next step is one
+spelling for a vector reduction's lanes on both sides. `count` (its
+step loop's callee loops nest differently on the two sides) and
+`find_from` (a loop reached on two paths with different carried
+variables) stay trusted.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
