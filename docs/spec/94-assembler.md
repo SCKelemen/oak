@@ -2863,6 +2863,10 @@ budget"): a single-use span local is forwarded into its call, and the
 loop invariants' reserve yields to a declaration that would otherwise
 refuse the body (`Oak.SpanForward.let_forward`).
 
+The fifty-sixth increment is constant conditions (§9 "Constant
+conditions"): a literal scrutinee lowers as its arm alone, and the
+verifier reads it as its bit (`Oak.ConstantConditions.select_true`).
+
 The forty-seventh increment is vector operands in place (§9,
 `nativegen/simd.go` `vecOperand`). A vector variable in its own register
 is read where it lies by every simd operation; the operation writes a
@@ -4402,6 +4406,23 @@ overflowing scratch, a scalar's home take them back (`reclaimReserve`,
 real call, and a span local that refused as "the callee-saved registers
 are exhausted" and now lowers natively; the C backend agrees. The RV64
 lane keeps its own pools.
+
+**Constant conditions (2026-09-16, both lanes; `spec/lean/Oak/ConstantConditions.lean`).**
+A conditional whose scrutinee is the literal `true` or `false` — `true ?
+{ … }`, the source's idiom for a scope (the hash library's `sha256_block`
+opens one around its span), or a `false` that disables an arm — lowers as
+the selected arm alone, in statement, value, and result position
+(`constantArm`): no Bool materialized and tested (`movz w11, #1; cbz w11`),
+no else label, no dead arm for the checker to find unreachable; a literal
+in condition position branches always or never (`conditionBranch`). The
+verifier's Oak lowering reads a literal condition as its bit where it
+refused "a condition that is not a comparison", so `sha256_block` and the
+bodies that call it are no longer trusted for that reason alone. The
+model is the conditional itself (`Oak.ConstantConditions.select_true`,
+`select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
+`scope` and `pick` — no branch, select, or conditional label —
+`TestE2ENativeConstantConditions` proves both and agrees with the C
+backend.
 
 **Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
 `spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
