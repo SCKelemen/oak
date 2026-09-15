@@ -5439,7 +5439,24 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
 			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
 		}
+		// `assert(cond)` establishes its condition for the rest of the
+		// block (typechecker/extents.go enterAssertFacts).
+		if es, isExpr := stmt.(*ast.ExpressionStatement); isExpr && es.Expression != nil {
+			if cond, isAssert := assertCondition(es.Expression); isAssert {
+				tc.enterAssertFacts(cond, block.Statements[i+1:])
+			}
+		}
 	}
+}
+
+// assertFactsOf recognizes the statement `assert(cond)` and returns the
+// condition it establishes for the statements after it.
+func assertFactsOf(stmt ast.Statement) (ast.Expression, bool) {
+	es, isExpr := stmt.(*ast.ExpressionStatement)
+	if !isExpr || es.Expression == nil {
+		return nil, false
+	}
+	return assertCondition(es.Expression)
 }
 
 // killFactsAfterStatement invalidates the facts an assignment statement
@@ -5490,6 +5507,9 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
 			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
 		}
+		if cond, isAssert := assertFactsOf(block.Statements[i]); isAssert {
+			tc.enterAssertFacts(cond, block.Statements[i+1:])
+		}
 	}
 
 	// The last statement should be an expression statement. A trailing
@@ -5524,6 +5544,9 @@ func (tc *TypeChecker) checkDeferredBlock(block *ast.BlockStatement, expected Ty
 		tc.killFactsAfterStatement(block.Statements[i])
 		if decl, isDecl := block.Statements[i].(*ast.VariableDeclaration); isDecl {
 			tc.enterDeclarationFacts(decl, block.Statements[i+1:])
+		}
+		if cond, isAssert := assertFactsOf(block.Statements[i]); isAssert {
+			tc.enterAssertFacts(cond, block.Statements[i+1:])
 		}
 	}
 	tailIndex := from - 1
