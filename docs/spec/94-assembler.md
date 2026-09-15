@@ -3825,13 +3825,28 @@ register a variable lives in is the variable's value, read where no block
 sees — after the loop, at the header, in another arm — so it is neither
 moved nor propagated away (the verifier refuted a `result = true` hoisted
 and an `x = y` propagated during development, `dec_prefix_less`,
-`utf8_first_error_at`). A loop that calls hoists nothing into a register
-(a call clobbers every scratch register); its copies still propagate and
-its guard still peels, on callee-saved registers. Loads stay (memory the loop stores through may
-alias), as do stores and calls. The os pilot's page-zeroing loop went
-from fifteen instructions per element to seven: the exit test, the
-element guard, `str x13, [x14, w4, uxtw #3]`, the increment, the back
-edge.
+`utf8_first_error_at`); a write into an argument, result, or platform
+register belongs to a call or a return and stays too (a call reads its
+argument registers without naming them — the pass once dropped `mov x1,
+x24` before a `bl`, and the linked program faulted where the verifier's
+witnesses had not reached). A hoisted value takes a scratch register the
+function never names, or one of the callee-saved registers the lowering
+reserves for the pass: the first lowering reports the values it could
+not place, and the second reserves that many (four at most), saved and
+restored with the variables'. A loop that calls hoists nothing into a
+scratch register (a call clobbers every one); its copies still propagate
+and its guard still peels, and its reserved registers survive the call.
+A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
+add :lo12:`) leaves a loop that stores to no global's address and calls
+nothing: a span cannot alias a scalar global — its elements lie in arrays
+and aggregates — so the loop's span stores leave it alone, a fact the
+type system gives and C's aliasing rules do not. Other loads stay (a span
+the loop stores through may alias one it reads), as do stores and calls.
+The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
+of its decoder cycle) went from twenty-two instructions per element to
+nine: the exit test, the index's add, the element guard, `str xzr, [x17,
+w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
+did not reach; the C backend under clang runs it in five.
 
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares

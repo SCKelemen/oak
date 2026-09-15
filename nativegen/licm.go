@@ -401,6 +401,12 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		if !isReg || (dest.Class != asm.ClassX && dest.Class != asm.ClassW) || homes[dest.Num] {
 			continue
 		}
+		// A write into an ABI register (an argument, the result, the
+		// indirect-result address, the platform and frame registers)
+		// belongs to a call or a return: it stays where it is.
+		if dest.Num <= 8 || dest.Num == 18 || dest.Num >= 29 {
+			continue
+		}
 		// movk reads its destination: only as the second half of a
 		// constant pair whose movz was hoisted (handled with the movz).
 		if ins.Mnemonic == "movk" {
@@ -655,6 +661,19 @@ func writesGeneral(ins asm.Instruction, reg int) bool {
 // operands, or a destination the instruction also reads (movk, madd's
 // addend is a source anyway).
 func readsGeneral(ins asm.Instruction, reg int) bool {
+	// A call reads its argument registers and the indirect-result
+	// register; a return reads the result registers. Neither names them
+	// as operands (the pass once dropped `mov x1, x24` before a `bl`).
+	switch ins.Mnemonic {
+	case "bl", "blr":
+		if reg <= 8 {
+			return true
+		}
+	case "ret":
+		if reg <= 1 || reg == 8 {
+			return true
+		}
+	}
 	for _, r := range sourceRegisters(ins) {
 		if r.Num == reg {
 			return true
@@ -883,4 +902,3 @@ func writtenEarlierInBlock(body []asm.Item, removed map[int]bool, at, reg int) b
 	}
 	return false
 }
-
