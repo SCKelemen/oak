@@ -26,7 +26,7 @@ func forwardSingleUseSpans(body ast.Expression) (ast.Expression, bool) {
 		out := make([]ast.Statement, 0, len(stmts))
 		for i := 0; i < len(stmts); i++ {
 			decl, isDecl := stmts[i].(*ast.VariableDeclaration)
-			if isDecl && i+1 < len(stmts) && decl.Name != nil && decl.Type != nil && isSpanSyntax(decl.Type) && spanExpression(decl.Value) {
+			if isDecl && i+1 < len(stmts) && decl.Name != nil && decl.Type != nil && spanLocalType(decl.Type) && spanExpression(decl.Value) {
 				name := decl.Name.Value
 				uses := 0
 				for _, later := range stmts[i+1:] {
@@ -49,8 +49,8 @@ func forwardSingleUseSpans(body ast.Expression) (ast.Expression, bool) {
 	return body, changed
 }
 
-// isSpanSyntax reports `[]T` or `[*]T`.
-func isSpanSyntax(typ ast.Expression) bool {
+// spanLocalType reports a span or view type, `[]T` or `[*]T`.
+func spanLocalType(typ ast.Expression) bool {
 	index, isIndex := typ.(*ast.IndexExpression)
 	if !isIndex || index.Dot {
 		return false
