@@ -109,7 +109,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide) {
+		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}

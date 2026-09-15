@@ -71,9 +71,13 @@ where that mattered: before the vector operands moved in place (#484),
 saved and reloaded it around the call exactly as the slot form stored and
 loaded it, plus two moves per trip, and the search kept the hoisted slot
 form; after #484 the home form is the cheaper and is selected. What a
-vector move and a frame-slot round trip cost, and whether residency
-transforms deserve a tie-break, is calibration work for the benchmarks
-(§8); the report's `candidates` line is where to read it.
+vector move and a frame-slot round trip cost is calibration work for the
+benchmarks (§8); the report's `candidates` line is where to read it. The
+tie-break landed with `late-cleanup` (2026-09-16): at one cost the
+candidate with more transforms applied comes first in the beam and the
+validation order (`opt.cheaper`), and the loop stride is read from the
+last increment of a compared register, the index's step before the back
+edge, not the first.
 
 Not yet: MachineIR and the allocator (Phase B), OptIR and the analyses
 (Phase C), vector plans (Phase D), and the proof-obligation service of

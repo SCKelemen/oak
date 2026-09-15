@@ -2818,7 +2818,17 @@ UTF-8 validator 330 to 304 — and it corrected one selection: the hoisted
 form of `blake3_compress` had been kept over the identity by the
 identity-last policy though the static model priced it higher, and the
 cleaned identity is now the cheapest verified body (report
-`candidates`).
+`candidates`). Joining the registry surfaced two selection faults the
+identity-last policy had masked, both fixed with it: the metrics read a
+loop's stride from the first increment of a compared register, so a
+value stepped in the body (`add x9, x9, #7` on a copy of a compared
+register) priced `zero_page`'s plain loop at a seventh of its trips and
+its hoisted form above it — the index steps last, before the back edge,
+and the stride is read there now; and at one static cost the candidate
+with more transforms applied comes first in the beam and the validation
+order, since the model cannot see what a residency transform saves (a
+vector home against a slot round trip is one load and one store either
+way), so `live_across` keeps its vector home beside the cleanup.
 
 The forty-eighth increment is owned arrays as values (§9 "Arrays as
 values"): `[N]T` parameters, results, arguments, initializers, and
