@@ -1305,6 +1305,10 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
+	// NoReductions leaves the plain integer reductions as written
+	// (nativegen/reduction.go): the compiler's second lowering when the
+	// unrolled form did not prove.
+	NoReductions bool
 	// Arch is asm.ArchArm64 (the default) or asm.ArchRV64.
 	Arch string
 	// SoftFloat marks a RISC-V target without the F/D calling convention
@@ -1464,9 +1468,9 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1477,7 +1481,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, nil, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, nil, false, true)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1502,16 +1506,31 @@ var reducedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, reuse bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// The vector helpers the body calls are expanded first (nativegen/inline.go);
 	// the lowering sees the expanded body, the verifier the original. An
 	// expansion the lowering refuses falls back to the body as written.
-	if body := inlineBody(fn, functions); body != fn.Body {
+	// The plain integer reductions are then unrolled (nativegen/reduction.go);
+	// the verifier sees that rewritten body (asm.Function.Body), the rewrite
+	// being its own theorem. A lowering the rewrite makes unsupported falls
+	// back to the body before it.
+	inlined := inlineBody(fn, functions)
+	if unrolled, changed := unrollReductions(fn, inlined); changed && unroll {
 		expanded := *fn
-		expanded.Body = body
+		expanded.Body = unrolled
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed); err == nil {
+			out.Body = unrolled
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
+	}
+	if inlined != fn.Body {
+		expanded := *fn
+		expanded.Body = inlined
 		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
@@ -6604,7 +6623,7 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Token) (int, error) {
 	// GuardLines is keyed by the line the emitted instructions carry (the
 	// statement's, g.line), the line a checker finding names.
-	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && g.tc.IndexProven(*tok) {
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && (g.tc.IndexProven(*tok) || rewriteProvenIndex(*tok)) {
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {

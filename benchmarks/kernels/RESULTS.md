@@ -317,3 +317,33 @@ chained `b endif_11; endif_11: endif_9: b loop_6` is one branch). The
 bounds facts stay necessary: they are what makes the guard-free form
 admissible, and the if-converted arms must keep the facts they had.
 
+## Verified reduction unrolling, 2026-09-16
+
+`bench_sum` is the first kernel rewritten before lowering under a proof of
+the rewrite (docs/spec/94-assembler.md §9 "Reductions";
+`spec/lean/Oak/Reduction.lean`): the plain integer reduction becomes a
+four-accumulator main loop, a remainder loop, and the combine, the
+verifier proving the assembly against the rewritten body (two loops
+coupled inductively, all five element reads elided under the checker's
+facts) and Lean proving the rewrite equal to the sequential sum. Run
+under a load average near 30 (`results/m-series-2026-09-16-reduction.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 114,000 | 180,333 | 1.58× | 122,167 |
+| dot | 875,667 | 971,333 | 1.11× | 820,667 |
+
+Reading: `sum` went from 3.20× of clang to 1.58×. The main loop is
+nineteen instructions per four elements — the header recomputes `len(v)
+- 4` each iteration (a loop-invariant clang hoists), each of the last
+three loads is preceded by its own index add (`add w10, w3, #1; ldr x10,
+[x19, w10, uxtw #3]`), and the four accumulators are four `add`s where
+clang's NEON `add v.2d` does two lanes per instruction. Next in this
+kernel's order: the element address formed once per block (`add xA, x19,
+w3, uxtw #3`) with the four loads as two `ldp` pairs off it — the
+checker already admits a wider access through a region a slack guard
+marked four lanes deep — then the invariant hoisted out of the header,
+and the vector form of the same rewrite (the `simd` types the language
+has) once the verifier couples a lane sum.
+

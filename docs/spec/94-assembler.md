@@ -2740,6 +2740,15 @@ still bounded the index at the header. The state is now the whole
 register state, met across every predecessor
 (`asm/bounds_arith_test.go`).
 
+The forty-fourth increment is the verified reduction unrolling (§9
+"Reductions"): the first rewrite licensed by a type — integer addition
+wraps and reassociates, so the plain reduction becomes four accumulators
+and a remainder loop before lowering, the verifier proving the assembly
+against the rewritten body and Lean proving the rewrite
+(`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
+(`asm.Function.Body`) so the verifier and the verdict cache judge the
+right one.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3779,6 +3788,30 @@ its kept lines by the line the emitted instructions carry — the
 statement's — which is the line a finding names; an access token on a
 later line of a multi-line statement had escaped the first version and
 sent the body to every guard.
+
+**Reductions (2026-09-16, both lanes; `nativegen/reduction.go`,
+`spec/lean/Oak/Reduction.lean`).** A plain integer reduction over a span —
+`while i < len(v) { acc = acc + v[i]; i = i + u32(1) }`, the accumulator
+a local of a declared integer type, the index a `u32`, the body those two
+statements — is rewritten before lowering into a four-accumulator main
+loop under the guard the vector kernels spell, `len(v) >= u32(4) && i <=
+len(v) - u32(4)`, reading `v[i]` through `v[i + u32(3)]` into `acc` and
+three fresh locals, the remainder loop as written, and the combine `acc =
+(acc + acc_u1) + (acc_u2 + acc_u3)`. The loop-carried chain is a quarter
+as long and the four loads are independent. The lowering sees the
+rewritten body and the verifier proves the assembly against it
+(`asm.Function.Body`, two loops coupled inductively as the tiled kernels
+are; the verdict cache keys on it); the rewrite itself is the theorem:
+integer addition wraps, so it is associative and commutative at every
+width, and the strided four-way fold of the elements equals the
+sequential fold (`Oak.Reduction.unrolled4_eq`, `unrolled4_sum`). The
+main loop's element reads are elided as typechecker-proven reads are —
+they lie inside the span under the guard — and the seam checker confirms
+each elided form or keeps its guard, as for every elision. Not rewritten:
+a float accumulator (its addition does not reassociate), a loop with any
+other statement, another stride, or an accumulator read elsewhere in the
+body; a use of the index after the loop reads `len(v)` on both sides.
+`bench_sum` went from six instructions per element to nineteen per four.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
