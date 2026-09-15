@@ -2,18 +2,27 @@
 
 Status: OptIR analysis DAG with exact identities, checked selective reuse, and
 bounded deterministic parallel execution; the complete native candidate path
-from materialization through selection is also live. This note refines the
-optimizer search design; it does not change Oak semantics or authorize OptIR
-emission.
+from materialization through selection is also live. Typed artifact references
+and arity-specific builders derive keys and decode dependencies for the OptIR
+graph. This note refines the optimizer search design; it does not change Oak
+semantics or authorize OptIR emission.
 
 ## 1. Decision
 
-Oak's compiler stages, optimizer analyses, transforms, validation, costing, and
-selection should be represented as one dependency graph of immutable
-artifacts. `compiler.Stage.Then` remains linear and native candidate search
-still owns an internal branching proposal search. OptIR's first generic
-analysis chain and every proposed native candidate's materialization and gates
-now execute through artifact graphs rather than direct calls.
+Reusable, branching, independently verifiable, proof-gating, or expensive
+compiler results should be represented as dependency graphs of immutable
+artifacts. Straight-line frontend sequencing and local implementation-detail
+cleanup remain ordinary deterministic code. `compiler.Stage.Then` is therefore
+deliberately linear, while OptIR's reusable generic analysis chain and every
+proposed native candidate's materialization and gates execute through artifact
+graphs.
+
+The boundary is demand-driven: a result deserves artifact identity when
+another computation needs to cache it, reuse it, compare it, verify it, run it
+concurrently, or bind evidence to its exact version. A private sequence such as
+canonicalize → GVN → DCE may remain one `ScalarCleanup` node unless an
+intermediate result gains one of those consumers. The compiler is a hybrid of
+pipelines and artifact DAGs, not one global graph by decree.
 
 The graph is about computation and evidence, not control-flow. An OptIR CFG may
 contain cycles while the artifact graph that produced and analyzed that CFG is
@@ -116,8 +125,11 @@ also include the compiler build identity in the producer revision.
 | selection | cheapest sufficiently admitted candidate | chooses; proves nothing itself |
 
 The generic graph executor schedules these kinds but does not infer semantic
-permission from a kind name. Typed compiler builders will impose the stronger
-candidate/admission/verdict/selection edge rules.
+permission from a kind name. `ArtifactRef[T]` and the typed root/unary/binary/
+ternary builders derive exact ordered-dependency keys, extract inputs, and fail
+closed on a missing or wrongly typed payload. They remove graph plumbing, not
+proof obligations: stronger candidate/admission/verdict/selection edge rules
+remain explicit compiler policy.
 
 ## 5. Costing and validation order
 
@@ -267,6 +279,11 @@ Completed:
 6. The graph has bounded deterministic ready-wave concurrency. OptIR runs with
    three workers; reverse completion, worker bounds, deterministic failures,
    cancellation, exact-once dependencies, and cache pruning are race-tested.
+7. Generic typed artifact references and arity-specific derived-task builders
+   own dependency extraction and recipe-key derivation. The OptIR graph is
+   migrated to them without changing its nodes, versions, topology, scheduling,
+   preservation evidence, or results. Tests pin ordered identities and refusal
+   of wrong cached payloads.
 
 The compiler currently runs this graph without a cross-call cache. Public
 OptIR results contain mutable slice-backed Go values, so sharing cached payloads
@@ -276,13 +293,15 @@ complete dependent invalidation after an input change.
 
 Remaining:
 
-7. Add persistent content-addressed caching only after canonical serialization
+8. Add persistent content-addressed caching only after canonical serialization
    and version invalidation are stable.
 
 ## 11. Non-goals of the first slice
 
 - no code-emission change;
 - no persistent cache;
+- no requirement that straight-line frontend stages or private local cleanup
+  become artifact nodes;
 - no analysis reuse across IR versions without a checked aspect certificate;
 - no claim that a graph kind replaces a proof or verifier verdict;
 - no requirement that language users understand or configure the graph.
