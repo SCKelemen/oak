@@ -371,11 +371,16 @@ func (in *inliner) expand(callee *ast.FunctionStatement, call *ast.InvocationExp
 	substitute := map[string]ast.Expression{}
 	var declared []*ast.VariableDeclaration
 	for i, p := range callee.Parameters {
-		if arg, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !assigned[p.Name.Value] {
+		// An aggregate parameter substitutes only when the callee never
+		// assigns, borrows, or addresses it — a field store `p.f = x` into
+		// a substituted record would write the caller's variable — and no
+		// parameter is a writable span the callee could reach it through.
+		readOnly := !isAggregateSyntax(p.Type) || (!recordParamTouched(callee, p.Name.Value) && !writableSpanParam(callee))
+		if arg, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !assigned[p.Name.Value] && readOnly {
 			rename[p.Name.Value] = arg.Value
 			continue
 		}
-		if root, isPath := fieldPath(call.Arguments[i]); isPath && isAggregateSyntax(p.Type) && !recordParamTouched(callee, p.Name.Value) && !writableSpanParam(callee) && !mentionsIdentifier(callee.Body, root) {
+		if root, isPath := fieldPath(call.Arguments[i]); isPath && isAggregateSyntax(p.Type) && readOnly && !mentionsIdentifier(callee.Body, root) {
 			// A field path (`next.h`) to a parameter the callee never
 			// assigns, borrows, or addresses, with no writable span
 			// through which the callee could reach the path's storage:
