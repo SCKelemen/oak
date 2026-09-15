@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 )
 
 func ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
@@ -156,11 +157,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 12 {
+	if got := len(registry.Transforms()); got != 13 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.VectorReductions || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true})
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.VectorReductions || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -173,7 +174,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.MultiplyAdd || lane.VectorReductions || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.MultiplyAdd || lane.VectorReductions || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
@@ -222,5 +223,17 @@ func TestMetricsStrideNeedsOneIncrement(t *testing.T) {
 	m := Metrics(fn)
 	if len(m.LoopBodies) != 1 || m.LoopBodies[0].Stride != 1 {
 		t.Fatalf("loop bodies %+v", m.LoopBodies)
+	}
+}
+
+func TestCompileForRefusesMismatchedOptIRFingerprint(t *testing.T) {
+	cfg := optir.CFG{Name: "f", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID:         0,
+		Operations: []optir.Operation{{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	lane := Lane{Arch: asm.ArchArm64, OptIR: &cfg, OptIRFingerprint: "not-the-cfg-fingerprint", OptIRChanges: 1, UseOptIR: true}
+	if _, err := CompileFor(lane, nil, nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("mismatched OptIR fingerprint reached materialization")
 	}
 }

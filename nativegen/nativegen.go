@@ -38,6 +38,7 @@ import (
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/machine"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1513,6 +1514,14 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
+	// OptIR is the verified optimized SSA candidate available to the
+	// AArch64 selector. UseOptIR is the candidate-search toggle;
+	// OptIRFingerprint and OptIRChanges make the materialization recipe and
+	// optimization report exact without treating the pointer as identity.
+	OptIR            *optir.CFG
+	OptIRFingerprint string
+	OptIRChanges     int
+	UseOptIR         bool
 	// VectorReductions rewrites the plain u64 and u32 reductions into
 	// vector-accumulator loops (nativegen/vector_reduction.go) instead of
 	// the scalar unrolling; the verifier judges the lowering against the
@@ -1723,7 +1732,32 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.VectorReductions)
+		var out *asm.Function
+		var err error
+		if lane.UseOptIR {
+			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
+				return nil, unsupported("an incomplete OptIR emission plan")
+			}
+			fingerprint, fingerprintErr := optir.FingerprintCFG(*lane.OptIR)
+			if fingerprintErr != nil {
+				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
+			}
+			if fingerprint != lane.OptIRFingerprint {
+				return nil, unsupported("an OptIR emission plan whose CFG does not match its fingerprint")
+			}
+			// The ordinary lowering supplies only checked signature/ABI metadata.
+			// Its executable items are discarded by the selector.
+			var template *asm.Function
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false)
+			if err == nil {
+				out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
+			}
+			if err == nil {
+				optIRLowered[out] = lane.OptIRChanges
+			}
+		} else {
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.VectorReductions)
+		}
 		if err != nil {
 			return out, err
 		}
@@ -1774,6 +1808,13 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+// OptIRLowered reports the generic SSA operations eliminated or hoisted by
+// the optimized CFG selected into fn. Zero means the body came from the
+// existing direct lowering.
+func OptIRLowered(fn *asm.Function) int { return optIRLowered[fn] }
+
+var optIRLowered = map[*asm.Function]int{}
 
 // FrameObjects reports the aggregates a lowering placed in its frame, by
 // sp-relative offset and size, for the machine package's slot promotion.

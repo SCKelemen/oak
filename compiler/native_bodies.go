@@ -16,6 +16,7 @@ import (
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -122,6 +123,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
+		if comp.options.Target.AsmArch() == asm.ArchArm64 {
+			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, tc)
+		}
 		// The candidate search (compiler/native_search.go, package opt;
 		// docs/notes/optimizer-search-2026-09.md): the plain lowering is the
 		// identity candidate, the lane's transforms — check elision, strength
@@ -171,6 +175,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 		}
 		verdict := driver.verdicts[asmFn]
+		if changed := nativegen.OptIRLowered(asmFn); changed > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: optimized OptIR selected (%d generic SSA operation(s) eliminated or hoisted, proven)", fn.Name.Value, changed)))
+		}
 		if kept := nativegen.VectorHomes(asmFn); kept > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
 		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
@@ -244,6 +251,36 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	result.Report = report
 	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
 	return result
+}
+
+// nativeOptIRCandidate projects and runs the exact artifact-DAG middle end
+// used by Compilation.OptIR. Unsupported functions and any failed analysis
+// simply have no candidate: the direct native lowering remains the identity.
+// Only a CFG changed by GVN/DCE or LICM is proposed, so the search never pays
+// to validate an alternate spelling with no generic optimization in it.
+func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
+	structured, err := lowerCheckedOptIRFunction(function, tc)
+	if err != nil {
+		return nil, 0, ""
+	}
+	cfg, err := optir.Project(structured)
+	if err != nil {
+		return nil, 0, ""
+	}
+	analyses, err := runOptIRAnalysisGraph(cfg)
+	if err != nil {
+		return nil, 0, ""
+	}
+	changes := analyses.simplification.GVN.EliminatedOperations + analyses.simplification.DCE.EliminatedOperations + analyses.loopMotion.HoistedOperations
+	if changes == 0 {
+		return nil, 0, ""
+	}
+	fingerprint, err := optir.FingerprintCFG(analyses.loopInvariant)
+	if err != nil {
+		return nil, 0, ""
+	}
+	optimized := analyses.loopInvariant
+	return &optimized, changes, fingerprint
 }
 
 // nativeLowering is what the native backend made of a program: the

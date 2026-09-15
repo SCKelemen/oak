@@ -289,12 +289,16 @@ and wrapping boundaries retain only the facts actually established. These
 results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
 meaning, while MachineIR owns eventual layout and scheduling.
 
-Its first loop transform is analysis-only LICM. After GVN/DCE it moves a closed
+Its first loop transform is LICM. After GVN/DCE it moves a closed
 total-pure operation to a canonical preheader only when all operands are
 available there. Potential traps, effects, calls, memory, unknown operations,
 noncanonical entries, and facts other than the definition-local checked type
 fact pin the operation. The cloned result passes the independent verifier and
-is retained with deterministic movement evidence; emission consumes neither.
+is retained with deterministic movement evidence. A changed final CFG enters
+native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
+liveness/interference coloring precedes a closed AArch64 selector; the direct
+lowering remains the identity, and every selected OptIR body must pass seam
+admission and semantic translation validation.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -314,8 +318,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves, and OptIR uses three workers for its independent analysis fan-out. The
 complete design is `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: equivalence-validated emission of the candidate, join/loop-parameter
-value congruence, region-aware memory SSA and the dead stores it would license,
+Not yet: join/loop-parameter value congruence, region-aware memory SSA and the
+dead stores it would license,
 non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),

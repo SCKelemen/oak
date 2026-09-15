@@ -4249,6 +4249,23 @@ before both were guarded (`compiler/e2e_native_guard_lines_test.go`;
 unchanged, `benchmarks/native/README.md`). The optimizer still decides
 nothing about safety: every unguarded access is one the checker admitted.
 
+*Checked fact transport (2026-09-16).* The typechecker retains a deterministic
+`IndexProof` identity with its normalized proposition, container, scope,
+witness, dependencies, and fixed extent when one exists. Native lowering may
+attach that opaque identity to the exact indexed memory operand realizing the
+source access; MachineIR preserves the instruction-local reference while
+rewriting registers. Metadata has no authority on its own: ordinary `Check`
+ignores it, while the compiler calls `CheckWithFacts` with a separately copied
+typechecker authority set. The checker verifies the ID, proposition, container,
+operand number, and concrete machine capacity. A dynamic view extent is
+admitted only when the checked Oak body contains one unshadowed,
+never-reassigned `view(&TABLE)`/`span(&TABLE)` binding and the addressed machine
+region carries that exact constant-data symbol. Thus
+`Oak.Extents.div_bound_scaled` can remove the normalization tables' guards
+without asking the assembler checker to rediscover source arithmetic, while
+stale, forged, retargeted, or ambiguous references fail closed
+(`compiler/e2e_native_fact_transport_test.go`).
+
 **Condition selection (2026-09-15, AArch64 lane).** Four selections in
 the lowering of conditions and compares, each the mechanical layer's
 (`90-backend.md` §16 rule 2) and each gated by the verifier as every body
@@ -6633,4 +6650,3 @@ multi-versioning of implementations that
 between whole implementations of one operation and may defer the choice to
 run time, while this chooses nothing at all — it only checks the one
 implementation more carefully.
-

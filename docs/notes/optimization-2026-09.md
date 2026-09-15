@@ -87,8 +87,8 @@ The first analysis-only SCCP validates operation arity, types, attributes, and
 cast legality, then computes exact constants and executable CFG edges with Oak's
 8/16/32/64/128-bit wrapping semantics, signed division edge behavior, and
 checked shift/division traps. Results are deterministic evidence and do not
-rewrite the CFG. No backend consumes this IR yet; equivalence validation remains
-mandatory before SCCP, GVN, or DCE can affect emitted code.
+rewrite the CFG. SCCP itself remains analysis-only; GVN/DCE and LICM can affect
+emitted AArch64 code only through the verifier-gated OptIR candidate below.
 
 The first target-independent cleanup candidate now runs beside that evidence.
 Dominance-scoped GVN assigns deterministic numbers to SSA values and shares
@@ -105,7 +105,8 @@ from the same closed vocabulary, treating terminators, other operations' facts,
 and function facts as roots. A definition's own fact leaves with the
 definition. Both transforms clone their input and independently verify input
 and output. `Compilation.OptIR()` exposes the simplified CFG and a deterministic
-report, but emission still consumes neither.
+report. When this cleanup or the following LICM changes the CFG, the final
+verified CFG is eligible for native candidate search.
 
 The generic control-flow analysis now gives that CFG a reusable semantic loop
 model. It reports reverse postorder, immediate dominators, back edges, natural
@@ -120,7 +121,7 @@ no Oak fixed-width wrap occurs; otherwise the recurrence remains useful but the
 count is absent. `Compilation.OptIR()` exposes these facts on the original CFG.
 They authorize no emission; each consumer must still establish its own legality.
 
-The first consumer is an analysis-only loop-invariant code-motion candidate.
+The first loop consumer is a loop-invariant code-motion candidate.
 It moves an operation to a canonical preheader only when every operand is
 already available there and the operation is in the same closed total-pure
 vocabulary as GVN/DCE. Division, remainder, shifts, calls, memory, effects,
@@ -130,8 +131,14 @@ result-local `checked.type` fact, which merely restates the typed SSA
 definition. Nested loops are considered outermost first, allowing a value
 invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
-post-GVN/DCE LICM candidate and a deterministic movement report. Emission still
-consumes neither.
+post-GVN/DCE LICM candidate and a deterministic movement report. Target-neutral
+SSA liveness/interference coloring and the closed AArch64 selector consume that
+final CFG. The selector supports Bool and 32/64-bit total integer operations
+plus structured CFG edges; it refuses effects, traps, calls, memory, narrow
+values, stack arguments, unknown operations, and excess pressure. Its candidate
+always passes the semantic-verifier gate: proven and witnessed verdicts remain
+distinct evidence grades, while refusal or a trusted verdict keeps an ungated
+lowering.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,

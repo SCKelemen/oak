@@ -36,6 +36,7 @@ const (
 // Transform names, as the optimization report spells them.
 const (
 	TransformStrength    = "strength-reduce"
+	TransformOptIR       = "optir-emit"
 	TransformElide       = "elide-guards"
 	TransformReuseFlags  = "reuse-flags"
 	TransformHoist       = "hoist-invariants"
@@ -182,6 +183,17 @@ func Transforms() []opt.Transform {
 			// the AArch64 emitter's zero tests dropped.
 			fired: func(fn *asm.Function) int { return StrengthReduced(fn) + Reduced(fn) },
 		},
+		&gatedTransform{laneTransform{
+			// The generic SSA middle end's optimized CFG becomes a native
+			// implementation candidate. The closed AArch64 selector refuses
+			// effects and unsupported types, and this new emission path remains
+			// verifier-gated until it has earned broader standing.
+			name: TransformOptIR, phase: opt.PhaseCanonical, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UseOptIR || l.OptIR == nil || l.OptIRChanges <= 0 },
+			apply:   func(l Lane) Lane { l.UseOptIR = true; return l },
+			fired:   OptIRLowered,
+		}},
 		&elideTransform{laneTransform{
 			// Guard elision: an element access the typechecker proved in
 			// range is lowered without its guard, and the checker admits
@@ -339,6 +351,7 @@ func Registry() *opt.Registry {
 // every transform off. The search turns them on one by one.
 func PlainLane(lane Lane) Lane {
 	lane.Strength = false
+	lane.UseOptIR = false
 	lane.ElideProven = false
 	lane.GuardLines = nil
 	lane.ReuseFlags = false

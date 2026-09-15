@@ -48,6 +48,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		enabled bool
 	}{
 		{"vector-reductions", lane.VectorReductions},
+		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
 		{"soft-float", lane.SoftFloat},
@@ -66,6 +67,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 	for _, flag := range flags {
 		writeNativeMaterializationPart(digest, flag.name, strconv.FormatBool(flag.enabled))
 	}
+	writeNativeMaterializationPart(digest, "optir-fingerprint", lane.OptIRFingerprint, "optir-changes", strconv.Itoa(lane.OptIRChanges))
 
 	lines := make([]int, 0, len(lane.GuardLines))
 	for line := range lane.GuardLines {

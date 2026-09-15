@@ -92,6 +92,14 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedGlobal.Globals["z"] = asm.Global{Type: "u64", Bits: 64, Aggregate: true, Size: 16}
 	changedTable := lane(false)
 	changedTable.Tables["z"] = nativegen.GlobalArray{Symbol: "data_z", Elem: "u8", Length: 9}
+	changedOptIR := lane(false)
+	changedOptIR.UseOptIR = true
+	changedOptIR.OptIRFingerprint = "cfg-a"
+	changedOptIR.OptIRChanges = 3
+	changedOptIRFingerprint := changedOptIR
+	changedOptIRFingerprint.OptIRFingerprint = "cfg-b"
+	changedOptIRCount := changedOptIR
+	changedOptIRCount.OptIRChanges = 4
 	changes := []struct {
 		name      string
 		driver    *nativeDriver
@@ -105,6 +113,9 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"constant", changedConstant, opt.Identity(lane(false))},
 		{"global", driver(false), opt.Identity(changedGlobal)},
 		{"table", driver(false), opt.Identity(changedTable)},
+		{"optir", driver(false), opt.Identity(changedOptIR)},
+		{"optir-fingerprint", driver(false), opt.Identity(changedOptIRFingerprint)},
+		{"optir-changes", driver(false), opt.Identity(changedOptIRCount)},
 	}
 	for _, change := range changes {
 		t.Run(change.name, func(t *testing.T) {

@@ -158,6 +158,7 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 // transform's form was tried and not kept.
 var setAside = map[string]string{
 	nativegen.TransformStrength:    "keeps its plain arithmetic",
+	nativegen.TransformOptIR:       "keeps its direct lowering",
 	nativegen.TransformElide:       "keeps its element guards",
 	nativegen.TransformReuseFlags:  "repeats its compares",
 	nativegen.TransformHoist:       "keeps its loop invariants in place",

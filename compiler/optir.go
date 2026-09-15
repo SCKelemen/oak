@@ -13,8 +13,8 @@ import (
 )
 
 // OptIRFunction is one checked structured projection, its independently
-// verified CFG/SSA view, and analysis-only optimization results. Simplified is
-// not consumed by emission.
+// verified CFG/SSA view, and optimization results. The native candidate search
+// may select LoopInvariant through its fail-closed AArch64 selector.
 type OptIRFunction struct {
 	Name           string
 	Structured     optir.Function
@@ -41,7 +41,8 @@ type OptIRModule struct {
 }
 
 // OptIR checks the program as written and projects every supported concrete
-// scalar function. It is an analysis API only and does not alter emission.
+// scalar function. It is also the public inspection API for the same middle
+// end whose optimized result can enter native candidate search.
 func (comp Compilation) OptIR() Stage[OptIRModule] {
 	return comp.Check().Then(func(model *SemanticModel) (OptIRModule, error) {
 		return lowerOptIRModule(model)

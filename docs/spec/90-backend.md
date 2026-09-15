@@ -477,9 +477,11 @@ generators by phase and records the proof kind and fact requirements of each.
 The bounded beam search materializes, de-duplicates, measures, seam-checks, and
 validates candidates through a lane-supplied driver. Static target costs guide
 selection but are never correctness evidence. The identity is always retained
-as the final fallback; checker-driven refinement may narrow a refused
-candidate, and verifier-gated transforms cannot ship on a trusted (unchecked)
-verdict.
+as the final fallback. Beam pruning also keeps the cheapest ungated candidate
+when possible, so a later verifier-gated machine transform cannot evict an
+independently admitted optimization. Checker-driven refinement may narrow a
+refused candidate, and verifier-gated transforms cannot ship on a trusted
+(unchecked) verdict.
 
 The first source and native rules are:
 
@@ -489,6 +491,7 @@ The first source and native rules are:
 | `source.canonical.bool.v1` | a built-in Bool identity after type checking and monomorphization; every non-literal operand remains exactly once, and no literal token is mutated | a fresh checker accepts the changed monomorphic program; the original specializing checker retains fact authority | double negation, `&&`/`\|\|` identities, and identity Bool comparisons are absent for every backend; literal negation waits for typed OptIR |
 | `source.canonical.integer.v1` | a zero/one identity whose checked result and retained operand have the same exact fixed-width integer type; floats, widening expressions, and user-defined operators are excluded, and the non-literal operand remains exactly once | the same cloned post-specialization recheck | redundant `+ 0`, `- 0`, `* 1`, `/ 1`, `\| 0`, `^ 0`, and shifts by zero are absent for every backend |
 | `elide-guards` | the exact accesses carry checked extent facts | the guardless assembly passes the lane seam checker and the selected body passes the native validation policy | per-access bounds guards are absent only where independently admitted |
+| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral coloring succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 code |
 
 The native lane proposes its strength reduction, guard elimination, flag reuse,
 invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
@@ -723,9 +726,16 @@ available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to
 the SSA result type. The cloned output is independently verified and carries a
-deterministic movement report. This substrate is not yet an emission path: no
-backend consumes either OptIR CFG, and no OptIR transform can authorize a
-code-generation change until equivalence validation is connected.
+deterministic movement report. A changed post-LICM CFG is now an AArch64 native
+candidate. Target-neutral SSA liveness/interference analysis assigns abstract
+colors; the selector maps them to caller-saved registers, destroys block
+arguments with edge-local parallel copies, and selects the closed Bool and
+32/64-bit total-integer vocabulary. Effects, traps, calls, memory, narrow
+integer normalization, stack parameters, register pressure, or an unfamiliar
+operation refuse only this candidate. The direct lowering remains the identity,
+and `optir-emit` is verifier-gated: it ships only after seam admission and a
+proven or witnessed semantic verdict against the Oak body; the evidence grade
+is retained and reported rather than conflated with proof.
 
 Compiler stages, analyses, candidates, and verification verdicts are not yet
 one end-to-end dependency DAG, but the generic OptIR analysis chain and native
