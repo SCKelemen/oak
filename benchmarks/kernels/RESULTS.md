@@ -522,3 +522,35 @@ clang's three) waits on a bottom-tested loop shape the verifier's
 recognizer admits, and the per-block chain of calls on the inlining of
 small record-returning callees.
 
+## Rotates, 2026-09-16
+
+`rotr32(x, u32(7))` inlined is one `ror w5, w3, #7` (docs/spec/94-assembler.md
+§9 "Rotates"); the dbs frame scan's native build carries 46 of them, the
+SHA-256 round loop is 55 instructions where it was 91, and its six
+variable-shift trap guards are gone. The scan did not move (interleaved
+with the C build under load, 232–273 ms against 110–137 ms), and the
+profile says why: on this machine the rounds are not on the path. Both
+builds dispatch the block compression to the FEAT_SHA256 unit, and both
+spend their time in `sha256_update` — the tail loop that feeds one byte at
+a time into the partial block, which after the 32-byte chain leaves
+`filled` nonzero takes every payload byte (the source's bulk path only
+runs from an empty block; a realignment fast path is the library's fix,
+not the compiler's). Read side by side (`sample` over a twenty-scan loop,
+`dbs-loop-native-sample.txt` and `dbs-loop-c-sample.txt`), clang's byte
+loop is ten instructions — the `filled` load, its guard, `ldrb`/`strb`,
+the increment stored back, `cmp #64; b.ne` — and the native lane's is
+fifteen: the increment's result is reloaded from its slot after the store
+(`str w9, [sp, #304]; ldr w9, [sp, #304]`), the `== 64` test is `cmp;
+cset; cbz` where a compare-and-branch would do, and the block's frame
+address is rebuilt each iteration (the pending loop invariants take
+that one). Per 64 bytes the native lane then copies `next.h` and
+`next.block` into temps (forty `ldr`/`str`), calls `sha256_compress`,
+which calls `sha256_block`, which copies `h` again before the unit runs,
+and copies the result back twice; clang inlines the chain and moves the
+same bytes as `ldp`/`stp` of `q` registers, twenty instructions in all,
+building `next` in the caller's result area so no copy remains at the
+return. That is the order of the next increments: the slot reload and
+the Bool compare in the byte loop, the result built in the `x8` area,
+by-reference arguments passed as the caller's own storage when the
+callee reads them in place, and pair copies for aggregates.
+

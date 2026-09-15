@@ -665,12 +665,46 @@ The rules a backend optimization obeys, restating `05-ergonomics-and-cost.md`
    typechecker proved, reduction unrolling the operator's associativity
    law), and proposes a configuration from a candidate; a static cost
    model orders the admitted bodies; the checker and the verifier judge
-   them in that order, and the cheapest proven body is kept — else the
-   strongest verdict, the plain lowering last, so no body ships on a
-   verdict weaker than the plain lowering earns. The search records an
+   them in that order; the first body to prove is kept, the plain
+   lowering validated last and preferred only when nothing else earns
+   as strong a verdict — so no body ships on a verdict weaker than the
+   plain lowering earns, and an admitted body the model prices near the
+   plain one is preferred to it on a tie. The search records an
    optimization report (`-opt-report`, `OAK_OPT_REPORT`): every
    transform taken with the fact that licensed it, every one set aside
    with the checker's or the verifier's reason, and the body's
    structural counts before and after. Cost is never correctness: a
    wrong estimate makes a body slower, and only the verdict decides
    what ships.
+
+**The layers, and what checks each.** The system is three layers, each
+verified against its input, the checks composing from source to silicon.
+
+- **Layer A, body rewrites, one for every lane** (`94-assembler.md`
+  §9.ag): transforms of the checked Oak body whose legality is a fact,
+  not a machine — strength reduction of constant arithmetic, helper
+  expansion, reduction unrolling, and the folds and idioms to come. Each
+  rewrite carries its obligation: *decided*, proved per site by the
+  bit-level decider as the theorem that the new expression equals the old
+  on every input, or *law-backed*, a schema proved once in Lean and
+  instantiated by a matcher. A site the decider does not prove is left as
+  written. The rewritten body is what layer B lowers and the verifier
+  judges, so "source equals rewritten body" is layer A's proof and
+  "rewritten body equals instructions" layer B's.
+- **Layer B, lowering and per-ISA optimization**: register homes,
+  selection, addressing, pairing, if-conversion, peephole, on each lane's
+  instruction stream, under the seam checker and the verifier; today a
+  candidate search over the lane's transforms keeps the cheapest proven
+  body (`docs/notes/optimizer-search-2026-09.md`).
+- **Layer C, per-processor tuning**: cost tables keyed by the `-cpu`
+  name, consumed by layer B's selection and scheduling; data, not passes,
+  with no obligation of their own, since the verifier judges the tuned
+  output and a wrong table costs speed, never meaning.
+
+Layer A's rewrites are transforms of the search like the lane's own: the
+identity candidate is the plain body, a transform proposes the rewritten
+one, and the site theorems are proved once per body, not per candidate.
+The `-verified` profile is the end-to-end mode: every body natively
+lowered with a proven verdict, every layer-A rewrite applied decided or
+law-backed — the layer applies nothing else, and reports the sites it
+left as written — nothing left to C.
