@@ -12,10 +12,11 @@ type Allocation struct {
 	Webs []*Web
 	// Promoted counts the frame slots moved into registers (Promote);
 	// Propagated the copies whose reads moved to their source and
-	// Eliminated the dead instructions removed (Simplify); Renamed the webs
-	// that changed register; Coalesced the copies removed because their
-	// source and destination share a register.
-	Promoted, Propagated, Eliminated, Renamed, Coalesced int
+	// Eliminated the dead instructions removed (Simplify); Hoisted the
+	// loop invariants moved to their preheaders (HoistInvariants); Renamed
+	// the webs that changed register; Coalesced the copies removed because
+	// their source and destination share a register.
+	Promoted, Propagated, Eliminated, Hoisted, Renamed, Coalesced int
 	// Pool lists the registers allocation may use: the ones the lowering
 	// already wrote (so every callee-saved one among them is saved and
 	// restored by the prologue and epilogue as emitted).
@@ -48,13 +49,25 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	hoisted, err := lifted.HoistInvariants()
+	if err != nil {
+		return nil, nil, err
+	}
+	if hoisted > 0 {
+		// Hoisting may leave copies to propagate and dead code behind.
+		p, e, serr := lifted.Simplify()
+		if serr != nil {
+			return nil, nil, serr
+		}
+		propagated, eliminated = propagated+p, eliminated+e
+	}
 	webs, err := lifted.Webs()
 	if err != nil {
 		return nil, nil, err
 	}
 	lifted.Liveness(webs)
 	t := lifted.t
-	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, Propagated: propagated, Eliminated: eliminated}
+	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, Propagated: propagated, Eliminated: eliminated, Hoisted: hoisted}
 	for _, ins := range lifted.Instrs {
 		for _, d := range ins.Defs {
 			if !d.Implicit && !t.reserved(d.Reg) {
@@ -321,5 +334,5 @@ func (u *uncolorable) Error() string {
 
 // Sites is how many sites reallocation changed in all.
 func (a *Allocation) Sites() int {
-	return a.Promoted + a.Propagated + a.Eliminated + a.Renamed + a.Coalesced
+	return a.Promoted + a.Propagated + a.Eliminated + a.Hoisted + a.Renamed + a.Coalesced
 }

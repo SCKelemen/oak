@@ -67,3 +67,68 @@ main: (): i32 = i32_bits_u32(visible(u32(41)))
 		t.Fatalf("public helper was reported as inlined: %+v", report.Remarks)
 	}
 }
+
+// The post-specialization canonicalizer rewrites the tree the first checker
+// already rewrote: `size_of[T]()` has become the plain `size_of()` with its
+// query recorded by position. The validating checker adopts those records,
+// so a program mixing layout builtins with a canonicalizable identity still
+// compiles (the u128 and no_padding programs regressed on this).
+func TestOptimizerRevalidationKeepsLayoutBuiltins(t *testing.T) {
+	src := `
+Frame: type = struct {
+  op: u64
+  size: u32
+}
+main: (): i32 {
+  static_assert(size_of[Frame]() == u32(16))
+  static_assert(offset_of[Frame](size) == u32(8))
+  x: u32 = size_of[Frame]() + u32(0)
+  x == u32(16) ? 42 | 1
+}
+`
+	output, err := New().WithSource("layout.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if !strings.Contains(output, "sizeof(oak_Frame)") {
+		t.Fatalf("emitted C lacks the layout query:\n%s", output)
+	}
+	report, err := New().WithSource("layout.oak", src).Optimizations().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decision(report, OptimizationCanonicalInteger, opt.Passed, "main", "add-zero=1"); !ok {
+		t.Fatalf("the identity was not canonicalized (the test would not exercise the re-check): %+v", report.Remarks)
+	}
+}
+
+// The byte-pack recognizer (codegen/byte_pack.go) reads the canonical
+// spelling too: lane 0 without its `<< u32(0)` and its `+ u32(0)`, which
+// the integer canonicalizer removes before the C backend runs. The pack
+// still lowers to one helper with one range check, not four byte reads.
+func TestCanonicalBytePackStaysRecognized(t *testing.T) {
+	src := `
+read32: (src: []u8, at: u32): u32 = ((u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24)))
+main: (): i32 {
+  data: [4]u8 = [4]u8{1, 0, 0, 0}
+  read32(view(&data), u32(0)) == u32(1) ? 42 | 1
+}
+`
+	report, err := New().WithSource("pack.oak", src).Optimizations().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decision(report, OptimizationCanonicalInteger, opt.Passed, "read32", "shift-zero=1"); !ok {
+		t.Fatalf("lane 0 was not canonicalized (the test would not exercise the canonical spelling): %+v", report.Remarks)
+	}
+	output, err := New().WithSource("pack.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if !strings.Contains(output, "oak_byte_pack_le_u32( src, at )") {
+		t.Fatalf("the canonical pack was not recognized:\n%s", output)
+	}
+	if strings.Contains(output, "oak_view_index_u8( src") {
+		t.Fatalf("the pack still reads byte by byte:\n%s", output)
+	}
+}

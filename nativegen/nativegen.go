@@ -624,20 +624,11 @@ func (g *generator) releaseTemps(temps []int) {
 	}
 }
 
-// fieldRepresentations: the C backend's sizes and alignments of the scalar
-// field types (codegen/records.go fixedFieldRepresentations).
-var fieldRepresentations = map[string]semir.RecordFieldRepresentation{
-	"u8": {Size: 1, Alignment: 1}, "i8": {Size: 1, Alignment: 1}, "byte": {Size: 1, Alignment: 1},
-	"u16": {Size: 2, Alignment: 2}, "i16": {Size: 2, Alignment: 2},
-	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4}, "f32": {Size: 4, Alignment: 4},
-	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8}, "f64": {Size: 8, Alignment: 8},
-	"Bool": {Size: 4, Alignment: 4},
-	// The fixed vectors as the C backend places them: the 16-byte lane
-	// array at the lane's alignment (codegen/records.go).
-	"simd.U8x16": {Size: 16, Alignment: 1}, "simd.U16x8": {Size: 16, Alignment: 2},
-	"simd.U32x4": {Size: 16, Alignment: 4}, "simd.U64x2": {Size: 16, Alignment: 8},
-	"simd.F32x4": {Size: 16, Alignment: 4}, "simd.F64x2": {Size: 16, Alignment: 8},
-}
+// fieldRepresentations is the shared primitive placement table
+// (semir.FieldRepresentations) the C emitter also reads, so a record lays
+// out here exactly as the C compiler ratifies it there. Lookups are
+// guarded by scalarOf: only the subset's scalars and vectors are consulted.
+var fieldRepresentations = semir.FieldRepresentations
 
 // layoutOf places a declared record type, or reports why it is outside the
 // subset (a non-scalar field, a packed layout, an under-aligned field).

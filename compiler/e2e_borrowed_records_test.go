@@ -38,7 +38,11 @@ main: (): i32 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  oak_view_u8 data;", "oak_view_index_u8( c.data, (u64)( 0 ) )"} {
+	// The view field indexes with its bounds check (`d.data[2]`); after
+	// `assert(len(c.data) == 4)` the fact from the assert proves `c.data[0]`
+	// in range (docs/spec/50-borrowing.md, extent facts from asserts, #500)
+	// and that access carries no check.
+	for _, want := range []string{"  oak_view_u8 data;", "oak_view_index_u8( d.data, (u64)( 2 ) )", "( c.data ).base[ 0 ]"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("generated C lacks %q:\n%s", want, output)
 		}

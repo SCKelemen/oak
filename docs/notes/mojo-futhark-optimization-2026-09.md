@@ -11,6 +11,9 @@ This note complements:
 - `docs/notes/proof-guided-optimization-2026-09.md`, which records the
   optimizations Oak can license from checked semantic facts.
 
+`docs/notes/implementation-literature-2026-09.md` is the third source survey,
+on the interpreter, JIT, and code-generator literature.
+
 LLVM remains the main reference for general optimizer infrastructure. Mojo and
 Futhark add different lessons:
 

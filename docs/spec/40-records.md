@@ -185,6 +185,12 @@ Required laws:
 This algorithm is not a claim that every target ABI uses this layout. Packed records, explicit offsets, overlays/unions, vector ABI rules, platform-specific aggregate classification, wire layouts, and FFI layouts are separate representation policies.
 
 The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
+The primitive placements it consumes — the size and alignment of every
+scalar and vector a field may hold on the recorded LP64 target model — are
+one table, `semir.FieldRepresentations`, read by both the C emitter (whose
+emitted assertions make the C compiler ratify each number) and the native
+lane (which must address the C emitter's structs): a representation fact
+kept beside the placement policies, not inside any record type.
 
 A fixed 128-bit vector field (`simd.F32x4`, `simd.U8x16`, …; `93-simd.md`
 §1.1, §1.2a) is placed as its lane array — the `struct { T lanes[N]; }`

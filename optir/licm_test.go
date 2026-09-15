@@ -88,6 +88,38 @@ func TestHoistLoopInvariantsMovesTotalPureDependencyChain(t *testing.T) {
 	}
 }
 
+func TestHoistLoopInvariantsConsumesOnlyExactUnmodifiedLoopAnalysis(t *testing.T) {
+	cfg := licmTestCFG()
+	analysis, err := AnalyzeLoops(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withArtifact, artifactReport, err := HoistLoopInvariantsWithAnalysis(cfg, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withWrapper, wrapperReport, err := HoistLoopInvariants(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(withArtifact, withWrapper) || !reflect.DeepEqual(artifactReport, wrapperReport) {
+		t.Fatalf("artifact LICM differs from compatibility wrapper:\nartifact: %#v %+v\nwrapper:  %#v %+v", withArtifact, artifactReport, withWrapper, wrapperReport)
+	}
+
+	stale := cfg
+	stale.Name = "different_input"
+	if _, _, err := HoistLoopInvariantsWithAnalysis(stale, analysis); err == nil || !strings.Contains(err.Error(), "different CFG") {
+		t.Fatalf("stale loop analysis was admitted: %v", err)
+	}
+
+	mutated := analysis
+	mutated.Loops = append([]NaturalLoop(nil), analysis.Loops...)
+	mutated.Loops[0].Depth++
+	if _, _, err := HoistLoopInvariantsWithAnalysis(cfg, mutated); err == nil || !strings.Contains(err.Error(), "mutated") {
+		t.Fatalf("mutated loop analysis was admitted: %v", err)
+	}
+}
+
 func TestHoistLoopInvariantsKeepsUnlicensedOperationsAndFacts(t *testing.T) {
 	tests := []struct {
 		name   string
