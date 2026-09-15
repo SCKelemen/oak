@@ -529,15 +529,14 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		// small equalities rather than one sixteen-way conditional at a
 		// symbolic index (Oak.Simd.store_lane). Otherwise the memories are
 		// compared at the fresh index.
+		// The fast path only proves: a pair that fails to prove — values
+		// that differ where a later write overrides them, or writes under
+		// complementary guards logged in opposite orders — leaves the
+		// decision to the memories themselves, never refutes on its own.
 		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name], width); aligned {
 			decided := true
 			for _, pair := range pairs {
-				verdict := decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, "")
-				if verdict.Kind == VerdictMismatch {
-					verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the span %s)", fn.Name, name), 1)
-					return verdict
-				}
-				if verdict.Kind != VerdictProven {
+				if verdict := decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, ""); verdict.Kind != VerdictProven {
 					decided = false
 					break
 				}
@@ -588,7 +587,13 @@ func alignedWrites(asm, oak []*spanWrite, width int) ([]writePair, bool) {
 			return nil, false
 		}
 		if asm[i].guard != nil {
-			pairs = append(pairs, writePair{asm: truncate(asm[i].guard, 1), oak: truncate(oak[i].guard, 1), width: 1})
+			// Guarded on both sides: the guards must agree, and the values
+			// where the guard holds (elsewhere the store does not happen).
+			ga, go_ := truncate(asm[i].guard, 1), truncate(oak[i].guard, 1)
+			pairs = append(pairs, writePair{asm: ga, oak: go_, width: 1})
+			zero := constTerm(0, width)
+			pairs = append(pairs, writePair{asm: iteTerm(ga, asm[i].value, zero), oak: iteTerm(go_, oak[i].value, zero), width: width})
+			continue
 		}
 		pairs = append(pairs, writePair{asm: asm[i].value, oak: oak[i].value, width: width})
 	}

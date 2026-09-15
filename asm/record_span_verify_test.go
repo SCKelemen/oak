@@ -63,3 +63,38 @@ func TestVerifyRecordSpanReads(t *testing.T) {
 		t.Fatalf("storing into next for value must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
+
+// The aligned-writes fast path only proves: two stores to one element
+// under complementary conditions, logged in opposite orders by the two
+// sides (the asm forks taken-first, the Oak body reads top-down), and a
+// value read back through a guarded earlier store, decide by the memories
+// rather than refuting on a pair (the false mismatches the final gate of
+// #453 found).
+func TestVerifyGuardedWritesDecideByMemory(t *testing.T) {
+	decl := "pick: (out: [*]u32, k: u32) -> ()"
+	oakBody := "{\n  u32(0) < len(out) ? {\n    k == u32(17) ? { out[u32(0)] = u32(1) } | { out[u32(0)] = u32(2) }\n  } | { }\n}"
+	// The asm stores the else value on the taken (k != 17) path first.
+	asmBody := "  bind x0, w1 = out\n  bind w2 = k\n  clobber x9\n  cmp w1, #1\n  b.lo done\n  cmp w2, #17\n  b.ne other\n  mov w9, #1\n  str w9, [x0]\n  b done\nother:\n  mov w9, #2\n  str w9, [x0]\ndone:\n  ret"
+	unit, errs := ParseUnit("gw.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, err := parseSignature(decl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+		t.Fatalf("checker: %v", findings)
+	}
+	spec, err := parseSignatureWithBody(decl + " = " + oakBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := Verify(unit.Functions[0], sig, spec.Body)
+	if v.Kind == VerdictMismatch {
+		t.Fatalf("stores under complementary guards must not refute: %s", v.Message)
+	}
+	if v.Kind != VerdictProven {
+		t.Fatalf("stores under complementary guards must be proven by the memories, got %s: %s", v.Kind, v.Message)
+	}
+}
