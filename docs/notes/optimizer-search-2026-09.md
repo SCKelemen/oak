@@ -61,14 +61,15 @@ The planning substrate of §16 Phase A is implemented on `specification`:
 Policy as landed: the identity is the fallback and is verified last, so
 an admitted transformed body is preferred to the plain lowering even when
 the static model prices it slightly higher (the model cannot see register
-residency); among transformed bodies the model decides. That already
-bites once: `vector-homes` on a vector accumulator carried through a call
-inside a loop saves and reloads it around the call exactly as the slot
-form stores and loads it, plus two moves per trip, so the search keeps
-the hoisted slot form (`compiler/e2e_native_vector_homes_test.go`,
-`carried`). Whether residency transforms deserve a tie-break, and what a
-vector move and a frame-slot round trip cost, is calibration work for
-the benchmarks (§8).
+residency); among transformed bodies the model decides. The first case
+where that mattered: before the vector operands moved in place (#484),
+`vector-homes` on an accumulator carried through a call inside a loop
+saved and reloaded it around the call exactly as the slot form stored and
+loaded it, plus two moves per trip, and the search kept the hoisted slot
+form; after #484 the home form is the cheaper and is selected. What a
+vector move and a frame-slot round trip cost, and whether residency
+transforms deserve a tie-break, is calibration work for the benchmarks
+(§8); the report's `candidates` line is where to read it.
 
 Not yet: MachineIR and the allocator (Phase B), OptIR and the analyses
 (Phase C), vector plans (Phase D), and the proof-obligation service of
