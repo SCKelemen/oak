@@ -13,17 +13,17 @@ import (
 // before the loop and again as a conditional back edge, one branch an
 // iteration; a conjunction rotates too, its tail a run of exits ending in
 // the back edge; the verifier recognizes both shapes and still proves the
-// bodies, and a disjunction keeps its top-tested form. The C
+// bodies, and a disjunction keeps its top-tested form. (A plain
+// reduction is not the example: the search unrolls it, and the cost model
+// finds the peeled test not worth rotating a three-trip remainder.) The C
 // backend's realization is the oracle for the values.
 const nativeRotationProgram = `
-total: (v: []u64): u64 {
-  acc: u64 = 0
+fill: (v: [*]u64, x: u64): () {
   i: u32 = 0
   while i < len(v) {
-    acc = acc + v[i]
+    v[i] = x
     i = i + u32(1)
   }
-  acc
 }
 
 first_zero: (v: []u64): u32 {
@@ -47,7 +47,8 @@ at_least_once: (n: u32): u32 {
 
 main: (): i32 {
   xs: [6]u64 = [u64(5), u64(7), u64(9), u64(0), u64(11), u64(10)]
-  i32_bits_u32(u32_trunc_u64(total(view(&xs))) + first_zero(view(&xs)) - u32(3) + at_least_once(u32(0)) - u32(1))
+  fill(span(&xs), u64(7))
+  i32_bits_u32(first_zero(view(&xs)) + at_least_once(u32(0)) + u32(35))
 }
 `
 
@@ -95,8 +96,8 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 		shapes[f.Name] = map[bool]string{true: "bottom", false: "top"}[conditionalBack >= 1]
 	}
 	joined := strings.Join(infos, "\n")
-	if shapes["total"] != "bottom" {
-		t.Errorf("total's remainder loop must be bottom-tested (a conditional back edge); shapes %v\n%s", shapes, joined)
+	if shapes["fill"] != "bottom" {
+		t.Errorf("fill's loop must be bottom-tested (a conditional back edge); shapes %v\n%s", shapes, joined)
 	}
 	if shapes["first_zero"] != "bottom" {
 		t.Errorf("first_zero's conjunction must be bottom-tested too (the tail a run of exits ending in the back edge); shapes %v\n%s", shapes, joined)
@@ -104,7 +105,7 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 	if shapes["at_least_once"] != "top" {
 		t.Errorf("a disjunction keeps the top-tested shape; shapes %v\n%s", shapes, joined)
 	}
-	for _, name := range []string{"total", "first_zero"} {
+	for _, name := range []string{"fill", "first_zero"} {
 		if !strings.Contains(joined, name+": 1 loop(s) bottom-tested, proven") || !strings.Contains(joined, "asm unit "+name+": proven equal to its Oak body") {
 			t.Errorf("%s's rotated loop must be proven; diagnostics:\n%s", name, joined)
 		}

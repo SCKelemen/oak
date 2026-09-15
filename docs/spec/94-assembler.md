@@ -4236,12 +4236,16 @@ the last leaving to the exit when false and the last a conditional back
 edge when true — `cmp; b.hs done; loop: body; cmp; b.lo loop; done:`; for
 `lo < hi && !found`, `cmp; b.hs done; cbz wF, loop` — one branch an
 iteration where the top-tested form paid its tests, a conditional exit,
-and an unconditional jump (`Lane.RotateLoops`; a disjunction keeps the
-top-tested shape). The rotation is a pass over the emitted items
-(`nativegen/rotate.go`), run after the loop-invariant pass, whose loop
-finder reads the top-tested shape; a header whose exit test hides a
+and an unconditional jump (`Lane.RotateLoops`, the `rotate-loops`
+transform of the candidate search, loop phase, mechanical; a disjunction
+keeps the top-tested shape). The rotation is a pass over the emitted
+items (`nativegen/rotate.go`), run after the loop-invariant pass, whose
+loop finder reads the top-tested shape; a header whose exit test hides a
 later test behind a setup instruction (the unrolled reduction's `sub wT,
-wL, #4; cmp wI, wT; b.hi done`) is left as it is. The verifier recognizes the shape by its conditional
+wL, #4; cmp wI, wT; b.hi done`) is left as it is. The search's cost
+model decides where the rotation pays: it rotates a plain byte sum over
+the unrolled form when both are evidence, and leaves a three-trip
+remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
 back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
 compares and branches to the exit label ending in the back edge, the
 entry test right before the header label is the same run with its last
@@ -4266,7 +4270,10 @@ branch an iteration (`ldr; add; add; cmp; b.lo`), `bench_dot`,
 and `bench_page_probe` rotate both their loops (the inner conditions are
 conjunctions) with their verdicts unchanged; on the stdlib-bearing
 program 39 bodies rotate and prove and none falls back
-(`compiler/e2e_native_rotation_test.go`).
+(`compiler/e2e_native_rotation_test.go`). The checker's taken-edge facts
+are general: the taken path of `b.cond` after a compare knows what the
+fall-through of `b.inverse` would, so a `b.hi header` back edge carries
+the slack fact as `b.lo header` carries the index fact.
 
 **Two copies removed (2026-09-15).** A widening from a narrow unsigned
 type to a wide one wrote `mov wR, wR` to clear the upper half; a value a

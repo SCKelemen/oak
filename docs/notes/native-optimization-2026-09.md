@@ -127,7 +127,14 @@ source and both gated by the verifier's loop coupling as it stands:
   side of `b.lo`. `bench_sum`'s iteration is five instructions and one
   branch. Conjunctions (`lo < hi && !found`) rotate too: the tail is a
   run of exits ending in the back edge, mirrored by the entry test; a
-  disjunction keeps the top-tested form.
+  disjunction keeps the top-tested form. The pass is the `rotate-loops`
+  transform of the candidate search (loop phase, mechanical), so the cost
+  model places it: 7 kernel bodies and 39 stdlib bodies rotate and prove;
+  `sum` keeps its unrolled form (the peeled test on a three-trip
+  remainder does not pay), and `page_probe`'s rotated form is checked
+  under the general taken-edge facts but loses to the unrotated one on
+  cost. Left: `||` loops, and a header whose second test hides behind a
+  setup instruction.
 - *A guard the loop test already decided.* `bench_search`'s outer loop
   read `probes[p]` under `while p < len(probes)` with both the exit test
   and the guard comparing the same registers: the index was proven and

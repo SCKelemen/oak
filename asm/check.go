@@ -1191,6 +1191,13 @@ func (c *checker) enterLabel(label Label) {
 // leaves on `cond`, so the path after it has its negation. The same
 // reading serves `b.cond` itself and a condition materialized by `cset`
 // and tested by `cbz`/`cbnz` (condFacts, Oak.Assembler.cset_cbz).
+// conditionInverse pairs each condition code with its complement: the
+// taken path of `b.cond` is the fall-through of `b.inverse`.
+var conditionInverse = map[string]string{
+	"eq": "ne", "ne": "eq", "hs": "lo", "cs": "cc", "lo": "hs", "cc": "cs", "mi": "pl", "pl": "mi",
+	"vs": "vc", "vc": "vs", "hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt",
+}
+
 func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
 	// len >= N for every span whose length register is wL.
@@ -1357,17 +1364,29 @@ func (c *checker) instruction(instr Instruction) bool {
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
-		if guard.valid && (instr.Cond == "lo" || instr.Cond == "cc") {
-			// `cmp wI, wL` then `b.lo header`: the taken path knows wI < wL
-			// — a bottom-tested loop's back edge, the same fact as the
-			// fall-through of `b.hs exit` (Oak.Assembler.index_access).
-			previous, had := c.idxFacts[guard.left]
-			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		if inverse, known := conditionInverse[instr.Cond]; known && guard.valid {
+			// The taken path knows what the fall-through of the
+			// complementary branch would: `cmp wI, wL; b.lo header` carries
+			// wI < wL to the header — a bottom-tested loop's back edge
+			// (Oak.Assembler.index_access, the same fact as `b.hs exit`'s
+			// fall-through). The facts are applied for the arrival alone.
+			savedIdx := map[int]idxFact{}
+			for reg, fact := range c.idxFacts {
+				savedIdx[reg] = fact
+			}
+			savedMins := map[*spanFact][2]int64{}
+			for _, fact := range c.spans {
+				has := int64(0)
+				if fact.hasMin {
+					has = 1
+				}
+				savedMins[fact] = [2]int64{has, fact.minLen}
+			}
+			c.guardFacts(guard, inverse)
 			c.branch(instr, false)
-			if had {
-				c.idxFacts[guard.left] = previous
-			} else {
-				delete(c.idxFacts, guard.left)
+			c.idxFacts = savedIdx
+			for fact, saved := range savedMins {
+				fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
 			}
 		} else {
 			c.branch(instr, false)

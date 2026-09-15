@@ -84,11 +84,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 8 {
+	if got := len(registry.Transforms()); got != 9 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, VectorHomes: true, Reallocate: true, Cleanup: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.VectorHomes || plain.Reallocate || plain.Cleanup || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true})
+	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 // Verified reduction unrolling (docs/spec/94-assembler.md §9 "Reductions";
@@ -142,9 +143,12 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	// for the loop as written too), so the unrolled form is kept — the
 	// verdict is not weakened — and the wrapping sum agrees with the C
 	// backend below.
-	// Byte loads have no pair form: the four stay.
-	if count, loads, _ := loops("sum8"); count != 2 || loads != 4 {
-		t.Errorf("sum8 must unroll as sum does (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
+	// Byte loads have no pair form: the four stay — or, both forms being
+	// evidence, the cost model keeps the cheaper bottom-tested plain loop
+	// (docs/spec/94-assembler.md §9 "Bottom-tested loops"): one loop, one
+	// load, a conditional back edge.
+	if count, loads, _ := loops("sum8"); !(count == 2 && loads == 4) && !(count == 1 && loads == 1 && nativegen.RotatedLoops(units["sum8"]) == 1) {
+		t.Errorf("sum8 must unroll as sum does or keep its rotated plain loop (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
 	}
 	if !strings.Contains(joined, "asm unit sum8: agrees with its Oak body") {
 		t.Errorf("sum8 must keep at least the evidence verdict of its plain form; diagnostics:\n%s", joined)
