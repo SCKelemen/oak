@@ -155,9 +155,21 @@ callee-saved register's own save slot is never promoted: that would only
 move the obligation. The checker's save/restore obligations judge the
 edited prologue and epilogue like any other body.
 
+Fourth increment: the RV64 lane. What the package knows of a lane — the
+instruction shapes, the register files and their spellings, the
+procedure-call contract, the copies, the frame-slot accesses it may
+promote, and the lowering's prologue and epilogue — is a target
+descriptor (`machine/target.go`), and the RV64 one lifts the lowering's
+`mv`/`fmv.d` copies, `ld`/`sd` and `fld`/`fsd` slots (only whole words:
+`sw`/`lw` extend on the way back, which a copy would not), the `call`
+contract (a0–a7 and fa0–fa7 read; ra, t0–t6, a0–a7, and the ft/fa files
+written), and the `sd ra`/`sd s1`… prologue for callee-saved growth. The
+vector extension's registers refuse the lift for now. The `reallocate`
+transform runs on both lanes.
+
 Not in this increment: live-range splitting, vector callee-saved growth
-(d8–d15), a lowering that emits virtual registers directly, scheduling,
-and the RV64 lane.
+(d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
+directly, and scheduling.
 
 ### Phase C, first substrate: `optir/`
 

@@ -1666,7 +1666,18 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		if err != nil || !lane.Reallocate {
+			return out, err
+		}
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		promotedSlots[out] = alloc.Promoted
+		return out, nil
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }

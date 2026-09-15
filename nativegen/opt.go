@@ -242,7 +242,7 @@ func Transforms() []opt.Transform {
 			// shape only, judged by the checker and the verifier — and, new,
 			// shipping only on the verifier's verdict.
 			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
-			arches:  arm64Only,
+			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Reallocate },
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
