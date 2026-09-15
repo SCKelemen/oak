@@ -149,7 +149,7 @@ Verdicts unchanged (`dispatch` proven, `search`
 witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
 
 **A leaf's vector locals in the argument registers (2026-09-15,
-`docs/spec/94-assembler.md` §9.ae).** The flattened `valid` and
+`docs/spec/94-assembler.md` §9.af).** The flattened `valid` and
 `valid_with` spilled five vector temporaries of the expanded
 `check_blocks` to frame slots: forty `str q`/`ldr q` per sixty-four-byte
 step of the main loop, forty-one in the body. Declaration order had spent
