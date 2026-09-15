@@ -1591,7 +1591,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 	case "", asm.ArchArm64:
 		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.Strength, lane.ElideProven, lane.GuardLines)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1650,28 +1650,20 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
-	// The vector helpers the body calls are expanded first (nativegen/inline.go);
-	// the lowering sees the expanded body, the verifier the original. An
-	// expansion the lowering refuses falls back to the body as written.
-	// The plain integer reductions are then unrolled (nativegen/reduction.go);
-	// the verifier sees that rewritten body (asm.Function.Body), the rewrite
-	// being its own theorem. A lowering the rewrite makes unsupported falls
-	// back to the body before it.
-	inlined := inlineBody(fn, functions)
-	if unrolled, changed := unrollReductions(fn, inlined); changed && unroll {
-		expanded := *fn
-		expanded.Body = unrolled
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
-			out.Body = unrolled
-			return out, nil
-		} else if _, outside := err.(Unsupported); !outside {
-			return nil, err
+	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
+	// most rewritten shape tried first; a lowering a rewritten shape makes
+	// unsupported falls back to the shape before it, the source last.
+	for _, stage := range rewriteStages(fn, functions, true, unroll, strength) {
+		if stage.body == fn.Body {
+			break
 		}
-	}
-	if inlined != fn.Body {
 		expanded := *fn
-		expanded.Body = inlined
+		expanded.Body = stage.body
 		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
+			if stage.judged {
+				out.Body = stage.body
+			}
+			rewriteSitesOf[out] = stage.sites
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
