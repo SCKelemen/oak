@@ -175,12 +175,13 @@ func constantIndex(expr ast.Expression) (int64, bool) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
 	case *ast.InfixExpression:
-		// A sum or product of two literals converted to one unsigned type
-		// (`u32(0) + u32(3)`, the shape an inlined helper's constant
-		// argument leaves in its offsets) is the literal it folds to when
-		// the result fits the type, so the fixed-width operation cannot
-		// have wrapped; `u8(200) + u8(100)` is not folded.
-		if e.Operator != "+" && e.Operator != "*" {
+		// A sum, product, or difference of two literals converted to one
+		// unsigned type (`u32(0) + u32(3)`, the shape an inlined helper's
+		// constant argument leaves in its offsets; `u32(32) - u32(7)`, an
+		// inlined rotate's count) is the literal it folds to when the
+		// result fits the type, so the fixed-width operation cannot have
+		// wrapped; `u8(200) + u8(100)` and `u32(1) - u32(2)` are not folded.
+		if e.Operator != "+" && e.Operator != "*" && e.Operator != "-" {
 			return 0, false
 		}
 		typeName := ""
@@ -205,9 +206,15 @@ func constantIndex(expr ast.Expression) (int64, bool) {
 			return 0, false
 		}
 		var value uint64
-		if e.Operator == "+" {
+		switch e.Operator {
+		case "+":
 			value = uint64(left) + uint64(right)
-		} else {
+		case "-":
+			if left < right {
+				return 0, false
+			}
+			value = uint64(left - right)
+		default:
 			if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
 				return 0, false
 			}

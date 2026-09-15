@@ -51,6 +51,7 @@ package nativegen
 
 import (
 	"math"
+	"math/bits"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -188,7 +189,7 @@ func (g *rvGenerator) zextRelease(mark int) {
 	}
 }
 
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, strength bool, elide bool, guardLines map[int]bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -204,7 +205,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, false, elide, guardLines); err == nil {
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, false); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -219,6 +220,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	g.vector = vector
 	g.elide = elide
 	g.guardLines = guardLines
+	g.strength = strength
 	g.zextIdx = map[string]int{}
 	usesFloat := rvMentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
@@ -614,6 +616,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	}
 	if g.elided > 0 {
 		elidedGuards[out] = g.elided
+	}
+	if g.reduced > 0 {
+		reducedOps[out] = g.reduced
 	}
 	return out, nil
 }
@@ -1285,6 +1290,55 @@ var rvBranchWhenFalse = map[string][2]string{
 	"<=": {"bltu", "blt"}, ">": {"bgeu", "bge"},
 }
 
+// indexLengthOperands recognizes `i < len(v)` — `i` a u32 (or narrower
+// unsigned) variable in a register, `v` a span with a normalized length —
+// and returns the variable, its register, and the span.
+func (g *rvGenerator) indexLengthOperands(infix *ast.InfixExpression) (ident *ast.Identifier, home int, sp span, ok bool) {
+	if infix.Operator != "<" {
+		return nil, 0, span{}, false
+	}
+	ident, isIdent := infix.Left.(*ast.Identifier)
+	if !isIdent {
+		return nil, 0, span{}, false
+	}
+	home, inReg := g.regs[ident.Value]
+	typ, known := g.types[ident.Value]
+	if !inReg || home < 0 || !known || typ.signed || typ.isBool || typ.isFloat || typ.isVec || typ.wide() {
+		return nil, 0, span{}, false
+	}
+	call, isCall := infix.Right.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, 0, span{}, false
+	}
+	if fn, isName := call.Function.(*ast.Identifier); !isName || fn.Value != "len" {
+		return nil, 0, span{}, false
+	}
+	if _, _, _, isArray := g.staticArrayOf(call.Arguments[0]); isArray {
+		return nil, 0, span{}, false
+	}
+	sp, err := g.spanOperand(call.Arguments[0])
+	if err != nil || sp.norm < 0 {
+		return nil, 0, span{}, false
+	}
+	return ident, home, sp, true
+}
+
+// hasIndexLengthTest reports whether a condition, through its `&&`, `||`
+// and `!`, holds an `i < len(v)` test the branch form would capture.
+func (g *rvGenerator) hasIndexLengthTest(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.PrefixExpression:
+		return e.Operator == "!" && g.hasIndexLengthTest(e.Right)
+	case *ast.InfixExpression:
+		if e.Operator == "&&" || e.Operator == "||" {
+			return g.hasIndexLengthTest(e.Left) || g.hasIndexLengthTest(e.Right)
+		}
+		_, _, _, ok := g.indexLengthOperands(e)
+		return ok
+	}
+	return false
+}
+
 // indexLengthTest compiles the guard `i < len(v)` — a u32 variable in a
 // register against a span's length, at the head of a construct whose body
 // may read `v[i]` — as `slli z, i, 32; srli z, z, 32; bgeu z, norm, target`:
@@ -1298,30 +1352,11 @@ var rvBranchWhenFalse = map[string][2]string{
 // elision, and only for `<`: the other operators give the checker nothing
 // to read.
 func (g *rvGenerator) indexLengthTest(infix *ast.InfixExpression, target string, jumpIfFalse bool) (bool, error) {
-	if !g.elide || !g.captureZext || infix.Operator != "<" {
+	if !g.elide || !g.captureZext {
 		return false, nil
 	}
-	ident, isIdent := infix.Left.(*ast.Identifier)
-	if !isIdent {
-		return false, nil
-	}
-	home, inReg := g.regs[ident.Value]
-	typ, known := g.types[ident.Value]
-	if !inReg || home < 0 || !known || typ.signed || typ.isBool || typ.isFloat || typ.isVec || typ.wide() {
-		return false, nil
-	}
-	call, isCall := infix.Right.(*ast.InvocationExpression)
-	if !isCall || len(call.Arguments) != 1 {
-		return false, nil
-	}
-	if fn, isName := call.Function.(*ast.Identifier); !isName || fn.Value != "len" {
-		return false, nil
-	}
-	if _, _, _, isArray := g.staticArrayOf(call.Arguments[0]); isArray {
-		return false, nil
-	}
-	sp, err := g.spanOperand(call.Arguments[0])
-	if err != nil || sp.norm < 0 {
+	ident, home, sp, ok := g.indexLengthOperands(infix)
+	if !ok {
 		return false, nil
 	}
 	z, err := g.alloc(scalars["u32"])
@@ -1348,6 +1383,42 @@ func (g *rvGenerator) condition(expr ast.Expression, target string) error {
 // operands directly — the ISA compares in the branch — so a loop's exit
 // test is one instruction over the variables' registers.
 func (g *rvGenerator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
+	// A negation flips the branch's sense; a conjunction or disjunction is
+	// its conjuncts' branches in order, each leaving to the target as soon
+	// as it decides (docs/spec/94-assembler.md §9.ae "Short-circuit
+	// conditions"): `a && b` branching when false is `a` false → target,
+	// then `b` false → target; `a || b` branching when true likewise. The
+	// other senses skip over the second test through a label. Evaluation
+	// order and short-circuiting are those of the Bool expression the
+	// materialized form spelled, without the flag register — and each
+	// conjunct meets indexLengthTest and the checker as a plain guard. The
+	// form is taken only where a conjunct is an `i < len(v)` test a body
+	// access can use (hasIndexLengthTest): every branch is a fork for the
+	// verifier's path enumeration, which the materialized Bool is not, and
+	// two bodies fell past its budget when every conjunction branched.
+	if prefix, isPrefix := expr.(*ast.PrefixExpression); isPrefix && prefix.Operator == "!" && g.elide && g.captureZext && g.hasIndexLengthTest(expr) {
+		return g.conditionBranch(prefix.Right, target, !jumpIfFalse)
+	}
+	if infix, ok := expr.(*ast.InfixExpression); ok && (infix.Operator == "&&" || infix.Operator == "||") && g.elide && g.captureZext && g.hasIndexLengthTest(expr) {
+		direct := (infix.Operator == "&&" && jumpIfFalse) || (infix.Operator == "||" && !jumpIfFalse)
+		if direct {
+			if err := g.conditionBranch(infix.Left, target, jumpIfFalse); err != nil {
+				return err
+			}
+			return g.conditionBranch(infix.Right, target, jumpIfFalse)
+		}
+		// `a && b` branching when true: `a` false skips the second test;
+		// `a || b` branching when false: `a` true skips it.
+		skip := g.newLabel("short")
+		if err := g.conditionBranch(infix.Left, skip, !jumpIfFalse); err != nil {
+			return err
+		}
+		if err := g.conditionBranch(infix.Right, target, jumpIfFalse); err != nil {
+			return err
+		}
+		g.label(skip)
+		return nil
+	}
 	if infix, ok := expr.(*ast.InfixExpression); ok {
 		if done, err := g.indexLengthTest(infix, target, jumpIfFalse); done || err != nil {
 			return err
@@ -1777,6 +1848,66 @@ func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.release(r)
 		g.normalize(l, typ)
 		return l, nil
+	}
+	// Strength reduction (Lane.Strength, docs/spec/90-backend.md §16): a
+	// constant right operand of *, /, or % lowers to the instruction the
+	// constant licenses — a power of two as a shift (or a mask for %), a
+	// nonzero divisor without the zero test — as on the AArch64 lane, with
+	// the W forms keeping a 32-bit type canonical and the narrow types
+	// re-normalized (Oak.StrengthReduction: mul_pow_two, udiv_pow_two,
+	// umod_pow_two, nonzero_divisor_no_trap). The verifier proves the body
+	// against the Oak semantics or the search keeps the plain lowering.
+	if g.strength && !typ.isFloat && !typ.isVec && (e.Operator == "*" || e.Operator == "/" || e.Operator == "%") {
+		if c, isConst := g.constantOperand(e.Right, typ); isConst {
+			c &= mask64(typ.bits)
+			power := c != 0 && c&(c-1) == 0
+			k := int64(bits.TrailingZeros64(c))
+			wide := typ.bits != 32
+			switch {
+			case e.Operator == "*" && power && k > 0:
+				g.emit(pick(wide, "slli", "slliw"), L, L, imm(k))
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "/" && power && !typ.signed:
+				if k > 0 {
+					g.emit(pick(wide, "srli", "srliw"), L, L, imm(k))
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "%" && power && !typ.signed:
+				switch {
+				case k == 0:
+					g.emit("li", L, imm(0))
+				case c-1 <= 2047:
+					g.emit("andi", L, L, imm(int64(c-1)))
+				default:
+					m, err := g.alloc(scalars["u64"])
+					if err != nil {
+						return 0, err
+					}
+					g.emit("li", rvReg(m), imm(int64(c-1)))
+					g.emit("and", L, L, rvReg(m))
+					g.release(m)
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case (e.Operator == "/" || e.Operator == "%") && c != 0:
+				// A nonzero constant divisor cannot trap: the quotient or
+				// remainder without the zero test.
+				r, err := g.exprAs(e.Right, typ)
+				if err != nil {
+					return 0, err
+				}
+				g.emit(rvALU(e.Operator, typ), L, L, rvReg(r))
+				g.reduced++
+				g.release(r)
+				g.normalize(l, typ)
+				return l, nil
+			}
+		}
 	}
 	r, err := g.exprAs(e.Right, typ)
 	if err != nil {

@@ -37,6 +37,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1387,6 +1388,7 @@ type generator struct {
 	leafHomesV    []int
 	leafPoolBuilt bool
 	leafVecHomes  int
+	rotated       int
 }
 
 type slotBinding struct {
@@ -1476,6 +1478,12 @@ type Lane struct {
 	// ...+v`): the rv64 lane lowers the fixed simd vectors there
 	// (nativegen/rv64_simd.go) and leaves them to the C backend otherwise.
 	Vector bool
+	// Reallocate recolors the lowered body's registers with the machine
+	// package's global allocator (machine.Reallocate): def-use webs as
+	// virtual registers, copies coalesced, the frame and the prologue as
+	// emitted. A body the lift refuses does not lower under the flag, so
+	// the candidate search keeps the body as emitted.
+	Reallocate bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1589,9 +1597,22 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
+		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
+		if err != nil || !lane.Reallocate {
+			return out, err
+		}
+		// Global register reallocation (machine.Reallocate): the body's
+		// webs recolored and its copies coalesced; a lift the package
+		// refuses leaves this configuration without a lowering.
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Renamed + alloc.Coalesced
+		return out, nil
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.Strength, lane.ElideProven, lane.GuardLines)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1604,6 +1625,12 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false)
 }
+
+// Reallocated reports how many webs a lowering recolored and copies it
+// coalesced under Lane.Reallocate.
+func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+var reallocated = map[*asm.Function]int{}
 
 // ElidedGuards reports how many element guards a lowering left out under
 // Lane.ElideProven (for the compiler's diagnostics).
@@ -1641,6 +1668,12 @@ var vectorHomesOf = map[*asm.Function]int{}
 func LeafVectorHomes(fn *asm.Function) int { return leafVectorHomesOf[fn] }
 
 var leafVectorHomesOf = map[*asm.Function]int{}
+
+// Rotated reports how many shift-spelled rotations a lowering emitted as
+// `ror` (docs/spec/94-assembler.md §9 "Rotates").
+func Rotated(fn *asm.Function) int { return rotatedOps[fn] }
+
+var rotatedOps = map[*asm.Function]int{}
 
 // pressured marks a lowering in which some scalar variable had to take a
 // caller-saved home or a frame slot: the second pass is worth its cost.
@@ -2239,6 +2272,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.leafVecHomes > 0 {
 		leafVectorHomesOf[out] = g.leafVecHomes
+	}
+	if g.rotated > 0 {
+		rotatedOps[out] = g.rotated
 	}
 	if g.reused > 0 {
 		reusedCompares[out] = g.reused
@@ -5567,6 +5603,23 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.emit("cset", wr(out), asm.Condition{Code: code})
 		return out, nil
 	}
+	if x, count, isRotate := g.rotate(e, typ); isRotate {
+		// `(x >> k) | (x << (W - k))` is one `ror` (docs/spec/94-assembler.md
+		// §9 "Rotates"; Oak.AssemblerSemantics.ror_spelling).
+		l, lfixed, err := g.operand(x, typ)
+		if err != nil {
+			return 0, err
+		}
+		out := l
+		if lfixed {
+			if out, err = g.alloc(typ); err != nil {
+				return 0, err
+			}
+		}
+		g.emit("ror", reg(out, typ), reg(l, typ), imm(count))
+		g.rotated++
+		return out, nil
+	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec && !g.reducesMultiply(e, typ) {
 		return g.directInfix(e, typ, mnemonic)
 	}
@@ -5898,6 +5951,44 @@ func (g *generator) sameOperand(e *ast.InfixExpression) bool {
 	return e.Left.String() == e.Right.String() && !g.callsProgramFunction(e.Left)
 }
 
+// rotate recognizes a rotation spelled with shifts — `(x >> k) | (x << (W -
+// k))` or `(x << k) | (x >> (W - k))` over an unsigned x of 32 or 64 bits,
+// both counts constant and summing to the width, the operand one pure
+// expression — and reports the operand and the right-rotate count. The
+// AArch64 lane lowers it to `ror`; a rotation's result is normalized
+// whenever its operand is, so no mask follows.
+func (g *generator) rotate(e *ast.InfixExpression, typ scalar) (ast.Expression, int64, bool) {
+	if e.Operator != "|" || g.rvLane || typ.signed || typ.isFloat || typ.isVec || typ.isBool || (typ.bits != 32 && typ.bits != 64) {
+		return nil, 0, false
+	}
+	left, leftIsShift := e.Left.(*ast.InfixExpression)
+	right, rightIsShift := e.Right.(*ast.InfixExpression)
+	if !leftIsShift || !rightIsShift {
+		return nil, 0, false
+	}
+	if left.Operator == "<<" && right.Operator == ">>" {
+		left, right = right, left
+	}
+	if left.Operator != ">>" || right.Operator != "<<" {
+		return nil, 0, false
+	}
+	rightCount, rightConst := constantValue(left.Right)
+	leftCount, leftConst := constantValue(right.Right)
+	if !rightConst || !leftConst || rightCount <= 0 || rightCount >= int64(typ.bits) || rightCount+leftCount != int64(typ.bits) {
+		return nil, 0, false
+	}
+	x := left.Left
+	if _, isLiteral := x.(*ast.IntegerLiteral); isLiteral || x.String() != right.Left.String() || g.callsProgramFunction(x) {
+		return nil, 0, false
+	}
+	for _, shift := range []*ast.InfixExpression{left, right} {
+		if t, err := g.typeOf(shift, &typ); err != nil || t != typ {
+			return nil, 0, false
+		}
+	}
+	return x, rightCount, true
+}
+
 func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
 	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isVec {
 		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
@@ -6089,11 +6180,14 @@ func constantValue(expr ast.Expression) (int64, bool) {
 	return 0, false
 }
 
-// foldLiteralPair folds `T(a) + T(b)` and `T(a) * T(b)` for an unsigned
-// integer type T when the result fits T, reading each side with value; a
-// wrapping result, a signed or mixed type, or a bare literal is not folded.
+// foldLiteralPair folds `T(a) + T(b)`, `T(a) * T(b)`, and `T(a) - T(b)` for
+// an unsigned integer type T when the result fits T (a difference when it
+// does not go below zero), reading each side with value; a wrapping
+// result, a signed or mixed type, or a bare literal is not folded. The
+// difference is the shift count of an inlined rotate, `u32(32) - u32(7)`
+// (docs/spec/94-assembler.md §9 "Rotates").
 func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, bool)) (int64, bool) {
-	if e.Operator != "+" && e.Operator != "*" {
+	if e.Operator != "+" && e.Operator != "*" && e.Operator != "-" {
 		return 0, false
 	}
 	typeName := ""
@@ -6118,9 +6212,15 @@ func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, 
 		return 0, false
 	}
 	var result uint64
-	if e.Operator == "+" {
+	switch e.Operator {
+	case "+":
 		result = uint64(left) + uint64(right)
-	} else {
+	case "-":
+		if left < right {
+			return 0, false
+		}
+		result = uint64(left - right)
+	default:
 		if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
 			return 0, false
 		}

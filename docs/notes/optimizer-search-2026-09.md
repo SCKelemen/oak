@@ -71,7 +71,35 @@ vector move and a frame-slot round trip cost, and whether residency
 transforms deserve a tie-break, is calibration work for the benchmarks
 (§8); the report's `candidates` line is where to read it.
 
-Not yet: MachineIR and the allocator (Phase B), OptIR and the analyses
+### Phase B, first increment: `machine/`
+
+The machine-level representation and the global allocator exist as a
+lift of the emitted body rather than a new lowering target: `machine.Lift`
+reads an AArch64 `asm.Function` into blocks and instructions with every
+definition and use explicit (a per-mnemonic shape table; an instruction,
+operand, or control shape it does not know refuses the lift), builds the
+control-flow graph, computes reaching definitions and the def-use webs
+that serve as virtual registers, global liveness with precise live
+segments (a value saved before a call and reloaded after it is not live
+across it), and recolors the webs nothing pins — entry values, the
+procedure-call contract, reserved registers, dead definitions — with a
+linear scan: a copy partner's register when free (the copy is then
+removed), else its own, else the lowest free register of the pool, which
+is the registers the lowering already wrote, so the frame, the prologue,
+and the epilogue stand as emitted. Ranges crossing a call take
+callee-saved registers only, wide vector webs never v8–v15 across a
+call, and a copy narrower than its source's writes or its destination's
+reads is never removed. A web that finds no register is pinned and
+allocation restarts, so at worst every web keeps the lowering's coloring.
+`nativegen`'s `reallocate` transform runs it as a machine-phase candidate;
+on the vector-homes test bodies the verifier proves every reallocated
+form and the search selects it, two to seventeen copies fewer per body.
+
+Not in this increment: spilling and live-range splitting (the pool never
+grows the frame), a lowering that emits virtual registers directly,
+scheduling, and the RV64 lane.
+
+Not yet: OptIR and the analyses (Phase C), OptIR and the analyses
 (Phase C), vector plans (Phase D), and the proof-obligation service of
 the proof-guided note §26 beyond the requirement/fact matching here.
 

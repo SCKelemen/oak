@@ -405,8 +405,8 @@ func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbo
 	if !ok {
 		return nil, nil, reason, false
 	}
-	// The effects are the run's past the exit: the loop's memory markers
-	// and what the code after the loop stores.
+	// The path continues past the exit: the loop's memory markers and
+	// what the code after the loop stores are its effects.
 	return x.run(shape.exitLabel, post)
 }
 
@@ -1657,6 +1657,22 @@ func loopWitnessInputs(fn *Function, sig *ast.FunctionStatement) []map[string]ui
 		names = append(names, param.Name.Value)
 	}
 	names = append(names, compositeParamLeaves(fn, sig)...)
+	// A Bool parameter holds 0 or 1 (the C enum): its witness values are
+	// masked to the bit, an input outside being ill-typed on both sides.
+	bools := map[string]bool{}
+	for _, param := range sig.Parameters {
+		if param != nil && param.Name != nil && typeText(param.Type) == "Bool" {
+			bools[param.Name.Value] = true
+		}
+	}
+	maskBools := func(env map[string]uint64) map[string]uint64 {
+		for name := range bools {
+			if value, bound := env[name]; bound {
+				env[name] = value & 1
+			}
+		}
+		return env
+	}
 	// The larger values clear the bounds checks of a body that reads a
 	// table of several 16-byte vectors before its loops (a UTF-8 kernel
 	// reads 64 bytes of tables): under the small ones alone every input
@@ -1668,7 +1684,7 @@ func loopWitnessInputs(fn *Function, sig *ast.FunctionStatement) []map[string]ui
 	}
 	for _, a := range small {
 		if len(names) == 1 {
-			inputs = append(inputs, map[string]uint64{names[0]: a})
+			inputs = append(inputs, maskBools(map[string]uint64{names[0]: a}))
 			continue
 		}
 		for _, b := range small {
@@ -1676,7 +1692,7 @@ func loopWitnessInputs(fn *Function, sig *ast.FunctionStatement) []map[string]ui
 			for i, extra := range names[2:] {
 				env[extra] = (a*7 + b*3 + uint64(i)) % 19
 			}
-			inputs = append(inputs, env)
+			inputs = append(inputs, maskBools(env))
 		}
 	}
 	return inputs
@@ -1868,17 +1884,23 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
 		}
-		if !okA || !okO || asmValue == trapPath {
-			// Beyond the unrolling budget on this input, or an input on
-			// which the body traps (an element read past a length the
-			// input set to zero): no value to compare on either side.
-			continue
-		}
 		names := make([]string, 0, len(env))
 		for name := range env {
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		if okA && asmValue == trapPath && okO && !concrete.witnessTrapped {
+			// The machine traps on this input and the Oak body yields a
+			// value (its own traps are noted in a witness run): the
+			// trapping inputs are not the same on the two sides.
+			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): the machine traps where Oak yields a value", fn.Name, describeEnv(names, env))}
+		}
+		if !okA || !okO || asmValue == trapPath || concrete.witnessTrapped {
+			// Beyond the unrolling budget on this input, or an input on
+			// which both bodies trap (an element read past a length the
+			// input set to zero): no value to compare.
+			continue
+		}
 		if asmTerm != nil {
 			got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
 			if got != want {
