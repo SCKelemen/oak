@@ -1912,6 +1912,11 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 // loopEventBudget bounds the data-dependent loops one body may hold.
 const loopEventBudget = 32
 
+// witnessWorkBudget bounds the machine steps a loop proof's witness runs
+// take in all: a cheap body runs every input loopWitnessInputs offers,
+// one whose callees unroll their loops on each input runs a few.
+const witnessWorkBudget = 1 << 21
+
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
 type bodyEnd struct {
@@ -3298,11 +3303,22 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// result term: the span memories are the comparison) has none here;
 	// its proof is the coupling alone.
 	checked := 0
+	work := 0
 	for _, env := range loopWitnessInputs(fn, sig) {
 		if !lowering.inDomain(env) {
 			continue // a union tag outside its variants: not a well-typed input
 		}
+		// The pass is bounded by the work its machine runs did, not by
+		// their number: a body whose callees unroll their loops on every
+		// input (add_bits spent three minutes here) stops after a few,
+		// a cheap body runs every input.
+		if work > witnessWorkBudget {
+			break
+		}
 		asmValue, asmRun, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
+		if asmRun != nil {
+			work += asmRun.steps
+		}
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk
 		var oakValue *term
