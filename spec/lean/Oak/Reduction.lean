@@ -64,4 +64,42 @@ theorem unrolled4_sum {w : Nat} (l : List (BitVec w)) :
   rw [unrolled4_eq]
   simp
 
+/-- The vectorized loops over the elements (`nativegen/vector_reduction.go`):
+    each block of eight feeds the eight lane accumulators — the lanes of
+    two `simd.U32x4` or four `simd.U64x2` vectors — the remainder feeds the
+    scalar accumulator, and the result is the scalar plus the combined
+    lanes. -/
+def vector8 {w : Nat} (acc a0 a1 a2 a3 a4 a5 a6 a7 : BitVec w) : List (BitVec w) → BitVec w
+  | x0 :: x1 :: x2 :: x3 :: x4 :: x5 :: x6 :: x7 :: rest =>
+      vector8 acc (a0 + x0) (a1 + x1) (a2 + x2) (a3 + x3) (a4 + x4) (a5 + x5) (a6 + x6) (a7 + x7) rest
+  | rest =>
+      rest.foldl (· + ·) acc + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+
+/-- **The vector rewrite is the loop**: from any scalar and eight lane
+    accumulators, the vectorized loops compute the sequential sum starting
+    at their combination. The lane accumulators are combined in the vector
+    domain and then across the lanes, which the grouping above records; any
+    grouping is the same value, since addition reassociates. -/
+theorem vector8_eq {w : Nat} (acc a0 a1 a2 a3 a4 a5 a6 a7 : BitVec w) (l : List (BitVec w)) :
+    vector8 acc a0 a1 a2 a3 a4 a5 a6 a7 l
+      = sequential (acc + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))) l := by
+  induction a0, a1, a2, a3, a4, a5, a6, a7, l using vector8.induct with
+  | case1 a0 a1 a2 a3 a4 a5 a6 a7 x0 x1 x2 x3 x4 x5 x6 x7 rest ih =>
+    rw [vector8, ih]
+    unfold sequential
+    simp only [List.foldl]
+    congr 1
+    ac_rfl
+  | case2 a0 a1 a2 a3 a4 a5 a6 a7 rest hrest =>
+    rw [vector8.eq_2 _ _ _ _ _ _ _ _ _ _ hrest]
+    unfold sequential
+    rw [foldl_add_right]
+
+/-- The kernel's statement: zero lanes, the sequential sum from the
+    scalar accumulator. -/
+theorem vector8_sum {w : Nat} (acc : BitVec w) (l : List (BitVec w)) :
+    vector8 acc 0 0 0 0 0 0 0 0 l = sequential acc l := by
+  rw [vector8_eq]
+  simp
+
 end Oak.Reduction

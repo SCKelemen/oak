@@ -841,7 +841,14 @@ This phase targets the measured UTF-8 call/spill gap directly.
 ### Phase D: vector planning
 
 22. vector-plan representation;
-23. fixed-width integer reduction vectorization — **in progress (2026-09-16, the oak session at ~/oakmcu/oak): a law-licensed source rewrite beside the unrolling, lanes as the four accumulators, `vectorize-reductions` in the registry**;
+23. fixed-width integer reduction vectorization — **landed 2026-09-16**
+    (`vectorize-reductions`, `nativegen/vector_reduction.go`): eight
+    elements an iteration over the lanes of two `simd.U32x4` or four
+    `simd.U64x2`, licensed by `Oak.Reduction.vector8_eq`, proven by the
+    verifier, 1.6× the scalar unrolling on `u32`; `u64` keeps the scalar
+    form on cost (an address register per 128-bit load). One vector
+    accumulator was measured slower than four scalar ones — the plan
+    table's VF/UF pair matters, and the interleave is where the win is;
 24. map/zip vectorization;
 25. SLP-like straight-line packing;
 26. vector-aware cost model;

@@ -874,15 +874,40 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		return "a vector load through a register that is not a span base", false
 	}
 	param, baseOffset, isSpan := spanBaseOf(base)
+	// An element address in the base register, `add xE, xB, wI, uxtw #s`
+	// then `[xE]`: the form the lowering uses for lanes wider than a byte
+	// (nativegen/simd.go vecAddress, the checker recording the region of
+	// the guard's lanes). The address is complete, so the addressing mode
+	// carries no index of its own; the element index is the address's,
+	// plus any constant offset in it.
+	var addrIndex *term
 	if !isSpan {
-		return "a vector load through a register that is not a span base", false
+		name, offset, idx, shift, isElement := elementBaseOf(base)
+		if !isElement || mem.Index != nil {
+			return "a vector load through a register that is not a span base", false
+		}
+		if elem, known := x.spans[name]; !known || elem == 0 || int64(1)<<uint(shift) != elem || offset%elem != 0 {
+			return "a vector load through an element address not aligned to an element", false
+		}
+		param, baseOffset, addrIndex, isSpan = name, offset, truncate(idx, 32), true
 	}
 	elem, known := x.spans[param]
 	if !known || elem == 0 || elem > size || baseOffset%elem != 0 || mem.Mode != MemOffset {
 		return "a vector load over a base that is not a span of whole elements", false
 	}
 	var index *term
-	if mem.Index != nil {
+	if addrIndex != nil {
+		index = addrIndex
+		if extra := baseOffset / elem; extra != 0 {
+			index = binaryTerm("add", index, constTerm(uint64(extra), 32))
+		}
+		if mem.Offset != 0 {
+			if mem.Offset < 0 || mem.Offset%elem != 0 {
+				return "a vector load not aligned to an element", false
+			}
+			index = binaryTerm("add", index, constTerm(uint64(mem.Offset/elem), 32))
+		}
+	} else if mem.Index != nil {
 		if int64(1)<<uint(mem.Shift) != elem {
 			return "an indexed vector load whose scale is not the element size", false
 		}
@@ -900,6 +925,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		}
 		index = constTerm(uint64(mem.Offset/elem+baseOffset/elem), 32)
 	}
+	_ = isSpan
 	bits := int(elem) * 8
 	lanes := make([]*term, size/elem)
 	for k := range lanes {
