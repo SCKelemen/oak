@@ -1365,6 +1365,8 @@ type generator struct {
 	flagsTo    map[string]string
 	liveFlags  string
 	reused     int
+	// held: the register each frame slot's value is in (nativegen/forward.go).
+	held map[int64]heldSlot
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// elided counts the guards left out under elide (reported).
@@ -3334,7 +3336,9 @@ func (g *generator) emit(mnemonic string, operands ...asm.Operand) {
 		return
 	}
 	g.liveFlags = ""
-	g.items = append(g.items, g.ins(mnemonic, operands...))
+	if ins, keep := g.forward(g.ins(mnemonic, operands...)); keep {
+		g.items = append(g.items, ins)
+	}
 	switch mnemonic {
 	case "b", "cbz", "cbnz", "tbz", "tbnz":
 		// A transfer that is not a compare's branch: the target's flags
@@ -3379,6 +3383,7 @@ func (g *generator) label(name string) {
 	}
 	g.items = append(g.items, asm.Label{Name: name, Line: g.line})
 	g.terminated = false
+	g.forgetAll()
 }
 
 func (g *generator) newLabel(hint string) string {
@@ -3502,6 +3507,15 @@ func (g *generator) overflowScratch() (int, bool) {
 // through here or emit.
 func (g *generator) put(item asm.Item) {
 	g.liveFlags = ""
+	if ins, isIns := item.(asm.Instruction); isIns {
+		forwarded, keep := g.forward(ins)
+		if !keep {
+			return
+		}
+		item = forwarded
+	} else {
+		g.forgetAll()
+	}
 	g.items = append(g.items, item)
 }
 
@@ -5158,6 +5172,19 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 		if codes, isComparison := conditionCodes[infix.Operator]; isComparison {
 			if operand, err := g.operandType(infix); err == nil && !operand.isFloat {
 				left, leftOK := g.simpleOperand(infix.Left, operand, false)
+				computedLeft := -1
+				if !leftOK && !g.rvLane {
+					// A computed left operand (a record field, `next.filled
+					// == u32(64)`): into a scratch, then the same
+					// compare-and-branch rather than a Bool materialized
+					// and tested (docs/spec/94-assembler.md §9 "Slot
+					// forwarding"; Oak.Forwarding.cbz_cset).
+					l, err := g.expr(infix.Left, &operand)
+					if err != nil {
+						return err
+					}
+					computedLeft, left, leftOK = l, reg(l, operand), true
+				}
 				right, rightOK := g.simpleOperand(infix.Right, operand, true)
 				if leftOK && !rightOK {
 					// A named constant, or a folded conversion: the compare
@@ -5189,6 +5216,9 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					// homes, a length register, an immediate) need no second
 					// compare (Lane.ReuseFlags).
 					compare := fmt.Sprintf("%v %v", left, right)
+					if computedLeft >= 0 {
+						compare = "" // a scratch's spelling names no operand at the label
+					}
 					if g.reuseFlags && g.liveFlags != "" && g.liveFlags == compare {
 						g.reused++
 					} else {
@@ -5198,7 +5228,13 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					if computed >= 0 {
 						g.release(computed)
 					}
+					if computedLeft >= 0 {
+						g.release(computedLeft)
+					}
 					return nil
+				}
+				if computedLeft >= 0 {
+					g.release(computedLeft)
 				}
 			}
 		}
@@ -6163,6 +6199,8 @@ func (g *generator) retargetLast(r, v int) bool {
 	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
 	ins.Operands = operands
 	g.items[n-1] = ins
+	g.forget(r)
+	g.forget(v)
 	return true
 }
 
@@ -7769,6 +7807,7 @@ func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
 		return err
 	}
 	g.items = g.items[:mark]
+	g.forgetAll()
 	switch {
 	case probe.sc != nil:
 		g.releaseTemps(probe.sc.temps)
