@@ -347,3 +347,27 @@ marked four lanes deep — then the invariant hoisted out of the header,
 and the vector form of the same rewrite (the `simd` types the language
 has) once the verifier couples a lane sum.
 
+## Pair loads, 2026-09-16
+
+The unrolled reduction's four loads are two `ldp` pairs off one block
+address, and the main loop's header reads the span's length register in
+place (docs/spec/94-assembler.md §9 "Pair loads"): `bench_sum`'s main
+loop is twelve instructions per four elements, proven as before (the
+verifier reads a pair load as two loads, in a loop body too). Run under
+a load average between 40 and 75 (`results/m-series-2026-09-16-pairs.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 221,333 | 200,000 | 0.90× | 116,139 |
+| dot | 898,000 | 1,028,000 | 1.14× | 910,250 |
+| tiled | 204,333 | 217,333 | 1.06× | 253,167 |
+
+Reading: the run is noisier than the previous one (the C row itself
+moved), so the ratio is read against the shape: `sum` is at twelve
+instructions per four elements where clang's NEON loop is about six per
+four (two `ldp q`, two `add v.2d` per eight elements); the remaining gap
+is the vector form of the same reduction. `tiled` and `dot` are
+unchanged by this increment (their loads are float lanes, which the
+pair pass leaves alone).
+

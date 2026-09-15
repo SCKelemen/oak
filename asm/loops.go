@@ -1153,6 +1153,15 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					pc++
 					continue
 				}
+				if instr.Mnemonic == "ldp" {
+					// A pair load off a span element address: two loads
+					// (nativegen/pair_loads.go).
+					if reason, ok := x.loadPair(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
 				if !isLoad(instr.Mnemonic) {
 					// A store through a span: into the iteration's memory
 					// (the loop's marker), recorded for the coupling proof.

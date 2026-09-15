@@ -2749,6 +2749,10 @@ against the rewritten body and Lean proving the rewrite
 (`asm.Function.Body`) so the verifier and the verdict cache judge the
 right one.
 
+The forty-fifth increment is the pair loads (§9): adjacent element loads
+of one span become a block address and `ldp` pairs, the verifier reading
+a pair as two loads (`asm/pair_loads_test.go`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3812,6 +3816,26 @@ a float accumulator (its addition does not reassociate), a loop with any
 other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
+
+**Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
+Within one basic block, two element loads of one span at consecutive
+indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
+x10, [x19, w10, uxtw #3]` with `w10 = w3 + 1` — become the block's element
+address formed once, `add x15, x19, w3, uxtw #3`, and one pair load at
+the immediate offset, `ldp x9, x10, [x15]`; the next pair reads `[x15,
+#16]`. The second load moves up to the first, so nothing between them may
+write the base, the index, or the block address, read or write the second
+destination, or store; the index temporary the second load consumed dies
+with it, and the block address is a scratch register the whole function
+never names (a register the second lowering pass gave a variable is live
+across blocks that never mention it). The seam checker admits the pair
+through the element region the index's slack guard marks (§7: `add xE, xB,
+wI, uxtw #s` under `wI + K <= len` is a region of K elements, and a pair
+of two elements at offset `2j` lies inside it for `2j + 2 <= K`); the
+verifier reads a pair load as two loads of the register width, in a
+straight path and in a loop body alike. The unrolled reduction's four
+loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
+four elements.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
