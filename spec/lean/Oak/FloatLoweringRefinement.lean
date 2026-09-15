@@ -5,8 +5,8 @@ import Oak.FloatOps
 
 `Oak.LoweringRefinement` relates the extraction and verifier lowerings for the
 shared integer and aggregate language.  This module starts the corresponding
-floating-point seam with the three binary32 operations emitted by
-`oak build -lean-floats bits`: `+`, `-`, and `*`.
+floating-point seam with the binary32 operations emitted by
+`oak build -lean-floats bits`: `+`, `-`, `*`, and the six comparisons.
 
 The source side uses the exact `Oak.FloatOps` carriers, modulo their documented
 canonical-NaN reading of Lean's `Float32`. The verifier side has
@@ -19,9 +19,10 @@ The second increment adds literals after decimal parsing has rounded them to
 binary32 bits, plus straight-line local declarations and rebindings.  The
 third adds the total sign operations: negation, absolute value, and copysign,
 under that same result-level NaN quotient. Payload-observing bitcasts are not
-part of this theorem.
-Decimal parsing itself, comparisons, conversions, spans, control flow, calls,
-binary64, and SIMD remain outside this theorem.
+part of this theorem. The fourth adds IEEE equality and ordering: NaNs are
+unordered and the two signed zeros are equal.
+Decimal parsing itself, conversions, spans, control flow, calls, binary64, and
+SIMD remain outside this theorem.
 -/
 
 namespace Oak.FloatLoweringRefinement
@@ -53,6 +54,26 @@ inductive VerifierUnaryOp
   | clearSign
   deriving DecidableEq, Repr
 
+/-- IEEE comparison operations in the source syntax. -/
+inductive SourceCompareOp
+  | eq
+  | ne
+  | lt
+  | le
+  | gt
+  | ge
+  deriving DecidableEq, Repr
+
+/-- The corresponding predicates built by the verifier's `floatCompare`. -/
+inductive VerifierCompareOp
+  | eq
+  | ne
+  | lt
+  | le
+  | gt
+  | ge
+  deriving DecidableEq, Repr
+
 /-- The spelling map in `oakLowering.lower` for binary32 arithmetic. -/
 def lowerOp : SourceOp → VerifierOp
   | .add => .fadd
@@ -63,6 +84,14 @@ def lowerOp : SourceOp → VerifierOp
 def lowerUnaryOp : SourceUnaryOp → VerifierUnaryOp
   | .neg => .xorSign
   | .abs => .clearSign
+
+def lowerCompareOp : SourceCompareOp → VerifierCompareOp
+  | .eq => .eq
+  | .ne => .ne
+  | .lt => .lt
+  | .le => .le
+  | .gt => .gt
+  | .ge => .ge
 
 /-- The extraction's `-lean-floats bits` reading of the three operations. -/
 def SourceOp.eval : SourceOp → Float32 → Float32 → Float32
@@ -88,6 +117,24 @@ def VerifierUnaryOp.eval : VerifierUnaryOp → Float32 → Float32
   | .xorSign => Oak.FloatOps.neg32
   | .clearSign => Oak.FloatOps.abs32
 
+/-- The bit-level comparison carriers used by extraction. -/
+def SourceCompareOp.eval : SourceCompareOp → Float32 → Float32 → Bool
+  | .eq => Oak.FloatOps.eq32
+  | .ne => Oak.FloatOps.ne32
+  | .lt => Oak.FloatOps.lt32
+  | .le => Oak.FloatOps.le32
+  | .gt => Oak.FloatOps.gt32
+  | .ge => Oak.FloatOps.ge32
+
+/-- The semantic reading of the verifier's `floatCompare` result. -/
+def VerifierCompareOp.eval : VerifierCompareOp → Float32 → Float32 → Bool
+  | .eq => Oak.FloatOps.eq32
+  | .ne => Oak.FloatOps.ne32
+  | .lt => Oak.FloatOps.lt32
+  | .le => Oak.FloatOps.le32
+  | .gt => Oak.FloatOps.gt32
+  | .ge => Oak.FloatOps.ge32
+
 /-- Mapping a source operation to the verifier operation preserves its exact
 binary32 meaning. -/
 @[simp] theorem lowerOp_eval (op : SourceOp) (a b : Float32) :
@@ -96,6 +143,10 @@ binary32 meaning. -/
 
 @[simp] theorem lowerUnaryOp_eval (op : SourceUnaryOp) (a : Float32) :
     (lowerUnaryOp op).eval a = op.eval a := by
+  cases op <;> rfl
+
+@[simp] theorem lowerCompareOp_eval (op : SourceCompareOp) (a b : Float32) :
+    (lowerCompareOp op).eval a b = op.eval a b := by
   cases op <;> rfl
 
 /-- The shared straight-line source subset for this increment. -/
@@ -229,6 +280,48 @@ theorem lowerF_eval (e : Expr) (ρ : SourceEnv) :
     (lowerF e).eval ρ = e.eval ρ := by
   exact lowerWith_eval e ρ ρ parameterTerms (parameterTerms_agree ρ)
 
+/-- A Boolean condition over two float expressions. -/
+inductive Condition
+  | compare (op : SourceCompareOp) (left right : Expr)
+  deriving Repr
+
+/-- The verifier-side Boolean term produced by `floatCompare`. -/
+inductive BoolTerm
+  | compare (op : VerifierCompareOp) (left right : Term)
+  deriving Repr
+
+def Condition.eval : Condition → SourceEnv → Bool
+  | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+
+def BoolTerm.eval : BoolTerm → SourceEnv → Bool
+  | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+
+def lowerConditionWith : Condition → TermEnv → BoolTerm
+  | .compare op left right, σ =>
+      .compare (lowerCompareOp op) (lowerWith left σ) (lowerWith right σ)
+
+/-- Float comparison lowering preserves the IEEE predicate in every agreeing
+scope. The comparison carriers treat every NaN alike, so this result is
+independent of Lean's NaN-payload canonicalization. -/
+theorem lowerConditionWith_eval (condition : Condition)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerConditionWith condition σ).eval parameters = condition.eval current := by
+  cases condition with
+  | compare op left right =>
+      simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
+      rw [lowerWith_eval left parameters current σ hσ,
+          lowerWith_eval right parameters current σ hσ]
+      exact lowerCompareOp_eval op (left.eval current) (right.eval current)
+
+def lowerCondition (condition : Condition) : BoolTerm :=
+  lowerConditionWith condition parameterTerms
+
+theorem lowerCondition_eval (condition : Condition) (ρ : SourceEnv) :
+    (lowerCondition condition).eval ρ = condition.eval ρ := by
+  exact lowerConditionWith_eval condition ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
+
 private def a : Expr := .param "a"
 private def b : Expr := .param "b"
 private def c : Expr := .param "c"
@@ -241,6 +334,18 @@ example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
 example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
 example : lowerF (.copysign (.unary .neg a) b) =
     .copysign (.unary .xorSign (.param "a")) (.param "b") := rfl
+example : lowerCondition (.compare .eq a b) =
+    .compare .eq (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .ne a b) =
+    .compare .ne (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .lt a b) =
+    .compare .lt (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .le a b) =
+    .compare .le (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .gt a b) =
+    .compare .gt (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .ge a b) =
+    .compare .ge (.param "a") (.param "b") := rfl
 example : lowerF (.binary .add (.binary .mul a b) c) =
     .float .fadd (.float .fmul (.param "a") (.param "b")) (.param "c") := rfl
 example : lowerF (.binary .add a (.literal 0x3FC00000)) =
