@@ -96,8 +96,13 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 		}
 		if ins.Mnemonic == "fadd" {
 			fadds++
-			if dst, isReg := ins.Operands[0].(asm.Register); !isReg || dst.Text != "s8" {
-				t.Errorf("dot's fadd must write the accumulator's home s8: %s", fmt.Sprint(ins))
+			// The accumulator lives in one register across the loop: the
+			// fadd writes the register it reads (the candidate search may
+			// recolor which one; compiler/native_search.go).
+			dst, isReg := ins.Operands[0].(asm.Register)
+			src, isSrc := ins.Operands[1].(asm.Register)
+			if !isReg || !isSrc || dst.Class != asm.ClassV || dst.Text != src.Text {
+				t.Errorf("dot's fadd must accumulate in place in a register: %s", fmt.Sprint(ins))
 			}
 		}
 	}

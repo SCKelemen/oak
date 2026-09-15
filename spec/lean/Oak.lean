@@ -183,4 +183,5 @@ import Oak.Tseitin
 import Oak.RVWMO
 import Oak.Reduction
 import Oak.ConstantConditions
+import Oak.Forwarding
 import Oak.ArrayValues

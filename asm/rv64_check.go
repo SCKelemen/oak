@@ -136,6 +136,16 @@ type rvChecker struct {
 	rawDead map[int]bool
 	gen     map[int]int // write generation of each integer register (facts about a value name it)
 
+	// The guard-fact fixpoint over labels (docs/spec/94-assembler.md §9.ae
+	// "Guard facts through labels on the RV64 lane"), as the AArch64
+	// checker's (Check): labelIn is the assumed guard state entering each
+	// label this pass (nil on the first pass: the optimistic carry-over),
+	// labelArrive the meet of the states that actually arrive there, and
+	// forgetAtLabels the conservative fallback past the pass cap.
+	labelIn        map[string]*rvGuardState
+	labelArrive    map[string]*rvGuardState
+	forgetAtLabels bool
+
 	// The vector extension (docs/spec/94-assembler.md §9): v0–v31 are
 	// caller-saved and clobberable, readable once written; the
 	// configuration vsetvli establishes (SEW, and what the checker knows
@@ -315,22 +325,44 @@ type rvRegion struct {
 	param bool
 }
 
+// checkRV64 runs the checker to a fixpoint over the guard facts at labels
+// (Check has the argument): each pass assumes a state at every label,
+// records the meet of the states arriving there, and the passes repeat
+// until the assumptions are the arrivals; past the cap, the conservative
+// pass forgets the guard facts at every label, the pre-fixpoint behavior.
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
-		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, le: map[int]int{}, diff: map[int]rvDiffFact{}, subCount: map[int]rvSubFact{}, scaledStart: map[int]rvScaledStart{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+	var labelIn map[string]*rvGuardState
+	for pass := 0; pass < maxGuardPasses; pass++ {
+		c := runRV64Pass(fn, decl, symbols, labelIn, false)
+		if c.labelArrive == nil {
+			return c.errors // signature or contract errors: nothing to iterate
+		}
+		if labelIn != nil && rvGuardStatesEqual(labelIn, c.labelArrive) {
+			return c.errors
+		}
+		labelIn = c.labelArrive
+	}
+	return runRV64Pass(fn, decl, symbols, nil, true).errors
+}
+
+func runRV64Pass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*rvGuardState, forgetAtLabels bool) *rvChecker {
+	c := newRV64Checker(fn, symbols)
+	c.labelIn = labelIn
+	c.forgetAtLabels = forgetAtLabels
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
-		return shared.errors
+		c.errors = shared.errors
+		return c
 	}
 	if fn.System {
 		c.errorf(fn.Line, "the system capability is not admitted for rv64 units in this increment")
 	}
 	c.bindContract()
 	if len(c.errors) > 0 {
-		return c.errors
+		return c
 	}
+	c.labelArrive = map[string]*rvGuardState{}
 	c.countWrites()
 	c.forgetGuards(-1)
 	// At entry every widened parameter holds; where paths meet, only the
@@ -349,7 +381,103 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 	}
 	fn.FloatFile = c.usesFloatFile
 	fn.VectorFile = c.usesVectorFile
-	return c.errors
+	return c
+}
+
+// rvGuardState is the guard state at a program point: every fact
+// forgetGuards drops where paths meet — index, scaled, half-scaled, upper,
+// difference, count, scaled-start, remaining-count, and slack facts, and
+// each span's proven minimum length. A label holds exactly the state every
+// predecessor carries (rvMeetGuards).
+type rvGuardState struct {
+	idx         map[int]rvIndexFact
+	scaled      map[int]rvScaledFact
+	half        map[int]rvIndexFact
+	le          map[int]int
+	diff        map[int]rvDiffFact
+	subCount    map[int]rvSubFact
+	scaledStart map[int]rvScaledStart
+	rem         map[int]rvRemFact
+	slack       map[int]rvSlackFact
+	mins        map[int]int64 // span base register -> proven minimum length
+}
+
+func (c *rvChecker) guardSnapshot() *rvGuardState {
+	gs := &rvGuardState{idx: copyMap(c.idx), scaled: copyMap(c.scaled), half: copyMap(c.half), le: copyMap(c.le), diff: copyMap(c.diff), subCount: copyMap(c.subCount), scaledStart: copyMap(c.scaledStart), rem: copyMap(c.rem), slack: copyMap(c.slack), mins: map[int]int64{}}
+	for base, span := range c.spans {
+		if span.hasMin {
+			gs.mins[base] = span.minLen
+		}
+	}
+	return gs
+}
+
+// arrive records the current state reaching a label.
+func (c *rvChecker) arrive(label string) {
+	if c.labelArrive == nil {
+		return
+	}
+	c.labelArrive[label] = rvMeetGuards(c.labelArrive[label], c.guardSnapshot())
+}
+
+// applyGuards installs a label's guard state: exactly the facts it holds,
+// the minimums on the spans that still exist.
+func (c *rvChecker) applyGuards(gs *rvGuardState) {
+	c.idx = copyMap(gs.idx)
+	c.scaled = copyMap(gs.scaled)
+	c.half = copyMap(gs.half)
+	c.le = copyMap(gs.le)
+	c.diff = copyMap(gs.diff)
+	c.subCount = copyMap(gs.subCount)
+	c.scaledStart = copyMap(gs.scaledStart)
+	c.rem = copyMap(gs.rem)
+	c.slack = copyMap(gs.slack)
+	for base, span := range c.spans {
+		minLen, has := gs.mins[base]
+		span.hasMin = has
+		span.minLen = minLen
+	}
+}
+
+func rvMeetGuards(a, b *rvGuardState) *rvGuardState {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := &rvGuardState{idx: meetMap(a.idx, b.idx), scaled: meetMap(a.scaled, b.scaled), half: meetMap(a.half, b.half), le: meetMap(a.le, b.le), diff: meetMap(a.diff, b.diff), subCount: meetMap(a.subCount, b.subCount), scaledStart: meetMap(a.scaledStart, b.scaledStart), rem: meetMap(a.rem, b.rem), slack: meetMap(a.slack, b.slack), mins: map[int]int64{}}
+	for base, minA := range a.mins {
+		if minB, ok := b.mins[base]; ok {
+			out.mins[base] = min(minA, minB)
+		}
+	}
+	return out
+}
+
+func (gs *rvGuardState) equal(other *rvGuardState) bool {
+	return equalMap(gs.idx, other.idx) && equalMap(gs.scaled, other.scaled) && equalMap(gs.half, other.half) && equalMap(gs.le, other.le) && equalMap(gs.diff, other.diff) && equalMap(gs.subCount, other.subCount) && equalMap(gs.scaledStart, other.scaledStart) && equalMap(gs.rem, other.rem) && equalMap(gs.slack, other.slack) && equalMap(gs.mins, other.mins)
+}
+
+func rvGuardStatesEqual(a, b map[string]*rvGuardState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, ga := range a {
+		gb, ok := b[name]
+		if !ok || !ga.equal(gb) {
+			return false
+		}
+	}
+	return true
+}
+
+// newRV64Checker is the checker with its maps made.
+func newRV64Checker(fn *Function, symbols map[string]bool) *rvChecker {
+	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
+		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, le: map[int]int{}, diff: map[int]rvDiffFact{}, subCount: map[int]rvSubFact{}, scaledStart: map[int]rvScaledStart{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+	return c
 }
 
 func (c *rvChecker) errorf(line int, format string, args ...interface{}) {
@@ -1027,7 +1155,24 @@ func (c *rvChecker) forgetRegister(num int) {
 // label reachable only by a later branch has no known displacement and is
 // refused, as the AArch64 checker refuses it.
 func (c *rvChecker) enterLabel(label Label, at int) {
+	if !c.unreachable {
+		c.arrive(label.Name) // the fall-through path
+	}
+	before := c.guardSnapshot()
 	c.forgetGuards(at)
+	// Guard facts at the label: the fixpoint's assumption for it — the meet
+	// of every predecessor's facts — or, on the first pass (no assumption
+	// yet) the optimistic carry-over, or under the conservative fallback
+	// nothing at all (forgetGuards has just dropped them).
+	switch {
+	case c.forgetAtLabels:
+	case c.labelIn == nil:
+		c.applyGuards(before)
+	default:
+		if assumed, known := c.labelIn[label.Name]; known {
+			c.applyGuards(assumed)
+		}
+	}
 	known, has := c.labelDisp[label.Name]
 	switch {
 	case has && !c.unreachable && known != c.disp:
@@ -1046,6 +1191,7 @@ func (c *rvChecker) branchTo(name string, line int) {
 		c.errorf(line, "branch to unknown label %s", name)
 		return
 	}
+	c.arrive(name)
 	if known, has := c.labelDisp[name]; has {
 		if known != c.disp {
 			c.errorf(line, "branch to %s with sp displacement %d, but the label has %d", name, c.disp, known)
