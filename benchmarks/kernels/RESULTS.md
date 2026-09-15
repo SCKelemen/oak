@@ -230,3 +230,31 @@ What remains, in the program's order:
    neither side's prover reads that guard as the bound; the fact would
    drop both.
 
+## After the first native program, 2026-09-16
+
+The same harness on the merged compiler (`results/m-series-2026-09-16-native.json`),
+the machine carrying a load average near 50 from other work, so the
+medians are noisy and the best samples are what is read. Best samples, ns
+per operation, 1 MiB / 2^20 elements; the ratio is the native backend over
+the C backend (clang `-O3` over the emitted C).
+
+| Kernel | C backend | oak-native | native / C | Rust | Note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| sum | 111,600 | 357,200 | 3.20× | 110,875 | the multi-accumulator reduction (item 1) |
+| dot | 876,000 | 989,000 | 1.13× | 810,342 | from 3.2× at the baseline |
+| tiled | 171,800 | 166,000 | 0.97× | 196,817 | from 2.7×; ahead of Rust |
+| search | 8,579,800 | 12,278,800 | 1.43× | 7,399,925 | from 2.4× (upstream's proof-guided elision); bounds through arithmetic (item 2) |
+| page_probe | 9,262,200 | 11,833,200 | 1.28× | 12,318,975 | as `search`; ahead of Rust |
+| bitmap | 183,600 | 161,400 | 0.88× | 170,142 | the C shell on both rows (`arm64.cnt64`) |
+| dispatch | 9,757,600 | 7,807,000 | 0.80× | 8,042,433 | ahead of both |
+| crc32c | 102,000 | 137,400 | 1.35× | 2,169,192 (table-driven) | the two calls per chunk (item 3) |
+| sha256 | 483,800 | 538,600 | 1.11× | 4,125,483 (word-at-a-time) | array parameters stay in the C shell |
+| blake3 | 2,631,600 | 4,193,400 | 1.59× | — | array parameters stay in the C shell |
+
+Reading: five of the ten kernels are within 15 percent of clang or ahead
+of it on the native backend, three are ahead of the hand-written Rust, and
+the three that remain behind by more than a third are the three named
+items of the program — the reduction, the bounds facts through arithmetic,
+and the call chain — plus the array-parameter bodies (`sha256`, `blake3`)
+that the native lane does not lower yet and the C shell runs.
+
