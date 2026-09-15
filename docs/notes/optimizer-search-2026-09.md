@@ -31,7 +31,11 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   against a fake lane.
 - `nativegen/opt.go` — the native lane's side: the five transforms the
   lane already performed (`strength-reduce`, `elide-guards`,
-  `reuse-flags`, `hoist-invariants`, `unroll-reductions`) as
+  `reuse-flags`, `hoist-invariants`, `unroll-reductions`), then
+  `vector-homes` and the first transform written for the registry,
+  `late-cleanup` (§11 "Machine", late copy/branch cleanup:
+  `nativegen/cleanup.go`, a block-local peephole under a whole-function
+  register liveness, 2026-09-16), as
   `opt.Transform`s over `Lane` configurations, each with its phase,
   proof kind, and requirements; `FunctionFacts` reading the
   typechecker's proved indices and the language's integer associativity
@@ -565,7 +569,8 @@ The existing native optimizations should be migrated into the candidate interfac
 - multiply-add/select forms;
 - scheduling alternatives;
 - allocation alternatives;
-- late copy/branch cleanup.
+- late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
+  of the kernel package's instructions, verdicts unchanged).
 
 ## 12. Vector planning
 
