@@ -569,7 +569,14 @@ sign bit, `vs` after `adds` the signed overflow). `cbz`/`cbnz` and
 flags (the checker reads the register and bounds the bit index); the
 executor, the loop-body executor, and loop recognition treat them like
 `b.cond`, so a count-down loop exiting through `cbz` is proven by the
-affine coupling and a `tbz` bit test verifies. Byte-offset pointer walks
+affine coupling and a `tbz` bit test verifies. A `u16` or `u8` (`i16`,
+`i8`) loop counter lives in a 32-bit general register, zero- or
+sign-extended after each step (`and #0xFFFF`, `uxth`, `sxth`); the
+coupling pairs the narrow Oak variable with the register through a
+widening image, each extension a candidate one iteration must preserve
+(the OS pilot's `i: u16` over `max_pages` in `reset`, which had "no
+register as an affine image"; `compiler/e2e_native_narrow_counter_test.go`).
+Byte-offset pointer walks
 (`[xB, xO]`) remain deliberately outside the subset: the scaled-index form
 is the idiom and costs nothing on AArch64, and a byte offset would need
 value tracking the seam checker fails closed on. **Instruction breadth.**

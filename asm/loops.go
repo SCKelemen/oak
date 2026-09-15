@@ -3308,6 +3308,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				// A Bool local: 0 or 1 in a general register, zero-extended
 				// (the C enum's word, `cset`, `sltu`).
 				widenings = []string{"zext"}
+			case len(s.locals) == 1 && (s.width() == 16 || s.width() == 8) && (asmEv.width[reg] == 32 || asmEv.width[reg] == 64) && strings.HasPrefix(reg, "r"):
+				// A u16/u8 (i16/i8) counter in a general register: the
+				// lane keeps it zero-extended (`and #0xFFFF`, `uxth`) or
+				// sign-extended (`sxth`) after each step — the OS pilot's
+				// `i: u16` over max_pages in reset. Each widening is a
+				// candidate image; one iteration must preserve it.
+				widenings = []string{"zext", "sext"}
 			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
 				// An f32 local in the low lane of a v register (a scalar
 				// write zeroes the rest) or in an RV64 f register (the file's
