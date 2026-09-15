@@ -115,11 +115,11 @@ func TestWriteExecutableArm64(t *testing.T) {
 			addr[s.Name] = s.Value
 		}
 		text, _ := file.Section(".text").Data()
-		// The stub's bl: the first word on Linux, after the stack setup on
-		// the freestanding board.
+		// The stub's bl: the first word on Linux; after the FP/SIMD enable
+		// (mrs, orr, msr, isb) and the stack setup on the freestanding board.
 		blAt := 0
 		if o.OS == OSFreestanding {
-			blAt = 8
+			blAt = 24
 		}
 		bl := binary.LittleEndian.Uint32(text[blAt : blAt+4])
 		if bl>>26 != 0x25 {
