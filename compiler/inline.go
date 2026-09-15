@@ -946,9 +946,23 @@ func substituteBindings(v reflect.Value, subst map[string]ast.Expression) {
 				walk(elem)
 			}
 		case reflect.Map:
+			// A record literal names its field expressions twice: in
+			// FieldOrder and in the Fields map. Map values cannot be set
+			// through the iterator, so an identifier there is replaced by
+			// storing the clone back under its key; the slice walk above
+			// replaced the other reference.
 			iter := v.MapRange()
 			for iter.Next() {
-				walk(iter.Value())
+				value := iter.Value()
+				if value.Kind() == reflect.Interface && value.Type() == expressionType && !value.IsNil() {
+					if ident, isIdent := value.Interface().(*ast.Identifier); isIdent {
+						if expr, named := subst[ident.Value]; named {
+							v.SetMapIndex(iter.Key(), reflect.ValueOf(cloneExpression(expr)))
+							continue
+						}
+					}
+				}
+				walk(value)
 			}
 		}
 	}

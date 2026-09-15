@@ -55,3 +55,29 @@ func TestE2EInlineLiteralArguments(t *testing.T) {
 		t.Fatalf("exit = (%d, abnormal=%v), want %d", exit, abnormal, want%256)
 	}
 }
+
+// A record literal names each field expression twice, in FieldOrder and in
+// the Fields map. When a field's whole value is a parameter (`a: x`),
+// substituting a literal argument must replace both references, or the map
+// keeps the renamed parameter and the merged body names a variable no
+// declaration introduces (`undefined variable: __inl2_arg0`). A parameter
+// inside a larger expression (`b: k * u32(3)`) is replaced within a node
+// both references share.
+const inlineLiteralRecordProgram = `
+Pair: type = struct { a: u64, b: u32 }
+
+mk_pair: (x: u64, k: u32) -> Pair = Pair { a: x, b: k * u32(3) }
+
+main: (): i32 {
+  p: Pair = mk_pair(u64(10), u32(2))
+  q: Pair = mk_pair(u64(20), 4)
+  i32_bits_u32(u32_trunc_u64(p.a + q.a) + p.b + q.b)
+}
+`
+
+func TestE2EInlineLiteralArgumentsIntoRecordLiteral(t *testing.T) {
+	want := interpretChecked(t, inlineLiteralRecordProgram)
+	if _, exit, abnormal := buildAndRunFrom(t, "inline_literal_record", New().WithSource("literal.oak", inlineLiteralRecordProgram)); abnormal || int64(exit) != want%256 {
+		t.Fatalf("exit = (%d, abnormal=%v), want %d", exit, abnormal, want%256)
+	}
+}
