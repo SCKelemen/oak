@@ -1352,6 +1352,10 @@ func indexRootIdent(e ast.Expression) string {
 	return ""
 }
 
+// declaredLocals collects the locals a loop body declares — at its top
+// level, in nested loops, and in the arms of statement-level conditionals
+// (a local declared in an arm and assigned in a loop nested there is the
+// body's own, not loop-carried), mirroring assignedLocals.
 func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
 	if body == nil {
 		return
@@ -1362,6 +1366,14 @@ func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
 			into[s.Name.Value] = true
 		case *ast.WhileStatement:
 			declaredLocals(s.Body, into)
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						declaredLocals(block.Block, into)
+					}
+				}
+			}
 		}
 	}
 }

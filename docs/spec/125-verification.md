@@ -60,13 +60,24 @@ is the interpreter's enumeration; at the bit level each binder is a fresh
 leaf of the blast and the quantifier is eliminated from the body's
 diagram bit by bit — `forall` the conjunction and `exists` the disjunction
 of the two cofactors at each of the binder's variables (Shannon's
-expansion; under the clause engine the domain is expanded, up to 256
-values) — so `exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32`
-parameter decides in a few hundred nodes, and a counterexample names the
-theorem's parameters only. A binder over a sum type is decided by
-enumeration (the bit level takes `Bool` and the integers); the Lean
-projection (§5) renders a quantifier as `List.all`/`List.any` over the
-explicit list of the domain, so `decide` evaluates the same enumeration.
+expansion; the clause engine has no cofactor and declines, so the
+certificate rung leaves a quantified theorem to the diagrams) — so
+`exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32` parameter
+decides in a few hundred nodes, and a counterexample names the theorem's
+parameters only. A binder over a sum type is decided by enumeration (the
+bit level takes `Bool` and the integers); the Lean projection (§5)
+renders a quantifier as `List.all`/`List.any` over the explicit list of
+the domain, so `decide` evaluates the same enumeration. The prover
+written in Oak (§7) takes quantifiers the same way: its parser reads the
+binder form, its serializer lays out a fresh leaf `name@qk` per binder
+after the parameters' leaves (the Go serializer's twin, word for word; a
+binder inside a callee stays with the Go decider), its lowering emits a
+quantifier term (kind 7 of the problem words) whose evaluator enumerates
+the domain by restarting the body at the leaf's parameter term, and its
+blaster eliminates the leaf's variables by an explicit-stack cofactor
+memoized in the apply cache — the same nodes the Go blaster creates, so
+the verdicts agree node for node over the Go-serialized problem
+(`spec/oak/quantifiers.oak`).
 
 Shape (`OAK-V0001`): a theorem is monomorphic (state it at the types it is
 about), has no receiver, no variadic tail, no effect clauses, and no
@@ -255,7 +266,12 @@ scales with the obligation — 200,000 or 100 per clause, whichever is
 larger (`sat_conflicts`), so a 6,442-clause extents row that needs 562,050
 conflicts closes in the corpus while the one needing 1.4 million gives up
 cheaply — and `-conflicts N` sets a flat budget instead; a row past the
-budget keeps the ladder's verdict and says the rung gave no verdict. `-cnf dir` writes every bit-level
+budget keeps the ladder's verdict and says the rung gave no verdict. The solver written in Oak hands its certificate over as the word record it
+kept while learning, not as text: the checker written in Oak checks the
+record in the solver's process and the Go checker reads the same words
+(`prove.CheckLRATWords`), so a certificate is neither printed nor parsed
+on the way; an external solver's certificate is text, checked as before.
+`-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
 the corpus (`prove/lrat_test.go`), the two checkers accept and refuse the

@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SCKelemen/oak/asm"
@@ -78,6 +79,25 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
 			continue
 		}
+		// A function with a dispatch clause (docs/spec/93-simd.md §6) is the
+		// selection between its realizations, decided once at startup by
+		// the processor's probed features; its Oak body is only the
+		// portable one. The C backend emits that selection, so the function
+		// stays there: lowering the body natively would define the symbol
+		// as the portable realization and leave the hardware unit
+		// unreachable (measured on CRC-32C: 23x behind the C backend,
+		// benchmarks/native/README.md). Its callers lower as usual and
+		// call the C backend's dispatching definition.
+		if len(fn.Dispatch) > 0 {
+			slots := make([]string, 0, len(fn.Dispatch))
+			for _, slot := range fn.Dispatch {
+				slots = append(slots, slot.Feature)
+			}
+			reason := fmt.Sprintf("it dispatches on %s; the C backend keeps the selection between its realizations", strings.Join(slots, ", "))
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
+			result.Fallbacks[fn.Name.Value] = reason
+			continue
+		}
 		// A read of a constant top-level scalar (the OS pilot's N1:
 		// `page_size`, `entries`) reaches the backend and the verifier as
 		// its folded value (constants); the C emitter keeps the body and
@@ -93,6 +113,16 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
+		// Strength reduction (docs/spec/90-backend.md §16): constant
+		// multiplications, divisions, and remainders as shifts, masks, and
+		// untested divisions; the checker and the verifier decide, and a
+		// refusal or a lost proof lowers the body again without it.
+		lane.Strength = lane.Arch == asm.ArchArm64
+		// Compare reuse across a conditional chain (docs/spec/94-assembler.md
+		// §9 "Condition selection"): the checker carries flags across a
+		// label every predecessor reaches with them, or the body lowers
+		// again without the reuse.
+		lane.ReuseFlags = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -106,17 +136,64 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			continue
 		}
 		findings := asm.Check(asmFn, source, symbols)
-		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
-			lane.ElideProven = false
+		// A refused elision falls back one source line at a time
+		// (docs/spec/94-assembler.md §9 "Check elision"): the finding
+		// names the line of the access the checker could not admit, that
+		// line's accesses keep their guards, and the body is lowered
+		// again, so the accesses the checker does admit stay elided. A
+		// finding without a line, or a line already kept, or the eighth
+		// round, falls back to every guard as before.
+		var kept []int
+		for round := 0; len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0; round++ {
+			line, hasLine := findingLine(findings[0], fn.Name.Value)
+			if round >= 8 || !hasLine || lane.GuardLines[line] {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
+				lane.ElideProven = false
+				lane.GuardLines = nil
+				kept = nil
+			} else {
+				if lane.GuardLines == nil {
+					lane.GuardLines = map[int]bool{}
+				}
+				lane.GuardLines[line] = true
+				kept = append(kept, line)
+			}
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				break
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		}
+		if err != nil {
+			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+			continue
+		}
+		if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
+			if len(kept) > 0 {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts, the guards of line(s) %s kept (the checker did not admit their elided form)", fn.Name.Value, elided, joinLines(kept))))
+			} else {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+			}
+		}
+		if len(findings) != 0 && lane.ReuseFlags && nativegen.ReusedCompares(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s repeats its compares (the checker did not admit the reused form: %s)", fn.Name.Value, findings[0])))
+			lane.ReuseFlags = false
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 				continue
 			}
 			findings = asm.Check(asmFn, source, symbols)
-		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+		}
+		if len(findings) != 0 && lane.Strength && nativegen.Reduced(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the checker did not admit the strength-reduced form: %s)", fn.Name.Value, findings[0])))
+			lane.Strength = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
 		}
 		// The verifier takes calls to program functions at their Oak bodies
 		// (asm.Function.Callees, docs/spec/94-assembler.md §8).
@@ -152,6 +229,28 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			fromCache++
 		}
 		verified++
+		if verdict.Kind != asm.VerdictProven && lane.Strength && nativegen.Reduced(asmFn) > 0 {
+			// The reduced form did not prove: the plain arithmetic is
+			// lowered and verified too, and kept when it proves — a
+			// faster body is not worth a weaker verdict.
+			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, GuardLines: lane.GuardLines, ReuseFlags: lane.ReuseFlags, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+				plainKey := ""
+				if cacheDir != "" {
+					plainKey = verdictCacheKey(plain, source, functions, declarations)
+				}
+				plainVerdict, plainCached := cachedVerdict(cacheDir, plainKey)
+				if !plainCached {
+					plainVerdict = asm.Verify(plain, source, source.Body)
+					storeVerdict(cacheDir, plainKey, plainVerdict)
+				}
+				if plainVerdict.Kind == asm.VerdictProven {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the verifier proved it and not the strength-reduced form: %s)", fn.Name.Value, verdict.Message)))
+					asmFn, verdict = plain, plainVerdict
+				}
+			}
+		} else if reduced := nativegen.Reduced(asmFn); reduced > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d constant operation(s) strength-reduced, proven", fn.Name.Value, reduced)))
+		}
 		if os.Getenv("OAK_NATIVE_TIMING") != "" {
 			// A profiling aid: how long each body's verification took.
 			note := ""
@@ -518,4 +617,32 @@ func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]
 		}
 	}
 	return out
+}
+
+// findingLine reads the source line a seam-checker finding names: the
+// checker prefixes every finding with `function:line:` (asm/check.go
+// errorf).
+func findingLine(finding, function string) (int, bool) {
+	rest, hasPrefix := strings.CutPrefix(finding, function+":")
+	if !hasPrefix {
+		return 0, false
+	}
+	digits, _, hasColon := strings.Cut(rest, ":")
+	if !hasColon {
+		return 0, false
+	}
+	line, err := strconv.Atoi(digits)
+	if err != nil || line <= 0 {
+		return 0, false
+	}
+	return line, true
+}
+
+// joinLines spells the kept lines for the diagnostic.
+func joinLines(lines []int) string {
+	parts := make([]string, len(lines))
+	for i, line := range lines {
+		parts[i] = strconv.Itoa(line)
+	}
+	return strings.Join(parts, ", ")
 }

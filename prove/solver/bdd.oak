@@ -34,6 +34,9 @@ BDD_TRUE: u32 = 1
 OP_AND: u32 = 0
 OP_OR: u32 = 1
 OP_XOR: u32 = 2
+// OP_RESTRICT keys a cofactor in the apply cache (bdd_restrict); never an
+// operation apply performs.
+OP_RESTRICT: u32 = 3
 
 // Term kinds and operators, as the serializer numbers them.
 KIND_PARAM: u32 = 0
@@ -46,6 +49,13 @@ KIND_SELECT: u32 = 5
 // of its operands, a select slot keyed by the operation and its operand
 // bits (asm/problem.go problemFloatOps numbers the op word).
 KIND_FLOAT: u32 = 6
+// A bounded quantifier over a leaf (docs/spec/10-syntax.md section 3e;
+// asm/problem.go kind 7): op 0 for forall, 1 for exists; a the body's
+// bit, b the leaf's own parameter term (the evaluator restarts the body
+// there for every value), the leaf in the low value word. The blaster
+// eliminates the leaf's variables by cofactors; the evaluator written in
+// Oak enumerates the domain (lower.oak eval_terms).
+KIND_QUANT: u32 = 7
 
 FOP_FADD: u32 = 0
 FOP_FSUB: u32 = 1
@@ -448,6 +458,90 @@ diagram_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
   ct: u32 = apply(l, mem, OP_AND, c, t)
   nce: u32 = apply(l, mem, OP_AND, bdd_not(l, mem, c), e)
   apply(l, mem, OP_OR, ct, nce)
+}
+
+// restrict_deliver hands a finished cofactor to the frame below the popped
+// one: into its low result while it waits on the low child, its high
+// result after.
+restrict_deliver: (l: Layout, mem: [*]u32, sp: u32, r: u32): () {
+  sp > u32(0) ? {
+    f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+    mem[f + u32(1)] == u32(1) ? { mem[f + u32(2)] = r } | { mem[f + u32(3)] = r }
+  } | { }
+}
+
+// bdd_restrict is the cofactor of edge e0 at variable v = value (asm/bdd.go
+// restrict, node for node): a node at v is its chosen branch, a node above
+// v is rebuilt over its restricted children, and everything at or past a
+// greater variable stands (variables ascend from the root). An explicit
+// stack, as apply's — a frame is (edge, phase, low result, high result):
+// phase 0 has not looked at the node, 1 waits on the low child, 2 on the
+// high one — memoized in the apply cache under OP_RESTRICT with the
+// variable and value as the second key. Past the budget the false node
+// stands in, as everywhere.
+bdd_restrict: (l: Layout, mem: [*]u32, e0: u32, v: u32, value: u32): u32 {
+  key: u32 = (v << u32(1)) | value
+  result: u32 = e0
+  sp: u32 = 1
+  mem[l.stack_at] = e0
+  mem[l.stack_at + u32(1)] = u32(0)
+  while sp > u32(0) {
+    f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+    e: u32 = mem[f]
+    phase: u32 = mem[f + u32(1)]
+    idx: u32 = e >> u32(1)
+    parity: u32 = e & u32(1)
+    mem[l.state_at + STATE_EXCEEDED] != u32(0) ? {
+      sp = u32(0)
+      result = BDD_FALSE
+    } | {
+      phase == u32(0) ? {
+        (idx == u32(0) || mem[l.var_at + idx] > v) ? {
+          sp = sp - u32(1)
+          result = e
+          restrict_deliver(l, mem, sp, e)
+        } | {
+          cached: u32 = cache_get(l, mem, OP_RESTRICT, e, key)
+          cached != NONE ? {
+            sp = sp - u32(1)
+            result = cached
+            restrict_deliver(l, mem, sp, cached)
+          } | {
+            mem[l.var_at + idx] == v ? {
+              r: u32 = value != u32(0) ? { mem[l.high_at + idx] ^ parity } | { mem[l.low_at + idx] ^ parity }
+              sp = sp - u32(1)
+              result = r
+              restrict_deliver(l, mem, sp, r)
+            } | {
+              mem[f + u32(1)] = u32(1)
+              sp >= l.stack_cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+                child: u32 = l.stack_at + sp * FRAME_WORDS
+                mem[child] = mem[l.low_at + idx] ^ parity
+                mem[child + u32(1)] = u32(0)
+                sp = sp + u32(1)
+              }
+            }
+          }
+        }
+      } | {
+      phase == u32(1) ? {
+        mem[f + u32(1)] = u32(2)
+        sp >= l.stack_cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+          child: u32 = l.stack_at + sp * FRAME_WORDS
+          mem[child] = mem[l.high_at + idx] ^ parity
+          mem[child + u32(1)] = u32(0)
+          sp = sp + u32(1)
+        }
+      } | {
+        r: u32 = mk(l, mem, mem[l.var_at + idx], mem[f + u32(2)], mem[f + u32(3)])
+        cache_put(l, mem, OP_RESTRICT, e, key, r)
+        sp = sp - u32(1)
+        result = r
+        restrict_deliver(l, mem, sp, r)
+      } }
+    }
+  }
+  result
 }
 
 // --- the blaster --------------------------------------------------------
@@ -894,6 +988,27 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
     cond: u32 = mem[l.bits_at + c * u32(64)]
     out = mux_bits(l, mem, cond, operand(l, mem, p, t, u32(0), w), operand(l, mem, p, t, u32(1), w), w)
   } | {
+  kind == KIND_QUANT ? {
+    // The body's bit with the leaf's variables eliminated, bit 0 first:
+    // forall the conjunction, exists the disjunction of the two
+    // cofactors (asm/blast.go quantify). The clause engine has no
+    // cofactor and declines.
+    mem[l.state_at + STATE_MODE] == u32(1) ? { ok = false } | {
+      f: u32 = mem[l.bits_at + term_a(p, t) * u32(64)]
+      leaf: u32 = term_vlo(p, t)
+      qw: u32 = leaf_width(p, leaf)
+      qop: u32 = term_op(p, t) == u32(0) ? { OP_AND } | { OP_OR }
+      bit: u32 = 0
+      while bit < qw && !exceeded(l, mem) {
+        lv: u32 = leaf_variable(p, leaf, bit)
+        low: u32 = bdd_restrict(l, mem, f, lv, u32(0))
+        high: u32 = bdd_restrict(l, mem, f, lv, u32(1))
+        f = apply(l, mem, qop, low, high)
+        bit = bit + u32(1)
+      }
+      out.at[u32(0)] = f
+    }
+  } | {
     op: u32 = term_op(p, t)
     left: Bits = operand(l, mem, p, t, u32(0), w)
     unary: Bool = op >= BOP_REV
@@ -916,7 +1031,7 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
       x: Bits = pointwise(l, mem, OP_XOR, left, shift_right_arith(left, u32(1), w), w)
       out = add_bits(l, mem, count_leading_zeros(l, mem, x, w), all_ones(w), BDD_FALSE, w)
     } | { ok = false } } } } } } } } } } } } } }
-  } } } } } }
+  } } } } } } }
   ok ? { store_bits(l, mem, t, out, w) } | { }
   ok
 }

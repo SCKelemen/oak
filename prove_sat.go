@@ -217,16 +217,25 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 	}
 	switch {
 	case run.Outcome.Unsatisfiable:
-		checked, goErr := prove.CheckLRAT(run.Formula, run.Outcome.Certificate)
-		oak, oakErr := runOakLRAT(run.Formula, run.Outcome.Certificate)
+		// The certificate is the solver's word record: the checker written
+		// in Oak checked it in the solver's process, the Go checker reads
+		// the same words here.
+		var checked prove.LRATResult
+		goErr := fmt.Errorf("the solver wrote no certificate record")
+		if run.Record != nil {
+			checked, goErr = prove.CheckLRATWords(run.Record)
+		}
+		oak := run.OakCheck
 		refusal := ""
 		switch {
-		case goErr != nil:
-			refusal = "the Go checker: " + goErr.Error()
-		case oakErr != nil:
-			refusal = "the Oak checker: " + oakErr.Error()
+		case !run.Checked:
+			refusal = "the Oak checker gave no verdict"
 		case oak.Status != 0:
 			refusal = fmt.Sprintf("the Oak checker refused it (status %d)", oak.Status)
+		case goErr != nil:
+			refusal = "the Go checker: " + goErr.Error()
+		case oak.Additions != checked.Additions || oak.Deletions != checked.Deletions:
+			refusal = fmt.Sprintf("the checkers counted differently (Oak %d additions and %d deletions, Go %d and %d)", oak.Additions, oak.Deletions, checked.Additions, checked.Deletions)
 		}
 		if refusal != "" {
 			r.Detail += "; the Oak solver's certificate was refused, so its verdict does not count (" + refusal + ")"
