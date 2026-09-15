@@ -1125,6 +1125,28 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.header[name] = value
 		ev.fresh[name] = fresh
 	}
+	// The package cells the body stores (`st = u8(4)` inside `while un {
+	// … }`, the OS pilot's flag idiom) are loop-carried too: each a fresh
+	// symbol at the cell's width, its header value the cell as this path
+	// holds it, paired with the Oak side's cell local like a register.
+	carriedCells := map[string]bool{}
+	for _, name := range x.cellsStoredIn(shape) {
+		global := x.globals[name]
+		varName := "global:" + name
+		width := cellWidth(global)
+		fresh := paramTerm(ev.freshName(varName), width)
+		x.declared[fresh.name] = width
+		value, _ := globalStateValue(x.globals, state.globals, name)
+		if freshState.globals == nil {
+			freshState.globals = map[string]*term{}
+		}
+		freshState.globals[name] = fresh
+		carriedCells[name] = true
+		ev.vars = append(ev.vars, varName)
+		ev.width[varName] = width
+		ev.header[varName] = truncate(value, width)
+		ev.fresh[varName] = fresh
+	}
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
@@ -1187,11 +1209,22 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if !ok {
 		return nil, reason + " (in a loop body)", false
 	}
-	// Loop events model registers, frame slots, and span memories, but not
-	// package cells. A cell may be written before or after the loop; changing
-	// one in an iteration remains outside the theorem and fails closed.
+	// A cell the body stores is a loop variable (carriedCells, above); a
+	// cell changed some other way — a callee's write the summary let
+	// through — remains outside the theorem and fails closed.
 	for _, end := range ends {
-		if name, differs := differingGlobalState(x.globals, freshState.globals, end.state.globals); differs {
+		before, after := map[string]*term{}, map[string]*term{}
+		for name, value := range freshState.globals {
+			if !carriedCells[name] {
+				before[name] = value
+			}
+		}
+		for name, value := range end.state.globals {
+			if !carriedCells[name] {
+				after[name] = value
+			}
+		}
+		if name, differs := differingGlobalState(x.globals, before, after); differs {
 			return nil, fmt.Sprintf("a store to package global %s in a loop body", name), false
 		}
 	}
@@ -1292,6 +1325,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		for reg, value := range freshState.fregs {
 			freshState.fregs[reg] = substitute(value, invariant)
+		}
+		for name, value := range freshState.globals {
+			freshState.globals[name] = substitute(value, invariant)
 		}
 		for addr, slot := range freshState.frame {
 			freshState.frame[addr] = frameSlot{value: substitute(slot.value, invariant), width: slot.width}
@@ -1599,6 +1635,47 @@ func writableSpanMemories(fn *Function, spans map[string]int64, recordSpans map[
 	return out
 }
 
+// cellsStoredIn names the package cells a loop body stores: the body
+// materializes a cell's address as `adrp xA, G; add xA, xA, :lo12:G` and
+// stores through `[xA]` (nativegen globalAddress; the checker admits no
+// other access), so the scan follows the symbol into the register it
+// names and the store through it. Sorted; an aggregate global or one the
+// function does not declare is left to the executor's refusal.
+func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
+	named := map[int]string{}
+	stored := map[string]bool{}
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		if isStoreMnemonic(instr.Mnemonic) && len(instr.Operands) == 2 {
+			if mem, isMem := instr.Operands[1].(Memory); isMem && mem.Index == nil && mem.Offset == 0 {
+				if name, isCell := named[mem.Base.Num]; isCell && mem.Base.Class == ClassX {
+					if global, declared := x.globals[name]; declared && !global.Aggregate {
+						stored[name] = true
+					}
+				}
+			}
+			continue
+		}
+		dest, isReg := instr.Operands[0].(Register)
+		if !isReg || dest.Class == ClassV {
+			continue
+		}
+		delete(named, dest.Num)
+		if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym && (instr.Mnemonic == "adrp" || instr.Mnemonic == "add") {
+			named[dest.Num] = sym.Name
+		}
+	}
+	out := make([]string, 0, len(stored))
+	for name := range stored {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // summarizeCallInLoop is summarizeCall inside a loop's header or body: the
 // callee's result is a term over the iteration's fresh symbols; a callee
 // with memory effects (stores through spans, package cells) is refused,
@@ -1766,6 +1843,12 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 			return value
 		}
 		return header.fregs[reg]
+	case strings.HasPrefix(name, "global:"):
+		cell := strings.TrimPrefix(name, "global:")
+		if value, written := e.state.globals[cell]; written {
+			return value
+		}
+		return header.globals[cell]
 	case len(name) > 1 && name[0] == 'v':
 		fmt.Sscanf(name, "v%d.%s", &reg, &side)
 		value, bound := e.state.vregs[reg]
@@ -2332,6 +2415,16 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					continue
 				}
 				if !isLoad(instr.Mnemonic) {
+					// A store to a package cell: the loop-carried cell's new
+					// value on this path (summarizeLoop pairs it with the
+					// Oak side's cell local).
+					if handled, reason, ok := x.globalStore(instr, st); handled {
+						if !ok {
+							return nil, reason, false
+						}
+						pc++
+						continue
+					}
 					// A store through a span: into the iteration's memory
 					// (the loop's marker), recorded for the coupling proof.
 					if handled, reason, ok := x.spanStore(instr, st); handled {
@@ -2612,6 +2705,12 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		return reason, false
 	}
 	ev.cond = truncate(cond, 1)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify oak loop %d: cond %s\n", ev.index, ev.cond)
+		for _, name := range ev.vars {
+			fmt.Fprintf(os.Stderr, "verify oak loop %d:   %s header %s\n", ev.index, name, ev.header[name])
+		}
+	}
 	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
@@ -3837,9 +3936,6 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	memoryNote := ""
-	if len(writtenCells) > 0 {
-		memoryNote += " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
-	}
 	if len(writtenSpans) > 0 {
 		memoryNote += " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
 	}
