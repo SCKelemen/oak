@@ -41,6 +41,7 @@ const (
 	TransformUnroll      = "unroll-reductions"
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
+	TransformReallocate  = "reallocate"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -210,6 +211,17 @@ func Transforms() []opt.Transform {
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
 		&laneTransform{
+			// Global register reallocation (package machine, Phase B): the
+			// body's def-use webs recolored by a linear scan and its copies
+			// coalesced, within the registers the lowering wrote; machine
+			// shape only, judged by the checker and the verifier.
+			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.Reallocate },
+			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
+			fired:   Reallocated,
+		},
+		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the
 			// operator's associativity (Oak.Reduction.unrolled4_eq); the
@@ -258,6 +270,7 @@ func PlainLane(lane Lane) Lane {
 	lane.HoistInvariants = false
 	lane.VectorHomes = false
 	lane.Cleanup = false
+	lane.Reallocate = false
 	lane.NoReductions = true
 	return lane
 }
@@ -419,13 +432,20 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				}
 			}
 		}
-		// The index steps last, right before the back edge, so the stride
-		// is read from the last increment of a compared register: a value
-		// stepped earlier in the body (`add x9, x9, #7` after a compare of
-		// w9's copy) is not the stride.
+		// The index register: compared in the loop, written exactly once
+		// in it, by `add r, r, #k` — its stride. A register the loop
+		// rounds or rebuilds (an `add r, r, #7` before a shift) is not one.
+		defs := map[int]int{}
+		for i := loop.from; i <= loop.to; i++ {
+			if ins, ok := fn.Items[i].(asm.Instruction); ok {
+				for _, r := range writtenGeneral(ins) {
+					defs[r]++
+				}
+			}
+		}
 		body.Stride, indices[k] = 1, -1
-		for i := loop.to; i >= loop.from; i-- {
-			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] {
+		for i := loop.from; i <= loop.to; i++ {
+			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] && defs[reg] == 1 {
 				body.Stride, indices[k] = step, reg
 				break
 			}

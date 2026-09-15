@@ -37,6 +37,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1484,6 +1485,12 @@ type Lane struct {
 	// ...+v`): the rv64 lane lowers the fixed simd vectors there
 	// (nativegen/rv64_simd.go) and leaves them to the C backend otherwise.
 	Vector bool
+	// Reallocate recolors the lowered body's registers with the machine
+	// package's global allocator (machine.Reallocate): def-use webs as
+	// virtual registers, copies coalesced, the frame and the prologue as
+	// emitted. A body the lift refuses does not lower under the flag, so
+	// the candidate search keeps the body as emitted.
+	Reallocate bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1598,11 +1605,26 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 	switch lane.Arch {
 	case "", asm.ArchArm64:
 		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
-		if err == nil && lane.Cleanup {
+		if err != nil {
+			return out, err
+		}
+		if lane.Cleanup {
 			// Late copy and branch cleanup (nativegen/cleanup.go).
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
 		}
-		return out, err
+		if !lane.Reallocate {
+			return out, nil
+		}
+		// Global register reallocation (machine.Reallocate): the body's
+		// webs recolored and its copies coalesced; a lift the package
+		// refuses leaves this configuration without a lowering.
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Renamed + alloc.Coalesced
+		return out, nil
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
 	}
@@ -1617,6 +1639,12 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false)
 }
+
+// Reallocated reports how many webs a lowering recolored and copies it
+// coalesced under Lane.Reallocate.
+func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+var reallocated = map[*asm.Function]int{}
 
 // ElidedGuards reports how many element guards a lowering left out under
 // Lane.ElideProven (for the compiler's diagnostics).

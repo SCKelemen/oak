@@ -1280,6 +1280,55 @@ var rvBranchWhenFalse = map[string][2]string{
 	"<=": {"bltu", "blt"}, ">": {"bgeu", "bge"},
 }
 
+// indexLengthOperands recognizes `i < len(v)` — `i` a u32 (or narrower
+// unsigned) variable in a register, `v` a span with a normalized length —
+// and returns the variable, its register, and the span.
+func (g *rvGenerator) indexLengthOperands(infix *ast.InfixExpression) (ident *ast.Identifier, home int, sp span, ok bool) {
+	if infix.Operator != "<" {
+		return nil, 0, span{}, false
+	}
+	ident, isIdent := infix.Left.(*ast.Identifier)
+	if !isIdent {
+		return nil, 0, span{}, false
+	}
+	home, inReg := g.regs[ident.Value]
+	typ, known := g.types[ident.Value]
+	if !inReg || home < 0 || !known || typ.signed || typ.isBool || typ.isFloat || typ.isVec || typ.wide() {
+		return nil, 0, span{}, false
+	}
+	call, isCall := infix.Right.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, 0, span{}, false
+	}
+	if fn, isName := call.Function.(*ast.Identifier); !isName || fn.Value != "len" {
+		return nil, 0, span{}, false
+	}
+	if _, _, _, isArray := g.staticArrayOf(call.Arguments[0]); isArray {
+		return nil, 0, span{}, false
+	}
+	sp, err := g.spanOperand(call.Arguments[0])
+	if err != nil || sp.norm < 0 {
+		return nil, 0, span{}, false
+	}
+	return ident, home, sp, true
+}
+
+// hasIndexLengthTest reports whether a condition, through its `&&`, `||`
+// and `!`, holds an `i < len(v)` test the branch form would capture.
+func (g *rvGenerator) hasIndexLengthTest(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.PrefixExpression:
+		return e.Operator == "!" && g.hasIndexLengthTest(e.Right)
+	case *ast.InfixExpression:
+		if e.Operator == "&&" || e.Operator == "||" {
+			return g.hasIndexLengthTest(e.Left) || g.hasIndexLengthTest(e.Right)
+		}
+		_, _, _, ok := g.indexLengthOperands(e)
+		return ok
+	}
+	return false
+}
+
 // indexLengthTest compiles the guard `i < len(v)` — a u32 variable in a
 // register against a span's length, at the head of a construct whose body
 // may read `v[i]` — as `slli z, i, 32; srli z, z, 32; bgeu z, norm, target`:
@@ -1293,30 +1342,11 @@ var rvBranchWhenFalse = map[string][2]string{
 // elision, and only for `<`: the other operators give the checker nothing
 // to read.
 func (g *rvGenerator) indexLengthTest(infix *ast.InfixExpression, target string, jumpIfFalse bool) (bool, error) {
-	if !g.elide || !g.captureZext || infix.Operator != "<" {
+	if !g.elide || !g.captureZext {
 		return false, nil
 	}
-	ident, isIdent := infix.Left.(*ast.Identifier)
-	if !isIdent {
-		return false, nil
-	}
-	home, inReg := g.regs[ident.Value]
-	typ, known := g.types[ident.Value]
-	if !inReg || home < 0 || !known || typ.signed || typ.isBool || typ.isFloat || typ.isVec || typ.wide() {
-		return false, nil
-	}
-	call, isCall := infix.Right.(*ast.InvocationExpression)
-	if !isCall || len(call.Arguments) != 1 {
-		return false, nil
-	}
-	if fn, isName := call.Function.(*ast.Identifier); !isName || fn.Value != "len" {
-		return false, nil
-	}
-	if _, _, _, isArray := g.staticArrayOf(call.Arguments[0]); isArray {
-		return false, nil
-	}
-	sp, err := g.spanOperand(call.Arguments[0])
-	if err != nil || sp.norm < 0 {
+	ident, home, sp, ok := g.indexLengthOperands(infix)
+	if !ok {
 		return false, nil
 	}
 	z, err := g.alloc(scalars["u32"])
@@ -1343,6 +1373,42 @@ func (g *rvGenerator) condition(expr ast.Expression, target string) error {
 // operands directly — the ISA compares in the branch — so a loop's exit
 // test is one instruction over the variables' registers.
 func (g *rvGenerator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
+	// A negation flips the branch's sense; a conjunction or disjunction is
+	// its conjuncts' branches in order, each leaving to the target as soon
+	// as it decides (docs/spec/94-assembler.md §9.ae "Short-circuit
+	// conditions"): `a && b` branching when false is `a` false → target,
+	// then `b` false → target; `a || b` branching when true likewise. The
+	// other senses skip over the second test through a label. Evaluation
+	// order and short-circuiting are those of the Bool expression the
+	// materialized form spelled, without the flag register — and each
+	// conjunct meets indexLengthTest and the checker as a plain guard. The
+	// form is taken only where a conjunct is an `i < len(v)` test a body
+	// access can use (hasIndexLengthTest): every branch is a fork for the
+	// verifier's path enumeration, which the materialized Bool is not, and
+	// two bodies fell past its budget when every conjunction branched.
+	if prefix, isPrefix := expr.(*ast.PrefixExpression); isPrefix && prefix.Operator == "!" && g.elide && g.captureZext && g.hasIndexLengthTest(expr) {
+		return g.conditionBranch(prefix.Right, target, !jumpIfFalse)
+	}
+	if infix, ok := expr.(*ast.InfixExpression); ok && (infix.Operator == "&&" || infix.Operator == "||") && g.elide && g.captureZext && g.hasIndexLengthTest(expr) {
+		direct := (infix.Operator == "&&" && jumpIfFalse) || (infix.Operator == "||" && !jumpIfFalse)
+		if direct {
+			if err := g.conditionBranch(infix.Left, target, jumpIfFalse); err != nil {
+				return err
+			}
+			return g.conditionBranch(infix.Right, target, jumpIfFalse)
+		}
+		// `a && b` branching when true: `a` false skips the second test;
+		// `a || b` branching when false: `a` true skips it.
+		skip := g.newLabel("short")
+		if err := g.conditionBranch(infix.Left, skip, !jumpIfFalse); err != nil {
+			return err
+		}
+		if err := g.conditionBranch(infix.Right, target, jumpIfFalse); err != nil {
+			return err
+		}
+		g.label(skip)
+		return nil
+	}
 	if infix, ok := expr.(*ast.InfixExpression); ok {
 		if done, err := g.indexLengthTest(infix, target, jumpIfFalse); done || err != nil {
 			return err
