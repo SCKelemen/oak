@@ -49,6 +49,13 @@ count: (n: u32): u32 {
   i
 }
 
+common: (x: u32): u32 {
+  left: u32 = x + u32(1)
+  right: u32 = x + u32(1)
+  dead: u32 = x * u32(2)
+  left + right
+}
+
 at: (values: []u32): u32 = values[u32(0)]
 main: (): i32 = 0
 `
@@ -113,6 +120,17 @@ main: (): i32 = 0
 	}
 	if !seenLoop {
 		t.Fatalf("count lost structured loop: %#v", counted.Structured)
+	}
+
+	common, ok := optIRFunction(first, "common")
+	if !ok {
+		t.Fatalf("common was not projected: %+v", first.Refusals)
+	}
+	if common.Simplification.CSE.EliminatedOperations != 2 || common.Simplification.DCE.EliminatedOperations != 2 {
+		t.Fatalf("common CSE/DCE report = %+v", common.Simplification)
+	}
+	if len(common.Simplified.Blocks) != 1 || len(common.Simplified.Blocks[0].Operations) != 3 {
+		t.Fatalf("common simplified CFG = %#v", common.Simplified)
 	}
 
 	if len(first.Refusals) != 1 || first.Refusals[0].Function != "at" || !strings.Contains(first.Refusals[0].Reason, "parameter values") {

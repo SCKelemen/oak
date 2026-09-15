@@ -53,6 +53,11 @@ type target struct {
 	slotCopy func(r Reg, reg asm.Register, s slot, store bool, line int) asm.Instruction
 	// clobber spells a register for the clobber list.
 	clobber func(Reg) asm.Register
+	// pure reports an instruction with no effect beyond its register
+	// results: no store, call, branch, compare or flag write, atomic, or
+	// system effect, and no load from anywhere but the frame. Such an
+	// instruction may go when no one reads its results.
+	pure func(asm.Instruction) bool
 	// frame is the lowering's prologue and epilogue shape (growCalleeSaved).
 	frame frameShape
 }
@@ -162,6 +167,7 @@ var arm64Target = &target{
 		}
 		return asm.Register{Text: "x" + itoa(r.Num), Class: asm.ClassX, Num: r.Num, Lane: -1}
 	},
+	pure: arm64Pure,
 	frame: frameShape{
 		isPairSave: func(a asm.Instruction) (int64, bool) {
 			regs, off, ok := gprStore(a, "stp")
@@ -503,6 +509,7 @@ var rv64Target = &target{
 		return asm.Instruction{Mnemonic: "mv", Operands: []asm.Operand{dst, src}, Line: line}
 	},
 	clobber: rv64Register,
+	pure:    rv64Pure,
 	frame: frameShape{
 		isPairSave: func(a asm.Instruction) (int64, bool) {
 			regs, off, ok := gprStore(a, "sd")
@@ -551,4 +558,65 @@ func rv64Register(r Reg) asm.Register {
 		return asm.Register{Text: rv64FNames[r.Num], Class: asm.ClassRV64F, Num: r.Num, Lane: -1}
 	}
 	return asm.Register{Text: rv64Names[r.Num], Class: asm.ClassRV64X, Num: r.Num, Lane: -1}
+}
+
+// frameLoad reports a load whose only memory operand is sp-relative.
+func frameLoad(a asm.Instruction) bool {
+	for _, op := range a.Operands {
+		if m, ok := op.(asm.Memory); ok {
+			return m.Base.Class == asm.ClassSP && m.Mode == asm.MemOffset && m.Index == nil
+		}
+	}
+	return false
+}
+
+var arm64PureSet = map[string]bool{}
+var rv64PureSet = map[string]bool{}
+
+func init() {
+	for _, m := range []string{"mov", "movz", "movk", "movn", "mvn", "neg", "add", "sub", "mul", "madd", "msub", "mneg", "smull", "umull", "smulh", "umulh", "umaddl", "smaddl", "udiv", "sdiv",
+		"and", "orr", "eor", "bic", "orn", "eon", "lsl", "lsr", "asr", "ror", "clz", "cls", "rbit", "cnt", "rev", "rev16", "rev32", "rev64", "sxtb", "sxth", "sxtw", "uxtb", "uxth", "ubfx", "sbfx", "ubfiz", "sbfiz", "extr",
+		"csel", "cset", "csetm", "csinc", "csinv", "csneg", "cneg", "cinc", "cinv", "adr", "adrp", "adrl",
+		"fmov", "fadd", "fsub", "fmul", "fdiv", "fneg", "fabs", "fsqrt", "fmax", "fmin", "fmaxnm", "fminnm", "fmadd", "fmsub", "fnmadd", "fnmsub", "fnmul", "fcvt", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "frintz", "frintm", "frintp", "frinta", "frintn", "frintx", "fcsel",
+		"dup", "movi", "mvni", "ext", "tbl", "cmeq", "cmhi", "cmhs", "cmgt", "cmge", "cmle", "cmlt", "cmtst", "fcmeq", "fcmgt", "fcmge", "addv", "uaddlv", "saddlv", "umaxv", "uminv", "smaxv", "sminv", "umov", "smov",
+		"shl", "sshr", "ushr", "sshl", "ushl", "shrn", "sshll", "ushll", "uxtl", "sxtl", "xtn", "uqxtn", "sqxtn", "uzp1", "uzp2", "zip1", "zip2", "trn1", "trn2", "addp", "faddp", "umax", "umin", "smax", "smin",
+		"uaddl", "uaddw", "usubl", "usubw", "abs", "sqadd", "uqadd", "sqsub", "uqsub", "not", "fmla", "fmls", "mla", "mls", "bsl", "bit", "bif", "ins", "umlal", "smlal", "sadalp", "uadalp", "bfi", "bfxil", "sli", "sri", "pmul", "pmull", "pmull2", "uabd", "sabd", "fabd"} {
+		arm64PureSet[m] = true
+	}
+	for _, m := range []string{"add", "addi", "addw", "addiw", "sub", "subw", "sll", "slli", "sllw", "slliw", "srl", "srli", "srlw", "srliw", "sra", "srai", "sraw", "sraiw",
+		"and", "andi", "or", "ori", "xor", "xori", "slt", "slti", "sltu", "sltiu", "seqz", "snez", "sltz", "sgtz", "lui", "auipc", "la", "li", "mv", "not", "neg", "negw",
+		"sext.w", "sext.b", "sext.h", "zext.b", "zext.h", "zext.w", "mul", "mulh", "mulhu", "mulhsu", "mulw", "div", "divu", "divw", "divuw", "rem", "remu", "remw", "remuw",
+		"andn", "orn", "xnor", "min", "max", "minu", "maxu", "rol", "rolw", "ror", "rori", "rorw", "roriw", "clz", "clzw", "ctz", "ctzw", "cpop", "cpopw", "rev8", "orc.b",
+		"sh1add", "sh2add", "sh3add", "sh1add.uw", "sh2add.uw", "sh3add.uw", "add.uw", "slli.uw",
+		"fadd.s", "fadd.d", "fsub.s", "fsub.d", "fmul.s", "fmul.d", "fdiv.s", "fdiv.d", "fsqrt.s", "fsqrt.d", "fmin.s", "fmin.d", "fmax.s", "fmax.d",
+		"fmadd.s", "fmadd.d", "fmsub.s", "fmsub.d", "fnmadd.s", "fnmadd.d", "fnmsub.s", "fnmsub.d", "fsgnj.s", "fsgnj.d", "fsgnjn.s", "fsgnjn.d", "fsgnjx.s", "fsgnjx.d",
+		"fmv.s", "fmv.d", "fmv.x.w", "fmv.x.d", "fmv.w.x", "fmv.d.x", "fabs.s", "fabs.d", "fneg.s", "fneg.d", "fcvt.s.d", "fcvt.d.s", "fclass.s", "fclass.d"} {
+		rv64PureSet[m] = true
+	}
+}
+
+// arm64Pure: the ALU, move, and vector forms that set no flags, and loads
+// from the frame.
+func arm64Pure(a asm.Instruction) bool {
+	if arm64PureSet[a.Mnemonic] {
+		return true
+	}
+	switch a.Mnemonic {
+	case "ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrsw", "ldur", "ldp":
+		return frameLoad(a)
+	}
+	return false
+}
+
+// rv64Pure: the ALU, move, and floating forms (RISC-V integer division
+// and conversions do not trap), and loads from the frame.
+func rv64Pure(a asm.Instruction) bool {
+	if rv64PureSet[a.Mnemonic] {
+		return true
+	}
+	switch a.Mnemonic {
+	case "lb", "lh", "lw", "ld", "lbu", "lhu", "lwu", "flw", "fld":
+		return frameLoad(a)
+	}
+	return false
 }

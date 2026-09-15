@@ -13,12 +13,15 @@ import (
 )
 
 // OptIRFunction is one checked structured projection, its independently
-// verified CFG/SSA view, and analysis-only SCCP result.
+// verified CFG/SSA view, and analysis-only optimization results. Simplified is
+// not consumed by emission.
 type OptIRFunction struct {
-	Name       string
-	Structured optir.Function
-	CFG        optir.CFG
-	Constants  optir.SCCPResult
+	Name           string
+	Structured     optir.Function
+	CFG            optir.CFG
+	Constants      optir.SCCPResult
+	Simplified     optir.CFG
+	Simplification optir.CSEDCEReport
 }
 
 // OptIRRefusal is an ordinary unsupported-subset result. The function remains
@@ -76,7 +79,18 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR SCCP of %s failed: %w", function.Name.Value, err)
 		}
-		module.Functions = append(module.Functions, OptIRFunction{Name: function.Name.Value, Structured: structured, CFG: cfg, Constants: constants})
+		simplified, simplification, err := optir.SimplifyCSEDCE(cfg)
+		if err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR CSE/DCE of %s failed: %w", function.Name.Value, err)
+		}
+		module.Functions = append(module.Functions, OptIRFunction{
+			Name:           function.Name.Value,
+			Structured:     structured,
+			CFG:            cfg,
+			Constants:      constants,
+			Simplified:     simplified,
+			Simplification: simplification,
+		})
 	}
 	return module, nil
 }

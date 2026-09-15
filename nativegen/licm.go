@@ -31,7 +31,14 @@ import (
 //     iteration — and the fact it establishes (`wA < wB`) holds at the
 //     header on both edges, so the element address the guard licensed
 //     hoists with it (the checker keeps constants, global addresses,
-//     element regions, and index guards across labels, §7).
+//     element regions, and index guards across labels, §7);
+//   - an exit test of the header whose operands the loop never writes
+//     (`cmp wL, #4; b.lo done`, the unrolled reduction's slack guard)
+//     decides the same way on every iteration, so it is peeled — run once
+//     before the header, gone from it — and a pure setup instruction over
+//     invariant sources that feeds a test (`sub wT, wL, #4; cmp wI, wT`)
+//     is hoisted under a new name when the old one is dead after the
+//     header; the remaining test is a plain run the rotation pass takes.
 //
 // What stays: loads (memory the loop stores through may alias), stores,
 // calls, and anything reading a register the loop writes. A rename needs
@@ -135,8 +142,8 @@ func hoistInvariants(items []asm.Item, mentioned map[int]bool, loopHomes map[str
 		}
 		done[next.name] = true
 		before := len(items)
-		out, used, missed := hoistLoop(items, *next, pool, loopHomes[next.name], globals, trap)
-		if len(out) != before || used != nil {
+		out, used, missed, header := hoistLoop(items, *next, pool, loopHomes[next.name], globals, trap)
+		if len(out) != before || used != nil || header {
 			changed++
 		}
 		wanted += missed
@@ -175,7 +182,7 @@ func (p *registerPool) take(acrossCall bool) (asm.Register, bool) {
 // in scope at the loop's header: a write into one is the variable's value,
 // read where no block analysis sees (after the loop, at the header, in
 // another arm), so it is neither moved nor propagated away.
-func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes map[int]bool, globals map[string]asm.Global, trap string) ([]asm.Item, []int, int) {
+func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes map[int]bool, globals map[string]asm.Global, trap string) ([]asm.Item, []int, int, bool) {
 	h, b := loop.header, loop.back
 	// Registers the loop writes; a call writes every caller-saved register.
 	written := map[int]bool{}
@@ -395,6 +402,168 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		}
 		return r, ok
 	}
+	// The header's exit tests, as groups — setup instructions, a compare,
+	// the exit branch — that are the conjuncts of the loop condition, pure
+	// compares that commute. A group whose every operand is invariant is
+	// peeled before the header; a setup instruction over invariant sources
+	// whose destination dies after the header is hoisted under a new name
+	// and the test reads it there. The header keeps at least one test.
+	tests := make([]asm.Item, bodyStart-(h+1))
+	copy(tests, items[h+1:bodyStart])
+	var peeledTests, headerSetup []asm.Item
+	headerChanged := false
+	if exitPure {
+		// deadAfterHeader: reg is unread in the header from index from
+		// on, and the body writes it before any read — on its first
+		// block, which every path through the body begins with — or never
+		// reads it.
+		deadAfterHeader := func(from, reg int) bool {
+			for j := from; j < len(tests); j++ {
+				if ins, isIns := tests[j].(asm.Instruction); isIns && readsGeneral(ins, reg) {
+					return false
+				}
+			}
+			for j := 0; j < len(body); j++ {
+				if _, isLabel := body[j].(asm.Label); isLabel {
+					break
+				}
+				ins, isIns := body[j].(asm.Instruction)
+				if !isIns {
+					continue
+				}
+				if readsGeneral(ins, reg) {
+					return false
+				}
+				if writesGeneral(ins, reg) {
+					return true
+				}
+				if endsBlock(ins) {
+					break
+				}
+			}
+			for j := 0; j < len(body); j++ {
+				if ins, isIns := body[j].(asm.Instruction); isIns && readsGeneral(ins, reg) {
+					return false
+				}
+			}
+			return true
+		}
+		isTestBranch := func(m string) bool {
+			return m == "b." || m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz"
+		}
+		isCompare := func(m string) bool { return m == "cmp" || m == "cmn" || m == "tst" }
+		var kept []asm.Item
+		groups := 0
+		for i := 0; i < len(tests); {
+			start, branchAt := i, -1
+			for j := i; j < len(tests); j++ {
+				if ins, isIns := tests[j].(asm.Instruction); isIns && isTestBranch(ins.Mnemonic) {
+					branchAt = j
+					break
+				}
+			}
+			if branchAt < 0 {
+				kept = append(kept, tests[i:]...)
+				break
+			}
+			groups++
+			i = branchAt + 1
+			group := make([]asm.Item, branchAt+1-start)
+			copy(group, tests[start:branchAt+1])
+			// The setups: pure, invariant sources (or an earlier setup's
+			// new name), a scratch destination read only by the group and
+			// dead after the header. Each takes a register; the group is
+			// kept as it is when one cannot.
+			hoisted := map[int]asm.Register{} // old destination -> new name
+			var setups []asm.Item
+			compares := 0
+			ok := true
+			for k := 0; k < len(group)-1 && ok; k++ {
+				ins := group[k].(asm.Instruction)
+				if isCompare(ins.Mnemonic) {
+					compares++
+					if compares > 1 {
+						ok = false
+					}
+					continue
+				}
+				dest, isReg := ins.Operands[0].(asm.Register)
+				if !pureInvariantMnemonics[ins.Mnemonic] || ins.Mnemonic == "movk" || !isReg || (dest.Class != asm.ClassX && dest.Class != asm.ClassW) || homes[dest.Num] || dest.Num <= 8 || dest.Num == 18 || dest.Num >= 29 {
+					ok = false
+					break
+				}
+				for _, src := range sourceRegisters(ins) {
+					if _, renamed := hoisted[src.Num]; !renamed && !invariant(src) {
+						ok = false
+					}
+				}
+				if !ok || !deadAfterHeader(branchAt+1, dest.Num) {
+					ok = false
+					break
+				}
+				r, got := free()
+				if !got {
+					missed++
+					ok = false
+					break
+				}
+				renamed := asm.Register{Text: "w" + itoa(r.Num), Class: dest.Class, Num: r.Num}
+				if dest.Class == asm.ClassX {
+					renamed.Text = "x" + itoa(r.Num)
+				}
+				moved := ins
+				moved.Operands = append([]asm.Operand(nil), ins.Operands...)
+				moved.Operands[0] = renamed
+				for old, name := range hoisted {
+					moved = renameReads(moved, old, name)
+				}
+				hoisted[dest.Num] = renamed
+				setups = append(setups, moved)
+			}
+			if !ok {
+				kept = append(kept, group...)
+				continue
+			}
+			// The test itself under the new names; invariant when every
+			// register it reads is invariant or a hoisted setup's.
+			var test []asm.Item
+			testInvariant := true
+			for k := 0; k < len(group); k++ {
+				ins := group[k].(asm.Instruction)
+				if !isCompare(ins.Mnemonic) && !isTestBranch(ins.Mnemonic) {
+					continue
+				}
+				for old, name := range hoisted {
+					ins = renameReads(ins, old, name)
+				}
+				for _, operand := range ins.Operands {
+					if reg, isReg := operand.(asm.Register); isReg && (reg.Class == asm.ClassX || reg.Class == asm.ClassW) {
+						if _, renamed := hoisted[reg.Num]; !renamed && !invariant(reg) {
+							testInvariant = false
+						}
+					}
+				}
+				test = append(test, ins)
+			}
+			if len(setups) > 0 {
+				headerChanged = true
+			}
+			if testInvariant && (i < len(tests) || len(kept) > 0) {
+				// Peeled whole: setups and test before the header; the
+				// header keeps at least one test.
+				peeledTests = append(peeledTests, setups...)
+				peeledTests = append(peeledTests, test...)
+				headerChanged = true
+				continue
+			}
+			headerSetup = append(headerSetup, setups...)
+			kept = append(kept, test...)
+		}
+		_ = groups
+		if headerChanged {
+			tests = kept
+		}
+	}
 	for i := 0; i < len(body); i++ {
 		ins, isIns := body[i].(asm.Instruction)
 		if !isIns || removed[i] {
@@ -542,16 +711,22 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			break
 		}
 	}
-	if len(preheader) == 0 && len(peeled) == 0 && len(removed) == 0 {
-		return items, nil, missed
+	if len(preheader) == 0 && len(peeled) == 0 && len(removed) == 0 && !headerChanged {
+		return items, nil, missed, false
+	}
+	if len(peeled) > 0 && len(peeledTests) > 0 {
+		// A peeled guard runs behind a copy of every exit test: the
+		// invariant tests stay in the header (conjuncts commute).
+		tests = append(append([]asm.Item(nil), peeledTests...), tests...)
+		peeledTests = nil
 	}
 	var out []asm.Item
 	out = append(out, items[:h]...)
+	// The setups the header's tests read.
+	out = append(out, headerSetup...)
 	if len(peeled) > 0 {
 		// The exit tests' copy: the preheader runs only when the body would.
-		for i := h + 1; i < bodyStart; i++ {
-			out = append(out, items[i])
-		}
+		out = append(out, tests...)
 	}
 	// The moved instructions in their body order — the peeled guard before
 	// the address arithmetic it licenses, as the checker reads them.
@@ -570,14 +745,19 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			out = append(out, peeled...)
 		}
 	}
-	out = append(out, items[h:bodyStart]...)
+	// The invariant tests, once, right before the header: the verifier's
+	// recognizer reads them as the loop's entry-only tests (asm/loops.go),
+	// so the executor meets the loop there and the loops keep their order.
+	out = append(out, peeledTests...)
+	out = append(out, items[h])
+	out = append(out, tests...)
 	for i, item := range body {
 		if !removed[i] {
 			out = append(out, item)
 		}
 	}
 	out = append(out, items[b:]...)
-	return out, used, missed
+	return out, used, missed, headerChanged
 }
 
 func itoa(n int) string {
