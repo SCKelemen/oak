@@ -2752,9 +2752,23 @@ into the back edge (`b endif; endif: b loop`) both demote a proven loop to
 evidence. They wait on a loop summary that admits break paths.
 
 The forty-fifth increment is the verified reduction unrolling (§9
+"Reductions"): the first rewrite licensed by a type — integer addition
+wraps and reassociates, so the plain reduction becomes four accumulators
+and a remainder loop before lowering, the verifier proving the assembly
+against the rewritten body and Lean proving the rewrite
+(`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
+(`asm.Function.Body`) so the verifier and the verdict cache judge the
+right one.
+
 The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
+
+The fifty-second increment is fields in registers (§9 "Fields in
+registers"): the scalar fields a loop touches of a top-level record
+local live in callee-saved registers, flushed where the record is used
+whole and reloaded where it is written whole
+(`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3885,6 +3899,40 @@ verifier reads a pair load as two loads of the register width, in a
 straight path and in a loop body alike. The unrolled reduction's four
 loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
 four elements.
+
+**Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
+`spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
+the body's top level whose scalar fields a loop reads or writes keeps
+those fields in callee-saved registers, as hidden locals named
+`record.field` — the fields of a loop's accumulator record are then the
+loop's variables. A field read is the register (in place for compares
+and operands, as a local's home is), a field store writes it
+(`assignVar`), and the record's memory sees the values only where the
+record is used whole — copied, passed to a callee by address or by
+chunks, returned, or reached as a place by any other path — when the
+homes are written back first (`flushPromoted`, at `placeOf` of the
+record as a whole); a whole write of the record — an assignment from
+another record, an initialization by copy, literal, call, or zero —
+reloads the homes from memory afterward (`reloadPromoted`). Between,
+register and memory may differ, and every read goes to the register.
+Promoted: 32- and 64-bit integer and Bool fields, most-touched first,
+while callee-saved registers remain beyond a reserve of two for the
+locals declared after the record. Not promoted: fields whose address is
+taken (`&r.f`, `&r`, or a deeper path under `r`), fields of records
+declared more than once or inside a loop, of parameters, of tagged
+unions, and float or narrow fields. The theorem: along any sequence of
+stores, flushes, and whole writes, the register reads what the
+memory-resident field would hold (`Oak.FieldPromotion.promoted_reads`),
+at a flush the memory holds it too (`flushed_memory`), and after a whole
+write the register holds what memory holds (`reloaded`).
+`TestNativeShapesFieldPromotion` pins the byte loop of an absorber whose
+`filled`, `blocks`, and `total` live in `w21`, `w22`, `x23`: the loop's
+only memory operations are the byte load from the view and the byte
+store into the block — `sha256_update`'s loop, with the pending
+increments, comes to ten instructions where clang's is thirteen.
+`TestE2ENativeFieldPromotion` agrees with the C backend, including a
+record assigned whole inside its loop (`a = seed`, the homes reloading).
+The RV64 lane is untouched.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
