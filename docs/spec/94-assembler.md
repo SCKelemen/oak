@@ -3988,7 +3988,20 @@ pass over the emitted items of a function, judged like every lowering by
 the seam checker and the verifier. A loop is the generator's shape — the
 `loop_N` header, its exit tests to `done_M`, the body, the back edge —
 and, innermost first, three things leave the body for a preheader before
-the header. A pure instruction (a constant, a global's address, an element
+the header, and a fourth leaves the header itself: an exit test whose
+operands the loop never writes (the unrolled reduction's `cmp wL, #4;
+b.lo done`) decides the same way on every iteration, so it is peeled —
+placed once right before the header label, where the verifier reads it
+as the loop's entry-only test ("Bottom-tested loops" below), gone from
+the header — and a pure setup instruction over invariant sources that
+feeds a test (`sub wT, wL, #4; cmp wI, wT`) is hoisted under a new name
+when its old destination is dead after the header (the body writes it
+before reading it, or never reads it); the tests are conjuncts, pure
+compares in any order, and the header keeps at least one. When a guard
+is peeled the invariant tests stay in the header, so the guard's copy of
+the exit tests holds every test. In the candidate search the unrolling
+comes first in the loop phase, so the invariant pass and the rotation
+see the unrolled shape. A pure instruction (a constant, a global's address, an element
 address, arithmetic) whose sources the loop never writes is hoisted, its
 destination renamed to a scratch register the whole function never names
 and its readers in the block renamed with it — either the old destination
@@ -4287,16 +4300,30 @@ loop finder reads the top-tested shape; the exit run ends at its last
 exit branch, so a guard's compare first in the body (the hoisted loop's
 `cmp wI, #64; b.hs trap`) is the body's and the hoisted form rotates too;
 a header whose exit test hides a later test behind a setup instruction
-(the unrolled reduction's `sub wT, wL, #4; cmp wI, wT; b.hi done`) is
-left as it is. The search's cost
+is left as it is — the unrolled reduction's `cmp wL, #4; b.lo done; sub
+wT, wL, #4; cmp wI, wT; b.hi done` until the invariant pass peels the
+first test and hoists the setup (2026-09-16, "Loop invariants" above),
+after which its header is `cmp wI, wT; b.hi done` and rotates: the
+four-accumulator loop runs ten instructions and one branch a trip, from
+fourteen and three, and proves (`sum`, `bench_sum`). The search's cost
 model decides where the rotation pays: it rotates a plain byte sum over
 the unrolled form when both are evidence, and leaves a three-trip
-remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
-back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
-compares and branches to the exit label ending in the back edge, the
-entry test right before the header label is the same run with its last
-branch to the exit under the complementary condition, and nothing else
-branches to the header. Such a loop runs its body exactly as the
+remainder loop top-tested rather than pay the peeled test. The verifier
+recognizes the shape by its conditional back edge (`asm/loops.go`
+`tailLoopShape`): the tail test is a run of compares and branches to the
+exit label ending in the back edge, the entry test right before the
+header label is the same run with its last branch to the exit under the
+complementary condition, and nothing else branches to the header. Before
+the entry test (or a top-tested header) may stand the loop's entry-only
+tests (`invariantEntryTests`): compares and branches to the same exit
+label over registers the loop never writes, the peeled invariant
+conjunct. They are exits of the shape — the executor meets the loop at
+the first undecided one, before any path forks around it, so the loops
+keep their program order and pair with the Oak body's — and conjuncts of
+its continue condition (`headerCondition` walks them first): a test the
+loop cannot change decides every iteration as it decided the first, so
+the summary over "entry tests and header tests" is the machine's loop
+without a lemma the shape does not carry. Such a loop runs its body exactly as the
 top-tested loop with that test at its header — the entry test is the
 first iteration's, the tail test every later one's — so the shape is the
 top-tested one with its test range at the tail: `headerCondition` walks
