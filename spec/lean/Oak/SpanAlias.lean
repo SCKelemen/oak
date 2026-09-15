@@ -88,11 +88,29 @@ def SpanFact.dropLen (f : SpanFact) (n : Reg) : SpanFact :=
 def SpanFact.addLen (f : SpanFact) (n : Reg) : SpanFact :=
   if f.lenRegs.contains n then f else { f with lenRegs := insertSorted n f.lenRegs }
 
+/-- `checker.equalRegister` over the alias facts: the smallest other
+    length register of the first span `d` measures — a register proven
+    to hold `d`'s value, which takes `d`'s place as the bound of the
+    guards naming it when `d` is written (docs/spec/94-assembler.md §7
+    "Bounds through arithmetic"). -/
+def equalRegister (st : Facts) (d : Reg) : Option Reg :=
+  match st.spans.find? (fun p => p.2.lenRegs.contains d && !(p.2.lenRegs.filter (fun l => l != d)).isEmpty) with
+  | some p => (p.2.lenRegs.filter (fun l => l != d)).head?
+  | none => none
+
+/-- A guard bounded by the written register rebounds to the register
+    equal to it, or dies; any other guard stays. -/
+def rebound (st : Facts) (d : Reg) (p : Reg × IdxFact) : Option (Reg × IdxFact) :=
+  if p.2.boundReg != (d : Int) then some p
+  else match equalRegister st d with
+    | some e => some (p.1, { p.2 with boundReg := (e : Int) })
+    | none => none
+
 /-- `checker.forgetRegisterFacts`, over the facts the alias rules touch. -/
 def forget (st : Facts) (d : Reg) : Facts :=
   { spans := (deleteReg st.spans d).map (fun p => (p.1, p.2.dropLen d)),
     regions := deleteReg st.regions d,
-    idx := (deleteReg st.idx d).filter (fun p => p.2.boundReg != (d : Int)) }
+    idx := (deleteReg st.idx d).filterMap (rebound st d) }
 
 /-- `aliasSpan` for `mov xD, xS`. -/
 def aliasX (st : Facts) (d s : Reg) : Facts :=
@@ -275,6 +293,74 @@ theorem idxMeans_preserved {σ σ' : RegFile} {i : Reg} {g : IdxFact}
     rw [w_eq_of_eq hi, w_eq_of_eq (hb hge)]
     exact ⟨h0, h1⟩
 
+/-- The register `equalRegister` names measures a span `d` measures too,
+    and is not `d`. -/
+theorem equalRegister_spec {st : Facts} {d e : Reg} (h : equalRegister st d = some e) :
+    ∃ p ∈ st.spans, d ∈ p.2.lenRegs ∧ e ∈ p.2.lenRegs ∧ e ≠ d := by
+  unfold equalRegister at h
+  split at h
+  · rename_i p hfind
+    refine ⟨p, List.mem_of_find?_eq_some hfind, ?_, ?_⟩
+    · have hp := List.find?_some hfind
+      simp only [Bool.and_eq_true, List.contains_iff_mem] at hp
+      exact hp.1
+    · cases hl : p.2.lenRegs.filter (fun l => l != d) with
+      | nil => rw [hl] at h; simp at h
+      | cons x xs =>
+        rw [hl] at h
+        simp only [List.head?_cons, Option.some.injEq] at h
+        have hx : x ∈ p.2.lenRegs.filter (fun l => l != d) := by rw [hl]; exact List.mem_cons_self
+        rw [h] at hx
+        rw [List.mem_filter] at hx
+        exact ⟨hx.1, bne_iff_ne.mp hx.2⟩
+  · simp at h
+
+/-- Rebinding keeps the guard's register. -/
+theorem rebound_key {st : Facts} {d : Reg} {q p : Reg × IdxFact} (h : rebound st d q = some p) : p.1 = q.1 := by
+  unfold rebound at h
+  split at h
+  · rw [← Option.some.inj h]
+  · split at h
+    · rw [← Option.some.inj h]
+    · simp at h
+
+/-- No guard the write forgets is on the written register. -/
+theorem mem_forget_idx {st : Facts} {d : Reg} {p : Reg × IdxFact} (h : p ∈ (forget st d).idx) : p.1 ≠ d := by
+  unfold forget at h
+  simp only at h
+  rw [List.mem_filterMap] at h
+  obtain ⟨q, hq, hpq⟩ := h
+  rw [rebound_key hpq]
+  exact (mem_deleteReg hq).2
+
+/-- A guard bounded by `d` holds of the register equal to `d` after the
+    write: both held the span's length before it. -/
+theorem idxMeans_rebound {W : World} {σ σ' : RegFile} {st : Facts} {d e i : Reg} {g : IdxFact}
+    (hw : WritesOnly σ σ' d) (hs : ∀ p ∈ st.spans, SpanMeans W σ p.1 p.2)
+    (hi : i ≠ d) (hbd : g.boundReg = (d : Int)) (he : equalRegister st d = some e)
+    (h : IdxMeans σ i g) : IdxMeans σ' i { g with boundReg := (e : Int) } := by
+  obtain ⟨sp, hsp, hd, he', hed⟩ := equalRegister_spec he
+  obtain ⟨addr, len, _, _, hlen, _⟩ := hs sp hsp
+  obtain ⟨_, hreg⟩ := h
+  have hge : 0 ≤ g.boundReg := by rw [hbd]; exact Int.natCast_nonneg d
+  obtain ⟨h0, h1⟩ := hreg hge
+  have htn : g.boundReg.toNat = d := by rw [hbd]; simp
+  rw [htn] at h0 h1
+  have hwd : w σ d = len := hlen d hd
+  have hwe : w σ e = len := hlen e he'
+  have hi' : w σ' i = w σ i := w_eq_of_eq (hw i hi)
+  have he'' : w σ' e = w σ e := w_eq_of_eq (hw e hed)
+  refine ⟨fun hlt => ?_, fun _ => ⟨fun hs' => ?_, fun hs' => ?_⟩⟩
+  · exfalso
+    simp only at hlt
+    exact absurd hlt (Int.not_lt.mpr (Int.natCast_nonneg e))
+  · simp only [Int.toNat_natCast]
+    rw [hi', he'', hwe, ← hwd]
+    exact h0 hs'
+  · simp only [Int.toNat_natCast]
+    rw [hi', he'', hwe, ← hwd]
+    exact h1 hs'
+
 /-- Forgetting is sound under any write to `d`. -/
 theorem forget_sound {W : World} {σ σ' : RegFile} {st : Facts} {d : Reg}
     (hw : WritesOnly σ σ' d) (h : Means W σ st) : Means W σ' (forget st d) := by
@@ -292,10 +378,21 @@ theorem forget_sound {W : World} {σ σ' : RegFile} {st : Facts} {d : Reg}
   · intro p hp
     unfold forget at hp
     simp only at hp
-    rw [List.mem_filter] at hp
-    obtain ⟨hp, hbound⟩ := hp
-    obtain ⟨hp, hne⟩ := mem_deleteReg hp
-    exact idxMeans_of_writesOnly hw hne (bne_iff_ne.mp hbound) (hi p hp)
+    rw [List.mem_filterMap] at hp
+    obtain ⟨q, hq, hpq⟩ := hp
+    obtain ⟨hq, hne⟩ := mem_deleteReg hq
+    unfold rebound at hpq
+    split at hpq
+    · rename_i hb
+      rw [← Option.some.inj hpq]
+      exact idxMeans_of_writesOnly hw hne (bne_iff_ne.mp hb) (hi q hq)
+    · rename_i hb
+      have hbd : q.2.boundReg = (d : Int) := by simpa using hb
+      split at hpq
+      · rename_i e he
+        rw [← Option.some.inj hpq]
+        exact idxMeans_rebound hw hs hne hbd he (hi q hq)
+      · simp at hpq
 
 /-- `mov xD, xS`: with `σ' d = σ s`, the maintained facts hold. -/
 theorem movX_sound {W : World} {σ σ' : RegFile} {st : Facts} {d s : Reg}
@@ -400,11 +497,7 @@ theorem movW_sound {W : World} {σ σ' : RegFile} {st : Facts} {d s : Reg}
     | some g =>
       rcases mem_insertReg hp with rfl | ⟨hp, _⟩
       · have hmem := lookupReg_mem hg
-        have hne : s ≠ d := by
-          unfold forget at hmem
-          simp only at hmem
-          rw [List.mem_filter] at hmem
-          exact (mem_deleteReg hmem.1).2
+        have hne : s ≠ d := mem_forget_idx hmem
         obtain ⟨himm, hreg⟩ := hi1 (s, g) hmem
         refine ⟨fun hlt => ?_, fun hge => ?_⟩
         · simp only; rw [hwd hne]; exact himm hlt
@@ -480,6 +573,7 @@ example : lookupReg (movX st0 1 0).spans 1 = some ⟨8, true, true, 4, [5]⟩ :=
 example : lookupReg (movX st0 1 0).regions 1 = none := by decide
 example : lookupReg (movX st0 1 0).idx 1 = none := by decide
 example : lookupReg (movX st0 1 0).regions 2 = some ⟨24, false⟩ := by decide
+example : lookupReg (movX st0 1 0).idx 3 = some ⟨5, 0, false⟩ := by decide
 example : lookupReg (movX st0 1 0).idx 4 = some ⟨-1, 16, false⟩ := by decide
 example : lookupReg (movX st0 1 0).idx 6 = some ⟨5, 2, true⟩ := by decide
 example : lookupReg (movX st1 5 9).spans 0 = some ⟨1, false, false, 4, []⟩ := by decide

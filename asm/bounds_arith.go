@@ -1,5 +1,7 @@
 package asm
 
+import "sort"
+
 // Bounds through arithmetic (docs/spec/94-assembler.md §7 "Bounds through
 // arithmetic"): the checker follows a proven bound through the arithmetic
 // the generator spells between the guard and the access — the binary
@@ -89,17 +91,22 @@ func (c *checker) lenLike(f *spanFact, n int) bool {
 	return false
 }
 
-// equalRegister returns a register proven to hold n's value — another
-// length register of a span n's value is the length of, the register
-// lenEqual pairs it with, or another register holding the same constant —
-// or -1. Used when n is rewritten, to keep the facts that named it.
+// equalRegister returns a register proven to hold n's value — the
+// smallest other length register of the first span (by base register) n
+// measures, else the register lenEqual pairs it with, else another
+// register holding the same constant — or -1. Used when n is rewritten,
+// to keep the facts that named it (Oak.SpanAlias.equalRegister, whose
+// transliteration test pins the choice).
 func (c *checker) equalRegister(n int) int {
-	for _, fact := range c.spans {
+	bases := make([]int, 0, len(c.spans))
+	for base := range c.spans {
+		bases = append(bases, base)
+	}
+	sort.Ints(bases)
+	for _, base := range bases {
+		fact := c.spans[base]
 		if !fact.holdsLen(n) {
 			continue
-		}
-		if fact.lenReg != n && fact.holdsLen(fact.lenReg) {
-			return fact.lenReg
 		}
 		best := -1
 		for reg := range fact.lenRegs {
