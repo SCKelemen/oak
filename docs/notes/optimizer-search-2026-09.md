@@ -726,6 +726,15 @@ The existing native optimizations should be migrated into the candidate interfac
 - guard elimination from proven extents;
 - byte-assembly to wide-load fusion;
 - pair loads;
+- vector block loads — **next, claimed 2026-09-16 by the oak session at
+  ~/oakmcu/oak**: the vectorized reduction's four `ldr q` each pay an
+  index add and an address add, where one element address and the
+  immediate offsets `#16`, `#32`, `#48` would serve. The seam checker
+  already admits them (a slack guard of sixteen `u32` elements marks a
+  64-byte region, and `regionAdmits` takes every offset inside it) and
+  the verifier already models them (`loadVector`'s element-address form
+  with a non-zero offset), so this is a machine peephole only — about
+  seven of the loop's seventeen instructions;
 - scalar-array element promotion;
 - constant-offset addressing forms.
 
