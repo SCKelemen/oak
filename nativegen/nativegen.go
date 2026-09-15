@@ -1929,7 +1929,17 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// The loop header a tail self-call re-enters: after the parameters are
 	// in their slots.
 	prologue = append(prologue, asm.Label{Name: g.head, Line: fn.Token.Line})
+	// Loop-invariant code motion (nativegen/licm.go): the registers a rename
+	// may take are those neither the prologue nor the body names.
+	named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
+	var hoistedInto []int
+	body, hoistedInto = hoistInvariants(body, named, g.trap)
 	out.Items = append(prologue, body...)
+	for _, r := range hoistedInto {
+		if r >= 16 && r-16 >= g.ipScratch {
+			g.ipScratch = r - 16 + 1 // x16/x17 taken: declared as clobbers below
+		}
+	}
 	// Clobbers: the scratch registers, the argument registers a call
 	// writes beyond the bound parameters, and the link register.
 	for r := scratchLow; r <= scratchHigh; r++ {
