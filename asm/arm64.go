@@ -92,6 +92,7 @@ var instructionTable = map[string]instructionSpec{
 	"cmp":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
 	"csel":  {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"cset":  {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"csinc": {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"ldr":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"str":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"ldrb":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},

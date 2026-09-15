@@ -5176,6 +5176,46 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		}
 		return out, nil
 	}
+	// A strength-reduced power of two reads its operand where it lies:
+	// `lsl w10, w23, #9` for `mid * u32(512)`, not a copy then the shift
+	// in place (docs/spec/90-backend.md §16; the general path below keeps
+	// the other constants).
+	if g.strength && !g.rvLane && !typ.isFloat && !typ.isVec && (e.Operator == "*" || e.Operator == "/" || e.Operator == "%") {
+		if c, isConst := g.constantOperand(e.Right, typ); isConst {
+			c &= mask64(typ.bits)
+			power := c != 0 && c&(c-1) == 0
+			k := int64(bits.TrailingZeros64(c))
+			if power && (e.Operator == "*" && k > 0 || e.Operator != "*" && !typ.signed) {
+				l, lfixed, err := g.operand(e.Left, typ)
+				if err != nil {
+					return 0, err
+				}
+				out := l
+				if lfixed {
+					if out, err = g.alloc(typ); err != nil {
+						return 0, err
+					}
+				}
+				switch {
+				case e.Operator == "*":
+					g.emit("lsl", reg(out, typ), reg(l, typ), imm(k))
+					g.normalize(out, typ)
+				case e.Operator == "/" && k > 0:
+					g.emit("lsr", reg(out, typ), reg(l, typ), imm(k))
+				case e.Operator == "/":
+					if out != l {
+						g.emit("mov", reg(out, typ), reg(l, typ))
+					}
+				case k == 0:
+					g.emit("movz", reg(out, typ), imm(0))
+				default:
+					g.emit("and", reg(out, typ), reg(l, typ), imm(int64(c-1)))
+				}
+				g.reduced++
+				return out, nil
+			}
+		}
+	}
 	l, err := g.expr(e.Left, &typ)
 	if err != nil {
 		return 0, err

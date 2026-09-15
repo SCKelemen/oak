@@ -417,7 +417,17 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if x.concrete {
 		return nil, "a loop that a witness run could not decide", false
 	}
-	if len(x.loops) >= loopEventBudget {
+	// The loop's event: a new one at the next index, or — the loop head
+	// reached again on another path — one taking the index and symbols of
+	// the first, whose fields the two paths' summaries merge below.
+	site := fmt.Sprintf("loop@%d", shape.header)
+	var prior *loopEvent
+	eventIndex := len(x.loops) + 1
+	rec, seen := x.sites[site]
+	if seen && rec.diverged(state.path) {
+		eventIndex = rec.base + 1
+		prior = x.loops[rec.base]
+	} else if len(x.loops) >= loopEventBudget {
 		return nil, "more data-dependent loops than the verifier's budget", false
 	}
 	// The loop-carried registers are those the body writes; each is a
@@ -541,11 +551,23 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 		}
 	}
-	ev := &loopEvent{index: len(x.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	ev := &loopEvent{index: eventIndex, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
 	if n := len(x.loopStack); n > 0 {
 		ev.parent = x.loopStack[n-1]
 	}
-	x.loops = append(x.loops, ev)
+	if prior != nil {
+		x.loops[eventIndex-1] = ev
+	} else {
+		if !seen {
+			// The first reach names the site; a reach on the same path
+			// (an unrolled outer iteration) is an instance of its own.
+			if x.sites == nil {
+				x.sites = map[string]loopSite{}
+			}
+			x.sites[site] = loopSite{base: len(x.loops), count: 1, paths: []*pathNode{state.path}}
+		}
+		x.loops = append(x.loops, ev)
+	}
 	regs := make([]int, 0, len(written))
 	for reg := range written {
 		regs = append(regs, reg)
@@ -840,7 +862,79 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		delete(freshState.frame, addr)
 	}
 	freshState.flags = nil
+	if prior != nil {
+		merged, reason, ok := mergeLoopEvents(state.pathCondition(), ev, prior)
+		if !ok {
+			return nil, reason, false
+		}
+		x.loops[eventIndex-1] = merged
+		rec.paths = append(rec.paths, state.path)
+		x.sites[site] = rec
+	}
 	return freshState, "", true
+}
+
+// loopSite is the range of loop event indices a site created — base is
+// the index before the first (events base+1 .. base+count) — and the
+// paths that summarized it, pairwise exclusive.
+type loopSite struct {
+	base, count int
+	paths       []*pathNode
+}
+
+// diverged reports whether path is exclusive with every path that
+// summarized the site: a reach from another side of some fork, whose
+// summary merges with the site's events. A path that is a prefix of one
+// of them, or extends one, is the same path reaching the site again.
+func (site loopSite) diverged(path *pathNode) bool {
+	for _, prior := range site.paths {
+		if !path.exclusive(prior) {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeLoopEvents joins the summaries two paths made of one loop site:
+// the path with condition cond summarized it as fresh, an earlier path
+// as prior. The loop's shape — its variables, their widths and symbols,
+// its nesting — must agree (the same instructions, or the same callee
+// body, summarized twice), and each field over the inputs selects the
+// summary of the path taken: the header values, the continue condition,
+// the next values, the entry memories, and the iteration's stores. The
+// paths are exclusive, so the select is exact on both and the later
+// merges compose (a third path selects over the merged pair).
+func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, bool) {
+	if cond == nil {
+		return nil, "a loop summarized twice on one path", false
+	}
+	if fresh.index != prior.index || fresh.parent != prior.parent || fresh.oakDerived != prior.oakDerived || len(fresh.vars) != len(prior.vars) {
+		return nil, "a loop whose shape differs between two paths", false
+	}
+	for k, name := range fresh.vars {
+		if prior.vars[k] != name || fresh.width[name] != prior.width[name] || fresh.floats[name] != prior.floats[name] {
+			return nil, "a loop whose loop-carried variables differ between two paths", false
+		}
+		if f, p := fresh.fresh[name], prior.fresh[name]; f == nil || p == nil || f.name != p.name || f.width != p.width {
+			return nil, "a loop whose loop-carried symbols differ between two paths", false
+		}
+	}
+	cond = truncate(cond, 1)
+	select_ := func(a, b *term) *term {
+		if a == nil || b == nil || equalTerms(a, b) {
+			return a
+		}
+		return iteTerm(cond, a, b)
+	}
+	merged := &loopEvent{index: fresh.index, parent: fresh.parent, vars: fresh.vars, header: map[string]*term{}, fresh: fresh.fresh, width: fresh.width, next: map[string]*term{}, floats: fresh.floats, oakDerived: fresh.oakDerived}
+	for _, name := range fresh.vars {
+		merged.header[name] = select_(fresh.header[name], prior.header[name])
+		merged.next[name] = select_(fresh.next[name], prior.next[name])
+	}
+	merged.cond = select_(fresh.cond, prior.cond)
+	merged.writes = mergeWrites(cond, fresh.writes, prior.writes)
+	merged.entry = mergeWrites(cond, fresh.entry, prior.entry)
+	return merged, "", true
 }
 
 // writableSpanParams names the function's writable span parameters
@@ -926,7 +1020,11 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 					if paths+len(work)+1 > headerPathBudget {
 						return nil, "more header paths than the verifier's budget", false
 					}
-					work = append(work, headerPath{pc: target, cond: binaryTerm("and", cond, taken), state: st.clone()})
+					fork := &forkMark{pc: pc}
+					takenState := st.clone()
+					takenState.assume(taken, fork, true)
+					work = append(work, headerPath{pc: target, cond: binaryTerm("and", cond, taken), state: takenState})
+					st.assume(binaryTerm("xor", taken, constTerm(1, 1)), fork, false)
 				}
 				cond = binaryTerm("and", cond, binaryTerm("xor", taken, constTerm(1, 1)))
 				pc++
@@ -965,7 +1063,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 }
 
 // loopEventBudget bounds the data-dependent loops one body may hold.
-const loopEventBudget = 8
+const loopEventBudget = 16
 
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
@@ -1122,8 +1220,12 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				}
 				taken := truncate(branch, 1)
 				notTaken := binaryTerm("xor", taken, constTerm(1, 1))
-				work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: st.clone()})
+				fork := &forkMark{pc: pc}
+				takenState := st.clone()
+				takenState.assume(taken, fork, true)
+				work = append(work, frontier{pc: target, cond: binaryTerm("and", cond, taken), state: takenState})
 				cond = binaryTerm("and", cond, notTaken)
+				st.assume(notTaken, fork, false)
 				pc++
 				continue
 			case "bl", "call":
@@ -2741,6 +2843,9 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if depth == 0 {
+		premise, a, b = canonical(premise), canonical(a), canonical(b)
+	}
 	width := a.width
 	if b.width > width {
 		width = b.width
