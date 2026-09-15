@@ -117,6 +117,32 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 			}
 		})
 	}
+
+	// Every switch the registry can turn on has to reach the key: two
+	// candidates the digest cannot tell apart would serve one's body for
+	// the other out of the cache, which is the one way a cache can be
+	// wrong. The loop is over the registry, so a transform added later
+	// fails here until its flag is written into the lane's digest.
+	plain := opt.Identity(nativegen.PlainLane(lane(false)))
+	plainKey, err := driver(false).MaterializationKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transform := range nativegen.Registry().Transforms() {
+		next := transform.Apply(plain)
+		if next == nil {
+			continue
+		}
+		t.Run("switch/"+transform.Name(), func(t *testing.T) {
+			key, err := driver(false).MaterializationKey(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key == plainKey {
+				t.Fatalf("%s does not reach the materialization key", transform.Name())
+			}
+		})
+	}
 }
 
 func TestNativeMaterializationKeyRejectsForeignConfiguration(t *testing.T) {
