@@ -56,13 +56,28 @@ func (f *Function) Webs() ([]*Web, error) {
 	// then every instruction's definitions.
 	var sites []site
 	entry := map[Reg]int{}
+	addEntry := func(r Reg, bits int) {
+		if _, dup := entry[r]; dup {
+			return
+		}
+		entry[r] = len(sites)
+		sites = append(sites, site{Access: Access{Reg: r, Bits: bits, Implicit: true}})
+	}
 	for n := 0; n <= 30; n++ {
-		entry[Reg{GPR, n}] = len(sites)
-		sites = append(sites, site{Access: Access{Reg: Reg{GPR, n}, Bits: 64, Implicit: true}})
+		addEntry(Reg{GPR, n}, 64)
 	}
 	for n := 0; n <= 31; n++ {
-		entry[Reg{VEC, n}] = len(sites)
-		sites = append(sites, site{Access: Access{Reg: Reg{VEC, n}, Bits: 128, Implicit: true}})
+		addEntry(Reg{VEC, n}, 128)
+	}
+	for _, ins := range f.Instrs {
+		// Pseudo-registers (frame slots under promotion) hold an unknown
+		// at entry too.
+		for _, u := range ins.Uses {
+			addEntry(u.Reg, u.Bits)
+		}
+		for _, d := range ins.Defs {
+			addEntry(d.Reg, d.Bits)
+		}
 	}
 	defSite := map[*Instr]map[int]int{} // instruction → def access index → site
 	for _, ins := range f.Instrs {

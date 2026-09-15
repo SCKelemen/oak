@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 // If-conversion (docs/spec/94-assembler.md §9 "If-conversion";
@@ -140,15 +141,17 @@ func TestE2ENativeIfConversion(t *testing.T) {
 		}
 	}
 	// count_hits's loop is one block: the header's two exits, the back
-	// edge, and no other branch.
+	// edge, and no other branch — or, bottom-tested (docs/spec/94-assembler.md
+	// §9 "Bottom-tested loops"), the tail's exit and its conditional back
+	// edge, the second exit test having become the back edge.
 	branches := 0
 	for _, ins := range loopBody(units["count_hits"]) {
 		if ins.Mnemonic == "b." || ins.Mnemonic == "b" || ins.Mnemonic == "cbz" || ins.Mnemonic == "cbnz" {
 			branches++
 		}
 	}
-	if branches != 3 {
-		t.Errorf("count_hits's loop must hold exactly its two exits and the back edge, got %d branches", branches)
+	if want := 3 - nativegen.RotatedLoops(units["count_hits"]); branches != want {
+		t.Errorf("count_hits's loop must hold exactly its exits and the back edge (%d branches), got %d", want, branches)
 	}
 	// `found = true` is a csinc from wzr, no constant built in the loop;
 	// `hits = hits + u32(1)` under a Bool is a cinc after `cmp wB, #0`.

@@ -18,47 +18,86 @@ import (
 // the signature — the checker from its own reading, so a lowering that
 // reads the wrong slot is refused, not trusted.
 
-// ArgClass describes one integer-class argument for the layout: the
-// registers it takes when it fits, and its size and alignment on the stack
-// under the packing convention (the standard one rounds both to 8).
+// ArgClass describes one argument for the layout: the registers it takes
+// when it fits, and its size and alignment on the stack under the packing
+// convention (the standard one rounds an integer-class argument to 8-byte
+// slots; a vector-class one — a float or a fixed vector, in v0–v7 while
+// they fit — keeps its natural size and alignment, at least 8).
 type ArgClass struct {
-	Words int   // registers when passed in registers (1 scalar, 2 span, chunks of a small record, 1 for a reference)
-	Bytes int64 // natural size on the stack (packed): 1, 2, 4, 8 for scalars; 16 for a span; chunks*8 for a record
-	Align int64 // natural alignment on the stack (packed)
+	Words  int   // registers when passed in registers (1 scalar, 2 span, chunks of a small record, 1 for a reference, 1 for a vector)
+	Bytes  int64 // natural size on the stack (packed): 1, 2, 4, 8 for scalars; 16 for a span; chunks*8 for a record; 4, 8, 16 for a float or vector
+	Align  int64 // natural alignment on the stack (packed)
+	Vector bool  // the vector class: a float or a fixed vector, its registers v0–v7
 }
 
 // ArgPlace is where an argument lands.
 type ArgPlace struct {
-	Reg     int   // first register, when in registers
+	Reg     int   // first register, when in registers (x0–x7, or v0–v7 for the vector class)
 	Regs    int   // registers taken
 	OnStack bool  // else at Offset from the entry sp
 	Offset  int64 // entry-relative byte offset of the argument's first byte
+	Vector  bool  // the vector class (its register is a v register)
 }
 
-// LayoutArguments places integer-class arguments in order; it returns the
-// places and the bytes of the stack area they take, rounded to 16.
+// LayoutArguments places arguments in order — the integer class in x0–x7
+// and the vector class in v0–v7 while they fit, each class going to the
+// stack from its first argument that does not, at increasing offsets from
+// one cursor shared by both (AAPCS64's NSAA); it returns the places and
+// the bytes of the stack area they take, rounded to 16. Maintained line
+// for line with Oak.ArgumentLayout.layoutFrom (spec/lean/Oak/ArgumentLayout.lean).
 func LayoutArguments(args []ArgClass, packed bool) ([]ArgPlace, int64) {
 	places := make([]ArgPlace, len(args))
-	next, off, stack := 0, int64(0), false
+	next, nextV, off, stack, stackV := 0, 0, int64(0), false, false
 	for i, a := range args {
-		if !stack && next+a.Words <= 8 {
-			places[i] = ArgPlace{Reg: next, Regs: a.Words}
-			next += a.Words
-			continue
+		if a.Vector {
+			if !stackV && nextV+a.Words <= 8 {
+				places[i] = ArgPlace{Reg: nextV, Regs: a.Words, Vector: true}
+				nextV += a.Words
+				continue
+			}
+			stackV = true
+		} else {
+			if !stack && next+a.Words <= 8 {
+				places[i] = ArgPlace{Reg: next, Regs: a.Words}
+				next += a.Words
+				continue
+			}
+			stack = true
 		}
-		stack = true
-		size, align := int64(a.Words)*8, int64(8)
-		if packed {
-			size, align = a.Bytes, a.Align
-		}
-		if align < 1 {
-			align = 1
-		}
+		size, align := stackSize(packed, a), stackAlign(packed, a)
 		off = (off + align - 1) / align * align
-		places[i] = ArgPlace{OnStack: true, Offset: off}
+		places[i] = ArgPlace{OnStack: true, Offset: off, Vector: a.Vector}
 		off += size
 	}
 	return places, (off + 15) / 16 * 16
+}
+
+// stackSize is the bytes an argument takes on the stack: its natural size
+// when packed; otherwise an integer-class argument its registers' worth
+// and a vector-class one its natural size, at least 8
+// (Oak.ArgumentLayout.stackSize).
+func stackSize(packed bool, a ArgClass) int64 {
+	switch {
+	case packed:
+		return a.Bytes
+	case a.Vector:
+		return max(a.Bytes, 8)
+	}
+	return int64(a.Words) * 8
+}
+
+// stackAlign is its stack alignment: natural when packed; otherwise 8, or
+// a vector-class argument's natural alignment when larger; never below 1
+// (Oak.ArgumentLayout.stackAlign).
+func stackAlign(packed bool, a ArgClass) int64 {
+	align := int64(8)
+	switch {
+	case packed:
+		align = a.Align
+	case a.Vector:
+		align = max(a.Align, 8)
+	}
+	return max(align, 1)
 }
 
 // argKind is the integer-class shape of a parameter for the layout.
@@ -120,7 +159,15 @@ func classifyArguments(params []*ast.FunctionParameter, composites map[string]Co
 			continue
 		}
 		if class == ClassV {
+			// A float or a fixed vector: the vector class, in v0–v7 while
+			// they fit, on the stack at its natural size and alignment past
+			// them (a 128-bit vector sixteen bytes, sixteen-aligned).
 			arg.kind = argVector
+			bytes := int64(16)
+			if bits, _, known := contractBits(param.Type); known && bits <= 64 {
+				bytes = int64(bits+7) / 8
+			}
+			arg.class = ArgClass{Words: 1, Bytes: bytes, Align: bytes, Vector: true}
 			out = append(out, arg)
 			continue
 		}

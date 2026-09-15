@@ -117,8 +117,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
 		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]
 		// The lane's transforms — check elision, strength reduction, compare
-		// reuse, loop-invariant motion, reduction unrolling — are the candidate
-		// search's to turn on (nativegen.Transforms, below), not the lane's.
+		// reuse, loop-invariant motion, loop rotation, reduction unrolling —
+		// are the candidate search's to turn on (nativegen.Transforms,
+		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		// The candidate search (compiler/native_search.go, package opt;
@@ -175,6 +176,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) homed in the argument registers", fn.Name.Value, homed)))
 		}
+		if promoted := nativegen.PromotedSlots(asmFn); promoted > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d frame slot(s) promoted to registers", fn.Name.Value, promoted)))
+		}
 		if reduced := nativegen.Reduced(asmFn); reduced > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d constant operation(s) strength-reduced, proven", fn.Name.Value, reduced)))
 		}
@@ -182,6 +186,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			// Rotations spelled with shifts lowered to `ror`
 			// (docs/spec/94-assembler.md §9 "Rotates").
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d rotation(s) lowered to ror", fn.Name.Value, rotated)))
+		}
+		if rotated := nativegen.RotatedLoops(asmFn); rotated > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d loop(s) bottom-tested, proven", fn.Name.Value, rotated)))
 		}
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
