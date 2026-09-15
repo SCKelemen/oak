@@ -31,7 +31,11 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   against a fake lane.
 - `nativegen/opt.go` — the native lane's side: the six transforms the
   lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
-  `hoist-invariants`, `vector-homes`, `unroll-reductions`) as
+  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `reallocate` and the first transform written for the registry,
+  `late-cleanup` (§11 "Machine", late copy/branch cleanup:
+  `nativegen/cleanup.go`, a block-local peephole under a whole-function
+  register liveness, 2026-09-16), as
   `opt.Transform`s over `Lane` configurations, each with its phase,
   proof kind, and requirements; `FunctionFacts` reading the
   typechecker's proved indices and the language's integer associativity
@@ -67,9 +71,13 @@ where that mattered: before the vector operands moved in place (#484),
 saved and reloaded it around the call exactly as the slot form stored and
 loaded it, plus two moves per trip, and the search kept the hoisted slot
 form; after #484 the home form is the cheaper and is selected. What a
-vector move and a frame-slot round trip cost, and whether residency
-transforms deserve a tie-break, is calibration work for the benchmarks
-(§8); the report's `candidates` line is where to read it.
+vector move and a frame-slot round trip cost is calibration work for the
+benchmarks (§8); the report's `candidates` line is where to read it. The
+tie-break landed with `late-cleanup` (2026-09-16): at one cost the
+candidate with more transforms applied comes first in the beam and the
+validation order (`opt.cheaper`), and the loop stride is read from the
+last increment of a compared register, the index's step before the back
+edge, not the first.
 
 ### Phase B, first increment: `machine/`
 
@@ -593,7 +601,8 @@ The existing native optimizations should be migrated into the candidate interfac
 - multiply-add/select forms;
 - scheduling alternatives;
 - allocation alternatives;
-- late copy/branch cleanup.
+- late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
+  of the kernel package's instructions, verdicts unchanged).
 
 ## 12. Vector planning
 

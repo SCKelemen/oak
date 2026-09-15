@@ -159,6 +159,7 @@ var setAside = map[string]string{
 	nativegen.TransformHoist:       "keeps its loop invariants in place",
 	nativegen.TransformUnroll:      "keeps its plain reduction",
 	nativegen.TransformVectorHomes: "keeps its vector slots",
+	nativegen.TransformCleanup:     "keeps its copies",
 	nativegen.TransformReallocate:  "keeps its register assignment",
 }
 

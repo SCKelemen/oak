@@ -2878,6 +2878,42 @@ The verifier's model of `eor vD, vN, vN` had read it as the vector move
 `orr vD, vN, vN` is; it is zero (`asm/verify_vector_test.go`), and the
 in-place `xor(v, v)` was the first body to spell it.
 
+The forty-eighth increment is the late copy and branch cleanup (§9,
+`nativegen/cleanup.go`, `Lane.Cleanup`, the `late-cleanup` transform of
+the candidate search). The lowering spells a value's path through a
+scratch register wherever an expression's result meets the place it is
+used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
+`mov x10, x12; mov x22, x10` — and a branch to the label that follows it
+when an arm's tail is empty. Under a whole-function liveness of the
+general registers over the item list (blocks at labels and after
+branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
+x0, x1, x8 and the restored callee-saved registers), four block-local
+rules run to a fixpoint: a copy read once by the next instruction is
+forwarded into that instruction's reads (a W copy only into W reads, the
+zero register and sp never forwarded, a call's implicit argument read
+never renamed); a definition of the retargetable set copied once to a
+destination writes that destination; a branch to the following label
+goes; a self-move goes. Machine shape only: the checker and the verifier
+judge the cleaned body, and the search keeps the uncleaned lowering where
+they refuse it. On the kernel package it removes 2.2 percent of the
+instructions with every verdict unchanged — the CRC-32C chunk step 98 to
+82, the byte-order read and write helpers 112 to 102 and 105 to 95, the
+UTF-8 validator 330 to 304 — and it corrected one selection: the hoisted
+form of `blake3_compress` had been kept over the identity by the
+identity-last policy though the static model priced it higher, and the
+cleaned identity is now the cheapest verified body (report
+`candidates`). Joining the registry surfaced two selection faults the
+identity-last policy had masked, both fixed with it: the metrics read a
+loop's stride from the first increment of a compared register, so a
+value stepped in the body (`add x9, x9, #7` on a copy of a compared
+register) priced `zero_page`'s plain loop at a seventh of its trips and
+its hoisted form above it — the index steps last, before the back edge,
+and the stride is read there now; and at one static cost the candidate
+with more transforms applied comes first in the beam and the validation
+order, since the model cannot see what a residency transform saves (a
+vector home against a slot round trip is one load and one store either
+way), so `live_across` keeps its vector home beside the cleanup.
+
 The forty-eighth increment is owned arrays as values (§9 "Arrays as
 values"): `[N]T` parameters, results, arguments, initializers, and
 whole-array assignments and stores follow the record rules under the

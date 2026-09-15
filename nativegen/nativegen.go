@@ -1462,6 +1462,13 @@ type Lane struct {
 	// use (docs/spec/94-assembler.md §9.ad); the checker and the verifier
 	// decide, and the compiler falls back to slots on refusal.
 	VectorHomes bool
+	// Cleanup runs the late copy and branch cleanup over the lowered items
+	// on the AArch64 lane (nativegen/cleanup.go): a copy read once by the
+	// next instruction is forwarded, a definition copied once writes its
+	// destination, a branch to the following label goes. The checker and
+	// the verifier judge the cleaned body; the compiler keeps the
+	// uncleaned lowering where they refuse it.
+	Cleanup bool
 	// Globals are the program's mutable top-level scalars a body may
 	// address (docs/spec/94-assembler.md §9, the OS pilot's N3), by Oak
 	// name with their storage width; the generator records the ones a body
@@ -1598,8 +1605,15 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 	switch lane.Arch {
 	case "", asm.ArchArm64:
 		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
-		if err != nil || !lane.Reallocate {
+		if err != nil {
 			return out, err
+		}
+		if lane.Cleanup {
+			// Late copy and branch cleanup (nativegen/cleanup.go).
+			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
+		}
+		if !lane.Reallocate {
+			return out, nil
 		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package

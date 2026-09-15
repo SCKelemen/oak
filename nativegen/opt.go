@@ -40,6 +40,7 @@ const (
 	TransformHoist       = "hoist-invariants"
 	TransformUnroll      = "unroll-reductions"
 	TransformVectorHomes = "vector-homes"
+	TransformCleanup     = "late-cleanup"
 	TransformReallocate  = "reallocate"
 )
 
@@ -235,7 +236,21 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
 			fired:   Unrolled,
 		},
+		cleanupTransform,
 	}
+}
+
+// cleanupTransform is the late copy and branch cleanup (nativegen/cleanup.go).
+var cleanupTransform = &laneTransform{
+	// Late cleanup (docs/spec/94-assembler.md §9 "Late cleanup"): a copy
+	// read once by the next instruction is forwarded, a definition copied
+	// once writes its destination, a branch to the following label goes —
+	// machine shape only, judged by the checker and the verifier.
+	name: TransformCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.Cleanup },
+	apply:   func(l Lane) Lane { l.Cleanup = true; return l },
+	fired:   CleanedCopies,
 }
 
 // Registry is the lane's transform registry.
@@ -252,6 +267,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ReuseFlags = false
 	lane.HoistInvariants = false
 	lane.VectorHomes = false
+	lane.Cleanup = false
 	lane.Reallocate = false
 	lane.NoReductions = true
 	return lane
