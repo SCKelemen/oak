@@ -178,6 +178,13 @@ same execution/HB/MO/SC validators that define Oak's language model.
 ordered-before projection used by Arm's official `aarch64hwreqs.cat` and
 `aarch64.cat` model.
 
+The assembly litmus programs in `spec/litmus/aarch64` run with Herdtools7 and
+that repository's official `aarch64.cat`, both fixed at commit
+`76d5bd259d4c4b553a0f52158b9638559b79a5b5`.  The gate requires `Never` for
+the MP stale-payload, STLR/LDAR SB both-zero, full-DMB SB both-zero, and LDAR
+IRIW split observations.  It requires `Sometimes` for LDAR/STLR LB both-zero,
+so an oracle that simply rejects weak-looking executions cannot pass.
+
 ### 7.1 Message passing (MP)
 
 Release/acquire publication establishes:
@@ -270,7 +277,9 @@ job. It:
 
 1. requires Clang AArch64 freestanding cross-target support;
 2. runs the Oak source -> C -> AArch64 assembly checks;
-3. runs the memory-model litmus outcomes.
+3. runs Oak's language-level memory-model litmus outcomes;
+4. builds pinned Herdtools7 and runs the matching assembly cases against the
+   official Arm CAT model from the same pinned checkout.
 
 The ordinary Go/race, Lean, and golden gates remain in place, so backend
 refinement cannot replace source/compiler/formal regression coverage.
@@ -278,6 +287,9 @@ refinement cannot replace source/compiler/formal regression coverage.
 Local developers without Clang may skip the assembly tests. CI sets
 `OAK_REQUIRE_AARCH64_CLANG=1`, turning absence of the cross compiler into a hard
 failure rather than a skipped verification claim.
+The Herd test similarly skips without `herd7` or `OAK_HERDTOOLS7_DIR` locally;
+CI sets `OAK_REQUIRE_HERD7=1`, so absence, a checkout at the wrong commit, an
+unparseable result, or an outcome drift is a hard failure.
 
 ## 10. What this does not yet prove
 
@@ -300,14 +312,12 @@ than a full verified compiler/ISA stack.
 
 The next machine-memory work should add:
 
-1. pinned Herd executions of MP/SB/LB/IRIW against Arm's official CAT model,
-   with the CAT revision recorded and drift checked;
-2. a mechanical CAT-to-Lean bridge for the small `bob`/`obs` projection;
-3. retained assembly artifacts/version metadata so failures are diagnosable;
-4. real AArch64 hardware litmus execution when a CI runner is available;
-5. MMIO address spaces and AArch64 `DMB`/`DSB`/`ISB` contracts;
-6. DMA/coherency and interrupt-boundary ordering;
-7. selective implementation-to-Lean refinement where the proof cost is
+1. a mechanical CAT-to-Lean bridge for the small `bob`/`obs` projection;
+2. retained assembly artifacts/version metadata so failures are diagnosable;
+3. real AArch64 hardware litmus execution when a CI runner is available;
+4. MMIO address spaces and AArch64 `DMB`/`DSB`/`ISB` contracts;
+5. DMA/coherency and interrupt-boundary ordering;
+6. selective implementation-to-Lean refinement where the proof cost is
    justified.
 
 Once this AArch64 refinement gate is stable, Oak has enough demonstrated
