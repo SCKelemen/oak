@@ -4100,9 +4100,11 @@ addressed as a constant offset from a base register — a frame slot from
 `sp`, a field of a record behind a register (an in-place parameter, the
 `x8` result area) — the integer register whose value the word holds: a
 store records the register it stored, a load the register it loaded into.
-A later load of the same slot at the same width, while that register has
-not been written since, is the register's value already — the load
-becomes a `mov`, or nothing when its destination is that register. So
+A later load of the same word at the same width — or a 32-bit load of a
+word a 64-bit register was stored to, which reads that register's low
+half — while that register has not been written since, is the register's
+value already: the load becomes a `mov`, or nothing when its destination
+is that register. So
 the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
 str w9, [sp, #304]`, followed by the field's test, no longer reloads what
 it just stored (`sha256_update`'s `next.filled`). Every write of a
