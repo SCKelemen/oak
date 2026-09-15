@@ -100,11 +100,12 @@ func TestNativeShapesPairCopies(t *testing.T) {
 			}
 		}
 	}
-	// The 40-byte copy in (from the parameter's address) and the copy out
-	// (into the x8 area): two pairs and one word each. The single words
-	// are the two tails, the three field updates (a load and a store
-	// each), and the saved register's store and reload.
-	if ldp < 4 || stp < 4 {
+	// The 40-byte copy `out: Wide = w` — from the parameter read in place
+	// into the result area built in place (§9 "Copies at the boundary"),
+	// so no other copy remains: two pairs and one word. The single words
+	// are that tail, the three field updates (a load and a store each),
+	// and the saved register's store and reload.
+	if ldp < 2 || stp < 2 {
 		t.Errorf("shift must copy its record by pairs; got %d ldp and %d stp:\n%s", ldp, stp, fmt.Sprint(shift.Items))
 	}
 	if singles > 12 {
