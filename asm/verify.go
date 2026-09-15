@@ -5925,6 +5925,12 @@ func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
 	if infix.Operator == "<=" {
 		trips++
 	}
+	if lo.trapsTracked {
+		// The theorem decider has no machine side to couple with: a
+		// summarized loop is a law left open (the lattice laws' loops over
+		// loops, `dnf_product_denotes`), so it unrolls every counted loop.
+		return false
+	}
 	return trips > countedTripLimit || (trips > countedUnrollLimit && bodyHasLoop(loop.Body, lo.functions))
 }
 

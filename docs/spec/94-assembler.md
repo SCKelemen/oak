@@ -5488,7 +5488,11 @@ four bodies of 128 and 512 trips proved unrolled where their coupling
 does not yet (`intern_long`, `positional_arms_ahead`).
 `TestVerifyLongCountedLoopInducted`: eighty trips are inducted and
 proven, a wrong store is refuted on a witness input long enough, and
-forty trips still unroll. Prover build (per body, the optimizer's
+forty trips still unroll. The theorem decider takes neither rule: with
+no machine side to couple with, a summarized loop is a law left open
+(the lattice laws' loops over loops, `dnf_product_denotes`, went "Go
+open, Oak decided" under the loop-over-loop rule), so it unrolls every
+counted loop. Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
 
