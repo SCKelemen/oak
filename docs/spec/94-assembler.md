@@ -3864,7 +3864,7 @@ The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
 of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
-did not reach; the C backend under clang runs it in five.
+did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
 
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares
