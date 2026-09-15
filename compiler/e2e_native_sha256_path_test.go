@@ -112,6 +112,13 @@ func TestNativeShapesSha256Path(t *testing.T) {
 	if absorb == nil {
 		t.Fatal("absorb was not lowered natively")
 	}
+	verdict, ok := model.NativeVerdicts["absorb"]
+	if !ok {
+		t.Fatal("absorb has no native verification verdict")
+	}
+	if verdict.Kind != asm.VerdictProven && verdict.Kind != asm.VerdictWitnessed {
+		t.Fatalf("absorb must have proof or witness evidence, got %s: %s", verdict.Kind, verdict.Message)
+	}
 	// filled and blocks stay in registers: no 32-bit load or store
 	// through the result register's word offsets inside the loop, only
 	// the pair copies of h and the call.

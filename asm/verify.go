@@ -5573,8 +5573,9 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 }
 
 // sameType is structural identity: declared records and unions by name,
-// arrays by element and length, scalars by width and signedness (an array
-// type is built afresh at each mention, so pointer identity would part
+// arrays by element and length, scalars by width, signedness, and numeric
+// category. An array type is built afresh at each mention, so pointer
+// identity would part
 // `[4]u8` from `[4]u8`).
 func sameType(a, b *oakType) bool {
 	if a == b {
@@ -5585,11 +5586,11 @@ func sameType(a, b *oakType) bool {
 	}
 	switch a.kind {
 	case oakScalar:
-		return a.width == b.width && a.signed == b.signed
+		return a.width == b.width && a.signed == b.signed && a.float == b.float
 	case oakArray:
 		return a.length == b.length && sameType(a.elem, b.elem)
 	}
-	return a.name == b.name
+	return a.name != "" && a.name == b.name
 }
 
 // aggregateRoot reports an expression that yields an aggregate without
@@ -6548,26 +6549,6 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	return truncate(result, width), "", true
 }
 
-// sameOakType is type identity: records and unions by their one declared
-// instance, arrays by length and element (an owned array type is built
-// afresh at each spelling, `[4]u64` in a signature and in a field), scalars
-// by width, sign, and floatness.
-func sameOakType(a, b *oakType) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil || a.kind != b.kind {
-		return false
-	}
-	switch a.kind {
-	case oakScalar:
-		return a.width == b.width && a.signed == b.signed && a.float == b.float
-	case oakArray:
-		return a.length == b.length && sameOakType(a.elem, b.elem)
-	}
-	return false
-}
-
 // describe spells a type for a message: its name, or its shape.
 func (t *oakType) describe() string {
 	if t == nil {
@@ -6585,16 +6566,16 @@ func (t *oakType) describe() string {
 	return "an aggregate"
 }
 
-// inlineCallValue inlines a call whose result is a record or a sum type
-// (docs/spec/125-verification.md section 3): the body as an aggregate
-// value, the arms of its matches merged leaf by leaf.
+// inlineCallValue inlines a call whose result is an aggregate
+// (docs/spec/125-verification.md section 3): the body as an aggregate value,
+// the arms of its matches merged leaf by leaf.
 func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.InvocationExpression, typ *oakType) (*oakValue, string, bool) {
 	name := callee.Name.Value
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
 	returned, ok := lo.oakTypeOf(callee.ReturnType)
-	if !ok || !sameOakType(returned, typ) {
+	if !ok || !sameType(returned, typ) {
 		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.describe()), false
 	}
 	restore, reason, ok := lo.enterCall(callee, call)
