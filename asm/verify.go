@@ -1402,6 +1402,18 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 // executeBodyChunk is executeBody delivering, for a record result of two
 // register chunks (9 to 16 bytes: x0 and x1, a0 and a1), the given chunk.
 func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
+	// Every path to its end first: the result is then a select tree on the
+	// branch conditions, which the decision splits well. Past the path
+	// budget the body runs again merging its paths at their joins
+	// (joinPoints), linear in the forks rather than exponential.
+	result, exec, reason, ok := executeBodyChunkJoining(fn, sig, concrete, half, chunk, false)
+	if !ok && strings.HasPrefix(reason, "more paths than the verifier's budget") {
+		return executeBodyChunkJoining(fn, sig, concrete, half, chunk, true)
+	}
+	return result, exec, reason, ok
+}
+
+func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int, joins bool) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}, notes: &pathNotes{}}
 	params := map[string]RegClass{}
 	var resultArea []compositeLeaf // a record result returned through memory: its leaves
@@ -1665,7 +1677,10 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	}
 	exec.hasResult = hasResult
 	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
-	result, effects, reason, ok := exec.run(0, state)
+	if joins {
+		exec.joins = joinPoints(fn.Items, labels)
+	}
+	result, effects, reason, ok := exec.runAll(state)
 	if effects != nil {
 		exec.cells, exec.writes, exec.trap = effects.cells, effects.writes, effects.trap
 	}
@@ -1732,6 +1747,18 @@ type pathExecutor struct {
 	// the range of indices the site's events occupy. A site reached again
 	// on another path reuses them (asm/loops.go, loopSite).
 	sites map[string]loopSite
+	// joins: each forward conditional branch's immediate post-dominator
+	// (joinPoints) — the item where its two paths meet again, at which
+	// the executor merges their states into one continuation instead of
+	// running each to the end (docs/spec/94-assembler.md §9, joins).
+	joins map[int]int
+	// stops is the stack of joins being collected: a path reaching the
+	// innermost stop parks its state in joined and ends.
+	stops  []int
+	joined []*symbolicState
+	// ends are the paths' outcomes — a result with its effects, or a trap
+	// — each under the path's condition; runAll folds them.
+	ends  []pathEnd
 	paths int
 	steps int
 	// records: record and union parameters by name (their leaves), env the
@@ -1975,15 +2002,18 @@ func (s *symbolicState) clone() *symbolicState {
 type pathNode struct {
 	parent *pathNode
 	cond   *term
-	fork   *forkMark
+	fork   *forkMark // nil for a join node: the disjunction of the paths merged there
 	side   bool
 	term   *term // the conjunction down to here, built on demand
 }
 
-// forkMark identifies one fork; it carries a field so that every mark is
-// a distinct allocation (pointers to zero-size values may coincide).
+// forkMark identifies one fork: the branch's position and its condition
+// (the taken side's, at the width the branch produced it). A field keeps
+// every mark a distinct allocation (pointers to zero-size values may
+// coincide).
 type forkMark struct {
-	pc int
+	pc   int
+	cond *term
 }
 
 // assume narrows the path to one side of a fork: the inputs on which cond
@@ -2018,14 +2048,34 @@ func (n *pathNode) condition() *term {
 func (n *pathNode) exclusive(other *pathNode) bool {
 	sides := map[*forkMark]bool{}
 	for at := other; at != nil; at = at.parent {
-		sides[at.fork] = at.side
+		if at.fork != nil {
+			sides[at.fork] = at.side
+		}
 	}
 	for at := n; at != nil; at = at.parent {
+		if at.fork == nil {
+			continue // a join: the paths it merged are told apart by their forks
+		}
 		if side, shared := sides[at.fork]; shared && side != at.side {
 			return true
 		}
 	}
 	return false
+}
+
+// conditionBelow is the conjunction of the branches taken below parent
+// (nil when none): the path's condition relative to the fork that ends
+// at a join.
+func (n *pathNode) conditionBelow(parent *pathNode) *term {
+	var cond *term
+	for at := n; at != nil && at != parent; at = at.parent {
+		if cond == nil {
+			cond = at.cond
+		} else {
+			cond = binaryTerm("and", at.cond, cond)
+		}
+	}
+	return cond
 }
 
 // noteTrapGuard records, on the path that falls through a `b.hs <trap>`
@@ -2653,6 +2703,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {
+		if n := len(x.stops); n > 0 && pc == x.stops[n-1] {
+			// The join the enclosing fork collects: this path parks here.
+			x.joined = append(x.joined, state)
+			return nil, nil, "", true
+		}
 		instr, isInstr := x.items[pc].(Instruction)
 		if !isInstr {
 			continue // a label is a position
@@ -2664,7 +2719,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		switch instr.Mnemonic {
 		case "ret":
 			if !x.hasResult {
-				return unitResult, state.effects(), "", true
+				return x.end(unitResult, state)
 			}
 			if x.resultClass == ClassV && (x.arch != ArchRV64 || x.floatResult == 0) {
 				// A vector result: v0 on AArch64, v8 on RV64 (the RVV psABI);
@@ -2678,9 +2733,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 					return nil, nil, "result register never written", false
 				}
 				if x.floatResult != 0 {
-					return value.lanesAt(x.floatResult)[0], state.effects(), "", true
+					return x.end(value.lanesAt(x.floatResult)[0], state)
 				}
-				return value.halves()[x.resultHalf], state.effects(), "", true
+				return x.end(value.halves()[x.resultHalf], state)
 			}
 			if x.resultArea != nil {
 				// The chunk of the result area the caller reads: each leaf in
@@ -2689,7 +2744,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				if !okArea {
 					return nil, nil, reason, false
 				}
-				return chunk, state.effects(), "", true
+				return x.end(chunk, state)
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
@@ -2704,7 +2759,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 					result = truncate(result, widthOf(x.resultClass))
 				}
 			}
-			return result, state.effects(), "", true
+			return x.end(result, state)
 		case "brk", "ebreak":
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
@@ -2712,7 +2767,8 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// the equivalence: it drops from the fork it came from, and
 			// the condition that reached it leaves the input domain
 			// (pathEffects.trap).
-			return trapPath, &pathEffects{trap: constTerm(1, 1)}, "", true
+			x.ends = append(x.ends, pathEnd{result: trapPath, cond: state.pathCondition(), path: state.path})
+			return nil, nil, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
@@ -2767,39 +2823,67 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
 				return x.loopEvent(shape, instr, state)
 			}
-			// Any other undecided branch forks; backward or forward alike —
-			// an unrecognized loop unfolds until the budgets stop it.
-			// The path records the fork, except a trap guard's: its taken
-			// side summarizes nothing, and the inputs it excludes are
-			// outside the comparison on both sides, so the fall-through
-			// keeps the path it had (its loop events then select on the
-			// conditions the Oak body's guards spell).
-			guard := isTrapBlock(x.items, target)
-			fork := &forkMark{pc: pc}
-			takenState := state.clone()
-			if !guard {
-				takenState.assume(cond, fork, true)
-			}
-			taken, takenEffects, reason, ok := x.run(target, takenState)
-			if !ok {
-				return nil, nil, reason, false
-			}
-			if guard {
+			if isTrapBlock(x.items, target) {
+				// A guard: the taken side traps, an end under the guard's
+				// condition (the Oak body traps on the same inputs, which
+				// leave the domain); this path continues past it under the
+				// bound the guard establishes, no fork recorded.
+				x.ends = append(x.ends, pathEnd{result: trapPath, cond: conjoin(state.pathCondition(), truncate(cond, 1)), path: state.path})
 				state.noteTrapGuard(instr)
-			} else {
-				state.assume(notTerm(cond), fork, false)
+				// The trapping side counts as the path it was: a counted
+				// loop guarding every iteration meets the path budget as
+				// it did, rather than unrolling to the step budget with a
+				// write log the decision cannot afford.
+				x.paths++
+				if x.paths > pathBudget {
+					return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
+				}
+				continue
 			}
-			fallThrough, fallEffects, reason, ok := x.run(pc+1, state)
+			// Any other undecided branch forks. A forward fork whose paths
+			// meet again (its immediate post-dominator, joinPoints) runs
+			// each side to the join, merges the states parked there into
+			// one — each register, slot, cell, and memory a select on the
+			// path condition — and continues once; without a join, or a
+			// backward branch (an unrecognized loop unfolding until the
+			// budgets stop it), each side runs to its end.
+			fork := &forkMark{pc: pc, cond: cond}
+			parent := state.path
+			takenState := state.clone()
+			takenState.assume(cond, fork, true)
+			state.assume(notTerm(cond), fork, false)
+			join, hasJoin := x.joins[pc]
+			if !hasJoin || target <= pc || join <= pc {
+				if _, _, reason, ok := x.run(target, takenState); !ok {
+					return nil, nil, reason, false
+				}
+				return x.run(pc+1, state)
+			}
+			mark := len(x.joined)
+			x.stops = append(x.stops, join)
+			_, _, reason, ok = x.run(target, takenState)
+			if ok {
+				_, _, reason, ok = x.run(pc+1, state)
+			}
+			x.stops = x.stops[:len(x.stops)-1]
 			if !ok {
 				return nil, nil, reason, false
 			}
-			switch {
-			case taken == trapPath:
-				return fallThrough, withTrap(fallEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
-			case fallThrough == trapPath:
-				return taken, withTrap(takenEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
+			parked := append([]*symbolicState(nil), x.joined[mark:]...)
+			x.joined = x.joined[:mark]
+			if len(parked) == 0 {
+				return nil, nil, "", true // both sides ended before the join
 			}
-			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
+			merged, mergeable := x.mergeStates(parent, parked)
+			if !mergeable {
+				for _, parkedState := range parked {
+					if _, _, reason, ok := x.run(join, parkedState); !ok {
+						return nil, nil, reason, false
+					}
+				}
+				return nil, nil, "", true
+			}
+			return x.run(join, merged)
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
@@ -2868,6 +2952,361 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		}
 	}
 	return nil, nil, "no ret reached", false
+}
+
+// pathEnd is one path's outcome: its result and effects, or trapPath, with
+// the path that reached it and, for a trap, the exact condition (the path's
+// with the guard's).
+type pathEnd struct {
+	result  *term
+	effects *pathEffects
+	cond    *term
+	path    *pathNode
+}
+
+// end records a path that returned result from state.
+func (x *pathExecutor) end(result *term, state *symbolicState) (*term, *pathEffects, string, bool) {
+	x.ends = append(x.ends, pathEnd{result: result, effects: state.effects(), path: state.path})
+	return nil, nil, "", true
+}
+
+// conjoin is the conjunction of two 1-bit conditions, either nil for true.
+func conjoin(a, b *term) *term {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	return binaryTerm("and", a, b)
+}
+
+// runAll executes the body from its first item and folds the paths' ends
+// along the tree of forks they took (foldTree): the result and effects at
+// a fork select on its condition between the two sides' — as they did
+// when every path ran to its end — and the ends past a join stand in for
+// both sides wherever a side parked rather than ended. The trap condition
+// is the disjunction of the trapping ends' exact conditions. Every path
+// trapping is trapPath.
+func (x *pathExecutor) runAll(state *symbolicState) (*term, *pathEffects, string, bool) {
+	if _, _, reason, ok := x.run(0, state); !ok {
+		return nil, nil, reason, false
+	}
+	chains := make([][]*pathNode, len(x.ends))
+	all := make([]int, len(x.ends))
+	var trap *term
+	for k, e := range x.ends {
+		all[k] = k
+		var chain []*pathNode
+		for at := e.path; at != nil; at = at.parent {
+			chain = append(chain, at)
+		}
+		for a, b := 0, len(chain)-1; a < b; a, b = a+1, b-1 {
+			chain[a], chain[b] = chain[b], chain[a]
+		}
+		chains[k] = chain
+		if e.result == trapPath {
+			cond := e.cond
+			if cond == nil {
+				cond = constTerm(1, 1)
+			}
+			if trap == nil {
+				trap = cond
+			} else {
+				trap = binaryTerm("or", cond, trap)
+			}
+		}
+	}
+	result, effects := x.foldTree(all, chains, 0, nil, nil)
+	if result == nil {
+		return trapPath, &pathEffects{trap: trap}, "", true
+	}
+	out := pathEffects{trap: trap}
+	if effects != nil {
+		out.cells, out.writes = effects.cells, effects.writes
+	}
+	return result, &out, "", true
+}
+
+// foldTree combines the ends whose paths share the first level nodes. At
+// this level the paths either end (one returning end at most; trapping
+// ends count only in the trap condition), fork — one fork, its sides
+// folded in turn — or pass a join node, whose ends are the continuation
+// both sides of the fork share: the fallback for a side that parked there
+// instead of ending. A side with no value (it trapped, or every path in
+// it did) yields the other side's, as the fork did when its paths ran to
+// their ends.
+func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, fallback *term, fallbackEffects *pathEffects) (*term, *pathEffects) {
+	var here *pathEnd
+	var fork *forkMark
+	var trueEnds, falseEnds, joinEnds []int
+	for _, k := range ends {
+		chain := chains[k]
+		if len(chain) <= level {
+			if x.ends[k].result != trapPath {
+				e := x.ends[k]
+				here = &e
+			}
+			continue
+		}
+		node := chain[level]
+		switch {
+		case node.fork == nil:
+			joinEnds = append(joinEnds, k)
+		case node.side:
+			fork = node.fork
+			trueEnds = append(trueEnds, k)
+		default:
+			fork = node.fork
+			falseEnds = append(falseEnds, k)
+		}
+	}
+	if here != nil {
+		return here.result, here.effects
+	}
+	if len(joinEnds) > 0 {
+		fallback, fallbackEffects = x.foldTree(joinEnds, chains, level+1, fallback, fallbackEffects)
+	}
+	if fork == nil {
+		return fallback, fallbackEffects
+	}
+	taken, takenEffects := x.foldTree(trueEnds, chains, level+1, fallback, fallbackEffects)
+	fallThrough, fallEffects := x.foldTree(falseEnds, chains, level+1, fallback, fallbackEffects)
+	switch {
+	case taken == nil:
+		return fallThrough, fallEffects
+	case fallThrough == nil:
+		return taken, takenEffects
+	}
+	return iteTerm(fork.cond, taken, fallThrough), x.mergeEffects(fork.cond, takenEffects, fallEffects)
+}
+
+// mergeStates merges the states parked at a join into one continuation:
+// the last parked stands, and each earlier one selects over it on its
+// own (exact) path condition; the merged path is a join node under the
+// fork's parent holding the disjunction of the merged paths' conditions
+// relative to it. Reports false when two states cannot merge (the
+// frames' depths differ).
+func (x *pathExecutor) mergeStates(parent *pathNode, parked []*symbolicState) (*symbolicState, bool) {
+	if len(parked) == 1 {
+		return parked[0], true
+	}
+	acc := parked[len(parked)-1]
+	rel := acc.path.conditionBelow(parent)
+	for i := len(parked) - 2; i >= 0; i-- {
+		s := parked[i]
+		cond := s.pathCondition()
+		if cond == nil {
+			cond = constTerm(1, 1)
+		}
+		merged, ok := x.mergeTwo(cond, s, acc)
+		if !ok {
+			return nil, false
+		}
+		acc = merged
+		if below := s.path.conditionBelow(parent); below != nil && rel != nil {
+			rel = binaryTerm("or", below, rel)
+		} else {
+			rel = nil
+		}
+	}
+	if rel == nil {
+		rel = constTerm(1, 1)
+	}
+	acc.path = &pathNode{parent: parent, cond: rel}
+	return acc, true
+}
+
+// mergeTwo merges two states: a under cond, b otherwise. What only one
+// side holds — a register, a slot, a vector — is unbound after the merge
+// (a read of it on the other path would have been unbound too); what both
+// hold selects on cond; the flags are forgotten; the cells and memories
+// merge as a fork's effects do; a bound survives when both sides hold it.
+func (x *pathExecutor) mergeTwo(cond *term, a, b *symbolicState) (*symbolicState, bool) {
+	if a.disp != b.disp || a.arch != b.arch {
+		return nil, false
+	}
+	cond = truncate(cond, 1)
+	sel := func(l, r *term) *term {
+		if l == r || equalTerms(l, r) {
+			return l
+		}
+		return iteTerm(cond, l, r)
+	}
+	out := &symbolicState{arch: a.arch, disp: a.disp, notes: a.notes, regs: map[int]*term{}, frame: map[int64]frameSlot{}}
+	for reg, l := range a.regs {
+		if r, has := b.regs[reg]; has {
+			out.regs[reg] = sel(l, r)
+		}
+	}
+	for addr, l := range a.frame {
+		if r, has := b.frame[addr]; has && r.width == l.width {
+			out.frame[addr] = frameSlot{value: sel(l.value, r.value), width: l.width}
+		}
+	}
+	if a.vregs != nil && b.vregs != nil {
+		out.vregs = map[int]vecValue{}
+		for reg, l := range a.vregs {
+			r, has := b.vregs[reg]
+			if !has || r.bits != l.bits || len(r.lanes) != len(l.lanes) {
+				continue
+			}
+			lanes := make([]*term, len(l.lanes))
+			for k := range lanes {
+				lanes[k] = sel(l.lanes[k], r.lanes[k])
+			}
+			out.vregs[reg] = vecValue{bits: l.bits, lanes: lanes}
+		}
+	}
+	if a.fregs != nil && b.fregs != nil {
+		out.fregs = map[int]*term{}
+		for reg, l := range a.fregs {
+			if r, has := b.fregs[reg]; has {
+				out.fregs[reg] = sel(l, r)
+			}
+		}
+	}
+	if a.rvcfg != nil && b.rvcfg != nil && *a.rvcfg == *b.rvcfg {
+		cfg := *a.rvcfg
+		out.rvcfg = &cfg
+	}
+	out.globals = x.mergeCells(cond, a.globals, b.globals)
+	out.writes = mergeWrites(cond, a.writes, b.writes)
+	switch {
+	case a.unknownFrom != nil && b.unknownFrom != nil:
+		from := *a.unknownFrom
+		if *b.unknownFrom < from {
+			from = *b.unknownFrom
+		}
+		out.unknownFrom = &from
+	case a.unknownFrom != nil:
+		from := *a.unknownFrom
+		out.unknownFrom = &from
+	case b.unknownFrom != nil:
+		from := *b.unknownFrom
+		out.unknownFrom = &from
+	}
+	if len(a.bounds) > 0 && len(b.bounds) > 0 {
+		out.bounds = map[int]uint64{}
+		for reg, l := range a.bounds {
+			if r, has := b.bounds[reg]; has && r == l {
+				out.bounds[reg] = l
+			}
+		}
+	}
+	if len(a.termBounds) > 0 && len(b.termBounds) > 0 {
+		out.termBounds = map[*term]uint64{}
+		for t, l := range a.termBounds {
+			if r, has := b.termBounds[t]; has && r == l {
+				out.termBounds[t] = l
+			}
+		}
+	}
+	return out, true
+}
+
+// joinPoints maps each conditional branch to its immediate post-dominator
+// among the items — the point every path from the branch passes on its
+// way to a return or trap — when it has one other than the exit itself.
+// Post-dominators by the iterative set equations over the items' control
+// flow (a label falls through, a jump goes to its label, a conditional
+// branch both ways, ret and brk leave).
+func joinPoints(items []Item, labels map[string]int) map[int]int {
+	n := len(items)
+	if n == 0 {
+		return nil
+	}
+	exit := n
+	succ := make([][]int, n)
+	for i, item := range items {
+		instr, isInstr := item.(Instruction)
+		next := i + 1
+		if next >= n {
+			next = exit
+		}
+		switch {
+		case !isInstr:
+			succ[i] = []int{next}
+		case instr.Mnemonic == "ret" || instr.Mnemonic == "brk" || instr.Mnemonic == "ebreak":
+			succ[i] = []int{exit}
+		case isUnconditionalJump(instr.Mnemonic):
+			if sym, isSym := instr.Operands[0].(Symbol); isSym {
+				if target, known := labels[sym.Name]; known {
+					succ[i] = []int{target}
+					continue
+				}
+			}
+			succ[i] = []int{exit}
+		case isConditionalBranch(instr.Mnemonic) && len(instr.Operands) > 0:
+			if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym {
+				if target, known := labels[sym.Name]; known {
+					succ[i] = []int{target, next}
+					continue
+				}
+			}
+			succ[i] = []int{next}
+		default:
+			succ[i] = []int{next}
+		}
+	}
+	words := (n + 1 + 63) / 64
+	full := make([]uint64, words)
+	for i := 0; i <= n; i++ {
+		full[i/64] |= 1 << uint(i%64)
+	}
+	pdom := make([][]uint64, n+1)
+	for i := 0; i < n; i++ {
+		pdom[i] = append([]uint64(nil), full...)
+	}
+	pdom[exit] = make([]uint64, words)
+	pdom[exit][exit/64] |= 1 << uint(exit%64)
+	for changed := true; changed; {
+		changed = false
+		for i := n - 1; i >= 0; i-- {
+			set := append([]uint64(nil), full...)
+			for _, s := range succ[i] {
+				for w := range set {
+					set[w] &= pdom[s][w]
+				}
+			}
+			set[i/64] |= 1 << uint(i%64)
+			for w := range set {
+				if set[w] != pdom[i][w] {
+					pdom[i] = set
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	size := func(set []uint64) int {
+		count := 0
+		for _, w := range set {
+			count += bits.OnesCount64(w)
+		}
+		return count
+	}
+	has := func(set []uint64, i int) bool { return set[i/64]&(1<<uint(i%64)) != 0 }
+	joins := map[int]int{}
+	for i := 0; i < n; i++ {
+		instr, isInstr := items[i].(Instruction)
+		if !isInstr || !isConditionalBranch(instr.Mnemonic) {
+			continue
+		}
+		best, bestSize := -1, -1
+		for d := 0; d < n; d++ {
+			if d == i || !has(pdom[i], d) {
+				continue
+			}
+			if sz := size(pdom[d]); sz > bestSize {
+				best, bestSize = d, sz
+			}
+		}
+		if best >= 0 {
+			joins[i] = best
+		}
+	}
+	return joins
 }
 
 // load executes `ldr rD, [xB, #off]` through a span base: the seam checker
@@ -3609,6 +4048,14 @@ func (lo *oakLowering) lowerVariableShift(e *ast.InfixExpression, op string, lef
 	if !isScalar || signed {
 		return nil, "a non-constant shift count of a signed operand", false
 	}
+	if lo.concrete != nil {
+		// A witness run: a count at the width is Oak trapping on this
+		// input (on this path), and the run stops there.
+		lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), right.width)))
+		if lo.witnessTrapped {
+			return nil, "a shift count reaching the width on this input", false
+		}
+	}
 	if lo.shiftGuardMax > uint64(width) {
 		// The machine's shift ran under no trap guard at Oak's width, so
 		// Oak traps where the machine wraps: no claim.
@@ -3719,6 +4166,14 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// witnessTrapped: in a witness run (concrete), a trap condition held
+	// on the input — Oak traps there (addTrap). The witness comparisons
+	// skip such an input, and the machine trapping on an input without it
+	// is a mismatch (machineTrapsWhereOakYields, verifyLoops).
+	witnessTrapped bool
+	// witnessMemo shares the values of subterms across the witness run's
+	// trap evaluations (the path conditions and indices repeat).
+	witnessMemo mapMemo
 	// machineTrap is the asm side's trap condition (pathExecutor.trap):
 	// the inputs on which the machine trapped — where Oak traps too, on
 	// the same guard — leave the input domain (domainCondition).
@@ -4063,6 +4518,12 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 			if !ok {
 				return nil, reason, false
 			}
+			if lo.concrete != nil && cond.kind == termConst {
+				if cond.value&1 == 1 {
+					return lo.aggregateValue(whenTrue, typ)
+				}
+				return lo.aggregateValue(whenFalse, typ)
+			}
 			restore := lo.underPath(cond)
 			t, reason, ok := lo.aggregateValue(whenTrue, typ)
 			restore()
@@ -4158,6 +4619,18 @@ func (lo *oakLowering) addTrap(t *term) {
 	if lo.path != nil {
 		t = binaryTerm("and", lo.path, t)
 	}
+	if lo.concrete != nil {
+		// A witness run: the condition is decided on the input (its
+		// parameters, lengths, and elements), and so is the path it lies
+		// on (a dead arm's trap is no trap).
+		if lo.witnessMemo == nil {
+			lo.witnessMemo = mapMemo{}
+		}
+		if lo.witnessMemo.eval(t, lo.concrete)&1 == 1 {
+			lo.witnessTrapped = true
+		}
+		return
+	}
 	lo.traps = append(lo.traps, t)
 }
 
@@ -4193,7 +4666,19 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 		// The assembler verifier's side: a failed assert traps, and the
 		// executor drops a trapping path from its fork (a `brk` delivers
 		// no result), so the equivalence is over the inputs on which the
-		// assert holds and the statement itself is a no-op here.
+		// assert holds and the statement itself is a no-op here — except
+		// on a witness input, where a failed assert is Oak trapping on
+		// that input (machineTrapsWhereOakYields).
+		if lo.concrete != nil {
+			cond, reason, ok := lo.lowerCondition(call.Arguments[0])
+			if !ok {
+				return reason, true, false
+			}
+			lo.addTrap(notTerm(cond)) // evaluated on the input under the path
+			if lo.witnessTrapped {
+				return "a failed assert on this input", true, false
+			}
+		}
 		return "", true, true
 	}
 	cond, reason, ok := lo.lowerCondition(call.Arguments[0])
@@ -4318,6 +4803,9 @@ func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound 
 		bound = constTerm(uint64(base.typ.length), 32)
 	}
 	lo.addTrap(cmpTerm("hs", index, bound))
+	if lo.witnessTrapped {
+		return nil, "an index past the array's length on this input", false
+	}
 	out := base.elems[len(base.elems)-1].copy()
 	for k := len(base.elems) - 2; k >= 0; k-- {
 		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
@@ -4345,6 +4833,9 @@ func (lo *oakLowering) assignUnderIndexTerm(base *oakValue, index *term, bound *
 		bound = constTerm(uint64(base.typ.length), 32)
 	}
 	lo.addTrap(cmpTerm("hs", index, bound))
+	if lo.witnessTrapped {
+		return "an index past the array's length on this input", false
+	}
 	fresh := base.elems[0].copy()
 	if reason, ok := lo.assignPlace(fresh, value); !ok {
 		return reason, false
@@ -5027,6 +5518,9 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	length := lo.spanLenTerm(sub.span, 32)
 	lo.addTrap(cmpTerm("hi", start, length))
 	lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+	if lo.witnessTrapped {
+		return fmt.Sprintf("a subslice of %s past its length on this input", sub.span), false
+	}
 	return bind(sub.span, lo.spanIndex(sub.span, start), count)
 }
 
@@ -5260,6 +5754,17 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 	if !ok {
 		return reason, false
 	}
+	if lo.concrete != nil && cond.kind == termConst {
+		// Decided on a witness input: only the arm taken runs — the
+		// other's traps and reads are not on this path, and lowering it
+		// would only cost (an unrolled callee). A symbolic run keeps both
+		// arms even under a folded condition: pruning there lets bodies
+		// past their refusals into decisions no budget affords yet.
+		if cond.value&1 == 1 {
+			return lo.lowerArm(whenTrue)
+		}
+		return lo.lowerArm(whenFalse)
+	}
 	before := lo.snapshotLocals()
 	restore := lo.underPath(cond)
 	reason, ok = lo.lowerArm(whenTrue)
@@ -5466,6 +5971,12 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		entry := paramTerm(name, contract.elemWidth)
 		if lo.concrete != nil {
 			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
+			// Past the length, Oak traps on this input (a witness run
+			// notes it; the value stands in for nothing).
+			lo.addTrap(cmpTerm("hs", constTerm(k, 32), lo.witnessBound(index.Left.(*ast.Identifier).Value)))
+			if lo.witnessTrapped {
+				return nil, contract, fmt.Sprintf("an index past len(%s) on this input", span), false
+			}
 		}
 		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
 	}
@@ -5481,16 +5992,18 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !ok {
 		return nil, spanContract{}, reason, false
 	}
+	if lo.concrete != nil {
+		// Past the span's own length (a derived span's, when derived):
+		// Oak traps on this input, which the witness run notes (addTrap)
+		// under the path; the value then stands in for nothing.
+		lo.addTrap(cmpTerm("hs", idx, lo.witnessBound(ident.Value)))
+		if lo.witnessTrapped {
+			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
+		}
+	}
 	idx = lo.spanIndex(ident.Value, idx) // a derived span: start + i in the root
 	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
-		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
-			// Oak traps on this input; the witness has no value to compare.
-			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
-		}
-		if length, isTable := lo.tableLens[ident.Value]; isTable && idx.value >= uint64(length) {
-			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
-		}
 		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
 	}
 	entry := selectTerm(span, idx, contract.elemWidth)
@@ -6335,6 +6848,14 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			if lo.trapsTracked {
 				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
 			}
+			if lo.concrete != nil {
+				// A witness run: a zero divisor is Oak trapping on this
+				// input (on this path), and the run stops there.
+				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
+				if lo.witnessTrapped {
+					return nil, "a zero divisor on this input", false
+				}
+			}
 			op := "udiv"
 			if signed {
 				op = "sdiv"
@@ -6375,6 +6896,19 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return lo.lowerVariableShift(e, op, left, right, width)
 		}
+		if (op == "shl" || op == "shr") && right.kind == termConst && right.value >= uint64(width) && lo.concrete != nil {
+			// Oak traps at the width: on a witness input the constant
+			// count says so if the path is live; a dead arm's count (the
+			// other arm's arithmetic, `(k - 8) * 8` under `k < 8`) traps
+			// nothing, and its value is discarded by the merge. A
+			// symbolic run keeps the machine's wrapped shift: the
+			// machine's guard traps there too, which the witness inputs
+			// check (machineTrapsWhereOakYields).
+			lo.addTrap(constTerm(1, 1))
+			if lo.witnessTrapped {
+				return nil, "a shift count reaching the width on this input", false
+			}
+		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
 		return lo.lowerBlock(e.Block, width)
@@ -6405,6 +6939,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		cond, reason, ok := lo.lowerCondition(e.Scrutinee)
 		if !ok {
 			return nil, reason, false
+		}
+		if lo.concrete != nil && cond.kind == termConst {
+			// Decided on a witness input: the arm taken alone.
+			if cond.value&1 == 1 {
+				return lo.lower(whenTrue, width)
+			}
+			return lo.lower(whenFalse, width)
 		}
 		restore := lo.underPath(cond)
 		left, reason, okL := lo.lower(whenTrue, width)
@@ -6825,6 +7366,83 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	return verifyChunk(fn, sig, oakBody, 0)
 }
 
+// machineTrapsWhereOakYields runs the machine on witness inputs and, on
+// one where it traps, runs the Oak body's witness lowering: a run that
+// yields a value without noting a trap of its own (a failed bounds check,
+// a zero divisor, a shift count at the width, a failed assert — addTrap
+// on a witness run) is the mismatch. Inputs on which the Oak run fails
+// for any other reason (a construct outside the subset) say nothing.
+// The machine runs concretely (a witness run of the executor, its loops
+// unrolled on the input) rather than by evaluating the symbolic trap
+// condition, whose loop symbols have no value on an input. Bounded: the
+// machine's runs are cheap, the Oak run is not.
+func machineTrapsWhereOakYields(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, hasResult bool) (map[string]uint64, bool) {
+	evaluated, runs := 0, 0
+	for _, env := range loopWitnessInputs(fn, sig) {
+		if evaluated >= trapWitnessBudget || runs >= trapWitnessRuns {
+			break
+		}
+		evaluated++
+		asmValue, _, _, okA := executeBodyChunk(fn, sig, env, 0, chunk)
+		if !okA || asmValue != trapPath {
+			continue
+		}
+		concrete := prepareLowering(fn, sig, env)
+		concrete.resultChunk = chunk
+		if !concrete.inDomain(env) {
+			continue
+		}
+		runs++
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "trap witness %s %s: the machine traps; running the Oak body\n", fn.Name, describeEnvSorted(env))
+		}
+		var okO bool
+		var reasonO string
+		if hasResult {
+			_, _, reasonO, okO = concrete.resultTerm(fn, sig, oakBody)
+		} else {
+			reasonO, okO = concrete.lowerUnitBody(oakBody)
+		}
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "trap witness %s %s: oak ok=%v %q trapped=%v\n", fn.Name, describeEnvSorted(env), okO, reasonO, concrete.witnessTrapped)
+		}
+		if okO && !concrete.witnessTrapped {
+			return env, true
+		}
+	}
+	return nil, false
+}
+
+// witnessBound is the length a witness run checks a span index against:
+// a constant table's length, else the span's own length term (a derived
+// span's over its start and count; a parameter's `len(v)`, which the
+// witness environment binds).
+func (lo *oakLowering) witnessBound(name string) *term {
+	if length, isTable := lo.tableLens[name]; isTable {
+		return constTerm(uint64(length), 32)
+	}
+	return lo.spanLenTerm(name, 32)
+}
+
+// trapWitnessBudget bounds the witness inputs the machine runs on,
+// trapWitnessRuns the Oak witness runs among them, for a body without
+// data-dependent loops (a body with them runs every witness input in
+// verifyLoops, where the same check applies).
+const (
+	trapWitnessBudget = 48
+	trapWitnessRuns   = 6
+)
+
+// describeEnvSorted is describeEnv over every name of env, sorted.
+func describeEnvSorted(env map[string]uint64) string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return describeEnv(names, env)
+}
+
 // verifyChunk is Verify for one result chunk (0 for a scalar or a
 // one-chunk record).
 func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
@@ -6848,6 +7466,21 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {
 		oakBody = loop
 	}
+	// The machine trapped on some inputs; those leave the domain on the
+	// claim that Oak traps there too. Witness inputs check the claim: an
+	// input on which the machine traps and the Oak body yields a value is
+	// a mismatch (a speculated arm whose guard trapped, say), not an
+	// exclusion. A body with data-dependent loops runs every witness
+	// input in verifyLoops, where the same check applies.
+	trapClaim := func() (Verdict, bool) {
+		if exec.trap == nil || len(exec.loops) > 0 || len(lowering.loops) > 0 {
+			return Verdict{}, false
+		}
+		if env, found := machineTrapsWhereOakYields(fn, sig, oakBody, chunk, exec.hasResult); found {
+			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): the machine traps where Oak yields a value", fn.Name, describeEnvSorted(env))}, true
+		}
+		return Verdict{}, false
+	}
 	if !exec.hasResult {
 		// A unit function that writes package state: the cells are the
 		// whole comparison.
@@ -6860,6 +7493,9 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			// The span memories are the comparison, under the loop coupling.
 			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
+		}
+		if verdict, refuted := trapClaim(); refuted {
+			return verdict
 		}
 		return decideEffects(fn, lowering, exec, nil)
 	}
@@ -6879,6 +7515,9 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 		verdict.Callees = exec.summarized
+		return verdict
+	}
+	if verdict, refuted := trapClaim(); refuted {
 		return verdict
 	}
 	note := ""
@@ -7743,8 +8382,11 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 		return recordSpanPlace{}, true, reason, false
 	}
 	span := lo.spanRoot(root.Value)
-	if lo.concrete != nil && idx.kind == termConst {
-		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
+	if lo.concrete != nil {
+		// Past the span's length: Oak traps on this input (noted by the
+		// witness run under the path).
+		lo.addTrap(cmpTerm("hs", idx, lo.spanLenTerm(root.Value, 32)))
+		if lo.witnessTrapped {
 			return recordSpanPlace{}, true, fmt.Sprintf("an index past len(%s) on this input", root.Value), false
 		}
 	}

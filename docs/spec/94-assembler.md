@@ -4730,6 +4730,74 @@ the merged bodies mostly reach the coupling proof, where their diagram
 budgets run out — the next work, with the path budget (eighty-five
 bodies: sequential diamonds enumerate exponentially).
 
+**Paths meet at their joins (2026-09-16).** The executor ran every path
+to its end, so a sequence of diamonds — the inlined `sb_begin`,
+`sb_str`, `sb_end` of a string builder, each a conditional — unfolded
+into their product, and eighty-five bodies stopped at the path budget.
+Every forward conditional branch now knows its immediate post-dominator
+(`joinPoints`, the set equations over the items' control flow), and a
+body past the budget runs again merging its paths there
+(`executeBodyChunk` retries with joins; the first run keeps the select
+tree on the branch conditions, which the decision splits well — the
+UTF-8 validator's proof depends on it): each side runs to the join and
+parks its state, the parked states merge into one continuation
+(`mergeStates`: a register, slot, vector, or cell both sides hold
+selects on the path condition, what one side holds is unbound, the
+memories merge as a fork's effects, a bound survives when both hold it),
+and the continuation runs once. The paths' outcomes are collected as
+ends — a result with its effects, or a trap, each with the path that
+reached it — and folded along the tree of forks (`foldTree`), the ends
+past a join standing for both sides wherever a side parked; a trap
+guard's taken side is such an end under the guard's condition, no fork
+recorded, counted against the path budget as the path it was (a counted
+loop guarding every iteration meets the budget as before, rather than
+unrolling to the step budget with a write log the decision cannot
+afford). The merged path is a join node holding the disjunction of the
+merged paths' conditions, so every end's condition stays exact and the
+trapping ends' disjunction is the machine's trap condition.
+`TestVerifyJoinsMergeDiamonds`: twelve diamonds (4096 paths) are proven
+and a wrong arm among them refuted; the nine-fold forking counted loop
+of `TestVerifyCountedLoops` is proven through its joins. Prover build:
+proven 562, evidence 139, trusted 265, the path-budget bodies down to
+fifty-one (the rest fork in loop bodies or unfold loops), the
+verifier's time unchanged.
+
+**The machine traps only where Oak traps — checked (2026-09-16).** The
+domain of the comparison excluded the inputs on which the machine
+trapped, on the claim that Oak traps there too, on the same guard; the
+claim was never checked. The backend's if-conversion (#465) speculates
+both arms of `k < 8 ? lo | (b << (k * 8)) | hi | (b << ((k - 8) * 8))`
+in `src_name`'s loop, and the else arm's shift-count guard traps when
+`k < 8` — the machine traps where Oak returns — yet the verdict was
+"proven", and the prover built natively trapped on its first name. The
+claim is now checked on witness inputs (`machineTrapsWhereOakYields`
+for a body without data-dependent loops, the witness loop of
+`verifyLoops` for one with them): where the machine's trap condition
+holds on an input, the Oak body's witness run must trap on it too, and
+one that yields a value instead is a mismatch, "the machine traps where
+Oak yields a value". Oak's traps are noted by the witness run, each
+evaluated on the input under its path so a dead arm's trap is none
+(`addTrap`): a failed assert, a zero divisor, a shift count at the
+width, an element or record field read or written past a span's own
+length (a derived span's, when derived), a vector reaching past it, a
+table index past the table, an array index past the array, a subslice
+past its span. Witness comparisons skip the inputs both sides trap on,
+and a Bool parameter's witness values are its bit (an input outside is
+ill-typed on both sides). `TestVerifyTrapDomain` now demands the
+mismatch for an asm trapping where the Oak body returns 7, the proof
+for an Oak body asserting the same condition, and the mismatch for a
+speculated arm whose guard traps. The Oak witness run lowers only the
+arm a decided conditional takes (a dead arm's callees would unroll for
+nothing), stops at its first noted trap, and evaluates its notes through
+one memo; the machine's run is the executor's own witness run rather
+than the symbolic trap condition evaluated on the input, whose loop
+symbols have no value there (`sat_decide` was reported trapping on an
+input its loop never entered). Prover build: proven 561, evidence 139,
+trusted 265, and one mismatch — `src_name`, the speculated shift guard
+above — which the native build reports as an error and leaves to the C
+backend; the natively built prover therefore does not build until the
+backend's if-conversion stops speculating an arm whose guard can trap.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
