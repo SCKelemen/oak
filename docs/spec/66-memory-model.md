@@ -20,9 +20,10 @@ This chapter intentionally separates the layers:
    defines the separate SC witness and its HB, modification-order, and read
    visibility constraints.
 
-The AArch64 ordered-before projection and its MP/SB/IRIW theorems are now in
-Lean; the mechanical bridge to a pinned official Arm CAT model and Herd litmus
-validation remain before the complete compiler-to-machine story is closed.
+The AArch64 ordered-before projection and its MP/SB/IRIW theorems are in Lean.
+The matching litmus programs execute in CI against Arm's official CAT model at
+pinned Herdtools7 commit `76d5bd259d4c4b553a0f52158b9638559b79a5b5`;
+the mechanical derivation of the projection from that CAT source remains open.
 
 ## 1. Execution events
 
@@ -277,7 +278,7 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 | seq-cst global order and read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | Go-to-Lean refinement | not yet proved |
 | compiler/C refinement | instruction families checked; global CAT bridge remains open |
-| AArch64 weak-memory litmus suite | language cases + Lean `ob` projection proved; pinned Herd execution remains open |
+| AArch64 weak-memory litmus suite | language cases + Lean `ob` projection proved + pinned official-CAT Herd execution gated |
 
 ## 12. Next closure steps
 
@@ -286,9 +287,8 @@ structures depend on it end to end, Oak should verify refinement through:
 
 1. keep the generated-C memory-order/assembly tests tied to the selected
    instruction classes;
-2. run AArch64 MP/SB/LB/IRIW litmus files with Herd against a pinned revision of
-   Arm's official CAT model, then mechanically derive the small
-   `Oak.AArch64WeakMemory` projection from it;
+2. mechanically derive the small `Oak.AArch64WeakMemory` projection from the
+   pinned Arm CAT source already exercised by the MP/SB/LB/IRIW Herd gate;
 3. target lock-free admission — in place for the C backend as a per-carrier
    static assertion (65-machine-memory.md §6); a realtime profile may still
    want it to refuse `OAK_ATOMIC_ACCEPT_LOCKED`;
