@@ -1295,9 +1295,12 @@ type generator struct {
 	resultRecord   *recordLayout
 	resultIndirect bool
 	resultAreaReg  int // the register holding the result area's address (x8 or its parked copy)
-	usedX8         bool
-	temps          int
-	head           string // the loop header a tail self-call jumps to
+	// returnSlot names the record local built in the result area itself
+	// (docs/spec/94-assembler.md §9 "Copies at the boundary"), "" for none.
+	returnSlot string
+	usedX8     bool
+	temps      int
+	head       string // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -1424,6 +1427,10 @@ type generator struct {
 	reused     int
 	// held: the register each frame slot's value is in (nativegen/forward.go).
 	held map[int64]heldSlot
+	// licmReserve: callee-saved registers held for the loop-invariant pass,
+	// handed back to declarations that would otherwise refuse the body
+	// (reclaimReserve).
+	licmReserve []int
 	// selected: conditional chains lowered as compare-and-select (nativegen/select.go).
 	selected int
 	// bottomTest (Lane.RotateLoops): bottom-tested loops
@@ -1695,11 +1702,22 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			return nil, unsupported("%v", rerr)
 		}
 		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		if err != nil || !lane.Reallocate {
+			return out, err
+		}
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Sites()
+		promotedSlots[out] = alloc.Promoted
+		return out, nil
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1971,7 +1989,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				rp.reg = -1
 				g.stackParams[name] = place
 			}
-			if indirect && !recordParamTouched(fn, name) && (!layoutHasArray(layout) || layout.isArray()) && g.usedCallee < calleeHigh-calleeLow+1 {
+			if indirect && !recordParamTouched(fn, name) && g.usedCallee < calleeHigh-calleeLow+1 {
 				// Read in place: the address parked in a callee-saved
 				// register, the fields loaded through it (the checker's
 				// region rule), no copy into the frame. Types drive it: a
@@ -2050,6 +2068,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
 				g.resultAreaReg = 8
+				if g.resultIndirect {
+					g.returnSlot = returnSlotLocal(fn)
+				}
 				if g.resultIndirect && g.hasCalls {
 					// A call clobbers x8: park the result area's address.
 					if g.usedCallee+1 > calleeHigh-calleeLow+1 {
@@ -2098,9 +2119,8 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Callee-saved registers reserved for the loop-invariant pass, saved
 	// and restored with the variables' (the count the first lowering
 	// wanted; the epilogue and the prologue read usedCallee after this).
-	var licmReserve []int
 	for k := 0; k < reserve && g.usedCallee < calleeHigh-calleeLow+1; k++ {
-		licmReserve = append(licmReserve, calleeLow+g.usedCallee)
+		g.licmReserve = append(g.licmReserve, calleeLow+g.usedCallee)
 		g.usedCallee++
 	}
 	body, err := g.lowerBody(fn.Body)
@@ -2265,7 +2285,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
 		var hoistedInto []int
 		var moved int
-		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, licmReserve, g.globals, g.trap)
+		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, g.licmReserve, g.globals, g.trap)
 		hoistedLoops[out] = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
@@ -3039,6 +3059,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			}
 			return nil
 		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordExpr(arm)
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
 		}
@@ -3080,6 +3103,11 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
 	}
 	if g.resultIndirect {
+		if rec.inReg && rec.reg == g.resultAreaReg && rec.offset == 0 {
+			// The local built in the result area: nothing to copy.
+			g.releaseTemps(rec.temps)
+			return nil
+		}
 		err := g.copyOut(g.resultAreaReg, rec)
 		g.releaseTemps(rec.temps)
 		return err
@@ -3106,6 +3134,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordInto(arm, outs)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
@@ -3608,6 +3639,9 @@ func (g *generator) overflowScratch() (int, bool) {
 		return r, true
 	}
 	if g.usedCallee >= calleeHigh-calleeLow+1 {
+		if r, ok := g.reclaimReserve(); ok {
+			return r, true
+		}
 		return 0, false
 	}
 	if g.saveArea == 0 {
@@ -3911,14 +3945,95 @@ func layoutHasArray(l *recordLayout) bool {
 }
 
 func (g *generator) declareRecord(name string, layout *recordLayout) *recordLocal {
+	rec := g.allocRecord(layout)
+	if name != "" && name == g.returnSlot && layout == g.resultRecord {
+		// The local the body returns is the caller's result area: its
+		// fields live behind the parked result register and no copy
+		// closes the function (docs/spec/94-assembler.md §9 "Copies at
+		// the boundary"; Oak.BoundaryCopies.build_in_place).
+		rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+	}
+	g.bindRecord(name, rec)
+	return rec
+}
+
+// allocRecord reserves a record's frame storage without binding a name.
+func (g *generator) allocRecord(layout *recordLayout) *recordLocal {
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.nslots += (layout.size + 7) / 8
+	return rec
+}
+
+// bindRecord brings a record's storage into scope under a name.
+func (g *generator) bindRecord(name string, rec *recordLocal) {
 	delete(g.slots, name)
 	delete(g.types, name)
 	delete(g.regs, name)
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
-	return rec
+}
+
+// returnSlotLocal names the record local a function builds in its result
+// area: the body's tail is the bare name of a local declared once, at the
+// body's top level, of the result type, not from a literal (a literal
+// fills frame slots), and whose address is never taken — the local then
+// is the area the caller passed in x8, and the return copies nothing.
+func returnSlotLocal(fn *ast.FunctionStatement) string {
+	block, isBlock := fn.Body.(*ast.BlockExpression)
+	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
+		return ""
+	}
+	stmts := block.Block.Statements
+	tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+	if !isExpr || tail.Discard {
+		return ""
+	}
+	ident, isIdent := tail.Expression.(*ast.Identifier)
+	if !isIdent {
+		return ""
+	}
+	name := ident.Value
+	for _, p := range fn.Parameters {
+		if p.Name != nil && p.Name.Value == name {
+			return ""
+		}
+	}
+	topLevel := false
+	for _, stmt := range stmts[:len(stmts)-1] {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Name.Value != name {
+			continue
+		}
+		if decl.Type == nil || decl.Type.String() != fn.ReturnType.String() {
+			return ""
+		}
+		if _, isLiteral := decl.Value.(*ast.RecordLiteral); isLiteral {
+			return ""
+		}
+		topLevel = true
+	}
+	if !topLevel {
+		return ""
+	}
+	declarations, ok := 0, true
+	walk(fn.Body, func(n ast.Node) {
+		switch e := n.(type) {
+		case *ast.VariableDeclaration:
+			if e.Name != nil && e.Name.Value == name {
+				declarations++
+			}
+		case *ast.PrefixExpression:
+			if e.Operator == "&" {
+				if root, has := pathRoot(e.Right); has && root == name {
+					ok = false
+				}
+			}
+		}
+	})
+	if declarations != 1 || !ok {
+		return ""
+	}
+	return name
 }
 
 // lowerSpanDeclaration lowers `w: []T = subslice(v, s, n)` / `w: [*]T = …`
@@ -3929,11 +4044,10 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 	if s.Value == nil {
 		return unsupported("the span local %s without an initializer", s.Name.Value)
 	}
-	if g.usedCallee+2 > calleeHigh-calleeLow+1 {
+	baseReg, lenReg, ok := g.takeCalleePair()
+	if !ok {
 		return unsupported("the span local %s: the callee-saved registers are exhausted", s.Name.Value)
 	}
-	baseReg, lenReg := calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
-	g.usedCallee += 2
 	value, owned, err := g.spanValue(s.Value, &target, baseReg, lenReg)
 	if err != nil {
 		return err
@@ -4111,11 +4225,20 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		}
 		g.emit("mov", xr(zero), imm(0))
 		words := (layout.size + 7) / 8
+		if rec.inReg {
+			// The result area: a record's size, not whole slots.
+			words = layout.size / 8
+		}
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.zeroPair(zero, g.slotMem(rec.offset+8*w))
+				g.zeroPair(zero, g.memOf(rec.loc().plus(8*w)))
 			} else {
-				g.emit("str", xr(zero), g.slotMem(rec.offset+8*w))
+				g.emit("str", xr(zero), g.memOf(rec.loc().plus(8*w)))
+			}
+		}
+		if rec.inReg {
+			for off := 8 * words; off < layout.size; off += 4 {
+				g.emit("str", wr(zero), g.memOf(rec.loc().plus(off)))
 			}
 		}
 		g.release(zero)
@@ -4127,6 +4250,20 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		}
 		_, err := g.fillRecord(layout, literal, s.Name.Value)
 		return err
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall && layout.size > 16 && g.callReturns(call, typeName) {
+		// `y: Big = f(x)`: the callee writes the fresh local through x8;
+		// the storage is reserved before the arguments evaluate and bound
+		// after (an argument may name an outer binding of the same name).
+		rec := g.allocRecord(layout)
+		if s.Name.Value == g.returnSlot && layout == g.resultRecord {
+			rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+		}
+		if _, err := g.callWith(call, rec); err != nil {
+			return err
+		}
+		g.bindRecord(s.Name.Value, rec)
+		return nil
 	}
 	// A copy of another record value: a local, a parameter, a call's
 	// result, a variant literal.
@@ -4141,6 +4278,40 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 	err = g.copyRecord(rec, src)
 	g.releaseTemps(src.temps)
 	return err
+}
+
+// callReturns reports a call to a program function whose declared result
+// is the named record type.
+func (g *generator) callReturns(call *ast.InvocationExpression, typeName string) bool {
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return false
+	}
+	callee, known := g.functions[g.calleeName(ident)]
+	if !known || callee.ReturnType == nil {
+		return false
+	}
+	name, isRecord := g.recordTypeName(callee.ReturnType)
+	return isRecord && name == typeName
+}
+
+// readsInPlace reports a by-reference argument the callee only reads: its
+// body never assigns, borrows, or addresses the parameter (and is a body,
+// not an extern or a unit), and no parameter of the callee is a writable
+// span, through which the callee could reach the caller's storage. The
+// caller then passes the address of its own storage instead of a copy's
+// (docs/spec/94-assembler.md §9 "Copies at the boundary";
+// Oak.BoundaryCopies.read_in_place).
+func (g *generator) readsInPlace(callee *ast.FunctionStatement, param *ast.FunctionParameter) bool {
+	if callee.Body == nil || callee.ExternSymbol != "" || param.Name == nil || recordParamTouched(callee, param.Name.Value) {
+		return false
+	}
+	for _, q := range callee.Parameters {
+		if sp, isSpan := g.spanTypeOf(q.Type); isSpan && sp.writable {
+			return false
+		}
+	}
+	return true
 }
 
 // copyRecord copies a record slot-wise (the padding travels too, as the C
@@ -4388,6 +4559,10 @@ func (g *generator) declare(name string, s scalar) int64 {
 		case g.usedCallee < calleeHigh-calleeLow+1:
 			r = calleeLow + g.usedCallee
 			g.usedCallee++
+		case len(g.licmReserve) > 0:
+			// The loop-invariant pass's reserve yields to a variable that
+			// would otherwise take a caller-saved home or a slot.
+			r, _ = g.reclaimReserve()
 		case len(g.callerHomes) > 0:
 			r = g.callerHomes[0]
 			g.callerHomes = g.callerHomes[1:]
@@ -4548,6 +4723,42 @@ func (g *generator) liveHomes() map[int]bool {
 		}
 	}
 	return homes
+}
+
+// reclaimReserve hands back the last callee-saved register reserved for
+// the loop-invariant pass (docs/spec/94-assembler.md §9 "The register
+// budget"): a declaration that would otherwise refuse the body, or fall to
+// a slot, takes it, and the pass hoists into what remains. The register
+// is already counted in usedCallee, so the prologue saves it either way.
+func (g *generator) reclaimReserve() (int, bool) {
+	if len(g.licmReserve) == 0 {
+		return 0, false
+	}
+	r := g.licmReserve[len(g.licmReserve)-1]
+	g.licmReserve = g.licmReserve[:len(g.licmReserve)-1]
+	return r, true
+}
+
+// takeCalleePair claims two callee-saved registers for a span local's
+// base and length: the unclaimed ones, then the invariant pass's reserve.
+func (g *generator) takeCalleePair() (base, length int, ok bool) {
+	if g.usedCallee+2 <= calleeHigh-calleeLow+1 {
+		base, length = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
+		g.usedCallee += 2
+		return base, length, true
+	}
+	if g.usedCallee+1 <= calleeHigh-calleeLow+1 && len(g.licmReserve) >= 1 {
+		base = calleeLow + g.usedCallee
+		g.usedCallee++
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	if len(g.licmReserve) >= 2 {
+		base, _ = g.reclaimReserve()
+		length, _ = g.reclaimReserve()
+		return base, length, true
+	}
+	return 0, 0, false
 }
 
 // declareAt binds a scalar variable to a given register: a leaf's
@@ -5179,6 +5390,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
 	}
+	if arm, isConstant := constantArm(match); isConstant {
+		// `true ? { … }`: the arm alone; `false ? { … }`: nothing.
+		if arm == nil {
+			return nil
+		}
+		return g.lowerArm(arm)
+	}
 	// If-conversion (nativegen/select.go): a chain over one comparison
 	// whose arms only assign lowers as compare and select.
 	if arms, final, isChain := conditionalArms(match); isChain {
@@ -5245,6 +5463,12 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 	// selection"): a negation inverts the branch instead of materializing
 	// a Bool, and a Bool variable in a register is tested where it lives.
 	switch e := expr.(type) {
+	case *ast.Boolean:
+		// A literal condition: the branch is always or never taken.
+		if e.Value != jumpIfFalse {
+			g.emit("b", asm.Symbol{Name: target})
+		}
+		return nil
 	case *ast.PrefixExpression:
 		if e.Operator == "!" {
 			return g.conditionBranch(e.Right, target, !jumpIfFalse)
@@ -5543,6 +5767,9 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.expr(arm, &typ)
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			out, err := g.alloc(typ)
@@ -6889,6 +7116,24 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				push(i, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
 				continue
 			}
+			if layout.size > 16 && g.readsInPlace(callee, p) {
+				// The callee only reads: the address of the caller's own
+				// storage, no copy.
+				base, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return 0, err
+				}
+				if rec.inReg {
+					if err := g.addOffset(base, rec.reg, rec.offset); err != nil {
+						return 0, err
+					}
+				} else {
+					g.emit("add", xr(base), sp(), imm(g.slotMem(rec.offset).Offset))
+				}
+				g.releaseTemps(rec.temps)
+				push(i, argument{regs: []int{base}, types: []scalar{scalars["u64"]}})
+				continue
+			}
 			if layout.size > 16 {
 				// By reference to a copy the callee owns.
 				copied := g.tempRecord(layout)
@@ -6989,9 +7234,16 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		}
 	}
 	if recordResult != nil && recordResult.layout.size > 16 {
-		// The callee writes its result into the temp through x8.
+		// The callee writes its result through x8: into the temp, the
+		// local it initializes, or the area this function itself returns.
 		g.usedX8 = true
-		g.emit("add", xr(8), sp(), imm(g.slotMem(recordResult.offset).Offset))
+		if recordResult.inReg {
+			if err := g.addOffset(8, recordResult.reg, recordResult.offset); err != nil {
+				return 0, err
+			}
+		} else {
+			g.emit("add", xr(8), sp(), imm(g.slotMem(recordResult.offset).Offset))
+		}
 	}
 	// Spill the live scratch registers that hold a value: the callee owns
 	// x9–x15 and v16–v23 (one allocated for an enclosing expression's
@@ -7271,6 +7523,30 @@ func spillReg(r int) asm.Register {
 
 // boolConditional recognizes `cond ? a | b`: two arms on the Bool literals,
 // or one literal and a trailing wildcard.
+// constantArm is the arm a Boolean-literal scrutinee selects — `true ? {
+// … }`, a source idiom for a scope, or a `false` that disables a branch —
+// so the conditional lowers as that arm alone: no Bool materialized and
+// tested, no label, no dead arm (docs/spec/94-assembler.md §9 "Constant
+// conditions"). The arm may be nil (a statement conditional without an
+// else arm whose literal is false): nothing to lower.
+func constantArm(match *ast.MatchExpression) (ast.Expression, bool) {
+	lit, isLit := match.Scrutinee.(*ast.Boolean)
+	if !isLit {
+		return nil, false
+	}
+	whenTrue, whenFalse, ok := boolConditional(match)
+	if !ok {
+		whenTrue, whenFalse, ok = statementConditional(match)
+	}
+	if !ok {
+		return nil, false
+	}
+	if lit.Value {
+		return whenTrue, true
+	}
+	return whenFalse, true
+}
+
 func boolConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
 	if match.Scrutinee == nil || len(match.Arms) != 2 {
 		return nil, nil, false
@@ -8205,6 +8481,9 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			g.release(out)
 			return nil
 		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultExpr(arm)
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultExpr)
 		}
@@ -8328,6 +8607,9 @@ func zeroReg(s scalar) asm.Register {
 func (g *generator) resultInto(expr ast.Expression, out int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultInto(arm, out)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {

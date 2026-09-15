@@ -32,7 +32,11 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   against a fake lane.
 - `nativegen/opt.go` — the native lane's side: the six transforms the
   lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
-  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `hoist-invariants`, `vector-homes`, `unroll-reductions` — the
+  unrolling first in the loop phase since 2026-09-16, so the invariant
+  pass and `rotate-loops` are applied to the unrolled shape: a transform
+  that fires on nothing leaves the frontier, so one that fires only on
+  another's output must follow it), then
   `reallocate` and the first transform written for the registry,
   `late-cleanup` (§11 "Machine", late copy/branch cleanup:
   `nativegen/cleanup.go`, a block-local peephole under a whole-function
@@ -155,11 +159,44 @@ callee-saved register's own save slot is never promoted: that would only
 move the obligation. The checker's save/restore obligations judge the
 edited prologue and epilogue like any other body.
 
-Not in this increment: live-range splitting, vector callee-saved growth
-(d8–d15), a lowering that emits virtual registers directly, scheduling,
-and the RV64 lane.
+Fourth increment: the RV64 lane. What the package knows of a lane — the
+instruction shapes, the register files and their spellings, the
+procedure-call contract, the copies, the frame-slot accesses it may
+promote, and the lowering's prologue and epilogue — is a target
+descriptor (`machine/target.go`), and the RV64 one lifts the lowering's
+`mv`/`fmv.d` copies, `ld`/`sd` and `fld`/`fsd` slots (only whole words:
+`sw`/`lw` extend on the way back, which a copy would not), the `call`
+contract (a0–a7 and fa0–fa7 read; ra, t0–t6, a0–a7, and the ft/fa files
+written), and the `sd ra`/`sd s1`… prologue for callee-saved growth. The
+vector extension's registers refuse the lift for now. The `reallocate`
+transform runs on both lanes.
 
-### Phase C, first substrate: `optir/`
+### Phase C, first increment: analyses and cleanups over the lifted IR
+
+`machine.Dominators` builds the dominator tree (Cooper–Harvey–Kennedy
+over a reverse postorder) and `Loops` the natural loops from its back
+edges — headers, latches, bodies, preheaders, nesting — as analyses for
+the passes to come (machine-level LICM and induction detection). Two
+global cleanups use the webs and the liveness segments (`Simplify`, run
+inside reallocation before allocation): copy propagation reads a copied
+value from its source wherever the source has one definition and is
+still live (so another web of the same register — a call's result, a
+later assignment — cannot have taken the register in between), and
+dead-code elimination removes an instruction whose every result no one
+reads when the lane's table says it is pure (no store, call, branch,
+compare or flag write, atomic, or system effect; loads only from the
+frame) and it writes no callee-saved or reserved register (a restore).
+Both refused wrong forms in their first tests — a propagation across a
+call's clobber, an elided callee-saved restore — before the liveness and
+the restore rule were added; the checker would have refused the bodies,
+but the pass should not propose them.
+
+Not in this increment: live-range splitting, vector callee-saved growth
+(d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
+directly, scheduling, machine-level LICM on the loop tree, and the
+recurrence analysis.
+
+### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
 emission. It retains typed scalar operations, effects, attributes, proof facts,
@@ -169,9 +206,32 @@ headers, bodies, and exits. An independent verifier checks structured
 arity/types and CFG definitions, same-block order, dominance, reachability,
 terminators, exact edge types, Bool branches, and returns.
 
-Not yet: checked Oak-to-OptIR projection, OptIR analyses and validated emission,
-vector plans (Phase D), and the proof-obligation service of the proof-guided
-note §26 beyond the requirement/fact matching here.
+`Compilation.OptIR()` now starts from the ordinary checked semantic model and
+projects each supported concrete scalar function into that representation. The
+initial subset covers fixed-width integers, Bool, unit, locals, assignments,
+structured branches and short-circuiting, exhaustive Bool matches, pre-test
+loops, value-preserving integer widening, and effect-marked calls. Unsupported
+memory and richer language forms are deterministic per-function refusals; a
+projection or verification inconsistency fails the complete analysis request.
+
+Analysis-only SCCP independently validates its operation vocabulary and computes
+exact constants plus executable blocks and edges. Integer folding follows Oak's
+fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
+it does not rewrite the CFG or authorize emission.
+
+The first generic transformation candidate is also connected. CSE uses exact
+operation identity and dominance, and DCE removes the resulting unused pure
+chains to a fixed point. Both are restricted to a closed vocabulary of total
+scalar operations: missing effect metadata never makes calls, traps, memory, or
+unknown operations removable. Proof facts are remapped only where they remain
+valid. Input and output pass the independent verifier, and
+`Compilation.OptIR()` retains the original CFG beside the simplified candidate
+and its deterministic report.
+
+Not yet: equivalence-validated emission of the candidate, available-expression
+and GVN generalization, dead stores, loop analyses beyond explicit recurrence
+shape, vector plans (Phase D), and the proof-obligation service of the
+proof-guided note §26 beyond the requirement/fact matching here.
 
 ## 1. Why this architecture
 

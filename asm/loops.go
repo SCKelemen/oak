@@ -58,6 +58,102 @@ type loopShape struct {
 	// conditional branch — taken to continue (tail).
 	testStart, testEnd int
 	tail               bool
+	// The entry-only tests' item range [entryStart, entryEnd): compares
+	// and branches to the exit label right before the header (before the
+	// entry run of a bottom-tested loop) over registers the loop never
+	// writes — an invariant conjunct the invariant pass peeled
+	// (nativegen/licm.go), decided once. They are exits the executor may
+	// meet the loop at, and conjuncts of the continue condition: a test
+	// the loop cannot change decides every iteration as it decided the
+	// first, so the summary over "entry tests and header tests" is the
+	// machine's loop. Empty when entryEnd <= entryStart.
+	entryStart, entryEnd int
+}
+
+// invariantEntryTests finds the entry-only tests before end: the longest
+// run of `cmp` and conditional branches to the exit label ending at end,
+// beginning at a compare or a compare-and-branch, none reading a register
+// written in [header, back]. It returns the run's start (end when none).
+func invariantEntryTests(items []Item, labels map[string]int, end, exitLabel, header, back int) int {
+	start := end
+	for start > 0 {
+		instr, isInstr := items[start-1].(Instruction)
+		if !isInstr {
+			break
+		}
+		if instr.Mnemonic == "cmp" {
+			start--
+			continue
+		}
+		if (instr.Mnemonic == "b." || instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") && len(instr.Operands) > 0 {
+			if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym && labels[sym.Name] == exitLabel {
+				start--
+				continue
+			}
+		}
+		break
+	}
+	// A leading `b.` reads flags the run did not set: it is not the run's.
+	for start < end {
+		if instr := items[start].(Instruction); instr.Mnemonic == "b." {
+			start++
+			continue
+		}
+		break
+	}
+	// The run ends in a branch (a trailing compare is the header's).
+	for start < end {
+		if instr := items[end-1].(Instruction); instr.Mnemonic == "cmp" {
+			return end // the header's own compare follows: no run
+		}
+		break
+	}
+	for at := start; at < end; at++ {
+		for _, operand := range items[at].(Instruction).Operands {
+			reg, isReg := operand.(Register)
+			if !isReg || reg.ZeroRegister() || reg.Class == ClassSP || reg.Class == ClassV {
+				continue
+			}
+			if writesRegisterIn(items, header, back, reg.Num) {
+				return end
+			}
+		}
+	}
+	return start
+}
+
+// writesRegisterIn reports whether an instruction in items [from, to]
+// writes general register reg: a destination, a pair load's second, a
+// writeback base, or a call's caller-saved clobber.
+func writesRegisterIn(items []Item, from, to, reg int) bool {
+	for i := from; i <= to && i < len(items); i++ {
+		instr, isInstr := items[i].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		if instr.Mnemonic == "bl" || instr.Mnemonic == "blr" {
+			if reg <= 18 {
+				return true
+			}
+			continue
+		}
+		if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && mem.Mode != MemOffset && mem.Base.Num == reg {
+			return true
+		}
+		if instr.Mnemonic == "cmp" || instr.Mnemonic == "cmn" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) {
+			continue
+		}
+		n := 1
+		if instr.Mnemonic == "ldp" || instr.Mnemonic == "ldpsw" {
+			n = 2
+		}
+		for k := 0; k < n && k < len(instr.Operands); k++ {
+			if dest, isReg := instr.Operands[k].(Register); isReg && dest.Class != ClassV && !dest.ZeroRegister() && dest.Num == reg {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // findLoops recognizes loops by their back edges, keyed by the exit branch.
@@ -261,7 +357,17 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 			continue
 		}
 		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart}
-		for _, at := range exits {
+		// The entry-only tests right before the header: exits too, met
+		// first.
+		shape.entryStart, shape.entryEnd = invariantEntryTests(items, labels, header, exitLabel, header, back), header
+		var entryExits []int
+		for at := shape.entryStart; at < shape.entryEnd; at++ {
+			if instr, isInstr := items[at].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
+				entryExits = append(entryExits, at)
+			}
+		}
+		shape.exits = append(entryExits, exits...)
+		for _, at := range shape.exits {
 			loops[at] = shape // an undecided branch at any exit test summarizes the loop
 		}
 		for _, at := range internal {
@@ -434,7 +540,16 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 			exits = append(exits, k)
 		}
 	}
-	shape := loopShape{header: header, cmp: cmpIndex, exit: exits[0], exitLabel: exitLabel, bodyStart: header + 1, bodyEnd: tailStart, exits: exits, testStart: tailStart, testEnd: back + 1, tail: true}
+	// The entry-only tests before the entry run: exits too, met first.
+	entryStart := invariantEntryTests(items, labels, header-n, exitLabel, header, back)
+	var entryExits []int
+	for at := entryStart; at < header-n; at++ {
+		if instr, isInstr := items[at].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
+			entryExits = append(entryExits, at)
+		}
+	}
+	exits = append(entryExits, exits...)
+	shape := loopShape{header: header, cmp: cmpIndex, exit: exits[0], exitLabel: exitLabel, bodyStart: header + 1, bodyEnd: tailStart, exits: exits, testStart: tailStart, testEnd: back + 1, tail: true, entryStart: entryStart, entryEnd: header - n}
 	return shape, "", true
 }
 
@@ -1229,18 +1344,35 @@ const headerPathBudget = 16
 func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*term, []*symbolicState, string, bool) {
 	type headerPath struct {
 		pc    int
+		seg   int // the segment pc lies in
 		cond  *term
 		state *symbolicState
 	}
-	work := []headerPath{{pc: shape.testStart, cond: constTerm(1, 1), state: fresh.clone()}}
+	// The test ranges walked in order: the entry-only tests (invariant,
+	// decided once before the header — the same on every iteration), then
+	// the header's or the tail's tests.
+	segments := [][2]int{{shape.testStart, shape.testEnd}}
+	if shape.entryEnd > shape.entryStart {
+		segments = [][2]int{{shape.entryStart, shape.entryEnd}, {shape.testStart, shape.testEnd}}
+	}
+	last := len(segments) - 1
+	work := []headerPath{{pc: segments[0][0], seg: 0, cond: constTerm(1, 1), state: fresh.clone()}}
 	var cont *term
 	var fallThroughStates []*symbolicState
 	paths := 0
 	for len(work) > 0 {
 		cur := work[len(work)-1]
 		work = work[:len(work)-1]
-		pc, cond, st := cur.pc, cur.cond, cur.state
-		for pc < shape.testEnd {
+		pc, seg, cond, st := cur.pc, cur.seg, cur.cond, cur.state
+		for {
+			if pc >= segments[seg][1] {
+				if seg < last {
+					seg++
+					pc = segments[seg][0]
+					continue
+				}
+				break
+			}
 			instr, isInstr := x.items[pc].(Instruction)
 			if !isInstr {
 				pc++
@@ -1270,7 +1402,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 					fork := &forkMark{pc: pc}
 					takenState := st.clone()
 					takenState.assume(taken, fork, true)
-					work = append(work, headerPath{pc: target, cond: binaryTerm("and", cond, taken), state: takenState})
+					work = append(work, headerPath{pc: target, seg: last, cond: binaryTerm("and", cond, taken), state: takenState})
 					st.assume(binaryTerm("xor", taken, constTerm(1, 1)), fork, false)
 				}
 				cond = binaryTerm("and", cond, binaryTerm("xor", taken, constTerm(1, 1)))

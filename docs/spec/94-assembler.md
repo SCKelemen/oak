@@ -2858,6 +2858,15 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The fifty-fifth increment is the register budget (§9 "The register
+budget"): a single-use span local is forwarded into its call, and the
+loop invariants' reserve yields to a declaration that would otherwise
+refuse the body (`Oak.SpanForward.let_forward`).
+
+The fifty-sixth increment is constant conditions (§9 "Constant
+conditions"): a literal scrutinee lowers as its arm alone, and the
+verifier reads it as its bit (`Oak.ConstantConditions.select_true`).
+
 The forty-seventh increment is vector operands in place (§9,
 `nativegen/simd.go` `vecOperand`). A vector variable in its own register
 is read where it lies by every simd operation; the operation writes a
@@ -2933,6 +2942,11 @@ branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
 The fifty-second increment is pair copies (§9 "Pair copies"): aggregate
 copies move sixteen bytes a step as `ldp`/`stp` where both sides are
 8-aligned and a pair remains (`Oak.PairCopies.pair_copy`).
+The fifty-first increment is copies at the boundary (§9 "Copies at the
+boundary"): a returned local built in the `x8` area, a read-only
+aggregate argument passed as the caller's storage, a call's result
+received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
+`build_in_place`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3983,7 +3997,20 @@ pass over the emitted items of a function, judged like every lowering by
 the seam checker and the verifier. A loop is the generator's shape — the
 `loop_N` header, its exit tests to `done_M`, the body, the back edge —
 and, innermost first, three things leave the body for a preheader before
-the header. A pure instruction (a constant, a global's address, an element
+the header, and a fourth leaves the header itself: an exit test whose
+operands the loop never writes (the unrolled reduction's `cmp wL, #4;
+b.lo done`) decides the same way on every iteration, so it is peeled —
+placed once right before the header label, where the verifier reads it
+as the loop's entry-only test ("Bottom-tested loops" below), gone from
+the header — and a pure setup instruction over invariant sources that
+feeds a test (`sub wT, wL, #4; cmp wI, wT`) is hoisted under a new name
+when its old destination is dead after the header (the body writes it
+before reading it, or never reads it); the tests are conjuncts, pure
+compares in any order, and the header keeps at least one. When a guard
+is peeled the invariant tests stay in the header, so the guard's copy of
+the exit tests holds every test. In the candidate search the unrolling
+comes first in the loop phase, so the invariant pass and the rotation
+see the unrolled shape. A pure instruction (a constant, a global's address, an element
 address, arithmetic) whose sources the loop never writes is hoisted, its
 destination renamed to a scratch register the whole function never names
 and its readers in the block renamed with it — either the old destination
@@ -4207,6 +4234,44 @@ names no operand. `TestNativeShapesForwarding` pins the byte loop of an
 absorber: no `cset`, no reload after a store, the `== 64` test on the
 register the increment was stored from; `TestE2ENativeForwarding` agrees
 with the C backend. The RV64 lane is untouched.
+**Copies at the boundary (2026-09-16, AArch64 lane;
+`spec/lean/Oak/BoundaryCopies.lean`).** Three copies of aggregates at
+calls and returns go. A record local the function returns through `x8` —
+the body's tail is the bare name of a local declared once at the body's
+top level, of the result type, not from a literal, its address never
+taken (`returnSlotLocal`) — is the caller's result area itself: its
+fields live behind the parked result register, `next: Sha256State =
+state` copies the parameter into the area, `next.filled = next.filled +
+u32(1)` reads and writes `[x21, #96]`, and the return copies nothing
+(`sha256_update` copied 112 bytes twice: in and out). A by-reference
+argument whose callee only reads it — the callee's body never assigns,
+borrows, or addresses the parameter (`recordParamTouched`), is a body and
+not an extern or a unit, and no parameter of the callee is a writable
+span, through which it could reach the caller's storage — is passed as
+the address of the caller's own storage, `add x9, sp, #off` for a frame
+record or `add x9, xR, #off` for one behind a register, where before a
+temp was filled and its address passed (`sha256_compress(next.h,
+next.block)` copied 96 bytes per block). And a local initialized from a
+call returning a record through memory, `y: Big = step(x)`, receives the
+callee's result in its own storage — reserved before the arguments
+evaluate and bound after, since an argument may name an outer binding of
+the same name — where before a temp received it and was copied. The
+same untouched-parameter rule now admits parameters whose records hold
+arrays: an array field behind a register is walked as an array field of a
+computed element is (`arrayAddressReg`), so `Sha256State` arrives in
+place. The theorems: the callee's reads through the caller's address are
+the reads of the copy, since nothing writes the storage during the call
+(`Oak.BoundaryCopies.read_in_place`), and an aggregate built at the
+result area holds word for word what one built in the frame and copied
+would (`build_in_place`). `TestNativeShapesBoundaryCopies` pins `step`
+(no frame slot in the body: the parameter read in place, the result
+written in place) and `twice` (its locals passed by their own addresses,
+results received in place; one spill across a call);
+`TestE2ENativeBoundaryCopies` agrees with the C backend. Not elided: a
+result stored into existing storage, `next.h = f(next.h, …)`, whose
+target may alias an argument passed in place — the temp stays; a callee
+with a writable span parameter; a parameter the callee passes to its own
+recursive call.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array
@@ -4244,16 +4309,30 @@ loop finder reads the top-tested shape; the exit run ends at its last
 exit branch, so a guard's compare first in the body (the hoisted loop's
 `cmp wI, #64; b.hs trap`) is the body's and the hoisted form rotates too;
 a header whose exit test hides a later test behind a setup instruction
-(the unrolled reduction's `sub wT, wL, #4; cmp wI, wT; b.hi done`) is
-left as it is. The search's cost
+is left as it is — the unrolled reduction's `cmp wL, #4; b.lo done; sub
+wT, wL, #4; cmp wI, wT; b.hi done` until the invariant pass peels the
+first test and hoists the setup (2026-09-16, "Loop invariants" above),
+after which its header is `cmp wI, wT; b.hi done` and rotates: the
+four-accumulator loop runs ten instructions and one branch a trip, from
+fourteen and three, and proves (`sum`, `bench_sum`). The search's cost
 model decides where the rotation pays: it rotates a plain byte sum over
 the unrolled form when both are evidence, and leaves a three-trip
-remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
-back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
-compares and branches to the exit label ending in the back edge, the
-entry test right before the header label is the same run with its last
-branch to the exit under the complementary condition, and nothing else
-branches to the header. Such a loop runs its body exactly as the
+remainder loop top-tested rather than pay the peeled test. The verifier
+recognizes the shape by its conditional back edge (`asm/loops.go`
+`tailLoopShape`): the tail test is a run of compares and branches to the
+exit label ending in the back edge, the entry test right before the
+header label is the same run with its last branch to the exit under the
+complementary condition, and nothing else branches to the header. Before
+the entry test (or a top-tested header) may stand the loop's entry-only
+tests (`invariantEntryTests`): compares and branches to the same exit
+label over registers the loop never writes, the peeled invariant
+conjunct. They are exits of the shape — the executor meets the loop at
+the first undecided one, before any path forks around it, so the loops
+keep their program order and pair with the Oak body's — and conjuncts of
+its continue condition (`headerCondition` walks them first): a test the
+loop cannot change decides every iteration as it decided the first, so
+the summary over "entry tests and header tests" is the machine's loop
+without a lemma the shape does not carry. Such a loop runs its body exactly as the
 top-tested loop with that test at its header — the entry test is the
 first iteration's, the tail test every later one's — so the shape is the
 top-tested one with its test range at the tail: `headerCondition` walks
@@ -4289,6 +4368,48 @@ retargeting then lands the computation in the variable's home
 w9`). A function whose result is a variable in its home register moves it
 to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
 w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
+
+**The register budget (2026-09-16, AArch64 lane; `nativegen/span_forward.go`,
+`spec/lean/Oak/SpanForward.lean`).** Two rules against the callee-saved
+file running out, which is what left the SHA-256 chain a call after the
+aggregate helpers could have folded it (RESULTS.md "Aggregate helpers").
+A span or view local used exactly once, in the statement that follows its
+declaration, as an argument of a call to a program function — `hs: [*]u32
+= span(&state); sha256_block_hw(hs, block, k)`, `w: []u8 = subslice(a, i,
+u32(4)); total = total + sum4(w)` — is forwarded: the declaration goes and
+the argument is the span expression itself, which the call evaluates into
+a fresh pair for the call alone (`forwardSingleUseSpans`), so no
+callee-saved pair is taken for the local's whole scope (a span local's
+pair is never returned to the pool). The expression is pure — an address,
+a length, a subslice's guard — so `let x = a in f x` is `f a`
+(`Oak.SpanForward.let_forward`); a lowering the rewrite makes unsupported
+falls back to the body before it, and the verifier reads the body as
+written. And the callee-saved registers the second lowering pass reserves
+for the loop invariants (up to four) yield to a declaration that would
+otherwise refuse the body or fall to a slot: a span local's pair, an
+overflowing scratch, a scalar's home take them back (`reclaimReserve`,
+`takeCalleePair`), and the pass hoists into what remains.
+`TestE2ENativeRegisterBudget` pins a loop with three span parameters, a
+real call, and a span local that refused as "the callee-saved registers
+are exhausted" and now lowers natively; the C backend agrees. The RV64
+lane keeps its own pools.
+
+**Constant conditions (2026-09-16, both lanes; `spec/lean/Oak/ConstantConditions.lean`).**
+A conditional whose scrutinee is the literal `true` or `false` — `true ?
+{ … }`, the source's idiom for a scope (the hash library's `sha256_block`
+opens one around its span), or a `false` that disables an arm — lowers as
+the selected arm alone, in statement, value, and result position
+(`constantArm`): no Bool materialized and tested (`movz w11, #1; cbz w11`),
+no else label, no dead arm for the checker to find unreachable; a literal
+in condition position branches always or never (`conditionBranch`). The
+verifier's Oak lowering reads a literal condition as its bit where it
+refused "a condition that is not a comparison", so `sha256_block` and the
+bodies that call it are no longer trusted for that reason alone. The
+model is the conditional itself (`Oak.ConstantConditions.select_true`,
+`select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
+`scope` and `pick` — no branch, select, or conditional label —
+`TestE2ENativeConstantConditions` proves both and agrees with the C
+backend.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

@@ -52,7 +52,7 @@ func (f *Function) buildBlocks() error {
 			ins := &Instr{Index: len(f.Instrs), Asm: it, Block: cur}
 			f.Instrs = append(f.Instrs, ins)
 			cur.Instrs = append(cur.Instrs, ins)
-			if terminator(it) {
+			if f.t.terminator(it) {
 				cur = nil
 			}
 		default:
@@ -95,7 +95,7 @@ func (f *Function) connect() error {
 				return fmt.Errorf("machine: line %d: branch to an unknown label %q", last.Asm.Line, target)
 			}
 			edge(b, to)
-			if conditional(last.Asm) && next != nil {
+			if f.t.conditional(last.Asm) && next != nil {
 				edge(b, next)
 			}
 		default:
@@ -105,16 +105,4 @@ func (f *Function) connect() error {
 		}
 	}
 	return nil
-}
-
-// conditional reports a branch that may fall through: b.cond and the
-// compare-and-branch forms.
-func conditional(ins asm.Instruction) bool {
-	switch ins.Mnemonic {
-	case "cbz", "cbnz", "tbz", "tbnz", "b.":
-		return true
-	case "b":
-		return ins.Cond != ""
-	}
-	return false
 }
