@@ -3594,7 +3594,15 @@ label whose every transfer is that compare's branch and which nothing
 falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
 reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
 else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
-90, verdicts unchanged.
+90, verdicts unchanged. Two more of the same kind: an unsigned value
+shifted right by a constant is not masked after the `lsr` (it stays
+inside its width), and a scalar match whose scrutinee is a variable in a
+register compares that register in every arm instead of a copy
+(`bench_dispatch` 58 from 60, still proven). The per-line fallback keys
+its kept lines by the line the emitted instructions carry — the
+statement's — which is the line a finding names; an access token on a
+later line of a multi-line statement had escaped the first version and
+sent the body to every guard.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

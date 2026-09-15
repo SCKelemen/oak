@@ -2312,14 +2312,25 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		g.releaseTemps(rec.temps)
 		return nil
 	}
-	// A scalar scrutinee with literal patterns.
+	// A scalar scrutinee with literal patterns: a variable in a register
+	// is compared where it lives, anything else evaluated into a scratch.
 	typ, err := g.typeOf(match.Scrutinee, nil)
 	if err != nil {
 		return err
 	}
-	value, err := g.expr(match.Scrutinee, &typ)
-	if err != nil {
-		return err
+	value, fixed := -1, false
+	if ident, isIdent := match.Scrutinee.(*ast.Identifier); isIdent && !typ.isFloat {
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[ident.Value]; ok && !t.isFloat && !t.isVec && t.wide() == typ.wide() {
+				value, fixed = v, true
+			}
+		}
+	}
+	if !fixed {
+		value, err = g.expr(match.Scrutinee, &typ)
+		if err != nil {
+			return err
+		}
 	}
 	closed := false
 	for _, matchArm := range match.Arms {
@@ -2362,7 +2373,9 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		g.emit("b", asm.Symbol{Name: g.trap})
 	}
 	g.label(end)
-	g.release(value)
+	if !fixed {
+		g.release(value)
+	}
 	return nil
 }
 
@@ -5046,7 +5059,11 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 				op = "lsr"
 			}
 			g.emit(op, reg(out, typ), reg(l, typ), imm(count))
-			g.normalize(out, typ)
+			// An unsigned value shifted right stays inside its width: no
+			// mask after `lsr`.
+			if op != "lsr" {
+				g.normalize(out, typ)
+			}
 			return out, nil
 		}
 	}
@@ -6435,7 +6452,9 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 // test compared, so the checker's fact from that test admits the access
 // without a second compare.
 func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Token) (int, error) {
-	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+	// GuardLines is keyed by the line the emitted instructions carry (the
+	// statement's, g.line), the line a checker finding names.
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && g.tc.IndexProven(*tok) {
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {
