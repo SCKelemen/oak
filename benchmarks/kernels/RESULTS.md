@@ -380,8 +380,11 @@ loop (sampled at 87 percent of the cycle), 2048 iterations of `s[dom]
 call to `cell` per element: 6.7× Zig where the C backend runs 0.57×. The
 inliner fix removed the call (22 per element), the loop-invariant pass the
 global's address and value, the stride constant, the element address and
-its guard (9 per element, `str xzr` the store): 2.2× Zig at the last
-measurement (1043 against 472 ns per cycle), the C backend 0.55×. Clang
+its guard (9 per element, `str xzr` the store): 1.57× Zig at the last
+measurement (875 against 556 ns per cycle), the C backend 0.43×. The
+pilot's `translate` benchmark, a different loop, runs 2× the C backend
+natively (7.3 against 4.8 ns per op under this load) and is the next
+thing to sample. Clang
 zeroes the page in five instructions per element and, with the store
 vectorized, fewer; the store loop's unrolling with `stp` pairs is the
 next item for this shape.
