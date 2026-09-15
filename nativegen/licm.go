@@ -112,10 +112,13 @@ func findGeneratorLoops(items []asm.Item) []invariantLoop {
 
 // hoistInvariants runs the pass over a function's body items. mentioned is
 // the set of general registers the function names (a rename never takes
-// one); trap names the trap block's label. It returns the items and the
-// registers the renames took.
-func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]asm.Item, []int) {
+// one); trap names the trap block's label. It returns the items, the
+// registers the renames took, and how many instructions moved or
+// disappeared (the compiler's fallback lowers the body again without the
+// pass when the checker refuses the hoisted form).
+func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]asm.Item, []int, int) {
 	var taken []int
+	changed := 0
 	done := map[string]bool{}
 	for {
 		var next *invariantLoop
@@ -127,11 +130,17 @@ func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]a
 			}
 		}
 		if next == nil {
-			return items, taken
+			return items, taken, changed
 		}
 		done[next.name] = true
+		before := len(items)
 		var used []int
-		items, used = hoistLoop(items, *next, mentioned, trap)
+		var out []asm.Item
+		out, used = hoistLoop(items, *next, mentioned, trap)
+		if len(out) != before || used != nil {
+			changed++
+		}
+		items = out
 		for _, r := range used {
 			mentioned[r] = true
 			taken = append(taken, r)
@@ -341,13 +350,19 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, tra
 			}
 		}
 		if isCopy {
-			if src, ok := ins.Operands[1].(asm.Register); ok && (src.Class == dest.Class || src.ZeroRegister()) {
+			if src, ok := ins.Operands[1].(asm.Register); ok && src.ZeroRegister() {
+				// The zero register reaches a store's data operand alone:
+				// a compare or an index through it carries no fact the
+				// checker can key (the constant index of `cursor[0]`).
+				if zeroStoreOnly(body, removed, i+1, blockEnd(i), dest.Num) {
+					renameUses(i+1, dest.Num, dest.Class, asm.Register{Text: "xzr", Class: asm.ClassX, Num: 31, Lane: -1}, true)
+					removed[i] = true
+				}
+				continue
+			}
+			if src, ok := ins.Operands[1].(asm.Register); ok && src.Class == dest.Class {
 				if canRename(i+1, dest.Num, dest.Class, true) && (invariant(src) || sourceHolds(body, removed, i+1, blockEnd(i), dest.Num, src.Num)) {
-					target := src
-					if src.ZeroRegister() {
-						target = asm.Register{Text: "xzr", Class: asm.ClassX, Num: 31, Lane: -1}
-					}
-					renameUses(i+1, dest.Num, dest.Class, target, true)
+					renameUses(i+1, dest.Num, dest.Class, src, true)
 					removed[i] = true
 				}
 				continue
@@ -707,4 +722,34 @@ func sourceHolds(body []asm.Item, removed map[int]bool, from, end, dest, src int
 		}
 	}
 	return true
+}
+
+// zeroStoreOnly reports whether every reader of dest in [from, end) before
+// its next write is a store's data operand, and dest is written again in
+// the block — the readers a copy of zero may take `xzr` for.
+func zeroStoreOnly(body []asm.Item, removed map[int]bool, from, end, dest int) bool {
+	readers := 0
+	for j := from; j < end; j++ {
+		ins, isIns := body[j].(asm.Instruction)
+		if !isIns || removed[j] {
+			continue
+		}
+		if readsGeneral(ins, dest) {
+			if !strings.HasPrefix(ins.Mnemonic, "st") || len(ins.Operands) < 2 {
+				return false
+			}
+			data, isReg := ins.Operands[0].(asm.Register)
+			if !isReg || data.Num != dest {
+				return false
+			}
+			if mem, isMem := ins.Operands[len(ins.Operands)-1].(asm.Memory); isMem && (mem.Base.Num == dest || (mem.Index != nil && mem.Index.Num == dest)) {
+				return false
+			}
+			readers++
+		}
+		if writesGeneral(ins, dest) {
+			return readers > 0
+		}
+	}
+	return false
 }
