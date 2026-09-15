@@ -1158,6 +1158,21 @@ func (g *generator) copyBytes(dst, src loc, size int64) error {
 	}
 	unit := copyUnit(g.alignmentOf(dst), g.alignmentOf(src))
 	off := int64(0)
+	if unit == 8 && size-off >= 16 && !g.rvLane {
+		// Sixteen bytes a step as a register pair (docs/spec/94-assembler.md
+		// §9 "Pair copies"; Oak.PairCopies.pair_copy): two scratch
+		// registers, `ldp` then `stp`, while a whole pair remains and both
+		// offsets fit the pair form's field.
+		second, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		for ; size-off >= 16 && pairable(g.memOf(src.plus(off))) && pairable(g.memOf(dst.plus(off))); off += 16 {
+			g.emit("ldp", xr(tmp), xr(second), g.memOf(src.plus(off)))
+			g.emit("stp", xr(tmp), xr(second), g.memOf(dst.plus(off)))
+		}
+		g.release(second)
+	}
 	for bytes := unit; bytes >= 1; bytes /= 2 {
 		for off+bytes <= size {
 			load, store := accessPair(bytes)
@@ -1172,6 +1187,12 @@ func (g *generator) copyBytes(dst, src loc, size int64) error {
 	}
 	g.release(tmp)
 	return nil
+}
+
+// pairable reports a memory operand the 64-bit pair forms take: an
+// 8-aligned offset within the signed 7-bit scaled field, -512 to 504.
+func pairable(m asm.Memory) bool {
+	return m.Mode == asm.MemOffset && m.Index == nil && m.Offset%8 == 0 && m.Offset >= -512 && m.Offset <= 504
 }
 
 // slotLoc is a frame-slot location.
@@ -2328,6 +2349,12 @@ func (g *generator) copyIn(dst *recordLocal, base int) []asm.Item {
 	var items []asm.Item
 	size := dst.layout.size
 	off := int64(0)
+	if !g.rvLane {
+		// Pairs first (§9 "Pair copies"): x9 and x10 are free in the prologue.
+		for ; off+16 <= size && pairable(asm.Memory{Base: xr(base), Offset: off}) && pairable(g.slotMem(dst.offset+off)); off += 16 {
+			items = append(items, g.ins("ldp", xr(scratchLow), xr(scratchLow+1), asm.Memory{Base: xr(base), Offset: off}), g.ins("stp", xr(scratchLow), xr(scratchLow+1), g.slotMem(dst.offset+off)))
+		}
+	}
 	for ; off+8 <= size; off += 8 {
 		items = append(items, g.ins("ldr", xr(scratchLow), asm.Memory{Base: xr(base), Offset: off}), g.ins("str", xr(scratchLow), g.slotMem(dst.offset+off)))
 	}
@@ -2353,6 +2380,18 @@ func (g *generator) copyOut(base int, src *recordLocal) error {
 	size := src.layout.size
 	unit := copyUnit(g.alignmentOf(src.loc()))
 	off := int64(0)
+	if unit == 8 && size >= 16 && !g.rvLane {
+		// Pairs into the result area (§9 "Pair copies").
+		second, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		for ; size-off >= 16 && pairable(g.memOf(src.loc().plus(off))) && pairable(asm.Memory{Base: xr(base), Offset: off}); off += 16 {
+			g.emit("ldp", xr(tmp), xr(second), g.memOf(src.loc().plus(off)))
+			g.emit("stp", xr(tmp), xr(second), asm.Memory{Base: xr(base), Offset: off})
+		}
+		g.release(second)
+	}
 	for bytes := unit; bytes >= 1; bytes /= 2 {
 		for off+bytes <= size {
 			load, store := accessPair(bytes)
