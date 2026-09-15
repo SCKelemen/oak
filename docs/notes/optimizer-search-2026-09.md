@@ -29,10 +29,10 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   `opt/opt_test.go` covers selection, fallback, requirement gating,
   pruning of unchanged and duplicate bodies, refinement, and budgets
   against a fake lane.
-- `nativegen/opt.go` — the native lane's side: the five transforms the
-  lane already performed (`strength-reduce`, `elide-guards`,
-  `reuse-flags`, `hoist-invariants`, `unroll-reductions`), then
-  `vector-homes` and the first transform written for the registry,
+- `nativegen/opt.go` — the native lane's side: the six transforms the
+  lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
+  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `reallocate` and the first transform written for the registry,
   `late-cleanup` (§11 "Machine", late copy/branch cleanup:
   `nativegen/cleanup.go`, a block-local peephole under a whole-function
   register liveness, 2026-09-16), as

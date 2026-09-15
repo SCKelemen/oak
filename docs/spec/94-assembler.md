@@ -5425,9 +5425,34 @@ t, base, t` or `add t, base, z` for bytes — with no guard of its own
 (`guardedAddress`), and the checker admits it from the fact through the
 scaled-index and element-region rules it already had for GCC's shape
 (`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
-that line's guards. Outside the mechanism, and still guarded: a bound that is not `len(v)`,
-an index that is not the tested variable, and an access after a label
-inside the body (the RV64 checker forgets index facts at labels).
+that line's guards. Outside the mechanism, and still guarded: a bound that is not `len(v)`
+and an index that is not the tested variable.
+
+**Guard facts through labels on the RV64 lane (2026-09-15).** The RV64
+checker forgot every guard fact where paths meet — index, scaled, upper,
+difference, count, remaining-count, and slack facts, and the spans' proven
+minimums — so an access after an arm inside a loop body (`v[i]` after a
+`?`) was refused however plainly the head had guarded `i`, and stayed
+guarded under the per-line fallback. The checker now runs to the same
+dataflow fixpoint as the AArch64 one (`checkRV64`, `rvGuardState`,
+`rvMeetGuards`): each pass assumes a guard state at every label, records
+the meet of the states that arrive there — by fall-through and by every
+branch, the arrival taken before the branch's own fall-through fact —
+and the passes repeat until the assumptions are the arrivals; the first
+pass carries facts over optimistically, facts only shrink, and past the
+cap the conservative pass forgets them all as before. The facts a stable
+register carries (constants, normalized lengths, aliases, frame addresses,
+regions written once) keep their own rules. A label reached from one path
+keeps that path's facts; one another path skips to loses what that path
+lacks (`TestRV64SpanMemoryChecker`, the two label cases). Measured on the
+stdlib-bearing program, like for like with the verdict cache off: 31
+guards elided where 29 were, the one body under the per-line fallback
+fully elided, the bodies' `bgeu` guards 542 → 536, and no verdict
+changes (237 proven) — a small step here, since after the short-circuit
+heads few elided bodies were being refused at a label; its value is what
+it removes as a reason, so that the capture at the head is now the only
+limit on the lane's elision (a bound other than `len(v)`; an index other
+than the tested variable, `v[i + 1]` under `i + 1 < len(v)`).
 
 **Short-circuit conditions (2026-09-15).** Of the standard library's 473
 `while` loops, 44 test a bare `i < len(v)` and 175 a conjunction, most
@@ -5504,4 +5529,47 @@ three data-dependent loops coupled inductively as before). The fixture
 twenty-four vector locals live at once and reports the ones the argument
 registers took. The timing row waits for a quiet host
 (`benchmarks/native/README.md`); the instruction count is the result.
+
+### 9.ag Layer A: verified body rewrites (2026-09-15)
+
+The rewrites of the checked Oak body that every lane shares
+(`90-backend.md` §16, `nativegen/rewrite.go`), applied before the
+lowering. The bodies to lower are tried most rewritten first, the source
+last, so a shape the lowering does not support falls back to the shape
+before it. Three rewrites today:
+
+- **Helper expansion**, law-backed as substitution: the callee's body in
+  place of the call with its parameters bound to the arguments (§9.y).
+- **Reduction unrolling**, law-backed by `Oak.Reduction.unrolled4_eq`
+  (§9 "Reductions"), instantiated by its matcher.
+- **Strength reduction of constant arithmetic**, decided per site: a
+  multiplication by a constant power of two above one becomes the shift,
+  an unsigned division the right shift, an unsigned remainder the mask,
+  each after the bit-level decider proves the theorem `old == new` over
+  the site's free variables (their declared scalar types as parameters,
+  `asm.DecideTheoremWith`). The decider's own model reads the constant
+  division as the shift, so the sites prove as the same term on both
+  sides; a site with a free variable of no scalar type, or one the
+  decider does not prove, is left as written and reported so. The
+  rewrite serves both lanes: the RV64 lowering of the same body carries
+  shifts and a mask where it lowered divides
+  (`compiler/e2e_native_rv64_rewrites_test.go`), and the AArch64 emitter's
+  own reduction (§9.ac) keeps only what a body rewrite cannot express, the
+  zero test dropped for a nonzero constant divisor.
+
+The strength reduction is proposed by the candidate search's
+`strength-reduce` transform on both lanes (`nativegen/opt.go`): the
+identity candidate is the plain body, and a body the search sets aside
+keeps its plain arithmetic, as §16's fallback rule asks. An operand that
+reads an element (`v[i] / u32(2)`) is abstracted in the site's theorem as
+a fresh parameter of the element type — the read is the same value on
+both sides — so the equality is of the arithmetic alone. The stages are
+computed once per body and switch setting, not once per candidate.
+
+A stage that rewrote more than substitution marks its body as the one
+the verifier judges (`asm.Function.Body`), so layer B's proof is against
+layer A's output; an expansion alone leaves the source as the reference,
+the verifier taking callees at their bodies. The compiler reports every body's sites by rewrite
+and obligation: `layer A — strength reduction ×2 decided at the bit
+level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
 

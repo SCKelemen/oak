@@ -155,17 +155,20 @@ var bothLanes = map[string]bool{asm.ArchArm64: true, asm.ArchRV64: true}
 func Transforms() []opt.Transform {
 	return []opt.Transform{
 		&laneTransform{
-			// Strength reduction (docs/spec/90-backend.md §16, §9.ac): a
-			// multiplication by a power of two as a shift, an unsigned
-			// division or remainder by one as a shift or a mask, a
-			// division by a nonzero constant without its zero test — local
-			// equalities of the fixed-width semantics with their theorems
-			// in Oak.StrengthReduction (spec/lean/Oak/StrengthReduction.lean).
+			// Strength reduction (docs/spec/90-backend.md §16, §9.ac, §9.ag):
+			// in layer A, on every lane, a multiplication by a power of two
+			// as a shift and an unsigned division or remainder by one as a
+			// shift or a mask, each site decided at the bit level before it
+			// applies (Oak.StrengthReduction states the laws); on the
+			// AArch64 lane also a division by a nonzero constant without
+			// its zero test, the verifier judging the body.
 			name: TransformStrength, phase: opt.PhaseCanonical, proof: opt.Canonical,
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Strength },
 			apply:   func(l Lane) Lane { l.Strength = true; return l },
-			fired:   Reduced,
+			// Layer A's decided sites (nativegen/rewrite.go, both lanes) and
+			// the AArch64 emitter's zero tests dropped.
+			fired: func(fn *asm.Function) int { return StrengthReduced(fn) + Reduced(fn) },
 		},
 		&elideTransform{laneTransform{
 			// Guard elision: an element access the typechecker proved in
@@ -231,12 +234,7 @@ func Transforms() []opt.Transform {
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return !l.NoReductions },
 			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
-			fired: func(fn *asm.Function) int {
-				if fn.Body != nil {
-					return 1
-				}
-				return 0
-			},
+			fired:   Unrolled,
 		},
 		cleanupTransform,
 	}
