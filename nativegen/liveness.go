@@ -109,7 +109,7 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 		}
 		switch {
 		case b.reg >= vecBase:
-			g.freeCalleeV = append(g.freeCalleeV, b.reg)
+			g.releaseVectorHome(b.reg)
 		case b.reg >= 0:
 			g.freeCallee = append(g.freeCallee, b.reg)
 		case b.offset >= 0 && b.typ.isVec:

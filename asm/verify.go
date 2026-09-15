@@ -1174,6 +1174,13 @@ type symbolicState struct {
 type frameSlot struct {
 	value *term
 	width int // bytes
+	// vec, on the low half of a whole q-register store, is the vector
+	// value stored, and hi the term written to the high half: a whole
+	// reload gives the value back lane for lane while both halves stand
+	// (vectorFrameAccessAt), so a vector kept in a caller-saved home and
+	// saved around a call keeps its lane structure for the proof.
+	vec *vecValue
+	hi  *term
 }
 
 // pathNotes is what every path of one execution reports back to the
