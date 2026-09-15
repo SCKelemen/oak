@@ -1,16 +1,19 @@
 # Optimizer artifact DAG
 
 Status: OptIR analysis DAG with exact identities, checked selective reuse, and
-bounded deterministic parallel execution. This note refines the optimizer
-search design; it does not change Oak semantics or authorize OptIR emission.
+bounded deterministic parallel execution; native candidate admission, metrics,
+cost, verdict, and selection gates are also live. This note refines the
+optimizer search design; it does not change Oak semantics or authorize OptIR
+emission.
 
 ## 1. Decision
 
 Oak's compiler stages, optimizer analyses, transforms, validation, costing, and
 selection should be represented as one dependency graph of immutable
 artifacts. `compiler.Stage.Then` remains linear and native candidate search
-still owns an internal branching search. OptIR's first generic analysis chain,
-however, now executes through the artifact graph rather than direct calls.
+still owns an internal branching proposal search. OptIR's first generic
+analysis chain and the native search's post-materialization gates now execute
+through artifact graphs rather than direct calls.
 
 The graph is about computation and evidence, not control-flow. An OptIR CFG may
 contain cycles while the artifact graph that produced and analyzed that CFG is
@@ -249,6 +252,15 @@ Completed:
    certificates. CSE/DCE's certificate is an admission artifact over exact CFG
    v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
    so v1 reuses dominance/natural loops while recomputing induction facts.
+5. Native search gives every exact materialized body a typed candidate,
+   admission, metrics, and cost chain. The bounded validation loop requests one
+   verdict target at a time in the established cost order, so proof early-stop
+   and validation budgets are unchanged. Final selection is an artifact whose
+   possible choices each contribute explicit candidate, clean-admission, cost,
+   and verdict edges. A weak verdict on a gated transform cannot produce a
+   selection target without a separately validated ungated fallback. The
+   per-search cache is intentionally ephemeral while backend-owned `Config`
+   and `Body` values lack canonical serialization and a deep freeze boundary.
 6. The graph has bounded deterministic ready-wave concurrency. OptIR runs with
    three workers; reverse completion, worker bounds, deterministic failures,
    cancellation, exact-once dependencies, and cache pruning are race-tested.
@@ -261,8 +273,10 @@ complete dependent invalidation after an input change.
 
 Remaining:
 
-5. Move native candidate materialization, seam checking, semantic validation,
-   cost, and selection onto typed graph builders while retaining identity.
+5. Move native candidate materialization itself onto the graph once every
+   backend configuration and complete lowering input has a canonical recipe
+   identity. Identity, seam admission, metrics, cost, semantic verdict, and
+   selection are already graph artifacts.
 7. Add persistent content-addressed caching only after canonical serialization
    and version invalidation are stable.
 

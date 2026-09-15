@@ -130,20 +130,23 @@ post-CSE/DCE LICM candidate and a deterministic movement report. Emission still
 consumes neither.
 
 The whole compiler does not yet run as one artifact DAG: source stages remain
-linear and native candidate search branches internally. The generic OptIR chain
-does. Exact-version immutable nodes now represent CFG v0, SCCP, loop structure
-and recurrences, CSE/DCE, CFG v1, preservation evidence, and LICM. Analyses
-declare the topology, SSA, operation, effect, type, fact, and layout aspects
-they read. CSE/DCE's checked certificate proves `CFGTopology` unchanged, so v1
-reuses v0 dominance/natural-loop structure but recomputes induction facts from
-the changed SSA. Certificates carry exact artifact/content identities and
-per-aspect digests; they prove reuse eligibility only, never semantic
-equivalence or emission permission. The executor now supports deterministic
-ready waves with a fixed worker bound; OptIR uses three workers for SCCP,
-loop-structure analysis, and CSE/DCE fan-out. A failed wave publishes nothing,
-and traces/errors are independent of worker completion order.
-`optimizer-artifact-dag-2026-09.md` gives the full design and the remaining
-native migration work.
+linear and native proposal generation and materialization remain dynamic. The
+generic OptIR chain does. Exact-version immutable nodes now represent CFG v0,
+SCCP, loop structure and recurrences, CSE/DCE, CFG v1, preservation evidence,
+and LICM. Analyses declare the topology, SSA, operation, effect, type, fact,
+and layout aspects they read. CSE/DCE's checked certificate proves
+`CFGTopology` unchanged, so v1 reuses v0 dominance/natural-loop structure but
+recomputes induction facts from the changed SSA. Certificates carry exact
+artifact/content identities and per-aspect digests; they prove reuse
+eligibility only, never semantic equivalence or emission permission. The
+executor now supports deterministic ready waves with a fixed worker bound;
+OptIR uses three workers for SCCP, loop-structure analysis, and CSE/DCE
+fan-out. A failed wave publishes nothing, and traces/errors are independent of
+worker completion order. Native materialized bodies now pass through typed
+candidate, admission, metrics, cost, verdict, and selection nodes. Validation
+targets stay sequential to preserve the proof budget and early stop; identity
+remains the explicit ungated fallback. `optimizer-artifact-dag-2026-09.md` gives
+the full design and the remaining materialization work.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar

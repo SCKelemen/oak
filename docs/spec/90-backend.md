@@ -723,17 +723,18 @@ backend consumes either OptIR CFG, and no OptIR transform can authorize a
 code-generation change until equivalence validation is connected.
 
 Compiler stages, analyses, candidates, and verification verdicts are not yet
-executed by one dependency DAG. The required direction is an immutable,
-versioned artifact graph: analysis and transform nodes name the exact input IR
-artifact, typed edges state prerequisites, mutations create new versions,
-and invalidations follow only affected edges. Cheap structural admission and
-costing may precede expensive verification because neither can authorize code;
-selection must depend on a sufficient verdict. This is also the concurrency
-boundary: independent ready analyses and candidate checks may run in parallel
-without sharing mutable IR. `opt/artifact.go` implements the first generic
-graph, derived versions, exact-once deterministic executor, cancellation, and
-process-local cache; compiler migration, typed gate edges, preservation
-certificates, and concurrent scheduling remain. The design is
+one end-to-end dependency DAG, but the generic OptIR analysis chain and native
+post-materialization gates now use the immutable, versioned artifact graph.
+Analysis and transform nodes name the exact input IR artifact, typed edges
+state prerequisites, mutations create new versions, and invalidations follow
+only affected edges. Cheap structural admission and costing precede expensive
+verification because neither can authorize code; native selection now depends
+on candidate, clean admission, cost, and verdict artifacts for every body it
+may return. This is also the concurrency boundary: independent ready analyses
+may run in parallel without sharing mutable IR. `opt/artifact.go` implements
+derived versions, exact-once deterministic executors, cancellation, and the
+process-local cache. Native proposal generation/materialization and linear
+source stages remain outside the graph. The design is
 `docs/notes/optimizer-artifact-dag-2026-09.md`.
 
 1. **Licensed removals only.** The compiler removes a check, a guard, a

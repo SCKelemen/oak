@@ -71,6 +71,8 @@ type fakeDriver struct {
 	findings  map[string][]string // by body key; absent means admitted
 	unlowered map[string]bool     // bodies that do not lower
 	validated []string
+	checked   []string
+	measured  []string
 	lowered   []string
 }
 
@@ -85,12 +87,16 @@ func (d *fakeDriver) Materialize(c *Candidate) error {
 }
 func (d *fakeDriver) Key(c *Candidate) string { return c.Body.(string) }
 func (d *fakeDriver) Measure(c *Candidate) Metrics {
+	d.measured = append(d.measured, c.Body.(string))
 	if m, ok := d.metrics[c.Body.(string)]; ok {
 		return m
 	}
 	return Metrics{Instructions: 10, Branches: 2, Loads: 2, Guards: 1}
 }
-func (d *fakeDriver) Check(c *Candidate) []string { return d.findings[c.Body.(string)] }
+func (d *fakeDriver) Check(c *Candidate) []string {
+	d.checked = append(d.checked, c.Body.(string))
+	return d.findings[c.Body.(string)]
+}
 func (d *fakeDriver) Validate(c *Candidate) Verdict {
 	key := c.Body.(string)
 	d.validated = append(d.validated, key)
