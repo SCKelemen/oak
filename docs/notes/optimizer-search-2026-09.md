@@ -230,6 +230,17 @@ when the lift refuses a body. The first test body exposed a reaching-
 definitions slip: a loop whose header is the entry block never saw its
 back-edge definitions; the entry now merges its predecessors too.
 
+Fourth increment: the lift admits the extended- and shifted-register
+operands of address arithmetic (`add x9, x19, w3, uxtw #2`), which had
+kept reallocation off every body with a scaled index; and the lowering
+records the aggregates it places in the frame (`nativegen.FrameObjects`),
+so promotion blocks only the object whose address is taken rather than
+everything above it (`machine.PromoteWith`). An exit bound computed in
+the header from invariants (`sub w9, w20, #16`) counts as invariant for
+the recurrence analysis, and a loop the analysis cannot read keeps the
+heuristic's stride rather than losing it — the vectorized reduction's
+sixteen-element trips were priced at stride one for one test run.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, scheduling, and exact trip counts against register bounds.

@@ -560,7 +560,10 @@ func Metrics(fn *asm.Function) opt.Metrics {
 			}
 		}
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
-			if sh := shapes[label.Name]; sh != nil {
+			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
+				// The analysis found the index: its stride and bound
+				// replace the heuristic's; a loop it could not read keeps
+				// the heuristic's reading.
 				body.Stride = sh.Stride
 				if sh.MaxTrips > 0 {
 					body.MaxTrips = sh.MaxTrips

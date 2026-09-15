@@ -1003,3 +1003,102 @@ func TestShapesRV64(t *testing.T) {
 		t.Fatalf("%v", shapes[0])
 	}
 }
+
+func TestLiftExtendedOperands(t *testing.T) {
+	// `add x9, x19, w3, uxtw #2` reads w3 through an extended operand;
+	// reallocation respells it with the register it gives w3's web.
+	f := fn(
+		ins("mov", w(10), w(0)),
+		ins("mov", w(3), w(10)),
+		ins("add", x(9), x(19), asm.Extended{Reg: w(3), Kind: "uxtw", Amount: 2}),
+		ins("ldr", w(0), mem(x(9), 0)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(3)}
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc.Coalesced+alloc.Propagated == 0 {
+		t.Fatalf("no copy removed:\n%v", out.Items)
+	}
+	var ext asm.Extended
+	for _, item := range out.Items {
+		if i, ok := item.(asm.Instruction); ok && i.Mnemonic == "add" {
+			ext = i.Operands[2].(asm.Extended)
+		}
+	}
+	if ext.Reg.Text != "w0" && ext.Reg.Text != "w10" {
+		t.Fatalf("extended register respelled to %q", ext.Reg.Text)
+	}
+}
+
+func TestPromoteWithFrameLayout(t *testing.T) {
+	// An array at [16, 48) whose address is taken, and a scalar slot at 56
+	// above it: with the layout known the scalar moves; without it, the
+	// escape blocks everything above 16.
+	body := func() *asm.Function {
+		return framed(
+			ins("sub", sp(), sp(), imm(64)),
+			ins("add", w(9), w(0), w(1)),
+			ins("str", w(9), mem(sp(), 56)),
+			ins("add", x(10), sp(), imm(16)),
+			ins("str", w(1), mem(x(10), 4)),
+			ins("mul", w(9), w(0), w(0)),
+			ins("ldr", w(11), mem(sp(), 56)),
+			ins("add", w(0), w(9), w(11)),
+			ins("add", sp(), sp(), imm(64)),
+			ins("ret"),
+		)
+	}
+	_, alloc, err := ReallocateWith(body(), []FrameObject{{Offset: 16, Size: 32}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc.Promoted != 1 {
+		t.Fatalf("with the layout: promoted %d", alloc.Promoted)
+	}
+	_, alloc, err = Reallocate(body())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alloc.Promoted != 0 {
+		t.Fatalf("without the layout: promoted %d", alloc.Promoted)
+	}
+	// A slot inside the object never moves, layout or not.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("str", w(1), mem(sp(), 24)),
+		ins("add", x(10), sp(), imm(16)),
+		ins("ldr", w(11), mem(sp(), 24)),
+		ins("add", w(0), w(11), w(10)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	if _, alloc, err := ReallocateWith(f, []FrameObject{{Offset: 16, Size: 32}}); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("inside the object: promoted %d (%v)", alloc.Promoted, err)
+	}
+}
+
+func TestShapesInvariantBoundInHeader(t *testing.T) {
+	// The bound `w9 = w20 - 16` is computed in the header from an
+	// invariant: the loop still has an index of stride 16.
+	f := fn(
+		ins("mov", w(3), w(31)),
+		label("loop_1"),
+		ins("sub", w(9), w(20), imm(16)),
+		ins("cmp", w(3), w(9)),
+		bcond("hi", "done_2"),
+		ins("add", w(3), w(3), imm(16)),
+		ins("b", sym("loop_1")),
+		label("done_2"),
+		ins("ret"),
+	)
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 1 || shapes[0].Index == nil || shapes[0].Stride != 16 || shapes[0].BoundReg != (Reg{GPR, 9}) {
+		t.Fatalf("%v", shapes[0])
+	}
+}

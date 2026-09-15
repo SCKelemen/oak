@@ -1337,9 +1337,13 @@ type generator struct {
 	usedFloat   bool
 	scopes      []map[string]slotBinding
 	nslots      int64
-	spill       map[int]int64 // scratch register → its spill slot offset
-	free        []int         // free scratch registers
-	ipScratch   int           // x16/x17 taken as overflow scratch (overflowScratch)
+	// frameObjects are the aggregates placed in the frame (arrays and
+	// records), by slot-relative offset and size, for the machine
+	// package's promotion (FrameObjects).
+	frameObjects []machine.FrameObject
+	spill        map[int]int64 // scratch register → its spill slot offset
+	free         []int         // free scratch registers
+	ipScratch    int           // x16/x17 taken as overflow scratch (overflowScratch)
 	// In a leaf (no call) the argument registers are homes: a scalar
 	// parameter stays where it arrived, and the argument registers no
 	// parameter occupies hold locals before any callee-saved register is
@@ -1725,7 +1729,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
 		// refuses leaves this configuration without a lowering.
-		re, alloc, rerr := machine.Reallocate(out)
+		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
 		if rerr != nil {
 			return nil, unsupported("%v", rerr)
 		}
@@ -1738,7 +1742,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		if err != nil || !lane.Reallocate {
 			return out, err
 		}
-		re, alloc, rerr := machine.Reallocate(out)
+		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
 		if rerr != nil {
 			return nil, unsupported("%v", rerr)
 		}
@@ -1762,6 +1766,25 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+// FrameObjects reports the aggregates a lowering placed in its frame, by
+// sp-relative offset and size, for the machine package's slot promotion.
+func FrameObjects(fn *asm.Function) []machine.FrameObject { return frameObjectsOf[fn] }
+
+var frameObjectsOf = map[*asm.Function][]machine.FrameObject{}
+
+// recordFrameObjects translates the generator's slot-relative aggregates
+// to sp-relative offsets for the function.
+func recordFrameObjects(fn *asm.Function, objects []machine.FrameObject, slotBase int64) {
+	if len(objects) == 0 {
+		return
+	}
+	out := make([]machine.FrameObject, 0, len(objects))
+	for _, obj := range objects {
+		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size})
+	}
+	frameObjectsOf[fn] = out
+}
 
 var reallocated = map[*asm.Function]int{}
 
@@ -2163,6 +2186,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		return nil, 0, 0, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
+	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
 	if len(g.usedGlobals) > 0 {
 		out.Globals = g.usedGlobals
 	}
@@ -3813,6 +3837,7 @@ func (g *generator) declareArray(name string, elem scalar, length int64) *arrayL
 func (g *generator) allocArray(elem scalar, length int64) *arrayLocal {
 	bytes := length * int64(elem.bits/8)
 	arr := &arrayLocal{offset: 8 * g.nslots, elem: elem, length: length}
+	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (bytes + 7) / 8 * 8})
 	g.nslots += (bytes + 7) / 8
 	return arr
 }
@@ -4031,6 +4056,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 // allocRecord reserves a record's frame storage without binding a name.
 func (g *generator) allocRecord(layout *recordLayout) *recordLocal {
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
+	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (layout.size + 7) / 8 * 8})
 	g.nslots += (layout.size + 7) / 8
 	return rec
 }
@@ -4494,6 +4520,7 @@ func (g *generator) lowerRecordArrayDeclaration(s *ast.VariableDeclaration, elem
 		g.usedFloat = true
 	}
 	arr := &arrayLocal{offset: 8 * g.nslots, elemLayout: elemLayout, length: length}
+	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (length*elemLayout.size + 7) / 8 * 8})
 	g.nslots += (length*elemLayout.size + 7) / 8
 	if s.Value == nil {
 		zero, err := g.alloc(scalars["u64"])

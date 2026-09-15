@@ -34,10 +34,21 @@ type slotAccess struct {
 	store  bool
 }
 
-// Promote rewrites the promotable frame slots of an AArch64 body into
-// registers. It returns the rewritten function (a new value; the input is
-// not modified) and how many slots moved, or the lift's error.
-func Promote(fn *asm.Function) (*asm.Function, int, error) {
+// FrameObject is an aggregate the lowering placed in the frame — an
+// array or record local — by its sp-relative byte offset and size. With
+// the layout known, an address taken at the object's base blocks only the
+// object; without it, everything above the address.
+type FrameObject struct {
+	Offset, Size int64
+}
+
+// Promote rewrites the promotable frame slots of a body into registers.
+// It returns the rewritten function (a new value; the input is not
+// modified) and how many slots moved, or the lift's error.
+func Promote(fn *asm.Function) (*asm.Function, int, error) { return PromoteWith(fn, nil) }
+
+// PromoteWith is Promote with the lowering's frame layout, when known.
+func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, error) {
 	lifted, err := Lift(cloneFunction(fn))
 	if err != nil {
 		return nil, 0, err
@@ -46,6 +57,26 @@ func Promote(fn *asm.Function) (*asm.Function, int, error) {
 		return lifted.Asm, 0, nil
 	}
 	accesses, escaped, blocked := frameAccesses(lifted)
+	// An address taken inside a recorded object blocks the object; the
+	// rest of the escapes keep the conservative rule.
+	var loose []int64
+	for _, e := range escaped {
+		placed := false
+		for _, obj := range objects {
+			if obj.Offset < 0 || obj.Size <= 0 || obj.Offset+obj.Size > fn.Frame {
+				continue // malformed: not trusted
+			}
+			if e >= obj.Offset && e < obj.Offset+obj.Size {
+				blocked = append(blocked, [2]int64{obj.Offset, obj.Offset + obj.Size})
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			loose = append(loose, e)
+		}
+	}
+	escaped = loose
 	slots := qualify(accesses, escaped, blocked, fn.Frame)
 	if len(slots) == 0 {
 		return lifted.Asm, 0, nil
