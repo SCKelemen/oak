@@ -52,7 +52,7 @@ TestSignedFails: (): () {
 	}
 	// The terminal form prints the same line.
 	var stdout strings.Builder
-	if Main([]string{"-run", "^TestSignedFails$", dir}, &stdout, &stdout) != 1 || !strings.Contains(stdout.String(), "invariant:7004 (got -9, want 4)") {
+	if Main([]string{"-run", "^TestSignedFails$", "-timeout", "60s", "-build-timeout", "10m", dir}, &stdout, &stdout) != 1 || !strings.Contains(stdout.String(), "invariant:7004 (got -9, want 4)") {
 		t.Fatalf("terminal output:\n%s", stdout.String())
 	}
 }
