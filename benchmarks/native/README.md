@@ -19,6 +19,25 @@ build (the CLI's `-emit-c` writes the C alone). `run.sh` does everything.
 
 ## Results
 
+Apple arm64, 2026-09-16, the two backends and the native lowering before
+vector operands were read in place (`94-assembler.md` §9), alternated
+three times on a host at load average 370; the ratios are the claim.
+
+| Backend | ns/byte | GB/s | valid |
+| --- | --- | --- | --- |
+| C backend, clang `-O2` over the emitted C | 0.10–0.11 | 8.8–9.6 | yes |
+| Native backend, before (1641e9a8) | 0.17–0.18 | 5.5–6.0 | yes |
+| Native backend, vector operands in place, `movi` splats | 0.12–0.14 | 7.3–8.0 | yes |
+
+The validator's body went from 611 lines to 330: fifty `orr` register
+copies (every vector read into a scratch and every result back to its
+home) to none, fifty frame-slot loads and stores to thirty-six, twenty-six
+constant splats from `movz; and; dup` to one `movi` each; every unit stays
+proven at the bit level. What remains is the slot traffic of the five
+vector locals the register file did not hold (the flattened kernel's live
+set peaks past the twenty homes; the liveness allocator of program item 2)
+and the loop's scalar bookkeeping.
+
 Apple arm64, 2026-09-13.
 
 | Backend | ns/byte | GB/s | valid |

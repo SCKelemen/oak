@@ -2763,6 +2763,27 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The forty-seventh increment is vector operands in place (§9,
+`nativegen/simd.go` `vecOperand`). A vector variable in its own register
+is read where it lies by every simd operation; the operation writes a
+fresh scratch when its first operand is a variable's home (its own
+scratch otherwise); the result retargets to the assigned variable's
+register as scalar results do (`retargetLast`, the arrangement `v16.16b`
+renamed to the home's), the operations that accumulate into or insert
+into their destination (`fmla`, a lane `mov`) copying a home first; and a
+literal splat is one `movi` (zero in any arrangement, a byte in the byte
+lanes) instead of `movz`, a mask and `dup` through a general register.
+Before it every vector read was an `orr` copy into a scratch and every
+result an `orr` copy back — the UTF-8 validator's `or(or(a, b), or(c, d))`
+was eight instructions for three, its body 611 lines with fifty copies
+and fifty frame-slot accesses; it is 330 lines with no copies and
+thirty-six slot accesses, every unit proven at the bit level, at
+0.12–0.14 ns per byte against the previous lowering's 0.17–0.18 and the
+C backend's 0.10–0.11 in one alternated run (`benchmarks/native/README.md`).
+The verifier's model of `eor vD, vN, vN` had read it as the vector move
+`orr vD, vN, vN` is; it is zero (`asm/verify_vector_test.go`), and the
+in-place `xor(v, v)` was the first body to spell it.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
