@@ -20,7 +20,8 @@ binary32 bits, plus straight-line local declarations and rebindings.  The
 third adds the total sign operations: negation, absolute value, and copysign,
 under that same result-level NaN quotient. Payload-observing bitcasts are not
 part of this theorem. The fourth adds IEEE equality and ordering: NaNs are
-unordered and the two signed zeros are equal.
+unordered and the two signed zeros are equal. The comparison leaves compose
+through pure Boolean literals, negation, conjunction, and disjunction.
 Decimal parsing itself, conversions, spans, control flow, calls, binary64, and
 SIMD remain outside this theorem.
 -/
@@ -283,22 +284,44 @@ theorem lowerF_eval (e : Expr) (ρ : SourceEnv) :
 /-- A Boolean condition over two float expressions. -/
 inductive Condition
   | compare (op : SourceCompareOp) (left right : Expr)
+  | literal (value : Bool)
+  | negate (condition : Condition)
+  | conjunction (left right : Condition)
+  | disjunction (left right : Condition)
   deriving Repr
 
 /-- The verifier-side Boolean term produced by `floatCompare`. -/
 inductive BoolTerm
   | compare (op : VerifierCompareOp) (left right : Term)
+  | literal (value : Bool)
+  | negate (condition : BoolTerm)
+  | conjunction (left right : BoolTerm)
+  | disjunction (left right : BoolTerm)
   deriving Repr
 
 def Condition.eval : Condition → SourceEnv → Bool
   | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+  | .literal value, _ => value
+  | .negate condition, ρ => !condition.eval ρ
+  | .conjunction left right, ρ => left.eval ρ && right.eval ρ
+  | .disjunction left right, ρ => left.eval ρ || right.eval ρ
 
 def BoolTerm.eval : BoolTerm → SourceEnv → Bool
   | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+  | .literal value, _ => value
+  | .negate condition, ρ => !condition.eval ρ
+  | .conjunction left right, ρ => left.eval ρ && right.eval ρ
+  | .disjunction left right, ρ => left.eval ρ || right.eval ρ
 
 def lowerConditionWith : Condition → TermEnv → BoolTerm
   | .compare op left right, σ =>
       .compare (lowerCompareOp op) (lowerWith left σ) (lowerWith right σ)
+  | .literal value, _ => .literal value
+  | .negate condition, σ => .negate (lowerConditionWith condition σ)
+  | .conjunction left right, σ =>
+      .conjunction (lowerConditionWith left σ) (lowerConditionWith right σ)
+  | .disjunction left right, σ =>
+      .disjunction (lowerConditionWith left σ) (lowerConditionWith right σ)
 
 /-- Float comparison lowering preserves the IEEE predicate in every agreeing
 scope. The comparison carriers treat every NaN alike, so this result is
@@ -307,12 +330,22 @@ theorem lowerConditionWith_eval (condition : Condition)
     (parameters current : SourceEnv) (σ : TermEnv)
     (hσ : Agree parameters current σ) :
     (lowerConditionWith condition σ).eval parameters = condition.eval current := by
-  cases condition with
+  induction condition generalizing parameters current σ with
   | compare op left right =>
       simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
       rw [lowerWith_eval left parameters current σ hσ,
           lowerWith_eval right parameters current σ hσ]
       exact lowerCompareOp_eval op (left.eval current) (right.eval current)
+  | literal => rfl
+  | negate condition ih =>
+      simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
+      rw [ih parameters current σ hσ]
+  | conjunction left right ihLeft ihRight =>
+      simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
+      rw [ihLeft parameters current σ hσ, ihRight parameters current σ hσ]
+  | disjunction left right ihLeft ihRight =>
+      simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
+      rw [ihLeft parameters current σ hσ, ihRight parameters current σ hσ]
 
 def lowerCondition (condition : Condition) : BoolTerm :=
   lowerConditionWith condition parameterTerms
@@ -493,6 +526,17 @@ example : lowerCondition (.compare .gt a b) =
     .compare .gt (.param "a") (.param "b") := rfl
 example : lowerCondition (.compare .ge a b) =
     .compare .ge (.param "a") (.param "b") := rfl
+example : lowerCondition
+    (.disjunction
+      (.negate (.compare .lt a b))
+      (.conjunction
+        (.compare .eq a b)
+        (.compare .ne b (.literal 0)))) =
+    .disjunction
+      (.negate (.compare .lt (.param "a") (.param "b")))
+      (.conjunction
+        (.compare .eq (.param "a") (.param "b"))
+        (.compare .ne (.param "b") (.literal 0))) := rfl
 example : lowerValueConditional {
     guard := .compare .lt a b
     whenTrue := .binary .add a (.literal 0x3F800000)

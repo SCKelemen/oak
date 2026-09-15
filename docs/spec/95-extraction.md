@@ -189,8 +189,11 @@ and random operands—arithmetic against the host, sign operations against their
 exact bit transforms under the canonical-NaN carrier, and comparisons against
 the host's IEEE predicates. The default mode is unchanged, so an extraction
 that never states a rounding or bit-level comparison fact keeps Lean's
-operators. A value-position Bool conditional over these expressions keeps the
-same carriers in its guard and arms and renders as Lean `if`; this is the first
+operators. Pure guards compose comparison leaves with Boolean literals, `!`,
+`&&`, and `||`; the theorem is intentionally about effect-free leaves, where
+strict verifier conjunction/disjunction and Oak's short circuit have the same
+value. A value-position Bool conditional over these expressions keeps the same
+carriers in its guard and arms and renders as Lean `if`; this is the first
 control-flow slice of `Oak.FloatLoweringRefinement`, not yet a claim about
 statement branches or nested float control flow. Pure `f32` calls compose too:
 arguments are evaluated in the caller scope, bound by the callee's ordered
