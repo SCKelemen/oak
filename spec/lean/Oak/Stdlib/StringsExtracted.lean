@@ -301,7 +301,7 @@ def text_result_ok (result : Result_u32_TextError) (fuel : Nat) : Option (Bool) 
 def text_result_value (result : Result_u32_TextError) (fuel : Nat) : Option (UInt32) := do
   pure (match result with | (.Ok value) => value | (.Err reason) => (4294967295 : UInt32))
 
-def bytes_range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
+def range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
   pure (if (decide (offset > length)) then false else (decide (width <= (length - offset))))
 
 def utf8_encode.loop1 (dst : Array UInt8) (offset : UInt32) (value : UInt32) (width : UInt32) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)
@@ -322,7 +322,7 @@ def utf8_encode (dst : Array UInt8) (offset : UInt32) (value : UInt32) (fuel : N
     else (do
       let r3 ← utf8_width value fuel
       let width : UInt32 := r3
-      let r4 ← bytes_range_fits (dst.size.toUInt32) offset width fuel
+      let r4 ← range_fits (dst.size.toUInt32) offset width fuel
       let (r5, dst) ← (
         if (!r4) then (do
           pure ((Result_u32_TextError.Err TextError.DestinationTooSmall), dst))
@@ -357,7 +357,7 @@ def utf16_encode (dst : Array UInt16) (offset : UInt32) (value : UInt32) (fuel :
     else (do
       let r3 ← utf16_width value fuel
       let width : UInt32 := r3
-      let r4 ← bytes_range_fits (dst.size.toUInt32) offset width fuel
+      let r4 ← range_fits (dst.size.toUInt32) offset width fuel
       let (r5, dst) ← (
         if (!r4) then (do
           pure ((Result_u32_TextError.Err TextError.DestinationTooSmall), dst))
@@ -380,7 +380,7 @@ def utf32_encode (dst : Array UInt32) (offset : UInt32) (value : UInt32) (fuel :
     if (!r1) then (do
       pure ((Result_u32_TextError.Err TextError.InvalidScalar), dst))
     else (do
-      let r3 ← bytes_range_fits (dst.size.toUInt32) offset (1 : UInt32) fuel
+      let r3 ← range_fits (dst.size.toUInt32) offset (1 : UInt32) fuel
       let (r4, dst) ← (
         if (!r3) then (do
           pure ((Result_u32_TextError.Err TextError.DestinationTooSmall), dst))
@@ -941,22 +941,22 @@ def text_require (src : Array UInt8) (fuel : Nat) : Option (Unit) := do
   let () ← (if (Oak.Utf8Exec.valid src) then pure () else none)
   pure ()
 
-def bytes_equal.loop1 (left : Array UInt8) (right : Array UInt8) (n : UInt32) (same : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
+def equal.loop1 (left : Array UInt8) (right : Array UInt8) (n : UInt32) (same : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < n)) then do
       let same := (same && ((left.getD i.toNat (0 : UInt8)) == (right.getD i.toNat (0 : UInt8))))
       let i := (i + (1 : UInt32))
-      bytes_equal.loop1 left right n same i fuel
+      equal.loop1 left right n same i fuel
     else pure (same, i)
 
-def bytes_equal (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Bool) := do
+def equal (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Bool) := do
   let n : UInt32 := (left.size.toUInt32)
   let r1 ← (
     if (n == (right.size.toUInt32)) then (do
       let same : Bool := true
       let i : UInt32 := (0 : UInt32)
-      let (same, i) ← bytes_equal.loop1 left right n same i fuel
+      let (same, i) ← equal.loop1 left right n same i fuel
       pure same)
     else (do
       pure false))
@@ -965,10 +965,10 @@ def bytes_equal (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option
 def text_equal (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Bool) := do
   let r1 ← text_require left fuel
   let r2 ← text_require right fuel
-  let r3 ← bytes_equal left right fuel
+  let r3 ← equal left right fuel
   pure r3
 
-def bytes_compare.loop1 (left : Array UInt8) (right : Array UInt8) (limit : UInt32) (order : Int32) (i : UInt32) : Nat → Option (Int32 × UInt32)
+def compare.loop1 (left : Array UInt8) (right : Array UInt8) (limit : UInt32) (order : Int32) (i : UInt32) : Nat → Option (Int32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if ((decide (i < limit)) && (order == (0 : Int32))) then do
@@ -983,14 +983,14 @@ def bytes_compare.loop1 (left : Array UInt8) (right : Array UInt8) (limit : UInt
         else (do
           pure order))
       let i := (i + (1 : UInt32))
-      bytes_compare.loop1 left right limit order i fuel
+      compare.loop1 left right limit order i fuel
     else pure (order, i)
 
-def bytes_compare (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Int32) := do
+def compare (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Int32) := do
   let limit : UInt32 := (if (decide ((left.size.toUInt32) < (right.size.toUInt32))) then (left.size.toUInt32) else (right.size.toUInt32))
   let order : Int32 := (0 : Int32)
   let i : UInt32 := (0 : UInt32)
-  let (order, i) ← bytes_compare.loop1 left right limit order i fuel
+  let (order, i) ← compare.loop1 left right limit order i fuel
   let order ← (if (order == (0 : Int32)) then (do
       let order ← (if (decide ((left.size.toUInt32) < (right.size.toUInt32))) then (do
           let order := (0 - (1 : Int32))
@@ -1010,7 +1010,7 @@ def bytes_compare (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Opti
 def text_compare (left : Array UInt8) (right : Array UInt8) (fuel : Nat) : Option (Int32) := do
   let r1 ← text_require left fuel
   let r2 ← text_require right fuel
-  let r3 ← bytes_compare left right fuel
+  let r3 ← compare left right fuel
   pure r3
 
 def text_equal_ascii_fold.loop1 (left : Array UInt8) (right : Array UInt8) (same : Bool) (i : UInt32) : Nat → Option (Bool × UInt32)
@@ -1042,7 +1042,7 @@ def text_match_at.loop1 (src : Array UInt8) (needle : Array UInt8) (offset : UIn
     else pure (same, i)
 
 def text_match_at (src : Array UInt8) (needle : Array UInt8) (offset : UInt32) (fuel : Nat) : Option (Bool) := do
-  let r1 ← bytes_range_fits (src.size.toUInt32) offset (needle.size.toUInt32) fuel
+  let r1 ← range_fits (src.size.toUInt32) offset (needle.size.toUInt32) fuel
   let same : Bool := r1
   let i : UInt32 := (0 : UInt32)
   let (same, i) ← text_match_at.loop1 src needle offset same i fuel
@@ -1068,7 +1068,7 @@ def text_has_suffix (src : Array UInt8) (suffix : Array UInt8) (fuel : Nat) : Op
 def text_find_from.loop1 (src : Array UInt8) (needle : Array UInt8) (found : Bool) (at_ : UInt32) : Nat → Option (Bool × UInt32)
   | 0 => none
   | fuel + 1 => do
-    let r1 ← bytes_range_fits (src.size.toUInt32) at_ (needle.size.toUInt32) fuel
+    let r1 ← range_fits (src.size.toUInt32) at_ (needle.size.toUInt32) fuel
     if ((!found) && r1) then do
       let r2 ← text_match_at src needle at_ fuel
       let found := r2
@@ -1126,7 +1126,7 @@ def text_last_index (src : Array UInt8) (needle : Array UInt8) (fuel : Nat) : Op
       pure (if found then (Option_u32.Some at_) else Option_u32.None)))
   pure r3
 
-def bytes_find.loop1 (src : Array UInt8) (needle : UInt8) (n : UInt32) (index : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
+def find.loop1 (src : Array UInt8) (needle : UInt8) (n : UInt32) (index : UInt32) (i : UInt32) : Nat → Option (UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < n)) then do
@@ -1136,19 +1136,19 @@ def bytes_find.loop1 (src : Array UInt8) (needle : UInt8) (n : UInt32) (index : 
         else (do
           pure index))
       let i := (i + (1 : UInt32))
-      bytes_find.loop1 src needle n index i fuel
+      find.loop1 src needle n index i fuel
     else pure (index, i)
 
-def bytes_find (src : Array UInt8) (needle : UInt8) (fuel : Nat) : Option (Option_u32) := do
+def find (src : Array UInt8) (needle : UInt8) (fuel : Nat) : Option (Option_u32) := do
   let n : UInt32 := (src.size.toUInt32)
   let index : UInt32 := n
   let i : UInt32 := (0 : UInt32)
-  let (index, i) ← bytes_find.loop1 src needle n index i fuel
+  let (index, i) ← find.loop1 src needle n index i fuel
   pure (if (index == n) then Option_u32.None else (Option_u32.Some index))
 
 def text_index_byte (src : Array UInt8) (value : UInt8) (fuel : Nat) : Option (Option_u32) := do
   let r1 ← text_require src fuel
-  let r2 ← bytes_find src value fuel
+  let r2 ← find src value fuel
   pure r2
 
 def text_index_rune.loop1 (src : Array UInt8) (value : UInt32) (at_ : UInt32) (index : UInt32) (found : Bool) : Nat → Option (UInt32 × UInt32 × Bool)

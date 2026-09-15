@@ -435,11 +435,78 @@ func TestPromoteRefusesEscapedAndCrossingSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// x19 is busy across the call (it holds w2), so nothing is free: the
-	// slot stays. The save slot of x19 itself is never promoted (its load
-	// is a restore with no reader).
-	if alloc.Promoted != 0 || !strings.Contains(text(out.Items), "[sp,#16]") || !strings.Contains(text(out.Items), "ldr x19, [sp,#32]") {
-		t.Fatalf("promoted %d:\n%s", alloc.Promoted, text(out.Items))
+	// x19 is busy across the call (it holds w2), so x20 is saved beside it
+	// — the next slot of the save area, [sp, #40] — and the value moves
+	// there; the save slot of x19 itself is never promoted (its load is a
+	// restore with no reader).
+	got := text(out.Items)
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#16]") || !strings.Contains(got, "str x20, [sp,#40]") || !strings.Contains(got, "ldr x20, [sp,#40]") || !strings.Contains(got, "ldr x19, [sp,#32]") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, got)
+	}
+	// The restore precedes the pair's, the save follows x19's.
+	if strings.Index(got, "ldr x20, [sp,#40]") > strings.Index(got, "ldp x29, x30") || strings.Index(got, "str x20, [sp,#40]") < strings.Index(got, "str x19, [sp,#32]") {
+		t.Fatalf("save/restore placement:\n%s", got)
+	}
+}
+
+func TestGrowCalleeSavedRefusals(t *testing.T) {
+	// The would-be save slot [sp, #40] is used by another value: no growth.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", x(19), mem(sp(), 32)),
+		ins("mov", w(19), w(2)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("str", x(3), mem(sp(), 40)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("ldr", x(11), mem(sp(), 40)),
+		ins("add", x(0), x(10), x(11)),
+		ins("add", w(0), w(0), w(19)),
+		ins("ldr", x(19), mem(sp(), 32)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(11), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d (%v)", alloc.Promoted, err)
+	}
+	// Two returns: no growth.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("cbz", w(0), sym("zero_1")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+		label("zero_1"),
+		ins("ldr", w(0), mem(sp(), 16)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d with two returns (%v)", alloc.Promoted, err)
+	}
+	// No [x29, x30] pair (the shape of a leaf): no growth.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d without a pair (%v)", alloc.Promoted, err)
 	}
 }
 
@@ -496,5 +563,86 @@ func TestPromoteKeepsWordsReadAsChunks(t *testing.T) {
 	f.Frame = 128
 	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
 		t.Fatalf("promoted %d (%v)", alloc.Promoted, err)
+	}
+}
+
+// RV64 spellings.
+func rx(n int) asm.Register {
+	return asm.Register{Text: rv64Names[n], Class: asm.ClassRV64X, Num: n, Lane: -1}
+}
+
+func rf(n int) asm.Register {
+	return asm.Register{Text: rv64FNames[n], Class: asm.ClassRV64F, Num: n, Lane: -1}
+}
+
+func rvfn(items ...asm.Item) *asm.Function {
+	return &asm.Function{Name: "f", Arch: asm.ArchRV64, Items: items, Frame: 64, Clobbers: []asm.Register{rx(5), rx(6), rx(7)}}
+}
+
+func TestRV64LiftAndCoalesce(t *testing.T) {
+	// The lowering's copies through a scratch: `mv t0, a0; ... mv a0, t0`.
+	out, alloc, err := Reallocate(rvfn(
+		ins("mv", rx(5), rx(10)),
+		ins("addi", rx(5), rx(5), imm(1)),
+		ins("mv", rx(10), rx(5)),
+		ins("ret"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.Coalesced != 2 || !strings.Contains(got, "addi a0, a0, #1") {
+		t.Fatalf("coalesced %d:\n%s", alloc.Coalesced, got)
+	}
+	// Unknown shapes refuse: an indirect jump, a vector register.
+	for _, body := range [][]asm.Item{
+		{ins("jr", rx(5))},
+		{ins("vadd.vv", asm.Register{Text: "v1", Class: asm.ClassRV64V, Num: 1, Lane: -1}, asm.Register{Text: "v2", Class: asm.ClassRV64V, Num: 2, Lane: -1}, asm.Register{Text: "v3", Class: asm.ClassRV64V, Num: 3, Lane: -1}), ins("ret")},
+	} {
+		if _, err := Lift(rvfn(body...)); err == nil {
+			t.Errorf("lift admitted %s", text(body))
+		}
+	}
+}
+
+func TestRV64CallContractAndSlots(t *testing.T) {
+	// A value parked in the frame across a call moves into s2, saved
+	// beside s1; a word slot (sw/lw) is not a slot; ra's save is not one.
+	f := rvfn(
+		ins("addi", sp(), sp(), imm(-64)),
+		ins("sd", rx(1), mem(sp(), 0)),
+		ins("sd", rx(9), mem(sp(), 16)),
+		ins("mv", rx(9), rx(11)),
+		ins("sd", rx(10), mem(sp(), 32)),
+		ins("sw", rx(12), mem(sp(), 40)),
+		ins("mv", rx(10), rx(12)),
+		ins("call", sym("g")),
+		ins("ld", rx(5), mem(sp(), 32)),
+		ins("lw", rx(6), mem(sp(), 40)),
+		ins("add", rx(10), rx(10), rx(5)),
+		ins("add", rx(10), rx(10), rx(6)),
+		ins("add", rx(10), rx(10), rx(9)),
+		ins("ld", rx(9), mem(sp(), 16)),
+		ins("ld", rx(1), mem(sp(), 0)),
+		ins("addi", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{rx(5), rx(6)}
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#32]") || !strings.Contains(got, "sd s2, [sp,#24]") || !strings.Contains(got, "ld s2, [sp,#24]") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, got)
+	}
+	if !strings.Contains(got, "sw a2, [sp,#40]") || !strings.Contains(got, "lw ") || !strings.Contains(got, "sd s1, [sp,#16]") || !strings.Contains(got, "ld ra, [sp,#0]") {
+		t.Fatalf("frame code changed:\n%s", got)
+	}
+	// No callee-saved register is declared a clobber (the checker refuses).
+	for _, c := range out.Clobbers {
+		if r, _, _, ok, _ := rv64Target.regOf(c); ok && rv64Target.calleeSaved(r) {
+			t.Fatalf("callee-saved %s declared a clobber", c.Text)
+		}
 	}
 }

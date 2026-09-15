@@ -1,6 +1,7 @@
 // Text algorithms over explicitly borrowed code units. No allocation.
 package strings
 
+import("bytes")
 import("unicode")
 
 pub TextError: type = InvalidEncoding | InvalidScalar | OutOfBounds | DestinationTooSmall | SizeOverflow | EmptySeparator | Empty
@@ -152,7 +153,7 @@ pub text_result_value: (result: Result[u32, TextError]): u32 = result ? | .Ok(va
 pub utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
     width: u32 = utf8_width(value)
-    !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
+    !bytes.range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
       width == u32(1) ? { dst[offset] = u8_trunc_u32(value) } | {
         width == u32(2) ? { dst[offset] = u8_trunc_u32(u32(192) | (value >> u32(6))) } | {
           width == u32(3) ? { dst[offset] = u8_trunc_u32(u32(224) | (value >> u32(12))) } | {
@@ -173,7 +174,7 @@ pub utf8_encode: (dst: [*]u8, offset: u32, value: u32): Result[u32, TextError] {
 pub utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
     width: u32 = utf16_width(value)
-    !bytes_range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
+    !bytes.range_fits(len(dst), offset, width) ? { .Err(.DestinationTooSmall) } | {
       width == u32(1) ? { dst[offset] = u16_trunc_u32(value) } | {
         rest: u32 = value - u32(65536)
         dst[offset] = u16_trunc_u32(u32(55296) + (rest >> u32(10)))
@@ -185,7 +186,7 @@ pub utf16_encode: (dst: [*]u16, offset: u32, value: u32): Result[u32, TextError]
 }
 pub utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError] {
   !unicode_is_scalar(value) ? { .Err(.InvalidScalar) } | {
-    !bytes_range_fits(len(dst), offset, u32(1)) ? { .Err(.DestinationTooSmall) } | {
+    !bytes.range_fits(len(dst), offset, u32(1)) ? { .Err(.DestinationTooSmall) } | {
       dst[offset] = value
       .Ok(u32(1))
     }
@@ -499,12 +500,12 @@ pub text_require: (src: []u8): () { assert(is_valid_utf8(src)) }
 pub text_equal: (left: []u8, right: []u8): Bool {
   text_require(left)
   text_require(right)
-  bytes_equal(left, right)
+  bytes.equal(left, right)
 }
 pub text_compare: (left: []u8, right: []u8): i32 {
   text_require(left)
   text_require(right)
-  bytes_compare(left, right)
+  bytes.compare(left, right)
 }
 pub text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
   text_require(left)
@@ -518,7 +519,7 @@ pub text_equal_ascii_fold: (left: []u8, right: []u8): Bool {
   same
 }
 pub text_match_at: (src: []u8, needle: []u8, offset: u32): Bool {
-  same: Bool = bytes_range_fits(len(src), offset, len(needle))
+  same: Bool = bytes.range_fits(len(src), offset, len(needle))
   i: u32 = 0
   while i < len(needle) && same {
     same = src[offset + i] == needle[i]
@@ -539,7 +540,7 @@ pub text_has_suffix: (src: []u8, suffix: []u8): Bool {
 pub text_find_from: (src: []u8, needle: []u8, start: u32): Option[u32] {
   found: Bool = false
   at: u32 = start
-  while !found && bytes_range_fits(len(src), at, len(needle)) {
+  while !found && bytes.range_fits(len(src), at, len(needle)) {
     found = text_match_at(src, needle, at)
     !found ? { at = at + u32(1) }
   }
@@ -571,7 +572,7 @@ pub text_last_index: (src: []u8, needle: []u8): Option[u32] {
 }
 pub text_index_byte: (src: []u8, value: u8): Option[u32] {
   text_require(src)
-  bytes_find(src, value)
+  bytes.find(src, value)
 }
 // Rune search returns a scalar index, never a byte index.
 pub text_index_rune: (src: []u8, value: u32): Option[u32] {

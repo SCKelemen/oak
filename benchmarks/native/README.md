@@ -159,6 +159,25 @@ one; both bodies prove as before. The timing row is not updated here (the
 host's load average stayed above 90 all day); the protocol is `run.sh`,
 best of five, against the 0.28 ns/byte row below.
 
+**Bottom-tested loops (2026-09-15, `docs/spec/94-assembler.md` §9
+"Bottom-tested loops").** A loop over one comparison runs its test at the
+bottom as a conditional back edge, with the test peeled once before the
+loop: one branch an iteration instead of two. Structural counts from
+`OAK_NATIVE_DUMP=1`: `bench_sum`'s iteration is `ldr; add; add; cmp;
+b.lo` — five instructions and one branch, from six and two — and the
+whole body grows by one instruction (the peeled test); `bench_dot`,
+`bench_dispatch`, `bench_search` (both loops; the inner conjunction's
+tail is `cmp; b.hs done; cbz wF, loop`), `bench_page_probe` (both loops),
+and `bench_tiled` (one loop) rotate the same way. With the widening's
+redundant self-move and the result's scratch copy gone the same day,
+the whole bodies read: `bench_sum` 20, `bench_dot` 42, `bench_dispatch`
+57, `bench_search` 55, `bench_page_probe` 94 (from 20, 41, 68, 61, and
+102 before this day's selection work, each now with one branch an
+iteration on its rotated loops). Verdicts
+unchanged: `sum`, `dot`, `dispatch` proven with their loops coupled
+inductively; `search` witnessed; `page_probe` trusted; `tiled`
+witnessed. Timing deferred to the quiet-host rerun.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

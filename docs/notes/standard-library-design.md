@@ -1,6 +1,8 @@
 # Oak standard library: foundations and first slice
 
-Status: discussion draft, not normative specification or implemented API.
+Status: historical discussion draft. `docs/spec/75-standard-library.md` now owns
+the normative architecture; this file retains the original implementation
+survey, detailed first-container contracts, and target notes.
 Reviewed 2026-09-07 against `SCKelemen/oak` branch `specification`, commit
 `6453db54ea02dfbc5903a721967f79739b41c4fc`.
 Repository location: `docs/notes/standard-library-design.md`.

@@ -2930,6 +2930,15 @@ The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
 frame slot's value is read from the register that stored or loaded it
 while that register stands, and a comparison on a computed operand
 branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
+The fifty-second increment is pair copies (§9 "Pair copies"): aggregate
+copies move sixteen bytes a step as `ldp`/`stp` where both sides are
+8-aligned and a pair remains (`Oak.PairCopies.pair_copy`).
+The fifty-first increment is copies at the boundary (§9 "Copies at the
+boundary"): a returned local built in the `x8` area, a read-only
+aggregate argument passed as the caller's storage, a call's result
+received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
+`build_in_place`).
+
 The fifty-third increment is fields in registers (§9 "Fields in
 registers"): the scalar fields a loop touches of a top-level record
 local live in callee-saved registers, flushed where the record is used
@@ -4209,6 +4218,126 @@ names no operand. `TestNativeShapesForwarding` pins the byte loop of an
 absorber: no `cset`, no reload after a store, the `== 64` test on the
 register the increment was stored from; `TestE2ENativeForwarding` agrees
 with the C backend. The RV64 lane is untouched.
+**Copies at the boundary (2026-09-16, AArch64 lane;
+`spec/lean/Oak/BoundaryCopies.lean`).** Three copies of aggregates at
+calls and returns go. A record local the function returns through `x8` —
+the body's tail is the bare name of a local declared once at the body's
+top level, of the result type, not from a literal, its address never
+taken (`returnSlotLocal`) — is the caller's result area itself: its
+fields live behind the parked result register, `next: Sha256State =
+state` copies the parameter into the area, `next.filled = next.filled +
+u32(1)` reads and writes `[x21, #96]`, and the return copies nothing
+(`sha256_update` copied 112 bytes twice: in and out). A by-reference
+argument whose callee only reads it — the callee's body never assigns,
+borrows, or addresses the parameter (`recordParamTouched`), is a body and
+not an extern or a unit, and no parameter of the callee is a writable
+span, through which it could reach the caller's storage — is passed as
+the address of the caller's own storage, `add x9, sp, #off` for a frame
+record or `add x9, xR, #off` for one behind a register, where before a
+temp was filled and its address passed (`sha256_compress(next.h,
+next.block)` copied 96 bytes per block). And a local initialized from a
+call returning a record through memory, `y: Big = step(x)`, receives the
+callee's result in its own storage — reserved before the arguments
+evaluate and bound after, since an argument may name an outer binding of
+the same name — where before a temp received it and was copied. The
+same untouched-parameter rule now admits parameters whose records hold
+arrays: an array field behind a register is walked as an array field of a
+computed element is (`arrayAddressReg`), so `Sha256State` arrives in
+place. The theorems: the callee's reads through the caller's address are
+the reads of the copy, since nothing writes the storage during the call
+(`Oak.BoundaryCopies.read_in_place`), and an aggregate built at the
+result area holds word for word what one built in the frame and copied
+would (`build_in_place`). `TestNativeShapesBoundaryCopies` pins `step`
+(no frame slot in the body: the parameter read in place, the result
+written in place) and `twice` (its locals passed by their own addresses,
+results received in place; one spill across a call);
+`TestE2ENativeBoundaryCopies` agrees with the C backend. Not elided: a
+result stored into existing storage, `next.h = f(next.h, …)`, whose
+target may alias an argument passed in place — the temp stays; a callee
+with a writable span parameter; a parameter the callee passes to its own
+recursive call.
+
+**Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
+An aggregate copy — between two locations (`copyBytes`: a record or array
+value assigned, stored, passed, or received), from a by-reference
+parameter's address into the frame in the prologue (`copyIn`), or from a
+local into the `x8` result area (`copyOut`) — moves sixteen bytes a step
+as a register pair, `ldp x9, x10, [src, #off]; stp x9, x10, [dst, #off]`,
+while both locations are 8-aligned, a whole pair remains inside the
+value, and both offsets fit the pair form's scaled 7-bit field (−512 to
+504); the 8/4/2/1-byte tail follows as before. A 40-byte record copies
+as two pairs and a word where it copied as five words; `Sha256State`'s
+112 bytes as seven pairs where it took fourteen. The seam checker admits
+`ldp`/`stp` on frame slots and inside regions as it admits `ldr`/`str`;
+the verifier reads `ldp` as two loads and tiles `stp` on frame and
+result-area memory. The theorem is that a pair copy is the word copy it
+replaces (`Oak.PairCopies.pair_copy`). `TestNativeShapesPairCopies` pins
+`shift` (a 40-byte parameter copied in and its result copied out by
+pairs, and still proven); `TestE2ENativePairCopies` agrees with the C
+backend. The RV64 lane keeps its word copies (no pair form in its base
+contract).
+
+**Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
+condition is a conjunction of simple tests — comparisons of simple
+operands, Bool variables in registers, their negations — is lowered with
+its test once before the loop and again at the bottom, every conjunct but
+the last leaving to the exit when false and the last a conditional back
+edge when true — `cmp; b.hs done; loop: body; cmp; b.lo loop; done:`; for
+`lo < hi && !found`, `cmp; b.hs done; cbz wF, loop` — one branch an
+iteration where the top-tested form paid its tests, a conditional exit,
+and an unconditional jump (`Lane.RotateLoops`, the `rotate-loops`
+transform of the candidate search, loop phase, mechanical; a disjunction
+keeps the top-tested shape). The rotation is a pass over the emitted
+items (`nativegen/rotate.go`), run after the loop-invariant pass, whose
+loop finder reads the top-tested shape; the exit run ends at its last
+exit branch, so a guard's compare first in the body (the hoisted loop's
+`cmp wI, #64; b.hs trap`) is the body's and the hoisted form rotates too;
+a header whose exit test hides a later test behind a setup instruction
+(the unrolled reduction's `sub wT, wL, #4; cmp wI, wT; b.hi done`) is
+left as it is. The search's cost
+model decides where the rotation pays: it rotates a plain byte sum over
+the unrolled form when both are evidence, and leaves a three-trip
+remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
+back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
+compares and branches to the exit label ending in the back edge, the
+entry test right before the header label is the same run with its last
+branch to the exit under the complementary condition, and nothing else
+branches to the header. Such a loop runs its body exactly as the
+top-tested loop with that test at its header — the entry test is the
+first iteration's, the tail test every later one's — so the shape is the
+top-tested one with its test range at the tail: `headerCondition` walks
+the tail test over the header state, an exit branch taken as the exit
+and the back edge taken as the continue, and the loop is keyed at every
+entry branch, so the executor summarizes it at the first undecided one
+(a Bool cleared before the loop decides its own test) with the entry
+state. The checker learns the taken side of `cmp wI, wL; b.lo header`
+carries `wI < wL` (the fall-through of `b.hs exit` did already, the same
+`Oak.Assembler.index_access` fact), so an elided element guard inside the
+body stays admitted on the back-edge path. A body the verifier judges
+weaker than its top-tested form — or the checker refuses — is lowered
+again top-tested. On the kernels `bench_sum` is five instructions and one
+branch an iteration (`ldr; add; add; cmp; b.lo`), `bench_dot`,
+`bench_dispatch`, `bytes_equal`, `bytes_find`, `bytes_fill`,
+`bitset_count`, and the CRC word helper rotate and prove; `bench_search`
+and `bench_page_probe` rotate both their loops (the inner conditions are
+conjunctions) with their verdicts unchanged; on the stdlib-bearing
+program 39 bodies rotate and prove and none falls back
+(`compiler/e2e_native_rotation_test.go`; 50 in the stdlib builder once the
+hoisted forms rotate). The checker's taken-edge facts
+are general: the taken path of `b.cond` after a compare knows what the
+fall-through of `b.inverse` would, so a `b.hi header` back edge carries
+the slack fact as `b.lo header` carries the index fact.
+
+**Two copies removed (2026-09-15).** A widening from a narrow unsigned
+type to a wide one wrote `mov wR, wR` to clear the upper half; a value a
+w instruction just computed has it clear already, so only a value that
+arrived otherwise — an argument register, whose upper half the caller
+leaves unspecified — is written once as w, and the declaration's
+retargeting then lands the computation in the variable's home
+(`lsr w6, w4, #3` for `arg: u64 = u64(b >> u8(3))`, from `lsr w9; mov w6,
+w9`). A function whose result is a variable in its home register moves it
+to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
+w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
 
 **Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
 `spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
@@ -5023,8 +5152,13 @@ symbols have no value there (`sat_decide` was reported trapping on an
 input its loop never entered). Prover build: proven 561, evidence 139,
 trusted 265, and one mismatch — `src_name`, the speculated shift guard
 above — which the native build reports as an error and leaves to the C
-backend; the natively built prover therefore does not build until the
-backend's if-conversion stops speculating an arm whose guard can trap.
+backend. The if-conversion now speculates a shift only by a literal
+count (`literalShiftCount`; a variable count is guarded at the width,
+and the arm not taken may hold one past it), so `src_name` lowers with
+its branches and is proven again, and the natively built prover builds
+and runs (`TestE2ENativeSelectDoesNotSpeculateAGuardedShift`). Prover
+build after the fix: proven 565, evidence 154, trusted 311, no
+disagreement.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
@@ -5483,6 +5617,43 @@ left — the helper expansion (§9.y) flattens them — so the increment moves
 no kernel row today; it stands for bodies the expansion refuses and for
 the allocator the flattened kernels need next, where forty vector locals
 meet thirty-two registers and only liveness among them decides who spills.
+
+### 9.ah Masked and narrow indices into tables and arrays (2026-09-15)
+
+The candidate search's report on the stdlib-bearing program showed 65
+AArch64 bodies with a guard-elision candidate and 52 selecting it; of the
+13 that did not, ten were constant-table lookups — `hex_digit`,
+`base64_symbol`, `base32_symbol`, the grapheme and normalization classes —
+whose index the typechecker proves by `masked_under_length` (`SYMBOLS[value
+& u32(63)]` over 64 entries) or by the width of a loaded byte
+(`VALUES[u32(unit)]` for a `u8` over 256), yet whose lowering kept the
+constant guard: the owned-array and table path (`arrayAddress`) had no
+elision hook, and the checker no fact to admit the access without the
+compare. Both are in place:
+
+- The lowering elides the constant guard of a proven access to an owned
+  array or a constant table as it does a span's (`arrayAddress`,
+  `IndexProven`, the per-line fallback), the address forming directly.
+- The checker records a constant bound from the instructions that make a
+  narrow value: `and wD, wS, #M` (or a mask in a register it knows as a
+  constant) leaves `wD < M + 1` (`Oak.Assembler.masked_index_bound`);
+  `ldrb`, `ldrh`, `uxtb`, `uxth` leave their destination below 2⁸ or 2¹⁶
+  (`Oak.Assembler.narrow_value_bound`). A frame array or table region of
+  at least that many elements then admits the access through the rules it
+  already had (`frameArrayAdmits`, `regionAdmits`), and a wider mask or a
+  halfword into a byte-sized table is refused (`TestCheckerGuardFacts`).
+
+Measured on the stdlib-bearing program, like for like with the verdict
+cache off: 57 bodies elide 136 guards where 52 elided 110, the bodies'
+`b.hs` trap branches fall from 950 to 896, one body moves from trusted to
+proven and none regress. The whole gain is the mask rule's — the symbol
+tables of the encoders and the class tables of the text passes; the
+byte-load and extension rules fired on no body here (a `u8` widened to
+`u32` is spelled without an instruction where the lowering knows the
+value narrow, so no fact arises) and stand for the units that spell them.
+Candidates the report still shows losing: an index reloaded from a frame
+slot (`append_byte`) and a bound through another register
+(`json_key_decoded_equal`, `text_equal_ascii_fold`), as §9.ad lists.
 
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 

@@ -336,8 +336,8 @@ theorem encode_spec (v : UInt64) (dst : Array UInt8) (h10 : 10 ≤ dst.size) (hs
   have hn : (nbytes v.toNat).toUInt32.toNat = nbytes v.toNat := by
     show (UInt32.ofNat _).toNat = _
     rw [UInt32.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
-  have hfits : bytes_range_fits (dst.size.toUInt32) 0 (nbytes v.toNat).toUInt32 fuel = some true := by
-    unfold bytes_range_fits
+  have hfits : range_fits (dst.size.toUInt32) 0 (nbytes v.toNat).toUInt32 fuel = some true := by
+    unfold range_fits
     have h1 : ¬ ((0 : UInt32) > dst.size.toUInt32) := by
       intro h; exact absurd h (UInt32.not_lt.mpr (UInt32.le_iff_toNat_le.mpr (by simp)))
     have h2 : UInt32.ofNat (nbytes v.toNat) ≤ UInt32.ofNat dst.size := by
