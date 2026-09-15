@@ -1624,7 +1624,8 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			return nil, unsupported("%v", rerr)
 		}
 		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Renamed + alloc.Coalesced
+		reallocated[out] = alloc.Promoted + alloc.Renamed + alloc.Coalesced
+		promotedSlots[out] = alloc.Promoted
 		return out, nil
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
@@ -1646,6 +1647,12 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
 
 var reallocated = map[*asm.Function]int{}
+
+// PromotedSlots reports how many frame slots a lowering moved into
+// registers under Lane.Reallocate (machine.Promote).
+func PromotedSlots(fn *asm.Function) int { return promotedSlots[fn] }
+
+var promotedSlots = map[*asm.Function]int{}
 
 // ElidedGuards reports how many element guards a lowering left out under
 // Lane.ElideProven (for the compiler's diagnostics).

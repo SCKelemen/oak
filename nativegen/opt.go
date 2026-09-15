@@ -92,6 +92,13 @@ func laneArch(lane Lane) string {
 	return lane.Arch
 }
 
+// gatedTransform ships only on a verifier's verdict (opt.Gated): a body
+// the verifier cannot judge keeps a form without it.
+type gatedTransform struct{ laneTransform }
+
+// NeedsVerdict marks the transform as gated.
+func (t *gatedTransform) NeedsVerdict() bool { return true }
+
 // elideTransform is the guard elision, refinable by source line: the
 // checker's finding names the line of the access it could not admit, that
 // line's accesses keep their guards, and the accesses the checker admits
@@ -213,17 +220,19 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
-		&laneTransform{
-			// Global register reallocation (package machine, Phase B): the
-			// body's def-use webs recolored by a linear scan and its copies
+		&gatedTransform{laneTransform{
+			// Global register reallocation and frame-slot promotion (package
+			// machine, Phase B): the body's def-use webs recolored by a
+			// linear scan, its slots moved into registers, its copies
 			// coalesced, within the registers the lowering wrote; machine
-			// shape only, judged by the checker and the verifier.
+			// shape only, judged by the checker and the verifier — and, new,
+			// shipping only on the verifier's verdict.
 			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.Reallocate },
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
-		},
+		}},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the

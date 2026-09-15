@@ -238,6 +238,31 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			break
 		}
 	}
+	if best.Verdict.Outcome <= Trusted && s.gated(best.Candidate) {
+		// No candidate was judged, and the best carries a transform that
+		// ships only on a verdict: the cheapest candidate without one takes
+		// its place — validated already, or validated now — at worst the
+		// plain lowering (docs/spec/90-backend.md §16 rule 3).
+		var replacement *Validated
+		for _, c := range order {
+			if s.gated(c) {
+				continue
+			}
+			for i := range sel.Validations {
+				if sel.Validations[i].Candidate == c {
+					replacement = &sel.Validations[i]
+				}
+			}
+			if replacement == nil {
+				verdict := d.Validate(c)
+				sel.Validations = append(sel.Validations, Validated{Candidate: c, Verdict: verdict})
+				replacement = &sel.Validations[len(sel.Validations)-1]
+			}
+			break
+		}
+		s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified (a trusted verdict) and %s ships only on a verdict: the %s form is kept", best.Candidate.Name(), s.gatedNames(best.Candidate), replacement.Candidate.Name()))
+		best = replacement
+	}
 	sel.Candidate, sel.Verdict = best.Candidate, best.Verdict
 	s.remark(function, sel)
 	return sel, nil
@@ -381,4 +406,24 @@ func (s *Search) remark(function string, sel *Selection) {
 	if best != sel.Identity {
 		s.Report.Analysis(function, "metrics", Delta(sel.Identity.Metrics, best.Metrics))
 	}
+}
+
+// gated reports whether a candidate carries a transform that ships only
+// on a verdict.
+func (s *Search) gated(c *Candidate) bool {
+	return s.gatedNames(c) != ""
+}
+
+// gatedNames spells the candidate's transforms that ship only on a
+// verdict, "" for none.
+func (s *Search) gatedNames(c *Candidate) string {
+	var names []string
+	for _, name := range c.Applied {
+		if t, ok := s.Registry.Lookup(name); ok {
+			if g, ok := t.(Gated); ok && g.NeedsVerdict() {
+				names = append(names, name)
+			}
+		}
+	}
+	return strings.Join(names, "+")
 }

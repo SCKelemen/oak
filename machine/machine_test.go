@@ -347,3 +347,154 @@ func TestSpellKeepsViews(t *testing.T) {
 		}
 	}
 }
+
+func framed(items ...asm.Item) *asm.Function {
+	f := fn(items...)
+	f.Frame = 64
+	return f
+}
+
+func TestPromoteMovesSlotsIntoRegisters(t *testing.T) {
+	// A value parked in [sp, #16] between its definition and two reads,
+	// no call: the slot becomes a register and the copies coalesce.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("add", w(9), w(0), w(1)),
+		ins("str", w(9), mem(sp(), 16)),
+		ins("mul", w(9), w(0), w(0)),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(9), w(9), w(10)),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("sub", w(0), w(9), w(10)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#16]") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, got)
+	}
+	// The first read coalesces with the value's own register; the second
+	// overlaps it (both are live in the add) and stays one copy.
+	if strings.Count(got, "mov w") > 1 {
+		t.Fatalf("the slot copies must coalesce:\n%s", got)
+	}
+}
+
+func TestPromoteRefusesEscapedAndCrossingSlots(t *testing.T) {
+	// The slot's address is taken (an array at 16): not promotable.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("str", w(0), mem(sp(), 16)),
+		ins("add", x(9), sp(), imm(16)),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(10), w(9)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("escaped slot promoted (%v): %+v", err, alloc)
+	}
+	// A slot live across a call with no saved callee-saved register: stays.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("call-crossing slot promoted (%v): %+v", err, alloc)
+	}
+	// With x19 saved by the prologue, the slot moves into it across the call.
+	f = framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("stp", x(29), x(30), mem(sp(), 0)),
+		ins("str", x(19), mem(sp(), 32)),
+		ins("mov", w(19), w(2)),
+		ins("str", w(1), mem(sp(), 16)),
+		ins("bl", sym("g")),
+		ins("ldr", w(10), mem(sp(), 16)),
+		ins("add", w(0), w(0), w(10)),
+		ins("add", w(0), w(0), w(19)),
+		ins("ldr", x(19), mem(sp(), 32)),
+		ins("ldp", x(29), x(30), mem(sp(), 0)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(10), x(30)}
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// x19 is busy across the call (it holds w2), so nothing is free: the
+	// slot stays. The save slot of x19 itself is never promoted (its load
+	// is a restore with no reader).
+	if alloc.Promoted != 0 || !strings.Contains(text(out.Items), "[sp,#16]") || !strings.Contains(text(out.Items), "ldr x19, [sp,#32]") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, text(out.Items))
+	}
+}
+
+func TestPromoteMixedWidthAndUninitializedSlots(t *testing.T) {
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("str", x(0), mem(sp(), 16)),
+		ins("ldr", w(10), mem(sp(), 16)), // a narrower read: not one width
+		ins("ldr", w(11), mem(sp(), 24)), // read before any store
+		ins("str", w(11), mem(sp(), 24)),
+		ins("add", w(0), w(10), w(11)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d (%v)", alloc.Promoted, err)
+	}
+}
+
+func TestPromoteVectorSlot(t *testing.T) {
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("dup", v(16, "4s"), w(0)),
+		ins("str", q(16), mem(sp(), 16)),
+		ins("dup", v(16, "4s"), w(1)),
+		ins("ldr", q(17), mem(sp(), 16)),
+		ins("add", v(0, "4s"), v(16, "4s"), v(17, "4s")),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#16]") || strings.Contains(got, "orr") {
+		t.Fatalf("promoted %d:\n%s", alloc.Promoted, got)
+	}
+}
+
+func TestPromoteKeepsWordsReadAsChunks(t *testing.T) {
+	// Two u32 elements stored as words at 96 and 100 and read as one
+	// 64-bit chunk at 96: neither word is a slot of its own.
+	f := fn(
+		ins("sub", sp(), sp(), imm(128)),
+		ins("str", w(0), mem(sp(), 96)),
+		ins("str", w(1), mem(sp(), 100)),
+		ins("ldr", w(9), mem(sp(), 100)),
+		ins("ldr", x(10), mem(sp(), 96)),
+		ins("add", x(0), x(10), x(9)),
+		ins("add", sp(), sp(), imm(128)),
+		ins("ret"),
+	)
+	f.Frame = 128
+	if _, alloc, err := Reallocate(f); err != nil || alloc.Promoted != 0 {
+		t.Fatalf("promoted %d (%v)", alloc.Promoted, err)
+	}
+}
