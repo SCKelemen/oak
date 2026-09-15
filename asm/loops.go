@@ -3006,6 +3006,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return trusted(fmt.Sprintf("the asm body has %d data-dependent loops, the Oak body %d", len(asmLoops), len(oakLoops)))
 	}
+	if len(asmLoops) > loopEventBudget {
+		// The events of several summarized calls add up past what one
+		// body may hold (loopEventBudget bounds each summary, not their
+		// sum): the coupling search over twenty-one events ran for an
+		// hour in `add_bits` and decided nothing.
+		return trusted(fmt.Sprintf("more data-dependent loops than the verifier's budget (%d, with the callees' summarized)", len(asmLoops)))
+	}
 	for k := range asmLoops {
 		if asmLoops[k].parent != oakLoops[k].parent {
 			if os.Getenv("OAK_VERIFY_TRACE") != "" {
