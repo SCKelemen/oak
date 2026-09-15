@@ -5872,7 +5872,24 @@ every path into a label stays guarded after it
 (`TestCheckerGuardFacts`: the spill-and-reload shape accepted, a slot
 overwritten with an unguarded value and a bound register rewritten
 refused; `TestE2ENativeSlotIndexElision` end to end).
-MEASUREMENT3.
+
+Measured on the stdlib-bearing program against the exact commit this work
+merged (the head moves hourly; pinning the base is what makes the diff
+this change and nothing else, with the verdict cache off): 56 bodies
+elide 129 guards where 54 elided 113, the bodies' `b.hs trap` branches
+fall from 746 to 730, their instructions from 28,733 to 28,700, and
+**exactly two bodies change** — `text_bom` by the constant-index rule and
+`append_byte` by the slot rule (1 trap branch and 2 instructions). No
+verdict moves in either direction (280 proven). The slot rule's reach is
+small here because slot forwarding (§9 "Slot forwarding") already removes
+most reloads before the checker sees them; it pays where the reload
+survives, as the builders' store does.
+
+An earlier reading of this change credited it with 203 changed bodies and
+285 more instructions, and a lost proof in `json_copy_run`. That was the
+stale-base confound: the branch had been measured against a head carrying
+work the branch did not have, so the diff showed their improvements as
+regressions. The rule is to pin the base to the commit the branch merged.
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 
 The RV64 lane kept every guard: its values are canonical (a u32
