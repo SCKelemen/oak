@@ -2739,7 +2739,10 @@ var unitResult = &term{kind: termConst, width: 64}
 // registerFrameMemory reports a load or store whose base register holds a
 // frame address term, with the address.
 func registerFrameMemory(instr Instruction, state *symbolicState) (Memory, int64, bool) {
-	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic)) {
+	// A pair load through a frame address (the result area's parked
+	// register, a record copied by pairs) is frame memory as a pair store
+	// is (docs/spec/94-assembler.md §9 "The SHA-256 path").
+	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldp") {
 		return Memory{}, 0, false
 	}
 	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
