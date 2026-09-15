@@ -700,20 +700,25 @@ algebraic forms are per-function refusals, never partial projections.
 The first analysis-only SCCP pass validates its operation vocabulary before
 computing exact constants and executable CFG edges. Its folds use Oak's exact
 fixed-width signed/unsigned arithmetic and trap boundaries rather than host or
-target arithmetic. Dominance-scoped CSE and fixed-point DCE produce a second,
-verified CFG from a closed vocabulary of total pure scalar operations. Exact
-operation code, types, operands, and ordered attributes must agree; proof facts
-move only when valid at the dominating definition. Calls, traps, memory,
-synchronization, unknown operations, and every explicitly effectful operation
-remain roots. `Compilation.OptIR()` returns the original CFG, SCCP evidence, the
-simplified candidate, and its report. Its loop analysis reports dominators,
+target arithmetic. Dominance-scoped GVN and fixed-point DCE produce a second,
+verified CFG from a closed vocabulary of total pure scalar operations. Plain
+copies share a value number; exact commutative integer/equality operations and
+inverse order comparisons receive one canonical key. Result types and ordered
+attributes remain exact, and any unknown attribute disables operand
+normalization. Proof facts move only when valid at the retained dominating
+definition. Calls, traps, memory, synchronization, unknown operations, and
+every explicitly effectful operation remain roots. Dead-store elimination is
+not attempted until OptIR projects memory identities and has region-aware
+memory SSA or equivalent Mod/Ref and alias facts. `Compilation.OptIR()` returns
+the original CFG, SCCP evidence, the simplified candidate, and its report. Its
+loop analysis reports dominators,
 back edges, natural-loop structure and nesting, canonical preheaders, and typed
 affine loop-carried recurrences. A unique continuation comparison is normalized
 around the induction value; an exact constant trip count is reported only when
 fixed-width range reasoning proves that every update through loop exit avoids
 wrap. Symbolic, multi-exit, and wrapping cases remain unproved rather than
 borrowing mathematical-integer semantics. Its LICM candidate runs after
-CSE/DCE and moves only closed total-pure operations whose operands are
+GVN/DCE and moves only closed total-pure operations whose operands are
 available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to

@@ -37,7 +37,12 @@ catalog entry, not a new mechanism (`semir.Arm64ControlTransferSpec.Carries`).
 
 The source result type is `never`, Oak's existing bottom type. Oak must not type `ERET` as `()` merely to accommodate a backend ABI: that would falsely permit ordinary continuation after an operation that never returns to its caller.
 
-A function whose final expression is `arm64.eret()` may therefore be declared `-> never` today. The semantic type lattice already specifies and proves `never` as bottom. General expected-position use of `never <: T` is separate checker-integration work; this chapter does not claim that every expression consumer already uses the lattice relation.
+A function whose final expression is `arm64.eret()` may therefore be declared
+`-> never`. The semantic type lattice specifies and proves `never` as bottom,
+and the ordinary assignability boundary applies that law in expected positions:
+returns, arguments, assignments, and match arms all admit `never <: T`. This
+does not require a conversion or runtime representation because evaluation
+does not produce a value.
 
 ## Effects
 

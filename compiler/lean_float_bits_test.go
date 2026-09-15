@@ -12,10 +12,13 @@ import (
 )
 
 // The bit-level binary32 operations of Oak.FloatOps (docs/spec/95-extraction.md
-// section 3; the ml pilot's E4) against the host's binary32: add32, sub32,
-// and mul32 must give the bits the hardware gives on edge operands and on
-// random ones, so a theorem over them is a theorem about what the C and the
-// interpreter compute. Needs the Lean toolchain and the spec/lean library.
+// section 3; the ml pilot's E4) against binary32: add32, sub32, and mul32
+// must give the bits the hardware gives, while neg32, abs32, and copysign32
+// must perform their exact sign-bit transformations modulo Float32's
+// canonical-NaN carrier, on edge and random operands. Thus a theorem over
+// them is a theorem about what the C and the interpreter compute after the
+// verifier's result-level NaN canonicalization. Needs the Lean toolchain and
+// the spec/lean library.
 func TestLeanFloatBitsAgreeWithHost(t *testing.T) {
 	lake := findLake()
 	if lake == "" {
@@ -51,21 +54,42 @@ func TestLeanFloatBitsAgreeWithHost(t *testing.T) {
 		lines++
 		fmt.Fprintf(&driver, "  IO.println (Oak.FloatOps.%s (Float32.ofBits (0x%08X : UInt32)) (Float32.ofBits (0x%08X : UInt32))).toBits\n", op, a, b)
 	}
+	unary := func(op string, a uint32) {
+		if lines%100 == 0 {
+			parts++
+			fmt.Fprintf(&driver, "def part%d : IO Unit := do\n", parts)
+		}
+		lines++
+		fmt.Fprintf(&driver, "  IO.println (Oak.FloatOps.%s (Float32.ofBits (0x%08X : UInt32))).toBits\n", op, a)
+	}
 	canon := func(v float32) uint32 {
 		if v != v {
 			return 0x7FC00000 // the canonical quiet NaN the model yields
 		}
 		return math.Float32bits(v)
 	}
+	carrierBits := func(bits uint32) uint32 {
+		if bits&0x7F800000 == 0x7F800000 && bits&0x007FFFFF != 0 {
+			return 0x7FC00000
+		}
+		return bits
+	}
 	for _, p := range ops {
 		a, b := p[0], p[1]
 		ab, bb := math.Float32bits(a), math.Float32bits(b)
+		carrierA, carrierB := carrierBits(ab), carrierBits(bb)
 		line("add32", ab, bb)
 		fmt.Fprintf(&want, "%d\n", canon(a+b))
 		line("sub32", ab, bb)
 		fmt.Fprintf(&want, "%d\n", canon(a-b))
 		line("mul32", ab, bb)
 		fmt.Fprintf(&want, "%d\n", canon(a*b))
+		unary("neg32", ab)
+		fmt.Fprintf(&want, "%d\n", carrierBits(carrierA^0x80000000))
+		unary("abs32", ab)
+		fmt.Fprintf(&want, "%d\n", carrierBits(carrierA&0x7FFFFFFF))
+		line("copysign32", ab, bb)
+		fmt.Fprintf(&want, "%d\n", carrierBits(carrierA&0x7FFFFFFF|carrierB&0x80000000))
 	}
 	driver.WriteString("\ndef main : IO Unit := do\n")
 	for i := 1; i <= parts; i++ {
@@ -96,8 +120,9 @@ func TestLeanFloatBitsAgreeWithHost(t *testing.T) {
 		if got[i] != wantLines[i] {
 			mismatches++
 			if mismatches <= 10 {
-				p := ops[i/3]
-				t.Errorf("case %d (%v, %v) op %d: lean %s, host %s", i, p[0], p[1], i%3, got[i], wantLines[i])
+				p := ops[i/6]
+				op := []string{"add32", "sub32", "mul32", "neg32", "abs32", "copysign32"}[i%6]
+				t.Errorf("case %d (%v, %v) %s: lean %s, host %s", i, p[0], p[1], op, got[i], wantLines[i])
 			}
 		}
 	}

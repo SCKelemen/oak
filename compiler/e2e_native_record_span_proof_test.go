@@ -141,8 +141,11 @@ func TestE2ENativeRecordSpanReadersProven(t *testing.T) {
 	if !strings.Contains(joined, "asm unit fill: proven") || !strings.Contains(joined, "span memory it writes (doms.count, doms.pending)") {
 		t.Errorf("fill (a counted loop of stores, then a read back) must be proven in result and memories; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit fill_large: agrees with its Oak body") || strings.Contains(joined, "asm unit fill_large: not verified") {
-		t.Errorf("fill_large (a summarized loop over a record span) must remain witnessed rather than trusted; diagnostics:\n%s", joined)
+	// The inducted loop's stores are collected per leaf memory on both
+	// sides, so the summarized loop over the record span is proven, not
+	// merely witnessed.
+	if !strings.Contains(joined, "asm unit fill_large: proven") || !strings.Contains(joined, "span memory it writes (tables.count, tables.entries)") {
+		t.Errorf("fill_large (a summarized loop over a record span) must be proven with its leaf memories; diagnostics:\n%s", joined)
 	}
 	if !strings.Contains(joined, "asm unit fill_large_via_alias: proven") || !strings.Contains(joined, "span memory it writes (state.count, state.entries)") {
 		t.Errorf("fill_large_via_alias must be proven through the renamed record span and its leaf memories; diagnostics:\n%s", joined)

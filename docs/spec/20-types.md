@@ -78,6 +78,29 @@ The compiler may canonicalize joins/meets internally. Surface syntax need not ex
 
 These laws, and the soundness and completeness of the normal-form procedure the checker decides them with, are stated in Oak over that procedure and decided by `oak prove` (`spec/oak/lattice.oak`; `125-verification.md` §6.1): a clause is the mask of the atoms it requires, a normal form the bitset of its clauses, and the procedure agrees with the pointwise semantics on every normal form of three atoms and every four-node type. `spec/lean/Oak/TypeLattice.lean` and `TypeLatticeRefinement.lean` prove the same for any number of atoms.
 
+### 3.1 Semantic order and value representation
+
+`A <= B` describes inclusion without a runtime check; it does not by itself
+select a runtime representation for `B`. Ordinary value flow succeeds either
+through a representation-neutral lattice step or through a separately
+specified conversion/satisfaction rule:
+
+- an exact type flows without conversion;
+- `never <= T` flows in every expected position because no runtime value is
+  produced;
+- numeric widening, refinement erasure, record-shape satisfaction, function
+  facts, and view/span alignment use their separately specified directional
+  rules rather than pretending opaque lattice atoms are ordered;
+- `T <= any`, `T <= T join U`, and projections from nontrivial meets do not
+  introduce boxes, tags, allocation, RTTI, or a new layout implicitly.
+
+Consequently, joins and meets may be used internally for checking and proof
+without becoming runtime union/intersection values. A match checked against an
+expected representable type checks each reachable arm against that type. With
+no expected type, incompatible arm representations are an error rather than an
+implicitly tagged join. A future dynamic `any` or first-class union feature
+must specify its representation and conversions before relaxing this rule.
+
 ## 4. ADTs are tagged sums, not ordinary union values
 
 An Oak declaration such as:
@@ -956,4 +979,3 @@ base's representation in the backend.
 Not yet: refinements over records and floats, and the discharge of a
 construction from a declared theorem rather than the facts in scope. Each
 stays a runtime check until then, never a silent one.
-
