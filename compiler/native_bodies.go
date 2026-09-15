@@ -112,7 +112,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// if the seam checker cannot admit the body from the facts on the
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
-		lane.ElideProven = lane.Arch == asm.ArchArm64
+		lane.ElideProven = true
 		// Strength reduction (docs/spec/90-backend.md §16): constant
 		// multiplications, divisions, and remainders as shifts, masks, and
 		// untested divisions; the checker and the verifier decide, and a

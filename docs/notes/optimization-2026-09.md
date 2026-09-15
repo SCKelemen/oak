@@ -143,11 +143,22 @@ column unchanged or improved.
    closed) and the verifier reloads a saved vector lane for lane. Read
    off the fixture, not the kernels: the helper expansion has flattened
    every calling vector body in the kernel package, so the row that
-   remains is the flattened one — the validator's loop spilled five
-   temporaries of the expanded `check_blocks` to slots, forty q-register
-   frame accesses per sixty-four bytes.
+   remains is the flattened one — forty vector locals against
+   thirty-two registers, where the leaf path hands out twenty homes and
+   the rest spill. The next step is therefore **a liveness-based
+   allocator for leaves**: registers reused across disjoint live ranges
+   (the last-use release exists; the pool must be sized by simultaneous
+   liveness, not by declaration count) and spills chosen by use count.
+   Target: UTF-8 (5×), then inlining pays instead of hurting. **Also landed 2026-09-16
+(`94-assembler.md` §9, forty-seventh increment):** the flattened
+validator copied every vector operand into a scratch and every result
+back — fifty `orr`s — because the vector path had none of the in-place
+reads and result retargeting the scalar path has; with them and literal
+splats as `movi`, the body is 330 lines from 611 and the validator 1.2×
+the C backend from 1.65× in one alternated run. The five spilled locals
+are the allocator's case above.
 3. **A leaf's vector locals in the argument registers** (landed
-   2026-09-15, `94-assembler.md` §9.ae): v1–v7 past the vector
+   2026-09-15, `94-assembler.md` §9.af): v1–v7 past the vector
    parameters as homes, the scalar leaf scheme for the vector file. The
    validator's loop goes from forty q-register frame accesses to none,
    its body from forty-one to one, both bodies still proven. The
@@ -174,7 +185,19 @@ column unchanged or improved.
    `__builtin_assume_aligned`, refinements and extents as
    `__builtin_assume` at loop headers: the C backend "a real backend"
    (`performance.md` §9). Measured by `-opt 2` before and after on the
-   kernels; the C compiler's vectorizer is the consumer.
+   kernels; the C compiler's vectorizer is the consumer. **Measured
+   2026-09-16 before landing, and found neutral on clang 21:** two store
+   loops over a span and a view (`dst[i] = dst[i] + src[i] * k` over
+   `u32`, `dst[i] = src[i] ^ k` over bytes) vectorize identically with
+   and without `restrict` base pointers (`-Rpass=loop-vectorize`: width
+   4×4 and 16×4 both ways) and time the same within noise (0.10–0.15 and
+   0.016–0.026 ns per element, alternated), because clang versions the
+   loop on a runtime overlap check whose cost is a compare per call. The
+   `restrict` emission is therefore not landed; the alignment and extent
+   assumptions wait for a loop where the C compiler demonstrably peels
+   or checks what Oak has proved. The native lane is where the aliasing
+   fact pays (row 2's consumer is the verifier's store log), not the C
+   compiler.
 6. **Scheduling and selection** for the two lanes' pipelines once the
    allocator exists: load latency hidden across the loop body, `madd`
    and `csel` forms, conditional compares.

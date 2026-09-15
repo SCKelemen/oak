@@ -532,7 +532,11 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 		if !okL || !okR {
 			return "unbound vector register read", false
 		}
-		if instr.Mnemonic == "mov" || n.Num == m.Num {
+		if instr.Mnemonic == "mov" || (n.Num == m.Num && (instr.Mnemonic == "orr" || instr.Mnemonic == "and")) {
+			// The vector move: orr/and of a register with itself. eor and
+			// bic of a register with itself are zero, not a move — the
+			// backend spells `xor(v, v)` as `eor vD, vN, vN` once it reads
+			// v in place — so they fall through to the lane-wise operation.
 			state.writeVec(d.Num, left)
 			return "", true
 		}

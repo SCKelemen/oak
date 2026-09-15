@@ -2763,6 +2763,27 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The forty-seventh increment is vector operands in place (§9,
+`nativegen/simd.go` `vecOperand`). A vector variable in its own register
+is read where it lies by every simd operation; the operation writes a
+fresh scratch when its first operand is a variable's home (its own
+scratch otherwise); the result retargets to the assigned variable's
+register as scalar results do (`retargetLast`, the arrangement `v16.16b`
+renamed to the home's), the operations that accumulate into or insert
+into their destination (`fmla`, a lane `mov`) copying a home first; and a
+literal splat is one `movi` (zero in any arrangement, a byte in the byte
+lanes) instead of `movz`, a mask and `dup` through a general register.
+Before it every vector read was an `orr` copy into a scratch and every
+result an `orr` copy back — the UTF-8 validator's `or(or(a, b), or(c, d))`
+was eight instructions for three, its body 611 lines with fifty copies
+and fifty frame-slot accesses; it is 330 lines with no copies and
+thirty-six slot accesses, every unit proven at the bit level, at
+0.12–0.14 ns per byte against the previous lowering's 0.17–0.18 and the
+C backend's 0.10–0.11 in one alternated run (`benchmarks/native/README.md`).
+The verifier's model of `eor vD, vN, vN` had read it as the vector move
+`orr vD, vN, vN` is; it is zero (`asm/verify_vector_test.go`), and the
+in-place `xor(v, v)` was the first body to spell it.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -5020,8 +5041,7 @@ length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second 
 above (`json_value_boundary`, `url_parse`); and index arithmetic the
 typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
 `normalize_find`: `at = low * 5` under `low < len / 5`), which the
-checker has no fact for. On the RV64 lane elision stays off until its
-index representation admits it.
+checker has no fact for. The RV64 lane elides too, since §9.ae.
 
 **Where optimizing passes live (decision, 2026-09-15).** Two levels carry
 proofs and admit passes: the AST, where the typechecker's facts are keyed
@@ -5077,7 +5097,57 @@ no kernel row today; it stands for bodies the expansion refuses and for
 the allocator the flattened kernels need next, where forty vector locals
 meet thirty-two registers and only liveness among them decides who spills.
 
-### 9.ae A leaf's vector locals in the argument registers (2026-09-15)
+### 9.ae Check elision on the RV64 lane (2026-09-15)
+
+The RV64 lane kept every guard: its values are canonical (a u32
+sign-extended from bit 31) and the loop's exit test compared them so —
+`sext.w t, norm; bgeu i, t` — while the checker's index fact wants the
+zero-extended index compared with the normalized length, so the exit test
+proved nothing the element access could use. The lane now lowers the
+guard `i < len(v)` at the head of a `while`, an `if`, or a statement
+conditional — `i` a u32 variable in a register, `v` a span — as `slli z,
+i, 32; srli z, z, 32; bgeu z, norm, exit` (`indexLengthTest`): the index
+zero-extended into a register the construct's body keeps, compared with
+the normalized length, which is the u32 comparison exactly (both operands
+are the 32-bit values as 64-bit numbers). The checker reads `bgeu z, norm`
+as its index fact on `z` (Oak.RiscV.index_guard). An element access in
+the body that the typechecker proved (`IndexProven`) and that indexes by
+that variable then reads `z` scaled through the base — `slli t, z, s; add
+t, base, t` or `add t, base, z` for bytes — with no guard of its own
+(`guardedAddress`), and the checker admits it from the fact through the
+scaled-index and element-region rules it already had for GCC's shape
+(`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
+that line's guards. Outside the mechanism, and still guarded: a
+conjunction (`while i < len(v) && cond`), a bound that is not `len(v)`,
+an index that is not the tested variable, and an access after a label
+inside the body (the RV64 checker forgets index facts at labels).
+
+Two verifier gaps opened by the new shape were closed, and both pay on the
+AArch64 lane too. First, a header temporary the body reads — here `z` —
+started the body as a fresh symbol: the loop's iteration ran from the
+fresh header state, not from the state after the exit test's setup
+instructions, so the body's address was unrelated to the index and no
+pairing of the accumulator survived. When the header falls through on one
+path, the body now starts from that path's values for the registers the
+header wrote (`headerCondition` returns the fall-through states;
+`loopEvent` carries them over). Second, the model of `(x << 32) >> 32`
+folded it to `x`'s own term for any symbol, right when the symbol is
+declared 32 bits wide (the length as bound, a normalized copy) and wrong
+for a loop's fresh 64-bit symbol holding a canonical u32 with its upper
+half set; the fold now asks `upperClear` and otherwise masks. The old
+lowering had hidden this behind its guard, whose fall-through premise
+excluded the offending values.
+
+Measured on the stdlib-bearing program, like for like against the head
+this merged onto and with the verdict cache off: on the RV64 lane 8 bodies
+elide 8 guards where none did (the mechanism's reach today: a plain `i <
+len(v)` head), and no verdict changes on either lane — the two verifier
+fixes are what the new shape needs to prove, and they alter no existing
+body's verdict. An earlier reading of this change credited it with 34
+bodies moving from trusted to proven; those came from the verifier work
+that landed upstream between the two snapshots compared, not from this.
+
+### 9.af A leaf's vector locals in the argument registers (2026-09-15)
 
 The third increment of the optimization system (`90-backend.md` §16),
 read off the flattened UTF-8 validator (`benchmarks/native/utf8_valid.oak`):
