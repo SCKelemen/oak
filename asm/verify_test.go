@@ -243,13 +243,20 @@ func TestVerifySpanMemory(t *testing.T) {
 	if signedMax.Kind != VerdictProven {
 		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
 	}
-	// Outside the subset: a byte span read as a word. A store through a
-	// span is inside it since the twenty-eighth increment (asm/effects.go):
+	// A byte span read as a word is the little-endian assembly of the four
+	// bytes (docs/spec/94-assembler.md §8, wide loads;
+	// Oak.Assembler.wide_load_assembles32): the body reading one byte is
+	// refuted, the body assembling four is proven. A store through a span
+	// is inside the model since the twenty-eighth increment (asm/effects.go):
 	// a lowering that bumps the element the body only reads is refuted.
-	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
-		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if bytes.Kind != VerdictTrusted {
-		t.Fatalf("a word load over bytes must be trusted, got %s: %s", bytes.Kind, bytes.Message)
+	wordAsm := "  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret"
+	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])", wordAsm)
+	if bytes.Kind != VerdictMismatch {
+		t.Fatalf("a word load over bytes against a one-byte read must be a mismatch, got %s: %s", bytes.Kind, bytes.Message)
+	}
+	word := verifyCase(t, "w0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | (u32(v[0]) | (u32(v[1]) << u32(8)) | (u32(v[2]) << u32(16)) | (u32(v[3]) << u32(24)))", wordAsm)
+	if word.Kind != VerdictProven {
+		t.Fatalf("a word load over bytes must be proven against the little-endian assembly, got %s: %s", word.Kind, word.Message)
 	}
 	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
 		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")

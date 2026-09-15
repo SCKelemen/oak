@@ -419,8 +419,14 @@ locals, `__inl<N>_a<i>` for copied arguments, `__inl<N>_r` for the result,
 three spellings that cannot meet (a local named `a1` or `r` once collided
 with the temporaries) — a plain
 identifier argument substitutes for a parameter the helper never assigns
-(so the caller's facts about it apply unchanged), a scalar argument of any
-other shape is copied into a typed temporary, and the helper's tail
+(so the caller's facts about it apply unchanged), so does an integer
+literal — `u32(8)` as written, or a bare literal wrapped in the parameter's
+type — so the merged body reads `v[u32(8) + u32(3)]` under
+`len(v) >= u32(8) + u32(4)`, constant sums the extents checker folds and
+proves (a temporary would leave `len(v) >= t + 4`, which proves nothing
+about `v[t + 3]` since the sum may have wrapped; the hash package's
+`crc32c_word_at` at its seven constant offsets is the case), a scalar
+argument of any other shape is copied into a typed temporary, and the helper's tail
 expression takes the call's place — directly when the call is a
 statement's whole value, through a typed result temporary when it is an
 operand. The pass refuses rather than reorders: nothing moves across a

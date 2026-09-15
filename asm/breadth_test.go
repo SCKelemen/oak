@@ -18,12 +18,13 @@ func TestVerifyInstructionBreadth(t *testing.T) {
 	if bytes.Kind != VerdictProven {
 		t.Fatalf("a byte checksum must be proven, got %s: %s", bytes.Kind, bytes.Message)
 	}
-	// A word load over bytes reads four elements at once: outside the
-	// subset, trusted (not a false proof).
+	// A word load over bytes reads four elements at once: the verifier
+	// models it as their little-endian assembly (docs/spec/94-assembler.md
+	// §8, wide loads), so a body reading one byte is refuted, not trusted.
 	wordOverBytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
 		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if wordOverBytes.Kind != VerdictTrusted {
-		t.Fatalf("a word load over bytes must be trusted, got %s: %s", wordOverBytes.Kind, wordOverBytes.Message)
+	if wordOverBytes.Kind != VerdictMismatch {
+		t.Fatalf("a word load over bytes against a one-byte read must be a mismatch, got %s: %s", wordOverBytes.Kind, wordOverBytes.Message)
 	}
 	// Halfwords: the first element or zero.
 	half := verifyCase(t, "first16: (v: []u16) -> u32", "len(v) == u32(0) ? u32(0) | u32(v[0])",

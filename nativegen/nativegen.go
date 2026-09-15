@@ -1121,11 +1121,17 @@ func unsupported(format string, args ...interface{}) Unsupported {
 type generator struct {
 	// rvLane marks the rv64 lane's embedding: the AArch64-only lowerings
 	// (the atomics) leave the function to the C backend there.
-	rvLane    bool
-	fn        *ast.FunctionStatement
-	tc        *typechecker.TypeChecker
-	functions map[string]*ast.FunctionStatement
-	result    *scalar
+	rvLane bool
+	fn     *ast.FunctionStatement
+	// scalarArrays: the array locals lowered as their elements
+	// (nativegen/scalar_arrays.go).
+	scalarArrays map[string]*scalarArray
+	// fusedWords counts the word assemblies lowered as one load
+	// (nativegen/word_fusion.go).
+	fusedWords int
+	tc         *typechecker.TypeChecker
+	functions  map[string]*ast.FunctionStatement
+	result     *scalar
 
 	items  []asm.Item
 	slots  map[string]int64       // variable → frame offset (relative to the frame base after the prologue)
@@ -1280,6 +1286,8 @@ type slotBinding struct {
 	rec    *recordLocal // an owned record local (offset/typ/reg unused)
 	sp     *span        // a local span or view, register-resident
 	freed  bool         // register or slot already returned after the last use
+	// sa: a scalar-replaced array (nativegen/scalar_arrays.go).
+	sa *scalarArray
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -2312,14 +2320,25 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		g.releaseTemps(rec.temps)
 		return nil
 	}
-	// A scalar scrutinee with literal patterns.
+	// A scalar scrutinee with literal patterns: a variable in a register
+	// is compared where it lives, anything else evaluated into a scratch.
 	typ, err := g.typeOf(match.Scrutinee, nil)
 	if err != nil {
 		return err
 	}
-	value, err := g.expr(match.Scrutinee, &typ)
-	if err != nil {
-		return err
+	value, fixed := -1, false
+	if ident, isIdent := match.Scrutinee.(*ast.Identifier); isIdent && !typ.isFloat {
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[ident.Value]; ok && !t.isFloat && !t.isVec && t.wide() == typ.wide() {
+				value, fixed = v, true
+			}
+		}
+	}
+	if !fixed {
+		value, err = g.expr(match.Scrutinee, &typ)
+		if err != nil {
+			return err
+		}
 	}
 	closed := false
 	for _, matchArm := range match.Arms {
@@ -2362,7 +2381,9 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		g.emit("b", asm.Symbol{Name: g.trap})
 	}
 	g.label(end)
-	g.release(value)
+	if !fixed {
+		g.release(value)
+	}
 	return nil
 }
 
@@ -3260,6 +3281,22 @@ func (g *generator) bindArray(name string, arr *arrayLocal) {
 func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scalar, length int64) error {
 	if elem.isFloat {
 		g.usedFloat = true
+	}
+	if !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length) {
+		// Every use an element at a literal index: the elements are
+		// scalars in registers (nativegen/scalar_arrays.go).
+		var literal *ast.ArrayLiteral
+		if s.Value != nil {
+			lit, isLiteral := s.Value.(*ast.ArrayLiteral)
+			if !isLiteral {
+				return unsupported("an array local initialized from %s", s.Value.String())
+			}
+			if int64(len(lit.Elements)) != length {
+				return unsupported("an array literal of %d elements for [%d]%s", len(lit.Elements), length, elem.name)
+			}
+			literal = lit
+		}
+		return g.declareScalarArray(s, elem, length, literal)
 	}
 	if s.Value == nil {
 		arr := g.declareArray(s.Name.Value, elem, length)
@@ -4941,6 +4978,25 @@ var floatIntrinsicOps = map[string]string{
 }
 
 func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if !g.rvLane {
+		// The rv64 lane hooks the same recognizer in its own infix
+		// (rvFusedWordLoad); this emission is the AArch64 idiom.
+		if w, isWord := g.recognizeWordAssembly(e, typ); isWord {
+			return g.fusedWordLoad(w, typ) // nativegen/word_fusion.go
+		}
+		if k, isConst := constantValue(e); isConst && !typ.isBool && !typ.isFloat && !typ.isVec && !typ.signed {
+			// A sum or product of literals (`u32(8) + u32(8)`, an inlined
+			// helper's constant guard) is its folded constant: a compare
+			// against it then takes the immediate form the seam checker
+			// reads a minimum length off (`cmp wL, #16; b.lo`).
+			r, err := g.alloc(typ)
+			if err != nil {
+				return 0, err
+			}
+			g.constant(r, uint64(k)&mask64(typ.bits), typ)
+			return r, nil
+		}
+	}
 	switch e.Operator {
 	case "&&", "||":
 		out, err := g.alloc(scalars["Bool"])
@@ -5046,26 +5102,48 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 				op = "lsr"
 			}
 			g.emit(op, reg(out, typ), reg(l, typ), imm(count))
-			g.normalize(out, typ)
+			// An unsigned value shifted right stays inside its width: no
+			// mask after `lsr`.
+			if op != "lsr" {
+				g.normalize(out, typ)
+			}
 			return out, nil
 		}
 	}
-	l, err := g.expr(e.Left, &typ)
-	if err != nil {
-		return 0, err
-	}
 	if typ.isFloat {
-		r, err := g.expr(e.Right, &typ)
+		// A float local in a register home is read in place, as an
+		// integer one is (operand); the result then needs its own
+		// register, which assignVar may rename to the home (retargetLast)
+		// — `total = total + x` becomes one fadd into the home.
+		l, lfixed, err := g.operand(e.Left, typ)
 		if err != nil {
 			return 0, err
+		}
+		r, rfixed := l, true
+		if !g.sameOperand(e) {
+			if r, rfixed, err = g.operand(e.Right, typ); err != nil {
+				return 0, err
+			}
 		}
 		op, ok := map[string]string{"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}[e.Operator]
 		if !ok {
 			return 0, unsupported("operator %s on %s", e.Operator, typ.name)
 		}
-		g.emit(op, reg(l, typ), reg(l, typ), reg(r, typ))
-		g.release(r)
-		return l, nil
+		out := l
+		if lfixed {
+			if out, err = g.alloc(typ); err != nil {
+				return 0, err
+			}
+		}
+		g.emit(op, reg(out, typ), reg(l, typ), reg(r, typ))
+		if !rfixed {
+			g.release(r)
+		}
+		return out, nil
+	}
+	l, err := g.expr(e.Left, &typ)
+	if err != nil {
+		return 0, err
 	}
 	switch e.Operator {
 	case "<<", ">>":
@@ -5164,9 +5242,14 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			}
 		}
 	}
-	r, err := g.expr(e.Right, &typ)
-	if err != nil {
-		return 0, err
+	// The same pure expression on both sides (`x * x`) is evaluated once.
+	same := g.sameOperand(e)
+	r := l
+	if !same {
+		var err error
+		if r, err = g.expr(e.Right, &typ); err != nil {
+			return 0, err
+		}
 	}
 	switch e.Operator {
 	case "+":
@@ -5204,7 +5287,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	default:
 		return 0, unsupported("operator %s", e.Operator)
 	}
-	g.release(r)
+	if !same {
+		g.release(r)
+	}
 	g.normalize(l, typ)
 	return l, nil
 }
@@ -5273,10 +5358,31 @@ func (g *generator) directInfix(e *ast.InfixExpression, typ scalar, mnemonic str
 // operand evaluates an expression as a source operand: a variable of the
 // type in its callee-saved register is read there (fixed: the caller never
 // releases it); anything else evaluates into a fresh scratch register.
+// sameOperand reports a binary operation whose two operands are the same
+// pure expression (`a[i] * a[i]`: the square): evaluated once, the one
+// register serves both sides. Pure means no call to a program function
+// (a call could observe or change what the second evaluation reads).
+func (g *generator) sameOperand(e *ast.InfixExpression) bool {
+	if e.Left == nil || e.Right == nil {
+		return false
+	}
+	if _, isLiteral := e.Left.(*ast.IntegerLiteral); isLiteral {
+		return false
+	}
+	return e.Left.String() == e.Right.String() && !g.callsProgramFunction(e.Left)
+}
+
 func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
-	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isFloat && !typ.isVec {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isVec {
 		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
 			if t, ok := g.types[ident.Value]; ok && t == typ {
+				return v, true, nil
+			}
+		}
+	}
+	if index, isIndex := expr.(*ast.IndexExpression); isIndex && !typ.isVec {
+		if hidden, elem, isScalar := g.scalarElement(index); isScalar && elem == typ {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
 				return v, true, nil
 			}
 		}
@@ -5340,7 +5446,7 @@ func mask64(bits int) uint64 {
 // write the variable directly (`add w19, w19, #1` instead of `add w9, w19,
 // #1; mov w19, w9`); otherwise the move or store as before.
 func (g *generator) assignVar(name string, r int) {
-	if v, inReg := g.regs[name]; inReg && v >= 0 && r < vecBase && g.retargetLast(r, v) {
+	if v, inReg := g.regs[name]; inReg && v >= 0 && (r < vecBase) == (v < vecBase) && g.retargetLast(r, v) {
 		g.release(r)
 		return
 	}
@@ -5351,7 +5457,7 @@ func (g *generator) assignVar(name string, r int) {
 // retargetable names the instructions whose destination may be renamed
 // without changing their meaning: they read their sources only (movk reads
 // its destination, the exclusives write a status).
-var retargetable = map[string]bool{"add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
+var retargetable = map[string]bool{"fadd": true, "fsub": true, "fmul": true, "fdiv": true, "fneg": true, "fabs": true, "fsqrt": true, "fmov": true, "scvtf": true, "ucvtf": true, "fcvt": true, "add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
 
 // retargetLast rewrites the last emitted instruction's destination from
 // scratch register r to register v, when that instruction is the one that
@@ -5366,12 +5472,21 @@ func (g *generator) retargetLast(r, v int) bool {
 		return false
 	}
 	dst, isReg := ins.Operands[0].(asm.Register)
-	if !isReg || dst.Num != r || (dst.Class != asm.ClassW && dst.Class != asm.ClassX) {
+	if !isReg {
 		return false
 	}
 	renamed := dst
-	renamed.Num = v
-	renamed.Text = dst.Text[:1] + strconv.Itoa(v)
+	switch {
+	case (dst.Class == asm.ClassW || dst.Class == asm.ClassX) && dst.Num == r && v < vecBase:
+		renamed.Num = v
+		renamed.Text = dst.Text[:1] + strconv.Itoa(v)
+	case dst.Class == asm.ClassV && (dst.Vec == "s" || dst.Vec == "d") && dst.Lane < 0 && dst.Num == r-vecBase && v >= vecBase:
+		// A float scratch in its s or d view: the home keeps the view.
+		renamed.Num = v - vecBase
+		renamed.Text = dst.Vec + strconv.Itoa(v-vecBase)
+	default:
+		return false
+	}
 	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
 	ins.Operands = operands
 	g.items[n-1] = ins
@@ -5401,6 +5516,15 @@ func constantValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.InfixExpression:
+		// A sum or product of two literals converted to one unsigned type,
+		// `u32(8) + u32(8)` (an inlined helper's guard once its literal
+		// argument substitutes, compiler/inline.go), folds when the result
+		// fits the type, so the fold is exact whatever the context;
+		// `u8(200) + u8(100)` wraps at run time and is left to the
+		// instructions. The extents checker and the Oak-side lowering fold
+		// the same shape by the same rule.
+		return foldLiteralPair(e, constantValue)
 	case *ast.InvocationExpression:
 		if ident, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 {
 			if _, isConv := scalars[ident.Value]; isConv {
@@ -5409,6 +5533,49 @@ func constantValue(expr ast.Expression) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// foldLiteralPair folds `T(a) + T(b)` and `T(a) * T(b)` for an unsigned
+// integer type T when the result fits T, reading each side with value; a
+// wrapping result, a signed or mixed type, or a bare literal is not folded.
+func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, bool)) (int64, bool) {
+	if e.Operator != "+" && e.Operator != "*" {
+		return 0, false
+	}
+	typeName := ""
+	for _, side := range []ast.Expression{e.Left, e.Right} {
+		call, isCall := side.(*ast.InvocationExpression)
+		if !isCall || len(call.Arguments) != 1 {
+			return 0, false
+		}
+		conv, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || (typeName != "" && conv.Value != typeName) {
+			return 0, false
+		}
+		typeName = conv.Value
+	}
+	typ, isScalar := scalars[typeName]
+	if !isScalar || typ.signed || typ.isFloat || typ.isBool || typ.isVec || typ.bits > 64 {
+		return 0, false
+	}
+	left, leftConst := value(e.Left)
+	right, rightConst := value(e.Right)
+	if !leftConst || !rightConst || left < 0 || right < 0 {
+		return 0, false
+	}
+	var result uint64
+	if e.Operator == "+" {
+		result = uint64(left) + uint64(right)
+	} else {
+		if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
+			return 0, false
+		}
+		result = uint64(left) * uint64(right)
+	}
+	if typ.bits < 64 && result >= uint64(1)<<uint(typ.bits) || result > 1<<62 {
+		return 0, false
+	}
+	return int64(result), true
 }
 
 // isConversion reports the conversion spellings the subset lowers inline
@@ -6435,7 +6602,9 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 // test compared, so the checker's fact from that test admits the access
 // without a second compare.
 func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Token) (int, error) {
-	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+	// GuardLines is keyed by the line the emitted instructions carry (the
+	// statement's, g.line), the line a checker finding names.
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[g.line] && g.tc.IndexProven(*tok) {
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {
@@ -6560,6 +6729,9 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 	case *ast.Identifier:
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return arr.elem, arr.elemLayout, arr.length, true
+		}
+		if sa, isScalar := g.scalarArrays[e.Value]; isScalar {
+			return sa.elem, nil, sa.length, true
 		}
 		if gl, isTable := g.tables[e.Value]; isTable {
 			return scalars[gl.Elem], nil, gl.Length, true
@@ -6784,6 +6956,15 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 			return g.arrayElementReg(arr, e.Index, r)
 		}
 	}
+	if hidden, elem, isScalar := g.scalarElement(e); isScalar {
+		// An element of a scalar-replaced array: its hidden local.
+		r, err := g.alloc(elem)
+		if err != nil {
+			return 0, err
+		}
+		g.put(g.loadVar(hidden, r))
+		return r, nil
+	}
 	arr, err := g.arrayOperand(e.Left)
 	if err != nil {
 		return 0, err
@@ -6929,6 +7110,18 @@ func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
 func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if s.Target.Dot {
 		return g.placeStore(s)
+	}
+	if hidden, elem, isScalar := g.scalarElement(s.Target); isScalar {
+		// An element of a scalar-replaced array: an assignment to its
+		// hidden local, renamed into its home when the value's last
+		// instruction allows (assignVar).
+		r, err := g.expr(s.Value, &elem)
+		if err != nil {
+			return err
+		}
+		g.assignVar(hidden, r)
+		g.killLoopFacts(hidden)
+		return nil
 	}
 	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
 		// `pool[i] = r`: a record element replaced.

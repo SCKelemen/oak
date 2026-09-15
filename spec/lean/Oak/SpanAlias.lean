@@ -261,6 +261,20 @@ theorem idxMeans_of_writesOnly {σ σ' : RegFile} {d i : Reg} {g : IdxFact}
     rw [w_eq_of_eq (hw i hi), w_eq_of_eq (hw _ hne)]
     exact ⟨h0, h1⟩
 
+/-- A guard is a statement about its two registers: any transition that
+    leaves them as they were keeps it — a `mov` or `add #0` into a fresh
+    register (the copy reads the same values), or a call that preserves
+    callee-saved registers under AAPCS64. -/
+theorem idxMeans_preserved {σ σ' : RegFile} {i : Reg} {g : IdxFact}
+    (hi : σ' i = σ i) (hb : 0 ≤ g.boundReg → σ' g.boundReg.toNat = σ g.boundReg.toNat)
+    (h : IdxMeans σ i g) : IdxMeans σ' i g := by
+  obtain ⟨himm, hreg⟩ := h
+  refine ⟨fun hlt => ?_, fun hge => ?_⟩
+  · rw [w_eq_of_eq hi]; exact himm hlt
+  · obtain ⟨h0, h1⟩ := hreg hge
+    rw [w_eq_of_eq hi, w_eq_of_eq (hb hge)]
+    exact ⟨h0, h1⟩
+
 /-- Forgetting is sound under any write to `d`. -/
 theorem forget_sound {W : World} {σ σ' : RegFile} {st : Facts} {d : Reg}
     (hw : WritesOnly σ σ' d) (h : Means W σ st) : Means W σ' (forget st d) := by

@@ -146,3 +146,126 @@ as it would a `switch`, over rustc's lowering of the same match. `page_probe` an
 are the same generated C shape as `search` and `dot`, ahead of both twins
 by the same margin.
 
+## Native backend baseline, 2026-09-15
+
+The `oak-native` row (the same kernels through the Oak assembler,
+`benchmarks/native/emit`) beside the C backend, on a machine carrying a
+load average near 200 from other work — so the absolute numbers are
+noise, and only the ratios and the instruction counts are read. Best of
+the samples, 1 MiB / 2^20 elements.
+
+| Kernel | C backend | oak-native | native / C | Lowered natively | What the loop does |
+| --- | ---: | ---: | ---: | --- | --- |
+| sum | 113 µs | 376 µs | 3.3× | whole, proven | 6 instructions per element already; clang unrolls and vectorizes the u64 reduction |
+| dot | 797 µs | 2,560 µs | 3.2× | whole, proven | 13 instructions per element: two guards the checker could not admit (`b[i]` under `len(a) == len(b)`), and the f32 accumulator copied through a scratch register twice per iteration |
+| tiled | 172 µs | 468 µs | 2.7× | whole, evidence | the eight-accumulator array lives in frame slots (a load and a store per accumulator per iteration), `a[i + k]` loaded twice, `i + k` computed twice |
+| search | 9.8 ms | 24.0 ms | 2.4× | whole, evidence | element guards kept (the index guard is lost across the search's statements) |
+| page_probe | 10.2 ms | 23.7 ms | 2.3× | whole, trusted | as `search`, twice |
+| dispatch | 18.4 ms | 8.1 ms | 0.44× | whole, proven | the native dispatch loop beats clang's over the C backend's checked bytecode reads |
+| bitmap | 326 µs | 184 µs | — | C (`arm64.cnt64` in value position) | both rows are the C backend |
+| crc32c | 137 µs | 2,995 µs | 22× | partly | the hardware `crc32cx` unit is reached through four levels of calls per step on the native side, where clang inlines the chain |
+| sha256 | 608 µs | 912 µs | 1.5× | partly (array parameters stay C) | |
+| blake3 | 2.84 ms | 4.91 ms | 1.7× | partly (array parameters stay C) | |
+
+The first change from this table: the checker now admits a second span's
+index under a proven length equality (`Oak.Assembler.index_under_equal_len`),
+which drops `dot`'s loop from 13 to 9 instructions per element; the second,
+reading a float local's register home in place and renaming a float
+operation's result into the home (as the integer path already did), drops
+it to 8: `ldr, ldr, fmul, fadd s8, s8, s16, add, cmp, b.hs, b`. The third:
+an array local whose every use is an element at a literal index becomes
+its elements in registers (`acc: [8]f32` is eight accumulators in
+`s8`–`s15`), and a squared operand is loaded once — `tiled`'s loop goes from
+about twelve instructions per element (a frame load and store per
+accumulator, the element loaded twice) to four (`add, ldr, fmul, fadd`),
+under a six-instruction header. Measured on the same loaded machine, best
+samples: `dot` 1.36× the C backend (from 3.2×), `tiled` 0.35× (the native
+loop is now ahead of clang over the C backend's checked reads), `sum`
+unchanged at 3.4×.
+
+The fourth: the checker reads the guard `len(v) >= i + K` in the shape the
+generator spells it (`add wS, wI, #K; cmp wL, wS; b.lo`) as the slack fact
+`i + K <= len`, so the eight byte reads of `crc32c_word_at` under
+`len(chunk) >= at + 8` keep no guards of their own — the 56-byte chunk
+step drops from about 500 to 386 instructions. The 22× of the baseline
+was not the guards: that build lowered `crc32c_step7`, a function that
+`dispatch`es on the `crc` feature, natively as its portable table loop,
+fifty-six table lookups per chunk; upstream since leaves a dispatching
+function to the C backend, which keeps the selection, so the hardware
+`crc32cx` unit is reached again. Measured on the same object (loaded
+machine, best samples): `crc32c` 1.8× the C backend, `dot` 1.0×, `tiled`
+0.67×, `sum` 2.75×. The fifth: the word assembly is one wide load
+(`nativegen/word_fusion.go`; the verifier models a load wider than the
+element as the assembly, `Oak.Assembler.wide_load_assembles`) — the chunk
+step is 178 instructions, `sha256` 0.92× of the C backend, `blake3` 1.00×;
+`crc32c` itself did not move (1.86×), so its remaining cost is the two
+calls per 56-byte chunk (the chunk step, then the dispatching `step7` in
+the C shell) with their spills, where clang inlines the chain — item 3
+below.
+
+The sixth: the inliner substitutes a literal argument for a parameter the
+helper never assigns (`compiler/inline.go`), and the extents checker, the
+generator and the Oak-side lowering fold `T(a) + T(b)` exactly, so the
+seven `crc32c_word_at(chunk, u32(k))` of a chunk read
+`chunk[u32(k) + u32(3)]` under `len(chunk) >= u32(k) + u32(8)`: every byte
+proven under the caller's `len(chunk) >= 56`, each word one
+`ldr x, [xB, #k]` with no index register and no slack guard, each `?`
+test a `cmp wL, #k+8`. The chunk step is 117 lines against 140; the timing
+row did not move on the loaded host (0.217 against 0.213 ns/byte, the C
+backend at 0.151).
+
+What remains, in the program's order:
+
+1. **Reductions unrolled with several accumulators** (`sum`): clang takes
+   eight elements per iteration into four vector accumulators and adds the
+   lanes at the end. The native backend can emit that under the checker's
+   slack idiom, but the verifier's loop coupling pairs one Oak variable with
+   one register as an affine image; a reduction over a wrapping,
+   associative operator needs the image *sum of registers* (`total = r2 +
+   r3 + r4 + r5`), a coupling rule with its law in Lean — so the codegen
+   and the coupling land together, or the verdict falls to evidence.
+2. **Bounds facts through arithmetic** (`search`, `page_probe`): `mid = lo
+   + (hi - lo) / 2` under `lo < hi` and `hi <= len(keys)` is below the
+   length, which the typechecker proves and the checker cannot follow (it
+   has no upper-bound fact on a register that survives the loop label, nor
+   the arithmetic step); the guards stay.
+3. **Inlining the call chain** (`crc32c`, the utf8 validator): the hardware
+   `crc32cx` unit is reached through four levels of calls per step; an
+   asm-level inliner with register renaming, or a source-level one with a
+   register allocator that keeps the flattened body's locals in registers.
+4. **Loop-invariant header arithmetic** (`tiled`'s `len(a) - 8` recomputed
+   every iteration under the slack idiom).
+5. **The typechecker's extent fact for `len(v) >= i + K`** (`word_at`'s
+   guard with `i` a parameter): the C backend keeps the eight checked
+   accessors and the fused native load keeps its own slack guard, since
+   neither side's prover reads that guard as the bound; the fact would
+   drop both.
+
+## After the first native program, 2026-09-16
+
+The same harness on the merged compiler (`results/m-series-2026-09-16-native.json`),
+the machine carrying a load average near 50 from other work, so the
+medians are noisy and the best samples are what is read. Best samples, ns
+per operation, 1 MiB / 2^20 elements; the ratio is the native backend over
+the C backend (clang `-O3` over the emitted C).
+
+| Kernel | C backend | oak-native | native / C | Rust | Note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| sum | 111,600 | 357,200 | 3.20× | 110,875 | the multi-accumulator reduction (item 1) |
+| dot | 876,000 | 989,000 | 1.13× | 810,342 | from 3.2× at the baseline |
+| tiled | 171,800 | 166,000 | 0.97× | 196,817 | from 2.7×; ahead of Rust |
+| search | 8,579,800 | 12,278,800 | 1.43× | 7,399,925 | from 2.4× (upstream's proof-guided elision); bounds through arithmetic (item 2) |
+| page_probe | 9,262,200 | 11,833,200 | 1.28× | 12,318,975 | as `search`; ahead of Rust |
+| bitmap | 183,600 | 161,400 | 0.88× | 170,142 | the C shell on both rows (`arm64.cnt64`) |
+| dispatch | 9,757,600 | 7,807,000 | 0.80× | 8,042,433 | ahead of both |
+| crc32c | 102,000 | 137,400 | 1.35× | 2,169,192 (table-driven) | the two calls per chunk (item 3) |
+| sha256 | 483,800 | 538,600 | 1.11× | 4,125,483 (word-at-a-time) | array parameters stay in the C shell |
+| blake3 | 2,631,600 | 4,193,400 | 1.59× | — | array parameters stay in the C shell |
+
+Reading: five of the ten kernels are within 15 percent of clang or ahead
+of it on the native backend, three are ahead of the hand-written Rust, and
+the three that remain behind by more than a third are the three named
+items of the program — the reduction, the bounds facts through arithmetic,
+and the call chain — plus the array-parameter bodies (`sha256`, `blake3`)
+that the native lane does not lower yet and the C shell runs.
+

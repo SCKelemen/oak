@@ -474,11 +474,35 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 	if !ok {
 		return reason, false
 	}
-	if int64(width) != x.spans[span] {
-		return fmt.Sprintf("a %d-byte load over %d-byte elements", width, x.spans[span]), false
+	elem := x.spans[span]
+	signed := name == "lw" || name == "lh" || name == "lb"
+	if int64(width) < elem || int64(width)%elem != 0 || (signed && int64(width) != elem) {
+		return fmt.Sprintf("a %d-byte load over %d-byte elements", width, elem), false
 	}
-	element := x.elementIn(state, span, index, width*8)
-	value := zeroExtend(element, 64)
+	var value *term
+	if int64(width) == elem {
+		value = zeroExtend(x.elementIn(state, span, index, width*8), 64)
+	} else {
+		// A load wider than the element (`ld` over bytes): the
+		// little-endian assembly of width/elem consecutive elements, the
+		// term Oak's word assembly spells (Oak.Assembler.wide_load_assembles;
+		// the AArch64 lane's load does the same).
+		for k := int64(0); k < int64(width)/elem; k++ {
+			at := index
+			if k != 0 {
+				at = binaryTerm("add", truncate(index, 32), constTerm(uint64(k), 32))
+			}
+			element := zeroExtend(x.elementIn(state, span, at, int(elem)*8), 64)
+			if k != 0 {
+				element = binaryTerm("shl", element, constTerm(uint64(k*elem*8), 64))
+			}
+			if value == nil {
+				value = element
+			} else {
+				value = binaryTerm("or", value, element)
+			}
+		}
+	}
 	switch name {
 	case "lw", "lh", "lb":
 		value = extendTerm(value, width*8, 64, true)

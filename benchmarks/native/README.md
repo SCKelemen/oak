@@ -124,7 +124,9 @@ the inner loop is eleven instructions from the exit test to the key
 load), `bench_page_probe` 93 → 90; `crc32c`, `blake3`, `sum`, `dot`
 unchanged. With the compare of a conditional chain reused at its else
 label (the checker carrying flags across the label): `bench_search` 53,
-`bench_page_probe` 89. Verdicts unchanged (`dispatch` proven, `search`
+`bench_page_probe` 89; with no mask after an unsigned right shift and a
+match scrutinee compared from its own register, `bench_dispatch` 58.
+Verdicts unchanged (`dispatch` proven, `search`
 witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
 
 **Strength reduction of constant arithmetic (2026-09-15,
