@@ -5305,10 +5305,35 @@ t, base, t` or `add t, base, z` for bytes — with no guard of its own
 (`guardedAddress`), and the checker admits it from the fact through the
 scaled-index and element-region rules it already had for GCC's shape
 (`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
-that line's guards. Outside the mechanism, and still guarded: a
-conjunction (`while i < len(v) && cond`), a bound that is not `len(v)`,
+that line's guards. Outside the mechanism, and still guarded: a bound that is not `len(v)`,
 an index that is not the tested variable, and an access after a label
 inside the body (the RV64 checker forgets index facts at labels).
+
+**Short-circuit conditions (2026-09-15).** Of the standard library's 473
+`while` loops, 44 test a bare `i < len(v)` and 175 a conjunction, most
+with such a test as one conjunct (`while i < len(src) && valid`). The
+lane spelled `a && b` through a Bool in a register (`short_N` labels, a
+`beqz` at the end), which no guard rule reads. A condition that holds an
+`i < len(v)` conjunct a body access can use (`hasIndexLengthTest`) now
+lowers as its conjuncts' branches in order, each leaving to the target as
+soon as it decides — `a && b` branching when false is `a` false → target
+then `b` false → target; the other senses skip the second test through a
+label — with a negation flipping the branch's sense
+(`conditionBranch`). Evaluation order and short-circuiting are the Bool
+form's; the register and its final test go; and the `i < len(v)`
+conjunct meets `indexLengthTest` as a plain guard, so its body elides. The
+verifier already reads a header of several compare-and-branch exits
+(`loopShape.exits`). The form is not taken for every conjunction: each
+branch is a fork for the verifier's path enumeration where the Bool form
+was one path, and taking it everywhere sent two proven bodies past the
+path budget (`url_scheme_end`, `grapheme_breaks`) — so it is taken only
+where it buys an elision. Measured on the stdlib-bearing program, like
+for like with the verdict cache off: 20 bodies elide 29 guards where 8
+elided 8, the bodies' `bgeu` guards fall from 561 to 542, and no verdict
+changes (237 proven before and after). Taking the form for every
+conjunction had cut the lane's instruction count by 3.7% with the
+verdict cost above; the gated form's count is flat, the zero-extension
+at each captured head paying for itself only in the bodies that elide.
 
 Two verifier gaps opened by the new shape were closed, and both pay on the
 AArch64 lane too. First, a header temporary the body reads — here `z` —
