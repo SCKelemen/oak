@@ -94,7 +94,20 @@ var leanStdlibPackages = []struct {
 	// program shape rather than of a package.
 	source string
 }{
-	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint"},
+	{name: "bytes", file: "BytesExtracted.lean", namespace: "Oak.Stdlib.Bytes"},
+	{name: "bitset", file: "BitsetExtracted.lean", namespace: "Oak.Stdlib.Bitset"},
+	{name: "endian", file: "EndianExtracted.lean", namespace: "Oak.Stdlib.Endian", deps: []string{"bytes"}},
+	{name: "buffer", file: "BufferExtracted.lean", namespace: "Oak.Stdlib.Buffer"},
+	{name: "array_list", file: "ArrayListExtracted.lean", namespace: "Oak.Stdlib.ArrayList", driver: `
+drive_push_u8: (cursor: [*]Cursor, storage: [*]u8, value: u8): Result[u32, Error] = push[u8](cursor, storage, value)
+drive_get_u8: (cursor: [*]Cursor, storage: []u8, index: u32): Result[u8, Error] = get[u8](cursor, storage, index)
+drive_set_u8: (cursor: [*]Cursor, storage: [*]u8, index: u32, value: u8): Result[u8, Error] = set[u8](cursor, storage, index, value)
+drive_pop_u8: (cursor: [*]Cursor, storage: [*]u8): Result[u8, Error] = pop[u8](cursor, storage)
+drive_insert_u8: (cursor: [*]Cursor, storage: [*]u8, index: u32, value: u8): Result[u32, Error] = insert[u8](cursor, storage, index, value)
+drive_remove_u8: (cursor: [*]Cursor, storage: [*]u8, index: u32): Result[u8, Error] = remove[u8](cursor, storage, index)
+drive_swap_remove_u8: (cursor: [*]Cursor, storage: [*]u8, index: u32): Result[u8, Error] = swap_remove[u8](cursor, storage, index)
+`},
+	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint", deps: []string{"bytes"}},
 	{name: "encoding", file: "EncodingExtracted.lean", namespace: "Oak.Stdlib.Encoding"},
 	{name: "hash", file: "HashExtracted.lean", namespace: "Oak.Stdlib.Hash"},
 	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
@@ -112,11 +125,11 @@ drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](
 	// into a span, and the f32/f64 rows of 20-types.md section 11.3.4.
 	{name: "floatkernels", file: "FloatKernelsExtracted.lean", namespace: "Oak.Stdlib.FloatKernels", source: leanFloatKernelsSource},
 	{name: "unicode", file: "UnicodeExtracted.lean", namespace: "Oak.Stdlib.Unicode"},
-	{name: "strings", file: "StringsExtracted.lean", namespace: "Oak.Stdlib.Strings", deps: []string{"unicode"}},
+	{name: "strings", file: "StringsExtracted.lean", namespace: "Oak.Stdlib.Strings", deps: []string{"bytes", "unicode"}},
 	{name: "url", file: "UrlExtracted.lean", namespace: "Oak.Stdlib.Url"},
-	{name: "path", file: "PathExtracted.lean", namespace: "Oak.Stdlib.Path", deps: []string{"unicode", "strings"}},
-	{name: "grapheme", file: "GraphemeExtracted.lean", namespace: "Oak.Stdlib.Grapheme", deps: []string{"unicode", "strings"}},
-	{name: "normalize", file: "NormalizeExtracted.lean", namespace: "Oak.Stdlib.Normalize", deps: []string{"unicode", "strings"}},
+	{name: "path", file: "PathExtracted.lean", namespace: "Oak.Stdlib.Path", deps: []string{"bytes", "unicode", "strings"}},
+	{name: "grapheme", file: "GraphemeExtracted.lean", namespace: "Oak.Stdlib.Grapheme", deps: []string{"bytes", "unicode", "strings"}},
+	{name: "normalize", file: "NormalizeExtracted.lean", namespace: "Oak.Stdlib.Normalize", deps: []string{"bytes", "unicode", "strings"}},
 	{name: "sort", file: "SortU32Extracted.lean", namespace: "Oak.Stdlib.SortU32", driver: `
 sort_u32_is_sorted: (items: []u32): Bool = sort_is_sorted[u32](items)
 sort_u32_insertion: (items: [*]u32): () { sort_insertion[u32](items) }

@@ -125,6 +125,12 @@ import Oak.FloatBounds
 import Oak.GraphemeBreak
 import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
+import Oak.Stdlib.BytesExtracted
+import Oak.Stdlib.BitsetExtracted
+import Oak.Stdlib.EndianExtracted
+import Oak.Stdlib.BufferExtracted
+import Oak.Stdlib.ArrayListExtracted
+import Oak.Stdlib.ArrayListLaws
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
 import Oak.FloatOps
@@ -143,6 +149,10 @@ import Oak.Stdlib.PathExtracted
 import Oak.Stdlib.GraphemeExtracted
 import Oak.Stdlib.NormalizeExtracted
 import Oak.Stdlib.VarintLaws
+import Oak.Stdlib.BytesLaws
+import Oak.Stdlib.BitsetLaws
+import Oak.Stdlib.EndianLaws
+import Oak.Stdlib.BufferLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.TensorLaws
 import Oak.Stdlib.PdqsortLaws

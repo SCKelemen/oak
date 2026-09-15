@@ -371,49 +371,8 @@ func pathRoot(expr ast.Expression) (string, bool) {
 // the one substitution authority) — so the native backend and the verifier
 // see exactly the types the C backend emits for them.
 func specializeInstantiations(tc *typechecker.TypeChecker, templates map[string]*ast.ADTType, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType) {
-	if tc == nil {
-		return
-	}
-	for _, inst := range tc.ADTInstantiations() {
-		template, declared := templates[inst.ADT]
-		if !declared || len(template.TypeParams) != len(inst.Args) {
-			continue
-		}
-		bindings := make(map[string]ast.Expression, len(inst.Args))
-		for i, param := range template.TypeParams {
-			if param == nil || param.Name == nil {
-				continue
-			}
-			bindings[param.Name.Value] = argumentExpressionOf(inst.Args[i])
-		}
-		mangled := inst.MangledName()
-		specialized := &ast.ADTType{BaseNode: template.BaseNode, Token: template.Token, EndToken: template.EndToken, Name: &ast.Identifier{Token: template.Name.Token, Value: mangled}, TagValues: template.TagValues}
-		ok := true
-		for _, variant := range template.Variants {
-			payload, okPayload := typechecker.SubstituteTypeAST(variant.Payload, bindings)
-			if !okPayload {
-				ok = false
-				break
-			}
-			literal := variant.Literal
-			if recordLit, isRecord := variant.Literal.(*ast.RecordLiteral); isRecord {
-				substituted := &ast.RecordLiteral{BaseNode: recordLit.BaseNode, Token: recordLit.Token, EndToken: recordLit.EndToken, Fields: map[string]ast.Expression{}, Layout: recordLit.Layout, TypeName: recordLit.TypeName}
-				for _, field := range recordLit.FieldOrder {
-					fieldType, okField := typechecker.SubstituteTypeAST(field.Value, bindings)
-					if !okField {
-						ok = false
-						break
-					}
-					substituted.Fields[field.Name] = fieldType
-					substituted.FieldOrder = append(substituted.FieldOrder, ast.RecordField{Token: field.Token, Name: field.Name, Value: fieldType, Align: field.Align})
-				}
-				literal = substituted
-			}
-			specialized.Variants = append(specialized.Variants, &ast.ADTVariant{Token: variant.Token, Name: variant.Name, Payload: payload, Literal: literal, Result: variant.Result})
-		}
-		if !ok {
-			continue
-		}
+	for _, specialized := range specializedInstantiationDeclarations(tc, templates) {
+		mangled := specialized.Name.Value
 		if literal, isRecord := recordShape(specialized); isRecord {
 			records[mangled] = literal
 		} else {

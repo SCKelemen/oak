@@ -31,6 +31,12 @@ compiler's internals, which move freely.
 | Region-indexed borrowed returns | `50-borrowing.md` §8c | stabilizing | first increment landed 2026-09-10 |
 | Modules: `package`, `import`, `oak.mod`, semver at module granularity, per-module profiles | `83-modules.md`, `82-package-semver.md`, `85-discipline.md` §1 | stabilizing | qualified stdlib package views are new |
 | Strings and UTF-8 validity | `70-strings.md` | frozen | |
+| Standard-library architecture: package layers, explicit storage/effects, public contract, proof-directed optimization | `75-standard-library.md` | stabilizing | The exact v1 package cut and `Option` to `Optional` migration are direction |
+| Qualified `bytes`: ranges, copying/movement, equality, ordering, and search | `76-bytes.md` | stabilizing | Implemented as a freestanding allocation-free package; the `bytes_*` flat compatibility names and `Option` spelling are direction |
+| Qualified `bitset`: `storage_bytes`, `contains`, `set`, `count_ones`, `Error` | `77-bitset.md` | stabilizing | Implemented as a freestanding allocation-free package; `BitSetError` and the `bitset_*` flat compatibility names are direction |
+| Qualified `endian`: concrete `u16`/`u32`/`u64` reads and writes in both byte orders | `78-endian.md` | stabilizing | Scalar freestanding implementation; target load/store refinements and the `bytes_read/write_*` flat names are direction |
+| Qualified `buffer`: contiguous byte queue cursor and value-state builder | `79-buffer.md` | stabilizing | Implemented without allocation over caller storage; borrow-returning views and the flat compatibility names are direction |
+| Qualified `array_list`: bounded generic vectors over caller storage | `81-array-list.md` | stabilizing | Implemented without allocation; resource-valued elements, owning/growing elevations, and the flat compatibility names are direction |
 | Derived declarations (`derive.equal/hash/compare/format`) | `30-adts-patterns.md`, `compiler/derive.go` | stabilizing | |
 | Typed test commands (`derive.test_generate/encode/decode`), `oak test` flags, artifact and campaign formats | `110-testing.md` | stabilizing | artifact schema is versioned; the runner rejects other versions |
 | Simulated storage, crashes, scheduling adapters (`SimDisk`, `SimProcess`, `SimSched`) | `110-testing.md` | stabilizing | landed 2026-09-10 |

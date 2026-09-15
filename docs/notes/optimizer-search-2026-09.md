@@ -4,9 +4,10 @@ Status: design note, September 2026.
 
 This note proposes the architecture for Oak's optimizing native backend after the first verified optimization increments in `nativegen/`: strength reduction, condition selection and if-conversion, aggregate promotion, wide-load fusion, reduction unrolling, and pair loads. It complements `docs/notes/optimization-2026-09.md`, `docs/notes/native-optimization-2026-09.md`, `docs/spec/90-backend.md` §16, and the semantic verifier in `docs/spec/94-assembler.md` §9.
 
-Two companion catalogs feed this architecture:
+Three companion catalogs feed this architecture:
 
 - `docs/notes/llvm-optimization-catalog-2026-09.md` records conventional compiler analyses, transforms, vectorization, IPO, register allocation, scheduling, and target-cost patterns worth adapting from LLVM;
+- `docs/notes/mojo-futhark-optimization-2026-09.md` records staged specialization, structured and algebraic planning, index properties, destination forwarding, storage coloring, and compile-time/runtime candidate versioning;
 - `docs/notes/proof-guided-optimization-2026-09.md` records Oak-native optimizations enabled by checked type facts, ownership, effects, refinements, extents, typestate/protocol models, declared laws, proof infrastructure, and semantic verification down to the selected assembly body.
 
 The central rule is:
@@ -63,6 +64,14 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   phrasing; `-opt-report` / `OAK_OPT_REPORT=1` print the report;
   `OAK_OPT_BEAM` overrides the beam for experiments. `-opt` keeps its
   one meaning (the C compiler's level).
+- The executable-oriented source pipeline has an explicit specialization
+  boundary. Conservative private-leaf inlining runs before specialization;
+  built-in Bool identities and exact fixed-width integer zero/one identities
+  run after concrete types are known. A fresh checker validates every changed
+  monomorphic program. Its validation clone receives only generic ADT
+  declarations recorded by the specializing checker, rebuilt through the same
+  checked substitution used by native lowering; those declarations never enter
+  emission. Source and native remarks share `opt.Report`.
 
 Policy as landed: the identity is the fallback and is verified last, so
 an admitted transformed body is preferred to the plain lowering even when
@@ -150,9 +159,19 @@ Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15), a lowering that emits virtual registers directly, scheduling,
 and the RV64 lane.
 
-Not yet: OptIR and the analyses (Phase C), OptIR and the analyses
-(Phase C), vector plans (Phase D), and the proof-obligation service of
-the proof-guided note §26 beyond the requirement/fact matching here.
+### Phase C, first substrate: `optir/`
+
+The target-neutral structured representation now exists independently of
+emission. It retains typed scalar operations, effects, attributes, proof facts,
+conditionals, and pre-test loops with explicit loop-carried values. Its
+deterministic projection introduces typed block arguments at joins, loop
+headers, bodies, and exits. An independent verifier checks structured
+arity/types and CFG definitions, same-block order, dominance, reachability,
+terminators, exact edge types, Bool branches, and returns.
+
+Not yet: checked Oak-to-OptIR projection, OptIR analyses and validated emission,
+vector plans (Phase D), and the proof-obligation service of the proof-guided
+note §26 beyond the requirement/fact matching here.
 
 ## 1. Why this architecture
 

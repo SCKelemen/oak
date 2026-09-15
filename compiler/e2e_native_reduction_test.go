@@ -105,23 +105,39 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s was not lowered natively:\n%s", name, strings.Join(infos, "\n"))
 		}
-		inFirst := false
-		for _, item := range fn.Items {
-			switch it := item.(type) {
-			case asm.Label:
-				if strings.HasPrefix(it.Name, "loop") {
-					count++
-					inFirst = count == 1
-				} else {
-					inFirst = false
+		firstName, firstStart, firstEnd := "", -1, len(fn.Items)
+		for i, item := range fn.Items {
+			if label, ok := item.(asm.Label); ok && strings.HasPrefix(label.Name, "loop_") {
+				count++
+				if firstStart < 0 {
+					firstName, firstStart = label.Name, i+1
 				}
-			case asm.Instruction:
-				if inFirst && (it.Mnemonic == "ldr" || it.Mnemonic == "ldrb") {
-					loads++
-				}
-				if inFirst && it.Mnemonic == "ldp" {
-					pairs++
-				}
+			}
+		}
+		for i, item := range fn.Items {
+			if label, ok := item.(asm.Label); ok && label.Name == "check_"+firstName {
+				firstEnd = i
+				break
+			}
+			instruction, ok := item.(asm.Instruction)
+			if !ok || (instruction.Mnemonic != "b" && instruction.Mnemonic != "j") || len(instruction.Operands) == 0 {
+				continue
+			}
+			if symbol, ok := instruction.Operands[len(instruction.Operands)-1].(asm.Symbol); ok && symbol.Name == firstName && i >= firstStart {
+				firstEnd = i
+				break
+			}
+		}
+		for _, item := range fn.Items[firstStart:firstEnd] {
+			instruction, ok := item.(asm.Instruction)
+			if !ok {
+				continue
+			}
+			if instruction.Mnemonic == "ldr" || instruction.Mnemonic == "ldrb" {
+				loads++
+			}
+			if instruction.Mnemonic == "ldp" {
+				pairs++
 			}
 		}
 		return count, loads, pairs
