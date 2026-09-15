@@ -88,20 +88,24 @@ cast legality, then computes exact constants and executable CFG edges with Oak's
 8/16/32/64/128-bit wrapping semantics, signed division edge behavior, and
 checked shift/division traps. Results are deterministic evidence and do not
 rewrite the CFG. No backend consumes this IR yet; equivalence validation remains
-mandatory before SCCP, CSE, or DCE can affect emitted code.
+mandatory before SCCP, GVN, or DCE can affect emitted code.
 
 The first target-independent cleanup candidate now runs beside that evidence.
-Dominance-scoped CSE shares exact operations only from a closed vocabulary of
-total pure scalar operations; code, result types, canonical SSA operands, and
-ordered attributes must all match. It retains sibling computations, trapping
-arithmetic, calls, memory, synchronization, unknown operations, and any
-operation carrying an effect. Proof facts move to the dominating definition
-only when all of their values are valid there. Fixed-point DCE then removes
-unused chains from the same closed vocabulary, treating terminators, other
-operations' facts, and function facts as roots. A definition's own fact leaves
-with the definition. Both transforms clone their input and independently verify
-input and output. `Compilation.OptIR()` exposes the simplified CFG and a
-deterministic report, but emission still consumes neither.
+Dominance-scoped GVN assigns deterministic numbers to SSA values and shares
+congruent operations only from a closed vocabulary of total pure scalar
+operations. Plain copies carry their operand's number; wrapping integer
+add/multiply/bitwise operations and equality use commutative operand order;
+`a > b`/`a >= b` share the keys for `b < a`/`b <= a`. Result types and ordered
+attributes remain part of identity, and unknown attributes disable algebraic
+normalization. Sibling computations, trapping arithmetic, calls, memory,
+synchronization, unknown operations, and any operation carrying an effect stay
+in place. Proof facts move to the dominating definition only when all of their
+values are valid there. Fixed-point DCE then removes unused chains and copies
+from the same closed vocabulary, treating terminators, other operations' facts,
+and function facts as roots. A definition's own fact leaves with the
+definition. Both transforms clone their input and independently verify input
+and output. `Compilation.OptIR()` exposes the simplified CFG and a deterministic
+report, but emission still consumes neither.
 
 The generic control-flow analysis now gives that CFG a reusable semantic loop
 model. It reports reverse postorder, immediate dominators, back edges, natural
@@ -119,28 +123,28 @@ They authorize no emission; each consumer must still establish its own legality.
 The first consumer is an analysis-only loop-invariant code-motion candidate.
 It moves an operation to a canonical preheader only when every operand is
 already available there and the operation is in the same closed total-pure
-vocabulary as CSE/DCE. Division, remainder, shifts, calls, memory, effects,
+vocabulary as GVN/DCE. Division, remainder, shifts, calls, memory, effects,
 unknown operations, and loops without a canonical preheader remain unchanged.
 Relational or path-derived facts pin an operation; the one exception is the
 result-local `checked.type` fact, which merely restates the typed SSA
 definition. Nested loops are considered outermost first, allowing a value
 invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
-post-CSE/DCE LICM candidate and a deterministic movement report. Emission still
+post-GVN/DCE LICM candidate and a deterministic movement report. Emission still
 consumes neither.
 
 The whole compiler does not yet run as one artifact DAG: source stages remain
 linear and native proposal enumeration remains dynamic. The
 generic OptIR chain does. Exact-version immutable nodes now represent CFG v0,
-SCCP, loop structure and recurrences, CSE/DCE, CFG v1, preservation evidence,
+SCCP, loop structure and recurrences, GVN/DCE, CFG v1, preservation evidence,
 and LICM. Analyses declare the topology, SSA, operation, effect, type, fact,
-and layout aspects they read. CSE/DCE's checked certificate proves
+and layout aspects they read. GVN/DCE's checked certificate proves
 `CFGTopology` unchanged, so v1 reuses v0 dominance/natural-loop structure but
 recomputes induction facts from the changed SSA. Certificates carry exact
 artifact/content identities and per-aspect digests; they prove reuse
 eligibility only, never semantic equivalence or emission permission. The
 executor now supports deterministic ready waves with a fixed worker bound;
-OptIR uses three workers for SCCP, loop-structure analysis, and CSE/DCE
+OptIR uses three workers for SCCP, loop-structure analysis, and GVN/DCE
 fan-out. A failed wave publishes nothing, and traces/errors are independent of
 worker completion order. Each native proposal has a canonical checked-input
 recipe and materializes into typed candidate, admission, metrics, cost,
@@ -239,7 +243,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analyses; CSE/DCE and analysis-only SCCP are the first executable pieces |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analyses; GVN/DCE and analysis-only SCCP are the first executable pieces; dead stores wait for projected memory identities and Mod/Ref/alias facts |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

@@ -26,7 +26,7 @@ structured OptIR
      |
     CFG v0 --------------------+
      |          |              |
-    SCCP   loop structure    CSE/DCE
+    SCCP   loop structure    GVN/DCE
                 |               |
                 |             CFG v1
                 |          /     |
@@ -108,7 +108,7 @@ also include the compiler build identity in the producer revision.
 | checked | checked semantic model, proof facts | only as a stated source license |
 | IR | structured OptIR, CFG, MachineIR | no |
 | analysis | SCCP, dominance, loops, alias/range facts | no |
-| candidate | CSE/DCE, LICM, vector or allocation plan | no |
+| candidate | GVN/DCE, LICM, vector or allocation plan | no |
 | admission | CFG verifier, seam checker, cheap structural checks | only the boundary it explicitly checks |
 | metrics | size, pressure, branch and memory estimates | no |
 | cost | target-neutral or target-specific score | no |
@@ -163,7 +163,7 @@ checked against digest equality and the whole certificate has an integrity
 digest. It is analysis-reuse evidence only, never semantic equivalence or
 permission to emit a candidate.
 
-CSE/DCE is the first consumer. It preserves CFG topology but may change SSA
+GVN/DCE is the first consumer. It preserves CFG topology but may change SSA
 identity, operation semantics, types, and proof-fact placement. Loop analysis
 is split accordingly: dominance and the natural-loop tree consume only
 `CFGTopology`, so CFG v1 reuses the checked structure from v0. Affine
@@ -201,7 +201,7 @@ Waves deliberately trade some pipeline utilization for reproducibility: worker
 timing cannot change which later nodes start, the selected error, cache
 contents, or trace. `ArtifactRun` still reports executed/cache-hit keys in the
 canonical graph order. OptIR uses three workers, matching its current SCCP,
-loop-structure, and CSE/DCE fan-out. Artifact computations must remain isolated
+loop-structure, and GVN/DCE fan-out. Artifact computations must remain isolated
 producers; the scheduler coordinates all cache reads and writes itself.
 
 ## 8. Cache rules
@@ -243,13 +243,13 @@ Completed:
 2. The current OptIR analysis API is projected onto graph nodes without
    changing its analysis results or emission behavior.
 3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP,
-   loop analysis, and CSE/DCE consume that exact key. CSE/DCE publishes CFG v1,
+   loop analysis, and GVN/DCE consume that exact key. GVN/DCE publishes CFG v1,
    a second loop node analyzes v1, and LICM consumes both v1 artifacts. LICM no
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
 4. OptIR has closed analysis-aspect declarations and checked preservation
-   certificates. CSE/DCE's certificate is an admission artifact over exact CFG
+   certificates. GVN/DCE's certificate is an admission artifact over exact CFG
    v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
    so v1 reuses dominance/natural loops while recomputing induction facts.
 5. Native search gives every proposal a canonical, pre-lowering recipe over
