@@ -2752,9 +2752,21 @@ into the back edge (`b endif; endif: b loop`) both demote a proven loop to
 evidence. They wait on a loop summary that admits break paths.
 
 The forty-fifth increment is the verified reduction unrolling (§9
+"Reductions"): the first rewrite licensed by a type — integer addition
+wraps and reassociates, so the plain reduction becomes four accumulators
+and a remainder loop before lowering, the verifier proving the assembly
+against the rewritten body and Lean proving the rewrite
+(`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
+(`asm.Function.Body`) so the verifier and the verdict cache judge the
+right one.
+
 The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
+
+The fifty-first increment is pair copies (§9 "Pair copies"): aggregate
+copies move sixteen bytes a step as `ldp`/`stp` where both sides are
+8-aligned and a pair remains (`Oak.PairCopies.pair_copy`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3885,6 +3897,26 @@ verifier reads a pair load as two loads of the register width, in a
 straight path and in a loop body alike. The unrolled reduction's four
 loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
 four elements.
+
+**Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
+An aggregate copy — between two locations (`copyBytes`: a record or array
+value assigned, stored, passed, or received), from a by-reference
+parameter's address into the frame in the prologue (`copyIn`), or from a
+local into the `x8` result area (`copyOut`) — moves sixteen bytes a step
+as a register pair, `ldp x9, x10, [src, #off]; stp x9, x10, [dst, #off]`,
+while both locations are 8-aligned, a whole pair remains inside the
+value, and both offsets fit the pair form's scaled 7-bit field (−512 to
+504); the 8/4/2/1-byte tail follows as before. A 40-byte record copies
+as two pairs and a word where it copied as five words; `Sha256State`'s
+112 bytes as seven pairs where it took fourteen. The seam checker admits
+`ldp`/`stp` on frame slots and inside regions as it admits `ldr`/`str`;
+the verifier reads `ldp` as two loads and tiles `stp` on frame and
+result-area memory. The theorem is that a pair copy is the word copy it
+replaces (`Oak.PairCopies.pair_copy`). `TestNativeShapesPairCopies` pins
+`shift` (a 40-byte parameter copied in and its result copied out by
+pairs, and still proven); `TestE2ENativePairCopies` agrees with the C
+backend. The RV64 lane keeps its word copies (no pair form in its base
+contract).
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
