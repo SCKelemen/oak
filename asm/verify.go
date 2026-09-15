@@ -3692,13 +3692,48 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if record, isRecord := x.records[param]; isRecord {
 		// The caller's copy of a record argument: a load at a leaf's exact
 		// offset and width is that leaf.
-		if mem.Index != nil {
-			return "an indexed load through a record argument", false
-		}
 		size := memorySize(instr.Mnemonic, dest.Class)
-		value, ok := x.recordBytes(record.leaves, baseOffset+mem.Offset, size)
-		if !ok {
-			return "a load from a record argument cutting through a field", false
+		var value *term
+		if mem.Index != nil {
+			// At a register index under the checker's guard (`cmp wI, #K;
+			// b.hs trap`, state.bounds): the element of the array field
+			// the address starts, selected from the field's leaves by the
+			// index — the fold the Oak side builds for `a.at[i]`
+			// (elementUnderIndexTerm), last leaf first.
+			arg := recordSpanArg{leaves: record.leaves}
+			prefix, length, stride, isArray := arg.arrayFieldAt(baseOffset + mem.Offset)
+			if !isArray {
+				return "an indexed load through a record argument at an offset that starts no array field", false
+			}
+			if int64(1)<<uint(mem.Shift) != stride || size != stride {
+				return fmt.Sprintf("an indexed load through a record argument (%s) whose scale is not the element size", prefix), false
+			}
+			bound, isBounded := state.bounds[mem.Index.Num]
+			if !isBounded || int64(bound) > length {
+				return "an indexed load through a record argument without a dominating constant index guard", false
+			}
+			idx, okIndex := state.read(*mem.Index)
+			if !okIndex {
+				return "unbound register read", false
+			}
+			index := truncate(idx, 32)
+			for k := length - 1; k >= 0; k-- {
+				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
+				if !okLeaf {
+					return "an indexed load through a record argument cutting through a field", false
+				}
+				if value == nil {
+					value = leaf
+				} else {
+					value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+				}
+			}
+		} else {
+			var ok bool
+			value, ok = x.recordBytes(record.leaves, baseOffset+mem.Offset, size)
+			if !ok {
+				return "a load from a record argument cutting through a field", false
+			}
 		}
 		if isSignExtendingLoad(instr.Mnemonic) {
 			state.write(dest, extendTerm(value, int(size)*8, widthOf(dest.Class), true))
