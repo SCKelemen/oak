@@ -5675,6 +5675,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
 	calleeSpans := map[string]spanContract{}
+	calleeRecordSpans := map[string]recordSpanArg{}
 	calleeAlias := map[string]string{}
 	calleeOffset := map[string]*term{}
 	calleeLen := map[string]*term{}
@@ -5702,6 +5703,13 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		if isBorrowType(param.Type) {
 			owner := addressOfOperand(arg)
 			local, isLocal := lo.locals[owner]
+			if recordArg, isRecordSpan := lo.recordSpans[owner]; !isLocal && isRecordSpan {
+				// A span of records passed on: the callee's parameter is an
+				// alias of the caller's, sharing its leaf memories.
+				calleeRecordSpans[param.Name.Value] = recordArg
+				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
+				continue
+			}
 			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
 				// A span parameter passed on: the callee's parameter is an
 				// alias of the caller's span, sharing its memory
@@ -5823,6 +5831,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	savedOffset, savedLen := lo.spanOffset, lo.spanLen
 	savedViews := lo.views
+	savedRecordSpans := lo.recordSpans
 	lo.locals = bound
 	lo.floats = calleeFloats
 	// The callee sees only its own span parameters, each spelled in the
@@ -5830,6 +5839,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
 	lo.spanOffset, lo.spanLen = calleeOffset, calleeLen
 	lo.views = calleeViews
+	lo.recordSpans = calleeRecordSpans
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
@@ -5839,6 +5849,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		lo.spanOffset, lo.spanLen = savedOffset, savedLen
 		lo.views = savedViews
+		lo.recordSpans = savedRecordSpans
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -7308,11 +7319,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				frameBorrows = append(frameBorrows, borrow)
 				break
 			}
-			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			if lo.spanAlias == nil {
 				lo.spanAlias = map[string]string{}
 			}
+			if recordArg, isRecordSpan := x.recordSpans[owner]; isRecordSpan {
+				// A span of records passed on: the callee's parameter is an
+				// alias of the caller's, its leaf memories the caller's.
+				if lo.recordSpans == nil {
+					lo.recordSpans = map[string]recordSpanArg{}
+				}
+				lo.recordSpans[param.Name.Value] = recordArg
+				lo.spanAlias[param.Name.Value] = owner
+				break
+			}
+			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			lo.spanAlias[param.Name.Value] = owner
 		default:
 			w, signed, _ := contractBits(param.Type)
