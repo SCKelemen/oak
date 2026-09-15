@@ -276,8 +276,12 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   still holding its initial constant, which the compare records as an
   immediate, while the back edge compares it against the narrowed
   register; the register form holds on both (2026-09-16, the page
-  probe's inner loop rotates with its key read unguarded). An access
-  admits an index guarded below a register
+  probe's inner loop rotates with its key read unguarded). The exact
+  per-register decision is transliterated by
+  `Oak.CheckerMeetRefinement.meetFact`; `meetFact_sound` proves that every
+  retained fact holds on both predecessor register states, and
+  `asm/check_meet_test.go` pins the production branches and results to the
+  executable Lean examples. An access admits an index guarded below a register
   whose upper chain ends at a register holding the span's length, proven
   equal to one, or holding a constant no larger than one such holds
   (`Oak.Assembler.index_under_upper`). A label's state is the whole
