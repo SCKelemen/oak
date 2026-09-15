@@ -492,16 +492,12 @@ type term struct {
 	// use width): an element parameter's fixed-memory value is its
 	// declared width's, whatever width it is read at. Zero: the width.
 	declared int
-	// id is the term's index in the termEvaluator that last numbered it,
-	// one-based; zero before any numbering. Only the witness pass sets it,
-	// before the variable orders' goroutines start reading the terms.
-	id    int32
-	name  string // termParam
-	value uint64 // termConst (already masked to width)
-	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
-	left  *term
-	right *term
-	cond  *term // termIte
+	name     string // termParam
+	value    uint64 // termConst (already masked to width)
+	op       string // termBinary: add sub and or xor shl shr; termCmp: condition code
+	left     *term
+	right    *term
+	cond     *term // termIte
 	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
 	kbDone  bool
 	kbValue uint64
@@ -2739,7 +2735,10 @@ var unitResult = &term{kind: termConst, width: 64}
 // registerFrameMemory reports a load or store whose base register holds a
 // frame address term, with the address.
 func registerFrameMemory(instr Instruction, state *symbolicState) (Memory, int64, bool) {
-	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic)) {
+	// A pair load through a frame address (the result area's parked
+	// register, a record copied by pairs) is frame memory as a pair store
+	// is (docs/spec/94-assembler.md §9 "The SHA-256 path").
+	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldp") {
 		return Memory{}, 0, false
 	}
 	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
@@ -5570,8 +5569,9 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 }
 
 // sameType is structural identity: declared records and unions by name,
-// arrays by element and length, scalars by width and signedness (an array
-// type is built afresh at each mention, so pointer identity would part
+// arrays by element and length, scalars by width, signedness, and numeric
+// category. An array type is built afresh at each mention, so pointer
+// identity would part
 // `[4]u8` from `[4]u8`).
 func sameType(a, b *oakType) bool {
 	if a == b {
@@ -5582,11 +5582,11 @@ func sameType(a, b *oakType) bool {
 	}
 	switch a.kind {
 	case oakScalar:
-		return a.width == b.width && a.signed == b.signed
+		return a.width == b.width && a.signed == b.signed && a.float == b.float
 	case oakArray:
 		return a.length == b.length && sameType(a.elem, b.elem)
 	}
-	return a.name == b.name
+	return a.name != "" && a.name == b.name
 }
 
 // aggregateRoot reports an expression that yields an aggregate without
@@ -6545,17 +6545,34 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	return truncate(result, width), "", true
 }
 
-// inlineCallValue inlines a call whose result is a record or a sum type
-// (docs/spec/125-verification.md section 3): the body as an aggregate
-// value, the arms of its matches merged leaf by leaf.
+// describe spells a type for a message: its name, or its shape.
+func (t *oakType) describe() string {
+	if t == nil {
+		return "nothing"
+	}
+	if t.name != "" {
+		return t.name
+	}
+	switch t.kind {
+	case oakArray:
+		return fmt.Sprintf("[%d]%s", t.length, t.elem.describe())
+	case oakScalar:
+		return fmt.Sprintf("a %d-bit scalar", t.width)
+	}
+	return "an aggregate"
+}
+
+// inlineCallValue inlines a call whose result is an aggregate
+// (docs/spec/125-verification.md section 3): the body as an aggregate value,
+// the arms of its matches merged leaf by leaf.
 func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.InvocationExpression, typ *oakType) (*oakValue, string, bool) {
 	name := callee.Name.Value
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
 	returned, ok := lo.oakTypeOf(callee.ReturnType)
-	if !ok || returned != typ {
-		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.name), false
+	if !ok || !sameType(returned, typ) {
+		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.describe()), false
 	}
 	restore, reason, ok := lo.enterCall(callee, call)
 	if !ok {

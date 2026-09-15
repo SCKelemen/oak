@@ -3147,6 +3147,11 @@ element-address form the wider lanes use and the cost model's assumed
 trip count calibrated from the measurement. A `u32` reduction runs at
 2.6× the scalar unrolling, a `u64` one at 1.4×, both proven.
 
+The fifty-ninth increment is the SHA-256 path (§9 "The SHA-256 path"):
+pair loads through a frame-address register verify as frame memory, an
+array-returning call matches its expected array type structurally, and a
+loop's record fields reclaim the invariants' reserve.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -4824,6 +4829,31 @@ aggregate leaves the view's reads unchanged (`view_unchanged`).
 `TestNativeShapesReadOnlyBorrow` pins `sum` reading its block in place and
 `main` copying the block once, for the call with the writable span;
 `TestE2ENativeReadOnlyBorrow` agrees with the C backend.
+
+**The SHA-256 path (2026-09-16, AArch64 lane and the verifier).** Three
+gaps the dbs frame scan's `sha256_update` still showed after the copies,
+the pair copies, the fields in registers, and the aggregate helpers. The
+verifier read a pair load through a register holding a frame address —
+`ldp x10, x11, [x22, #32]`, the parked result register, a record copied
+by pairs inside the loop — as "a load through a register that is not a
+span base" and left the body trusted; `registerFrameMemory` now admits
+`ldp` as it admits `stp`, and `frameAccessAt` tiles the pair
+(`Oak.PairCopies.pair_copy`). The Oak-side model refused a call returning
+an owned array where an array was expected — `acc.h = bump(acc.h, k)`,
+`next.h = sha256_block(next.h, …)` — because an array type is built
+afresh at each spelling and the check was pointer identity; `sameOakType`
+compares arrays by length and element, scalars by width, records and
+unions by their one instance. And the loop-invariant pass's reserve,
+claimed before the body lowers, could take the callee-saved register a
+loop's record field needed, leaving the field in memory and the hoisted
+form costlier than the plain one (`sha256_update`'s report: 3293 against
+2817); field promotion's `takeCalleeRegister` reclaims a reserved register
+when the unclaimed ones run out. `TestE2ENativeSha256Path` pins `absorb`
+— its accumulator the result area, `h` copied by pairs through the parked
+register in the loop, `filled` and `blocks` in registers — no longer
+trusted for the pair loads (witnessed on 410 inputs; the coupling of the
+result area's loop-carried words is the next step), agreeing with the C
+backend.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
