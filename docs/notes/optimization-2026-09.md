@@ -141,7 +141,15 @@ column unchanged or improved.
    allocator for the flattened kernels: the thirty-two vector registers
    hold a flattened kernel's forty vector locals only with liveness.
    Target: UTF-8 (5×), then inlining pays instead of hurting. (Scalar
-   locals already live in callee-saved registers across calls.)
+   locals already live in callee-saved registers across calls.) **First
+   step landed 2026-09-16:** the flattened validator made no calls but
+   copied every vector operand into a scratch and every result back —
+   fifty `orr`s — because the vector path had none of the in-place
+   reads and result retargeting the scalar path has; with them
+   (`94-assembler.md` §9 "Vector operands in place") and literal splats
+   as `movi`, the body is 330 lines from 611 and the validator 1.2× the
+   C backend from 1.65× in one alternated run. The five spilled locals
+   remain the allocator's case.
 3. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;
@@ -160,7 +168,19 @@ column unchanged or improved.
    `__builtin_assume_aligned`, refinements and extents as
    `__builtin_assume` at loop headers: the C backend "a real backend"
    (`performance.md` §9). Measured by `-opt 2` before and after on the
-   kernels; the C compiler's vectorizer is the consumer.
+   kernels; the C compiler's vectorizer is the consumer. **Measured
+   2026-09-16 before landing, and found neutral on clang 21:** two store
+   loops over a span and a view (`dst[i] = dst[i] + src[i] * k` over
+   `u32`, `dst[i] = src[i] ^ k` over bytes) vectorize identically with
+   and without `restrict` base pointers (`-Rpass=loop-vectorize`: width
+   4×4 and 16×4 both ways) and time the same within noise (0.10–0.15 and
+   0.016–0.026 ns per element, alternated), because clang versions the
+   loop on a runtime overlap check whose cost is a compare per call. The
+   `restrict` emission is therefore not landed; the alignment and extent
+   assumptions wait for a loop where the C compiler demonstrably peels
+   or checks what Oak has proved. The native lane is where the aliasing
+   fact pays (row 2's consumer is the verifier's store log), not the C
+   compiler.
 6. **Scheduling and selection** for the two lanes' pipelines once the
    allocator exists: load latency hidden across the loop body, `madd`
    and `csel` forms, conditional compares.

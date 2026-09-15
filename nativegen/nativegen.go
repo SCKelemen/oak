@@ -5650,7 +5650,7 @@ func (g *generator) assignVar(name string, r int) {
 // retargetable names the instructions whose destination may be renamed
 // without changing their meaning: they read their sources only (movk reads
 // its destination, the exclusives write a status).
-var retargetable = map[string]bool{"fadd": true, "fsub": true, "fmul": true, "fdiv": true, "fneg": true, "fabs": true, "fsqrt": true, "fmov": true, "scvtf": true, "ucvtf": true, "fcvt": true, "add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
+var retargetable = map[string]bool{"movi": true, "umin": true, "umax": true, "cmeq": true, "uqsub": true, "ushr": true, "sshr": true, "fmin": true, "fmax": true, "dup": true, "tbl": true, "ext": true, "cnt": true, "fadd": true, "fsub": true, "fmul": true, "fdiv": true, "fneg": true, "fabs": true, "fsqrt": true, "fmov": true, "scvtf": true, "ucvtf": true, "fcvt": true, "add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
 
 // retargetLast rewrites the last emitted instruction's destination from
 // scratch register r to register v, when that instruction is the one that
@@ -5677,6 +5677,15 @@ func (g *generator) retargetLast(r, v int) bool {
 		// A float scratch in its s or d view: the home keeps the view.
 		renamed.Num = v - vecBase
 		renamed.Text = dst.Vec + strconv.Itoa(v-vecBase)
+	case dst.Class == asm.ClassV && dst.Vec == "q" && dst.Lane < 0 && dst.Num == r-vecBase && v >= vecBase:
+		// A vector loaded whole (`ldr q16`): the home takes the load.
+		renamed.Num = v - vecBase
+		renamed.Text = "q" + strconv.Itoa(v-vecBase)
+	case dst.Class == asm.ClassV && isArrangement(dst.Vec) && dst.Lane < 0 && dst.Num == r-vecBase && v >= vecBase:
+		// A vector scratch in an arrangement (`v16.16b`): the operation
+		// writes the variable's home directly.
+		renamed.Num = v - vecBase
+		renamed.Text = "v" + strconv.Itoa(v-vecBase) + "." + dst.Vec
 	default:
 		return false
 	}
@@ -5684,6 +5693,16 @@ func (g *generator) retargetLast(r, v int) bool {
 	ins.Operands = operands
 	g.items[n-1] = ins
 	return true
+}
+
+// isArrangement reports a whole-vector arrangement (`16b`, `8h`, `4s`,
+// `2d`, and the 64-bit halves), never a scalar view or a lane.
+func isArrangement(vec string) bool {
+	switch vec {
+	case "16b", "8b", "8h", "4h", "4s", "2s", "2d", "1d":
+		return true
+	}
+	return false
 }
 
 // operandType is the common type of a comparison's operands.
