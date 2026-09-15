@@ -3820,10 +3820,14 @@ loop's exit tests — the preheader runs exactly when the body would have
 run once, so the trap fires on the same inputs as before, once — and the
 fact it establishes holds at the header on both edges, so the element
 address it licenses hoists after it (§7: constants, global addresses,
-element regions, and index guards are in the label state). A loop that
-calls hoists nothing into a register (a call clobbers every scratch
-register); its copies still propagate and its guard still peels, on
-callee-saved registers. Loads stay (memory the loop stores through may
+element regions, and index guards are in the label state). A write into a
+register a variable lives in is the variable's value, read where no block
+sees — after the loop, at the header, in another arm — so it is neither
+moved nor propagated away (the verifier refuted a `result = true` hoisted
+and an `x = y` propagated during development, `dec_prefix_less`,
+`utf8_first_error_at`). A loop that calls hoists nothing into a register
+(a call clobbers every scratch register); its copies still propagate and
+its guard still peels, on callee-saved registers. Loads stay (memory the loop stores through may
 alias), as do stores and calls. The os pilot's page-zeroing loop went
 from fifteen instructions per element to seven: the exit test, the
 element guard, `str x13, [x14, w4, uxtw #3]`, the increment, the back

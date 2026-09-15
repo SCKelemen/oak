@@ -116,7 +116,7 @@ func findGeneratorLoops(items []asm.Item) []invariantLoop {
 // registers the renames took, and how many instructions moved or
 // disappeared (the compiler's fallback lowers the body again without the
 // pass when the checker refuses the hoisted form).
-func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]asm.Item, []int, int) {
+func hoistInvariants(items []asm.Item, mentioned map[int]bool, homes map[int]bool, trap string) ([]asm.Item, []int, int) {
 	var taken []int
 	changed := 0
 	done := map[string]bool{}
@@ -136,7 +136,7 @@ func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]a
 		before := len(items)
 		var used []int
 		var out []asm.Item
-		out, used = hoistLoop(items, *next, mentioned, trap)
+		out, used = hoistLoop(items, *next, mentioned, homes, trap)
 		if len(out) != before || used != nil {
 			changed++
 		}
@@ -148,8 +148,11 @@ func hoistInvariants(items []asm.Item, mentioned map[int]bool, trap string) ([]a
 	}
 }
 
-// hoistLoop processes one loop.
-func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, trap string) ([]asm.Item, []int) {
+// hoistLoop processes one loop. homes are the registers variables live in:
+// a write into one is the variable's value, read where no block analysis
+// sees (after the loop, at the header, in another arm), so it is neither
+// moved nor propagated away.
+func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, homes map[int]bool, trap string) ([]asm.Item, []int) {
 	h, b := loop.header, loop.back
 	// Registers the loop writes; a call writes every caller-saved register.
 	written := map[int]bool{}
@@ -323,7 +326,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, tra
 			continue
 		}
 		dest, isReg := ins.Operands[0].(asm.Register)
-		if !isReg || (dest.Class != asm.ClassX && dest.Class != asm.ClassW) {
+		if !isReg || (dest.Class != asm.ClassX && dest.Class != asm.ClassW) || homes[dest.Num] {
 			continue
 		}
 		// movk reads its destination: only as the second half of a

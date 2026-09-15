@@ -1192,6 +1192,10 @@ type generator struct {
 	leafHomes []int
 	argHomes  map[string]int
 	homesUsed map[int]bool // every argument register handed out as a home
+	// everHome: every general register any variable ever lived in — the
+	// loop-invariant pass never moves or removes a write into one (its
+	// value is the variable's, read where the block cannot see).
+	everHome map[int]bool
 	// callerHomes: in a function that calls, the caller-saved registers a
 	// variable may live in once the callee-saved ones are taken — x16, x17
 	// and the argument registers no parameter occupies — each saved before
@@ -1572,6 +1576,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	g.hasCalls = mentionsCall(fn.Body)
 	g.argHomes = map[string]int{}
 	g.homesUsed = map[int]bool{}
+	g.everHome = map[int]bool{}
 	if g.hasCalls {
 		g.outgoing = g.outgoingArea(fn.Body)
 	}
@@ -1946,7 +1951,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
 		var hoistedInto []int
 		var moved int
-		body, hoistedInto, moved = hoistInvariants(body, named, g.trap)
+		body, hoistedInto, moved = hoistInvariants(body, named, g.everHome, g.trap)
 		hoistedLoops[out] = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
@@ -3270,6 +3275,7 @@ func (g *generator) popScope() {
 					g.spans[name] = *b.sp
 				} else {
 					g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
+					g.noteHome(b.reg)
 				}
 				break
 			}
@@ -3909,7 +3915,15 @@ func (g *generator) declare(name string, s scalar) int64 {
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
+	g.noteHome(r)
 	return offset
+}
+
+// noteHome records a register a variable lives in (everHome).
+func (g *generator) noteHome(r int) {
+	if r >= 0 && r < vecBase && g.everHome != nil {
+		g.everHome[r] = true
+	}
 }
 
 // declareAt binds a scalar variable to a given register: a leaf's
@@ -3918,6 +3932,7 @@ func (g *generator) declareAt(name string, s scalar, r int) {
 	g.homesUsed[r] = true
 	g.slots[name], g.types[name], g.regs[name] = -1, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, typ: s, reg: r}
+	g.noteHome(r)
 }
 
 // slotMem is the frame address of a slot: past the [x29, x30] pair and the
