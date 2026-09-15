@@ -2779,7 +2779,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// it from the slot the body stored, at its offset and width.
 				chunk, reason, okArea := x.resultAreaChunk(state)
 				if !okArea {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				return x.end(chunk, state)
 			}
@@ -2808,7 +2808,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			return nil, nil, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		case "adrl":
@@ -2837,7 +2837,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 			cond, reason, ok := branchCondition(instr, state)
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			target, ok := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 			if !ok {
@@ -2904,7 +2904,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			join, hasJoin := x.joins[pc]
 			if !hasJoin || target <= pc || join <= pc {
 				if _, _, reason, ok := x.run(target, takenState); !ok {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				return x.run(pc+1, state)
 			}
@@ -2916,7 +2916,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			x.stops = x.stops[:len(x.stops)-1]
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			parked := append([]*symbolicState(nil), x.joined[mark:]...)
 			x.joined = x.joined[:mark]
@@ -2927,7 +2927,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if !mergeable {
 				for _, parkedState := range parked {
 					if _, _, reason, ok := x.run(join, parkedState); !ok {
-						return nil, nil, reason, false
+						return nil, nil, atInstruction(reason, instr), false
 					}
 				}
 				return nil, nil, "", true
@@ -2936,19 +2936,19 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if isFrameMemory(instr) {
 			if reason, ok := x.frameAccess(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if mem, base, isFrame := registerFrameMemory(instr, state); isFrame {
 			if reason, ok := x.registerFrameAccess(instr, state, mem, base); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
@@ -2956,51 +2956,61 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// An exclusive store, an LSE atomic, or clrex through a span
 			// element (asm/atomics.go).
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if instr.Mnemonic == "ldp" {
 			if reason, ok := x.loadPair(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if isLoad(instr.Mnemonic) {
 			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
 				if reason, ok := x.loadVector(instr, state); !ok {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				continue
 			}
 			if reason, ok := x.load(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if handled, reason, ok := x.globalStore(instr, state); handled {
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if handled, reason, ok := x.spanStore(instr, state); handled {
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if hasVectorOperand(instr) {
 			if reason, ok := x.stepVector(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if reason, ok := step(instr, state); !ok {
-			return nil, nil, reason, false
+			return nil, nil, atInstruction(reason, instr), false
 		}
 	}
 	return nil, nil, "no ret reached", false
+}
+
+// atInstruction names the instruction behind a refusal that says nothing
+// of where it arose (an unbound register read: which register, which
+// line), so the verdict points at the code.
+func atInstruction(reason string, instr Instruction) string {
+	if reason == "unbound register read" {
+		return fmt.Sprintf("unbound register read at line %d (%s)", instr.Line, instr.String())
+	}
+	return reason
 }
 
 // pathEnd is one path's outcome: its result and effects, or trapPath, with
