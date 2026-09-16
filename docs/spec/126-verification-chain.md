@@ -157,6 +157,23 @@ occurrence identity, not control-flow placement,
 dynamic call counts, arguments/ABI, callee implementation equivalence,
 encoding, relocation, or the non-OptIR native path.
 
+The verifier's ordinary machine-call summary path now has a separate exact
+callee-identity gate. `asm.ResolveNativeCallee` is shared by call
+summarization, loop discovery, outgoing-stack-area analysis, and the verdict
+cache. It requires the function-map key and declaration name to agree and the
+machine symbol to be exactly that scalar name, or exactly the active lane's
+suffix of a declaration whose signature carries a fixed vector. Reserved-name
+collisions, arbitrary aliases, unsuffixed vector entries, suffixed scalar
+entries, opposite-lane suffixes, malformed declarations, and ambiguous
+exact/base bindings refuse. `Oak.AssemblerCalleeIdentity.resolve_sound` proves
+the corresponding ambiguity-aware model returns only a canonical declaration
+whose native symbol is the queried machine symbol. Cross-target Go tables
+cover the accepting and refusing decision families, with representative live
+decisions pinned to Lean examples. This
+closes static symbol-to-Oak-body identity for summarized direct calls, not call
+placement, ABI argument transport, the truth of the callee body summary, or
+callee implementation equivalence.
+
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register
 aggregates, deferred span decisions, and two-half vectors—preserves that

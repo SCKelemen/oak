@@ -128,14 +128,12 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 		if !ok {
 			continue
 		}
-		name := symbol.Name
-		callee := functions[name]
-		if callee == nil {
-			if base, suffixed := strings.CutSuffix(name, asm.VectorEntrySuffix(asmFn.Arch)); suffixed {
-				name, callee = base, functions[base]
-			}
+		callee, resolved := asm.ResolveNativeCallee(asmFn.Arch, symbol.Name, functions)
+		if !resolved {
+			continue
 		}
-		if callee == nil || reached[name] {
+		name := callee.Name.Value
+		if reached[name] {
 			continue
 		}
 		reached[name] = true

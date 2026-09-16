@@ -2001,7 +2001,7 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 		}
 	}
 	exec.hasResult = hasResult
-	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
+	exec.loopExits = findLoopsIn(fn.Name, fn.Arch, fn.Items, labels, fn.Callees)
 	if joins {
 		exec.joins = joinPoints(fn.Items, labels)
 	}
@@ -8751,15 +8751,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if !isSym {
 		return opaque, false
 	}
-	callee := x.fn.Callees[sym.Name]
-	if callee == nil {
-		// A vector-contract callee is reached at its native entry, the Oak
-		// name under the lane's suffix (VectorEntrySuffix).
-		if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-			callee = x.fn.Callees[base]
-		}
-	}
-	if callee == nil || callee.Body == nil || callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
+	callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+	if !resolved {
 		return opaque, false
 	}
 	name := callee.Name.Value

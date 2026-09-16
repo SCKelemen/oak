@@ -200,7 +200,7 @@ func writesRegisterIn(items []Item, from, to, reg int) bool {
 // Back edges are met in item order, so an inner loop is recognized before
 // the outer body containing it is examined.
 func findLoops(items []Item, labels map[string]int) map[int]loopShape {
-	return findLoopsIn("", items, labels, nil)
+	return findLoopsIn("", ArchArm64, items, labels, nil)
 }
 
 // findLoopsIn is findLoops naming the function for the OAK_VERIFY_TRACE
@@ -208,7 +208,7 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 // program's functions: a call to one of them, in a header or a body, is
 // summarized in place (summarizeCall), so it is not a reason to refuse
 // the loop; a call to anything else is.
-func findLoopsIn(function string, items []Item, labels map[string]int, callees map[string]*ast.FunctionStatement) map[int]loopShape {
+func findLoopsIn(function, arch string, items []Item, labels map[string]int, callees map[string]*ast.FunctionStatement) map[int]loopShape {
 	summarizable := func(instr Instruction) bool {
 		if (instr.Mnemonic != "bl" && instr.Mnemonic != "call") || len(instr.Operands) == 0 {
 			return false
@@ -217,17 +217,8 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 		if !isSym {
 			return false
 		}
-		if callees[sym.Name] != nil {
-			return true
-		}
-		// A vector-contract callee is reached at its native entry, the Oak
-		// name under the lane's suffix (summarizeCall reads it the same way).
-		for _, arch := range []string{ArchArm64, ArchRV64} {
-			if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(arch)); suffixed && callees[base] != nil {
-				return true
-			}
-		}
-		return false
+		_, resolved := ResolveNativeCallee(arch, sym.Name, callees)
+		return resolved
 	}
 	loops := map[int]loopShape{}
 	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
@@ -2197,13 +2188,8 @@ func (x *pathExecutor) outgoingArea() int64 {
 			if !isSym {
 				continue
 			}
-			callee := x.fn.Callees[sym.Name]
-			if callee == nil {
-				if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-					callee = x.fn.Callees[base]
-				}
-			}
-			if callee == nil {
+			callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+			if !resolved {
 				continue
 			}
 			var classes []ArgClass
@@ -2244,13 +2230,8 @@ func (x *pathExecutor) loopsInside(shape loopShape) bool {
 		if !isSym {
 			continue
 		}
-		callee := x.fn.Callees[sym.Name]
-		if callee == nil {
-			if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-				callee = x.fn.Callees[base]
-			}
-		}
-		if callee != nil && callee.Body != nil && bodyHasLoop(callee.Body, x.fn.Callees) {
+		callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+		if resolved && bodyHasLoop(callee.Body, x.fn.Callees) {
 			inside = true
 		}
 	}

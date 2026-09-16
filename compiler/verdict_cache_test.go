@@ -175,33 +175,144 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 		return functions, functions["root"]
 	}
 
-	for _, symbol := range []string{"helper", "helper" + asm.VectorEntrySuffix(asm.ArchArm64)} {
-		before, rootBefore := functionMap("x", "x + u32(1)")
-		after, rootAfter := functionMap("x", "x + u32(2)")
-		machine := &asm.Function{
-			Name:      "root",
-			Arch:      asm.ArchArm64,
-			Signature: rootBefore,
-			Items: []asm.Item{
-				asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: symbol}}},
-			},
-		}
-		beforeKey := verdictCacheKey(machine, rootBefore, before, "")
-		machine.Signature = rootAfter
-		afterKey := verdictCacheKey(machine, rootAfter, after, "")
-		if beforeKey == afterKey {
-			t.Fatalf("machine-only callee %q did not contribute its source identity to the cache key", symbol)
-		}
-	}
-
 	before, rootBefore := functionMap("x", "x + u32(1)")
 	after, rootAfter := functionMap("x", "x + u32(2)")
-	_, rewritten := functionMap("helper(x)", "x")
-	machine := &asm.Function{Name: "root", Arch: asm.ArchArm64, Signature: rootBefore, Body: rewritten.Body}
+	machine := &asm.Function{
+		Name:      "root",
+		Arch:      asm.ArchArm64,
+		Signature: rootBefore,
+		Items: []asm.Item{
+			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: "helper"}}},
+		},
+	}
 	beforeKey := verdictCacheKey(machine, rootBefore, before, "")
 	machine.Signature = rootAfter
 	afterKey := verdictCacheKey(machine, rootAfter, after, "")
 	if beforeKey == afterKey {
+		t.Fatal("machine-only scalar callee did not contribute its source identity to the cache key")
+	}
+
+	vectorFunctionMap := func(helperBody string) (map[string]*ast.FunctionStatement, *ast.FunctionStatement) {
+		source := "root: (x: u32): u32 = x\ndouble: (v: simd.U8x16): simd.U8x16 = " + helperBody + "\n"
+		p := parser.New(layout.New(scanner.New(source)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		functions := map[string]*ast.FunctionStatement{}
+		for _, statement := range program.Statements {
+			if function, ok := statement.(*ast.FunctionStatement); ok {
+				functions[function.Name.Value] = function
+			}
+		}
+		return functions, functions["root"]
+	}
+	vectorBefore, vectorRootBefore := vectorFunctionMap("simd.add_u8x16(v, v)")
+	vectorAfter, vectorRootAfter := vectorFunctionMap("simd.sub_u8x16(v, v)")
+	vectorSymbol := "double" + asm.VectorEntrySuffix(asm.ArchArm64)
+	vectorMachine := &asm.Function{
+		Name:      "root",
+		Arch:      asm.ArchArm64,
+		Signature: vectorRootBefore,
+		Items: []asm.Item{
+			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: vectorSymbol}}},
+		},
+	}
+	vectorBeforeKey := verdictCacheKey(vectorMachine, vectorRootBefore, vectorBefore, "")
+	vectorMachine.Signature = vectorRootAfter
+	vectorAfterKey := verdictCacheKey(vectorMachine, vectorRootAfter, vectorAfter, "")
+	if vectorBeforeKey == vectorAfterKey {
+		t.Fatal("machine-only vector callee did not contribute its source identity to the cache key")
+	}
+
+	before, rootBefore = functionMap("x", "x + u32(1)")
+	after, rootAfter = functionMap("x", "x + u32(2)")
+	_, rewritten := functionMap("helper(x)", "x")
+	machine = &asm.Function{Name: "root", Arch: asm.ArchArm64, Signature: rootBefore, Body: rewritten.Body}
+	beforeKey = verdictCacheKey(machine, rootBefore, before, "")
+	machine.Signature = rootAfter
+	afterKey = verdictCacheKey(machine, rootAfter, after, "")
+	if beforeKey == afterKey {
 		t.Fatal("a callee reachable only from the verified rewritten body did not contribute to the cache key")
+	}
+}
+
+func TestVerdictCacheMachineCalleesAgreeWithStrictResolver(t *testing.T) {
+	parse := func(source string) map[string]*ast.FunctionStatement {
+		p := parser.New(layout.New(scanner.New(source)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		functions := map[string]*ast.FunctionStatement{}
+		for _, statement := range program.Statements {
+			if function, ok := statement.(*ast.FunctionStatement); ok {
+				functions[function.Name.Value] = function
+			}
+		}
+		return functions
+	}
+	versions := func() (map[string]*ast.FunctionStatement, map[string]*ast.FunctionStatement) {
+		before := parse("root: (x: u32): u32 = x\nhelper: (x: u32): u32 = x + u32(1)\ndouble: (v: simd.U8x16): simd.U8x16 = simd.add_u8x16(v, v)\n")
+		after := parse("root: (x: u32): u32 = x\nhelper: (x: u32): u32 = x + u32(2)\ndouble: (v: simd.U8x16): simd.U8x16 = simd.sub_u8x16(v, v)\n")
+		return before, after
+	}
+	for _, arch := range []string{asm.ArchArm64, asm.ArchRV64} {
+		arch := arch
+		t.Run(arch, func(t *testing.T) {
+			activeSuffix := asm.VectorEntrySuffix(arch)
+			oppositeSuffix := asm.VectorEntrySuffix(asm.ArchArm64)
+			if arch == asm.ArchArm64 {
+				oppositeSuffix = asm.VectorEntrySuffix(asm.ArchRV64)
+			}
+			tests := []struct {
+				name   string
+				symbol string
+				mutate func(map[string]*ast.FunctionStatement)
+			}{
+				{name: "canonical scalar", symbol: "helper"},
+				{name: "active vector", symbol: "double" + activeSuffix},
+				{name: "unsuffixed vector", symbol: "double"},
+				{name: "scalar suffix", symbol: "helper" + activeSuffix},
+				{name: "opposite suffix", symbol: "double" + oppositeSuffix},
+				{name: "alias", symbol: "alias", mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["alias"] = functions["helper"]
+				}},
+				{name: "key name mismatch", symbol: "helper", mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["helper"] = functions["double"]
+				}},
+				{name: "suffixed shadow", symbol: "double" + activeSuffix, mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["double"+activeSuffix] = functions["helper"]
+				}},
+			}
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					before, after := versions()
+					if test.mutate != nil {
+						test.mutate(before)
+						test.mutate(after)
+					}
+					_, resolved := asm.ResolveNativeCallee(arch, test.symbol, before)
+					mnemonic := "bl"
+					if arch == asm.ArchRV64 {
+						mnemonic = "call"
+					}
+					machine := &asm.Function{
+						Name:      "root",
+						Arch:      arch,
+						Signature: before["root"],
+						Items: []asm.Item{
+							asm.Instruction{Mnemonic: mnemonic, Operands: []asm.Operand{asm.Symbol{Name: test.symbol}}},
+						},
+					}
+					beforeKey := verdictCacheKey(machine, before["root"], before, "")
+					machine.Signature = after["root"]
+					afterKey := verdictCacheKey(machine, after["root"], after, "")
+					if changed := beforeKey != afterKey; changed != resolved {
+						t.Fatalf("cache dependency changed = %v, strict resolver = %v", changed, resolved)
+					}
+				})
+			}
+		})
 	}
 }

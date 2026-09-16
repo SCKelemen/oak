@@ -6251,7 +6251,16 @@ inlines. A natively lowered function that passes vectors to a callee the
 C backend realizes is itself left to the C backend, to a fixpoint
 (`compiler/native_bodies.go`), so no call crosses the two contracts
 unconverted. The suffix is reserved the way `__` is: no Oak identifier
-ends in it.
+ends in it. `asm.ResolveNativeCallee` is the single fail-closed identity
+decision used by call summarization, loop discovery, outgoing-area analysis,
+and verdict-cache dependency collection. It accepts an ordinary entry only
+when the map key, declaration name, and unsuffixed machine symbol are equal;
+it accepts a suffixed entry only for a declaration whose signature actually
+carries a fixed vector and only under the active lane's suffix. Aliased or
+malformed bindings, an unsuffixed vector entry, a suffixed scalar entry, the
+other lane's suffix, and ambiguous exact/base spellings remain opaque. This
+ensures that the Oak body summarized by the verifier is the body named by the
+machine call and hashed into the verdict cache.
 
 ### 9.y Vector helpers expanded, locals released at their last use (2026-09-13)
 

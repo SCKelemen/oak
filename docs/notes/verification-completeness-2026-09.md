@@ -332,6 +332,19 @@ Go-to-Lean pins cover both native targets and all rejection shapes. Call
 placement/control flow, dynamic counts, argument ABI, callee implementation
 equivalence, and universal Go-to-Lean correspondence remain open.
 
+The non-OptIR call-summary path now also closes its static
+machine-symbol-to-Oak-body identity seam. One shared fail-closed resolver feeds
+the verifier, loop analysis, outgoing-area calculation, and cache dependency
+collection. It admits only a canonical scalar spelling or the active lane's
+canonical suffix for a declaration with a fixed-vector signature, and rejects
+map aliases, source/suffix collisions, the other lane's suffix, ABI-shape
+mismatches, and ambiguity. `Oak.AssemblerCalleeIdentity.resolve_sound` proves
+the small resolution model returns a declaration whose canonical native symbol
+is exactly the queried symbol. Cross-target Go tables cover the decision
+families, with representative live decisions serving as bounded Lean
+correspondence pins. This does not prove dynamic call placement, ABI transport,
+callee-summary truth, or the machine implementation of the callee.
+
 ### 3.4 Object, executable, relocation, and linking are not formally closed
 
 `asm/object.go` and `asm/executable.go` compute ELF and Mach-O layouts, symbol

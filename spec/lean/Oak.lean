@@ -4,6 +4,7 @@ import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
 import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
+import Oak.AssemblerCalleeIdentity
 import Oak.ObjectLayout
 import Oak.Kernel
 import Oak.BufferCustody
