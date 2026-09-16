@@ -16,7 +16,7 @@ func TestLayoutOptIRRV64SpillsAlignsAndBoundsCanonicalSlots(t *testing.T) {
 			{ID: 3, WidthBytes: 1, AlignmentBytes: 1, Values: []optir.ValueID{3}},
 		},
 	}
-	layout, err := layoutOptIRRV64Spills(plan, 32)
+	layout, err := layoutOptIRRV64Spills(plan, nil, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,8 +26,77 @@ func TestLayoutOptIRRV64SpillsAlignsAndBoundsCanonicalSlots(t *testing.T) {
 
 	plan.Slots = append(plan.Slots, optir.SpillSlot{ID: 4, WidthBytes: 8, AlignmentBytes: 8, Values: []optir.ValueID{4}})
 	plan.Spills[4] = 4
-	if _, err := layoutOptIRRV64Spills(plan, 16); err == nil || !strings.Contains(err.Error(), "frame limit") {
+	if _, err := layoutOptIRRV64Spills(plan, nil, 16); err == nil || !strings.Contains(err.Error(), "frame limit") {
 		t.Fatalf("overflowing spill layout error = %v", err)
+	}
+}
+
+func TestLayoutOptIRRV64SpillsOmitsOnlyFullyRematerializedSlots(t *testing.T) {
+	plan := optir.RegisterPlan{
+		Spills: map[optir.ValueID]optir.SpillSlotID{1: 1, 2: 1, 3: 2},
+		Slots: []optir.SpillSlot{
+			{ID: 1, WidthBytes: 4, AlignmentBytes: 4, Values: []optir.ValueID{1, 2}},
+			{ID: 2, WidthBytes: 4, AlignmentBytes: 4, Values: []optir.ValueID{3}},
+		},
+	}
+	rematerialized := map[optir.ValueID]optir.RematerializationDecision{
+		1: {Value: 1, Code: optir.OpConstInt},
+		3: {Value: 3, Code: optir.OpConstInt},
+	}
+	layout, err := layoutOptIRRV64Spills(plan, rematerialized, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset, retained := layout.Offsets[1]
+	if layout.Frame != 16 || !retained || offset != 0 {
+		t.Fatalf("filtered spill layout = %+v, want shared slot 1 retained at offset zero", layout)
+	}
+	if _, exists := layout.Offsets[2]; exists {
+		t.Fatalf("fully rematerialized slot 2 was physically allocated: %+v", layout)
+	}
+
+	rematerialized[2] = optir.RematerializationDecision{Value: 2, Code: optir.OpConstInt}
+	layout, err = layoutOptIRRV64Spills(plan, rematerialized, 32)
+	if err != nil || layout.Frame != 0 || len(layout.Offsets) != 0 {
+		t.Fatalf("fully rematerialized layout = %+v, err=%v; want empty frame", layout, err)
+	}
+	rematerialized[99] = optir.RematerializationDecision{Value: 99, Code: optir.OpConstInt}
+	if _, err := layoutOptIRRV64Spills(plan, rematerialized, 32); err == nil || !strings.Contains(err.Error(), "is not spilled") {
+		t.Fatalf("unspilled rematerialization error = %v", err)
+	}
+}
+
+func TestOptIRRV64RematerializationCostMatchesEncoderWords(t *testing.T) {
+	constant := func(typ optir.Type, value string) optir.Operation {
+		return optir.Operation{
+			Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: typ}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: value}},
+		}
+	}
+	for name, test := range map[string]struct {
+		operation optir.Operation
+		cost      uint64
+	}{
+		"small":    {operation: constant("u32", "2047"), cost: 1},
+		"lui only": {operation: constant("u32", "4096"), cost: 1},
+		"two word": {operation: constant("u32", "2048"), cost: 2},
+		"wide":     {operation: constant("u64", "1311768467463790320"), cost: 6},
+		"bool": {operation: optir.Operation{
+			Code: optir.OpConstBool, Results: []optir.Value{{ID: 1, Type: optir.TypeBool}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "true"}},
+		}, cost: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cost, ok := optIRRV64RematerializationCost(test.operation)
+			if !ok || cost != test.cost {
+				t.Fatalf("cost = %d, ok=%t; want %d/true", cost, ok, test.cost)
+			}
+		})
+	}
+	malformed := constant("u32", "1")
+	malformed.Attributes = append(malformed.Attributes, optir.Attribute{Name: "extra", Value: "forged"})
+	if _, ok := optIRRV64RematerializationCost(malformed); ok {
+		t.Fatal("constant with extra attributes received an RV64 rematerialization cost")
 	}
 }
 

@@ -30,7 +30,8 @@ const (
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
 // values live across calls, broad spill-loop shapes, and unsupported spill
-// pressure refuse the candidate.
+// pressure refuse the candidate. On acyclic spill paths, independently
+// verified cheap constants may be reconstructed instead of stored.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -85,6 +86,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	colors := map[optir.ValueID]int{}
 	liveOut := map[optir.BlockID][]optir.ValueID{}
 	spills := map[optir.ValueID]optir.SpillSlotID{}
+	rematerializations := map[optir.ValueID]optir.RematerializationDecision{}
 	spillLayout := optIRRV64SpillLayout{Offsets: map[optir.SpillSlotID]int64{}}
 	coloring, coloringErr := optir.ColorRegisters(cfg, strictRegisters, fixed)
 	if coloringErr == nil {
@@ -103,7 +105,11 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
 			return nil, err
 		}
-		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxFrame)
+		rematerializations, err = optIRRV64Rematerializations(cfg, spillRegisters, planFixed, plan)
+		if err != nil {
+			return nil, err
+		}
+		spillLayout, err = layoutOptIRRV64Spills(plan, rematerializations, optIRRV64MaxFrame)
 		if err != nil {
 			return nil, err
 		}
@@ -128,6 +134,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 
 	selector := &optIRRV64Selector{
 		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets,
+		rematerializations: rematerializations, definitions: optIRRV64Definitions(cfg),
 		frame: frame, raOffset: raOffset,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls, order: layout.Order,
 	}
@@ -169,19 +176,21 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 }
 
 type optIRRV64Selector struct {
-	cfg          optir.CFG
-	types        map[optir.ValueID]optir.Type
-	colors       map[optir.ValueID]int
-	spills       map[optir.ValueID]optir.SpillSlotID
-	spillOffsets map[optir.SpillSlotID]int64
-	frame        int64
-	raOffset     int64
-	labels       map[optir.BlockID]string
-	items        []asm.Item
-	written      map[int]bool
-	calls        map[optir.ValueID]string
-	edges        int
-	order        []optir.BlockID
+	cfg                optir.CFG
+	types              map[optir.ValueID]optir.Type
+	colors             map[optir.ValueID]int
+	spills             map[optir.ValueID]optir.SpillSlotID
+	spillOffsets       map[optir.SpillSlotID]int64
+	rematerializations map[optir.ValueID]optir.RematerializationDecision
+	definitions        map[optir.ValueID]optir.Operation
+	frame              int64
+	raOffset           int64
+	labels             map[optir.BlockID]string
+	items              []asm.Item
+	written            map[int]bool
+	calls              map[optir.ValueID]string
+	edges              int
+	order              []optir.BlockID
 }
 
 func (selector *optIRRV64Selector) lower() error {
@@ -225,6 +234,14 @@ func (selector *optIRRV64Selector) lower() error {
 }
 
 func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
+	if len(operation.Results) == 1 {
+		if decision, rematerialized := selector.rematerializations[operation.Results[0].ID]; rematerialized {
+			if decision.Code != operation.Code {
+				return fmt.Errorf("rematerialization decision for value %d names %s, got %s", operation.Results[0].ID, decision.Code, operation.Code)
+			}
+			return nil
+		}
+	}
 	if len(selector.spills) == 0 {
 		return selector.registerOperation(operation)
 	}
@@ -239,7 +256,11 @@ func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 	loaded := map[optir.ValueID]int{}
 	nextScratch := optIRRV64SpillScratchA
 	for _, operand := range operation.Operands {
-		if _, spilled := selector.spills[operand]; !spilled {
+		location, err := selector.valueLocation(operand)
+		if err != nil {
+			return err
+		}
+		if location.slot == 0 && location.rematerialized == 0 {
 			continue
 		}
 		if _, exists := loaded[operand]; exists {
@@ -251,7 +272,7 @@ func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 		original[operand] = selector.colors[operand]
 		selector.colors[operand] = nextScratch
 		loaded[operand] = nextScratch
-		if err := selector.loadSpill(operand, nextScratch, line); err != nil {
+		if err := selector.readLocation(location, nextScratch, selector.types[operand], line); err != nil {
 			return err
 		}
 		nextScratch++
@@ -514,13 +535,11 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, next optir.Bloc
 		}
 		value := terminator.Values[0]
 		if selector.types[value] != optir.Type("()") {
-			if _, spilled := selector.spills[value]; spilled {
-				if err := selector.loadSpill(value, 10, line); err != nil {
-					return err
-				}
-			} else {
-				selector.move(10, selector.register(value), line)
+			register, err := selector.readValue(value, optIRRV64SpillScratchA, line)
+			if err != nil {
+				return err
 			}
+			selector.move(10, register, line)
 		}
 		if len(selector.calls) != 0 {
 			sp := optIRRV64SP()
@@ -594,8 +613,9 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, next optir.Bloc
 }
 
 type optIRRV64Location struct {
-	register int
-	slot     optir.SpillSlotID
+	register       int
+	slot           optir.SpillSlotID
+	rematerialized optir.ValueID
 }
 
 type optIRRV64LocationMove struct {
@@ -607,11 +627,17 @@ type optIRRV64LocationMove struct {
 func (selector *optIRRV64Selector) valueLocation(value optir.ValueID) (optIRRV64Location, error) {
 	register, colored := selector.colors[value]
 	slot, spilled := selector.spills[value]
-	if colored == spilled {
-		return optIRRV64Location{}, fmt.Errorf("value %d does not have exactly one RV64 machine location", value)
-	}
 	if colored {
+		if spilled {
+			return optIRRV64Location{}, fmt.Errorf("value %d is both colored and spilled", value)
+		}
 		return optIRRV64Location{register: register}, nil
+	}
+	if _, rematerialized := selector.rematerializations[value]; rematerialized {
+		return optIRRV64Location{rematerialized: value}, nil
+	}
+	if !spilled {
+		return optIRRV64Location{}, fmt.Errorf("value %d does not have an RV64 machine location", value)
 	}
 	if slot == 0 {
 		return optIRRV64Location{}, fmt.Errorf("value %d has invalid RV64 spill slot zero", value)
@@ -628,6 +654,12 @@ func (selector *optIRRV64Selector) readValue(value optir.ValueID, scratch, line 
 		return 0, err
 	}
 	if location.slot == 0 {
+		if location.rematerialized != 0 {
+			if err := selector.emitRematerialized(location.rematerialized, scratch, line); err != nil {
+				return 0, err
+			}
+			return scratch, nil
+		}
 		return location.register, nil
 	}
 	if err := selector.loadSpillSlot(location.slot, scratch, selector.types[value], line); err != nil {
@@ -637,6 +669,9 @@ func (selector *optIRRV64Selector) readValue(value optir.ValueID, scratch, line 
 }
 
 func (selector *optIRRV64Selector) readLocation(location optIRRV64Location, destination int, typ optir.Type, line int) error {
+	if location.rematerialized != 0 {
+		return selector.emitRematerialized(location.rematerialized, destination, line)
+	}
 	if location.slot != 0 {
 		return selector.loadSpillSlot(location.slot, destination, typ, line)
 	}
@@ -645,13 +680,16 @@ func (selector *optIRRV64Selector) readLocation(location optIRRV64Location, dest
 }
 
 func (selector *optIRRV64Selector) emitLocationMove(move optIRRV64LocationMove, line int) error {
+	if move.destination.rematerialized != 0 {
+		return fmt.Errorf("parallel copy cannot overwrite rematerialized value %d", move.destination.rematerialized)
+	}
 	if move.destination.slot == 0 {
 		return selector.readLocation(move.source, move.destination.register, move.typ, line)
 	}
 	source := move.source.register
-	if move.source.slot != 0 {
+	if move.source.slot != 0 || move.source.rematerialized != 0 {
 		source = optIRRV64SpillScratchA
-		if err := selector.loadSpillSlot(move.source.slot, source, move.typ, line); err != nil {
+		if err := selector.readLocation(move.source, source, move.typ, line); err != nil {
 			return err
 		}
 	}
@@ -720,6 +758,9 @@ func (selector *optIRRV64Selector) emitLocationCopies(moves []optIRRV64LocationM
 		// Preserve one old destination in t6, then make the cycle acyclic.
 		// Slot-to-slot traffic uses t5, so it cannot overwrite this value.
 		cycle := moves[0].destination
+		if cycle.rematerialized != 0 {
+			return fmt.Errorf("parallel-copy cycle cannot overwrite rematerialized value %d", cycle.rematerialized)
+		}
 		var cycleType optir.Type
 		for _, move := range moves {
 			if move.source == cycle {
@@ -741,6 +782,59 @@ func (selector *optIRRV64Selector) emitLocationCopies(moves []optIRRV64LocationM
 		}
 	}
 	return nil
+}
+
+func (selector *optIRRV64Selector) emitRematerialized(value optir.ValueID, destination, line int) error {
+	decision, admitted := selector.rematerializations[value]
+	operation, exists := selector.definitions[value]
+	if !admitted || !exists || decision.Code != operation.Code || len(operation.Results) != 1 || operation.Results[0].ID != value ||
+		len(operation.Operands) != 0 || len(operation.Effects) != 0 || len(operation.Facts) != 0 {
+		return fmt.Errorf("value %d has no closed RV64 rematerialization definition", value)
+	}
+	if _, valid := optIRRV64RematerializationCost(operation); !valid {
+		return fmt.Errorf("value %d has invalid RV64 rematerialization cost input", value)
+	}
+	switch operation.Code {
+	case optir.OpConstBool:
+		if operation.Results[0].Type != optir.TypeBool {
+			return fmt.Errorf("malformed rematerialized Bool constant %d", value)
+		}
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok || spelling != "true" && spelling != "false" {
+			return fmt.Errorf("invalid rematerialized Bool constant %d", value)
+		}
+		bits := int64(0)
+		if spelling == "true" {
+			bits = 1
+		}
+		selector.constant(destination, bits, line)
+		return nil
+	case optir.OpConstInt:
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok {
+			return fmt.Errorf("rematerialized integer constant %d has no value", value)
+		}
+		bits, err := optIRIntegerConstant(spelling, operation.Results[0].Type)
+		if err != nil {
+			return fmt.Errorf("invalid rematerialized %s constant %d", operation.Results[0].Type, value)
+		}
+		selector.constant(destination, optIRRV64Canonical(bits, operation.Results[0].Type), line)
+		return nil
+	default:
+		return fmt.Errorf("value %d uses forbidden RV64 rematerialization operation %s", value, operation.Code)
+	}
+}
+
+func optIRRV64Definitions(cfg optir.CFG) map[optir.ValueID]optir.Operation {
+	definitions := map[optir.ValueID]optir.Operation{}
+	for _, block := range cfg.Blocks {
+		for _, operation := range block.Operations {
+			for _, result := range operation.Results {
+				definitions[result.ID] = operation
+			}
+		}
+	}
+	return definitions
 }
 
 func (selector *optIRRV64Selector) constant(destination int, value int64, line int) {

@@ -2,21 +2,27 @@ package machine
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/SCKelemen/oak/optir"
 )
 
 // optIRRV64SpillLayout gives a verified abstract spill slot an RV64 frame
-// offset. The materializer owns the whole frame: calls remain refusals until
-// their save area composes with these offsets.
+// offset. The materializer owns the spill portion of the frame; a disjoint
+// return-address save area may be composed above it.
 type optIRRV64SpillLayout struct {
 	Offsets map[optir.SpillSlotID]int64
 	Frame   int64
 }
 
-func layoutOptIRRV64Spills(plan optir.RegisterPlan, maximumFrame int64) (optIRRV64SpillLayout, error) {
+func layoutOptIRRV64Spills(plan optir.RegisterPlan, rematerialized map[optir.ValueID]optir.RematerializationDecision, maximumFrame int64) (optIRRV64SpillLayout, error) {
 	layout := optIRRV64SpillLayout{Offsets: map[optir.SpillSlotID]int64{}}
+	for value := range rematerialized {
+		if _, spilled := plan.Spills[value]; !spilled {
+			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 rematerialized value %d is not spilled", value)
+		}
+	}
 	if len(plan.Spills) == 0 {
 		if len(plan.Slots) != 0 {
 			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spill plan has slots without spilled values")
@@ -36,6 +42,16 @@ func layoutOptIRRV64Spills(plan optir.RegisterPlan, maximumFrame int64) (optIRRV
 		if width != 1 && width != 2 && width != 4 && width != 8 || alignment != width {
 			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spill slot %d has unsupported %d-byte width/%d-byte alignment", slot.ID, width, alignment)
 		}
+		materialized := false
+		for _, value := range slot.Values {
+			if _, omitted := rematerialized[value]; !omitted {
+				materialized = true
+				break
+			}
+		}
+		if !materialized {
+			continue
+		}
 		aligned, ok := checkedAlign(next, alignment)
 		if !ok || aligned > maximumFrame-width {
 			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spill slots exceed the %d-byte target frame limit", maximumFrame)
@@ -43,14 +59,18 @@ func layoutOptIRRV64Spills(plan optir.RegisterPlan, maximumFrame int64) (optIRRV
 		layout.Offsets[slot.ID] = aligned
 		next = aligned + width
 	}
+	for value, slot := range plan.Spills {
+		_, omitted := rematerialized[value]
+		if _, exists := layout.Offsets[slot]; !exists && !omitted {
+			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spilled value %d names missing slot %d", value, slot)
+		}
+	}
+	if next == 0 {
+		return layout, nil
+	}
 	frame, ok := checkedAlign(next, 16)
 	if !ok || frame == 0 || frame > maximumFrame {
 		return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spill frame exceeds the %d-byte target limit", maximumFrame)
-	}
-	for value, slot := range plan.Spills {
-		if _, exists := layout.Offsets[slot]; !exists {
-			return optIRRV64SpillLayout{}, fmt.Errorf("machine: OptIR RV64 spilled value %d names missing slot %d", value, slot)
-		}
 	}
 	layout.Frame = frame
 	return layout, nil
@@ -84,24 +104,39 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 	if len(plan.Spills) == 0 {
 		return nil
 	}
-
-	// Count every CFG edge, including two conditional arms with the same target,
-	// and use a Kahn traversal to distinguish acyclic spill materialization from
-	// the one exact natural-loop form admitted below.
-	indegree := make(map[optir.BlockID]int, len(cfg.Blocks))
-	outgoing := make(map[optir.BlockID][]optir.BlockID, len(cfg.Blocks))
 	for _, block := range cfg.Blocks {
-		indegree[block.ID] = 0
 		for _, operation := range block.Operations {
 			if operation.Code != optir.OpCall && len(operation.Effects) != 0 {
 				return fmt.Errorf("machine: OptIR RV64 spill materialization refuses non-call effects")
 			}
 		}
 	}
+
+	// Distinguish acyclic spill materialization from the one exact natural-loop
+	// form admitted below.
+	acyclic, err := optIRRV64SpillCFGAcyclic(cfg)
+	if err != nil {
+		return err
+	}
+	if !acyclic {
+		return validateOptIRRV64SpillLoop(cfg, plan)
+	}
+	return nil
+}
+
+// optIRRV64SpillCFGAcyclic counts every CFG edge, including two conditional
+// arms with the same target. A Kahn traversal therefore rejects irreducible
+// cycles as well as natural loops.
+func optIRRV64SpillCFGAcyclic(cfg optir.CFG) (bool, error) {
+	indegree := make(map[optir.BlockID]int, len(cfg.Blocks))
+	outgoing := make(map[optir.BlockID][]optir.BlockID, len(cfg.Blocks))
+	for _, block := range cfg.Blocks {
+		indegree[block.ID] = 0
+	}
 	for _, block := range cfg.Blocks {
 		for _, edge := range optIRTerminatorEdges(block.Terminator) {
 			if _, exists := indegree[edge.Target]; !exists {
-				return fmt.Errorf("machine: OptIR RV64 spill CFG names missing block %d", edge.Target)
+				return false, fmt.Errorf("machine: OptIR RV64 spill CFG names missing block %d", edge.Target)
 			}
 			outgoing[block.ID] = append(outgoing[block.ID], edge.Target)
 			indegree[edge.Target]++
@@ -124,10 +159,7 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 			}
 		}
 	}
-	if visited != len(cfg.Blocks) {
-		return validateOptIRRV64SpillLoop(cfg, plan)
-	}
-	return nil
+	return visited == len(cfg.Blocks), nil
 }
 
 // planOptIRRV64Spills keeps the predicate of the one admitted spill-loop shape
@@ -163,6 +195,82 @@ func planOptIRRV64Spills(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int)
 	}
 	plan, err := optir.PlanRegisters(cfg, pool, fixed)
 	return plan, fixed, err
+}
+
+func optIRRV64Rematerializations(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int, plan optir.RegisterPlan) (map[optir.ValueID]optir.RematerializationDecision, error) {
+	accepted := map[optir.ValueID]optir.RematerializationDecision{}
+	acyclic, err := optIRRV64SpillCFGAcyclic(cfg)
+	if err != nil || !acyclic {
+		return accepted, err
+	}
+	evidence, err := optir.AnalyzeRematerialization(cfg, pool, fixed, plan)
+	if err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 rematerialization analysis: %w", err)
+	}
+	if err := optir.VerifyRematerializationPlan(cfg, pool, fixed, plan, evidence); err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 rematerialization evidence: %w", err)
+	}
+	definitions := optIRRV64Definitions(cfg)
+	for _, decision := range evidence.Decisions {
+		if decision.Code != optir.OpConstBool && decision.Code != optir.OpConstInt {
+			continue
+		}
+		operation, exists := definitions[decision.Value]
+		cost, ok := optIRRV64RematerializationCost(operation)
+		if !exists || !ok || decision.Uses == 0 || cost > math.MaxUint64/decision.Uses || decision.Uses == math.MaxUint64 {
+			continue
+		}
+		if cost*decision.Uses <= decision.Uses+1 {
+			accepted[decision.Value] = decision
+		}
+	}
+	return accepted, nil
+}
+
+func optIRRV64RematerializationCost(operation optir.Operation) (uint64, bool) {
+	if len(operation.Results) != 1 || len(operation.Operands) != 0 || len(operation.Effects) != 0 || len(operation.Facts) != 0 {
+		return 0, false
+	}
+	switch operation.Code {
+	case optir.OpConstBool:
+		if operation.Results[0].Type != optir.TypeBool || len(operation.Attributes) != 1 || operation.Attributes[0].Name != optir.AttributeValue {
+			return 0, false
+		}
+		value, ok := optIRAttribute(operation, optir.AttributeValue)
+		return 1, ok && (value == "true" || value == "false")
+	case optir.OpConstInt:
+		if len(operation.Attributes) != 1 || operation.Attributes[0].Name != optir.AttributeValue {
+			return 0, false
+		}
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok {
+			return 0, false
+		}
+		value, err := optIRIntegerConstant(spelling, operation.Results[0].Type)
+		if err != nil {
+			return 0, false
+		}
+		canonical := optIRRV64Canonical(value, operation.Results[0].Type)
+		if canonical >= -(1<<31) && canonical < 1<<31 {
+			return optIRRV64LIWords(canonical), true
+		}
+		low := int64(int32(uint32(uint64(canonical))))
+		high := int64(int32(uint32((uint64(canonical) - uint64(low)) >> 32)))
+		return optIRRV64LIWords(high) + 1 + optIRRV64LIWords(low) + 1, true
+	default:
+		return 0, false
+	}
+}
+
+func optIRRV64LIWords(value int64) uint64 {
+	if value >= -2048 && value <= 2047 {
+		return 1
+	}
+	high := (value + 0x800) >> 12
+	if value-(high<<12) == 0 {
+		return 1
+	}
+	return 2
 }
 
 func optIRRV64CanonicalSpillLoopCondition(cfg optir.CFG) (optir.ValueID, bool) {

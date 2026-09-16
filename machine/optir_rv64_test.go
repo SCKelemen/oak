@@ -373,7 +373,7 @@ call_eighth: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32): u
 	}
 }
 
-func TestLowerOptIRRV64MaterializesVerifiedSpills(t *testing.T) {
+func TestLowerOptIRRV64RematerializesVerifiedConstantSpills(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 spilled_sum: (): u32 = u32(20) + u32(22)
 `)
@@ -389,8 +389,8 @@ spilled_sum: (): u32 = u32(20) + u32(22)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lowered.Frame != 16 {
-		t.Fatalf("spill frame = %d, want 16", lowered.Frame)
+	if lowered.Frame != 0 {
+		t.Fatalf("rematerialized frame = %d, want zero", lowered.Frame)
 	}
 	if findings := asm.Check(lowered, declaration, nil); len(findings) != 0 {
 		t.Fatalf("spilled body fails seam check: %v\n%s", findings, text(lowered.Items))
@@ -399,10 +399,8 @@ spilled_sum: (): u32 = u32(20) + u32(22)
 		t.Fatalf("spilled body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
 	}
 	body := text(lowered.Items)
-	for _, instruction := range []string{"addi sp, sp, #-16", "sw ", "lw ", "addi sp, sp, #16"} {
-		if !strings.Contains(body, instruction) {
-			t.Errorf("spilled body lacks %q:\n%s", instruction, body)
-		}
+	if strings.Contains(body, "sw ") || strings.Contains(body, "lw ") || !strings.Contains(body, "li t5, #20") {
+		t.Fatalf("cheap constants were not reconstructed without frame traffic:\n%s", body)
 	}
 	spillScratch := false
 	for _, register := range lowered.Clobbers {
@@ -410,6 +408,83 @@ spilled_sum: (): u32 = u32(20) + u32(22)
 	}
 	if !spillScratch {
 		t.Errorf("spill scratch is absent from clobbers: %v", lowered.Clobbers)
+	}
+}
+
+func TestLowerOptIRRV64KeepsExpensiveConstantsInVerifiedSpillSlots(t *testing.T) {
+	const values = 15
+	var source strings.Builder
+	source.WriteString("expensive_constants: (): u64 = ")
+	for index := 0; index < values; index++ {
+		if index != 0 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u64(%d)", uint64(0x123456789abcdef0)+uint64(index))
+	}
+	source.WriteByte('\n')
+	declaration := optIRRV64Declaration(t, source.String())
+	cfg := optIRExpensiveConstantPressureCFG(values)
+	plan, planFixed, err := planOptIRRV64Spills(cfg, optIRRV64SpillRegisters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rematerialized, err := optIRRV64Rematerializations(cfg, optIRRV64SpillRegisters, planFixed, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rematerialized) != 0 {
+		t.Fatalf("expensive constants were rematerialized: %+v", rematerialized)
+	}
+	lowered, err := LowerOptIRRV64(cfg, &asm.Function{Name: cfg.Name, Arch: asm.ArchRV64, Signature: declaration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame == 0 || !strings.Contains(body, "sd ") || !strings.Contains(body, "ld ") {
+		t.Fatalf("expensive constants did not retain physical spill traffic:\n%s", body)
+	}
+	if findings := asm.Check(lowered, declaration, nil); len(findings) != 0 {
+		t.Fatalf("expensive-constant body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("expensive-constant body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestLowerOptIRRV64RematerializesCallArgumentsAndKeepsReturnAddressFrame(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+add_remat: (x: u32, y: u32): u32 = x + y
+call_remat: (): u32 = add_remat(u32(20), u32(22))
+`)
+	cfg := optir.CFG{Name: "call_remat", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Operations: []optir.Operation{
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "20"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "22"}}},
+			{Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{1, 2}, Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "add_remat"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+	}}}
+	template := &asm.Function{
+		Name: "call_remat", Arch: asm.ArchRV64, Signature: declarations["call_remat"],
+		Callees: map[string]*ast.FunctionStatement{"add_remat": declarations["add_remat"]},
+	}
+	lowered, err := lowerOptIRRV64WithRegisters(cfg, template, []int{5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame != 16 || strings.Contains(body, "sw ") || strings.Contains(body, "lw ") {
+		t.Fatalf("rematerialized call frame/traffic is wrong: frame=%d\n%s", lowered.Frame, body)
+	}
+	for _, instruction := range []string{"sd ra, [sp,#8]", "li a0, #20", "li t0, #22", "mv a1, t0", "call add_remat", "ld ra, [sp,#8]"} {
+		if !strings.Contains(body, instruction) {
+			t.Errorf("rematerialized call lacks %q:\n%s", instruction, body)
+		}
+	}
+	if findings := asm.Check(lowered, declarations["call_remat"], map[string]bool{"add_remat": true}); len(findings) != 0 {
+		t.Fatalf("rematerialized call fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declarations["call_remat"], declarations["call_remat"].Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("rematerialized call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
 	}
 }
 
@@ -467,7 +542,7 @@ func TestLowerOptIRRV64MaterializesProductionPressureAcrossSSAEdges(t *testing.T
 	}
 }
 
-func TestLowerOptIRRV64MaterializesNarrowSignedSpills(t *testing.T) {
+func TestLowerOptIRRV64RematerializesNarrowSignedSpills(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 spilled_narrow: (): i8 = i8(120) + i8(10)
 `)
@@ -490,12 +565,12 @@ spilled_narrow: (): i8 = i8(120) + i8(10)
 		t.Fatalf("narrow spilled body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
 	}
 	body := text(lowered.Items)
-	if !strings.Contains(body, "sb ") || !strings.Contains(body, "lb ") || !strings.Contains(body, "srai ") {
-		t.Fatalf("i8 spill lacks byte storage or canonical sign extension:\n%s", body)
+	if strings.Contains(body, "sb ") || strings.Contains(body, "lb ") || !strings.Contains(body, "li t5, #120") || !strings.Contains(body, "srai ") {
+		t.Fatalf("i8 constant was not reconstructed with canonical sign extension:\n%s", body)
 	}
 }
 
-func TestLowerOptIRRV64ReloadsSpilledReturnValue(t *testing.T) {
+func TestLowerOptIRRV64RematerializesSpilledReturnValue(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 spilled_return: (): u32 = u32(42)
 `)
@@ -524,17 +599,9 @@ spilled_return: (): u32 = u32(42)
 	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
 		t.Fatalf("spilled-return body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
 	}
-	reloadedIntoResult := false
-	for _, item := range lowered.Items {
-		instruction, ok := item.(asm.Instruction)
-		if !ok || instruction.Mnemonic != "lw" || len(instruction.Operands) == 0 {
-			continue
-		}
-		register, ok := instruction.Operands[0].(asm.Register)
-		reloadedIntoResult = reloadedIntoResult || ok && register.Num == 10
-	}
-	if !reloadedIntoResult {
-		t.Fatalf("spilled return was not reloaded into a0:\n%s", text(lowered.Items))
+	body := text(lowered.Items)
+	if strings.Contains(body, "lw ") || !strings.Contains(body, "li t5, #42") || !strings.Contains(body, "mv a0, t5") {
+		t.Fatalf("spilled return was not rematerialized into the result path:\n%s", body)
 	}
 }
 
@@ -568,8 +635,8 @@ spilled_branch: (): i8 = true ? i8(120) | i8(-120)
 		t.Fatalf("spilled branch body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(branchBody.Items))
 	}
 	branchText := text(branchBody.Items)
-	if !strings.Contains(branchText, "sb ") || !strings.Contains(branchText, "lb ") || !strings.Contains(branchText, "lbu t5") {
-		t.Fatalf("spilled branch lacks edge store/reload traffic:\n%s", branchText)
+	if strings.Contains(branchText, "sb ") || strings.Contains(branchText, "lb ") || !strings.Contains(branchText, "li t5, #1") {
+		t.Fatalf("spilled branch constants were not rematerialized:\n%s", branchText)
 	}
 
 	loopCFG := optir.CFG{Name: "spilled_loop", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
@@ -684,6 +751,10 @@ loop_spill: (n: u32): u32 = {
 		if _, spilledAcc := plan.Spills[5]; !spilledAcc {
 			t.Fatalf("test plan has no loop-carried spill: %+v", plan.Spills)
 		}
+	}
+	rematerialized, err := optIRRV64Rematerializations(cfg, spillRegisters, planFixed, plan)
+	if err != nil || len(rematerialized) != 0 {
+		t.Fatalf("cyclic rematerialization = %+v, err=%v; want none", rematerialized, err)
 	}
 	template := &asm.Function{
 		Name: "loop_spill", Arch: asm.ArchRV64, Signature: declaration,
