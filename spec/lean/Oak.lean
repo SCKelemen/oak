@@ -6,6 +6,7 @@ import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
 import Oak.ObjectLayout
+import Oak.ObjectRelocation
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact
