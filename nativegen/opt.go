@@ -50,6 +50,7 @@ const (
 	TransformValueSelect = "value-select"
 	TransformReallocate  = "reallocate"
 	TransformSchedule    = "schedule"
+	TransformFuse        = "fuse"
 	TransformRotate      = "rotate-loops"
 )
 
@@ -221,6 +222,16 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ReuseFlags = true; return l },
 			fired:   ReusedCompares,
 		},
+		&gatedTransform{laneTransform{
+			// Peephole fusion (machine.Fuse): a shift folded into an add's
+			// shifted operand, an increment folded into a csinc; machine
+			// shape only, shipping only on the verifier's verdict.
+			name: TransformFuse, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.Fuse },
+			apply:   func(l Lane) Lane { l.Fuse = true; return l },
+			fired:   Fused,
+		}},
 		&gatedTransform{laneTransform{
 			// Instruction scheduling (package machine, Phase B): each block's
 			// instructions reordered between barriers so a consumer follows
@@ -414,6 +425,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ValueSelect = false
 	lane.Reallocate = false
 	lane.Schedule = false
+	lane.Fuse = false
 	lane.VectorReductions = false
 	lane.VectorMaps = false
 	lane.NoReductions = true

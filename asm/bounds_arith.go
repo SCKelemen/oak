@@ -346,6 +346,18 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 			}
 		}
 	case "add":
+		if len(instr.Operands) == 3 {
+			// The halving folded into the add's operand: `add wMid, wLo,
+			// wT, lsr #k` under wT = hi - lo is the midpoint in one
+			// instruction (machine.Fuse), the same lemma
+			// (Oak.Assembler.midpoint_below) as `lsr` then `add`.
+			if sh, isShifted := instr.Operands[2].(Shifted); isShifted && sh.Kind == "lsr" && sh.Amount >= 1 && sh.Amount <= 31 && sh.Reg.Class == ClassW && len(regs) >= 2 && regs[1].Class == ClassW {
+				if m, has := c.mid[sh.Reg.Num]; has && m.lo == regs[1].Num && m.hi != dest.Num && sh.Reg.Num != dest.Num {
+					newIdx = &idxFact{boundReg: m.hi}
+				}
+				return
+			}
+		}
 		if len(regs) != 3 || len(instr.Operands) != 3 || regs[1].Class != ClassW || regs[2].Class != ClassW {
 			return
 		}

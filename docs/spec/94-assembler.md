@@ -4804,6 +4804,21 @@ after a slack guard over the same span and index). One vector a trip, not four: 
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
 elements (`benchmarks/native/README.md`, "Map vectorization").
 
+**Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
+`fuse` candidate).** Two instructions the lowering spells one after the
+other become the one instruction that does both, where the lifted webs
+show the intermediate register has one definition and one use in the
+same block and nothing the pair reads is written in between: `lsl`, `lsr`,
+or `asr` by an immediate into the add or sub that reads its result
+(`add wD, wA, wS, lsr #k`), and `add wT, wX, #1` into the `csel` that
+selects it (`csinc wD, wB, wX, !c` for `csel wD, wT, wB, c`; `csinc wD,
+wA, wX, c` for `csel wD, wA, wT, c`). Machine shape only, gated on the
+verifier's verdict like the reallocator and the scheduler, and judged by
+the checker, whose bound arithmetic reads the fused midpoint (§7: `add
+wMid, wLo, wT, lsr #k` under `wT = hi - lo` is `wMid < wHi`, the lemma of
+`lsr` then `add`, Oak.Assembler.midpoint_below). The binary search's
+inner loop is ten instructions from twelve.
+
 **Multiply-add forms (2026-09-16, AArch64 lane;
 `nativegen/multiply_add.go`).** AArch64 computes a product and its addend
 in one instruction, so the integer expressions `a + b * c`, `b * c + a`,

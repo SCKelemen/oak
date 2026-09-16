@@ -295,6 +295,29 @@ bodies lift, schedule (`vsetivli` regions), reallocate their scalar
 registers, and price by stride — what the RV64 map vectorization needed
 from this side (item 24 below).
 
+### Phase B, seventh increment: peephole fusion over the lifted IR
+
+`machine.Fuse` (the `fuse` candidate, gated like the reallocator and the
+scheduler) folds two instructions the lowering spells one after the
+other into the one AArch64 instruction that does both, where the lifted
+webs show the intermediate register has one definition and one use in
+the same block and nothing the pair reads changes in between: a shift
+into an add's shifted operand (`lsr w9, w9, #1; add w25, w7, w9` → `add
+w25, w7, w9, lsr #1`) and an increment into a csinc (`add w10, w25, #1;
+csel w7, w10, w7, lo` → `csinc w7, w7, w25, hs`). The binary search's
+inner loop — `search` and `page_probe` in `benchmarks/kernels`, the two
+largest gaps left in proven or witnessed code — was eleven instructions
+against clang's nine for the same source, and these two fusions are the
+difference but for clang's `ccmp`, which combines the loop's two exit
+tests into one branch (the next candidate). The seam checker had to learn
+the fused midpoint: its bound arithmetic followed `sub; lsr; add` to
+`mid < hi` (Oak.Assembler.midpoint_below) and read the shifted-operand
+add as nothing, so the fused form kept its element guard and priced
+above the unfused one until `asm/bounds_arith.go` took the halving off
+the operand — the same lemma, one instruction. With that the search
+selects the fused forms for both kernels (`search`'s loop 10 instructions
+from 12 with the guard, cost 3732 against 4116).
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

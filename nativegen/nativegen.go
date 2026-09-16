@@ -1651,8 +1651,12 @@ type Lane struct {
 	// emitted. A body the lift refuses does not lower under the flag, so
 	// the candidate search keeps the body as emitted.
 	Reallocate bool
-	// Schedule reorders each block\'s instructions between barriers so a
-	// value\'s consumer follows its producer by its latency where the
+	// Fuse folds instruction pairs into the one instruction that does both
+	// (machine.Fuse: a shift into an add's shifted operand, an increment
+	// into a csinc); the candidate search turns it on, the verifier judges.
+	Fuse bool
+	// Schedule reorders each block's instructions between barriers so a
+	// value's consumer follows its producer by its latency where the
 	// block has independent work (machine.Schedule); the candidate search
 	// keeps the body as emitted where the lift refuses.
 	Schedule bool
@@ -1965,6 +1969,16 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 // the machine package refuses leaves the configuration without a
 // lowering, so the candidate search keeps the body as emitted.
 func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
+	if lane.Fuse {
+		// Peephole fusion first (machine.Fuse): the scheduler then orders
+		// the fused instructions.
+		fused, n, err := machine.Fuse(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		out.Items = fused.Items
+		fusedOf[out] = n
+	}
 	if !lane.Schedule {
 		return out, nil
 	}
@@ -1982,6 +1996,12 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 func Scheduled(fn *asm.Function) int { return scheduledOf[fn] }
 
 var scheduledOf = map[*asm.Function]int{}
+
+// Fused reports how many instruction pairs a lowering fused under
+// Lane.Fuse.
+func Fused(fn *asm.Function) int { return fusedOf[fn] }
+
+var fusedOf = map[*asm.Function]int{}
 
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
