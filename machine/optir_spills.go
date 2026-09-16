@@ -193,7 +193,7 @@ func optIRCFGAcyclic(cfg optir.CFG) (bool, error) {
 // precolor is checked by the generic planner; failure remains an ordinary
 // candidate refusal.
 func planOptIRSpillsKeepingCanonicalLoopCondition(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int) (optir.RegisterPlan, map[optir.ValueID]int, error) {
-	condition, canonicalLoop := optIRCanonicalSpillLoopCondition(cfg)
+	condition, canonicalLoop := optIRCanonicalLoopCondition(cfg)
 	if canonicalLoop {
 		if _, alreadyFixed := fixed[condition]; alreadyFixed {
 			plan, err := optir.PlanRegisters(cfg, pool, fixed)
@@ -298,7 +298,7 @@ func optIRRV64LIWords(value int64) uint64 {
 	return 2
 }
 
-func optIRCanonicalSpillLoopCondition(cfg optir.CFG) (optir.ValueID, bool) {
+func optIRCanonicalLoopCondition(cfg optir.CFG) (optir.ValueID, bool) {
 	structure, err := optir.AnalyzeLoopStructure(cfg)
 	if err != nil || len(structure.Loops) != 1 || len(structure.BackEdges) != 1 {
 		return 0, false
@@ -362,7 +362,7 @@ func validateOptIRRV64SpillLoop(cfg optir.CFG, plan optir.RegisterPlan) error {
 			}
 		}
 	}
-	if _, canonical := optIRCanonicalSpillLoopCondition(cfg); !canonical {
+	if _, canonical := optIRCanonicalLoopCondition(cfg); !canonical {
 		return refuse()
 	}
 	return nil

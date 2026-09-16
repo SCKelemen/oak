@@ -39,10 +39,11 @@ func validateCheckedOptIRRegionMemory(
 }
 
 // validateOptIRRegionMemory closes the first memory-emission subset before a
-// target sees it. It deliberately admits only acyclic, call-free control flow
-// over exact scalar package-cell reads and whole, nonvolatile replacements.
-// The independent MemorySSA verifier binds operation sites and merge versions
-// to the exact CFG revision and checked region metadata.
+// target sees it. It deliberately admits only acyclic control flow or one
+// canonical natural loop, with calls still refused by the target selectors.
+// Exact scalar package-cell reads and whole, nonvolatile replacements are the
+// only memory vocabulary. The independent MemorySSA verifier binds operation
+// sites and merge/loop versions to the exact CFG and checked region metadata.
 func validateOptIRRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
@@ -61,7 +62,9 @@ func validateOptIRRegionMemory(
 		return nil, fmt.Errorf("machine: OptIR region memory control flow: %w", err)
 	}
 	if !acyclic {
-		return nil, fmt.Errorf("machine: OptIR region memory requires acyclic control flow")
+		if _, canonical := optIRCanonicalLoopCondition(cfg); !canonical {
+			return nil, fmt.Errorf("machine: OptIR region memory requires acyclic control flow or one canonical natural loop")
+		}
 	}
 	if len(metadata.Regions) == 0 {
 		return nil, fmt.Errorf("machine: OptIR region memory requires at least one declared region")
