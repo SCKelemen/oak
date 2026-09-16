@@ -6177,7 +6177,12 @@ side's does not), which the cache masked; and `termSize` is a tree
 size, so a "12 million node" term may be a 330-node graph. The loop
 coupling's stages report their times under the trace (the witness pass
 with its inputs and work, the coupling and the decisions), as does each
-witness input's two sides.
+witness input's two sides. The prover tally itself waits: since
+63a6a47b `ap_certificate_after_proven`'s coupling grows past ten
+gigabytes in `pruneWritesUnder`/`pruneUnderFacts` (the unit verified in
+5.6 s a candidate on the morning's binary), and a full build's optimizer
+materialization holds ten more at its end on either binary; the last
+complete tally stands at 536 proven, 205 evidence, 216 trusted.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
