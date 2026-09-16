@@ -101,6 +101,41 @@ theorem write_cnthctl_el2_is_direct_low32 (newValue : BitVec 64) :
     writeCnthctlEl2Component newValue = ⟨newValue.setWidth 32⟩ := by
   rfl
 
+/-- The pinned CNTVOFF_EL2 body redirects under the same old-HCR nested-
+    virtualization predicate used by VTTBR_EL2. These Boolean arguments are
+    separate architectural-state projections, not fields of either value. -/
+def cntvoffEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 64-bit CNTVOFF_EL2 component.
+    NVMem(96), every other state component, and access/trap effects are omitted. -/
+structure CNTVOFFWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeCntvoffEl2Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : CNTVOFFWriteComponent :=
+  if cntvoffEl2RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_cntvoff_el2_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeCntvoffEl2Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_cntvoff_el2_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeCntvoffEl2Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

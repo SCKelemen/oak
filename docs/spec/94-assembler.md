@@ -822,8 +822,14 @@ immediate op1=100 branch and distinguishes the model's separate op1=000
 `CNTKCTL_EL1` VHE route, which can also mention CNTHCTL_EL2 but is not Oak's
 instruction.
 
-These seams prove neither access admission nor runtime X0/X1/X2/X3 value
-provenance, HCR/VTTBR/VTCR/CNTHCTL field validity, desired
+`MSR CNTVOFF_EL2, X4` is `0xd51ce064`. Generated Lean proves the exact decoder
+target and full-width component body: direct at EL2, or unchanged CNTVOFF plus
+a redirect flag under the projected EL1 nested-virtualization condition. The
+source audit pins the longer op2=011 route, old HCR/SCR aliases, full-width
+NVMem(96) alternative, and official 64-bit register declaration.
+
+These seams prove neither access admission nor runtime X0/X1/X2/X3/X4 value
+provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF field validity, desired
 virtualization or exception-routing configuration, publication, BBM, TLBI
 effects, timer behavior, completion, context synchronization, or a CAT edge.
 

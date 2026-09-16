@@ -97,6 +97,14 @@ is explicitly rejected by the local decoder. Access/trap admission, runtime X3
 provenance, timer permissions and behavior, ordering, synchronization, and a
 dynamic `ColdEntry.Step` occurrence remain external.
 
+The CNTVOFF seam computes `MSR CNTVOFF_EL2, X4` as `0xd51ce064` and proves the
+official admitted EL2 body installs all 64 X4 bits. Lean preserves the distinct
+EL1 nested-virtualization branch as a redirect flag plus unchanged CNTVOFF;
+the source gate audits its NVMem(96) write. Predicate-state consistency,
+access/trap admission, runtime X4 provenance, NVMem(96) contents/effects,
+offset/counter behavior, ordering, synchronization, and a dynamic occurrence
+remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

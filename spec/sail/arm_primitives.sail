@@ -992,6 +992,7 @@ enum SystemRegisterWriteTarget = {
   SystemRegisterWriteTarget_VTTBR_EL2,
   SystemRegisterWriteTarget_VTCR_EL2,
   SystemRegisterWriteTarget_CNTHCTL_EL2,
+  SystemRegisterWriteTarget_CNTVOFF_EL2,
   SystemRegisterWriteTarget_HCR_EL2
 }
 
@@ -1119,6 +1120,51 @@ val aarch64_sysregwrite_cnthctl_el2_pure : bits(64) -> bits(32)
 
 function aarch64_sysregwrite_cnthctl_el2_pure (val_name) = {
     slice(val_name, 0, 32)
+}
+
+val system_register_cntvoff_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_cntvoff_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x0 &
+        op2 == 0b011 then {
+        (true, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    }
+}
+
+val decode64_system_write_cntvoff_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_cntvoff_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_cntvoff_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_cntvoff_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_cntvoff_el2_pure (at_el1, hcr_nv, hcr_nv2,
+    hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
+      (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
 }
 
 val system_register_hcr_el2_target_pure :

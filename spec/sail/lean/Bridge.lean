@@ -679,6 +679,74 @@ theorem cnthctl_el2_generated_body_is_direct_low32 (newValue : BitVec 64) :
       newValue.setWidth 32 := by
   rfl
 
+/-! CNTVOFF_EL2/X4 is a full-width conditional component update. The exact
+official body redirects an EL1 nested-virtualization write to NVMem(96); this
+projection retains only that choice and the CNTVOFF component. Predicate-state
+consistency, NVMem, access admission, and timer behavior remain external. -/
+
+def decodedCntvoffSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_cntvoff_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem cntvoff_el2_x4_decoder_execution_target :
+    decodedCntvoffSystemRegisterWriteTarget msrCntvoffEl2X4 =
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 0b00100#5) := by
+  rfl
+
+theorem cntvoff_el2_x5_decoder_rt_is_preserved :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce065#32 =
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 0b00101#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_cntvoff_target :
+    decodedCntvoffSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_cntvoff_el2_x4_not_projected_to_write :
+    decodedCntvoffSystemRegisterWriteTarget 0xd53ce064#32 = none := by
+  rfl
+
+theorem msr_cnthctl_el2_x3_not_projected_to_cntvoff :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce103#32 = none := by
+  rfl
+
+theorem msr_cntpoff_el2_x4_not_projected_to_cntvoff :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce0c4#32 = none := by
+  rfl
+
+def cntvoffWriteComponentToPair (result : CNTVOFFWriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem cntvoff_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      cntvoffWriteComponentToPair
+        (writeCntvoffEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem cntvoff_el2_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem cntvoff_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

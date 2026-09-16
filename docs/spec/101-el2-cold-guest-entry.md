@@ -156,6 +156,13 @@ body's unconditional low-32 update. The source gate keeps the separate
 admission, dynamic occurrence, X3 provenance, field validity, timer behavior,
 ordering, or synchronization.
 
+The counter-offset theorem computes static `MSR CNTVOFF_EL2, X4` word
+`0xd51ce064`. Generated Lean proves its full-width direct EL2 update and keeps
+the official EL1 nested-virtualization redirect as unchanged CNTVOFF plus a
+flag; the source gate audits NVMem(96). It proves no access/trap admission,
+predicate-state consistency, X4 provenance, offset arithmetic or monotonicity,
+guest timer behavior, ordering, synchronization, or occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

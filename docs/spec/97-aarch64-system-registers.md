@@ -170,6 +170,13 @@ It separately counts the model's second CNTHCTL assignment and the generated
 decoder rejects `MSR CNTKCTL_EL1, X3`; that VHE-sensitive op1=000 path is not
 silently merged into Oak's CNTHCTL theorem.
 
+The counter-offset write is full-width and conditional. Lean computes
+`MSR CNTVOFF_EL2, X4` as `0xd51ce064`, selects CNTVOFF_EL2/X4, and proves the
+direct EL2 body installs the supplied 64-bit value. The projected EL1 nested-
+virtualization alternative preserves old CNTVOFF and raises a redirect flag;
+the source gate pins the same old HCR/SCR aliases and the official NVMem(96)
+assignment. The proof does not connect those Booleans to architectural state.
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -210,6 +217,12 @@ permission, event-stream behavior, VHE alias semantics, ordering, completion,
 context synchronization, upper-32-bit preservation, or other architectural
 state.
 
+The CNTVOFF theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime X4 provenance, predicate-state consistency, or
+NVMem effect. It proves no offset validity, virtual-counter arithmetic,
+wraparound or monotonicity property, guest timer behavior, relation to
+CNTHCTL, ordering, completion, context synchronization, or other state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -225,6 +238,7 @@ state.
 | exact VTTBR_EL2/X1 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact VTCR_EL2/X2 word and low-32 conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact CNTHCTL_EL2/X3 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
+| exact CNTVOFF_EL2/X4 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

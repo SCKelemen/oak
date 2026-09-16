@@ -269,6 +269,15 @@ admission, occurrence, runtime X3 provenance, timer-control field validity,
 timer behavior, upper-bit preservation, other state, ordering, completion,
 and context synchronization remain open.
 
+The following `MSR CNTVOFF_EL2, X4` word is `0xd51ce064`. Generated Lean proves
+the exact target and full-width component transition: direct at EL2, with the
+EL1 nested-virtualization alternative represented as a redirect flag and
+unchanged CNTVOFF. The source gate pins the complete op2=011 route, five old
+HCR/SCR predicate aliases, NVMem(96) alternative, and 64-bit declaration.
+Access/traps, occurrence, runtime X4 provenance, predicate-state consistency,
+NVMem effects, counter arithmetic/monotonicity and guest-timer behavior, other
+state, ordering, completion, and context synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
