@@ -60,9 +60,11 @@ func LowerOptIRRV64WithRegionMemory(
 	return lowerOptIRRV64Selection(cfg, template, optIRRV64Registers, optIRRV64SpillRegisters, memory)
 }
 
-// LowerOptIRRV64WithCheckedRegionMemory is the production compiler entry:
-// checked source authority must project to the exact final CFG before the
-// independently verified RegionMemorySSA selector may emit an access.
+// LowerOptIRRV64WithCheckedRegionMemory is the low-level checked-authority
+// transport entry. It validates that source authority projects to the exact
+// final CFG, but does not independently establish recursive call-summary
+// truth. Production call-bearing lowering uses
+// LowerOptIRRV64WithCertifiedRegionMemory.
 func LowerOptIRRV64WithCheckedRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
@@ -72,6 +74,26 @@ func LowerOptIRRV64WithCheckedRegionMemory(
 	bindings map[optir.RegionID]OptIRRegionGlobal,
 ) (*asm.Function, error) {
 	memory, err := validateCheckedOptIRRegionMemory(cfg, template, authority, projection, memorySSA, bindings)
+	if err != nil {
+		return nil, err
+	}
+	return lowerOptIRRV64Selection(cfg, template, optIRRV64Registers, optIRRV64SpillRegisters, memory)
+}
+
+// LowerOptIRRV64WithCertifiedRegionMemory is the production call-bearing
+// region-memory entry. The certificate independently checks the consistency
+// of the compiler-supplied recursive summary graph before checked projection
+// and RegionMemorySSA validation.
+func LowerOptIRRV64WithCertifiedRegionMemory(
+	cfg optir.CFG,
+	template *asm.Function,
+	authority optir.CheckedMemoryAuthority,
+	projection optir.CheckedMemoryProjection,
+	memorySSA optir.RegionMemorySSA,
+	certificate optir.CheckedMemoryCallCertificate,
+	bindings map[optir.RegionID]OptIRRegionGlobal,
+) (*asm.Function, error) {
+	memory, err := validateCertifiedOptIRRegionMemory(cfg, template, authority, projection, memorySSA, certificate, bindings)
 	if err != nil {
 		return nil, err
 	}

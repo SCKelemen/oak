@@ -109,6 +109,9 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedOptIRProjection := changedOptIR
 	emptyProjection := optir.CheckedMemoryProjection{}
 	changedOptIRProjection.OptIRMemoryProjection = &emptyProjection
+	changedOptIRCallCertificate := changedOptIR
+	emptyCallCertificate := optir.CheckedMemoryCallCertificate{}
+	changedOptIRCallCertificate.OptIRMemoryCallCertificate = &emptyCallCertificate
 	changedOptIRBinding := changedOptIR
 	changedOptIRBinding.OptIRRegionGlobals = map[optir.RegionID]nativegen.OptIRRegionGlobal{
 		"region": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
@@ -132,6 +135,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"optir-memory", driver(false), opt.Identity(changedOptIRMemory)},
 		{"optir-memory-authority", driver(false), opt.Identity(changedOptIRAuthority)},
 		{"optir-memory-projection", driver(false), opt.Identity(changedOptIRProjection)},
+		{"optir-memory-call-certificate", driver(false), opt.Identity(changedOptIRCallCertificate)},
 		{"optir-region-binding", driver(false), opt.Identity(changedOptIRBinding)},
 	}
 	for _, change := range changes {

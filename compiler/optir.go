@@ -1,8 +1,6 @@
 package compiler
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -92,12 +90,7 @@ type optIRCheckedProjection struct {
 	facts      optir.CheckedFactAuthority
 	memory     optir.CheckedMemoryAuthority
 	cfg        optir.CFG
-	summary    optIRCallEffectSummary
-}
-
-type optIRCallEffectSummary struct {
-	fingerprint string
-	accesses    []optir.CheckedMemoryCallAccess
+	summary    optir.CheckedMemoryCallSummary
 }
 
 func newOptIRCallEffectPlanner(root *ast.Program, tc *typechecker.TypeChecker, globals map[string]optir.Type) *optIRCallEffectPlanner {
@@ -150,7 +143,7 @@ func (planner *optIRCallEffectPlanner) lower(function *ast.FunctionStatement) (o
 	if err := optir.VerifyCFGCheckedFacts(cfg, facts); err != nil {
 		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after projection: %w", name, err)
 	}
-	summary, err := deriveOptIRCallEffectSummary(cfg, memory)
+	summary, err := optir.DeriveCheckedMemoryCallSummary(cfg, memory)
 	if err != nil {
 		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR call-effect summary for %s: %w", name, err)
 	}
@@ -190,126 +183,89 @@ func (planner *optIRCallEffectPlanner) lowerRoot(function *ast.FunctionStatement
 	return optIRCheckedProjection{structured: structured, facts: facts, memory: memory, cfg: cfg}, nil
 }
 
-func (planner *optIRCallEffectPlanner) authorizeCall(name string) (optIRCallEffectSummary, error) {
+func (planner *optIRCallEffectPlanner) authorizeCall(name string) (optir.CheckedMemoryCallSummary, error) {
 	function, exists := planner.functions[name]
 	if !exists {
-		return optIRCallEffectSummary{}, refuseOptIR(token.Token{}, "callee %s is unknown or not an internal function", name)
+		return optir.CheckedMemoryCallSummary{}, refuseOptIR(token.Token{}, "callee %s is unknown or not an internal function", name)
 	}
 	projection, err := planner.lower(function)
 	if err != nil {
-		return optIRCallEffectSummary{}, err
+		return optir.CheckedMemoryCallSummary{}, err
 	}
 	return projection.summary, nil
 }
 
-func deriveOptIRCallEffectSummary(cfg optir.CFG, memory optir.CheckedMemoryAuthority) (optIRCallEffectSummary, error) {
-	byRegion := map[optir.RegionID]optir.CheckedMemoryCallAccess{}
-	add := func(access optir.CheckedMemoryCallAccess) error {
-		if access.Region == "" || access.ValueType == "" || access.WholeRegion || access.Volatile || !optIRCallEffectKind(access.Kind) {
-			return fmt.Errorf("malformed call effect for region %q", access.Region)
+// memoryCallCertificate closes one optimized root over exactly the concrete
+// checked callees still reachable from that CFG. The planner cache can contain
+// projections built for unrelated module functions, so it is deliberately not
+// used as the certificate node set.
+func (planner *optIRCallEffectPlanner) memoryCallCertificate(root string, cfg optir.CFG, authority optir.CheckedMemoryAuthority) (optir.CheckedMemoryCallCertificate, error) {
+	if planner == nil || root == "" {
+		return optir.CheckedMemoryCallCertificate{}, fmt.Errorf("compiler: checked memory-call certificate has no root")
+	}
+	cached, exists := planner.cache[root]
+	if !exists || cached.memory.Fingerprint() != authority.Fingerprint() {
+		return optir.CheckedMemoryCallCertificate{}, fmt.Errorf("compiler: checked memory-call certificate root %q is not the cached authority", root)
+	}
+
+	nodes := make([]optir.CheckedMemoryCallCertificateNode, 0, len(planner.cache))
+	seen := map[string]bool{}
+	var collect func(string, optir.CFG, optir.CheckedMemoryAuthority) error
+	collect = func(name string, current optir.CFG, memory optir.CheckedMemoryAuthority) error {
+		if seen[name] {
+			return nil
 		}
-		if prior, exists := byRegion[access.Region]; exists {
-			if prior.ValueType != access.ValueType {
-				return fmt.Errorf("call-effect region %q has conflicting access types %s and %s", access.Region, prior.ValueType, access.ValueType)
+		seen[name] = true
+		nodes = append(nodes, optir.CheckedMemoryCallCertificateNode{Name: name, CFG: current, Authority: memory})
+		calls, err := activeOptIRMemoryCalls(current, memory)
+		if err != nil {
+			return fmt.Errorf("compiler: checked memory-call certificate node %q: %w", name, err)
+		}
+		for _, call := range calls {
+			child, exists := planner.cache[call.Callee]
+			if !exists {
+				return fmt.Errorf("compiler: checked memory-call certificate node %q is missing cached callee %q", name, call.Callee)
 			}
-			access.Kind = joinOptIRCallEffectKinds(prior.Kind, access.Kind)
+			if err := collect(call.Callee, child.cfg, child.memory); err != nil {
+				return err
+			}
 		}
-		byRegion[access.Region] = access
 		return nil
 	}
-	for _, record := range memory.Records() {
-		if record.Volatile || !optIRCallEffectKind(record.Kind) {
-			return optIRCallEffectSummary{}, fmt.Errorf("unsupported direct call effect %s for region %q", record.Kind, record.Region)
-		}
-		if err := add(optir.CheckedMemoryCallAccess{
-			Region: record.Region, Kind: record.Kind, ValueType: record.ValueType,
-			// A source store is a whole-cell operation, but a call may execute
-			// it conditionally. Its summary is therefore only a may-write.
-			WholeRegion: false, Volatile: false,
-		}); err != nil {
-			return optIRCallEffectSummary{}, err
-		}
+	if err := collect(root, cfg, authority); err != nil {
+		return optir.CheckedMemoryCallCertificate{}, err
 	}
-	for _, call := range memory.CallRecords() {
-		for _, access := range call.Accesses {
-			if err := add(access); err != nil {
-				return optIRCallEffectSummary{}, err
+	return optir.NewCheckedMemoryCallCertificate(root, nodes)
+}
+
+func activeOptIRMemoryCalls(cfg optir.CFG, authority optir.CheckedMemoryAuthority) ([]optir.CheckedMemoryCallRecord, error) {
+	byID := make(map[string]optir.CheckedMemoryCallRecord, len(authority.CallRecords()))
+	for _, record := range authority.CallRecords() {
+		byID[record.ID] = record
+	}
+	active := map[string]optir.CheckedMemoryCallRecord{}
+	for _, block := range cfg.Blocks {
+		for _, operation := range block.Operations {
+			if operation.MemoryCallID == "" {
+				continue
 			}
+			record, exists := byID[operation.MemoryCallID]
+			if !exists {
+				return nil, fmt.Errorf("operation refers to unknown checked call ID %s", operation.MemoryCallID)
+			}
+			active[record.ID] = record
 		}
 	}
-	accesses := make([]optir.CheckedMemoryCallAccess, 0, len(byRegion))
-	for _, access := range byRegion {
-		accesses = append(accesses, access)
+	ids := make([]string, 0, len(active))
+	for id := range active {
+		ids = append(ids, id)
 	}
-	sort.Slice(accesses, func(i, j int) bool { return accesses[i].Region < accesses[j].Region })
-	fingerprint, err := fingerprintOptIRCallEffectSummary(cfg, memory.CallRecords(), accesses)
-	if err != nil {
-		return optIRCallEffectSummary{}, err
+	sort.Strings(ids)
+	calls := make([]optir.CheckedMemoryCallRecord, 0, len(ids))
+	for _, id := range ids {
+		calls = append(calls, active[id])
 	}
-	return optIRCallEffectSummary{fingerprint: fingerprint, accesses: accesses}, nil
-}
-
-func optIRCallEffectKind(kind optir.MemoryAccessKind) bool {
-	return kind == optir.MemoryRead || kind == optir.MemoryWrite || kind == optir.MemoryReadWrite
-}
-
-func joinOptIRCallEffectKinds(left, right optir.MemoryAccessKind) optir.MemoryAccessKind {
-	if left == right {
-		return left
-	}
-	return optir.MemoryReadWrite
-}
-
-func fingerprintOptIRCallEffectSummary(cfg optir.CFG, calls []optir.CheckedMemoryCallRecord, accesses []optir.CheckedMemoryCallAccess) (string, error) {
-	cfgFingerprint, err := optir.FingerprintCFG(cfg)
-	if err != nil {
-		return "", err
-	}
-	type childSummary struct{ callee, fingerprint string }
-	children := make([]childSummary, 0, len(calls))
-	for _, call := range calls {
-		children = append(children, childSummary{callee: call.Callee, fingerprint: call.SummaryFingerprint})
-	}
-	sort.Slice(children, func(i, j int) bool {
-		if children[i].callee != children[j].callee {
-			return children[i].callee < children[j].callee
-		}
-		return children[i].fingerprint < children[j].fingerprint
-	})
-	digest := sha256.New()
-	writePart := func(value string) {
-		var size [8]byte
-		binary.LittleEndian.PutUint64(size[:], uint64(len(value)))
-		_, _ = digest.Write(size[:])
-		_, _ = digest.Write([]byte(value))
-	}
-	writePart("oak.compiler.optir-call-effect-summary.v1")
-	writePart(cfgFingerprint)
-	var count [8]byte
-	binary.LittleEndian.PutUint64(count[:], uint64(len(children)))
-	_, _ = digest.Write(count[:])
-	for _, child := range children {
-		writePart(child.callee)
-		writePart(child.fingerprint)
-	}
-	binary.LittleEndian.PutUint64(count[:], uint64(len(accesses)))
-	_, _ = digest.Write(count[:])
-	for _, access := range accesses {
-		writePart(string(access.Region))
-		writePart(string(access.Kind))
-		writePart(string(access.ValueType))
-		if access.WholeRegion {
-			writePart("whole")
-		} else {
-			writePart("partial")
-		}
-		if access.Volatile {
-			writePart("volatile")
-		} else {
-			writePart("nonvolatile")
-		}
-	}
-	return fmt.Sprintf("%x", digest.Sum(nil)), nil
+	return calls, nil
 }
 
 func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
@@ -399,7 +355,7 @@ type optIRMemoryBuilder struct {
 	globals          map[string]optir.Type
 	records          map[string]optir.CheckedMemoryAccessRecord
 	callRecords      map[string]optir.CheckedMemoryCallRecord
-	authorizeCall    func(string) (optIRCallEffectSummary, error)
+	authorizeCall    func(string) (optir.CheckedMemoryCallSummary, error)
 	unsummarizedCall bool
 	err              error
 }
@@ -408,7 +364,7 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 	return lowerCheckedOptIRFunctionWithCalls(function, tc, globals, nil)
 }
 
-func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (optIRCallEffectSummary, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
+func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (optir.CheckedMemoryCallSummary, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
 	if function.Receiver != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
 	}
@@ -852,7 +808,7 @@ func (lowerer *optIRLowerer) lowerCall(call *ast.InvocationExpression, resultTyp
 			}
 			return optir.Value{}, err
 		}
-		record, err := optir.NewCheckedMemoryCallRecordWithAccesses(optIRSource(call.Token), callee.Value, summary.fingerprint, summary.accesses)
+		record, err := optir.NewCheckedMemoryCallRecordWithAccesses(optIRSource(call.Token), callee.Value, summary.Fingerprint(), summary.Accesses())
 		if err != nil {
 			return optir.Value{}, fmt.Errorf("compiler: checked memory call to %s: %w", callee.Value, err)
 		}

@@ -765,10 +765,27 @@ also covers the canonical typed effect set, while child summaries bind the
 exact callee graph recursively; absence never implies any effect grade.
 Authority is an upper bound after verified
 rewrites, so a removed operation may leave an unused record, but every active
-operation must resolve exactly once. The record constructor seals supplied
-summary text; the normal compiler derives that text, while final semantic
-translation validation remains the independent shipping gate. A standalone
-call-summary certificate checker remains future TCB-closure work. Every
+operation must resolve exactly once. The record constructor seals transport
+identity only. Production additionally constructs a closed call-summary
+certificate from the final optimized root CFG and every reachable callee's
+original checked CFG and authority. A standalone OptIR checker defensively
+copies that graph, reprojects every node, rejects cycles, missing children,
+duplicate or unreachable nodes, requires exact authority coverage on every
+callee, recomputes canonical per-region joins bottom-up, and compares every
+call record's claimed fingerprint and accesses with the derived child. The
+root alone may retain unused upper-bound records after verified rewrites. Its
+length-delimited certificate fingerprint binds the exact final root CFG,
+root authority, every reachable callee CFG/authority, and every derived
+summary. Both production region-memory selectors rerun the checker; a final
+active call whose summary feeds RegionMemorySSA without a certificate, a
+certificate with no such active call, or a template whose function identity
+differs from the root fails closed. A call-only `NoModRef` CFG consumes no
+memory-summary fact and stays on the ordinary call path. The certificate is
+also part of candidate and materialization identity. It authenticates the
+internal consistency of the compiler-supplied checked projection graph; it
+does not independently re-lower Oak source or identify the actual machine
+callee. Final semantic translation validation remains the independent
+source/body shipping gate. Every
 package-global region is observable at normal return. Projection, MemorySSA,
 liveness, evidence, DSE, and load forwarding are exact typed artifact-DAG nodes
 after LICM; each transform independently reruns its complete verifier before
@@ -805,7 +822,9 @@ identity. The resulting body still requires seam admission and a
 semantic-verifier verdict before selection. Broader memory loops, aggregate
 regions, broader load PRE through memory phis, definite-write summaries, and
 calls in memory loops remain open; exact recursive `NoModRef`, `Ref`, `Mod`,
-and `ModRef` may-effect summaries are implemented.
+and `ModRef` may-effect summaries and their standalone graph checker are
+implemented. Formally refining that checker or reducing it to a still smaller
+proof-certificate consumer remains TCB-closure work.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its

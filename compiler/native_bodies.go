@@ -268,6 +268,7 @@ type nativeOptIRPlan struct {
 	memorySSA        *optir.RegionMemorySSA
 	memoryAuthority  *optir.CheckedMemoryAuthority
 	memoryProjection *optir.CheckedMemoryProjection
+	memoryCallCert   *optir.CheckedMemoryCallCertificate
 	observability    optir.RegionMemoryObservability
 	bindings         map[optir.RegionID]nativegen.OptIRRegionGlobal
 }
@@ -283,6 +284,7 @@ func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
 	lane.OptIRMemorySSA = plan.memorySSA
 	lane.OptIRMemoryAuthority = plan.memoryAuthority
 	lane.OptIRMemoryProjection = plan.memoryProjection
+	lane.OptIRMemoryCallCertificate = plan.memoryCallCert
 	lane.OptIRMemoryObservability = plan.observability
 	lane.OptIRRegionGlobals = plan.bindings
 }
@@ -371,7 +373,25 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	if !reflect.DeepEqual(memorySSA, analyses.regionLoadMemorySSA) {
 		return nativeOptIRPlan{}
 	}
-	fingerprint, err := optir.FingerprintRegionMemoryInput(optimized, projection.Metadata, projection.Observability)
+	var certificate *optir.CheckedMemoryCallCertificate
+	activeCalls, err := activeOptIRMemoryCalls(optimized, memoryAuthority)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	var fingerprint string
+	if len(activeCalls) == 0 {
+		fingerprint, err = optir.FingerprintRegionMemoryInput(optimized, projection.Metadata, projection.Observability)
+	} else {
+		checkedCertificate, certificateErr := planner.memoryCallCertificate(function.Name.Value, optimized, memoryAuthority)
+		if certificateErr != nil {
+			return nativeOptIRPlan{}
+		}
+		fingerprint, err = optir.FingerprintCertifiedRegionMemoryInput(
+			optimized, projection.Metadata, projection.Observability,
+			function.Name.Value, memoryAuthority, checkedCertificate,
+		)
+		certificate = &checkedCertificate
+	}
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
@@ -383,7 +403,7 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	return nativeOptIRPlan{
 		cfg: &optimized, changes: changes, fingerprint: fingerprint,
 		metadata: &metadata, memorySSA: &memorySSA, memoryAuthority: &memoryAuthority, memoryProjection: &projection,
-		observability: projection.Observability, bindings: bindings,
+		memoryCallCert: certificate, observability: projection.Observability, bindings: bindings,
 	}
 }
 

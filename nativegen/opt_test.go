@@ -266,3 +266,61 @@ func TestOptIRFingerprintRequiresCompleteCheckedMemoryEvidence(t *testing.T) {
 		t.Fatalf("one-sided checked memory fingerprint error = %v", err)
 	}
 }
+
+func TestOptIRFingerprintRequiresCallCertificateExactlyForCallAuthority(t *testing.T) {
+	source := optir.Source{Context: "fingerprint-call.oak", Line: 1, Column: 20}
+	call, err := optir.NewCheckedMemoryCallRecord(source, "leaf", "leaf-summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls(nil, []optir.CheckedMemoryCallRecord{call})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{Name: "caller", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0,
+		Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "leaf"}}, Source: source, MemoryCallID: call.ID,
+		}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lane := Lane{
+		OptIR: &cfg, OptIRMemory: &projection.Metadata, OptIRMemorySSA: &memorySSA,
+		OptIRMemoryAuthority: &authority, OptIRMemoryProjection: &projection,
+	}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without a call certificate") {
+		t.Fatalf("missing checked call certificate fingerprint error = %v", err)
+	}
+
+	emptyAuthority, err := optir.NewCheckedMemoryAuthority(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyProjection, err := optir.ProjectCheckedMemory(optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}, emptyAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptySSA, err := optir.AnalyzeRegionMemorySSA(optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}, emptyProjection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unexpected optir.CheckedMemoryCallCertificate
+	plainCFG := optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}
+	lane = Lane{
+		OptIR: &plainCFG, OptIRMemory: &emptyProjection.Metadata, OptIRMemorySSA: &emptySSA,
+		OptIRMemoryAuthority: &emptyAuthority, OptIRMemoryProjection: &emptyProjection,
+		OptIRMemoryCallCertificate: &unexpected,
+	}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without checked memory call authority") {
+		t.Fatalf("unexpected checked call certificate fingerprint error = %v", err)
+	}
+}

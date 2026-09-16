@@ -26,7 +26,7 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v3")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v4")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -82,6 +82,11 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		writeNativeMaterializationPart(digest, "optir-memory-projection:nil")
 	} else {
 		writeNativeMaterializationPart(digest, "optir-memory-projection", lane.OptIRMemoryProjection.Fingerprint())
+	}
+	if lane.OptIRMemoryCallCertificate == nil {
+		writeNativeMaterializationPart(digest, "optir-memory-call-certificate:nil")
+	} else {
+		writeNativeMaterializationPart(digest, "optir-memory-call-certificate", lane.OptIRMemoryCallCertificate.Fingerprint())
 	}
 	regionIDs := make([]string, 0, len(lane.OptIRRegionGlobals))
 	for region := range lane.OptIRRegionGlobals {

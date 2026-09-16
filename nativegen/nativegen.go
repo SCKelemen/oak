@@ -1535,10 +1535,15 @@ type Lane struct {
 	// OptIRMemoryAuthority and OptIRMemoryProjection retain checked source
 	// authority across optimization. RegionMemorySSA alone proves consistency
 	// with metadata; it cannot authorize self-authored metadata.
-	OptIRMemoryAuthority     *optir.CheckedMemoryAuthority
-	OptIRMemoryProjection    *optir.CheckedMemoryProjection
-	OptIRMemoryObservability optir.RegionMemoryObservability
-	OptIRRegionGlobals       map[optir.RegionID]OptIRRegionGlobal
+	OptIRMemoryAuthority  *optir.CheckedMemoryAuthority
+	OptIRMemoryProjection *optir.CheckedMemoryProjection
+	// OptIRMemoryCallCertificate independently checks every recursive call
+	// summary interpreted by the final region-memory CFG. It is required when
+	// that path still has an active checked call ID and is included in candidate
+	// identity. A call-only NoModRef CFG does not consume memory-summary facts.
+	OptIRMemoryCallCertificate *optir.CheckedMemoryCallCertificate
+	OptIRMemoryObservability   optir.RegionMemoryObservability
+	OptIRRegionGlobals         map[optir.RegionID]OptIRRegionGlobal
 	// VectorReductions rewrites the plain u64 and u32 reductions into
 	// vector-accumulator loops (nativegen/vector_reduction.go) instead of
 	// the scalar unrolling; the verifier judges the lowering against the
@@ -1793,6 +1798,14 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 					out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
 				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
 					err = unsupported("an OptIR region-memory plan without complete checked evidence")
+				} else if optIRHasActiveMemoryCalls(*lane.OptIR) {
+					if lane.OptIRMemoryCallCertificate == nil {
+						err = unsupported("an OptIR region-memory call plan without a checked call certificate")
+					} else {
+						out, err = machine.LowerOptIRArm64WithCertifiedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, *lane.OptIRMemoryCallCertificate, lane.machineOptIRRegionGlobals())
+					}
+				} else if lane.OptIRMemoryCallCertificate != nil {
+					err = unsupported("an OptIR region-memory plan with an unexpected call certificate")
 				} else {
 					out, err = machine.LowerOptIRArm64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
 				}
@@ -1848,6 +1861,14 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 					out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
 				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
 					err = unsupported("an OptIR region-memory plan without complete checked evidence")
+				} else if optIRHasActiveMemoryCalls(*lane.OptIR) {
+					if lane.OptIRMemoryCallCertificate == nil {
+						err = unsupported("an OptIR region-memory call plan without a checked call certificate")
+					} else {
+						out, err = machine.LowerOptIRRV64WithCertifiedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, *lane.OptIRMemoryCallCertificate, lane.machineOptIRRegionGlobals())
+					}
+				} else if lane.OptIRMemoryCallCertificate != nil {
+					err = unsupported("an OptIR region-memory plan with an unexpected call certificate")
 				} else {
 					out, err = machine.LowerOptIRRV64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
 				}
@@ -1881,7 +1902,7 @@ func (lane Lane) optIRFingerprint() (string, error) {
 		return "", fmt.Errorf("missing OptIR CFG")
 	}
 	if lane.OptIRMemory == nil {
-		if lane.OptIRMemorySSA != nil || lane.OptIRMemoryAuthority != nil || lane.OptIRMemoryProjection != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
+		if lane.OptIRMemorySSA != nil || lane.OptIRMemoryAuthority != nil || lane.OptIRMemoryProjection != nil || lane.OptIRMemoryCallCertificate != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
 			return "", fmt.Errorf("memory evidence or bindings without region metadata")
 		}
 		return optir.FingerprintCFG(*lane.OptIR)
@@ -1896,7 +1917,30 @@ func (lane Lane) optIRFingerprint() (string, error) {
 		!reflect.DeepEqual(lane.OptIRMemoryProjection.Observability, lane.OptIRMemoryObservability) {
 		return "", fmt.Errorf("checked memory projection disagrees with the emission plan")
 	}
+	if optIRHasActiveMemoryCalls(*lane.OptIR) {
+		if lane.OptIRMemoryCallCertificate == nil {
+			return "", fmt.Errorf("checked memory call authority without a call certificate")
+		}
+		return optir.FingerprintCertifiedRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability, lane.OptIR.Name, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryCallCertificate)
+	}
+	if lane.OptIRMemoryCallCertificate != nil {
+		return "", fmt.Errorf("call certificate without checked memory call authority")
+	}
 	return optir.FingerprintRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability)
+}
+
+// optIRHasActiveMemoryCalls consults the exact final CFG rather than the
+// source authority's upper bound: verified transformations may remove a call,
+// and an unused call record cannot affect machine selection.
+func optIRHasActiveMemoryCalls(cfg optir.CFG) bool {
+	for _, block := range cfg.Blocks {
+		for _, operation := range block.Operations {
+			if operation.MemoryCallID != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRRegionGlobal {

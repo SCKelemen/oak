@@ -22,7 +22,34 @@ type optIRRegionMemorySelection struct {
 	globals map[string]asm.Global
 }
 
-// validateCheckedOptIRRegionMemory is the production semantic-authority seam.
+// validateCertifiedOptIRRegionMemory is the production call-summary seam. It
+// independently checks the recursive summary certificate against the exact
+// function, CFG, and source authority before the lower-level transport and
+// MemorySSA checks may interpret any call effect.
+func validateCertifiedOptIRRegionMemory(
+	cfg optir.CFG,
+	template *asm.Function,
+	authority optir.CheckedMemoryAuthority,
+	projection optir.CheckedMemoryProjection,
+	memorySSA optir.RegionMemorySSA,
+	certificate optir.CheckedMemoryCallCertificate,
+	bindings map[optir.RegionID]OptIRRegionGlobal,
+) (*optIRRegionMemorySelection, error) {
+	if template == nil || template.Signature == nil || template.Signature.Name == nil {
+		return nil, fmt.Errorf("machine: OptIR checked memory call certificate needs a named assembler template")
+	}
+	if template.Signature.Name.Value != cfg.Name {
+		return nil, fmt.Errorf("machine: OptIR checked memory call certificate root %q does not match template %q", cfg.Name, template.Signature.Name.Value)
+	}
+	if err := optir.VerifyCheckedMemoryCallCertificate(cfg.Name, cfg, authority, certificate); err != nil {
+		return nil, fmt.Errorf("machine: OptIR checked memory call certificate: %w", err)
+	}
+	return validateCheckedOptIRRegionMemory(cfg, template, authority, projection, memorySSA, bindings)
+}
+
+// validateCheckedOptIRRegionMemory is the low-level semantic-authority and
+// transport-integrity seam. Production call-bearing lowering first uses
+// validateCertifiedOptIRRegionMemory to establish the summaries themselves.
 // RegionMemorySSA proves consistency with metadata; this additional check
 // proves that the metadata itself was projected from checked source accesses
 // on the exact final CFG.

@@ -877,6 +877,22 @@ because a callee may execute an assignment conditionally. Every child call has
 the same evidence, and the summary fingerprint binds the exact callee CFG,
 sorted child summaries, and canonical effect set. Foreign, bodyless, and
 recursive graphs fail closed; absence of authority never implies an effect.
+Production does not rely on those sealed records alone. A standalone OptIR
+checker consumes a closed certificate graph: the exact final optimized root
+and the original checked CFG/authority for every reachable callee. It
+reprojects every node, requires exact non-root authority coverage, recursively
+recomputes the canonical Mod/Ref joins, and rejects cycles, missing, duplicate,
+unreachable, stale, or under-approximated nodes. The root may keep unused
+upper-bound records after a verified rewrite. A versioned length-delimited
+fingerprint binds the whole accepted graph, and AArch64/RV64 production
+region-memory selection requires and reruns that certificate exactly when an
+active final call summary is interpreted by MemorySSA. A call-only `NoModRef`
+CFG consumes no memory-summary fact and stays on the ordinary call path. The
+certificate participates in candidate and materialization identity. It checks
+the internal consistency of compiler-supplied checked projections rather than
+independently re-lowering Oak or identifying the actual machine callee;
+semantic translation validation remains the final independent source/body
+gate.
 Exact CFG and metadata fingerprints plus independent recomputation reject
 stale or mutated evidence. Memory-definition liveness now takes an explicit
 set of regions observable on normal return,
@@ -928,7 +944,9 @@ both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
 broader load PRE through memory phis, definite-write summaries, and calls in
 memory loops remain open; exact recursive `NoModRef`/`Ref`/`Mod`/`ModRef`
-may-effect summaries have landed.
+may-effect summaries and their standalone graph checker have landed. Formal
+refinement of the checker, or a smaller proof-certificate consumer beneath it,
+remains TCB-closure work.
 
 As the projection broadens, region memory SSA should power:
 
@@ -1151,7 +1169,8 @@ This phase targets the measured UTF-8 call/spill gap directly.
 18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate,
     checked scalar-global projection, and one verifier-proved canonical memory
     loop on both targets landed; exact recursive
-    `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries also landed, while broader
+    `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries plus a standalone closed-DAG
+    certificate checker also landed, while formal checker refinement, broader
     loops, aggregate regions, and definite-write summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;

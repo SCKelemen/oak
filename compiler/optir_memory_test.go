@@ -290,27 +290,11 @@ main: (): i32 = 0
 	if mixedCalls[0].SummaryFingerprint == "" || mixedCalls[0].SummaryFingerprint == forwardCalls[0].SummaryFingerprint {
 		t.Fatalf("transitive summary did not bind its own CFG and child: direct=%q transitive=%q", forwardCalls[0].SummaryFingerprint, mixedCalls[0].SummaryFingerprint)
 	}
-	fingerprint, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{read})
-	if err != nil || fingerprint != mixedCalls[0].SummaryFingerprint {
-		t.Fatalf("transitive summary fingerprint = %q, err=%v, want %q", fingerprint, err, mixedCalls[0].SummaryFingerprint)
-	}
-	changed := read
-	changed.Region += ":changed"
-	changedRegion, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
-	if err != nil || changedRegion == fingerprint {
-		t.Fatalf("read-region change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedRegion, err)
-	}
-	changed = read
-	changed.ValueType = "u64"
-	changedType, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
-	if err != nil || changedType == fingerprint {
-		t.Fatalf("read-type change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedType, err)
-	}
-	changed = read
-	changed.Kind = optir.MemoryWrite
-	changedKind, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
-	if err != nil || changedKind == fingerprint {
-		t.Fatalf("effect-kind change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedKind, err)
+	derived, err := optir.DeriveCheckedMemoryCallSummary(forward.CFG, forward.CheckedMemory)
+	if err != nil || derived.Fingerprint() != mixedCalls[0].SummaryFingerprint ||
+		!reflect.DeepEqual(derived.Accesses(), []optir.CheckedMemoryCallAccess{read}) {
+		t.Fatalf("transitive summary = fingerprint %q, accesses %+v, err=%v; want %q / %+v",
+			derived.Fingerprint(), derived.Accesses(), err, mixedCalls[0].SummaryFingerprint, read)
 	}
 	if err := optir.VerifyCheckedMemoryProjection(mixed.LoopInvariant, mixed.CheckedMemory, mixed.MemoryProjection); err != nil {
 		t.Fatalf("transitive reader checked projection: %v", err)
@@ -348,6 +332,39 @@ main: (): i32 = 0
 	}
 	if changed := summary("value == true"); changed == first {
 		t.Fatalf("callee CFG change retained pure summary fingerprint %q", first)
+	}
+}
+
+func TestCheckedMemoryCallCertificateExcludesUnrelatedCachedProjection(t *testing.T) {
+	model, err := New().WithSource("optir_call_certificate.oak", `
+observed: u32 = u32(7)
+other: u32 = u32(9)
+read_observed: (): u32 = observed
+root: (): u32 = read_observed()
+unrelated: (): u32 = other
+main: (): i32 = 0
+`).Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	globals := checkedOptIRGlobals(model.Tree.Root, model.TypeChecker)
+	planner := newOptIRCallEffectPlanner(model.Tree.Root, model.TypeChecker, globals)
+	if _, err := planner.lower(planner.functions["unrelated"]); err != nil {
+		t.Fatalf("cache unrelated projection: %v", err)
+	}
+	root, err := planner.lower(planner.functions["root"])
+	if err != nil {
+		t.Fatalf("lower certificate root: %v", err)
+	}
+	certificate, err := planner.memoryCallCertificate("root", root.cfg, root.memory)
+	if err != nil {
+		t.Fatalf("reachable-only certificate: %v", err)
+	}
+	if certificate.Fingerprint() == "" {
+		t.Fatal("reachable-only certificate has no fingerprint")
+	}
+	if err := optir.VerifyCheckedMemoryCallCertificate("root", root.cfg, root.memory, certificate); err != nil {
+		t.Fatalf("verify reachable-only certificate: %v", err)
 	}
 }
 

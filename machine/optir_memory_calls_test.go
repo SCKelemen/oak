@@ -17,6 +17,7 @@ type optIRMemoryCallTarget struct {
 	addressText     string
 	storeText       string
 	lowerChecked    func(optir.CFG, *asm.Function, optir.CheckedMemoryAuthority, optir.CheckedMemoryProjection, optir.RegionMemorySSA, map[optir.RegionID]OptIRRegionGlobal) (*asm.Function, error)
+	lowerCertified  func(optir.CFG, *asm.Function, optir.CheckedMemoryAuthority, optir.CheckedMemoryProjection, optir.RegionMemorySSA, optir.CheckedMemoryCallCertificate, map[optir.RegionID]OptIRRegionGlobal) (*asm.Function, error)
 	lowerUnchecked  func(optir.CFG, *asm.Function, optir.RegionMemoryMetadata, optir.RegionMemorySSA, map[optir.RegionID]OptIRRegionGlobal) (*asm.Function, error)
 }
 
@@ -25,13 +26,34 @@ func optIRMemoryCallTargets() []optIRMemoryCallTarget {
 		{
 			name: "aarch64", arch: asm.ArchArm64, parameter: w(0),
 			callInstruction: "bl inc", addressText: "adrp x17, state", storeText: "str w0, [x17,#0]",
-			lowerChecked: LowerOptIRArm64WithCheckedRegionMemory, lowerUnchecked: LowerOptIRArm64WithRegionMemory,
+			lowerChecked: LowerOptIRArm64WithCheckedRegionMemory, lowerCertified: LowerOptIRArm64WithCertifiedRegionMemory, lowerUnchecked: LowerOptIRArm64WithRegionMemory,
 		},
 		{
 			name: "rv64", arch: asm.ArchRV64, parameter: optIRRV64Register(10),
 			callInstruction: "call inc", addressText: "la t6, state", storeText: "sw t0, [t6,#0]",
-			lowerChecked: LowerOptIRRV64WithCheckedRegionMemory, lowerUnchecked: LowerOptIRRV64WithRegionMemory,
+			lowerChecked: LowerOptIRRV64WithCheckedRegionMemory, lowerCertified: LowerOptIRRV64WithCertifiedRegionMemory, lowerUnchecked: LowerOptIRRV64WithRegionMemory,
 		},
+	}
+}
+
+func TestLowerOptIRCertifiedRegionMemoryRejectsMissingCertificate(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRMemoryCallFixture(t, target)
+			var missing optir.CheckedMemoryCallCertificate
+			if _, err := target.lowerCertified(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, missing, fixture.bindings); err == nil || !strings.Contains(err.Error(), "certificate") {
+				t.Fatalf("missing checked call certificate refusal = %v", err)
+			}
+			wrongTemplate := *fixture.template
+			wrongDeclaration := *fixture.declaration
+			wrongName := *fixture.declaration.Name
+			wrongName.Value = "different_root"
+			wrongDeclaration.Name = &wrongName
+			wrongTemplate.Signature = &wrongDeclaration
+			if _, err := target.lowerCertified(fixture.cfg, &wrongTemplate, fixture.authority, fixture.projection, fixture.memorySSA, missing, fixture.bindings); err == nil || !strings.Contains(err.Error(), "does not match template") {
+				t.Fatalf("certificate/template root mismatch refusal = %v", err)
+			}
+		})
 	}
 }
 
@@ -64,6 +86,28 @@ func TestLowerOptIRCheckedRegionMemoryNoModRefCallVerifies(t *testing.T) {
 			}
 			if !strings.Contains(verdict.Message, "callees taken at their Oak bodies: inc") || !strings.Contains(verdict.Message, "package state it writes (state)") {
 				t.Fatalf("proven verdict does not cover the callee and package state: %s", verdict.Message)
+			}
+		})
+	}
+}
+
+func TestLowerOptIRCertifiedRegionMemoryNoModRefCallVerifies(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRMemoryCallFixture(t, target)
+			lowered, err := target.lowerCertified(
+				fixture.cfg, fixture.template, fixture.authority, fixture.projection,
+				fixture.memorySSA, fixture.certificate, fixture.bindings,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if findings := asm.Check(lowered, fixture.declaration, map[string]bool{"inc": true}); len(findings) != 0 {
+				t.Fatalf("certified call/memory body fails seam check: %v\n%s", findings, text(lowered.Items))
+			}
+			verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+			if verdict.Kind != asm.VerdictProven {
+				t.Fatalf("certified call/memory verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
 			}
 		})
 	}
@@ -358,6 +402,7 @@ type optIRMemoryCallFixture struct {
 	authority   optir.CheckedMemoryAuthority
 	projection  optir.CheckedMemoryProjection
 	memorySSA   optir.RegionMemorySSA
+	certificate optir.CheckedMemoryCallCertificate
 	bindings    map[optir.RegionID]OptIRRegionGlobal
 	global      asm.Global
 }
@@ -669,7 +714,26 @@ call_store: (x: u32): u32 = {
 	const region optir.RegionID = "opaque:checked-state"
 	callSource := optir.Source{Context: "checked-call-memory.oak", Line: 3, Column: 16}
 	storeSource := optir.Source{Context: "checked-call-memory.oak", Line: 4, Column: 3}
-	callRecord, err := optir.NewCheckedMemoryCallRecord(callSource, "inc", "checked-transitive-no-mod-ref:inc")
+	leafCFG := optir.CFG{
+		Name: "inc", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}},
+			Operations: []optir.Operation{
+				{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+				{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{1, 2}},
+			},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+		}},
+	}
+	leafAuthority, err := optir.NewCheckedMemoryAuthority(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafSummary, err := optir.DeriveCheckedMemoryCallSummary(leafCFG, leafAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callRecord, err := optir.NewCheckedMemoryCallRecordWithAccesses(callSource, "inc", leafSummary.Fingerprint(), leafSummary.Accesses())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,6 +774,13 @@ call_store: (x: u32): u32 = {
 	if err := optir.VerifyRegionMemorySSA(cfg, projection.Metadata, memorySSA); err != nil {
 		t.Fatal(err)
 	}
+	certificate, err := optir.NewCheckedMemoryCallCertificate("call_store", []optir.CheckedMemoryCallCertificateNode{
+		{Name: "call_store", CFG: cfg, Authority: authority},
+		{Name: "inc", CFG: leafCFG, Authority: leafAuthority},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	global := asm.Global{Type: "u32", Bits: 32}
 	template := &asm.Function{
 		Name: "call_store", Arch: target.arch, Signature: declaration, Fallback: true,
@@ -719,6 +790,6 @@ call_store: (x: u32): u32 = {
 	}
 	return optIRMemoryCallFixture{
 		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,
-		bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
+		certificate: certificate, bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
 	}
 }

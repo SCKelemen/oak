@@ -39,8 +39,9 @@ type CheckedMemoryCallAccess struct {
 // callee, summary fingerprint, and canonical accesses. Constructing this record
 // checks its canonical identity; it does not by itself prove that an arbitrary
 // fingerprint denotes a callee summary.
-// Production derives the fingerprint and accesses from checked callee CFGs and
-// still requires final semantic translation validation.
+// Production derives the fingerprint and accesses from checked callee CFGs,
+// authenticates the closed graph with CheckedMemoryCallCertificate, and still
+// requires final semantic translation validation.
 type CheckedMemoryCallRecord struct {
 	ID                 string
 	Source             Source
