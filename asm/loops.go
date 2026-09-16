@@ -4188,6 +4188,25 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			premise = binaryTerm("and", domainPremise, premise)
 			equal, decided = implies(premise, oakReached, asmReached)
 		}
+		// A bottom-tested loop (docs/spec/94-assembler.md §9 "Loop
+		// rotation") is entered only where its first test passes; the
+		// source loop is reached there and elsewhere, running no iteration
+		// where that test fails. The two select the same iterations when
+		// one side's reach condition is the other's conjoined with its
+		// own entry condition — a loop that does not run leaves every
+		// value and memory at its header, as the unreached loop does.
+		if !decided || !equal {
+			if entry, known := oakEv.entryCondition(); known && entry != nil {
+				oakRuns := binaryTerm("and", oakReached, truncate(substitute(entry, sigma), 1))
+				equal, decided = implies(premise, oakRuns, asmReached)
+			}
+		}
+		if !decided || !equal {
+			if entry, known := asmEv.entryCondition(); known && entry != nil {
+				asmRuns := binaryTerm("and", asmReached, truncate(substitute(entry, sigma), 1))
+				equal, decided = implies(premise, oakReached, asmRuns)
+			}
+		}
 		if !decided || !equal {
 			if trace {
 				fmt.Fprintf(os.Stderr, "verify %s: loop %d reach conditions not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, k+1, decided, oakReached, asmReached, premise)
