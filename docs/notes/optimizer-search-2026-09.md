@@ -1009,7 +1009,16 @@ The existing native optimizations should be migrated into the candidate interfac
   itself worth recording — the static cost model counts instructions,
   and on this core that is not what the clock counts. A port-pressure or
   dependency-chain term (item 26) is what would tell these apart;
-- select forms;
+- select forms — **landed 2026-09-16** (`value-select`,
+  `nativegen/value_select.go`): a value-position conditional as a compare
+  and one `csel`, with `csinc`/`csneg`/`csinv` where the arms share a
+  variable, the verifier needing no extension. The first increment in
+  this run with a large measured win: 3.4 times on a clamp whose
+  comparison is unpredictable, and free where it predicts. Both arms are
+  evaluated before the compare, so `speculable` gates it as it gates
+  if-conversion. The statement form (`nativegen/select.go`) still wants
+  every condition in a chain to compare the same two operands, which is
+  the next thing to widen;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
