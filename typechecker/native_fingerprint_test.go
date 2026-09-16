@@ -99,3 +99,74 @@ func TestNilNativeLoweringFingerprintIsStable(t *testing.T) {
 		t.Fatalf("nil fingerprints = %q, %q", first, second)
 	}
 }
+
+func TestNativeLoweringFingerprintIncludesScalarGlobalAuthority(t *testing.T) {
+	firstKey := tokenKey{context: "pkg", line: 4, column: 2, literal: "first"}
+	secondKey := tokenKey{context: "pkg", line: 7, column: 2, literal: "second"}
+	checker := func(reverse bool) *TypeChecker {
+		regions := []ScalarGlobalRegion{
+			{ID: "region-first", Name: "first", Type: "u32", DeclarationScope: "pkg:1:1", Provenance: "checked", Witness: checkedScalarGlobalRegionProposition},
+			{ID: "region-second", Name: "second", Type: "Bool", DeclarationScope: "pkg:2:1", Provenance: "checked", Witness: checkedScalarGlobalRegionProposition},
+		}
+		keys := []tokenKey{firstKey, secondKey}
+		if reverse {
+			regions[0], regions[1] = regions[1], regions[0]
+			keys[0], keys[1] = keys[1], keys[0]
+		}
+		tc := &TypeChecker{
+			intSize:                  64,
+			ptrSize:                  64,
+			scalarGlobalDeclarations: map[string]*scalarGlobalDeclaration{},
+			scalarGlobalWrites:       map[tokenKey]ScalarGlobalWriteProof{},
+		}
+		for _, region := range regions {
+			tc.scalarGlobalDeclarations[region.Name] = &scalarGlobalDeclaration{region: region, checked: true}
+		}
+		for _, key := range keys {
+			region := regions[0]
+			if key == secondKey {
+				region = ScalarGlobalRegion{ID: "region-second", Name: "second", Type: "Bool"}
+			} else {
+				region = ScalarGlobalRegion{ID: "region-first", Name: "first", Type: "u32"}
+			}
+			id := "write-" + region.Name
+			tc.scalarGlobalWrites[key] = ScalarGlobalWriteProof{
+				ID: id, Proposition: checkedScalarGlobalWriteProposition,
+				RegionID: region.ID, Global: region.Name, Type: region.Type,
+				Scope: fmtScope(key), Provenance: "checked", Witness: checkedScalarGlobalWriteProposition,
+				Dependencies: []string{"region=" + region.ID, "type=" + region.Type},
+			}
+		}
+		return tc
+	}
+
+	want := checker(false).NativeLoweringFingerprint()
+	if got := checker(true).NativeLoweringFingerprint(); got != want {
+		t.Fatalf("scalar authority insertion order changed fingerprint: %s != %s", got, want)
+	}
+	mutations := []struct {
+		name   string
+		mutate func(*TypeChecker)
+	}{
+		{"region field", func(tc *TypeChecker) { tc.scalarGlobalDeclarations["first"].region.Witness = "changed" }},
+		{"write field", func(tc *TypeChecker) {
+			proof := tc.scalarGlobalWrites[firstKey]
+			proof.Proposition = "changed"
+			tc.scalarGlobalWrites[firstKey] = proof
+		}},
+		{"write dependency", func(tc *TypeChecker) {
+			proof := tc.scalarGlobalWrites[firstKey]
+			proof.Dependencies[0] = "changed"
+			tc.scalarGlobalWrites[firstKey] = proof
+		}},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			changed := checker(false)
+			mutation.mutate(changed)
+			if got := changed.NativeLoweringFingerprint(); got == want {
+				t.Fatalf("scalar authority mutation did not change fingerprint %s", got)
+			}
+		})
+	}
+}

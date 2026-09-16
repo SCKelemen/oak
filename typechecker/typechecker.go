@@ -661,10 +661,15 @@ type TypeChecker struct {
 	// indexProofs retains the checked proposition behind a proven index.
 	// Native lowering may refer to its opaque ID, but cannot manufacture
 	// authority by merely setting provenIndices.
-	indexProofs            map[tokenKey]IndexProof
-	asmBackedFunctions     map[string]bool
-	functionTemplates      map[string]*ast.FunctionStatement
-	functionInstantiations map[string]*ast.FunctionStatement
+	indexProofs map[tokenKey]IndexProof
+	// scalarGlobalDeclarations and scalarGlobalWrites retain the checked
+	// declaration-region and direct-write authority consumed by the first
+	// MemorySSA native-lowering slice (scalar_global_writes.go).
+	scalarGlobalDeclarations map[string]*scalarGlobalDeclaration
+	scalarGlobalWrites       map[tokenKey]ScalarGlobalWriteProof
+	asmBackedFunctions       map[string]bool
+	functionTemplates        map[string]*ast.FunctionStatement
+	functionInstantiations   map[string]*ast.FunctionStatement
 	// instantiationTemplates maps each specialization's mangled name back
 	// to its template, so resource contracts declared for a template apply
 	// to every specialization (docs/spec/50-borrowing.md section 9).
@@ -909,6 +914,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
+	tc.resetScalarGlobalWriteAuthority()
 	tc.kernels = map[string]bool{}
 	for _, stmt := range program.Statements {
 		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Kernel && fn.Name != nil {
@@ -961,6 +967,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		if varType := tc.parseTypeExpression(decl.Type); varType != nil {
 			tc.env.SetType(decl.Name.Value, varType)
 			tc.predeclaredGlobals[decl.Name.Value] = true
+			tc.provisionScalarGlobalDeclaration(decl, varType)
 		}
 	}
 	for _, stmt := range program.Statements {
@@ -970,11 +977,16 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		// Top-level bindings are static storage: constant initializers only
 		// (typechecker/globals.go).
-		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+		before := len(tc.Errors())
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if isDecl {
 			tc.checkMeasured(decl)
 			tc.checkGlobalInitializer(decl)
 		}
 		tc.checkStatement(stmt)
+		if isDecl {
+			tc.finishScalarGlobalDeclaration(decl, len(tc.Errors()) == before)
+		}
 	}
 
 	// Generic function templates are replaced by their monomorphized
@@ -4854,6 +4866,9 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 			}
 			tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
+	}
+	if valueType != nil && len(tc.Errors()) == before {
+		tc.recordScalarGlobalWrite(stmt, valueType)
 	}
 }
 
