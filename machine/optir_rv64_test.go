@@ -538,7 +538,7 @@ spilled_return: (): u32 = u32(42)
 	}
 }
 
-func TestLowerOptIRRV64MaterializesSpillsAcrossSSAEdgesAndRefusesLoopsAndCalls(t *testing.T) {
+func TestLowerOptIRRV64MaterializesSpillsAcrossEdgesAndCallsAndRefusesLoops(t *testing.T) {
 	branchDeclaration := optIRRV64Declaration(t, `
 spilled_branch: (): i8 = true ? i8(120) | i8(-120)
 `)
@@ -592,18 +592,55 @@ spilled_loop: (): u32 = u32(3)
 
 	declarations := optIRRV64Declarations(t, `
 add: (x: u32, y: u32): u32 = x + y
-spilled_call: (): u32 = add(u32(20), u32(22))
+spilled_call: (): u32 = add(u32(20), u32(22)) + (u32(1) + u32(2))
 `)
 	callCFG := optir.CFG{Name: "spilled_call", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
 		ID: 0, Operations: []optir.Operation{
 			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "20"}}},
 			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "22"}}},
 			{Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{1, 2}, Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "add"}}},
-		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 4, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 5, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "2"}}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 6, Type: "u32"}}, Operands: []optir.ValueID{4, 5}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 7, Type: "u32"}}, Operands: []optir.ValueID{3, 6}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{7}},
 	}}}
 	callTemplate := &asm.Function{Name: "spilled_call", Arch: asm.ArchRV64, Signature: declarations["spilled_call"], Callees: map[string]*ast.FunctionStatement{"add": declarations["add"]}}
-	if _, err := lowerOptIRRV64WithRegisters(callCFG, callTemplate, []int{5}); err == nil || !strings.Contains(err.Error(), "refuses calls and effects") {
-		t.Fatalf("spilled call refusal = %v", err)
+	callPlan, err := optir.PlanRegisters(callCFG, []int{5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spilledArgument := false
+	for _, operand := range callCFG.Blocks[0].Operations[2].Operands {
+		_, spilledArgument = callPlan.Spills[operand]
+		if spilledArgument {
+			break
+		}
+	}
+	if !spilledArgument {
+		t.Fatalf("test plan has no spilled call argument: %+v", callPlan.Spills)
+	}
+	if _, spilled := callPlan.Spills[3]; !spilled {
+		t.Fatalf("test plan has no spilled call result: %+v", callPlan.Spills)
+	}
+	callBody, err := lowerOptIRRV64WithRegisters(callCFG, callTemplate, []int{5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callBody.Frame != 32 {
+		t.Fatalf("composed spill/call frame = %d, want 32", callBody.Frame)
+	}
+	if findings := asm.Check(callBody, declarations["spilled_call"], map[string]bool{"add": true}); len(findings) != 0 {
+		t.Fatalf("spilled call body fails seam check: %v\n%s", findings, text(callBody.Items))
+	}
+	if verdict := asm.Verify(callBody, declarations["spilled_call"], declarations["spilled_call"].Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled call body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(callBody.Items))
+	}
+	callText := text(callBody.Items)
+	for _, instruction := range []string{"addi sp, sp, #-32", "sd ra, [sp,#24]", "sw ", "lw ", "call add", "ld ra, [sp,#24]", "addi sp, sp, #32"} {
+		if !strings.Contains(callText, instruction) {
+			t.Errorf("spilled call body lacks %q:\n%s", instruction, callText)
+		}
 	}
 }
 

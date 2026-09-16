@@ -21,7 +21,7 @@ var optIRRV64SpillRegisters = []int{5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28,
 const (
 	optIRRV64SpillScratchA = 30
 	optIRRV64CopyScratch   = 31
-	optIRRV64MaxSpillFrame = 2032
+	optIRRV64MaxFrame      = 2032
 )
 
 // LowerOptIRRV64 selects an admitted RV64 body from a verified optimized
@@ -29,8 +29,8 @@ const (
 // integer constants, copies, widening casts, total arithmetic, comparisons,
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
-// values live across calls, spill loops, and spill/call frame composition
-// refuse the candidate.
+// values live across calls, spill loops, and unsupported spill pressure refuse
+// the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -103,7 +103,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
 			return nil, err
 		}
-		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxSpillFrame)
+		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxFrame)
 		if err != nil {
 			return nil, err
 		}
@@ -113,16 +113,16 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	if err != nil {
 		return nil, err
 	}
-	if len(calls) != 0 && spillLayout.Frame != 0 {
-		return nil, fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls")
+	spillFrame := spillLayout.Frame
+	frame, raOffset, err := composeOptIRRV64Frame(spillFrame, len(calls) != 0)
+	if err != nil {
+		return nil, err
 	}
 
 	selector := &optIRRV64Selector{
-		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets, frame: spillLayout.Frame,
+		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets,
+		frame: frame, raOffset: raOffset,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls,
-	}
-	if len(calls) != 0 {
-		selector.frame = 16
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -168,6 +168,7 @@ type optIRRV64Selector struct {
 	spills       map[optir.ValueID]optir.SpillSlotID
 	spillOffsets map[optir.SpillSlotID]int64
 	frame        int64
+	raOffset     int64
 	labels       map[optir.BlockID]string
 	items        []asm.Item
 	written      map[int]bool
@@ -186,7 +187,7 @@ func (selector *optIRRV64Selector) lower() error {
 			}
 			if len(selector.calls) != 0 {
 				sp := optIRRV64SP()
-				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: selector.raOffset, Mode: asm.MemOffset})
 			}
 			// Do not let unspecified ABI padding become part of an Oak value.
 			// Bool retains one bit; narrow integers are restored to their
@@ -210,6 +211,9 @@ func (selector *optIRRV64Selector) lower() error {
 func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 	if len(selector.spills) == 0 {
 		return selector.registerOperation(operation)
+	}
+	if operation.Code == optir.OpCall {
+		return selector.call(operation)
 	}
 	line := operation.Source.Line
 	if line <= 0 && len(operation.Results) != 0 {
@@ -351,25 +355,52 @@ func (selector *optIRRV64Selector) registerOperation(operation optir.Operation) 
 	case optir.OpEqual, optir.OpNotEqual, optir.OpLess, optir.OpLessEqual, optir.OpGreater, optir.OpGreaterEqual:
 		return selector.compare(operation, line)
 	case optir.OpCall:
-		callee, admitted := selector.calls[result.ID]
-		if !admitted {
-			return fmt.Errorf("call is outside the admitted direct-call set")
-		}
-		moves := make([]optIRRV64Move, 0, len(operation.Operands))
-		for index, operand := range operation.Operands {
-			destination, source := 10+index, selector.register(operand)
-			if destination != source {
-				moves = append(moves, optIRRV64Move{destination: destination, source: source})
-			}
-		}
-		selector.parallelCopies(moves, line)
-		selector.emit("call", line, asm.Symbol{Name: callee})
-		selector.move(destination, 10, line)
-		selector.normalize(destination, result.Type, line)
-		return nil
+		return selector.call(operation)
 	default:
 		return fmt.Errorf("operation %s is outside the closed selector vocabulary", operation.Code)
 	}
+}
+
+func (selector *optIRRV64Selector) call(operation optir.Operation) error {
+	if len(operation.Results) != 1 {
+		return fmt.Errorf("call has %d results, want one", len(operation.Results))
+	}
+	result := operation.Results[0]
+	callee, admitted := selector.calls[result.ID]
+	if !admitted {
+		return fmt.Errorf("call is outside the admitted direct-call set")
+	}
+	line := operation.Source.Line
+	if line <= 0 {
+		line = result.Source.Line
+	}
+	moves := make([]optIRRV64LocationMove, 0, len(operation.Operands))
+	for index, operand := range operation.Operands {
+		destination := optIRRV64Location{register: 10 + index}
+		source, err := selector.valueLocation(operand)
+		if err != nil {
+			return err
+		}
+		if destination != source {
+			moves = append(moves, optIRRV64LocationMove{destination: destination, source: source, typ: selector.types[operand]})
+		}
+	}
+	if err := selector.emitLocationCopies(moves, line); err != nil {
+		return err
+	}
+	selector.emit("call", line, asm.Symbol{Name: callee})
+
+	destination, err := selector.valueLocation(result.ID)
+	if err != nil {
+		return err
+	}
+	if destination.slot == 0 {
+		selector.move(destination.register, 10, line)
+		selector.normalize(destination.register, result.Type, line)
+		return nil
+	}
+	selector.normalize(10, result.Type, line)
+	return selector.storeSpillSlot(destination.slot, 10, result.Type, line)
 }
 
 func (selector *optIRRV64Selector) sameIntegerOperation(operation optir.Operation, arity int) error {
@@ -477,7 +508,7 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		}
 		if len(selector.calls) != 0 {
 			sp := optIRRV64SP()
-			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: selector.raOffset, Mode: asm.MemOffset})
 		}
 		if selector.frame != 0 {
 			sp := optIRRV64SP()
@@ -517,11 +548,6 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 	default:
 		return fmt.Errorf("unsupported terminator %s", terminator.Kind)
 	}
-}
-
-type optIRRV64Move struct {
-	destination int
-	source      int
 }
 
 type optIRRV64Location struct {
@@ -672,35 +698,6 @@ func (selector *optIRRV64Selector) emitLocationCopies(moves []optIRRV64LocationM
 		}
 	}
 	return nil
-}
-
-func (selector *optIRRV64Selector) parallelCopies(moves []optIRRV64Move, line int) {
-	for len(moves) > 0 {
-		progress := false
-		for index, move := range moves {
-			usedAsSource := false
-			for _, other := range moves {
-				usedAsSource = usedAsSource || other.source == move.destination
-			}
-			if usedAsSource {
-				continue
-			}
-			selector.move(move.destination, move.source, line)
-			moves = append(moves[:index], moves[index+1:]...)
-			progress = true
-			break
-		}
-		if progress {
-			continue
-		}
-		cycle := moves[0].destination
-		selector.move(optIRRV64CopyScratch, cycle, line)
-		for index := range moves {
-			if moves[index].source == cycle {
-				moves[index].source = optIRRV64CopyScratch
-			}
-		}
-	}
 }
 
 func (selector *optIRRV64Selector) constant(destination int, value int64, line int) {

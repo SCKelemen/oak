@@ -66,6 +66,19 @@ func checkedAlign(value, alignment int64) (int64, bool) {
 	return (value + mask) &^ mask, true
 }
 
+func composeOptIRRV64Frame(spillFrame int64, hasCalls bool) (frame, raOffset int64, err error) {
+	if spillFrame < 0 || spillFrame%16 != 0 || spillFrame > optIRRV64MaxFrame {
+		return 0, 0, fmt.Errorf("machine: invalid OptIR RV64 spill frame %d", spillFrame)
+	}
+	if !hasCalls {
+		return spillFrame, 0, nil
+	}
+	if spillFrame > optIRRV64MaxFrame-16 {
+		return 0, 0, fmt.Errorf("machine: OptIR RV64 spill/call frame needs more than %d bytes", optIRRV64MaxFrame)
+	}
+	return spillFrame + 16, spillFrame + 8, nil
+}
+
 func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 	if len(plan.Spills) == 0 {
 		return nil
@@ -79,8 +92,8 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 	for _, block := range cfg.Blocks {
 		indegree[block.ID] = 0
 		for _, operation := range block.Operations {
-			if operation.Code == optir.OpCall || len(operation.Effects) != 0 {
-				return fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls and effects")
+			if operation.Code != optir.OpCall && len(operation.Effects) != 0 {
+				return fmt.Errorf("machine: OptIR RV64 spill materialization refuses non-call effects")
 			}
 		}
 	}
