@@ -141,8 +141,15 @@ func TestE2ENativeGuardedRecordLoopProven(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	if !strings.Contains(joined, "asm unit clear_pages: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "span memory it writes (s.entry_count, s.free_count, s.pages)") {
-		t.Errorf("the guarded data-dependent loop must be proven with its leaf memories:\n%s", joined)
+	// Only the leaf the loop stores to: the loop marks one memory per leaf
+	// of the record span and drops the marks nothing wrote, so the leaves
+	// this body leaves alone are not among the memories it is proven in
+	// (asm/loops.go, the marker under the loop's entry test).
+	if !strings.Contains(joined, "asm unit clear_pages: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "span memory it writes (s.pages)") {
+		t.Errorf("the guarded data-dependent loop must be proven with the leaf memory it writes:\n%s", joined)
+	}
+	if strings.Contains(joined, "span memory it writes (s.entry_count") {
+		t.Errorf("clear_pages writes no counter and must not be proven in their memories:\n%s", joined)
 	}
 	// The final verdict, not a candidate transform's ("keeps its …
 	// (the … form was judged …)"), decides.
