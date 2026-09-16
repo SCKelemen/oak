@@ -747,6 +747,77 @@ theorem cntvoff_el2_generated_body_el1_nv_redirect_preserves_component
       true true false true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! SP_EL1/X5 is a full-width conditional component update. The projection
+retains the official EL1 nested-virtualization redirect as a flag plus unchanged
+SP_EL1, while NVMem(576), access admission, and stack validity remain external. -/
+
+def decodedSpEl1SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_sp_el1_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem sp_el1_x5_decoder_execution_target :
+    decodedSpEl1SystemRegisterWriteTarget msrSpEl1X5 =
+      some (.SystemRegisterWriteTarget_SP_EL1, 0b00101#5) := by
+  rfl
+
+theorem sp_el1_x6_decoder_rt_is_preserved :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51c4106#32 =
+      some (.SystemRegisterWriteTarget_SP_EL1, 0b00110#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_sp_el1_target :
+    decodedSpEl1SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_sp_el1_x5_not_projected_to_write :
+    decodedSpEl1SystemRegisterWriteTarget 0xd53c4105#32 = none := by
+  rfl
+
+theorem msr_sp_el0_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd5184105#32 = none := by
+  rfl
+
+theorem msr_sp_el2_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51e4105#32 = none := by
+  rfl
+
+theorem msr_spsr_el2_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51c4005#32 = none := by
+  rfl
+
+def spEl1WriteComponentToPair (result : SPEl1WriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem sp_el1_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      spEl1WriteComponentToPair
+        (writeSpEl1Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem sp_el1_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem sp_el1_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

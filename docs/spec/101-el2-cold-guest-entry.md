@@ -163,6 +163,13 @@ flag; the source gate audits NVMem(96). It proves no access/trap admission,
 predicate-state consistency, X4 provenance, offset arithmetic or monotonicity,
 guest timer behavior, ordering, synchronization, or occurrence.
 
+The guest-stack theorem computes static `MSR SP_EL1, X5` word `0xd51c4105`.
+Generated Lean proves the full-width direct EL2 update and retains the official
+EL1 NVMem(576) redirect as unchanged SP_EL1 plus a flag. It proves no access or
+trap admission, predicate-state consistency, NVMem(576) contents/effects, X5
+provenance, stack alignment, canonicality, mapping, contents, memory safety,
+post-ERET selection/use, ordering, synchronization, or occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

@@ -105,6 +105,14 @@ access/trap admission, runtime X4 provenance, NVMem(96) contents/effects,
 offset/counter behavior, ordering, synchronization, and a dynamic occurrence
 remain external.
 
+The SP_EL1 seam computes `MSR SP_EL1, X5` as `0xd51c4105` and proves the
+official admitted EL2 body installs the complete guest stack value. The EL1
+nested-virtualization alternative is a redirect flag plus unchanged SP_EL1;
+the source gate audits NVMem(576). Access/traps, predicate-state consistency,
+NVMem(576) contents/effects, runtime X5 provenance, stack
+validity/mapping/safety, eventual selection after ERET, ordering,
+synchronization, and dynamic occurrence remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

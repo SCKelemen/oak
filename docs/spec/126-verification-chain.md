@@ -278,6 +278,15 @@ Access/traps, occurrence, runtime X4 provenance, predicate-state consistency,
 NVMem effects, counter arithmetic/monotonicity and guest-timer behavior, other
 state, ordering, completion, and context synchronization remain open.
 
+The following `MSR SP_EL1, X5` word is `0xd51c4105`. Generated Lean proves its
+exact bank/operand target and full-width transition: direct at EL2, with the
+official EL1 nested-virtualization alternative represented as a redirect flag
+and unchanged SP_EL1. The source gate pins the complete route, five HCR/SCR
+aliases, NVMem(576), and the 64-bit declaration. Access/traps, occurrence,
+runtime X5 provenance, predicate-state consistency, NVMem effects, stack
+alignment/canonicality/mapping/contents/safety, post-ERET selection/use,
+relation to SPSR, other state, ordering, and synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

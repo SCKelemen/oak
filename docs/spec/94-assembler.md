@@ -828,10 +828,16 @@ a redirect flag under the projected EL1 nested-virtualization condition. The
 source audit pins the longer op2=011 route, old HCR/SCR aliases, full-width
 NVMem(96) alternative, and official 64-bit register declaration.
 
-These seams prove neither access admission nor runtime X0/X1/X2/X3/X4 value
-provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF field validity, desired
+`MSR SP_EL1, X5` is `0xd51c4105`. Generated Lean proves the exact bank/operand
+target and full-width direct/redirect component body. The official-source gate
+pins its nested route, five old HCR/SCR aliases, NVMem(576) alternative, and
+64-bit declaration; negative theorems distinguish SP_EL0 and SP_EL2.
+
+These seams prove neither access admission nor runtime X0/X1/X2/X3/X4/X5 value
+provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP field validity, desired
 virtualization or exception-routing configuration, publication, BBM, TLBI
-effects, timer behavior, completion, context synchronization, or a CAT edge.
+effects, predicate-state consistency, NVMem contents/effects, stack validity or
+use, timer behavior, completion, context synchronization, or a CAT edge.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

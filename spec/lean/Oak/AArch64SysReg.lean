@@ -136,6 +136,40 @@ theorem write_cntvoff_el2_el1_nv_redirect_preserves_component
       ⟨true, oldValue⟩ := by
   rfl
 
+/-- The pinned SP_EL1 body redirects under the old-HCR nested-virtualization
+    predicate. The Boolean inputs are separate machine-state projections. -/
+def spEl1RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 64-bit SP_EL1 component. NVMem(576),
+    other architectural state, and all access/trap effects are omitted. -/
+structure SPEl1WriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeSpEl1Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : SPEl1WriteComponent :=
+  if spEl1RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_sp_el1_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeSpEl1Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_sp_el1_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeSpEl1Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

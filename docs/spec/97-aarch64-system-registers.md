@@ -177,6 +177,12 @@ virtualization alternative preserves old CNTVOFF and raises a redirect flag;
 the source gate pins the same old HCR/SCR aliases and the official NVMem(96)
 assignment. The proof does not connect those Booleans to architectural state.
 
+The guest-stack write is likewise full-width and conditional. Lean computes
+`MSR SP_EL1, X5` as `0xd51c4105`, selects the exact SP bank, and proves direct
+EL2 installation of the supplied 64-bit value. The projected EL1 nested-
+virtualization alternative preserves SP_EL1 and raises a redirect flag; the
+source gate pins NVMem(576). Decoder negatives distinguish SP_EL0 and SP_EL2.
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -223,6 +229,12 @@ NVMem effect. It proves no offset validity, virtual-counter arithmetic,
 wraparound or monotonicity property, guest timer behavior, relation to
 CNTHCTL, ordering, completion, context synchronization, or other state.
 
+The SP_EL1 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime X5 provenance, predicate-state consistency, or
+NVMem effect. It establishes no stack alignment, canonicality, mapping,
+contents, memory safety, post-ERET bank selection/use, relation to SPSR,
+ordering, completion, context synchronization, or other state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -239,6 +251,7 @@ CNTHCTL, ordering, completion, context synchronization, or other state.
 | exact VTCR_EL2/X2 word and low-32 conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact CNTHCTL_EL2/X3 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
 | exact CNTVOFF_EL2/X4 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact SP_EL1/X5 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |
