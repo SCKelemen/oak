@@ -26,7 +26,7 @@ const (
 	optIRMemoryLivenessRevision   = "oak.optir.memory-liveness.v2"
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
 	optIRDSERevision              = "oak.optir.dead-store-elimination.v4"
-	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v9"
+	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v10"
 )
 
 type optIRSCCPRewriteArtifact struct {

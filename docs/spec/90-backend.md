@@ -759,7 +759,11 @@ materialize exactly one unavailable input when that input is the entry-memory
 version. An unconditional predecessor receives the load directly. When exactly
 one arm of a conditional targets the phi, the transform creates a dedicated
 block, redirects only that arm, and carries the arm's existing SSA arguments
-unchanged from the split block to the phi. The transform moves the removed
+unchanged from the split block to the phi. Regions needing the same edge share
+one split block. All promoted phi inputs follow that final edge, including
+already-available values and phis planned before the split was requested.
+Different target blocks retain different splits; the one-missing-input limit
+applies separately to each region phi. The transform moves the removed
 canonical load's checked source/access identity to the edge block; it neither
 synthesizes authority nor executes the load on another arm. It creates one
 fresh typed parameter in the phi block and appends the corresponding value to
@@ -775,7 +779,12 @@ edges, drops facts bound to removed SSA values, rewrites all uses and metadata
 sites, and rebuilds MemorySSA. A composed backend regression reprojects the
 moved checked authority over a split CFG, rebuilds MemorySSA, lowers it on both
 AArch64 and RV64, and requires clean seam admission plus a proven semantic
-verdict. The
+verdict. Shared-edge regressions cover two moved loads, mixed available and
+moved values in either planning order, dominating stores and loads, both
+conditional arms, existing SSA arguments, distinct targets, last-block-ID
+reuse, and rejection of duplicated checked authority. The shared two-region
+CFGs also pass both selectors and receive proven semantic verdicts; the store
+arm reaches a join with no remaining region loads. The
 scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access

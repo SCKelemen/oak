@@ -1017,7 +1017,13 @@ resolved before edge materialization. The transform drops facts bound to
 removed SSA identities, remaps every use and operation site, and rebuilds
 MemorySSA. A composed regression then reprojects the checked authority and
 requires both AArch64 and RV64 lowering of the split CFG to pass seam admission
-with a proven semantic verdict. Checked Oak
+with a proven semantic verdict. Multiple region phis now share the same split
+block for an exact original predecessor/target pair. Every promoted input
+follows that final edge, including an already-available value from a phi
+planned before another region requested the split. Distinct targets stay
+separate. Regressions remove both join loads and prove the resulting two-region
+CFGs on AArch64 and RV64, including mixtures of moved and available inputs;
+the one-missing-input limit remains per region phi. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a

@@ -243,6 +243,12 @@ one unavailable entry-memory input may instead be materialized on its real
 incoming edge. The load is appended to an unconditional predecessor or, when
 exactly one conditional arm targets the phi, to a new block reached only by
 that arm. The split block forwards the arm's existing SSA arguments unchanged.
+Multiple region phis share one block for the same original edge. Every
+promoted input is routed through the final edge, including previously
+available values and phis planned before another region requested the split.
+This removes both join loads in the two-region regression and is checked
+through AArch64 and RV64 lowering with proven semantic verdicts. The limit of
+one missing input remains per region phi.
 The transform moves the removed canonical load's checked source/access identity
 to that edge block, creates a fresh typed parameter in the phi block, and
 appends the edge values. Loads in the phi block and dominated blocks may share

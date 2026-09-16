@@ -73,7 +73,9 @@ func (report RegionLoadForwardingReport) Changes() int {
 // it covers closed joins and loop-carried values. At most one unavailable
 // entry-memory input may be materialized by moving the removed load's checked
 // identity to a real predecessor. An unconditional edge receives it directly;
-// one arm of a conditional is split into a dedicated block. Conceptual
+// one arm of a conditional is split into a dedicated block shared by all
+// promoted regions on that edge. Every phi input follows the final edge,
+// including values that were already available before splitting. Conceptual
 // function-entry inputs and ambiguous edges remain unavailable. No load is
 // speculated, and no alias or address fact is inferred.
 func ForwardRegionLoads(
@@ -255,7 +257,7 @@ func forwardRegionLoads(
 
 	available := map[regionLoadKey][]availableRegionLoad{}
 	phiPlans := map[regionLoadKey]*regionLoadPhiPlan{}
-	reservedSplits := map[regionLoadSplitEdge]bool{}
+	splitEdges := map[regionLoadSplitEdge]BlockID{}
 	var plannedPhis []*regionLoadPhiPlan
 	replacements := map[ValueID]ValueID{}
 	removed := map[OperationSite]bool{}
@@ -289,7 +291,7 @@ func forwardRegionLoads(
 					planned, planErr := planRegionLoadPhi(
 						access.Input, access.Region, result, operation, access.ID, current, blocks, metadata, versions,
 						accessesByID, definitions, dominators, edgeLoads, replacements,
-						reservedSplits, &nextValue, &nextBlock,
+						splitEdges, &nextValue, &nextBlock,
 					)
 					if planErr != nil {
 						return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, planErr
@@ -325,9 +327,10 @@ func forwardRegionLoads(
 		resultBlocks[result.Blocks[index].ID] = &result.Blocks[index]
 	}
 	var splitBlocks []Block
+	createdSplits := map[BlockID]bool{}
 	for _, plan := range plannedPhis {
 		insertion := plan.insertion
-		if insertion == nil || !insertion.split {
+		if insertion == nil || !insertion.split || createdSplits[insertion.block] {
 			continue
 		}
 		predecessor := resultBlocks[insertion.predecessor]
@@ -341,6 +344,7 @@ func forwardRegionLoads(
 				True: Edge{Target: insertion.target, Arguments: append([]ValueID(nil), insertion.edgeArguments...)},
 			},
 		})
+		createdSplits[insertion.block] = true
 	}
 	result.Blocks = append(result.Blocks, splitBlocks...)
 	resultBlocks = make(map[BlockID]*Block, len(result.Blocks))
@@ -355,7 +359,13 @@ func forwardRegionLoads(
 		}
 		block.Parameters = append(block.Parameters, plan.parameter)
 		for _, incoming := range plan.incoming {
-			predecessor := resultBlocks[incoming.predecessor]
+			// Plans retain original edge identities until every region has been
+			// considered: a later plan may split an earlier phi's incoming edge.
+			predecessorID := incoming.predecessor
+			if split, exists := splitEdges[regionLoadSplitEdge{predecessor: predecessorID, target: plan.block}]; exists {
+				predecessorID = split
+			}
+			predecessor := resultBlocks[predecessorID]
 			value := resolveReplacement(incoming.value, replacements)
 			if predecessor == nil || value == 0 || appendRegionLoadEdgeArgument(&predecessor.Terminator, plan.block, value) == 0 {
 				return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, fmt.Errorf("optir: region load forwarding phi has no edge from block %d to %d", incoming.predecessor, plan.block)
@@ -534,7 +544,7 @@ func planRegionLoadPhi(
 	dominators map[BlockID]map[BlockID]bool,
 	edgeLoads map[regionLoadKey][]availableRegionLoad,
 	replacements map[ValueID]ValueID,
-	reservedSplits map[regionLoadSplitEdge]bool,
+	splitEdges map[regionLoadSplitEdge]BlockID,
 	nextValue *ValueID,
 	nextBlock *BlockID,
 ) (*regionLoadPhiPlan, error) {
@@ -595,19 +605,20 @@ func planRegionLoadPhi(
 		insertionBlock := predecessor
 		if missingEdge.split {
 			edge := regionLoadSplitEdge{predecessor: predecessor, target: version.Block}
-			if reservedSplits[edge] {
-				return nil, nil
-			}
-			if *nextBlock == 0 {
-				return nil, fmt.Errorf("optir: region load forwarding block identity overflow")
-			}
-			insertionBlock = *nextBlock
-			if insertionBlock == ^BlockID(0) {
-				*nextBlock = 0
+			if split, exists := splitEdges[edge]; exists {
+				insertionBlock = split
 			} else {
-				*nextBlock++
+				if *nextBlock == 0 {
+					return nil, fmt.Errorf("optir: region load forwarding block identity overflow")
+				}
+				insertionBlock = *nextBlock
+				if insertionBlock == ^BlockID(0) {
+					*nextBlock = 0
+				} else {
+					*nextBlock++
+				}
+				splitEdges[edge] = insertionBlock
 			}
-			reservedSplits[edge] = true
 		}
 		valueID, ok := allocate()
 		if !ok {
@@ -617,7 +628,6 @@ func planRegionLoadPhi(
 		value.ID = valueID
 		value.Name = result.Name + ".memory-edge"
 		plan.incoming[missing].value = valueID
-		plan.incoming[missing].predecessor = insertionBlock
 		plan.insertion = &regionLoadInsertionPlan{
 			predecessor: predecessor,
 			block:       insertionBlock,
@@ -788,7 +798,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v9")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v10")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)
