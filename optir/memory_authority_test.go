@@ -26,6 +26,9 @@ func TestCheckedMemoryAuthorityProjectsExactGlobalAccesses(t *testing.T) {
 	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
 		t.Fatal(err)
 	}
+	if projection.Fingerprint() == "" {
+		t.Fatal("checked memory projection has no transport fingerprint")
+	}
 	if !reflect.DeepEqual(projection.Metadata.Regions, []RegionID{"global:counter"}) ||
 		!reflect.DeepEqual(projection.Observability.LiveOut, []RegionID{"global:counter"}) || len(projection.Metadata.Operations) != 2 {
 		t.Fatalf("checked memory projection = %+v", projection)

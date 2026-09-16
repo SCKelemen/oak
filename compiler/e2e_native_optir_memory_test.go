@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/target"
 )
 
 const nativeOptIRMemoryProgram = `
@@ -46,6 +47,17 @@ func TestE2ENativeRV64OptIRSelectsVerifiedRegionDSE(t *testing.T) {
 	}
 	if len(native.Object) == 0 {
 		t.Fatal("RV64 region-DSE candidate produced no object")
+	}
+}
+
+func TestE2ENativeRV64OptIRRegionDSEUnderQEMU(t *testing.T) {
+	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
+	native, diagnostics := nativeRV64Lower(t, bare, nativeOptIRMemoryProgram)
+	if joined := strings.Join(diagnostics, "\n"); !strings.Contains(joined, "overwrite: optimized OptIR selected") {
+		t.Fatalf("verified RV64 region DSE candidate was not selected:\n%s", joined)
+	}
+	if out := runNativeRV64Bare(t, "native_rv64_optir_memory", native); !strings.Contains(out, "0000002a\n") {
+		t.Fatalf("optimized RV64 region DSE did not exit 42:\n%s", out)
 	}
 }
 

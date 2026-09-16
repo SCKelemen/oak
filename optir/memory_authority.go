@@ -123,6 +123,11 @@ type CheckedMemoryProjection struct {
 	integrity            string
 }
 
+// Fingerprint identifies the exact CFG, checked authority, Mod/Ref metadata,
+// and observability boundary captured by this projection. Consumers must still
+// call VerifyCheckedMemoryProjection before trusting the projection.
+func (projection CheckedMemoryProjection) Fingerprint() string { return projection.integrity }
+
 // ProjectCheckedMemory resolves opaque operation IDs against independently
 // supplied authority and constructs exact Mod/Ref metadata. It fails closed on
 // every unmodeled memory effect.

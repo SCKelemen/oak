@@ -20,6 +20,24 @@ type optIRRegionMemorySelection struct {
 	loads  map[optir.OperationSite]OptIRRegionGlobal
 }
 
+// validateCheckedOptIRRegionMemory is the production semantic-authority seam.
+// RegionMemorySSA proves consistency with metadata; this additional check
+// proves that the metadata itself was projected from checked source accesses
+// on the exact final CFG.
+func validateCheckedOptIRRegionMemory(
+	cfg optir.CFG,
+	template *asm.Function,
+	authority optir.CheckedMemoryAuthority,
+	projection optir.CheckedMemoryProjection,
+	memorySSA optir.RegionMemorySSA,
+	bindings map[optir.RegionID]OptIRRegionGlobal,
+) (*optIRRegionMemorySelection, error) {
+	if err := optir.VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		return nil, fmt.Errorf("machine: OptIR checked region memory authority: %w", err)
+	}
+	return validateOptIRRegionMemory(cfg, template, projection.Metadata, memorySSA, bindings)
+}
+
 // validateOptIRRegionMemory closes the first memory-emission subset before a
 // target sees it. It deliberately admits only acyclic, call-free control flow
 // over exact scalar package-cell reads and whole, nonvolatile replacements.

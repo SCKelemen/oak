@@ -260,13 +260,15 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // is proposed, so the search never pays to validate an alternate spelling with
 // no generic optimization in it.
 type nativeOptIRPlan struct {
-	cfg           *optir.CFG
-	changes       int
-	fingerprint   string
-	metadata      *optir.RegionMemoryMetadata
-	memorySSA     *optir.RegionMemorySSA
-	observability optir.RegionMemoryObservability
-	bindings      map[optir.RegionID]nativegen.OptIRRegionGlobal
+	cfg              *optir.CFG
+	changes          int
+	fingerprint      string
+	metadata         *optir.RegionMemoryMetadata
+	memorySSA        *optir.RegionMemorySSA
+	memoryAuthority  *optir.CheckedMemoryAuthority
+	memoryProjection *optir.CheckedMemoryProjection
+	observability    optir.RegionMemoryObservability
+	bindings         map[optir.RegionID]nativegen.OptIRRegionGlobal
 }
 
 func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
@@ -278,6 +280,8 @@ func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
 	lane.OptIRFingerprint = plan.fingerprint
 	lane.OptIRMemory = plan.metadata
 	lane.OptIRMemorySSA = plan.memorySSA
+	lane.OptIRMemoryAuthority = plan.memoryAuthority
+	lane.OptIRMemoryProjection = plan.memoryProjection
 	lane.OptIRMemoryObservability = plan.observability
 	lane.OptIRRegionGlobals = plan.bindings
 }
@@ -317,14 +321,34 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc
 		}
 		return nativeOptIRPlan{cfg: &optimized, changes: changes, fingerprint: fingerprint}
 	}
-	memorySSA, err := optir.AnalyzeRegionMemorySSA(optimized, analyses.deadStoreMetadata)
+	if err := optir.VerifyDeadStoreElimination(
+		analyses.loopInvariant,
+		analyses.memoryProjection.Metadata,
+		analyses.memorySSA,
+		analyses.memoryProjection.Observability,
+		analyses.memoryLiveness,
+		analyses.deadStores,
+		analyses.deadStoreMetadata,
+		analyses.deadStoreElimination,
+	); err != nil {
+		return nativeOptIRPlan{}
+	}
+	projection, err := optir.ProjectCheckedMemory(optimized, memoryAuthority)
+	if err != nil || !reflect.DeepEqual(projection.Metadata, analyses.deadStoreMetadata) ||
+		!reflect.DeepEqual(projection.Observability, analyses.memoryProjection.Observability) {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyCheckedMemoryProjection(optimized, memoryAuthority, projection); err != nil {
+		return nativeOptIRPlan{}
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(optimized, projection.Metadata)
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
-	if err := optir.VerifyRegionMemorySSA(optimized, analyses.deadStoreMetadata, memorySSA); err != nil {
+	if err := optir.VerifyRegionMemorySSA(optimized, projection.Metadata, memorySSA); err != nil {
 		return nativeOptIRPlan{}
 	}
-	fingerprint, err := optir.FingerprintRegionMemoryInput(optimized, analyses.deadStoreMetadata, analyses.memoryProjection.Observability)
+	fingerprint, err := optir.FingerprintRegionMemoryInput(optimized, projection.Metadata, projection.Observability)
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
@@ -332,11 +356,11 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc
 	if !ok {
 		return nativeOptIRPlan{}
 	}
-	metadata := analyses.deadStoreMetadata
+	metadata := projection.Metadata
 	return nativeOptIRPlan{
 		cfg: &optimized, changes: changes, fingerprint: fingerprint,
-		metadata: &metadata, memorySSA: &memorySSA,
-		observability: analyses.memoryProjection.Observability, bindings: bindings,
+		metadata: &metadata, memorySSA: &memorySSA, memoryAuthority: &memoryAuthority, memoryProjection: &projection,
+		observability: projection.Observability, bindings: bindings,
 	}
 }
 

@@ -883,14 +883,17 @@ separate immutable authority fixes its exact source, region, kind, scalar type,
 whole-region contract, and volatility. The two projections must agree.
 Projection rejects missing, duplicated, stale, forged, or mismatched authority
 and treats every global region as live on normal return. The typed artifact DAG
-runs projection, MemorySSA, liveness, combined evidence, and DSE after LICM.
+runs projection, MemorySSA, liveness, combined evidence, and DSE after LICM;
+DSE independently verifies its complete rewrite before publishing it.
 Changed post-DSE CFGs can enter native search on AArch64 and RV64 when the
 memory vocabulary is acyclic, call-free control flow over exact
-scalar package-global reads and whole nonvolatile writes. Selection
-independently verifies rebuilt MemorySSA and matches every opaque region
+scalar package-global reads and whole nonvolatile writes. Selection reprojects
+immutable checked source-access authority over the exact final CFG,
+independently verifies rebuilt MemorySSA, and matches every opaque region
 through typechecker authority to an exact global descriptor already authorized
 by the assembler template. Width- and signedness-correct code covers Bool and
-8/16/32/64-bit integers. Existing verified register plans and typed aligned
+8/16/32/64-bit integers. Authority and final-projection fingerprints are part
+of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, memory loops, load GVN,

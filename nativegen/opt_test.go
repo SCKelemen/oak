@@ -2,6 +2,7 @@ package nativegen
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
@@ -244,5 +245,24 @@ func TestCompileForRefusesMismatchedOptIRFingerprint(t *testing.T) {
 		if _, err := CompileFor(lane, nil, nil, nil, nil, nil, nil); err == nil {
 			t.Fatalf("mismatched OptIR fingerprint reached %s materialization", arch)
 		}
+	}
+}
+
+func TestOptIRFingerprintRequiresCompleteCheckedMemoryEvidence(t *testing.T) {
+	cfg := optir.CFG{Name: "f", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID:         0,
+		Operations: []optir.Operation{{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	metadata := optir.RegionMemoryMetadata{}
+	memorySSA := optir.RegionMemorySSA{}
+	lane := Lane{OptIR: &cfg, OptIRMemory: &metadata, OptIRMemorySSA: &memorySSA}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "complete checked evidence") {
+		t.Fatalf("incomplete checked memory fingerprint error = %v", err)
+	}
+	authority := optir.CheckedMemoryAuthority{}
+	lane = Lane{OptIR: &cfg, OptIRMemoryAuthority: &authority}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without region metadata") {
+		t.Fatalf("one-sided checked memory fingerprint error = %v", err)
 	}
 }

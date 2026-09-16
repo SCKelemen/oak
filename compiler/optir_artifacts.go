@@ -308,6 +308,9 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 		dse, dseTask := opt.DerivedArtifact3(opt.ArtifactCandidate, "optir.dead-store-elimination", optIRDSERevision, cfgV3, memoryProjection, memoryEvidence,
 			func(_ context.Context, input optir.CFG, projection optir.CheckedMemoryProjection, evidence optIRMemoryEvidenceArtifact) (optIRDSEArtifact, error) {
 				result, metadata, report, err := optir.EliminateDeadRegionStores(input, projection.Metadata, evidence.SSA, projection.Observability, evidence.Liveness)
+				if err == nil {
+					err = optir.VerifyDeadStoreElimination(input, projection.Metadata, evidence.SSA, projection.Observability, evidence.Liveness, result, metadata, report)
+				}
 				return optIRDSEArtifact{CFG: result, Metadata: metadata, Report: report}, err
 			})
 		references.hasMemory = true

@@ -30,14 +30,15 @@ main: (): i32 = 0
 	if replace.CheckedMemoryHash == "" || replace.CheckedMemoryHash != replace.CheckedMemory.Fingerprint() {
 		t.Fatalf("checked memory authority fingerprint = %q / %q", replace.CheckedMemoryHash, replace.CheckedMemory.Fingerprint())
 	}
-	if !reflect.DeepEqual(replace.MemoryProjection.Metadata.Regions, []optir.RegionID{"global:counter"}) ||
-		!reflect.DeepEqual(replace.MemoryProjection.Observability.LiveOut, []optir.RegionID{"global:counter"}) {
+	regions := replace.MemoryProjection.Metadata.Regions
+	if len(regions) != 1 || regions[0] == "" ||
+		!reflect.DeepEqual(replace.MemoryProjection.Observability.LiveOut, []optir.RegionID{regions[0]}) {
 		t.Fatalf("checked memory projection = %+v", replace.MemoryProjection)
 	}
 	if err := optir.VerifyCheckedMemoryProjection(replace.LoopInvariant, replace.CheckedMemory, replace.MemoryProjection); err != nil {
 		t.Fatalf("checked memory projection verification: %v", err)
 	}
-	if len(replace.DeadStoreElimination.Removed) != 1 || replace.DeadStoreElimination.Removed[0].Region != "global:counter" {
+	if len(replace.DeadStoreElimination.Removed) != 1 || replace.DeadStoreElimination.Removed[0].Region != regions[0] {
 		t.Fatalf("dead-store report = %+v", replace.DeadStoreElimination)
 	}
 	if err := optir.VerifyDeadStoreElimination(

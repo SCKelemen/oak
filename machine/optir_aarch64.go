@@ -39,8 +39,10 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	return lowerOptIRArm64(cfg, template, optIRArm64Registers, optIRArm64SpillRegisters)
 }
 
-// LowerOptIRArm64WithRegionMemory selects the closed scalar-global memory
-// subset after independently checking exact RegionMemorySSA evidence.
+// LowerOptIRArm64WithRegionMemory is the low-level region-model entry. It
+// independently checks exact RegionMemorySSA evidence, but the caller owns the
+// region model; production source lowering uses
+// LowerOptIRArm64WithCheckedRegionMemory instead.
 func LowerOptIRArm64WithRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
@@ -49,6 +51,24 @@ func LowerOptIRArm64WithRegionMemory(
 	bindings map[optir.RegionID]OptIRRegionGlobal,
 ) (*asm.Function, error) {
 	memory, err := validateOptIRRegionMemory(cfg, template, metadata, memorySSA, bindings)
+	if err != nil {
+		return nil, err
+	}
+	return lowerOptIRArm64Selection(cfg, template, optIRArm64Registers, optIRArm64SpillRegisters, memory)
+}
+
+// LowerOptIRArm64WithCheckedRegionMemory is the production compiler entry:
+// checked source authority must project to the exact final CFG before the
+// independently verified RegionMemorySSA selector may emit an access.
+func LowerOptIRArm64WithCheckedRegionMemory(
+	cfg optir.CFG,
+	template *asm.Function,
+	authority optir.CheckedMemoryAuthority,
+	projection optir.CheckedMemoryProjection,
+	memorySSA optir.RegionMemorySSA,
+	bindings map[optir.RegionID]OptIRRegionGlobal,
+) (*asm.Function, error) {
+	memory, err := validateCheckedOptIRRegionMemory(cfg, template, authority, projection, memorySSA, bindings)
 	if err != nil {
 		return nil, err
 	}

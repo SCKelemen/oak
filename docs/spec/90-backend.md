@@ -744,17 +744,20 @@ access kind, scalar type, whole-region contract, and volatility must all match,
 the two projections must agree, and missing, duplicated, forged, or stale IDs
 fail closed. Every package-global region is observable at normal return.
 Projection, MemorySSA, liveness, evidence, and DSE are exact typed artifact-DAG
-nodes after LICM. Changed post-DSE CFGs now enter AArch64 or RV64 native search
-for closed acyclic, call-free control flow containing exact scalar
+nodes after LICM; the DSE node independently reruns its complete transform
+verifier before publishing a candidate. Changed post-DSE CFGs now enter AArch64
+or RV64 native search for closed acyclic, call-free control flow containing exact scalar
 package-global reads and whole nonvolatile writes. Each selector
-independently verifies rebuilt MemorySSA, resolves opaque regions only through
+independently reprojects the immutable checked source-access authority over the
+exact final CFG, verifies rebuilt MemorySSA, resolves opaque regions only through
 typechecker authority, and requires the resulting descriptor to match a global
 already authorized by the assembler template. Bool and signed/unsigned
 8/16/32/64-bit cells use their exact ABI widths and canonical load extensions.
 The target's independently verified register plan, typed aligned spill frame,
 and reserved scratch discipline compose with those accesses. The resulting
-body still requires seam admission and a semantic-verifier verdict before
-selection. Load forwarding, memory loops,
+The authority and final projection fingerprints are part of materialization
+identity. The resulting body still requires seam admission and a
+semantic-verifier verdict before selection. Load forwarding, memory loops,
 aggregate regions, and interprocedural call Mod/Ref summaries remain open.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each

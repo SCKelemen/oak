@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1525,8 +1526,13 @@ type Lane struct {
 	// OptIRMemory, its independently verified SSA evidence, observability,
 	// and region bindings form one exact memory-aware emission plan. A nil
 	// OptIRMemory selects the ordinary pure OptIR path.
-	OptIRMemory              *optir.RegionMemoryMetadata
-	OptIRMemorySSA           *optir.RegionMemorySSA
+	OptIRMemory    *optir.RegionMemoryMetadata
+	OptIRMemorySSA *optir.RegionMemorySSA
+	// OptIRMemoryAuthority and OptIRMemoryProjection retain checked source
+	// authority across optimization. RegionMemorySSA alone proves consistency
+	// with metadata; it cannot authorize self-authored metadata.
+	OptIRMemoryAuthority     *optir.CheckedMemoryAuthority
+	OptIRMemoryProjection    *optir.CheckedMemoryProjection
 	OptIRMemoryObservability optir.RegionMemoryObservability
 	OptIRRegionGlobals       map[optir.RegionID]OptIRRegionGlobal
 	// VectorReductions rewrites the plain u64 and u32 reductions into
@@ -1776,10 +1782,10 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
 					out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
-				} else if lane.OptIRMemorySSA == nil {
-					err = unsupported("an OptIR region-memory plan without MemorySSA evidence")
+				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+					err = unsupported("an OptIR region-memory plan without complete checked evidence")
 				} else {
-					out, err = machine.LowerOptIRArm64WithRegionMemory(*lane.OptIR, template, *lane.OptIRMemory, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+					out, err = machine.LowerOptIRArm64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
 				}
 			}
 			if err == nil {
@@ -1831,10 +1837,10 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
 					out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
-				} else if lane.OptIRMemorySSA == nil {
-					err = unsupported("an OptIR region-memory plan without MemorySSA evidence")
+				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+					err = unsupported("an OptIR region-memory plan without complete checked evidence")
 				} else {
-					out, err = machine.LowerOptIRRV64WithRegionMemory(*lane.OptIR, template, *lane.OptIRMemory, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+					out, err = machine.LowerOptIRRV64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
 				}
 			}
 			if err == nil {
@@ -1866,13 +1872,20 @@ func (lane Lane) optIRFingerprint() (string, error) {
 		return "", fmt.Errorf("missing OptIR CFG")
 	}
 	if lane.OptIRMemory == nil {
-		if lane.OptIRMemorySSA != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
+		if lane.OptIRMemorySSA != nil || lane.OptIRMemoryAuthority != nil || lane.OptIRMemoryProjection != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
 			return "", fmt.Errorf("memory evidence or bindings without region metadata")
 		}
 		return optir.FingerprintCFG(*lane.OptIR)
 	}
-	if lane.OptIRMemorySSA == nil {
-		return "", fmt.Errorf("region metadata without MemorySSA evidence")
+	if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+		return "", fmt.Errorf("region metadata without complete checked evidence")
+	}
+	if err := optir.VerifyCheckedMemoryProjection(*lane.OptIR, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection); err != nil {
+		return "", err
+	}
+	if !reflect.DeepEqual(lane.OptIRMemoryProjection.Metadata, *lane.OptIRMemory) ||
+		!reflect.DeepEqual(lane.OptIRMemoryProjection.Observability, lane.OptIRMemoryObservability) {
+		return "", fmt.Errorf("checked memory projection disagrees with the emission plan")
 	}
 	return optir.FingerprintRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability)
 }

@@ -240,15 +240,19 @@ kind, type, whole-region contract, and volatility. The projections must agree.
 Missing, duplicated, forged, stale, or mismatched authority fails closed;
 globals are conservatively live on normal return. Projection, MemorySSA,
 liveness, combined evidence, and DSE now follow LICM in the typed artifact
-DAG. A changed post-DSE CFG can enter native search on AArch64 and RV64 for
-acyclic, call-free control flow over exact scalar package-global reads and whole
-nonvolatile writes. The selectors independently verify rebuilt
-MemorySSA, require each opaque region to resolve through typechecker authority
+DAG; DSE independently verifies its complete rewrite before publishing it. A
+changed post-DSE CFG can enter native search on AArch64 and RV64 for
+acyclic, call-free control flow over exact scalar package-global
+reads and whole nonvolatile writes. The production path reprojects immutable
+checked source-access authority over the exact final CFG; the selectors then
+independently verify rebuilt MemorySSA and require each opaque region to resolve
+through typechecker authority
 to an exact global descriptor already authorized by the assembler template,
 and use width- and signedness-correct loads/stores for Bool and
-8/16/32/64-bit integers. Their existing independently verified register plans,
-typed aligned spill frames, and reserved scratch disciplines now compose with
-those global accesses on both targets. Seam admission and semantic translation
+8/16/32/64-bit integers. Authority and final-projection fingerprints enter the
+materialization identity. Their independently verified register plans, typed
+aligned spill frames, and reserved scratch disciplines compose with those
+global accesses on both targets. Seam admission and semantic translation
 validation remain the emission gate; direct lowering remains the fallback.
 Aggregate/partial regions, memory loops, load GVN, and
 interprocedural call Mod/Ref summaries remain open; a function mixing a call

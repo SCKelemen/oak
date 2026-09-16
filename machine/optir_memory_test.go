@@ -68,6 +68,49 @@ set_region: (x: u32): () = {
 	}
 }
 
+func TestLowerOptIRCheckedRegionMemoryBindsSourceAuthorityToFinalCFG(t *testing.T) {
+	declaration := optIRRV64Declaration(t, `
+set_checked: (x: u32): () = {
+  state = x
+}
+`)
+	source := optir.Source{Context: "checked.oak", Line: 3, Column: 3}
+	record, err := optir.NewCheckedMemoryAccessRecord(source, "opaque-checked-region", optir.MemoryWrite, "u32", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthority([]optir.CheckedMemoryAccessRecord{record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{Name: "set_checked", Entry: 0, Results: []optir.Type{"()"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}}, Operations: []optir.Operation{
+			{Code: optir.OpStoreRegion, Operands: []optir.ValueID{1}, Effects: []optir.Effect{optir.EffectWriteMemory}, Source: source, MemoryAccessID: record.ID},
+			{Code: optir.OpConstUnit, Results: []optir.Value{{ID: 2, Type: "()"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
+	}}}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySSA := optIRAnalyzeRegionMemory(t, cfg, projection.Metadata)
+	template := &asm.Function{
+		Name: "set_checked", Arch: asm.ArchArm64, Signature: declaration,
+		Bindings: []asm.Binding{{Register: w(0), Param: "x"}},
+		Globals:  map[string]asm.Global{"state": {Type: "u32", Bits: 32}},
+	}
+	bindings := map[optir.RegionID]OptIRRegionGlobal{
+		"opaque-checked-region": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
+	}
+	if _, err := LowerOptIRArm64WithCheckedRegionMemory(cfg, template, authority, projection, memorySSA, bindings); err != nil {
+		t.Fatalf("exact checked region memory refused: %v", err)
+	}
+	projection.Metadata.Operations[0].Accesses[0].Region = "self-authored-region"
+	if _, err := LowerOptIRArm64WithCheckedRegionMemory(cfg, template, authority, projection, memorySSA, bindings); err == nil || !strings.Contains(err.Error(), "mutated") {
+		t.Fatalf("mutated checked projection error = %v", err)
+	}
+}
+
 func TestLowerOptIRBoolRegionStoreUsesCanonicalPackageCell(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 set_flag: (x: Bool): () = {
