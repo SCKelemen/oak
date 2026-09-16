@@ -29,7 +29,7 @@ const (
 // integer constants, copies, widening casts, total arithmetic, comparisons,
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
-// values live across calls, and spills outside one straight-line return block
+// values live across calls, spill loops, and spill/call frame composition
 // refuse the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
@@ -100,7 +100,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, fixed, plan); err != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 spill-plan evidence: %w", err)
 		}
-		if err := validateOptIRRV64StraightLineSpills(cfg, plan); err != nil {
+		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
 			return nil, err
 		}
 		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxSpillFrame)
@@ -495,9 +495,13 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		if selector.types[terminator.Condition] != optir.TypeBool {
 			return fmt.Errorf("condition %d is not Bool", terminator.Condition)
 		}
+		condition, err := selector.readValue(terminator.Condition, optIRRV64SpillScratchA, line)
+		if err != nil {
+			return err
+		}
 		trueLabel := selector.edgeLabel(block.ID, "true")
 		falseLabel := selector.edgeLabel(block.ID, "false")
-		selector.emit("bnez", line, optIRRV64Register(selector.register(terminator.Condition)), asm.Symbol{Name: trueLabel})
+		selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: trueLabel})
 		selector.emit("j", line, asm.Symbol{Name: falseLabel})
 		selector.items = append(selector.items, asm.Label{Name: trueLabel, Line: line})
 		if err := selector.edgeCopies(terminator.True, line); err != nil {
@@ -520,26 +524,153 @@ type optIRRV64Move struct {
 	source      int
 }
 
+type optIRRV64Location struct {
+	register int
+	slot     optir.SpillSlotID
+}
+
+type optIRRV64LocationMove struct {
+	destination optIRRV64Location
+	source      optIRRV64Location
+	typ         optir.Type
+}
+
+func (selector *optIRRV64Selector) valueLocation(value optir.ValueID) (optIRRV64Location, error) {
+	register, colored := selector.colors[value]
+	slot, spilled := selector.spills[value]
+	if colored == spilled {
+		return optIRRV64Location{}, fmt.Errorf("value %d does not have exactly one RV64 machine location", value)
+	}
+	if colored {
+		return optIRRV64Location{register: register}, nil
+	}
+	if slot == 0 {
+		return optIRRV64Location{}, fmt.Errorf("value %d has invalid RV64 spill slot zero", value)
+	}
+	if _, exists := selector.spillOffsets[slot]; !exists {
+		return optIRRV64Location{}, fmt.Errorf("value %d names missing RV64 spill slot %d", value, slot)
+	}
+	return optIRRV64Location{slot: slot}, nil
+}
+
+func (selector *optIRRV64Selector) readValue(value optir.ValueID, scratch, line int) (int, error) {
+	location, err := selector.valueLocation(value)
+	if err != nil {
+		return 0, err
+	}
+	if location.slot == 0 {
+		return location.register, nil
+	}
+	if err := selector.loadSpillSlot(location.slot, scratch, selector.types[value], line); err != nil {
+		return 0, err
+	}
+	return scratch, nil
+}
+
+func (selector *optIRRV64Selector) readLocation(location optIRRV64Location, destination int, typ optir.Type, line int) error {
+	if location.slot != 0 {
+		return selector.loadSpillSlot(location.slot, destination, typ, line)
+	}
+	selector.move(destination, location.register, line)
+	return nil
+}
+
+func (selector *optIRRV64Selector) emitLocationMove(move optIRRV64LocationMove, line int) error {
+	if move.destination.slot == 0 {
+		return selector.readLocation(move.source, move.destination.register, move.typ, line)
+	}
+	source := move.source.register
+	if move.source.slot != 0 {
+		source = optIRRV64SpillScratchA
+		if err := selector.loadSpillSlot(move.source.slot, source, move.typ, line); err != nil {
+			return err
+		}
+	}
+	return selector.storeSpillSlot(move.destination.slot, source, move.typ, line)
+}
+
 func (selector *optIRRV64Selector) edgeCopies(edge optir.Edge, line int) error {
+	moves, err := selector.edgeMoves(edge)
+	if err != nil {
+		return err
+	}
+	return selector.emitLocationCopies(moves, line)
+}
+
+func (selector *optIRRV64Selector) edgeMoves(edge optir.Edge) ([]optIRRV64LocationMove, error) {
 	target := optIRBlock(selector.cfg, edge.Target)
 	if target == nil || len(target.Parameters) != len(edge.Arguments) {
-		return fmt.Errorf("invalid edge to block %d", edge.Target)
+		return nil, fmt.Errorf("invalid edge to block %d", edge.Target)
 	}
-	var moves []optIRRV64Move
+	var moves []optIRRV64LocationMove
 	for index, parameter := range target.Parameters {
 		argument := edge.Arguments[index]
 		if parameter.Type == optir.Type("()") {
 			continue
 		}
 		if selector.types[argument] != parameter.Type {
-			return fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
+			return nil, fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
 		}
-		destination, source := selector.register(parameter.ID), selector.register(argument)
+		destination, err := selector.valueLocation(parameter.ID)
+		if err != nil {
+			return nil, err
+		}
+		source, err := selector.valueLocation(argument)
+		if err != nil {
+			return nil, err
+		}
 		if destination != source {
-			moves = append(moves, optIRRV64Move{destination: destination, source: source})
+			moves = append(moves, optIRRV64LocationMove{destination: destination, source: source, typ: parameter.Type})
 		}
 	}
-	selector.parallelCopies(moves, line)
+	return moves, nil
+}
+
+func (selector *optIRRV64Selector) emitLocationCopies(moves []optIRRV64LocationMove, line int) error {
+	for len(moves) > 0 {
+		progress := false
+		for index, move := range moves {
+			usedAsSource := false
+			for _, other := range moves {
+				usedAsSource = usedAsSource || other.source == move.destination
+			}
+			if usedAsSource {
+				continue
+			}
+			if err := selector.emitLocationMove(move, line); err != nil {
+				return err
+			}
+			moves = append(moves[:index], moves[index+1:]...)
+			progress = true
+			break
+		}
+		if progress {
+			continue
+		}
+
+		// Preserve one old destination in t6, then make the cycle acyclic.
+		// Slot-to-slot traffic uses t5, so it cannot overwrite this value.
+		cycle := moves[0].destination
+		var cycleType optir.Type
+		for _, move := range moves {
+			if move.source == cycle {
+				cycleType = move.typ
+				break
+			}
+		}
+		if cycleType == "" {
+			return fmt.Errorf("parallel-copy cycle has no source for destination")
+		}
+		if err := selector.readLocation(cycle, optIRRV64CopyScratch, cycleType, line); err != nil {
+			return err
+		}
+		scratch := optIRRV64Location{register: optIRRV64CopyScratch}
+		for index := range moves {
+			if moves[index].source == cycle {
+				moves[index].source = scratch
+			}
+		}
+	}
 	return nil
 }
 
@@ -596,29 +727,43 @@ func (selector *optIRRV64Selector) move(destination, source, line int) {
 
 func (selector *optIRRV64Selector) loadSpill(value optir.ValueID, register int, line int) error {
 	slot, spilled := selector.spills[value]
-	offset, laidOut := selector.spillOffsets[slot]
-	if !spilled || !laidOut {
+	if !spilled {
 		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
 	}
-	mnemonic, ok := optIRRV64SpillLoad(selector.types[value])
+	return selector.loadSpillSlot(slot, register, selector.types[value], line)
+}
+
+func (selector *optIRRV64Selector) loadSpillSlot(slot optir.SpillSlotID, register int, typ optir.Type, line int) error {
+	offset, laidOut := selector.spillOffsets[slot]
+	if slot == 0 || !laidOut {
+		return fmt.Errorf("load names missing RV64 spill slot %d", slot)
+	}
+	mnemonic, ok := optIRRV64SpillLoad(typ)
 	if !ok {
-		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+		return fmt.Errorf("RV64 spill slot %d has unsupported type %s", slot, typ)
 	}
 	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
 	selector.written[register] = true
-	selector.normalize(register, selector.types[value], line)
+	selector.normalize(register, typ, line)
 	return nil
 }
 
 func (selector *optIRRV64Selector) storeSpill(value optir.ValueID, register int, line int) error {
 	slot, spilled := selector.spills[value]
-	offset, laidOut := selector.spillOffsets[slot]
-	if !spilled || !laidOut {
+	if !spilled {
 		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
 	}
-	mnemonic, ok := optIRRV64SpillStore(selector.types[value])
+	return selector.storeSpillSlot(slot, register, selector.types[value], line)
+}
+
+func (selector *optIRRV64Selector) storeSpillSlot(slot optir.SpillSlotID, register int, typ optir.Type, line int) error {
+	offset, laidOut := selector.spillOffsets[slot]
+	if slot == 0 || !laidOut {
+		return fmt.Errorf("store names missing RV64 spill slot %d", slot)
+	}
+	mnemonic, ok := optIRRV64SpillStore(typ)
 	if !ok {
-		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+		return fmt.Errorf("RV64 spill slot %d has unsupported type %s", slot, typ)
 	}
 	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
 	return nil

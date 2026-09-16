@@ -7,8 +7,8 @@ import (
 )
 
 // optIRRV64SpillLayout gives a verified abstract spill slot an RV64 frame
-// offset. The first RV64 materialization slice owns the whole frame: calls and
-// control-flow joins remain refusals until their layouts compose here.
+// offset. The materializer owns the whole frame: calls remain refusals until
+// their save area composes with these offsets.
 type optIRRV64SpillLayout struct {
 	Offsets map[optir.SpillSlotID]int64
 	Frame   int64
@@ -66,17 +66,52 @@ func checkedAlign(value, alignment int64) (int64, bool) {
 	return (value + mask) &^ mask, true
 }
 
-func validateOptIRRV64StraightLineSpills(cfg optir.CFG, plan optir.RegisterPlan) error {
+func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 	if len(plan.Spills) == 0 {
 		return nil
 	}
-	if len(cfg.Blocks) != 1 || cfg.Blocks[0].ID != cfg.Entry || cfg.Blocks[0].Terminator.Kind != optir.TerminatorReturn {
-		return fmt.Errorf("machine: OptIR RV64 spill materialization supports one return-terminated block")
-	}
-	for _, operation := range cfg.Blocks[0].Operations {
-		if operation.Code == optir.OpCall || len(operation.Effects) != 0 {
-			return fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls and effects")
+
+	// This slice admits forward branches and joins, but not loops. Count every
+	// CFG edge, including two conditional arms with the same target, and use a
+	// Kahn traversal so irreducible cycles fail closed as well as natural loops.
+	indegree := make(map[optir.BlockID]int, len(cfg.Blocks))
+	outgoing := make(map[optir.BlockID][]optir.BlockID, len(cfg.Blocks))
+	for _, block := range cfg.Blocks {
+		indegree[block.ID] = 0
+		for _, operation := range block.Operations {
+			if operation.Code == optir.OpCall || len(operation.Effects) != 0 {
+				return fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls and effects")
+			}
 		}
+	}
+	for _, block := range cfg.Blocks {
+		for _, edge := range optIRTerminatorEdges(block.Terminator) {
+			if _, exists := indegree[edge.Target]; !exists {
+				return fmt.Errorf("machine: OptIR RV64 spill CFG names missing block %d", edge.Target)
+			}
+			outgoing[block.ID] = append(outgoing[block.ID], edge.Target)
+			indegree[edge.Target]++
+		}
+	}
+	queue := make([]optir.BlockID, 0, len(cfg.Blocks))
+	for _, block := range cfg.Blocks {
+		if indegree[block.ID] == 0 {
+			queue = append(queue, block.ID)
+		}
+	}
+	visited := 0
+	for cursor := 0; cursor < len(queue); cursor++ {
+		block := queue[cursor]
+		visited++
+		for _, target := range outgoing[block] {
+			indegree[target]--
+			if indegree[target] == 0 {
+				queue = append(queue, target)
+			}
+		}
+	}
+	if visited != len(cfg.Blocks) {
+		return fmt.Errorf("machine: OptIR RV64 spill materialization refuses cyclic control flow")
 	}
 	return nil
 }

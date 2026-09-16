@@ -31,21 +31,29 @@ func TestLayoutOptIRRV64SpillsAlignsAndBoundsCanonicalSlots(t *testing.T) {
 	}
 }
 
-func TestOptIRRV64SpillAdmissionRejectsControlFlowEffectsAndScratchAliasing(t *testing.T) {
+func TestOptIRRV64SpillAdmissionAllowsAcyclicCFGAndRejectsCyclesEffectsAndScratchAliasing(t *testing.T) {
 	plan := optir.RegisterPlan{Spills: map[optir.ValueID]optir.SpillSlotID{1: 1}}
 	branching := optir.CFG{Name: "branching", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
 		{ID: 0, Parameters: []optir.Value{{ID: 1, Type: optir.TypeBool}}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 1}, False: optir.Edge{Target: 1}}},
 		{ID: 1, Parameters: []optir.Value{{ID: 2, Type: "u32"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}}},
 	}}
-	if err := validateOptIRRV64StraightLineSpills(branching, plan); err == nil || !strings.Contains(err.Error(), "one return-terminated block") {
-		t.Fatalf("branching spill admission error = %v", err)
+	if err := validateOptIRRV64SpillCFG(branching, plan); err != nil {
+		t.Fatalf("acyclic branching spill admission error = %v", err)
+	}
+
+	cyclic := optir.CFG{Name: "cyclic", Entry: 0, Blocks: []optir.Block{
+		{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}}},
+		{ID: 1, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 0}}},
+	}}
+	if err := validateOptIRRV64SpillCFG(cyclic, plan); err == nil || !strings.Contains(err.Error(), "cyclic control flow") {
+		t.Fatalf("cyclic spill admission error = %v", err)
 	}
 
 	call := optir.CFG{Name: "call", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
 		ID: 0, Operations: []optir.Operation{{Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall}}},
 		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
 	}}}
-	if err := validateOptIRRV64StraightLineSpills(call, plan); err == nil || !strings.Contains(err.Error(), "refuses calls and effects") {
+	if err := validateOptIRRV64SpillCFG(call, plan); err == nil || !strings.Contains(err.Error(), "refuses calls and effects") {
 		t.Fatalf("call spill admission error = %v", err)
 	}
 
