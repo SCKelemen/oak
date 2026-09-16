@@ -66,8 +66,6 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
-		{"fuse", lane.Fuse},
-		{"fuse-exits", lane.FuseExits},
 		{"schedule", lane.Schedule},
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},
