@@ -10490,14 +10490,15 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// — the OS pilot's translate and unmap_page: two hundred term nodes of
 	// 64-bit descriptor arithmetic over three memory reads, whose diagrams
 	// close at eleven million nodes — is retried once under the escalated
-	// budget, the orders racing as before. Only small terms claim the
-	// time: a large term past the budget stays evidence.
-	if termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
+	// budget a build opts into (OAK_VERIFY_BUDGET), the orders racing as
+	// before. Only small terms claim the time: a large term past the
+	// budget stays evidence.
+	if budget := escalatedNodeBudget(); budget > 0 && termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
 		var stopEscalated atomic.Bool
 		escalated := equalityBlasters(names, params, asmTerm, oakTerm)
 		escalatedResults := make(chan attempt, len(escalated))
 		for _, bl := range escalated {
-			bl.withBudget(escalatedNodeBudget)
+			bl.withBudget(budget)
 			bl.bdd.stop = &stopEscalated
 			go func(bl *blaster) {
 				verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)

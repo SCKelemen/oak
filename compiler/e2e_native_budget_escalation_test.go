@@ -278,6 +278,7 @@ main: (): i32 {
 func TestE2ENativeStage2ReplicaProvenUnderEscalatedBudget(t *testing.T) {
 	requireArm64Host(t)
 	skipInShort(t)
+	t.Setenv("OAK_VERIFY_BUDGET", "high")
 	var infos []string
 	comp := New().WithSource("stage2_replica.oak", nativeStage2ReplicaProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {

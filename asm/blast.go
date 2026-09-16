@@ -13,6 +13,7 @@ package asm
 
 import (
 	"math/bits"
+	"os"
 	"strconv"
 )
 
@@ -79,15 +80,34 @@ const blastNodeBudget = 2000000
 // NodeBudget is the decider's node budget, which the Oak solver is sized to.
 const NodeBudget = blastNodeBudget
 
-// escalatedNodeBudget is the budget a small equality — a few hundred term
-// nodes whose diagrams still exceed blastNodeBudget under every order: the
-// 64-bit address arithmetic of a page-table walk — is retried under
-// (decideEqual). escalationTermNodes bounds the terms that may claim it;
-// a large term past the budget stays evidence, as before.
-const (
-	escalatedNodeBudget = 16000000
-	escalationTermNodes = 400
-)
+// escalationTermNodes bounds the equalities that may claim the escalated
+// budget (escalatedNodeBudget): a few hundred term nodes whose diagrams
+// still exceed blastNodeBudget under every order — the 64-bit address
+// arithmetic of a page-table walk. A large term past the budget stays
+// evidence, as before.
+const escalationTermNodes = 400
+
+// escalatedNodeBudget is the node budget a build opts into for small
+// equalities past the base budget: OAK_VERIFY_BUDGET=high is eight times
+// the base (sixteen million nodes, where the OS pilot's translate and
+// unmap_page close at eleven million), a number is that many nodes, and
+// unset or 0 is no retry — the default, so a corpus of evidence verdicts
+// does not pay the retry's time at every decision. The verdict cache keys
+// on the setting (compiler/verdict_cache.go).
+func escalatedNodeBudget() int {
+	switch value := os.Getenv("OAK_VERIFY_BUDGET"); value {
+	case "", "0", "base":
+		return 0
+	case "high":
+		return 8 * blastNodeBudget
+	default:
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= blastNodeBudget {
+			return 0
+		}
+		return n
+	}
+}
 
 // withBudget gives the blaster a fresh diagram store of the budget.
 func (bl *blaster) withBudget(budget int) *blaster {
