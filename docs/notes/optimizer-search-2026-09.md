@@ -356,14 +356,15 @@ places the ABI register arguments as a simultaneous parallel copy whose cycles
 use the selector's reserved scratch, and normalizes the result at the boundary.
 A ninth or stack argument, all broader call forms, and other effects still
 refuse. AArch64 materializes the independently verified spill plan across its
-supported CFG and composes it with the call frame. RV64 now materializes a
-closed first subset: one return-terminated block without calls or effects,
-canonical scalar slots in a bounded 16-byte-aligned frame, and at most two
-spilled operands through reserved `t5`/`t6` scratches. Width-correct stores,
-signed/narrow reloads, and spilled returns are machine-proven; RV64 edges,
-loops, calls, and call-frame composition still refuse. The direct lowering
-remains the identity, and every selected OptIR body must pass seam admission
-and semantic translation validation; refusal or a trusted verdict falls back.
+supported CFG and composes it with the call frame. RV64 materializes acyclic
+CFGs without calls or effects: canonical scalar slots in a bounded
+16-byte-aligned frame, at most two spilled operands through reserved `t5`/`t6`
+scratches, explicit spilled-condition reloads, and simultaneous register/slot
+copies on SSA edges. Width-correct stores, signed/narrow reloads, production-
+pressure diamonds, and spilled returns are machine-proven; RV64 loops, calls,
+and call-frame composition still refuse. The direct lowering remains the
+identity, and every selected OptIR body must pass seam admission and semantic
+translation validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -1014,7 +1015,7 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
     plan and verifier-gated AArch64 scalar insertion landed; splitting, broader
-    MachineIR, and RV64 insertion remain**);
+    MachineIR, RV64 loops/call-frame composition, and RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
     and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);

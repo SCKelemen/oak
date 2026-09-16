@@ -491,7 +491,7 @@ The first source and native rules are:
 | `source.canonical.bool.v1` | a built-in Bool identity after type checking and monomorphization; every non-literal operand remains exactly once, and no literal token is mutated | a fresh checker accepts the changed monomorphic program; the original specializing checker retains fact authority | double negation, `&&`/`\|\|` identities, and identity Bool comparisons are absent for every backend; literal negation waits for typed OptIR |
 | `source.canonical.integer.v1` | a zero/one identity whose checked result and retained operand have the same exact fixed-width integer type; floats, widening expressions, and user-defined operators are excluded, and the non-literal operand remains exactly once | the same cloned post-specialization recheck | redundant `+ 0`, `- 0`, `* 1`, `/ 1`, `\| 0`, `^ 0`, and shifts by zero are absent for every backend |
 | `elide-guards` | the exact accesses carry checked extent facts | the guardless assembly passes the lane seam checker and the selected body passes the native validation policy | per-access bounds guards are absent only where independently admitted |
-| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral coloring succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 code |
+| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral strict coloring or an independently verified and materialized spill plan succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 and RV64 code |
 
 The native lane proposes its strength reduction, guard elimination, flag reuse,
 invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
@@ -753,13 +753,14 @@ and typed/aligned abstract stack slots, never spills ABI precolors, and
 independently verifies interference and safe slot reuse. AArch64 materializes
 the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
 using width- and signedness-correct traffic plus register/slot parallel copies.
-RV64's first consumer is narrower: only a one-block, return-terminated, call-
-and effect-free CFG may materialize. It verifies the same plan again, checks
-canonical slot widths and alignments, lays out a 16-byte-aligned frame bounded
-to 2032 bytes, and uses reserved `t5`/`t6` scratches for at most two spilled
-operands. Loads preserve the target's canonical signed/narrow representation,
-and each spilled result is stored immediately. RV64 branch, loop, SSA-edge, and
-call spill traffic still refuses.
+RV64's consumer is narrower: only an acyclic, call- and effect-free CFG may
+materialize. It verifies the same plan again, checks canonical slot widths and
+alignments, lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses
+reserved `t5`/`t6` scratches for at most two spilled operands. Loads preserve
+the target's canonical signed/narrow representation, each spilled result is
+stored immediately, spilled conditions reload explicitly, and simultaneous
+register/slot copies materialize SSA edges. RV64 loop and call spill traffic
+still refuses.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and

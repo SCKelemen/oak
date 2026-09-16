@@ -183,13 +183,14 @@ materializes it with three reserved scratch registers and an overflow-checked,
 stores use the represented width, and edge-copy cycles work across registers
 and slots. The resulting high-pressure candidate still passes the seam checker
 and semantic verifier before selection. RV64 consumes the same verified plan
-for a closed first shape: one block, one return, no call or effect. Canonical
-slots become an overflow-checked, 16-byte-aligned frame of at most 2032 bytes;
-at most two spilled operands reload through reserved `t5`/`t6`, signed and
-narrow representations are restored, and each spilled result stores
-immediately. Machine tests prove `u32`, wrapping `i8`, and spilled-return
-traffic. Control-flow edges, loops, calls, and call-frame composition remain
-RV64 refusals.
+for an acyclic CFG with no call or effect. Canonical slots become an
+overflow-checked, 16-byte-aligned frame of at most 2032 bytes; at most two
+spilled operands reload through reserved `t5`/`t6`, signed and narrow
+representations are restored, and each spilled result stores immediately.
+Location-aware simultaneous copies cover register/slot SSA edges and spilled
+conditions reload explicitly. Machine tests prove production-pressure `u32`
+diamonds, wrapping `i8` edge traffic, spilled conditions, and spilled returns.
+Loops, calls, and call-frame composition remain RV64 refusals.
 
 Region-aware MemorySSA has its first explicit analysis substrate as well.
 Checked metadata names regions and exact read/write/read-write behavior beside
