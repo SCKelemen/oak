@@ -1322,12 +1322,17 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			// loop-carried.  Restore the entry log: retaining the marker
 			// would invent a change to an untouched sibling field, and a
 			// peeled loop would guard that invented change differently.
+			// The entry record stays until the pass below, which restores
+			// untouched memories once more and drops their markers: an
+			// entry deleted here read as empty there, and the pass deleted
+			// the whole log — the store before the loop with it (the OS
+			// pilot's alloc_table: `free_count - 1` before its zeroing
+			// loop vanished, and the memory after the loop was unproven).
 			if len(ev.entry[span]) == 0 {
 				delete(freshState.writes, span)
 			} else {
 				freshState.writes[span] = ev.entry[span]
 			}
-			delete(ev.entry, span)
 			continue
 		}
 		if ev.writes == nil {
