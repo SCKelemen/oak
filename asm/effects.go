@@ -750,7 +750,7 @@ func alignReads(t *term, asmReads map[*term]spanRead, oakReads map[readKey][]*te
 		if cond != t.cond || left != t.left || right != t.right {
 			copied := *t
 			copied.cond, copied.left, copied.right = cond, left, right
-			copied.id, copied.kbDone = 0, false
+			copied.id, copied.kbDone, copied.sigBits = 0, false, 0
 			out = &copied
 		}
 	}

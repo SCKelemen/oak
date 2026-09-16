@@ -405,21 +405,22 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			word = word&^(0x7ffff<<5) | (uint32(delta>>2)&0x7ffff)<<5
 			le.PutUint32(l.text[r.offset:], word)
 		case "adrl21":
+			offset := uint64(r.offset)
+			if textAddr > ^uint64(0)-offset {
+				return fmt.Errorf("executable: relocation address %#x + %d overflows", textAddr, r.offset)
+			}
 			place := textAddr + uint64(r.offset)
-			// adrp xR, page(sym) - page(place); add xR, xR, #lo12(sym).
 			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
 				return fmt.Errorf("executable: an adrl at %d cut short", r.offset)
 			}
-			pageDelta := (int64(target) >> 12) - (int64(place) >> 12)
-			if pageDelta < -(1<<20) || pageDelta >= 1<<20 {
-				return fmt.Errorf("executable: adrl to %s at %#x is %d pages away, beyond adrp's reach", r.symbol, place, pageDelta)
-			}
 			adrp := le.Uint32(l.text[r.offset:])
-			adrp = adrp&^(0x3<<29|0x7ffff<<5) | uint32(pageDelta&0x3)<<29 | uint32((pageDelta>>2)&0x7ffff)<<5
 			add := le.Uint32(l.text[r.offset+4:])
-			add = add&^(0xfff<<10) | uint32(target&0xfff)<<10
-			le.PutUint32(l.text[r.offset:], adrp)
-			le.PutUint32(l.text[r.offset+4:], add)
+			patched, err := patchAArch64ADRL21(adrp, add, place, target)
+			if err != nil {
+				return fmt.Errorf("executable: adrl21 to %s: %w", r.symbol, err)
+			}
+			le.PutUint32(l.text[r.offset:], patched.adrp)
+			le.PutUint32(l.text[r.offset+4:], patched.add)
 		case "riscv_pcrel":
 			place := textAddr + uint64(r.offset)
 			delta := int64(target) - int64(place)

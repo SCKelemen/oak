@@ -1417,6 +1417,11 @@ type generator struct {
 	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
 	// i + N <= len(v) until i is assigned.
 	loopFacts []loopFact
+	// equalLens: the spans the enclosing conditionals prove to have one
+	// length (`len(a) == len(b) ? { … }`, vector_map.go armFacts): a loop
+	// condition's slack fact over one of them holds for the others, which
+	// the checker reads off the conditional's own compare (lenEqual).
+	equalLens lengthClasses
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1555,6 +1560,11 @@ type Lane struct {
 	// vector main loop and the scalar remainder (nativegen/vector_map.go);
 	// the verifier judges the lowering against the rewritten body.
 	VectorMaps bool
+	// VectorFolds rewrites the lane-wise float reductions over span
+	// parameters into a vector main loop whose lanes are added in order
+	// and the scalar remainder (nativegen/vector_fold.go); the verifier
+	// judges the lowering against the rewritten body.
+	VectorFolds bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1799,7 +1809,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1819,10 +1829,11 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds)
 		}
 		if err != nil {
 			return out, err
@@ -1882,6 +1893,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -1965,7 +1977,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2111,14 +2123,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, strength) {
+	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, vfolds, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -3048,6 +3060,27 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 // caller's position (statement, value, or result). A wildcard or bare
 // binding ends the chain; without one, falling off every arm reaches the
 // trap block (the checker proved exhaustiveness, so it never runs).
+// underArmFacts lowers one arm's body with the length equalities its
+// condition proves in force (equalLens), restoring the enclosing ones after.
+func (g *generator) underArmFacts(match *ast.MatchExpression, matchArm *ast.MatchArm, arm func(body ast.Expression) error) error {
+	saved := g.equalLens
+	g.equalLens = armFacts(match, matchArm, saved)
+	err := arm(matchArm.Body)
+	g.equalLens = saved
+	return err
+}
+
+// underCondition lowers a conditional's true path with the length
+// equalities its condition proves in force (equalLens), restoring the
+// enclosing ones after.
+func (g *generator) underCondition(cond ast.Expression, whenTrue func() error) error {
+	saved := g.equalLens
+	g.equalLens = lengthFactsOf(cond, saved)
+	err := whenTrue()
+	g.equalLens = saved
+	return err
+}
+
 func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Expression) error) error {
 	end := g.newLabel("match_end")
 	if layout, err := g.recordLayoutOfExpr(match.Scrutinee); err == nil {
@@ -3105,7 +3138,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 				g.popScope()
 				return unsupported("the pattern %s over %s", matchArm.Pattern.String(), layout.name)
 			}
-			err := arm(matchArm.Body)
+			err := g.underArmFacts(match, matchArm, arm)
 			g.popScope()
 			if err != nil {
 				return err
@@ -3170,7 +3203,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 			closed = true
 		}
 		g.pushScope()
-		err := arm(matchArm.Body)
+		err := g.underArmFacts(match, matchArm, arm)
 		g.popScope()
 		if err != nil {
 			return err
@@ -3417,7 +3450,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordExpr(whenTrue); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordExpr(whenTrue) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -3489,7 +3522,7 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordInto(whenTrue, outs) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -3712,16 +3745,24 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 }
 
 // reachableGlobals is the package state a unit's verification ranges
-// over: the globals this body addressed (usedGlobals), and every global a
-// callee's body names, transitively — the verifier summarizes a callee at
+// over: the globals this body addressed (usedGlobals), and every global the
+// source body or a callee names, transitively — the verifier summarizes a callee at
 // its Oak body over the package cells (docs/spec/94-assembler.md §9), so
 // a cell only the callee touches (`st = u8(1)` in alloc_table, reached
 // from walk_leaf) must be declared to the caller's unit too. Declaring a
 // global the body never addresses admits nothing at the checker: a fact
 // arises only from an `adrp` of the name. Nil when there are none.
 func (g *generator) reachableGlobals() map[string]asm.Global {
+	return verificationGlobals(g.fn, g.functions, g.globals, g.usedGlobals)
+}
+
+// verificationGlobals retains declarations needed to interpret the original
+// Oak body even when optimization removes its accesses or calls. These are
+// arbitrary entry-state cells, not facts that their initializers still hold.
+// Unreferenced declarations add no instructions or memory access authority.
+func verificationGlobals(root *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, globals, addressed map[string]asm.Global) map[string]asm.Global {
 	out := map[string]asm.Global{}
-	for name, global := range g.usedGlobals {
+	for name, global := range addressed {
 		out[name] = global
 	}
 	seen := map[string]bool{}
@@ -3730,14 +3771,14 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 		walk(fn.Body, func(n ast.Node) {
 			switch e := n.(type) {
 			case *ast.Identifier:
-				if global, isGlobal := g.globals[e.Value]; isGlobal {
+				if global, isGlobal := globals[e.Value]; isGlobal {
 					if _, has := out[e.Value]; !has {
 						out[e.Value] = global
 					}
 				}
 			case *ast.AssignmentStatement:
 				if e.Name != nil {
-					if global, isGlobal := g.globals[e.Name.Value]; isGlobal {
+					if global, isGlobal := globals[e.Name.Value]; isGlobal {
 						if _, has := out[e.Name.Value]; !has {
 							out[e.Name.Value] = global
 						}
@@ -3745,7 +3786,7 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 				}
 			case *ast.InvocationExpression:
 				if ident, isIdent := e.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
-					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
+					if callee, declared := functions[ident.Value]; declared && callee != nil && callee.Body != nil {
 						seen[ident.Value] = true
 						visit(callee)
 					}
@@ -3753,18 +3794,11 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 			}
 		})
 	}
-	if g.fn != nil {
-		seen[g.fn.Name.Value] = true
-		walk(g.fn.Body, func(n ast.Node) {
-			if call, isCall := n.(*ast.InvocationExpression); isCall {
-				if ident, isIdent := call.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
-					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
-						seen[ident.Value] = true
-						visit(callee)
-					}
-				}
-			}
-		})
+	if root != nil && root.Body != nil {
+		if root.Name != nil {
+			seen[root.Name.Value] = true
+		}
+		visit(root)
 	}
 	if len(out) == 0 {
 		return nil
@@ -5826,7 +5860,7 @@ func (g *generator) lowerIf(s *ast.IfStatement) error {
 	}
 	if s.Consequence != nil {
 		g.pushScope()
-		err := g.lowerStatements(s.Consequence.Statements, false, "")
+		err := g.underCondition(s.Condition, func() error { return g.lowerStatements(s.Consequence.Statements, false, "") })
 		g.popScope()
 		if err != nil {
 			return err
@@ -5878,7 +5912,7 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
 		return err
 	}
-	if err := g.lowerArm(whenTrue); err != nil {
+	if err := g.underCondition(match.Scrutinee, func() error { return g.lowerArm(whenTrue) }); err != nil {
 		return err
 	}
 	if whenFalse == nil {
@@ -6313,8 +6347,8 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		t, err := g.expr(whenTrue, &typ)
-		if err != nil {
+		var t int
+		if err := g.underCondition(e.Scrutinee, func() error { t, err = g.expr(whenTrue, &typ); return err }); err != nil {
 			return 0, err
 		}
 		g.emit(moveOf(typ), reg(out, typ), reg(t, typ))

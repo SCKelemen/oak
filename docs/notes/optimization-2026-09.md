@@ -239,15 +239,32 @@ dominating whole-region store. For a closed join or loop phi, each real
 predecessor normally supplies the exact typed value from the direct
 whole-region nonvolatile store defining its incoming version or from a
 canonical load of that version dominating the predecessor terminator. Exactly
-one unavailable entry-memory input may instead be materialized when its real
-predecessor branches unconditionally to the phi. The transform moves the
-removed canonical load's checked source/access identity to a fresh load before
-that edge, creates a fresh typed parameter in the phi block, and appends the
-edge values. Loads in the phi block and dominated blocks may share the
-parameter. It does not synthesize authority or speculate onto another path.
-Conceptual function-entry inputs, conditional/critical edges, multiple missing
-inputs, partial/call definitions, missing edges, type mismatches, and value-ID
-exhaustion fail closed. The evidence records insertions and removals.
+one unavailable entry-memory input may instead be materialized on its real
+incoming edge. The load is appended to an unconditional predecessor or, when
+exactly one conditional arm targets the phi, to a new block reached only by
+that arm. The split block forwards the arm's existing SSA arguments unchanged.
+Multiple region phis share one block for the same original edge. Every
+promoted input is routed through the final edge, including previously
+available values and phis planned before another region requested the split.
+This removes both join loads in the two-region regression and is checked
+through AArch64 and RV64 lowering with proven semantic verdicts. The limit of
+one missing input remains per region phi.
+One scalar cleanup round now follows forwarding: SCCP folds newly exposed
+constants and branches, then phi cleanup/GVN/DCE removes redundant parameters
+and pure operations. Checked memory projection and MemorySSA are rebuilt for
+the final `MemoryCleanup.CFG`, and native selection replays that composition.
+Source-only global declarations remain available to the verifier when an
+unreachable access or call disappears; no removed machine access is restored.
+Both native targets prove the constant-branch and wrapping-arithmetic fixtures,
+which also execute on the host and under RV64 QEMU.
+The transform moves the removed canonical load's checked source/access identity
+to that edge block, creates a fresh typed parameter in the phi block, and
+appends the edge values. Loads in the phi block and dominated blocks may share
+the parameter. It does not synthesize authority or execute the load on another
+arm. Conceptual function-entry inputs, ambiguous two-arm edges, multiple missing
+inputs, partial/call definitions, missing edges, type mismatches, and value- or
+block-ID exhaustion fail closed. The evidence records insertions, splits, and
+removals.
 Later-removed predecessor loads are resolved before edge materialization. It
 drops facts tied to removed SSA identities, renumbers
 metadata, and rebuilds MemorySSA. Checked Bool/fixed-integer
@@ -402,7 +419,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, verified whole-region DSE, dominance-scoped load/store forwarding, available-value join/loop-phi PRE, and one-missing-entry-value materialization on unconditional edges have landed; changed final scalar-global CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops, critical-edge splitting, multiple unavailable phi inputs, conceptual-entry loop phis, and partial/call-written versions remain fail-closed |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, verified whole-region DSE, dominance-scoped load/store forwarding, available-value join/loop-phi PRE, and one-missing-entry-value materialization on direct or split conditional edges have landed; changed final scalar-global CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops, multiple unavailable phi inputs, broader load placement, conceptual-entry loop phis, and partial/call-written versions remain fail-closed |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |
