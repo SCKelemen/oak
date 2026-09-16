@@ -13,10 +13,11 @@ import (
 // spec/lean/Oak/LoweringRefinement.lean as `lowerT`, and `lowerT_eval`
 // proves it agrees with the Lean extraction's embedding of the same
 // expression in every agreeing scope (docs/spec/126-verification-chain.md
-// §4, the seam). Oak.FloatLoweringRefinement does the same for its first
-// exact-f32 slice. These tests pin `oakLowering.lower` to the two models:
-// every expression below is lowered at its own width and its `term.String()`
-// must be the render stated as an `example` in the corresponding Lean file.
+// §4, the seam). Oak.FloatLoweringRefinement does the same for its bounded
+// binary32 and binary64 slices. These tests pin `oakLowering.lower` to the
+// two models: every expression below is lowered at its own width and its
+// `term.String()` must be the render stated as an `example` in the
+// corresponding Lean file.
 // A change to either side has to visit the other.
 var loweringRenders = []struct {
 	decl, body, want string
@@ -43,7 +44,14 @@ var loweringRenders = []struct {
 	{"f: (a, b: f32) -> f32", "a / b", "fdiv32(a, b)"},
 	{"f: (a, b, c: f32) -> f32", "fma(a, b, c)", "fma32(a, b, c)"},
 	{"f: (a, b, c: f32) -> f32", "a * b + c", "fadd32(fmul32(a, b), c)"},
-	// The separate bounded binary64 family retains one ordered FMA node.
+	// The separate bounded binary64 family retains the four arithmetic
+	// operation identities and one ordered FMA node. Multiplication followed
+	// by addition remains two operations, never an implicit FMA.
+	{"f: (a, b: f64) -> f64", "a + b", "fadd64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a - b", "fsub64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a * b", "fmul64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a / b", "fdiv64(a, b)"},
+	{"f: (a, b, c: f64) -> f64", "a * b + c", "fadd64(fmul64(a, b), c)"},
 	{"f: (a, b, c: f64) -> f64", "fma(a, b, c)", "fma64(a, b, c)"},
 	// Exact f32-to-f64 widening retains the source's width-32 operation
 	// beneath one ordered width-changing fcvt node.
@@ -51,6 +59,9 @@ var loweringRenders = []struct {
 	// The same widening node remains visible when it is an ordered f64 FMA
 	// operand; the two width-specific refinement families compose here.
 	{"f: (a, b: f32, x, y: f64) -> f64", "fma(f64(a + b), x, y)", "fma64(fcvt64(fadd32(a, b)), x, y)"},
+	// Binary64 arithmetic composes over the same proved widening leaf without
+	// erasing either width's operations or contracting multiply-then-add.
+	{"f: (a, b: f32, x, y: f64) -> f64", "f64(a + b) * x + y", "fadd64(fmul64(fcvt64(fadd32(a, b)), x), y)"},
 	// Exact sign operations (FloatLoweringRefinement): negation flips the
 	// sign bit, abs clears it, and copysign combines the magnitude and sign.
 	{"f: (a: f32) -> f32", "-a", "(a xor 2147483648)"},
@@ -122,6 +133,11 @@ var loweringRenders = []struct {
 var loweringProgramRenders = []struct {
 	program, want string
 }{
+	// Binary64 locals substitute the complete arithmetic tree.
+	{"f: (a, b, c: f64) -> f64 = {\n  t: f64 = a / b\n  (t + c) * b\n}\n", "fmul64(fadd64(fdiv64(a, b), c), b)"},
+	// Reusing a pure local substitutes its complete tree at each use. This
+	// pins value/dependency structure, not runtime sharing or evaluation count.
+	{"f: (a, b: f64) -> f64 = {\n  t: f64 = a * b\n  t + t\n}\n", "fadd64(fmul64(a, b), fmul64(a, b))"},
 	// Binary64 FMA locals substitute their ordered ternary term exactly once.
 	{"f: (a, b, c: f64) -> f64 = {\n  t: f64 = fma(a, b, c)\n  fma(t, b, c)\n}\n", "fma64(fma64(a, b, c), b, c)"},
 	// A pure f32 call (FloatLoweringRefinement.lowerCall): arguments lower in
