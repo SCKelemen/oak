@@ -56,6 +56,22 @@ theorem str64_unsigned_store_request_bridge
     Oak.ArmASL.str64UnsignedStoreRequest, Sail.BitVec.zeroExtend,
     Out.Functions.Zeros]
 
+theorem big_endian_reverse64_bridge (value : BitVec 64) :
+    Out.Functions.big_endian_reverse64_pure value =
+      Oak.ArmASL.bigEndianReverse64 value := by
+  simp only [Out.Functions.big_endian_reverse64_pure,
+    Oak.ArmASL.bigEndianReverse64, Sail.BitVec.slice, BitVec.extractLsb']
+
+theorem str64_aligned_normal_write_memory_arguments_bridge
+    (bigEndian : Bool) (paddress : BitVec 52) (preMemData : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress preMemData =
+      Oak.ArmASL.str64AlignedNormalWriteMemoryArguments
+        bigEndian paddress preMemData := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Oak.ArmASL.str64AlignedNormalWriteMemoryArguments,
+    big_endian_reverse64_bridge, Sail.BitVec.zeroExtend]
+
 theorem str_xzr_x0_decoder :
     Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
       (true, 0b11111#5, 0#5, 0#12) := by
@@ -77,6 +93,55 @@ theorem str_x2_x0_store_request (x0 x2 sp : BitVec 64) :
         2#5 0#5 0#12 x0 x2 sp = (x0, x2) := by
   simp [Out.Functions.str64_unsigned_store_request_pure,
     Sail.BitVec.zeroExtend]
+
+/-- Conditional selected pre-`__WriteMemory` arguments for the exact break
+store. The translated physical address is an explicit input, and reaching the
+ordinary aligned route remains an external premise. Zero is endian-invariant. -/
+theorem str_xzr_x0_write_memory_arguments
+    (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 discardedRtValue sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2 =
+      (paddress.zeroExtend 56, 0#64) := by
+  cases bigEndian <;>
+    simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+      Out.Functions.str64_unsigned_store_request_pure,
+      Out.Functions.big_endian_reverse64_pure, Out.Functions.Zeros,
+      Sail.BitVec.zeroExtend, Sail.BitVec.slice]
+
+/-- Conditional selected pre-`__WriteMemory` arguments for the exact make
+store under the explicit `bigEndian = false` input. -/
+theorem str_x2_x0_little_endian_write_memory_arguments
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        false paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56, x2) := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend]
+
+/-- The same conditional make projection records the official big-endian byte
+reversal rather than silently treating the pre-`Mem` value as unchanged. -/
+theorem str_x2_x0_big_endian_write_memory_arguments
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        true paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56, Oak.ArmASL.bigEndianReverse64 x2) := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Out.Functions.str64_unsigned_store_request_pure,
+    big_endian_reverse64_bridge, Sail.BitVec.zeroExtend]
+
+/-- A known-byte witness fixes the byte-reversal direction. -/
+theorem big_endian_reverse64_known_bytes :
+    Out.Functions.big_endian_reverse64_pure 0x0001020304050607#64 =
+      0x0706050403020100#64 := by
+  native_decide
 
 /-- Adjacent load and 32-bit store classes are deliberately rejected. -/
 theorem ldr_x2_x0_not_str64 :
@@ -166,6 +231,107 @@ theorem sail_make_store_request_requires_external
     ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
       strX2X0 :=
   occurrence.1
+
+/-- External occurrence-indexed premise that the pinned aligned ordinary route
+    is reached for a virtual address, endian choice, and translated physical
+    address. Adequacy of this predicate against a dynamic Arm execution remains
+    an open refinement obligation. -/
+def AlignedNormalWriteMemoryRoute (Occurrence : Type) :=
+  Occurrence → BitVec 64 → Bool → BitVec 52 → BitVec 64 → Prop
+
+/-- Retain the break occurrence, external route premise, and pre-`Mem` request
+    while adding only the conditional `__WriteMemory` argument equation. -/
+def SailBreakDescriptorWriteArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  SailBreakDescriptorStoreRequestOccurrence code trace event slot
+      x0 discardedRtValue sp ∧
+    route event x0 bigEndian paddress 0#64 ∧
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2 =
+      (paddress.zeroExtend 56, 0#64)
+
+/-- The make projection records both endian cases without assuming that the
+    selected physical address is X0 or the descriptor slot. -/
+def SailMakeDescriptorWriteArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) : Prop :=
+  SailMakeDescriptorStoreRequestOccurrence code trace event slot x0 x2 sp ∧
+    route event x0 bigEndian paddress x2 ∧
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56,
+        if bigEndian then Oak.ArmASL.bigEndianReverse64 x2 else x2)
+
+theorem refineBreakDescriptorStoreWithSailWriteArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 discardedRtValue sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress 0#64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 discardedRtValue sp :=
+  ⟨refineBreakDescriptorStoreWithSailRequest x0 discardedRtValue sp occurrence,
+    routeReached,
+    str_xzr_x0_write_memory_arguments bigEndian paddress x0 discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailWriteArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress x2)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 x2 sp := by
+  refine ⟨refineMakeDescriptorStoreWithSailRequest x0 x2 sp occurrence,
+    routeReached, ?_⟩
+  cases bigEndian
+  · exact str_x2_x0_little_endian_write_memory_arguments paddress x0 x2 sp
+  · exact str_x2_x0_big_endian_write_memory_arguments paddress x0 x2 sp
+
+/-- Conditional write-argument decoration still cannot manufacture either
+    descriptor occurrence/action premise. -/
+theorem sail_break_write_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {bigEndian : Bool}
+    {paddress : BitVec 52} {x0 discardedRtValue sp : BitVec 64}
+    (projection : SailBreakDescriptorWriteArgumentsProjection code trace route
+      event slot bigEndian paddress x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+        strXzrX0 ∧
+      route event x0 bigEndian paddress 0#64 :=
+  ⟨sail_break_store_request_requires_external projection.1, projection.2.1⟩
+
+theorem sail_make_write_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {bigEndian : Bool}
+    {paddress : BitVec 52} {x0 x2 sp : BitVec 64}
+    (projection : SailMakeDescriptorWriteArgumentsProjection code trace route
+      event slot bigEndian paddress x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+        strX2X0 ∧
+      route event x0 bigEndian paddress x2 :=
+  ⟨sail_make_store_request_requires_external projection.1, projection.2.1⟩
 
 /-- Translate the enums generated by Sail to the names used by Oak's encoding
 specification.  These functions change only the constructors' namespaces. -/

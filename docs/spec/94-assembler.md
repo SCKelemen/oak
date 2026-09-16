@@ -900,11 +900,21 @@ Lean additionally proves the exact STR64 field decodes and the selected store
 arm's pre-`Mem` arguments `(X0, 0)` and `(X0, X2)` from explicit register inputs. A
 source gate pins SEE 1277, the official decoder's normal eight-byte store
 parameters, X31-as-zero, and the instruction body's final `Mem` call. The
-decorated occurrence retains the external action premise unchanged. It does
-not derive descriptor provenance, successful ASL `Mem` effects, address
-translation, faults, endianness, tags, physical writes, CAT membership,
-completion, invalidation, publication, or context synchronization. No Darwin/Mach-O
-object oracle or privileged Apple EL2 execution gate exists yet.
+decorated occurrence retains the external action premise unchanged.
+
+For the conditional ordinary aligned path after that call, generated Sail Lean
+also proves the selected pre-`__WriteMemory` address/data arguments from an
+externally supplied translated 52-bit PA: the call address is its 56-bit zero
+extension; break data remains zero in either endian; make data is X2 in little
+endian and its exact eight-byte reversal in big endian. The official-source
+gate pins complete bodies for endian/alignment selection, translation/fault,
+exclusive and MTE checks, trickbox/counter routing, the direct size-eight call,
+and the selected no-device external-RAM wrapper. It does not prove that this
+route is reached or returns. Descriptor/PA provenance, translation correctness,
+successful ASL memory or external RAM effects, unique writes, tags/device
+behavior, CAT membership, completion, invalidation, publication, and context
+synchronization remain open. No Darwin/Mach-O object oracle or privileged
+Apple EL2 execution gate exists yet.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand

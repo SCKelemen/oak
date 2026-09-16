@@ -448,6 +448,22 @@ normal eight-byte store parameters, X31-as-zero, and the final official
 `Mem(address, 8, AccType_NORMAL) = data` call. These generated facts decorate,
 but cannot create, each external descriptor occurrence/action witness.
 
+The next conditional Sail projection stops at the selected arguments of the
+ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied
+translated 52-bit PA, generated Lean proves a 56-bit zero-extended call address
+and post-endian data: break is zero under either endian, little-endian make is
+X2, and big-endian make is X2 with its eight bytes reversed. The drift gate
+pins complete official bodies from endian/alignment selection through
+translation, fault, exclusive, MTE, trickbox/counter routing, `aset__Mem`, and
+`__WriteMemory`, plus the selected no-device model and its external
+`write_ram` boundary. This is not route-reachability or memory-effect evidence.
+Occurrence-level decorators retain an external route predicate indexed by the
+same event, virtual address, endian result, PA, and data; extraction returns it
+and the original descriptor occurrence unchanged.
+Alignment, normal fault-free translation and PA provenance, special-route
+exclusion, RAM mutation/return, unique writes, CAT event/tag identity,
+visibility, completion, and publication remain open.
+
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
 `Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly

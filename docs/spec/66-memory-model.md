@@ -30,7 +30,9 @@ chains from Herd's include-expanded parser AST. Lean now mirrors the pinned
 projects already classified descriptor actions through an explicit one-way
 soundness premise. Construction of the primitive tags, a complete formal
 semantics of CAT, and the occurrence-indexed instruction-to-event bridge remain
-open.
+open. The adjacent Sail proof conditionally projects aligned ordinary STR64
+data to the selected pre-`__WriteMemory` PA/data arguments, but does not prove
+route reachability, memory mutation, or event generation.
 
 ## 1. Execution events
 

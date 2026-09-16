@@ -786,6 +786,45 @@ function str64_unsigned_store_request_pure (Rt, Rn, imm12, rn_value, rt_value, s
     (base + offset, data)
 }
 
+/* The next conditional projection covers only the arguments selected by the
+ * ordinary aligned size-8 route after Mem.  In the pinned model, aset_Mem
+ * performs BigEndianReverse before AArch64_aset_MemSingle; successful
+ * translation supplies a 52-bit desc.paddress.address; and aset__Mem's
+ * non-trickbox, non-counter, non-size-16 arm calls
+ * __WriteMemory(8, ZeroExtend(paddress), value_name).
+ *
+ * Reachability of that route is deliberately not represented by a caller-
+ * supplied Boolean.  It remains an external premise covering alignment,
+ * normally returning fault-free translation, exclusive clearing, access-
+ * descriptor construction, MTE/tag continuation, and special-route
+ * exclusion.  The result is not a RAM write or a CAT event.
+ */
+
+val big_endian_reverse64_pure : bits(64) -> bits(64)
+
+function big_endian_reverse64_pure (value_name) = {
+    slice(value_name, 0, 8) @
+    slice(value_name, 8, 8) @
+    slice(value_name, 16, 8) @
+    slice(value_name, 24, 8) @
+    slice(value_name, 32, 8) @
+    slice(value_name, 40, 8) @
+    slice(value_name, 48, 8) @
+    slice(value_name, 56, 8)
+}
+
+val str64_aligned_normal_write_memory_arguments_pure :
+  (bool, bits(52), bits(64)) -> (bits(56), bits(64))
+
+function str64_aligned_normal_write_memory_arguments_pure
+  (big_endian, paddress, pre_mem_data) = {
+    let write_data : bits(64) = if big_endian then
+        big_endian_reverse64_pure(pre_mem_data)
+      else
+        pre_mem_data;
+    (sail_zero_extend(paddress, 56), write_data)
+}
+
 /* ---------------------------------------------------------------------
  * The A64 barrier decoder (docs/spec/94-assembler.md §9).
  *

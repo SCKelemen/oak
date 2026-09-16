@@ -366,6 +366,31 @@ zero behavior, and the final `Mem(address, 8, AccType_NORMAL) = data` call.
 The Sail facts decorate the external descriptor occurrences by conjunction;
 an extraction theorem returns each original word/action premise unchanged.
 
+A second generated projection follows only the conditional argument flow of
+the ordinary aligned size-eight route. Given an externally supplied 52-bit
+physical address from a normally returning, nonfaulting translation, it proves
+that the selected pre-`__WriteMemory` arguments are the address zero-extended
+to 56 bits and the post-endian 64-bit data. Consequently the exact break store
+selects `(ZeroExtend(PA), 0)` under either endian, the little-endian make store
+selects `(ZeroExtend(PA), X2)`, and the big-endian make case selects the exact
+eight-byte reversal of X2. A known-byte theorem fixes the reversal direction.
+
+The official-source oracle pins complete normalized bodies and exact
+signatures for `BigEndianReverse`, `aset_Mem`,
+`AArch64_aset_MemSingle`, `IsFault`, `aset__Mem`, `__WriteMemory`, and the
+no-device `__WriteRAM` wrapper. It also pins the 52-bit `FullAddress` field,
+the three overload routes, endian/aligned selection, translation/fault,
+exclusive, MTE, trickbox, counter-register, size-16 split, direct-write, model
+file-selection, and external `write_ram` seams. These checks justify the
+conditional argument projection only. Alignment and route reachability,
+translation correctness, the supplied PA's provenance, normal return, RAM
+mutation, and event creation are not outputs of the pure function.
+The occurrence-level break/make decorators therefore require an opaque
+`AlignedNormalWriteMemoryRoute` premise indexed by the same occurrence,
+virtual address, endian result, physical address, and pre-endian data. Their
+extraction theorems return that premise and the original descriptor occurrence
+unchanged; adequacy of the route predicate against Arm execution remains open.
+
 Lean now also spells out the two pinned CAT descriptor-set formulas as
 occurrence predicates: uncacheable is `TTDINV | TTDAF0`, while cacheable is
 `(TTD & M) \ TLBUncacheableTTD`. A one-way
@@ -394,8 +419,9 @@ store/system order and no ISB. The two local equalities are recorded in
 `Oak.Forwarding` (`unsigned_lt_one_is_zero`, `zero_index_store`) and their
 lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
 verifier's decided subset: its verdict remains **trusted**, not proven.
-Dynamic PC/object trace extraction, effects after the official ASL pre-`Mem`
-request, and every instruction-to-action classification remain
+Dynamic PC/object trace extraction, reachability and effects of the official
+ASL call after the selected pre-`__WriteMemory` arguments, and every
+instruction-to-action classification remain
 compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
 object oracle or a privileged Apple EL2 execution gate.
 
@@ -541,6 +567,10 @@ This chapter does **not** claim:
   action-to-tag soundness premise from Oak descriptor values or STR execution,
   a proof that a concrete IPA/VMID/regime selects the required TLBI scope, or
   a proof that descriptor publication and invalidation have completed;
+- a proof that the aligned, fault-free, tag-safe, non-trickbox/non-counter
+  route is reached, that the supplied physical address is the translation of
+  X0 or the descriptor slot, or that `__WriteMemory`/external `write_ram`
+  returns and changes RAM;
 - a complete live stage-2 remapping protocol or a kernel-checked compiler
   refinement proof for the TLBI occurrence beyond the executable regression
   witness;

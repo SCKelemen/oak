@@ -424,6 +424,29 @@ def str64UnsignedStoreRequest (rt rn : BitVec 5) (imm12 : BitVec 12)
   let data := if rt = 0b11111#5 then 0#64 else rtValue
   (base + (imm12.zeroExtend 64 <<< 3), data)
 
+/-- Width-64 specialization of Arm's recursive `BigEndianReverse`. At width
+    eight it is the identity; recursively concatenating the low half before
+    the high half therefore reverses the eight bytes, not the bits in a byte. -/
+def bigEndianReverse64 (value : BitVec 64) : BitVec 64 :=
+  BitVec.extractLsb' 0 8 value ++
+    (BitVec.extractLsb' 8 8 value ++
+      (BitVec.extractLsb' 16 8 value ++
+        (BitVec.extractLsb' 24 8 value ++
+          (BitVec.extractLsb' 32 8 value ++
+            (BitVec.extractLsb' 40 8 value ++
+              (BitVec.extractLsb' 48 8 value ++
+                BitVec.extractLsb' 56 8 value))))))
+
+/-- Conditional arguments of the pinned ordinary aligned size-eight
+    `__WriteMemory` call. `paddress` is an externally supplied translated
+    physical address. Reaching this call remains an external premise; this
+    function neither translates an address nor performs a memory effect. -/
+def str64AlignedNormalWriteMemoryArguments (bigEndian : Bool)
+    (paddress : BitVec 52) (preMemData : BitVec 64) :
+    BitVec 56 × BitVec 64 :=
+  (paddress.zeroExtend 56,
+    if bigEndian then bigEndianReverse64 preMemData else preMemData)
+
 /-- Arm's `HighestSetBit`, `CountLeadingZeroBits`, `CountLeadingSignBits`:
 ```
 function HighestSetBit x = { foreach (i from ('N - 1) to 0 by 1 in dec)

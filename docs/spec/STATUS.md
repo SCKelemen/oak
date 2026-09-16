@@ -19,7 +19,14 @@ An explicit one-way action-to-tag soundness premise projects the exact
 break/make occurrences and BBM old/break/make fields into those sets; it does
 not construct primitive tags, CAT events, memory effects, physical addresses,
 official BBM membership, or publication. The adjacent generated Sail proof
-still stops at the STR store arm's pre-`Mem` `(X0, 0)`/`(X0, X2)` arguments.
+now conditionally reaches the selected ordinary aligned pre-`__WriteMemory`
+arguments: an external translated 52-bit PA is zero-extended to 56 bits;
+break data is zero under either endian; make data is X2 in little endian and
+byte-reversed in big endian. The occurrence decorator retains an external
+route predicate indexed by event, VA, endian, PA, and data. It does not prove
+that route is reached, PA/slot
+provenance, translation correctness, RAM mutation/return, a unique write, or
+CAT event generation.
 
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
