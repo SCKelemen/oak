@@ -241,6 +241,7 @@ import Oak.ConstantConditions
 import Oak.BoundaryCopies
 import Oak.PairCopies
 import Oak.BlockedFill
+import Oak.PairStoreEffects
 import Oak.FieldPromotion
 import Oak.Forwarding
 import Oak.ArrayValues

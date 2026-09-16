@@ -594,6 +594,15 @@ and widened multi-record regions carry no single-record identity. This is
 non-authoritative metadata only. A lowering still requires exact array-field
 selection and trap preservation, verifier support, scalar-tail lowering,
 alias/observer exclusion, and private/unpublished ordinary-memory authority.
+`Oak.PairStoreEffects` closes one later final-state edge in isolation: its log
+uses the verifier's exact 32-bit modular indices, and under explicit no-wrap
+premises applying one pair equals `storePair` while two adjacent zero pairs
+equal four scalar writes. A synchronized Go helper builds those entries in
+operand/address order, including the wrap case, but no instruction handler can
+reference it; an AST gate permits only its declaration, and direct verifier
+tests pin both existing pair-store refusals. It therefore proves neither
+architectural occurrence nor component or observer order, and grants no
+verifier or code-generation authority.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

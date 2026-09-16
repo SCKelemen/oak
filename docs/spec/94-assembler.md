@@ -1140,6 +1140,19 @@ trap preservation, verifier support, scalar-tail lowering, and explicit
 ordinary private-memory authority proving the storage has not yet been
 published—never a live descriptor-update protocol.
 
+`Oak.PairStoreEffects` now models the verifier-side final-state expansion
+separately: one pair is exactly two append-order logical word writes, applying
+that log equals `storePair`, and two adjacent zero pairs equal the four scalar
+stores in one blocked-fill iteration, under explicit one-pair/four-word
+no-wrap premises. The synchronized Go helper constructs the same exact 32-bit
+modular entries—including the wrap boundary—and is deliberately unreachable
+from instruction execution. An AST source gate fails on any production
+identifier reference to the helper, while direct verifier tests pin both
+pair-store refusals. Thus this closes only the conditional write-log algebra,
+not any admission, occurrence, component/observer order, atomicity,
+non-tearing, byte-address wrap, fault, translation, memory-type, CAT, ASL
+`Mem`, visibility, completion, or publication obligation.
+
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
 `#2` and proves its pure D/A/I/F body sets I while preserving D/A/F. A Go

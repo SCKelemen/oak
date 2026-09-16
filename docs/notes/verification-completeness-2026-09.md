@@ -635,6 +635,18 @@ metadata never broadens an access decision; it can only discard an ambiguous
 fact at a meet and supplies no authority. Exact array-field selection and
 private/unpublished custody remain explicit later gates.
 
+The next final-state bridge is staged but intentionally unreachable:
+`Oak.PairStoreEffects.apply_pair64_writes_eq_storePair` proves that applying
+two exact 32-bit modular logical entries equals the abstract pair store under
+an explicit no-wrap premise; the block theorems likewise require all four
+indices not to wrap. Go constructs the same normal and wrap-boundary sequences
+under a synchronized test, while an AST source gate allows no production
+identifier reference to the helper and direct verifier tests pin the generic-
+and record-span pair refusals. This is conditional write-log algebra
+only—not instruction occurrence, component/observer ordering,
+atomicity/non-tearing, bounds, traps, translation, ASL `Mem`, CAT, visibility,
+completion, or publication authority.
+
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
 model. Until that lands, RV64 is closer to a formally closed
