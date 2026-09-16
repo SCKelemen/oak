@@ -8797,6 +8797,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		// store before the loop inside `ok ? { … }` is unguarded on the
 		// machine's side and guarded by ok on the Oak side, and the two
 		// agree exactly there (walk_leaf calling alloc_table).
+		ev.reached = ev.oakPath
 		if callPath := state.pathCondition(); callPath != nil {
 			if ev.reached != nil {
 				ev.reached = binaryTerm("and", truncate(callPath, 1), truncate(ev.reached, 1))

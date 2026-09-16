@@ -727,6 +727,11 @@ type loopEvent struct {
 	// couples its counter's register on the inputs where ok holds, where
 	// the register's header value is what the path made it.
 	reached *term
+	// oakPath, on the Oak side, is the lowering's path condition at the
+	// loop (an arm the loop sits in): a call summary conjoins it with the
+	// machine's path at the call as the callee loop's reached condition
+	// (summarizeCall). The Oak side's own events leave reached nil.
+	oakPath *term
 	// at is the event's place in the layout: the loop header's item
 	// index, or the call's for a callee's loops. Sibling events out of
 	// layout order mean the paths ran the sides of a fork in another
@@ -2683,7 +2688,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// The Oak path condition at the loop (an arm the loop sits in): a call
 	// summary's callee loops carry it as their reaching condition, with the
 	// machine's path at the call (summarizeCall).
-	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: lo.path}
+	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, oakPath: lo.path}
 	if n := len(lo.loopStack); n > 0 {
 		ev.parent = lo.loopStack[n-1]
 	}
