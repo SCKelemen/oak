@@ -1238,9 +1238,17 @@ The existing native optimizations should be migrated into the candidate interfac
   this run with a large measured win: 3.4 times on a clamp whose
   comparison is unpredictable, and free where it predicts. Both arms are
   evaluated before the compare, so `speculable` gates it as it gates
-  if-conversion. The statement form (`nativegen/select.go`) still wants
-  every condition in a chain to compare the same two operands, which is
-  the next thing to widen;
+  if-conversion. The statement form (`nativegen/select.go`) already groups
+  a chain's conditions, sharing a compare between consecutive arms that
+  compare the same two operands; its real limit was that only the first
+  arm's condition operand could be computed, **widened 2026-09-16**: a
+  later arm's is evaluated before the chain when it is speculable, so a
+  two-comparison chain converts whole instead of branching on its first
+  arm and re-recognizing the rest. 1.8 times on an unpredictable
+  three-arm chain in a loop. What is left there is the assignment cap —
+  `maxSelectAssigns` is 4, so a chain assigning two variables across
+  three arms still splits — which is a register-pressure question, not a
+  recognition one;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent

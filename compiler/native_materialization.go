@@ -63,6 +63,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-blocks", lane.VectorBlocks},
 		{"multiply-add", lane.MultiplyAdd},
 		{"value-select", lane.ValueSelect},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},

@@ -3776,6 +3776,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The sixty-second increment is a computed condition operand in any arm of
+a chain (§9 "If-conversion"): a later arm's comparison operand is
+evaluated before the chain when it is speculable, where it used to leave
+the chain unrecognized and the first arm branching. 1.8 times faster on
+an unpredictable three-arm chain, free where it predicts.
+
 The sixty-first increment is value-position select forms (§9 "Select
 forms"): a compare and one `csel` — or `csinc`, `csneg`, `csinv` where
 the arms share a variable — where the lowering branched over two moves.
@@ -5036,6 +5042,55 @@ of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
 did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
+
+**A computed condition operand in any arm (2026-09-16, AArch64 lane;
+`nativegen/select.go`).** The chain's compares are emitted before its
+selects, so a condition operand the compare cannot take directly — a
+register or a small immediate — is evaluated there. Only the first arm's
+could be: the recognizer admitted a computed operand for the first arm
+alone, and the lowering evaluated only the first group's, so a later arm
+needing one left the whole chain unrecognized. The first arm then
+branched and the else body was re-recognized as a chain of its own, which
+is how a two-comparison chain came out half converted:
+
+```
+cmp  w6, w2                          add  w9, w6, #1
+b.hs +8                              cmp  w9, w3
+b    +20                        ->   csel w10, w2, w7, hs
+add  w9, w6, #1                      csel w11, w3, w10, lo
+cmp  w9, w3                          cmp  w6, w2
+csel w10, w2, w7, hs                 csel w7,  w6, w11, lo
+csel w6,  w3, w10, lo
+```
+
+Widening it exposed a fall-through the chain's representation had always
+had, and the fix comes with it. The groups are applied outward, the
+earliest last, so a variable takes its value from the earliest group
+whose taken arm assigns it — but a group whose taken arm does *not*
+assign it leaves whatever the later groups computed, where the source
+leaves the value it held before the chain. In
+`a < b ? { m = a } | c < d ? { n = c } | { n = 9 }` the second
+comparison set `n` even where the first arm matched. The verifier
+refused such a body, so the native build failed rather than
+miscompiling, and it failed on `specification` before this change too —
+the widening only made the shape reachable more often. A variable a
+later group assigns must now be assigned by every arm of every earlier
+group that can be taken; an outcome no arm of a group covers is a real
+fall-through and is not in question.
+
+Every group's computed operands are now evaluated, and a later arm's
+operand is admitted when it is `speculable` — the condition for it is
+the arms' own: the first arm's condition is where the source evaluates
+it too, while a later arm's runs only where the arms before it did not
+match, so evaluating it ahead of the chain is speculation. A call in a
+later arm's condition keeps the branch.
+
+Measured on a three-arm chain in a loop over 2^12 `u32` elements
+(`benchmarks/native/README.md` "Chain condition operands"): where the
+comparisons are unpredictable the loop goes from 1.01–1.10 ns an element
+to 0.54–0.62, and where they always take one arm the two are the same
+within noise — the same shape as the select forms above, for the same
+reason.
 
 **Select forms (2026-09-16, AArch64 lane;
 `nativegen/value_select.go`).** A conditional in value position lowered
