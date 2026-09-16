@@ -350,10 +350,13 @@ exact 1-based initial RUP database model. The hardened Go checker kernel lives
 in the dependency-leaf `internal/lrat` package. For every supplied sequence
 satisfying `WellFormedFrom`, left-to-right evaluation constructs an assignment
 satisfying all gate clauses, with the final-clause model correctly conditional.
-Production trace provenance, shared input/output disjointness and input
-preservation, operand-universe coverage, final-root construction, and bit
-blasting remain open. The next step remains
-production-builder/bit-blaster and checker implementation refinement,
+`Oak.CNFBuilderTrace` derives that premise for an accepted supplied contiguous
+allocation-event projection. The production exporter now separately performs
+a fail-closed streaming audit of its actual shared allocation, raw-gate clause
+sequence, and final edge conversion before DIMACS serialization. Recorded-gate
+provenance from the bit blaster, final-root construction, DIMACS, and formal
+Go-to-Lean implementation refinement remain open. The next step remains
+bit-blaster/final-root and checker implementation refinement,
 followed by requiring the leaf checker below compiler selection so certificate
 acceptance can safely become verdict authority.
 

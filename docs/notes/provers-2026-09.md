@@ -160,10 +160,13 @@ encoder's laws are stated in `Oak.Tseitin`; `Oak.TseitinCNF` connects exact
 raw-gate lists, supplied-list/final-clause composition, and their exact
 1-based initial database to RUP semantics; a supplied sequence satisfying
 `WellFormedFrom` (strictly increasing outputs and backward-only operands) has
-a constructed model of its gate clauses. Production provenance, shared
-input/output disjointness and input preservation, operand-universe coverage,
-final-root construction, and the complete builder remain open; the clause
-engine written in Oak
+a constructed model of its gate clauses; `Oak.CNFBuilderTrace` now derives
+that premise from a checked supplied allocation-event projection. The concrete
+exporter separately streams its actual builder snapshot through an independent
+fail-closed allocator/gate/clause/final-edge audit. Go-to-Lean refinement,
+recorded-gate/bit-blaster provenance, folds/memo completeness, final-root
+construction, and the complete builder remain open; the clause engine written
+in Oak
 (`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
@@ -225,11 +228,13 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
    lists, supplied-list/final-clause composition, and exact 1-based initial
    database models are proved by `Oak.TseitinCNF`; supplied sequences
    satisfying `WellFormedFrom` (strictly increasing outputs and backward-only
-   operands) also get a constructed gate-clause model. Production provenance,
-   shared input/output disjointness and input preservation, operand-universe
-   coverage, final-root construction, folds/memoization, bit blasting, DIMACS,
-   and implementation refinement remain open (`performance.md` §13 "Trusted
-   base of the checker stated").
+   operands) also get a constructed gate-clause model. `Oak.CNFBuilderTrace`
+   checks that premise for a supplied shared-allocation projection, while the
+   concrete exporter independently audits its actual allocation, gate-clause,
+   and final-edge snapshot before DIMACS. Recorded-gate/bit-blaster provenance,
+   final-root construction, folds/memoization, DIMACS, and Go-to-Lean
+   implementation refinement remain open (`performance.md` §13 "Trusted base
+   of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the
    witness pass, exhaustive enumeration, reachable-state exploration — a

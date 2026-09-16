@@ -425,17 +425,32 @@ OR, XOR, and ITE gate records
 For any supplied gate list and non-settled final clause, their concatenation
 is modeled exactly when every gate equation and that final clause hold;
 `databaseOfClauses` proves the same characterization after assigning initial
-RUP IDs 1 through N, with ID 0 absent. Go regression tables pin complemented
-edges, one dependent AND-to-XOR list, and the production final-clause order of
-trap roots followed by the negated claim. `WellFormedFrom` states strictly
-increasing outputs and backward-only operands; `evalSequence_gateConsistent`
-proves that evaluating such a supplied list left to right models every gate
+RUP IDs 1 through N, with ID 0 absent. `Oak.CNFBuilderTrace` checks a supplied
+production-shaped allocation-event list: input and gate outputs occupy one
+contiguous one-based namespace, input keys and outputs are unique, complement
+edges decode with the production polarity, operation tags and binary operand
+order are exact, and gate operands refer strictly backward. Acceptance implies
+`WellFormedSequence`, so left-to-right evaluation models every decoded gate
 clause. Adding the final clause remains conditional on that evaluated
-assignment satisfying it. This is still not a proof that the builder produced
-the list, ordering, or clause. Shared input/output disjointness and input
-preservation, operand-universe coverage, folds, allocation/memoization, budget
-behavior, bit blasting, final-root correspondence, DIMACS parsing, and Go/Lean
-correspondence remain separate obligations.
+assignment satisfying it.
+
+At the concrete export boundary, `validateCNFTrace` independently audits the
+actual `cnfBuilder` snapshot before counts or DIMACS text become authoritative.
+It checks shared-allocation coverage and disjointness, ordered outputs and
+backward operands, reconstructs and streams the exact 3/3/4/6 raw clauses
+against both the builder and emitted lists without sorting or deduplication,
+and independently converts the non-settled obligation edges into the one final
+clause. Allocation/budget violations and missing, extra, reordered, or
+polarity-mismatched clauses within that checked snapshot refuse export. The
+success-path workspace is one byte per allocated variable plus fixed-size
+gate-clause storage.
+
+This still is not a Go-to-Lean refinement. It does not prove that recorded
+gates correspond to the bit-blaster operations, that folds and memo hits are
+complete, or that the supplied obligation roots are traps in source order
+followed by the negated claim. Settled paths have no emitted formula and do not
+run this audit. Final-root correspondence, bit blasting, DIMACS serialization
+and parsing, and implementation correspondence remain separate obligations.
 
 This is an **additional audit**, not a compiler admission path: it cannot
 create or promote `VerdictProven`, and the verifier cache cannot stand in for
