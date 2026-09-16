@@ -762,6 +762,10 @@ and typed/aligned abstract stack slots, never spills ABI precolors, and
 independently verifies interference and safe slot reuse. AArch64 materializes
 the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
 using width- and signedness-correct traffic plus register/slot parallel copies.
+For the canonical pre-test spill-loop shape shared with RV64, allocation keeps
+the Bool predicate in a register so only verifier-supported word/doubleword
+frame state crosses the backedge; a loop-carried `u32` fixture is proved from
+Oak body through the emitted AArch64 loop.
 For AArch64, a fingerprint-bound target-independent analysis may replace a
 spilled constant or a bounded copy chain rooted in one with reconstruction at
 each use. A target cost check keeps expensive literals in their slots; accepted

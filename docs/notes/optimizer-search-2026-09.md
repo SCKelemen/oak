@@ -363,7 +363,9 @@ refuse. The independently verified abstract spill plan is materialized on
 AArch64 and composed with this call frame. Spilled constants and bounded copy
 chains may instead be rematerialized after independent recipe verification and
 a target cost check; accepted recipes remove their physical slots, while
-expensive literals stay spilled. RV64 materializes acyclic CFGs with no effect
+expensive literals stay spilled. A canonical AArch64 pre-test loop now keeps
+its Bool predicate register-resident and machine-proves a loop-carried `u32`
+spill through the backedge. RV64 materializes acyclic CFGs with no effect
 except an admitted direct call, plus one exact call-free natural loop with a
 unique preheader, conditional header, straight-line latch, and return exit.
 The loop predicate remains in a register, only aligned four- or eight-byte

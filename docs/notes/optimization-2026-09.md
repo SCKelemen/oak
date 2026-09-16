@@ -187,8 +187,11 @@ checks full assignment coverage, precolors, colors, and every slot. AArch64 now
 materializes it with three reserved scratch registers and an overflow-checked,
 16-byte-aligned frame of at most 4080 bytes. Loads preserve narrow signedness,
 stores use the represented width, and edge-copy cycles work across registers
-and slots. The resulting high-pressure candidate still passes the seam checker
-and semantic verifier before selection. RV64 consumes the same verified plan
+and slots. On the canonical pre-test loop shape, a separately checked precolor
+keeps the Bool predicate out of byte-width frame traffic; a compact
+loop-carried `u32` spill fixture passes the seam checker and semantic verifier.
+The resulting high-pressure candidates still pass both gates before selection.
+RV64 consumes the same verified plan
 for an acyclic CFG with no effect except an admitted direct call and for one
 exact call-free natural loop: a unique preheader, conditional header,
 straight-line latch, and return exit. The predicate stays register-resident and
