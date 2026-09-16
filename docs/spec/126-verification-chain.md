@@ -195,7 +195,16 @@ clause, and carries that characterization to the exact 1-based initial RUP
 database. `Oak.CNFBuilderTrace` checks a supplied production-shaped
 input/gate allocation stream and proves that acceptance gives contiguous
 unique shared allocations, exact complement-edge and operation-tag decoding,
-backward operands, and `WellFormedSequence`. `Oak.CNFFinalObligation` proves
+backward operands, and `WellFormedSequence`. `Oak.CNFDenseAllocation` then
+checks a production-shaped nonnegative snapshot with explicit input and
+memo-map projections: exact dense/injective ownership of `1..variables`,
+ordered backward gates, no recorded folded shapes, and an exact unique-table
+lookup for every gate. Acceptance supplies the same well-formed sequence and
+proves each in-range variable has exactly one owner. Representative production
+accept/refuse decisions are rendered as kernel-checked Lean examples;
+arbitrary Go memory/map projection, signed conversion, builder history,
+clauses, DIMACS, and verdict authority remain outside this bounded
+correspondence. `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
 proves evaluation preservation and pending counterexample semantics for a
@@ -403,6 +412,16 @@ not architectural PC/BranchTo execution, target validity, source-CFG label
 selection, BL/X30, conditional branches, object/link correctness, or
 observation.
 
+Ordinary local `BL <label>` has the parallel call-class seam.
+`Oak.AArch64CallBranchEncoding` pins `BL_only_branch_imm`, proves fixed bits,
+exact `imm26`, equality with the Branch26 call patch, signed endpoints, and
+target reachability. Generated Sail Lean selects `BranchType_DIRCALL` with the
+exact sign-extended scaled offset and rejects `B`; Go gates pin the generated
+row, local encoder, official decoder/dispatch route, overflow-safe subtraction,
+and individual alignment. It does not prove architectural PC, the X30 write,
+`PostDecode`, `BranchTo`, target mapping, source-CFG labels, object/link
+correctness, or observation.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
@@ -570,6 +589,17 @@ stub's linked call word is checked in the written ELF. The pins are not a
 universal implementation-refinement theorem for Go. This closes only the
 model's word-level arithmetic. Symbol/layout authority, other relocations, ELF
 structure, and the complete output bytes remain trusted.
+
+`Oak.AArch64AddressRelocation` closes one additional two-word arithmetic seam
+for the executable resolver's `adrl21`. It admits exactly an `ADRP` and
+unshifted 64-bit `ADD` using one non-SP destination/base register, proves the
+signed 21-bit page patch and low-12 patch preserve all fixed/register fields,
+and proves decoding reaches the exact target. The production helper uses
+uint64-safe directional arithmetic, requires the whole eight-byte pair to fit,
+round-trips before mutation, and its boundary decisions are kernel-pinned.
+This is not symbol/layout authority, relocation-record or file-format
+correctness, loading, register execution, whole-resolver transactionality, or
+a whole-link theorem.
 
 ### 2.6 Object → binary
 
@@ -744,20 +774,25 @@ extraction's selected do-block. `lowerConditionalAssignment_eval` is its
 one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
 the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
 the production render retains `fcvt64` over the exact width-32 operand term.
-The separate `lowerF64_eval` family proves binary64 `+`, `-`, `*`, `/`, and
-ordered `Oak.FloatOps.fma64` over binary64 parameters, already-rounded bit
-literals, straight-line local substitution, and leaves from the proved
-widening family. Thus `f64(a + b) * x + y` retains and composes the exact
+The separate `lowerF64_eval` family proves binary64 `+`, `-`, `*`, `/`,
+ordered `Oak.FloatOps.fma64`, negation, `abs`, and `copysign` over binary64
+parameters, already-rounded bit literals, straight-line local substitution,
+and leaves from the proved widening family. `lowerF64Condition_eval` adds all
+six comparisons and recursive pure Boolean guards; `lowerF64Flow_eval` adds
+arbitrary finite value-position condition trees. Thus
+`f64(a + b) * x + y` retains and composes the exact
 `fadd32`, `fcvt64`, `fmul64`, and `fadd64` nodes, while explicit FMA remains a
 single ordered `fma64` node. The widened leaf starts in its own initial binary32
 parameter scope; this is not arbitrary mixed-width local sequencing.
 This is deliberately still a first slice: decimal parsing into the literal
-bits, all other conversions, spans, effectful conditions, nested or effectful
-statement arms, borrowing/recursive/effectful calls, binary64 unary operations
-and comparisons, and vector operations remain related to the extraction by
-tests rather than this theorem. Division here proves operation identity and
-operand order through the shared Lean carriers; it does not independently
-prove correctly-rounded IEEE division or payload-observing NaN behavior.
+bits, all other conversions, spans, effectful/statement conditions and arms,
+borrowing/recursive/effectful calls, and vector operations remain related to
+the extraction by tests rather than this theorem. The binary64 sign and
+comparison results are carrier/shape refinements: they do not prove that the
+verifier's xor/and/comparison expansion implements Lean Float, IEEE behavior,
+hardware, or NaN-payload behavior. Division likewise proves operation identity
+and operand order through the shared Lean carriers, not independently
+correct-rounded IEEE division.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -842,10 +877,14 @@ for a workload):
    corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
    that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
    `(Oak.FloatOps.add32 a b).toFloat`. The separate `lowerF64_eval` family
-   closes binary64 `+`, `-`, `*`, `/`, and ordered FMA over parameters, bit
-   literals, widened leaves, and pure locals, pinned to exact verifier renders
-   and default/bits-mode extraction. Decimal parsing, all other conversions,
-   memory, effectful conditions, nested or effectful statement arms,
+   closes binary64 `+`, `-`, `*`, `/`, ordered FMA, negation, `abs`, and
+   `copysign` over parameters, bit literals, widened leaves, and pure locals.
+   Its condition/flow theorems add all six comparisons, pure Boolean guards,
+   and arbitrary finite value-condition trees, pinned to exact verifier
+   renders and default/bits-mode extraction. These are carrier/shape
+   refinements, not proofs that verifier bit expansions implement Lean Float,
+   IEEE behavior, NaN payloads, or hardware. Decimal parsing, all other
+   conversions, memory, effectful or statement conditions/arms,
    borrowing/recursive/effectful calls, and the rest of the float/vector edge
    stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the

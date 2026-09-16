@@ -445,6 +445,19 @@ order are exact, and gate operands refer strictly backward. Acceptance implies
 clause. Adding the final clause remains conditional on that evaluated
 assignment satisfying it.
 
+`Oak.CNFDenseAllocation` closes the next bounded snapshot seam. Its executable
+checker models the production validator's nonnegative `cnfBuilder` projection:
+the shared input/gate namespace is exactly dense and injective, gate outputs
+are ordered and backward-referencing, folded gate shapes are absent, and every
+gate has its exact unique-table key and output. Acceptance proves every
+in-range DIMACS variable has exactly one input-or-gate owner, the decoded gate
+sequence is well formed, and the existing Tseitin database theorem applies.
+`TestValidateCNFAllocationMatchesLean` renders real production snapshots and
+their Go decisions as kernel-checked Lean examples. This remains bounded
+correspondence, not a universal Go-memory/map refinement or a proof of signed
+projection, mutation history, clause emission, DIMACS, solving, LRAT, or
+compiler verdict authority.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and
@@ -1029,6 +1042,19 @@ alignment before writing the field, with endpoint and near-`uint64` mutation
 tests. This is static encoding, relocation arithmetic, and decode/dispatch
 identity—not an architectural `PC`, `BranchTo`, target mapping/executability,
 source-CFG label correctness, BL/X30, conditional branches, or observation.
+
+Ordinary local `BL <label>` now has the matching call-class seam.
+`Oak.AArch64CallBranchEncoding` pins `BL_only_branch_imm`, proves its fixed
+bits and exact `imm26`, composes its packer with the Branch26 call relocation,
+and proves the decoded displacement reaches the modeled target throughout the
+aligned signed range. Generated Sail Lean selects `BranchType_DIRCALL`,
+recovers the exact sign-extended scaled offset, and rejects `B`; production
+tests pin the generated row, exact bytes, signed endpoints, overflow-safe
+local-label arithmetic, individual alignment, and the pinned official decoder
+route. This is static encoding, relocation arithmetic, and decode/dispatch
+identity only. It does not read architectural PC, write X30, execute
+`PostDecode`/`BranchTo`, establish target or source-label validity, prove
+object/link correctness, or observe a call.
 
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
@@ -4391,6 +4417,19 @@ executable test pins the patched call word in the final ELF text. This is a
 proof of the direct-branch arithmetic and bits only. Function layout and
 symbol-address authority, ELF headers and sections, every other relocation,
 and the final image as a whole remain trusted.
+
+The executable writer's AArch64 `adrl21` pair is a second word-level slice.
+`Oak.AArch64AddressRelocation` specifies exact `ADRP Xd` plus unshifted
+`ADD Xd, Xd, #lo12` admission, the signed 21-bit page interval, immediate
+placement, fixed/register-field preservation, and reconstruction of the exact
+64-bit target. The production helper avoids signed narrowing, requires the
+complete eight-byte pair to fit the address space, validates one non-SP
+destination/base register, independently decodes the candidate, and writes
+neither word when that pair refuses. Boundary decisions are rendered back to
+Lean for kernel checking. This proves pair arithmetic and bit patching only:
+symbol and section layout, relocation records, file formats, loading, register
+execution, global transactional linking, and the complete image remain
+trusted.
 
 **Constant top-level bindings.** A body's read of a constant integer
 top-level binding (never assigned or addressed, a constant initializer;
