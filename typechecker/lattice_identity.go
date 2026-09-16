@@ -100,9 +100,8 @@ func latticeAtomIdentical(left, right Type) bool {
 			latticeAtomIdentical(left.ReturnType, right.ReturnType)
 	case *ConstIntType:
 		return left.Value == right.(*ConstIntType).Value
-	default:
-		return leftValue.Kind() == reflect.Ptr && leftValue.Pointer() == rightValue.Pointer()
 	}
+	return leftValue.Kind() == reflect.Ptr && leftValue.Pointer() == rightValue.Pointer()
 }
 
 func latticeRecordsIdentical(left, right *RecordType) bool {
