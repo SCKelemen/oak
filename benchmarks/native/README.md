@@ -92,7 +92,10 @@ goes through the native backend, and the C backend's build of the same
 package is the control. The runner is `benchmarks/kernels/runner.c` with
 the emitted C included and the companion object linked; the two runners
 were run alternately, three rounds each of three samples over three inner
-rounds, 1 MiB per kernel, and the checksums agree on every row.
+rounds, 2^20 input elements per kernel, and the checksums agree on every
+row. An element is a byte for hashes and `dispatch`, an `f32` for `dot`
+and `tiled`, and a `u64` for the other kernels. The tables divide elapsed
+time by this input element count, not by the buffers' byte sizes.
 
 Apple M4 Max, Apple clang 21.0.0, 2026-09-14, revision aade7acd. The host
 was loaded (load average 35–40 from another session's test suites), so
@@ -101,7 +104,7 @@ is the same C-realized helper (`arm64.cnt64`) on both sides, bounds the
 noise at about twenty percent. Raw samples:
 `results/kernels-m4-max-2026-09-14.jsonl`.
 
-| Kernel | C backend ns/byte | Native ns/byte | Native / C | Verdict on the native body |
+| Kernel | C backend ns/element | Native ns/element | Native / C | Verdict on the native body |
 | --- | --- | --- | --- | --- |
 | `crc32c` | 0.144 | 3.311 → 0.817 after the dispatch fix | 23.0 → 5.7 | trusted (indexes a package table) |
 | `sha256` | 0.639 | 0.719 → 0.646 after the dispatch fix | 1.12 → 1.00 | trusted (indexes a package table) |
@@ -209,6 +212,74 @@ reconciles them (`meetIdx`), the page's key read is unguarded under
 rotation, and the three-loop body selects the hoisted rotated form
 (six percent below the hoisted unrotated one by the model, at the
 calibrated loop weight).
+
+**The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
+runner and package, seven samples of five rounds, 2^20 input elements per
+kernel, with matching checksums. The host was loaded (reported load average
+40–50), and this run collected each implementation's samples together,
+so both times and ratios may include load drift. Raw samples:
+[`kernels-m4-max-2026-09-16.json`](results/kernels-m4-max-2026-09-16.json).
+
+| Kernel | C backend ns/element | Native ns/element | Native / C | Native / C on 2026-09-14 |
+| --- | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.160 | 0.162 | 1.01 | 5.7 |
+| `sha256` | 0.714 | 0.707 | 0.99 | 1.00 |
+| `blake3` | 3.211 | 10.117 | 3.15 | 1.54 |
+| `dot` | 0.901 | 1.124 | 1.25 | 3.24 |
+| `sum` | 0.130 | 0.140 | 1.08 | 3.40 |
+| `search` | 11.841 | 12.918 | 1.09 | 1.76 |
+| `page_probe` | 9.681 | 16.084 | 1.66 | 1.93 |
+| `bitmap` | 0.260 | 0.235 | 0.90 | 1.19 |
+| `dispatch` | 10.763 | 9.044 | 0.84 | 0.83 |
+| `tiled` | 0.187 | 0.199 | 1.07 | 2.8 |
+
+The loop kernels' measured ratios improved; BLAKE3's worsened from 1.54
+to 3.15. The compression-body inspection reported 530 instructions
+against 519 earlier that day. That comparison covers two September 16
+builds; the September 14 baseline did not lower compression natively.
+
+**BLAKE3 investigation (2026-09-16, compiler e1898e09).** Rebuilding
+`aade7acd` shows that only `bench_blake3` and `blake3_start_flag` were
+native in its BLAKE3 path: compression stayed in C because the native
+backend did not accept its array parameters. The arrays-as-values
+increment (`63569c6a`, PR #472) admitted those bodies. The hash source
+is unchanged between the baseline and this investigation.
+
+The following comparison uses the same C runner and input, seven samples
+of five rounds over 1 MiB, interleaving all five variants and rotating
+which runs first. Every sample has the same checksum. The two restricted
+current builds use `OAK_NATIVE_ONLY`; their other functions stay in C.
+Raw samples, revisions, filters, and emitted native-unit lists:
+[`blake3-native-coverage-2026-09-16.json`](results/blake3-native-coverage-2026-09-16.json).
+
+| Build | ms per 1 MiB | Relative to current C |
+| --- | ---: | ---: |
+| Current C | 2.574 | 1.00 |
+| September 14 native baseline, rebuilt | 4.584 | 1.78 |
+| Current compiler, only the baseline's two BLAKE3 units native | 3.856 | 1.50 |
+| Current compiler, only `blake3_compress` native | 7.085 | 2.75 |
+| Current native build | 8.629 | 3.35 |
+
+The coverage experiment identifies native compression as the main added
+cost. Keeping the old native coverage restores its approximate ratio;
+moving compression alone out of C accounts for most of the gap. The
+selected compression body has a 448-byte frame and 527 instructions,
+including 156 `ldr`, 141 `str`, 17 `ldp`, 17 `stp`, 34 `eor`, and 32
+`ror`; 305 instructions access memory through `sp`. These are counts
+from the emitted object, not timings attributed to individual operations.
+The verifier reports an indexed load through a record argument without
+a dominating constant index guard, so the scheduling and register
+reallocation candidates remain trusted and are not selected. The next
+compiler work is to discharge that proof obligation and reduce the
+compression body's frame traffic; the performance gap is still open.
+
+The baseline rebuild uses the current directory-aware emit driver and
+stubs the unrelated `bench_tiled` body, matching its documented historical
+verifier refusal; BLAKE3 is unchanged. Core placement and contention
+remain uncontrolled. The benchmark driver now actually interleaves
+implementations, retains samples in observation order, and checks every
+sample's checksum (`benchmarks/kernels/README.md`). The earlier 1fcaba66
+record above retains its original samples and sampling order.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
