@@ -192,14 +192,19 @@ clause, and carries that characterization to the exact 1-based initial RUP
 database. `Oak.CNFBuilderTrace` checks a supplied production-shaped
 input/gate allocation stream and proves that acceptance gives contiguous
 unique shared allocations, exact complement-edge and operation-tag decoding,
-backward operands, and `WellFormedSequence`; adding the final clause remains
-conditional. Independently, the concrete exporter streams the actual builder
-snapshot through `validateCNFTrace` before serialization, checking allocator
+backward operands, and `WellFormedSequence`. `Oak.CNFFinalObligation` proves
+the exact four-way construction and that a pending decoded-root clause is
+satisfied exactly when a trap fires or the claim is false. Independently, the
+concrete exporter memo-replays the supplied trap terms in slice order and the
+claim term, and checks the producer's root filtering, order, polarity, and outcome before every
+successful return. A pending snapshot additionally passes through
+`validateCNFTrace` before serialization, checking allocator
 coverage/disjointness, exact raw-clause order and multiplicity, and exact
 final-edge conversion. Any mismatch among those checked representations
-refuses export. It does not yet prove the Go checker refines the Lean checker,
-recorded-gate/bit-blaster provenance,
-fold/memo completeness, final-root construction, or DIMACS correspondence.
+refuses export. It does not yet prove the Go checkers refine the Lean checkers,
+recorded-gate/bit-blaster or term-to-root semantics, trap/claim term-list
+provenance or source ordering, fold/memo completeness, or DIMACS
+correspondence.
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,

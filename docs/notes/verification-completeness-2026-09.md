@@ -351,12 +351,16 @@ in the dependency-leaf `internal/lrat` package. For every supplied sequence
 satisfying `WellFormedFrom`, left-to-right evaluation constructs an assignment
 satisfying all gate clauses, with the final-clause model correctly conditional.
 `Oak.CNFBuilderTrace` derives that premise for an accepted supplied contiguous
-allocation-event projection. The production exporter now separately performs
-a fail-closed streaming audit of its actual shared allocation, raw-gate clause
-sequence, and final edge conversion before DIMACS serialization. Recorded-gate
-provenance from the bit blaster, final-root construction, DIMACS, and formal
-Go-to-Lean implementation refinement remain open. The next step remains
-bit-blaster/final-root and checker implementation refinement,
+allocation-event projection. `Oak.CNFFinalObligation` proves the four total
+decoded-root outcomes, exact trap/claim clause order, and pending
+counterexample semantics. The production exporter now memo-replays the
+supplied trap terms in slice order and the claim, and independently checks
+every outcome before performing the streaming audit of its actual shared allocation,
+raw-gate clause sequence, and final edge conversion. Recorded-gate provenance
+and term-to-root semantics from the bit blaster, trap/claim term-list provenance
+and source ordering, DIMACS, and formal Go-to-Lean implementation refinement
+remain open. The next step remains bit-blaster and
+checker implementation refinement,
 followed by requiring the leaf checker below compiler selection so certificate
 acceptance can safely become verdict authority.
 

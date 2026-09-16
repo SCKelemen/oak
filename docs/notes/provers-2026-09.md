@@ -162,11 +162,15 @@ raw-gate lists, supplied-list/final-clause composition, and their exact
 `WellFormedFrom` (strictly increasing outputs and backward-only operands) has
 a constructed model of its gate clauses; `Oak.CNFBuilderTrace` now derives
 that premise from a checked supplied allocation-event projection. The concrete
-exporter separately streams its actual builder snapshot through an independent
-fail-closed allocator/gate/clause/final-edge audit. Go-to-Lean refinement,
-recorded-gate/bit-blaster provenance, folds/memo completeness, final-root
-construction, and the complete builder remain open; the clause engine written
-in Oak
+exporter separately memo-replays the supplied trap terms in slice order and
+the claim term, and checks the four-way outcome and exact filtered root order
+before streaming its actual builder snapshot through the
+allocator/gate/clause/final-edge audit.
+`Oak.CNFFinalObligation` proves the corresponding decoded-root construction
+and counterexample semantics. Go-to-Lean refinement,
+recorded-gate/bit-blaster and term-to-root semantics, trap/claim term-list
+provenance and source ordering, folds/memo completeness, and the complete
+builder remain open; the clause engine written in Oak
 (`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
@@ -230,10 +234,14 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
    satisfying `WellFormedFrom` (strictly increasing outputs and backward-only
    operands) also get a constructed gate-clause model. `Oak.CNFBuilderTrace`
    checks that premise for a supplied shared-allocation projection, while the
-   concrete exporter independently audits its actual allocation, gate-clause,
-   and final-edge snapshot before DIMACS. Recorded-gate/bit-blaster provenance,
-   final-root construction, folds/memoization, DIMACS, and Go-to-Lean
-   implementation refinement remain open (`performance.md` §13 "Trusted base
+   `Oak.CNFFinalObligation` proves the corresponding four-way decoded-root
+   construction. The concrete exporter independently memo-replays its supplied
+   trap terms in slice order and claim term, checks every outcome, and audits
+   its actual allocation, gate-clause, and final-edge snapshot before DIMACS.
+   Recorded-gate/bit-blaster
+   and term-to-root semantics, trap/claim term-list provenance and source
+   ordering, folds/memoization, DIMACS, and Go-to-Lean implementation refinement
+   remain open (`performance.md` §13 "Trusted base
    of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the

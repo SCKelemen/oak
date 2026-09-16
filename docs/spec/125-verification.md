@@ -186,13 +186,17 @@ model characterization for its exact 1-based initial RUP database.
 `Oak.CNFBuilderTrace` checks a supplied production-shaped shared-allocation
 event list and proves that acceptance gives contiguous unique input/gate
 allocation, exact edge/op decoding, backward-only operands, and
-`WellFormedSequence`. At runtime, `validateCNFTrace` independently streams the
-actual builder's exact raw clauses and final edge-to-literal conversion before
-DIMACS export; structural violations or mismatches within the actual snapshot
-refuse. The final-clause model stays conditional. This is not yet a Go-to-Lean
-implementation refinement and does not prove recorded-gate provenance,
-folding/memoization, bit blasting, final-root construction, or DIMACS
-correspondence.
+`WellFormedSequence`. `Oak.CNFFinalObligation` gives the four total outcomes
+for decoded roots and proves exact trap order, claim-negation polarity, and the
+pending clause's counterexample semantics. At runtime,
+`validateCNFObligation` memo-replays the supplied trap terms in slice order and
+the claim before every successful return and independently checks the
+producer's outcome and filtered edge list. `validateCNFTrace` then streams a pending
+builder's exact raw clauses and final edge-to-literal conversion before DIMACS
+export; structural violations or mismatches within the checked snapshots
+refuse. This is not yet a Go-to-Lean implementation refinement and does not
+prove recorded-gate provenance, folding/memoization, term-to-root blasting,
+trap/claim term-list provenance or source ordering, or DIMACS correspondence.
 
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
@@ -869,11 +873,14 @@ In order of payoff, each reusing a surface that exists:
   clause, and exact 1-based initial RUP database are connected by
   `Oak.TseitinCNF`; `Oak.CNFBuilderTrace` proves that an accepted supplied
   allocation-event projection decodes to a `WellFormedSequence`. The concrete
-  exporter now independently and fail-closed checks allocator coverage,
+  `Oak.CNFFinalObligation` proves exact decoded-root outcome and pending-clause
+  semantics. The concrete exporter now memo-replays the supplied trap/claim
+  terms and independently checks every outcome, allocator coverage,
   gate/clause order and multiplicity, backward operands, and final
-  edge-to-literal conversion. Production gate/bit-blaster provenance,
-  folding/memoization, final-root construction, DIMACS construction, and
-  Go-to-Lean implementation refinement remain open. GPU solving is
+  edge-to-literal conversion. Production gate/bit-blaster and term-to-root
+  semantics, trap/claim term-list provenance and source ordering,
+  folding/memoization, DIMACS construction, and Go-to-Lean implementation
+  refinement remain open. GPU solving is
   not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
   obligation here is kilobytes — but the many small independent

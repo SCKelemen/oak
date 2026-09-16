@@ -434,23 +434,37 @@ order are exact, and gate operands refer strictly backward. Acceptance implies
 clause. Adding the final clause remains conditional on that evaluated
 assignment satisfying it.
 
-At the concrete export boundary, `validateCNFTrace` independently audits the
-actual `cnfBuilder` snapshot before counts or DIMACS text become authoritative.
-It checks shared-allocation coverage and disjointness, ordered outputs and
-backward operands, reconstructs and streams the exact 3/3/4/6 raw clauses
-against both the builder and emitted lists without sorting or deduplication,
-and independently converts the non-settled obligation edges into the one final
-clause. Allocation/budget violations and missing, extra, reordered, or
-polarity-mismatched clauses within that checked snapshot refuse export. The
-success-path workspace is one byte per allocated variable plus fixed-size
-gate-clause storage.
+`Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
+It proves the exact four-way decision—true-trap refutation takes precedence
+over false-claim refutation, an all-constant safe obligation is proven, and
+otherwise a nonempty clause retains symbolic traps in supplied order followed
+by the negated symbolic claim. For a pending outcome, satisfying that clause is
+equivalent to some trap firing or the claim being false; the theorem composes
+with the gate/database characterization above.
+
+At the concrete export boundary, `validateCNFObligation` independently replays
+the supplied trap terms in slice order and the claim term through the
+completed blaster's memo. It requires exactly one bit per root and no change to
+the builder or blaster snapshot, then streams those roots against the
+producer's filtered edge sequence and four-way outcome. This check runs before
+every successful return, including settled paths. On a pending path,
+`validateCNFTrace` additionally audits the actual `cnfBuilder` snapshot before
+counts or DIMACS text become authoritative. It checks shared-allocation
+coverage and disjointness, ordered outputs and backward operands, reconstructs
+and streams the exact 3/3/4/6 raw clauses against both the builder and emitted
+lists without sorting or deduplication, and independently converts the checked
+obligation edges into the one final clause. Violations or mismatches within
+those representations refuse export. The trace checker's success-path
+workspace is one byte per allocated variable plus fixed-size gate-clause
+storage; root replay is memo-only and linear in the number of roots.
 
 This still is not a Go-to-Lean refinement. It does not prove that recorded
-gates correspond to the bit-blaster operations, that folds and memo hits are
-complete, or that the supplied obligation roots are traps in source order
-followed by the negated claim. Settled paths have no emitted formula and do not
-run this audit. Final-root correspondence, bit blasting, DIMACS serialization
-and parsing, and implementation correspondence remain separate obligations.
+gates correspond to the bit-blaster operations or that folds and memo hits are
+complete. The obligation audit establishes assembly from memo-replayed roots,
+not the correctness of term-to-root blasting. Settled paths run the root audit
+but have no emitted formula for the clause-trace audit. Bit-blaster semantics,
+trap/claim term-list provenance and source ordering, DIMACS serialization and
+parsing, and implementation correspondence remain separate obligations.
 
 This is an **additional audit**, not a compiler admission path: it cannot
 create or promote `VerdictProven`, and the verifier cache cannot stand in for
