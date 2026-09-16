@@ -344,17 +344,32 @@ unproved refinement obligations; the theorem does not identify Oak events or
 relations with the CAT execution.
 
 The concrete wrapper keeps an external instruction-word projection beside
-that sequence. It now requires both DSB ISH indices to carry exact word
-`0xd5033b9f`/barrier-action witnesses and the same TLBI index to carry exact
-VMALLS12E1IS word `0xd50c83df` and `Action.tlbi target`; no word is used to
-derive its action. The projection theorem preserves that same TLBI event and
-target through the BBM projection, and a separate theorem exposes the three
-exact words at the same indices as the ordering witness. The four `po` links
-make break, pre-DSB, TLBI, post-DSB, and make pairwise distinct; the old event
-is excluded because the abstract `coherenceAfter` relation has no
-irreflexivity premise. Dynamic PC/object trace extraction and every
-instruction-to-action classification remain compiler/execution-refinement
-premises.
+that sequence. It requires the break index to carry exact `STR XZR,[X0]` word
+`0xf900001f` and abstract uncacheable-descriptor action, both DSB ISH indices
+to carry exact word `0xd5033b9f`/barrier-action witnesses, the TLBI index to
+carry exact VMALLS12E1IS word `0xd50c83df` and `Action.tlbi target`, and the
+make index to carry exact `STR X2,[X0]` word `0xf9000002` and abstract
+cacheable-descriptor action. No word is used to derive its action. The
+projection theorem preserves that same TLBI event and target through the BBM
+projection, and a separate theorem exposes all five exact words at the same
+indices as the ordering witness. The four `po` links make break, pre-DSB,
+TLBI, post-DSB, and make pairwise distinct; the old event is excluded because
+the abstract `coherenceAfter` relation has no irreflexivity premise.
+
+The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
+incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its
+assertion establishes a nonempty span; those facts do not establish live PTE
+provenance. The freestanding ELF/AAPCS64 symbol is pinned in full to eight words:
+`CBZ w1`, the five exact store/system words above, `RET`, and the trap `BRK`.
+The bootstrap C/Clang lane independently retains the same fall-through
+store/system order and no ISB. The two local equalities are recorded in
+`Oak.Forwarding` (`unsigned_lt_one_is_zero`, `zero_index_store`) and their
+lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
+verifier's decided subset: its verdict remains **trusted**, not proven.
+Dynamic PC/object trace extraction, an official ASL memory-write semantics,
+and every instruction-to-action classification remain
+compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
+object oracle or a privileged Apple EL2 execution gate.
 
 The two official catalogue tests validate generic pinned CAT BBM ordering and
 diagnostic behavior only. Their maintenance instruction is stage-1

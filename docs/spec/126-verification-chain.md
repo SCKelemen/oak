@@ -374,9 +374,10 @@ shape empty only under explicit premises that all old events are maintained,
 official-needs membership projects to Oak's local requirement, and Oak's
 `ProjectedBBM` implies official `BBM`; none of those refinement premises is
 claimed here. A conditional wrapper preserves externally supplied exact
-DSB ISH/VMALLS12E1IS/DSB ISH word/action occurrences at the same indices as
-the BBM ordering chain and proves the five `po`-linked break-through-make
-events distinct. The Sail bridge conjoins the TLBI's named call-target theorem without
+`STR XZR,[X0]`/DSB ISH/VMALLS12E1IS/DSB ISH/`STR X2,[X0]` word/action
+occurrences at the same five indices as the BBM ordering chain and proves the
+five `po`-linked break-through-make events distinct. Its word and action
+fields are independent. The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
 descriptor event classification, coherence-after, invalidation scope, concrete
 IPA/VMID target selection, completion, and context synchronization remain
@@ -427,6 +428,21 @@ executable occurrence evidence, not the still-open formal extraction of a
 dynamic execution occurrence. The downstream OS currently emits the plain
 VMALLS12E1 sequence, so this encoding theorem, conditional bridge, and object
 witness are not evidence for that consumer path.
+
+The deliberately incomplete stage-2 BBM ordering source slice is separately
+pinned in full. Its Oak type requires an 8-byte-aligned span and its assertion
+requires one element; `Oak.Forwarding.unsigned_lt_one_is_zero` licenses the
+direct zero test and `zero_index_store` the local store cleanup. The
+freestanding ELF/AAPCS64 native symbol is exactly `CBZ w1`, the two exact STR
+words around the three exact maintenance words, `RET`, and trap `BRK`. The C
+lane preserves the same fall-through store/system order. `Oak.Forwarding`
+proves only the local Boolean-branch and zero-index address/value equalities
+used by lowering/cleanup. Because DSB is outside the semantic verifier's
+decided subset, the whole-body verdict is trusted. Neither that verdict nor
+the exact STR encodings derives an official Sail/ASL memory write, PTE
+provenance/alignment beyond the source base fact, CAT `ca`/`inv-scope`
+membership, TLBI effects, DSB completion, publication, or ISB synchronization.
+There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
 
 The fixed Oak context-sync example has a bootstrap C system-instruction order
 gate and an independent native zero-overhead gate: the bootstrap C lane retains

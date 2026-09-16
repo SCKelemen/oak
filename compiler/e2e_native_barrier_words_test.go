@@ -166,6 +166,37 @@ func TestE2ENativeStage2VMALLS12E1ISContextSyncExactWords(t *testing.T) {
 		})
 }
 
+// This deliberately incomplete ordering slice retains Oak's span guard and
+// trap, then pins the two stores and three system instructions at the object
+// boundary. The exact body also rules out hidden stores, barriers, register
+// rewrites, calls, or an ISB. Descriptor classification and architectural
+// memory effects remain external refinement obligations.
+func TestE2ENativeStage2BBMOrderingSliceExactWords(t *testing.T) {
+	path := filepath.Join("..", "examples", "hypervisor",
+		"stage2_bbm_ordering_slice.oak")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgt := target.Target{OS: target.OSFreestanding, Arch: target.ArchArm64}
+	object, err := New().WithSource(path, string(source)).WithTarget(tgt).
+		EmitNativeObject(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAArch64ObjectWords(t, object,
+		"oak_stage2_bbm_ordering_slice", []uint32{
+			0x340000e1, // cbz w1, trap: preserve the non-empty-span guard
+			0xf900001f, // str xzr, [x0]: break
+			0xd5033b9f, // dsb ish
+			0xd50c83df, // tlbi vmalls12e1is
+			0xd5033b9f, // dsb ish
+			0xf9000002, // str x2, [x0]: make
+			0xd65f03c0, // ret
+			0xd4200020, // trap: brk #1
+		})
+}
+
 var coldEntryRegisterPrefix = []uint32{
 	0xd50342df, // msr DAIFSet, #2
 	0xd51c1100, // msr HCR_EL2, x0

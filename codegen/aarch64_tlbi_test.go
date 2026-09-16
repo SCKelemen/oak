@@ -129,6 +129,46 @@ func TestAArch64TLBIContextSyncSequenceOrder(t *testing.T) {
 	}
 }
 
+func TestAArch64Stage2BBMOrderingSliceStoresSurroundMaintenance(t *testing.T) {
+	path := filepath.Join("..", "examples", "hypervisor",
+		"stage2_bbm_ordering_slice.oak")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, assembly := compileTLBIAArch64Assembly(t, string(source))
+	body := aarch64FunctionBody(t, assembly,
+		"hypervisor_stage2_bbm_ordering_slice")
+
+	// Pin every instruction on the function-entry fall-through through its
+	// first RET. The reporting trap block follows that RET and is deliberately
+	// outside this sequence.
+	var hotPath []string
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], ".") ||
+			strings.HasPrefix(fields[0], "//") {
+			continue
+		}
+		hotPath = append(hotPath,
+			strings.ReplaceAll(strings.Join(fields, " "), ",", ""))
+		if fields[0] == "ret" {
+			break
+		}
+	}
+	if len(hotPath) != 7 || !strings.HasPrefix(hotPath[0], "cbz w1 ") {
+		t.Fatalf("BBM ordering slice entry path = %q, want cbz w1,<trap> plus six fixed instructions:\n%s",
+			hotPath, body)
+	}
+	wantTail := []string{
+		"str xzr [x0]", "dsb ish", "tlbi vmalls12e1is", "dsb ish",
+		"str x2 [x0]", "ret",
+	}
+	if got, want := strings.Join(hotPath[1:], "|"), strings.Join(wantTail, "|"); got != want {
+		t.Fatalf("BBM ordering slice entry tail = %q, want %q:\n%s", got, want, body)
+	}
+}
+
 func TestAArch64TLBIGeneratedCFailsClosedOnHost(t *testing.T) {
 	cc, err := exec.LookPath("cc")
 	if err != nil {

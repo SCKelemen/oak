@@ -253,17 +253,24 @@ The next correctness increment is live stage-2 maintenance.
 `Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event
 BBM-shaped local ordering skeleton corresponding to CAT around an abstract
 TLBI occurrence. Its concrete wrapper preserves externally supplied exact
-DSB ISH, VMALLS12E1IS, and DSB ISH word/action witnesses at the same indices
-as the ordering chain; the words do not create the trace actions. The five
+`STR XZR,[X0]`, DSB ISH, VMALLS12E1IS, DSB ISH, and `STR X2,[X0]`
+word/action witnesses at the same indices as the ordering chain; the words do
+not create the trace actions. The five
 `po`-linked break-through-make events are pairwise distinct. Before a
 previously active guest
 context can change translation state, Oak still needs a kernel-checked dynamic
 compiler/execution trace supplying that premise and proofs of architectural
 target/scope, descriptor publication, invalidation completion, and final
-context synchronization. Oak now has an exact zero-overhead source/object leaf
+context synchronization. Oak now has an aligned, nonempty, deliberately
+incomplete source slice whose freestanding ELF/AAPCS64 object is exactly `CBZ`, those
+five words, `RET`, and trap `BRK`; its C lane preserves the same fall-through
+order. The whole native body is verifier-trusted because of DSB, not proven,
+and the store words do not establish descriptor provenance or ASL memory
+effects. There is no Darwin/Mach-O oracle or privileged Apple EL2 execution
+gate yet. Oak separately has an exact zero-overhead source/object leaf
 for the fixed `DSB ISH; VMALLS12E1IS; DSB ISH; ISB` slice, but its formal
 completed wrapper still requires those execution-level completion and sync
-facts explicitly. It is not a descriptor BBM protocol. The current OS
+facts explicitly. Neither slice is a complete descriptor BBM protocol. The current OS
 guest-entry and revoke paths use plain `VMALLS12E1`, not the IS operation, and
 revoke omits ISB, so this theorem and leaf do not refine them. After those
 obligations and the consumer-specific instruction choice are resolved, this

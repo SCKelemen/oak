@@ -374,8 +374,9 @@ func Transforms() []opt.Transform {
 var cleanupTransform = &laneTransform{
 	// Late cleanup (docs/spec/94-assembler.md §9 "Late cleanup"): a copy
 	// read once by the next instruction is forwarded, a definition copied
-	// once writes its destination, a branch to the following label goes —
-	// machine shape only, judged by the checker and the verifier.
+	// once writes its destination, and narrowly proved branch/store materialized
+	// temporaries disappear. Machine shape only: always seam-checked, and judged
+	// by the verifier only where that verifier's subset applies.
 	name: TransformCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
 	arches:  arm64Only,
 	applied: func(l Lane) bool { return l.Cleanup },

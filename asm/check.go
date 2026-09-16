@@ -1964,6 +1964,18 @@ func (c *checker) instruction(instr Instruction) bool {
 		} else {
 			c.branch(instr, false)
 		}
+		if instr.Mnemonic == "cbz" && reg.Class == ClassW {
+			// The fall-through knows this unsigned value is nonzero. When it
+			// is a span length, that is exactly the minimum length one needed
+			// by element zero (Oak.Forwarding.unsigned_lt_one_is_zero). The
+			// branch state was captured above, so the taken edge gains no such
+			// fact; a stronger existing minimum is preserved.
+			for _, fact := range c.spans {
+				if fact.holdsLen(reg.Num) && (!fact.hasMin || fact.minLen < 1) {
+					fact.hasMin, fact.minLen = true, 1
+				}
+			}
+		}
 		// A context that knows the register's value decides the branch:
 		// when it is always taken the fall-through is unreachable here.
 		if c.pinnedState != nil && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {

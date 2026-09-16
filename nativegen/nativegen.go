@@ -5763,15 +5763,8 @@ func (g *generator) effect(expr ast.Expression) error {
 		return unsupported("a call through a value")
 	}
 	if ident.Value == "assert" && len(call.Arguments) == 1 {
-		b := scalars["Bool"]
-		r, err := g.expr(call.Arguments[0], &b)
-		if err != nil {
-			return err
-		}
 		g.usedTrap = true
-		g.emit("cbz", wr(r), asm.Symbol{Name: g.trap})
-		g.release(r)
-		return nil
+		return g.conditionBranch(call.Arguments[0], g.trap, true)
 	}
 	if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
 		// A store, a fence, or a read-modify-write whose result is dropped.
@@ -5930,6 +5923,28 @@ func (g *generator) condition(expr ast.Expression, target string) error {
 
 var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs": "lo", "ls": "hi", "hi": "ls", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le"}
 
+// unsignedOneBranch recognizes the exact unsigned comparison against one
+// whose branch is a zero/nonzero test. Oak.Forwarding.unsigned_lt_one_is_zero
+// is the local arithmetic equality; signed conditions and every other
+// immediate retain CMP so the transformation fails closed.
+func unsignedOneBranch(left, right asm.Operand, code string) (string, asm.Register, bool) {
+	r, isRegister := left.(asm.Register)
+	one, isImmediate := right.(asm.Immediate)
+	if !isRegister || (r.Class != asm.ClassW && r.Class != asm.ClassX) ||
+		r.Num < 0 || r.Num > 30 || r.ZeroRegister() || !isImmediate ||
+		one.Value != 1 || one.Shift != 0 || one.MSL {
+		return "", asm.Register{}, false
+	}
+	switch code {
+	case "lo":
+		return "cbz", r, true
+	case "hs":
+		return "cbnz", r, true
+	default:
+		return "", asm.Register{}, false
+	}
+}
+
 // conditionBranch evaluates a Bool expression and branches to target when
 // it is false (jumpIfFalse) or true. A comparison of simple operands —
 // variables in registers, a span length, a small constant — emits directly
@@ -6042,6 +6057,16 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					}
 					if jumpIfFalse {
 						code = inverseCondition[code]
+					}
+					if mnemonic, tested, zeroTest := unsignedOneBranch(left, right, code); zeroTest {
+						g.emit(mnemonic, tested, asm.Symbol{Name: target})
+						if computed >= 0 {
+							g.release(computed)
+						}
+						if computedLeft >= 0 {
+							g.release(computedLeft)
+						}
+						return nil
 					}
 					// The compare a conditional chain's guard made stands at
 					// the else label: the same operands (variables in their

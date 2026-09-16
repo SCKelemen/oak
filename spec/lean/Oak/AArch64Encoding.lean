@@ -1,12 +1,12 @@
 import Std.Tactic.BVDecide
 
 /-!
-# AArch64 system encodings
+# AArch64 encodings
 
-The A64 barrier, TLBI, and PSTATE-immediate words emitted by Oak, with fields
-generated from Arm's ISA XML.  `spec/sail/lean/Bridge.lean` proves these words
-reach the corresponding clauses of Arm's Sail `decode64` and projects the
-successful decoder results into Oak's deliberately narrow local semantics.
+The A64 store, barrier, TLBI, and PSTATE-immediate words emitted by Oak, with
+fields generated from Arm's ISA XML. `spec/sail/lean/Bridge.lean` proves the
+projected system words reach the corresponding clauses of Arm's Sail `decode64`
+and projects successful decoder results into Oak's narrow local semantics.
 -/
 
 namespace Oak.AArch64Encoding
@@ -46,6 +46,10 @@ def msrSystem : Encoding := ⟨"MSR_SR_systemmove", "msr", 0xd5100000#32, 0xfff0
 -- OAK-A64-ERET-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
 def eret : Encoding := ⟨"ERET_64E_branch_reg", "eret", 0xd69f03e0#32, 0xffffffff#32, [⟨"opc", 24, 4⟩, ⟨"op2", 20, 5⟩, ⟨"A", 11, 1⟩, ⟨"M", 10, 1⟩, ⟨"Rn", 9, 5⟩, ⟨"op4", 4, 5⟩]⟩
 -- OAK-A64-ERET-ENC-END
+
+-- OAK-A64-STR64-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def str64UnsignedOffset : Encoding := ⟨"STR_64_ldst_pos", "str", 0xf9000000#32, 0xffc00000#32, [⟨"size", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"opc", 23, 2⟩, ⟨"imm12", 21, 12⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-STR64-ENC-END
 
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
@@ -93,6 +97,13 @@ def encodeSystemMsr (o0 : BitVec 1) (op1 : BitVec 3)
   (msrSystem.value &&& msrSystem.mask) ||| (o0.setWidth 32 <<< 19) |||
     (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
     (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+/-- Fill the generated unsigned-offset STR (64-bit) encoding fields. The
+    immediate is stored in scaled units, as in Arm's `imm12` field. -/
+def encodeStr64UnsignedOffset (imm12 : BitVec 12) (rn rt : BitVec 5) :
+    BitVec 32 :=
+  (str64UnsignedOffset.value &&& str64UnsignedOffset.mask) |||
+    (imm12.setWidth 32 <<< 10) ||| (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
 
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
@@ -174,6 +185,21 @@ theorem msr_spsr_el2_x7_word : msrSpsrEl2X7 = 0xd51c4007#32 := by native_decide
 def eretWord : BitVec 32 := eret.value
 theorem eret_word : eretWord = 0xd69f03e0#32 := by native_decide
 -- OAK-A64-ERET-WORD-END
+
+-- OAK-A64-DESCRIPTOR-STORE-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def strXzrX0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 0b11111#5
+def strX2X0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 2#5
+theorem str_xzr_x0_word : strXzrX0 = 0xf900001f#32 := by native_decide
+theorem str_x2_x0_word : strX2X0 = 0xf9000002#32 := by native_decide
+-- OAK-A64-DESCRIPTOR-STORE-WORD-END
+
+/-- A make from X1 is a different exact word; this only detects Rt drift. -/
+theorem str_x1_x0_cannot_equal_make :
+    (0xf9000001#32 : BitVec 32) ≠ strX2X0 := by native_decide
+
+/-- A break through X1 is a different exact word; this only detects Rn drift. -/
+theorem str_xzr_x1_cannot_equal_break :
+    (0xf900003f#32 : BitVec 32) ≠ strXzrX0 := by native_decide
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

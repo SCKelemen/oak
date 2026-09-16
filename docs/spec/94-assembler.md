@@ -858,6 +858,21 @@ decorator conjoins the generated DSB, TLBI, and ISB decode/call-target facts
 with the external occurrence witness. It returns that witness unchanged and
 therefore proves neither DSB completion nor ISB context synchronization.
 
+The adjacent `stage2_bbm_ordering_slice` adds exact break and make stores
+around the first three operations, deliberately omitting ISB. `[* align
+8]u64` plus `assert(len(slot) >= 1)` supplies only an aligned, nonempty Oak
+span. `Oak.Forwarding.unsigned_lt_one_is_zero` licenses the direct assertion
+branch and `zero_index_store` the exact zero-index store cleanup. The
+direct-native complete freestanding ELF/AAPCS64 symbol is eight words—`CBZ w1`, `STR
+XZR,[X0]`, `DSB ISH`, `TLBI VMALLS12E1IS`, `DSB ISH`, `STR X2,[X0]`, `RET`,
+`BRK`—and Clang independently retains the same fall-through store/system
+order. Generated XML metadata, Oak's encoder, the text assembler, and Lean
+agree on `0xf900001f` and `0xf9000002`. The occurrence wrapper keeps those
+words and abstract descriptor actions as independent fields. It does not
+derive descriptor provenance, ASL memory effects, CAT membership, completion,
+invalidation, publication, or context synchronization. No Darwin/Mach-O
+object oracle or privileged Apple EL2 execution gate exists yet.
+
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
 `#2` and proves its pure D/A/I/F body sets I while preserving D/A/F. A Go
@@ -3368,15 +3383,21 @@ used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
 when an arm's tail is empty. Under a whole-function liveness of the
 general registers over the item list (blocks at labels and after
 branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
-x0, x1, x8 and the restored callee-saved registers), four block-local
+x0, x1, x8 and the restored callee-saved registers), five block-local
 rules run to a fixpoint: a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
 destination writes that destination; a branch to the following label
-goes; a self-move goes. Machine shape only: the checker and the verifier
-judge the cleaned body, and the search keeps the uncleaned lowering where
-they refuse it. On the kernel package it removes 2.2 percent of the
+goes; a self-move goes; and an exact dead-temporary scalar
+`mov rV,rS; mov wI,wzr; str rV,[rB,wI,uxtw #scale]` becomes
+`str rS,[rB]` with aliasing, width, addressing mode, and scale checked.
+`Oak.Forwarding.zero_index_store` proves the new local equality and states
+only the observed address/value pair. Every
+candidate is seam-checked, including after stale indexed facts are removed.
+The semantic verifier judges the whole body only within its subset: a trusted
+verdict (for example, a body containing DSB) is not a proof of cleanup. On the
+kernel package the original four rules remove 2.2 percent of the
 instructions with every verdict unchanged — the CRC-32C chunk step 98 to
 82, the byte-order read and write helpers 112 to 102 and 105 to 95, the
 UTF-8 validator 330 to 304 — and it corrected one selection: the hoisted
