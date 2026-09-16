@@ -697,8 +697,11 @@ the ordinary checked semantic model to this substrate for concrete scalar
 functions: fixed-width integers, Bool, unit, local assignments, structured
 branches and short-circuiting, exhaustive Bool matches, pre-test loops with
 explicit carried locals, value-preserving integer widening, and effect-marked
-calls. Unsupported memory, methods, kernels, protocol lowerings, and richer
-algebraic forms are per-function refusals, never partial projections.
+calls. Reads and whole-cell assignments of checked package globals whose types
+are Bool or fixed-width integers project as explicit region operations. Arrays,
+spans, pointers, partial accesses, calls mixed with global state, methods,
+kernels, protocol lowerings, and richer algebraic forms are per-function
+refusals, never partial projections.
 
 The SCCP analysis validates its operation vocabulary before computing exact
 constants and executable CFG edges. Its folds use Oak's exact fixed-width
@@ -733,8 +736,17 @@ writes as dead candidates. Partial writes keep their predecessor live; volatile
 accesses are roots. A separately verified DSE transform can now remove a dead
 operation only when it is the closed `store.region` form and metadata certifies
 one whole-region, nonvolatile write. It rewrites operation sites and metadata,
-then rebuilds MemorySSA. Checked Oak memory projection has not landed, so this
-candidate cannot yet enter production emission; load forwarding is also open.
+then rebuilds MemorySSA. The scalar-global projection first binds metadata to
+the exact structured operation identity while constructing CFG operation
+sites. It then independently resolves each projected operation's opaque access
+ID against a separate immutable typechecker-backed authority: source, region,
+access kind, scalar type, whole-region contract, and volatility must all match,
+the two projections must agree, and missing, duplicated, forged, or stale IDs
+fail closed. Every package-global region is observable at
+normal return. Projection, MemorySSA, liveness, evidence, and DSE are exact
+typed artifact-DAG nodes after LICM. DSE remains analysis-only because the
+native OptIR selector does not yet lower memory operations; load forwarding,
+aggregate regions, and interprocedural call Mod/Ref summaries are also open.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its

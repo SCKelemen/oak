@@ -145,6 +145,7 @@ func fingerprintBlock(digest hash.Hash, block Block) {
 
 func fingerprintOperation(digest hash.Hash, operation Operation) {
 	fingerprintString(digest, operation.Code)
+	fingerprintString(digest, operation.MemoryAccessID)
 	fingerprintValues(digest, operation.Results)
 	fingerprintValueIDs(digest, operation.Operands)
 	fingerprintUint64(digest, uint64(len(operation.Effects)))

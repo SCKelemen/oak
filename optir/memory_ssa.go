@@ -381,6 +381,7 @@ func isKnownMemoryOperation(code string) bool {
 		OpBoolNot, OpIntNeg, OpIntAdd, OpIntSub, OpIntMul, OpIntDiv, OpIntRem,
 		OpIntAnd, OpIntOr, OpIntXor, OpIntShl, OpIntShr,
 		OpEqual, OpNotEqual, OpLess, OpLessEqual, OpGreater, OpGreaterEqual,
+		OpLoadRegion,
 		OpStoreRegion:
 		return true
 	default:

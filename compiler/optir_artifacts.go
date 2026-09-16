@@ -8,16 +8,22 @@ import (
 )
 
 const (
-	optIRAnalysisWorkers       = 3
-	optIRSCCPRevision          = "oak.optir.sccp.v1"
-	optIRSCCPRewriteRevision   = "oak.optir.sccp-rewrite.v1"
-	optIRSCCPCFGRevision       = "oak.optir.sccp-cfg.v1"
-	optIRLoopStructureRevision = "oak.optir.loop-structure.v1"
-	optIRLoopsRevision         = "oak.optir.loops.v2"
-	optIRGVNDCERevision        = "oak.optir.gvn-dce.v3"
-	optIRCleanupCFGRevision    = "oak.optir.cleanup-cfg.v4"
-	optIRPreservationRevision  = "oak.optir.preservation.v1"
-	optIRLICMRevision          = "oak.optir.licm.v1"
+	optIRAnalysisWorkers          = 3
+	optIRSCCPRevision             = "oak.optir.sccp.v1"
+	optIRSCCPRewriteRevision      = "oak.optir.sccp-rewrite.v1"
+	optIRSCCPCFGRevision          = "oak.optir.sccp-cfg.v1"
+	optIRLoopStructureRevision    = "oak.optir.loop-structure.v1"
+	optIRLoopsRevision            = "oak.optir.loops.v2"
+	optIRGVNDCERevision           = "oak.optir.gvn-dce.v3"
+	optIRCleanupCFGRevision       = "oak.optir.cleanup-cfg.v4"
+	optIRPreservationRevision     = "oak.optir.preservation.v1"
+	optIRLICMRevision             = "oak.optir.licm.v1"
+	optIRFinalCFGRevision         = "oak.optir.final-cfg.v1"
+	optIRMemoryProjectionRevision = "oak.optir.checked-memory-projection.v1"
+	optIRMemorySSARevision        = "oak.optir.region-memory-ssa.v2"
+	optIRMemoryLivenessRevision   = "oak.optir.memory-liveness.v2"
+	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
+	optIRDSERevision              = "oak.optir.dead-store-elimination.v1"
 )
 
 type optIRSCCPRewriteArtifact struct {
@@ -35,69 +41,113 @@ type optIRLICMArtifact struct {
 	Report optir.LICMReport
 }
 
+type optIRMemoryEvidenceArtifact struct {
+	SSA      optir.RegionMemorySSA
+	Liveness optir.MemoryDefinitionLiveness
+}
+
+type optIRDSEArtifact struct {
+	CFG      optir.CFG
+	Metadata optir.RegionMemoryMetadata
+	Report   optir.DeadStoreEliminationReport
+}
+
 type optIRArtifactKeys struct {
-	cfgV0           opt.ArtifactKey
-	sccp            opt.ArtifactKey
-	sccpRewrite     opt.ArtifactKey
-	cfgV1           opt.ArtifactKey
-	loopStructureV1 opt.ArtifactKey
-	loopsV1         opt.ArtifactKey
-	cleanup         opt.ArtifactKey
-	cfgV2           opt.ArtifactKey
-	preservation    opt.ArtifactKey
-	loopsV2         opt.ArtifactKey
-	licm            opt.ArtifactKey
+	cfgV0            opt.ArtifactKey
+	sccp             opt.ArtifactKey
+	sccpRewrite      opt.ArtifactKey
+	cfgV1            opt.ArtifactKey
+	loopStructureV1  opt.ArtifactKey
+	loopsV1          opt.ArtifactKey
+	cleanup          opt.ArtifactKey
+	cfgV2            opt.ArtifactKey
+	preservation     opt.ArtifactKey
+	loopsV2          opt.ArtifactKey
+	licm             opt.ArtifactKey
+	cfgV3            opt.ArtifactKey
+	memoryAuthority  opt.ArtifactKey
+	memoryProjection opt.ArtifactKey
+	memorySSA        opt.ArtifactKey
+	memoryLiveness   opt.ArtifactKey
+	memoryEvidence   opt.ArtifactKey
+	dse              opt.ArtifactKey
 }
 
 type optIRArtifactRefs struct {
-	cfgV0           opt.ArtifactRef[optir.CFG]
-	sccp            opt.ArtifactRef[optir.SCCPResult]
-	sccpRewrite     opt.ArtifactRef[optIRSCCPRewriteArtifact]
-	cfgV1           opt.ArtifactRef[optir.CFG]
-	loopStructureV1 opt.ArtifactRef[optir.LoopStructure]
-	loopsV1         opt.ArtifactRef[optir.LoopAnalysis]
-	cleanup         opt.ArtifactRef[optIRGVNDCEArtifact]
-	cfgV2           opt.ArtifactRef[optir.CFG]
-	preservation    opt.ArtifactRef[optir.PreservationCertificate]
-	loopsV2         opt.ArtifactRef[optir.LoopAnalysis]
-	licm            opt.ArtifactRef[optIRLICMArtifact]
+	hasMemory        bool
+	cfgV0            opt.ArtifactRef[optir.CFG]
+	sccp             opt.ArtifactRef[optir.SCCPResult]
+	sccpRewrite      opt.ArtifactRef[optIRSCCPRewriteArtifact]
+	cfgV1            opt.ArtifactRef[optir.CFG]
+	loopStructureV1  opt.ArtifactRef[optir.LoopStructure]
+	loopsV1          opt.ArtifactRef[optir.LoopAnalysis]
+	cleanup          opt.ArtifactRef[optIRGVNDCEArtifact]
+	cfgV2            opt.ArtifactRef[optir.CFG]
+	preservation     opt.ArtifactRef[optir.PreservationCertificate]
+	loopsV2          opt.ArtifactRef[optir.LoopAnalysis]
+	licm             opt.ArtifactRef[optIRLICMArtifact]
+	cfgV3            opt.ArtifactRef[optir.CFG]
+	memoryAuthority  opt.ArtifactRef[optir.CheckedMemoryAuthority]
+	memoryProjection opt.ArtifactRef[optir.CheckedMemoryProjection]
+	memorySSA        opt.ArtifactRef[optir.RegionMemorySSA]
+	memoryLiveness   opt.ArtifactRef[optir.MemoryDefinitionLiveness]
+	memoryEvidence   opt.ArtifactRef[optIRMemoryEvidenceArtifact]
+	dse              opt.ArtifactRef[optIRDSEArtifact]
 }
 
 func (references optIRArtifactRefs) keys() optIRArtifactKeys {
 	return optIRArtifactKeys{
-		cfgV0:           references.cfgV0.Key(),
-		sccp:            references.sccp.Key(),
-		sccpRewrite:     references.sccpRewrite.Key(),
-		cfgV1:           references.cfgV1.Key(),
-		loopStructureV1: references.loopStructureV1.Key(),
-		loopsV1:         references.loopsV1.Key(),
-		cleanup:         references.cleanup.Key(),
-		cfgV2:           references.cfgV2.Key(),
-		preservation:    references.preservation.Key(),
-		loopsV2:         references.loopsV2.Key(),
-		licm:            references.licm.Key(),
+		cfgV0:            references.cfgV0.Key(),
+		sccp:             references.sccp.Key(),
+		sccpRewrite:      references.sccpRewrite.Key(),
+		cfgV1:            references.cfgV1.Key(),
+		loopStructureV1:  references.loopStructureV1.Key(),
+		loopsV1:          references.loopsV1.Key(),
+		cleanup:          references.cleanup.Key(),
+		cfgV2:            references.cfgV2.Key(),
+		preservation:     references.preservation.Key(),
+		loopsV2:          references.loopsV2.Key(),
+		licm:             references.licm.Key(),
+		cfgV3:            references.cfgV3.Key(),
+		memoryAuthority:  references.memoryAuthority.Key(),
+		memoryProjection: references.memoryProjection.Key(),
+		memorySSA:        references.memorySSA.Key(),
+		memoryLiveness:   references.memoryLiveness.Key(),
+		memoryEvidence:   references.memoryEvidence.Key(),
+		dse:              references.dse.Key(),
 	}
 }
 
 type optIRAnalysisArtifacts struct {
-	constants          optir.SCCPResult
-	sccpSimplified     optir.CFG
-	sccpSimplification optir.SCCPRewriteReport
-	loops              optir.LoopAnalysis
-	simplified         optir.CFG
-	simplification     optir.GVNDCEReport
-	loopInvariant      optir.CFG
-	loopMotion         optir.LICMReport
-	run                opt.ArtifactRun
-	keys               optIRArtifactKeys
+	hasMemory            bool
+	constants            optir.SCCPResult
+	sccpSimplified       optir.CFG
+	sccpSimplification   optir.SCCPRewriteReport
+	loops                optir.LoopAnalysis
+	simplified           optir.CFG
+	simplification       optir.GVNDCEReport
+	loopInvariant        optir.CFG
+	loopMotion           optir.LICMReport
+	memoryProjection     optir.CheckedMemoryProjection
+	memorySSA            optir.RegionMemorySSA
+	memoryLiveness       optir.MemoryDefinitionLiveness
+	deadStores           optir.CFG
+	deadStoreMetadata    optir.RegionMemoryMetadata
+	deadStoreElimination optir.DeadStoreEliminationReport
+	run                  opt.ArtifactRun
+	keys                 optIRArtifactKeys
 }
 
-func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
-	graph, references, err := newOptIRAnalysisGraph(cfg)
+func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAuthority) (optIRAnalysisArtifacts, error) {
+	graph, references, err := newOptIRAnalysisGraph(cfg, memoryAuthority)
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
-	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, references.sccp.Key(), references.sccpRewrite.Key(), references.loopsV1.Key(), references.cleanup.Key(), references.licm.Key())
+	targets := []opt.ArtifactKey{references.sccp.Key(), references.sccpRewrite.Key(), references.loopsV1.Key(), references.cleanup.Key(), references.licm.Key()}
+	if references.hasMemory {
+		targets = append(targets, references.dse.Key())
+	}
+	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, targets...)
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
@@ -121,7 +171,8 @@ func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
 	if err != nil {
 		return optIRAnalysisArtifacts{}, err
 	}
-	return optIRAnalysisArtifacts{
+	artifacts := optIRAnalysisArtifacts{
+		hasMemory:          references.hasMemory,
 		constants:          constants,
 		sccpSimplified:     sccpRewrite.CFG,
 		sccpSimplification: sccpRewrite.Report,
@@ -132,10 +183,36 @@ func runOptIRAnalysisGraph(cfg optir.CFG) (optIRAnalysisArtifacts, error) {
 		loopMotion:         licm.Report,
 		run:                run,
 		keys:               references.keys(),
-	}, nil
+	}
+	if !references.hasMemory {
+		return artifacts, nil
+	}
+	memoryProjection, err := references.memoryProjection.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
+	memorySSA, err := references.memorySSA.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
+	memoryLiveness, err := references.memoryLiveness.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
+	dse, err := references.dse.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
+	artifacts.memoryProjection = memoryProjection
+	artifacts.memorySSA = memorySSA
+	artifacts.memoryLiveness = memoryLiveness
+	artifacts.deadStores = dse.CFG
+	artifacts.deadStoreMetadata = dse.Metadata
+	artifacts.deadStoreElimination = dse.Report
+	return artifacts, nil
 }
 
-func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactRefs, error) {
+func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAuthority) (*opt.ArtifactGraph, optIRArtifactRefs, error) {
 	fingerprint, err := optir.FingerprintCFG(cfg)
 	if err != nil {
 		return nil, optIRArtifactRefs{}, err
@@ -190,6 +267,8 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactRefs
 			result, report, err := optir.HoistLoopInvariantsWithAnalysis(input, loops)
 			return optIRLICMArtifact{CFG: result, Report: report}, err
 		})
+	cfgV3, cfgV3Task := opt.DerivedArtifact1(opt.ArtifactIR, "optir.cfg.v3", optIRFinalCFGRevision, licm,
+		func(_ context.Context, result optIRLICMArtifact) (optir.CFG, error) { return result.CFG, nil })
 
 	references := optIRArtifactRefs{
 		cfgV0:           cfgV0,
@@ -203,8 +282,43 @@ func newOptIRAnalysisGraph(cfg optir.CFG) (*opt.ArtifactGraph, optIRArtifactRefs
 		preservation:    preservation,
 		loopsV2:         loopsV2,
 		licm:            licm,
+		cfgV3:           cfgV3,
 	}
-	tasks := []opt.ArtifactTask{cfgV0Task, sccpTask, sccpRewriteTask, cfgV1Task, loopStructureV1Task, loopsV1Task, cleanupTask, cfgV2Task, preservationTask, loopsV2Task, licmTask}
+	tasks := []opt.ArtifactTask{cfgV0Task, sccpTask, sccpRewriteTask, cfgV1Task, loopStructureV1Task, loopsV1Task, cleanupTask, cfgV2Task, preservationTask, loopsV2Task, licmTask, cfgV3Task}
+	if len(memoryAuthority.Records()) != 0 {
+		memoryAuthorityRef, memoryAuthorityTask := opt.RootArtifact(opt.ArtifactKey{
+			Kind: opt.ArtifactChecked, Name: "optir.checked-memory", Version: memoryAuthority.Fingerprint(),
+		}, memoryAuthority)
+		memoryProjection, memoryProjectionTask := opt.DerivedArtifact2(opt.ArtifactAnalysis, "optir.checked-memory-projection", optIRMemoryProjectionRevision, cfgV3, memoryAuthorityRef,
+			func(_ context.Context, input optir.CFG, authority optir.CheckedMemoryAuthority) (optir.CheckedMemoryProjection, error) {
+				return optir.ProjectCheckedMemory(input, authority)
+			})
+		memorySSA, memorySSATask := opt.DerivedArtifact2(opt.ArtifactAnalysis, "optir.region-memory-ssa", optIRMemorySSARevision, cfgV3, memoryProjection,
+			func(_ context.Context, input optir.CFG, projection optir.CheckedMemoryProjection) (optir.RegionMemorySSA, error) {
+				return optir.AnalyzeRegionMemorySSA(input, projection.Metadata)
+			})
+		memoryLiveness, memoryLivenessTask := opt.DerivedArtifact3(opt.ArtifactAnalysis, "optir.memory-liveness", optIRMemoryLivenessRevision, cfgV3, memoryProjection, memorySSA,
+			func(_ context.Context, input optir.CFG, projection optir.CheckedMemoryProjection, memory optir.RegionMemorySSA) (optir.MemoryDefinitionLiveness, error) {
+				return optir.AnalyzeMemoryDefinitionLiveness(input, projection.Metadata, memory, projection.Observability)
+			})
+		memoryEvidence, memoryEvidenceTask := opt.DerivedArtifact2(opt.ArtifactAnalysis, "optir.memory-evidence", optIRMemoryEvidenceRevision, memorySSA, memoryLiveness,
+			func(_ context.Context, memory optir.RegionMemorySSA, liveness optir.MemoryDefinitionLiveness) (optIRMemoryEvidenceArtifact, error) {
+				return optIRMemoryEvidenceArtifact{SSA: memory, Liveness: liveness}, nil
+			})
+		dse, dseTask := opt.DerivedArtifact3(opt.ArtifactCandidate, "optir.dead-store-elimination", optIRDSERevision, cfgV3, memoryProjection, memoryEvidence,
+			func(_ context.Context, input optir.CFG, projection optir.CheckedMemoryProjection, evidence optIRMemoryEvidenceArtifact) (optIRDSEArtifact, error) {
+				result, metadata, report, err := optir.EliminateDeadRegionStores(input, projection.Metadata, evidence.SSA, projection.Observability, evidence.Liveness)
+				return optIRDSEArtifact{CFG: result, Metadata: metadata, Report: report}, err
+			})
+		references.hasMemory = true
+		references.memoryAuthority = memoryAuthorityRef
+		references.memoryProjection = memoryProjection
+		references.memorySSA = memorySSA
+		references.memoryLiveness = memoryLiveness
+		references.memoryEvidence = memoryEvidence
+		references.dse = dse
+		tasks = append(tasks, memoryAuthorityTask, memoryProjectionTask, memorySSATask, memoryLivenessTask, memoryEvidenceTask, dseTask)
+	}
 	graph, err := opt.NewArtifactGraph(tasks...)
 	if err != nil {
 		return nil, optIRArtifactRefs{}, err

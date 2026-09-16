@@ -72,13 +72,14 @@ type Value struct {
 // Operation is a target-independent scalar, memory, or call operation. Its
 // effects must be explicit before a future pass may reorder or remove it.
 type Operation struct {
-	Code       string
-	Results    []Value
-	Operands   []ValueID
-	Effects    []Effect
-	Attributes []Attribute
-	Facts      []Fact
-	Source     Source
+	Code           string
+	Results        []Value
+	Operands       []ValueID
+	Effects        []Effect
+	Attributes     []Attribute
+	Facts          []Fact
+	Source         Source
+	MemoryAccessID string
 }
 
 // Region is structured control with explicit arguments and yielded values.

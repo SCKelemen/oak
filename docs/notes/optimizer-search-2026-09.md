@@ -850,10 +850,18 @@ roots reads, volatile accesses, opaque clobbers, and those terminal versions,
 and propagates through join/loop phis. Partial writes keep their predecessors
 live. A verified transform deletes only a dead, whole-region, nonvolatile
 `store.region`, rewrites its metadata, and rebuilds MemorySSA. Checked Oak
-memory operations do not project into it yet, so the transform cannot currently
-affect emitted programs.
+Bool/fixed-integer package-global reads and whole-cell assignments now project
+into it. Metadata first follows the exact structured operation identity into a
+CFG site. Each projected operation then carries only an opaque access ID; a
+separate immutable authority fixes its exact source, region, kind, scalar type,
+whole-region contract, and volatility. The two projections must agree.
+Projection rejects missing, duplicated, stale, forged, or mismatched authority
+and treats every global region as live on normal return. The typed artifact DAG runs projection, MemorySSA, liveness,
+combined evidence, and DSE after LICM. DSE remains analysis-only because native
+OptIR selection does not yet lower memory operations. Aggregate/partial
+regions, load GVN, and interprocedural call Mod/Ref summaries remain open.
 
-Once that projection exists, region memory SSA should power:
+As the projection broadens, region memory SSA should power:
 
 - load CSE;
 - store-to-load forwarding;
@@ -1053,7 +1061,8 @@ This phase targets the measured UTF-8 call/spill gap directly.
 16. explicit loop outputs;
 17. recurrence/trip-count analysis;
 18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate
-    landed; checked memory projection remains**);
+    and checked scalar-global projection landed; aggregate regions and call
+    summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
 21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address

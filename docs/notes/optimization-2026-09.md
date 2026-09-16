@@ -232,9 +232,18 @@ phis, and reports only unused exact writes as dead candidates. Partial writes
 keep the reaching definition live and volatile accesses are observable roots.
 A separately verified transform now deletes only the closed `store.region`
 operation when it is one nonvolatile whole-region write and its exact output is
-dead. It renumbers metadata and rebuilds MemorySSA. This is still an
-analysis-only candidate until checked Oak memory operations and region
-identities project into OptIR; load GVN remains open.
+dead. It renumbers metadata and rebuilds MemorySSA. Checked Bool/fixed-integer
+package-global reads and whole-cell assignments now bind metadata to exact
+structured operation identities while CFG sites are built, then resolve opaque
+access IDs against separate immutable authority for their exact source, region,
+kind, type, whole-region contract, and volatility. The projections must agree.
+Missing, duplicated, forged, stale, or mismatched authority fails closed;
+globals are conservatively live on normal return. Projection, MemorySSA,
+liveness, combined evidence, and
+DSE now follow LICM in the typed artifact DAG. DSE remains analysis-only until
+the native OptIR selector lowers these memory operations. Aggregate/partial
+regions, load GVN, and interprocedural call Mod/Ref summaries remain open; a
+function mixing a call with projected global state refuses for now.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,
@@ -244,7 +253,8 @@ and root/unary/binary/ternary builders derive its keys and extract payloads, so
 pass code no longer owns dependency indexes and type assertions. Exact-version
 immutable nodes represent CFG v0, SCCP analysis, SCCP rewrite and CFG v1, loop
 structure and recurrences, GVN/DCE and CFG v2, preservation evidence,
-recomputed loop facts, and LICM. Analyses declare the topology, SSA, operation,
+recomputed loop facts, LICM and CFG v3, checked-memory projection, region
+MemorySSA, memory liveness, evidence, and DSE. Analyses declare the topology, SSA, operation,
 effect, type, fact, and layout aspects they read. GVN/DCE's checked certificate
 proves `CFGTopology` unchanged, so v2 reuses v1 dominance/natural-loop
 structure but recomputes induction facts from the changed SSA. Certificates carry exact
@@ -350,7 +360,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed, while production DSE waits for checked memory-region projection |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed, while DSE remains analysis-only pending native memory selection/emission |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

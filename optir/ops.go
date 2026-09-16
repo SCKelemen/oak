@@ -33,6 +33,10 @@ const (
 	OpGreater      = "compare.greater"
 	OpGreaterEqual = "compare.greater-equal"
 
+	// OpLoadRegion reads one complete checked semantic memory region. Its
+	// opaque MemoryAccessID must resolve against separate checked authority.
+	OpLoadRegion = "memory.region-load"
+
 	// OpStoreRegion replaces one complete checked semantic memory region with
 	// its sole operand. Region identity and exactness live in
 	// RegionMemoryMetadata; partial stores remain extension operations until

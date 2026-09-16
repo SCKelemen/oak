@@ -124,7 +124,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
-			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, tc)
+			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, root, tc)
 		}
 		// The candidate search (compiler/native_search.go, package opt;
 		// docs/notes/optimizer-search-2026-09.md): the plain lowering is the
@@ -259,19 +259,19 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, or LICM is proposed, so the
 // search never pays to validate an alternate spelling with no generic
 // optimization in it.
-func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
-	structured, authority, err := lowerCheckedOptIRFunction(function, tc)
+func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
+	structured, authority, memoryAuthority, err := lowerCheckedOptIRFunction(function, tc, checkedOptIRGlobals(root, tc))
 	if err != nil {
 		return nil, 0, ""
 	}
-	cfg, err := optir.Project(structured)
+	cfg, err := projectCheckedOptIRFunction(structured, memoryAuthority)
 	if err != nil {
 		return nil, 0, ""
 	}
 	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
 		return nil, 0, ""
 	}
-	analyses, err := runOptIRAnalysisGraph(cfg)
+	analyses, err := runOptIRAnalysisGraphWithMemory(cfg, memoryAuthority)
 	if err != nil {
 		return nil, 0, ""
 	}
