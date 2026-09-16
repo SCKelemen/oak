@@ -18,6 +18,36 @@ func FingerprintCFG(cfg CFG) (string, error) {
 	return fingerprintCFG(cfg), nil
 }
 
+// FingerprintRegionMemoryInput returns a canonical digest of an exact CFG and
+// its checked region-memory boundary. Declaration order is not significant for
+// regions, memory-operation metadata, distinct-region accesses, or live-out
+// regions. The digest identifies analysis inputs; it contains no memory-SSA,
+// liveness, or transformation evidence and is not an authorization to emit.
+func FingerprintRegionMemoryInput(
+	cfg CFG,
+	metadata RegionMemoryMetadata,
+	observability RegionMemoryObservability,
+) (string, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return "", err
+	}
+	normalizedMetadata, err := normalizeMemoryMetadata(cfg, metadata)
+	if err != nil {
+		return "", err
+	}
+	normalizedObservability, err := normalizeRegionMemoryObservability(normalizedMetadata.regions, observability)
+	if err != nil {
+		return "", err
+	}
+
+	digest := sha256.New()
+	fingerprintString(digest, "oak.optir.region-memory-input.v1")
+	fingerprintString(digest, fingerprintCFG(cfg))
+	fingerprintString(digest, fingerprintNormalizedMemoryMetadata(normalizedMetadata))
+	fingerprintString(digest, fingerprintRegionMemoryObservability(normalizedObservability))
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
 func fingerprintCFG(cfg CFG) string {
 	digest := sha256.New()
 	fingerprintString(digest, "oak.optir.cfg.v1")
