@@ -317,8 +317,23 @@ local projected edges corresponding to CAT's `ob` operands for one old
 cacheable TTD event, provided assumed projections of `ca` and `inv-scope` are
 supplied by the architecture refinement. A conditional theorem covers every
 make event selected by an external `requiresBBM` predicate. It does not prove
-that those local edges belong to an actual CAT execution or equate that
-predicate with CAT's complete `TTD-update-needsBBM` classification.
+that those local edges belong to an actual CAT execution.
+
+The CAT certificate separately pins the complete outer classification seam:
+`TLBUncacheableTTD`, `TLBCacheableTTD`, all six arms of
+`TTD-update-BBM-cand`, and the exact three-operand
+`TTD-update-needsBBM`. It also pins
+`flag ~empty (TTD-update-needsBBM \ BBM) as Warning-BBM-expected`, including
+its flagged status. This is a diagnostic warning in the official CAT model,
+not an execution-validity axiom.
+
+`maintained_old_events_exclude_projected_cat_bbm_warning` mirrors that set
+difference propositionally. It proves the warning shape empty if every old
+event has a local maintenance witness, official-needs membership implies the
+local `requiresBBM` predicate, and every `ProjectedBBM` witness implies
+official `BBM` membership. Those three premises are explicit and remain
+unproved refinement obligations; the theorem does not identify Oak events or
+relations with the CAT execution.
 
 The concrete wrapper keeps an external instruction-word projection beside
 that sequence. `Vmalls12e1isOccurrence` requires the same event to carry the

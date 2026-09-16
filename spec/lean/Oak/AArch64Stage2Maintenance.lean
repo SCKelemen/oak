@@ -499,4 +499,32 @@ theorem maintains_old_event_covers_projected_bbm
   intro make needsBBM
   exact dsb_ish_sequence_projects_bbm (maintains make needsBBM)
 
+/-- The pair-membership shape of CAT's `Warning-BBM-expected` diagnostic:
+    a descriptor update classified as needing BBM but absent from BBM. The two
+    relations remain parameters because this module does not model the full
+    CAT event vocabulary or establish the required refinement maps. -/
+def ProjectedCATBBMWarning {Occurrence : Type}
+    (catNeedsBBM catBBM : Occurrence → Occurrence → Prop) : Prop :=
+  ∃ old make, catNeedsBBM old make ∧ ¬catBBM old make
+
+/-- If every old event is maintained, CAT-needs membership is covered by the
+    local requirement, and every local projected witness is sound for CAT BBM,
+    then the projected shape of the official warning is empty. The premises
+    are explicit refinement obligations, not consequences of this theorem;
+    the official CAT construct is a flagged diagnostic, not a validity axiom. -/
+theorem maintained_old_events_exclude_projected_cat_bbm_warning
+    {Occurrence Target : Type}
+    {catNeedsBBM catBBM localRequires : Occurrence → Occurrence → Prop}
+    {trace : Trace Occurrence Target}
+    (maintains : ∀ old, MaintainsOldEvent localRequires trace old)
+    (needsProjects : ∀ old make, catNeedsBBM old make → localRequires old make)
+    (projectedBBMSound : ∀ old make,
+      ProjectedBBM trace old make → catBBM old make) :
+    ¬ProjectedCATBBMWarning catNeedsBBM catBBM := by
+  rintro ⟨old, make, needsBBM, lacksBBM⟩
+  apply lacksBBM
+  apply projectedBBMSound old make
+  exact maintains_old_event_covers_projected_bbm
+    (maintains old) make (needsProjects old make needsBBM)
+
 end Oak.AArch64Stage2Maintenance

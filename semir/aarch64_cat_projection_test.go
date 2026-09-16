@@ -29,21 +29,25 @@ var errCATLispTooLarge = errors.New("CAT parser output exceeds the configured li
 // They intentionally certify only the relation definitions used by Oak's
 // restricted projection, not the complete semantics of the Arm CAT model.
 var pinnedAArch64ProjectionHashes = map[string]string{
-	"dmb.full":      "7f0e43f97632346b01cfb634eb6d58a9ceb4a51dabf60aa378f2a0b72ea76555",
-	"dmb.ld":        "9f29bd95706acf92340db7085c5dd409e0d2c4458c416557d2e12cb9290d5f9d",
-	"dsb.full":      "4fdbe77c686677c1c1a133ba17b7a5e6930bdf3c2f87563976cce7ec47ef3fdf",
-	"dsb.ld":        "2c9e7a6a7a2e46caf783099840744699b3da701c6739b1e3e10b05a84cff35e5",
-	"DSB-ob":        "2c2d1203a9426dcbce587d994668dd5996870cd6dae02a9c9ae08937fec08abb",
-	"IFB":           "a58fe8df59d374ab93bbd99a0f8c531cecf0f4a963faba7583715c6291c33e8f",
-	"IFB-ob":        "fb843e22617036291fa424a8b744854f5980d51c21502d12a8ebfe1ef05253f9",
-	"BBM":           "a62ebb7ec51abaaa8cf711db47c5735306743a417163e0cf5561c003aa57bd35",
-	"bob":           "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
-	"lob":           "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
-	"local-hw-reqs": "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
-	"hw-reqs":       "5de8d9ab52b47cbfd5541a6c3913ac466b7fb084a8fe65ccc4253fa10848ce97",
-	"Exp-obs":       "52c8a651e8479a19c224dfe10577b96a3483e4775546d717e548543875252419",
-	"obs":           "547031d91767ede427f6f42ba64fdd6dd6800d2cbb4e9eff5f072ff41371199d",
-	"ob":            "60f3e529e30a548fa078a31c7feb2dc1d378b6283123ee3921434938413b5936",
+	"dmb.full":            "7f0e43f97632346b01cfb634eb6d58a9ceb4a51dabf60aa378f2a0b72ea76555",
+	"dmb.ld":              "9f29bd95706acf92340db7085c5dd409e0d2c4458c416557d2e12cb9290d5f9d",
+	"dsb.full":            "4fdbe77c686677c1c1a133ba17b7a5e6930bdf3c2f87563976cce7ec47ef3fdf",
+	"dsb.ld":              "2c9e7a6a7a2e46caf783099840744699b3da701c6739b1e3e10b05a84cff35e5",
+	"DSB-ob":              "2c2d1203a9426dcbce587d994668dd5996870cd6dae02a9c9ae08937fec08abb",
+	"IFB":                 "a58fe8df59d374ab93bbd99a0f8c531cecf0f4a963faba7583715c6291c33e8f",
+	"IFB-ob":              "fb843e22617036291fa424a8b744854f5980d51c21502d12a8ebfe1ef05253f9",
+	"BBM":                 "a62ebb7ec51abaaa8cf711db47c5735306743a417163e0cf5561c003aa57bd35",
+	"TLBUncacheableTTD":   "c11e80b07e965db086f8bfabf9b96a07b3c5d69db86f9af0265b86833653886e",
+	"TLBCacheableTTD":     "3c89334e50810b29eae42759ad550f7b049862eb8ee41aad170038ec604ce1a6",
+	"TTD-update-BBM-cand": "8c1a0c4195c2b6fec86fe9ba7afea63a1b35cfe9915c1d325d791baa04a08d16",
+	"TTD-update-needsBBM": "5c7a60eeb50c5d0626fa3972fe5fcb4a2b559f17c96af12305d4ff1ee1099aa5",
+	"bob":                 "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
+	"lob":                 "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
+	"local-hw-reqs":       "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
+	"hw-reqs":             "5de8d9ab52b47cbfd5541a6c3913ac466b7fb084a8fe65ccc4253fa10848ce97",
+	"Exp-obs":             "52c8a651e8479a19c224dfe10577b96a3483e4775546d717e548543875252419",
+	"obs":                 "547031d91767ede427f6f42ba64fdd6dd6800d2cbb4e9eff5f072ff41371199d",
+	"ob":                  "60f3e529e30a548fa078a31c7feb2dc1d378b6283123ee3921434938413b5936",
 }
 
 var pinnedAArch64BobArmHashes = []string{
@@ -59,6 +63,7 @@ const pinnedAArch64ExternalIrreflexiveHash = "0d3935d123120064a5f8c4cb229df1eb5e
 const pinnedAArch64DSBFullArmHash = "5591f902cc9e242fb058023293d939a414688205aab118ca61d6994814c13e98"
 const pinnedAArch64IFBControlArmHash = "66f0c45e72f09b9c2d28952a625953ef422f4e40d470b5a1377a8874e5f41527"
 const pinnedAArch64IFBDsbArmHash = "dc9583eacb2c1ff264fb746e8b85e0910fecc2b67e29374c5b180d65c4103b1e"
+const pinnedAArch64BBMWarningHash = "316f717cf3080a7fd9ea40770b905cd9bab389379b6e7e224ce867b3b84c918b"
 
 type catLispNode struct {
 	atom   string
@@ -493,6 +498,92 @@ func isAArch64BBMSequence(node *catLispNode) bool {
 		catSetFilter(operands[6], "TLBCacheableTTD")
 }
 
+func isAArch64TLBUncacheableTTD(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":union")
+	return ok && len(operands) == 2 &&
+		catVariable(operands[0], "TTDINV") && catVariable(operands[1], "TTDAF0")
+}
+
+func isAArch64TLBCacheableTTD(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":diff")
+	if !ok || len(operands) != 2 || !catVariable(operands[1], "TLBUncacheableTTD") {
+		return false
+	}
+	intersection, ok := catOperator(operands[0], ":inter")
+	return ok && len(intersection) == 2 &&
+		catVariable(intersection[0], "TTD") && catVariable(intersection[1], "M")
+}
+
+func isAArch64TTDUpdateBBMCandidate(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":union")
+	if !ok || len(operands) != 6 {
+		return false
+	}
+	for index, name := range []string{
+		"TTD-MT-update", "TTD-SH-update", "TTD-ICH-update",
+		"TTD-OCH-update", "TTD-DT-update",
+	} {
+		if !catVariable(operands[index], name) {
+			return false
+		}
+	}
+	intersection, ok := catOperator(operands[5], ":inter")
+	if !ok || len(intersection) != 2 || !catVariable(intersection[0], "TTD-OA-update") {
+		return false
+	}
+	alternatives, ok := catOperator(intersection[1], ":union")
+	return ok && len(alternatives) == 2 &&
+		catVariable(alternatives[0], "TTD-at-least-one-writable") &&
+		catVariable(alternatives[1], "TTD-memory-contents-mismatch")
+}
+
+func isAArch64TTDUpdateNeedsBBM(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	return ok && len(operands) == 3 &&
+		catSetFilter(operands[0], "TLBCacheableTTD") &&
+		catVariable(operands[1], "TTD-update-BBM-cand") &&
+		catSetFilter(operands[2], "TLBCacheableTTD")
+}
+
+func catNamedTest(node *catLispNode, name string) bool {
+	if firstAtom(node) != ":i_test" || len(node.list) < 2 || !node.list[1].isList() {
+		return false
+	}
+	for _, field := range node.list[1].list {
+		if firstAtom(field) == "cat::name" && len(field.list) == 3 &&
+			field.list[1].atom == "." && field.list[2].quoted && field.list[2].atom == name {
+			return true
+		}
+	}
+	return false
+}
+
+// The official BBM condition is a flagged non-emptiness warning, not an
+// execution-validity axiom. Pinning :flagged is therefore semantically
+// important: replacing it with a checked CAT test must fail this certificate.
+func isAArch64BBMWarning(node *catLispNode) bool {
+	if firstAtom(node) != ":i_test" || len(node.list) != 3 ||
+		node.list[2].atom != ":flagged" || !node.list[1].isList() {
+		return false
+	}
+	fields := node.list[1].list
+	if len(fields) != 5 || firstAtom(fields[0]) != "cat::loc" || len(fields[0].list) != 1 ||
+		firstAtom(fields[1]) != "cat::pos" || len(fields[1].list) != 1 ||
+		firstAtom(fields[2]) != "cat::test" || len(fields[2].list) != 3 ||
+		fields[2].list[1].atom != ":t_no" || fields[2].list[2].atom != ":testempty" ||
+		firstAtom(fields[3]) != "cat::exp" || len(fields[3].list) < 2 ||
+		firstAtom(fields[4]) != "cat::name" || len(fields[4].list) != 3 ||
+		fields[4].list[1].atom != "." || !fields[4].list[2].quoted ||
+		fields[4].list[2].atom != "Warning-BBM-expected" {
+		return false
+	}
+	expression := &catLispNode{list: fields[3].list[1:]}
+	difference, ok := catOperator(expression, ":diff")
+	return ok && len(difference) == 2 &&
+		catVariable(difference[0], "TTD-update-needsBBM") &&
+		catVariable(difference[1], "BBM")
+}
+
 // The IFB-ob arm used by Oak's stage-2 sequence is exactly
 // `DSB-ob; [IFB]; po`. Keeping this selector structural prevents another IFB
 // dependency arm from satisfying the stage-2 projection by name alone.
@@ -506,7 +597,20 @@ func isAArch64IFBDsbArm(node *catLispNode) bool {
 
 type aarch64CATProjection struct {
 	definitions map[string]*catLispNode
+	bbmWarning  *catLispNode
 	external    *catLispNode
+}
+
+func (p *aarch64CATProjection) clone() *aarch64CATProjection {
+	result := &aarch64CATProjection{
+		definitions: make(map[string]*catLispNode, len(p.definitions)),
+		bbmWarning:  p.bbmWarning.clone(),
+		external:    p.external.clone(),
+	}
+	for name, definition := range p.definitions {
+		result.definitions[name] = definition.clone()
+	}
+	return result
 }
 
 func extractAArch64CATProjection(root *catLispNode) (*aarch64CATProjection, error) {
@@ -521,6 +625,12 @@ func extractAArch64CATProjection(root *catLispNode) (*aarch64CATProjection, erro
 		projection.definitions[name] = definition
 	}
 	for _, form := range root.list {
+		if catNamedTest(form, "Warning-BBM-expected") {
+			if projection.bbmWarning != nil {
+				return nil, errors.New("expanded CAT AST has duplicate Warning-BBM-expected tests")
+			}
+			projection.bbmWarning = form
+		}
 		if firstAtom(form) != ":i_test" || !containsCATAtom(form, "external") {
 			continue
 		}
@@ -531,6 +641,9 @@ func extractAArch64CATProjection(root *catLispNode) (*aarch64CATProjection, erro
 	}
 	if projection.external == nil {
 		return nil, errors.New("expanded CAT AST has no external test")
+	}
+	if projection.bbmWarning == nil {
+		return nil, errors.New("expanded CAT AST has no Warning-BBM-expected test")
 	}
 	return projection, nil
 }
@@ -559,6 +672,21 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	}
 	if !isAArch64BBMSequence(definition["BBM"]) {
 		return errors.New("BBM is not the exact cacheable-ca-uncacheable-ob-TLBI-(ob & inv-scope)-cacheable sequence")
+	}
+	if !isAArch64TLBUncacheableTTD(definition["TLBUncacheableTTD"]) {
+		return errors.New("TLBUncacheableTTD is not exactly TTDINV | TTDAF0")
+	}
+	if !isAArch64TLBCacheableTTD(definition["TLBCacheableTTD"]) {
+		return errors.New("TLBCacheableTTD is not exactly (TTD & M) \\ TLBUncacheableTTD")
+	}
+	if !isAArch64TTDUpdateBBMCandidate(definition["TTD-update-BBM-cand"]) {
+		return errors.New("TTD-update-BBM-cand does not have the exact six update arms")
+	}
+	if !isAArch64TTDUpdateNeedsBBM(definition["TTD-update-needsBBM"]) {
+		return errors.New("TTD-update-needsBBM is not the exact cacheable-candidate-cacheable sequence")
+	}
+	if !isAArch64BBMWarning(projection.bbmWarning) {
+		return errors.New("Warning-BBM-expected is not the exact flagged non-empty needsBBM \\ BBM test")
 	}
 	bobArms, ok := catOperator(definition["bob"], ":union")
 	if !ok {
@@ -725,6 +853,11 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	if ifbDsbArmHash != pinnedAArch64IFBDsbArmHash {
 		return fmt.Errorf("IFB-ob DSB arm AST hash %s, want %s", ifbDsbArmHash, pinnedAArch64IFBDsbArmHash)
 	}
+	bbmWarningHash := expressionHash(projection.bbmWarning)
+	if bbmWarningHash != pinnedAArch64BBMWarningHash {
+		return fmt.Errorf("Warning-BBM-expected AST hash %s, want %s",
+			bbmWarningHash, pinnedAArch64BBMWarningHash)
+	}
 	externalHash := expressionHash(projection.external)
 	if pinnedAArch64ExternalIrreflexiveHash == "" {
 		missing = append(missing, "external="+externalHash)
@@ -806,6 +939,26 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"BBM", "TLBI"},
 		{"BBM", "ob"},
 		{"BBM", "inv-scope"},
+		{"TLBUncacheableTTD", ":union"},
+		{"TLBUncacheableTTD", "TTDINV"},
+		{"TLBUncacheableTTD", "TTDAF0"},
+		{"TLBCacheableTTD", ":diff"},
+		{"TLBCacheableTTD", ":inter"},
+		{"TLBCacheableTTD", "TTD"},
+		{"TLBCacheableTTD", "M"},
+		{"TLBCacheableTTD", "TLBUncacheableTTD"},
+		{"TTD-update-BBM-cand", ":union"},
+		{"TTD-update-BBM-cand", ":inter"},
+		{"TTD-update-BBM-cand", "TTD-MT-update"},
+		{"TTD-update-BBM-cand", "TTD-SH-update"},
+		{"TTD-update-BBM-cand", "TTD-ICH-update"},
+		{"TTD-update-BBM-cand", "TTD-OCH-update"},
+		{"TTD-update-BBM-cand", "TTD-DT-update"},
+		{"TTD-update-BBM-cand", "TTD-OA-update"},
+		{"TTD-update-BBM-cand", "TTD-at-least-one-writable"},
+		{"TTD-update-BBM-cand", "TTD-memory-contents-mismatch"},
+		{"TTD-update-needsBBM", ":seq"},
+		{"TTD-update-needsBBM", "TTD-update-BBM-cand"},
 		{"bob", "dmb.full"},
 		{"bob", "dmb.ld"},
 		{"bob", "NoRet"},
@@ -822,10 +975,7 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"ob", "ob"},
 	}
 	for _, mutation := range mutations {
-		copyProjection := &aarch64CATProjection{definitions: make(map[string]*catLispNode), external: projection.external.clone()}
-		for name, definition := range projection.definitions {
-			copyProjection.definitions[name] = definition.clone()
-		}
+		copyProjection := projection.clone()
 		if !replaceFirstCATAtom(copyProjection.definitions[mutation.definition], mutation.from, mutation.from+".removed") {
 			return fmt.Errorf("mutation fixture cannot find %s in %s", mutation.from, mutation.definition)
 		}
@@ -834,10 +984,7 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		}
 	}
 	for _, atom := range []string{"DSB-ob", "IFB", "po"} {
-		copyProjection := &aarch64CATProjection{definitions: make(map[string]*catLispNode), external: projection.external.clone()}
-		for name, definition := range projection.definitions {
-			copyProjection.definitions[name] = definition.clone()
-		}
+		copyProjection := projection.clone()
 		arms, ok := catOperator(copyProjection.definitions["IFB-ob"], ":union")
 		if !ok {
 			return errors.New("mutation fixture cannot find IFB-ob union")
@@ -863,10 +1010,7 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"TLBCacheableTTD", 2},
 		{"ob", 2},
 	} {
-		copyProjection := &aarch64CATProjection{definitions: make(map[string]*catLispNode), external: projection.external.clone()}
-		for name, definition := range projection.definitions {
-			copyProjection.definitions[name] = definition.clone()
-		}
+		copyProjection := projection.clone()
 		if !replaceNthCATAtom(copyProjection.definitions["BBM"], mutation.atom, mutation.atom+".removed", mutation.occurrence) {
 			return fmt.Errorf("mutation fixture cannot find BBM %s occurrence %d", mutation.atom, mutation.occurrence)
 		}
@@ -874,7 +1018,49 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 			return fmt.Errorf("projection checker accepted BBM without %s occurrence %d", mutation.atom, mutation.occurrence)
 		}
 	}
-	copyProjection := &aarch64CATProjection{definitions: projection.definitions, external: projection.external.clone()}
+	for _, occurrence := range []int{1, 2} {
+		copyProjection := projection.clone()
+		if !replaceNthCATAtom(copyProjection.definitions["TTD-update-needsBBM"],
+			"TLBCacheableTTD", "TLBCacheableTTD.removed", occurrence) {
+			return fmt.Errorf("mutation fixture cannot find TTD-update-needsBBM cacheable occurrence %d", occurrence)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted TTD-update-needsBBM without cacheable occurrence %d", occurrence)
+		}
+	}
+	for _, mutation := range []struct {
+		definition string
+		atom       string
+		occurrence int
+	}{
+		{"TTD-update-BBM-cand", ":union", 2},
+		{"TTD-update-needsBBM", ":toid", 1},
+		{"TTD-update-needsBBM", ":toid", 2},
+	} {
+		copyProjection := projection.clone()
+		if !replaceNthCATAtom(copyProjection.definitions[mutation.definition],
+			mutation.atom, mutation.atom+".removed", mutation.occurrence) {
+			return fmt.Errorf("mutation fixture cannot find %s occurrence %d in %s",
+				mutation.atom, mutation.occurrence, mutation.definition)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted %s without %s occurrence %d",
+				mutation.definition, mutation.atom, mutation.occurrence)
+		}
+	}
+	for _, atom := range []string{
+		":t_no", ":testempty", ":diff", "TTD-update-needsBBM", "BBM",
+		"Warning-BBM-expected", ":flagged",
+	} {
+		copyProjection := projection.clone()
+		if !replaceFirstCATAtom(copyProjection.bbmWarning, atom, atom+".removed") {
+			return fmt.Errorf("mutation fixture cannot find %s in Warning-BBM-expected", atom)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted Warning-BBM-expected without %s", atom)
+		}
+	}
+	copyProjection := projection.clone()
 	if !replaceFirstCATAtom(copyProjection.external, ":irreflexive", ":acyclic") {
 		return errors.New("mutation fixture cannot find external irreflexive test")
 	}
@@ -948,6 +1134,93 @@ func TestAArch64IFBDsbArmShapeAndHash(t *testing.T) {
 		}
 		if isAArch64IFBDsbArm(mutated) {
 			t.Fatalf("IFB-ob DSB arm without %s was accepted", atom)
+		}
+	}
+}
+
+func TestAArch64BBMNeedsAndWarningShapesAndHashes(t *testing.T) {
+	definitions := []struct {
+		name  string
+		ast   string
+		hash  string
+		shape func(*catLispNode) bool
+	}{
+		{
+			name: "TLBUncacheableTTD",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTDINV") (:e_var nil "TTDAF0")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBUncacheableTTD"],
+			shape: isAArch64TLBUncacheableTTD,
+		},
+		{
+			name: "TLBCacheableTTD",
+			ast: `(:e_op nil :diff (` +
+				`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))) ` +
+				`(:e_var nil "TLBUncacheableTTD")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBCacheableTTD"],
+			shape: isAArch64TLBCacheableTTD,
+		},
+		{
+			name: "TTD-update-BBM-cand",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTD-MT-update") (:e_var nil "TTD-SH-update") ` +
+				`(:e_var nil "TTD-ICH-update") (:e_var nil "TTD-OCH-update") ` +
+				`(:e_var nil "TTD-DT-update") ` +
+				`(:e_op nil :inter ((:e_var nil "TTD-OA-update") ` +
+				`(:e_op nil :union ((:e_var nil "TTD-at-least-one-writable") ` +
+				`(:e_var nil "TTD-memory-contents-mismatch")))))))`,
+			hash:  pinnedAArch64ProjectionHashes["TTD-update-BBM-cand"],
+			shape: isAArch64TTDUpdateBBMCandidate,
+		},
+		{
+			name: "TTD-update-needsBBM",
+			ast: `(:e_op nil :seq (` +
+				`(:e_op1 nil :toid (:e_var nil "TLBCacheableTTD")) ` +
+				`(:e_var nil "TTD-update-BBM-cand") ` +
+				`(:e_op1 nil :toid (:e_var nil "TLBCacheableTTD"))))`,
+			hash:  pinnedAArch64ProjectionHashes["TTD-update-needsBBM"],
+			shape: isAArch64TTDUpdateNeedsBBM,
+		},
+	}
+	for _, definition := range definitions {
+		t.Run(definition.name, func(t *testing.T) {
+			node, err := parseCATLisp([]byte(definition.ast))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !definition.shape(node) {
+				t.Fatalf("exact %s AST was not recognized: %s", definition.name, node.canonical())
+			}
+			if got := expressionHash(node); got != definition.hash {
+				t.Fatalf("%s AST hash %s, want %s", definition.name, got, definition.hash)
+			}
+		})
+	}
+
+	warning, err := parseCATLisp([]byte(
+		`(:i_test ((cat::loc) (cat::pos) (cat::test :t_no :testempty) ` +
+			`(cat::exp :e_op nil :diff ((:e_var nil "TTD-update-needsBBM") ` +
+			`(:e_var nil "BBM"))) (cat::name . "Warning-BBM-expected")) :flagged)`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catNamedTest(warning, "Warning-BBM-expected") || !isAArch64BBMWarning(warning) {
+		t.Fatalf("exact Warning-BBM-expected AST was not recognized: %s", warning.canonical())
+	}
+	if got := expressionHash(warning); got != pinnedAArch64BBMWarningHash {
+		t.Fatalf("Warning-BBM-expected AST hash %s, want %s", got, pinnedAArch64BBMWarningHash)
+	}
+	for _, atom := range []string{
+		":t_no", ":testempty", ":diff", "TTD-update-needsBBM", "BBM",
+		"Warning-BBM-expected", ":flagged",
+	} {
+		mutated := warning.clone()
+		if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+			t.Fatalf("warning mutation fixture lacks %s", atom)
+		}
+		if isAArch64BBMWarning(mutated) {
+			t.Fatalf("Warning-BBM-expected without %s was accepted", atom)
 		}
 	}
 }

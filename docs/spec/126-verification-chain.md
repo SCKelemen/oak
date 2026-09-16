@@ -228,8 +228,15 @@ Live stage-2 maintenance has a separate restricted proof layer.
 old descriptor event and proves that DSB ISH-classified occurrences around an
 abstract TLBI construct two local projected edges corresponding to its
 ordered-before operands. The CAT AST gate pins the exact seven-operand `BBM`
-definition and separately pins `DSB-ob`/`ob`; an execution-refinement theorem
-between them remains open. A conditional wrapper now preserves the same
+definition and separately pins `DSB-ob`/`ob`. It now also pins the cacheable
+and uncacheable TTD sets, all six `TTD-update-BBM-cand` arms, the exact
+`TTD-update-needsBBM` sequence, and the exact flagged
+`Warning-BBM-expected` difference test. That CAT construct is a diagnostic
+warning, not an execution-validity axiom. Lean proves its propositional warning
+shape empty only under explicit premises that all old events are maintained,
+official-needs membership projects to Oak's local requirement, and Oak's
+`ProjectedBBM` implies official `BBM`; none of those refinement premises is
+claimed here. A conditional wrapper preserves the same
 externally supplied exact VMALLS12E1IS word/action occurrence through the BBM
 projection, and the Sail bridge conjoins its named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
