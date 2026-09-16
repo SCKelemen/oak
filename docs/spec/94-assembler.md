@@ -815,10 +815,17 @@ VTCR_EL2/X2 target and that the direct EL2 body stores X2 bits 31:0. The source
 gate pins that truncating assignment and the identically truncated NVMem(64)
 redirect. The projection preserves old VTCR_EL2 on redirect and erases NVMem.
 
-These seams prove neither access admission nor runtime X0/X1/X2 value
-provenance, HCR/VTTBR/VTCR field validity, desired
+`MSR CNTHCTL_EL2, X3` is `0xd51ce103`. The official exact tuple's admitted body
+unconditionally writes X3 bits 31:0 to its 32-bit component. Generated Lean
+proves that decoder target and truncating body. The source audit follows the
+immediate op1=100 branch and distinguishes the model's separate op1=000
+`CNTKCTL_EL1` VHE route, which can also mention CNTHCTL_EL2 but is not Oak's
+instruction.
+
+These seams prove neither access admission nor runtime X0/X1/X2/X3 value
+provenance, HCR/VTTBR/VTCR/CNTHCTL field validity, desired
 virtualization or exception-routing configuration, publication, BBM, TLBI
-effects, completion, context synchronization, or a CAT edge.
+effects, timer behavior, completion, context synchronization, or a CAT edge.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

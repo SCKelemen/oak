@@ -90,6 +90,13 @@ VTCR component while the source gate audits NVMem(64). It proves no runtime X2
 provenance, control-bit consistency with machine state, VTCR field validity,
 VTTBR compatibility, stage-2 behavior, ordering, or dynamic occurrence.
 
+The CNTHCTL seam computes `MSR CNTHCTL_EL2, X3` as `0xd51ce103` and proves the
+successful official body overwrites the 32-bit component with X3 bits 31:0.
+The exact op1=100 route has no redirect; a distinct op1=000 CNTKCTL/VHE route
+is explicitly rejected by the local decoder. Access/trap admission, runtime X3
+provenance, timer permissions and behavior, ordering, synchronization, and a
+dynamic `ColdEntry.Step` occurrence remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

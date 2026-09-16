@@ -261,6 +261,14 @@ provenance, predicate consistency with machine state, VTCR validity and VTTBR
 compatibility, stage-2 behavior, NVMem effects, other state, publication,
 ordering, BBM/TLBI completion, and context synchronization remain open.
 
+The next `MSR CNTHCTL_EL2, X3` word is `0xd51ce103`. Generated Lean proves the
+exact target and the admitted body's unconditional X3-bits-31:0 update of the
+official 32-bit register. The source gate pins the full op1=100 route and keeps
+the separate op1=000 `CNTKCTL_EL1` VHE path distinct. Access/minimum-EL/trap
+admission, occurrence, runtime X3 provenance, timer-control field validity,
+timer behavior, upper-bit preservation, other state, ordering, completion,
+and context synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

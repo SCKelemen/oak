@@ -623,6 +623,62 @@ theorem vtcr_el2_generated_body_el1_nv_redirect_preserves_component
       true true false true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! The CNTHCTL_EL2/X3 projection follows the `op2 = 000`, CRn=E branch.
+The successful official body unconditionally stores X3 bits 31:0 in the
+32-bit register. Access admission, traps, dynamic occurrence, timer-policy
+validity, and every other machine-state component remain outside these facts. -/
+
+def decodedCnthctlSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_cnthctl_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem cnthctl_el2_x3_decoder_execution_target :
+    decodedCnthctlSystemRegisterWriteTarget msrCnthctlEl2X3 =
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 0b00011#5) := by
+  rfl
+
+theorem cnthctl_el2_x4_decoder_rt_is_preserved :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51ce104#32 =
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 0b00100#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_cnthctl_target :
+    decodedCnthctlSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_cnthctl_el2_x3_not_projected_to_write :
+    decodedCnthctlSystemRegisterWriteTarget 0xd53ce103#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+theorem msr_cntvoff_el2_x4_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51ce064#32 = none := by
+  rfl
+
+theorem msr_cntkctl_el1_x3_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd518e103#32 = none := by
+  rfl
+
+theorem cnthctl_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cnthctl_el2_pure newValue =
+      (writeCnthctlEl2Component newValue).value := by
+  rfl
+
+theorem cnthctl_el2_generated_body_is_direct_low32 (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cnthctl_el2_pure newValue =
+      newValue.setWidth 32 := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

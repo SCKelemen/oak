@@ -149,6 +149,13 @@ records unchanged VTCR_EL2 while the official source assigns NVMem(64). This
 does not prove access/trap admission, runtime X2 provenance, upper-bit
 preservation, valid VTCR fields, VTTBR compatibility, ordering, or occurrence.
 
+The timer-control theorem computes static `MSR CNTHCTL_EL2, X3` word
+`0xd51ce103`. Generated Lean proves the exact target and the official admitted
+body's unconditional low-32 update. The source gate keeps the separate
+`CNTKCTL_EL1, X3` VHE-sensitive route out of this theorem. It proves no access
+admission, dynamic occurrence, X3 provenance, field validity, timer behavior,
+ordering, or synchronization.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

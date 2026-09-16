@@ -87,6 +87,20 @@ theorem write_vtcr_el2_el1_nv_redirect_preserves_component
       ⟨true, oldValue⟩ := by
   rfl
 
+/-- The successful official CNTHCTL_EL2 write body. The architectural
+    component is 32-bit even though the source X register is 64-bit. Access,
+    traps, and every other machine-state component are omitted. -/
+structure CNTHCTLWriteComponent where
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeCnthctlEl2Component (newValue : BitVec 64) : CNTHCTLWriteComponent :=
+  ⟨newValue.setWidth 32⟩
+
+theorem write_cnthctl_el2_is_direct_low32 (newValue : BitVec 64) :
+    writeCnthctlEl2Component newValue = ⟨newValue.setWidth 32⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

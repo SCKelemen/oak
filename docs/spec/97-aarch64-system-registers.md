@@ -162,6 +162,14 @@ VTCR_EL2 as `bits(32)`: the direct result is exactly X2 bits 31:0, not the full
 64-bit argument. The EL1 redirect leaves the projected component unchanged;
 the source gate audits the corresponding low-32-bit NVMem(64) assignment.
 
+The timer-control write follows the same width boundary but a different body.
+Lean computes `MSR CNTHCTL_EL2, X3` as `0xd51ce103`, selects the exact tuple,
+and proves its admitted body unconditionally stores X3 bits 31:0 in the
+official 32-bit component. The source gate follows the complete op1=100 route.
+It separately counts the model's second CNTHCTL assignment and the generated
+decoder rejects `MSR CNTKCTL_EL1, X3`; that VHE-sensitive op1=000 path is not
+silently merged into Oak's CNTHCTL theorem.
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -195,6 +203,13 @@ compatibility. It proves no stage-2 enablement or walk behavior, publication,
 ordering, BBM, TLBI effect/completion, context synchronization, NVMem effect,
 or preservation of other machine state.
 
+The CNTHCTL theorem proves no access admission, minimum exception level, trap
+absence, dynamic occurrence, or runtime X3 provenance. It validates no field,
+RES0/RES1, or feature-dependent constraint and proves no guest timer/counter
+permission, event-stream behavior, VHE alias semantics, ordering, completion,
+context synchronization, upper-32-bit preservation, or other architectural
+state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -209,6 +224,7 @@ or preservation of other machine state.
 | exact HCR_EL2/X0 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact VTTBR_EL2/X1 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact VTCR_EL2/X2 word and low-32 conditional component update | Lean/Sail proved; official source drift-pinned |
+| exact CNTHCTL_EL2/X3 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |
