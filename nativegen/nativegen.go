@@ -1832,7 +1832,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
-				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -1896,7 +1896,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
-				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -3756,7 +3756,37 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 // global the body never addresses admits nothing at the checker: a fact
 // arises only from an `adrp` of the name. Nil when there are none.
 func (g *generator) reachableGlobals() map[string]asm.Global {
-	return verificationGlobals(g.fn, g.functions, g.globals, g.usedGlobals)
+	return verificationGlobals(g.fn, g.functions, withArrayAggregates(g.globals, g.aggregates), g.usedGlobals)
+}
+
+// withArrayAggregates is the globals map with the program's top-level
+// arrays of scalars added as aggregate globals (their type text and
+// size, as globalAggregatePlace declares them): the verifier reads such
+// an array as a span memory (asm.declareGlobalArrays), and a caller
+// whose callee writes it — write_byte through write_flush's out_buf —
+// must declare it too, as it declares the cells a callee touches. The
+// scalar globals map itself stays as it is: the backend's own lookups
+// (globalOf) and the optimizer read it as the cells.
+func withArrayAggregates(globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration) map[string]asm.Global {
+	if len(aggregates) == 0 {
+		return globals
+	}
+	out := make(map[string]asm.Global, len(globals)+len(aggregates))
+	for name, global := range globals {
+		out[name] = global
+	}
+	for name, decl := range aggregates {
+		if decl == nil || decl.Type == nil {
+			continue
+		}
+		if _, has := out[name]; has {
+			continue
+		}
+		if elem, length, isArray := arrayOf(decl.Type); isArray {
+			out[name] = asm.Global{Type: decl.Type.String(), Aggregate: true, Size: length * int64(elem.bits/8)}
+		}
+	}
+	return out
 }
 
 // verificationGlobals retains declarations needed to interpret the original
