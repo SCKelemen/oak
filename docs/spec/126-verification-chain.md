@@ -427,10 +427,16 @@ the membership formulas `TTDINV | TTDAF0` and
 `(TTD & M) \ TLBUncacheableTTD`. An explicit one-way action-to-tag soundness
 premise lets the exact store wrappers and `ProjectedBBMWitness` expose exactly
 the old/break/make descriptor-filter facts. The source/AST gates reject formula
-and operand-order drift. Primitive CAT tags, soundness of that premise, CAT
-event identity, reverse classification, and STR/value-to-tag derivation remain
-open; the theorem does not add `ca`, `ob`, TLBI membership, `inv-scope`, or
-official `BBM` membership.
+and operand-order drift. Lean also states the complete seven-operand
+`ProjectedCATBBM` predicate over supplied occurrence relations. A factored
+one-way bridge separately maps descriptor tags, `coherenceAfter` to `ca`, local
+ordering to `ob`, abstract TLBI action to TLBI membership, and local
+`invScope` to `inv-scope`; under it the existing witness inhabits the exact
+projected relation. The specialized warning theorem no longer needs a
+monolithic `ProjectedBBM -> catBBM` premise. Primitive CAT predicates,
+soundness of every bridge field, CAT event identity, reverse classification,
+STR/value-to-tag derivation, and adequacy against an official execution remain
+open; no completion, invalidation, or publication follows.
 
 The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,

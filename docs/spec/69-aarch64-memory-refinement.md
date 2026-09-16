@@ -327,6 +327,19 @@ supplied by the architecture refinement. A conditional theorem covers every
 make event selected by an external `requiresBBM` predicate. It does not prove
 that those local edges belong to an actual CAT execution.
 
+Lean now also states an exact pulled-back `ProjectedCATBBM` predicate over
+externally supplied occurrence sets and relations. It preserves `ca` from old
+to break, `ob` from break to TLBI, TLBI membership at that same middle event,
+and both `ob` and `inv-scope` from that TLBI to make before applying the final
+cacheable-descriptor filter. `TraceToProjectedCATBBMSoundness` factors the
+local-to-CAT obligation into five one-way fields: descriptor tag soundness,
+`coherenceAfter` to `ca`, local `ProjectedOrderedBefore` to `ob`, abstract TLBI
+action to TLBI membership, and local `invScope` to CAT `inv-scope`. Under those
+fields, `projected_bbm_witness_projects_exact_cat_bbm` proves the existing
+indexed witness inhabits every operand of the exact projected relation. An
+exact Lean-source gate pins the conjunction, event sharing, and edge directions
+beside the already pinned official CAT AST.
+
 The CAT certificate separately pins the complete outer classification seam:
 `TLBUncacheableTTD`, `TLBCacheableTTD`, all six arms of
 `TTD-update-BBM-cand`, and the exact three-operand
@@ -342,6 +355,14 @@ local `requiresBBM` predicate, and every `ProjectedBBM` witness implies
 official `BBM` membership. Those three premises are explicit and remain
 unproved refinement obligations; the theorem does not identify Oak events or
 relations with the CAT execution.
+
+For the exact pulled-back relation,
+`maintained_old_events_exclude_exact_projected_cat_bbm_warning` removes the
+monolithic `ProjectedBBM -> catBBM` premise: local maintenance uses the supplied
+needs relation directly, and the five factored one-way fields construct
+`ProjectedCATBBM`. This is still conditional. It neither proves that the needs
+relation is official `TTD-update-needsBBM` nor that any supplied predicate came
+from an official CAT execution.
 
 The concrete wrapper keeps an external instruction-word projection beside
 that sequence. It requires the break index to carry exact `STR XZR,[X0]` word
@@ -403,11 +424,13 @@ pin both formulas and reject operator, atom, operand-order, and set-difference
 direction drift.
 
 The primitive `TTD`, `M`, `TTDINV`, and `TTDAF0` tags and the one-way soundness
-map are still external execution-refinement inputs. There is no reverse
-classifier, no STR or descriptor-value derivation of a tag, and no claim that
-an Oak occurrence is an official CAT event. In particular this step does not
-establish address-to-slot/PTE provenance, `ca`, `ob`, `inv-scope`, official
-`BBM` membership, completion, or publication.
+map are still external execution-refinement inputs. The new `ca`, `ob`, TLBI,
+and `inv-scope` fields are likewise premises rather than derived relations.
+There is no reverse classifier, no STR or descriptor-value derivation of a tag,
+and no claim that an Oak occurrence is an official CAT event. In particular
+this step does not establish address-to-slot/PTE provenance, adequacy of any
+projected predicate against an official execution, completion, invalidation,
+or publication.
 
 The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
 incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its

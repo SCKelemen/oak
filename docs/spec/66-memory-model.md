@@ -28,7 +28,10 @@ and load-DMB `bob`, full-DSB `DSB-ob`, structural `IFB-ob`, and `obs` inclusion
 chains from Herd's include-expanded parser AST. Lean now mirrors the pinned
 `TTDINV | TTDAF0` and `(TTD & M) \ TLBUncacheableTTD` membership formulas and
 projects already classified descriptor actions through an explicit one-way
-soundness premise. Construction of the primitive tags, a complete formal
+soundness premise. It also spells the complete seven-operand `BBM` relation
+over supplied occurrence predicates and proves the local maintenance witness
+inhabits it under separate one-way `ca`, `ob`, TLBI-membership, and `inv-scope`
+obligations. Construction of those primitive predicates, a complete formal
 semantics of CAT, and the occurrence-indexed instruction-to-event bridge remain
 open. The adjacent Sail proof conditionally projects aligned ordinary STR64
 data to the selected pre-`__WriteMemory` PA/data arguments, but does not prove
