@@ -198,6 +198,47 @@ func (l *textLayout) addData(data []DataSymbol) error {
 // rv64Reloc reports a relocation kind of the RV64 lane.
 func rv64Reloc(kind string) bool { return kind == "riscv_call_plt" || kind == "riscv_pcrel" }
 
+type relocationKindFootprint struct {
+	kind  string
+	width int
+}
+
+// relocationKindFootprints is the closed inventory admitted into an object.
+// Keeping the inventory beside the width means a new relocation fails closed
+// until its complete footprint is classified and added to the proof pins.
+var relocationKindFootprints = [...]relocationKindFootprint{
+	{kind: "call26", width: 4},
+	{kind: "jump26", width: 4},
+	{kind: "branch26", width: 4},
+	{kind: "condbr19", width: 4},
+	{kind: "tbz14", width: 4},
+	{kind: "adr21", width: 4},
+	{kind: "adrp21", width: 4},
+	{kind: "lo12", width: 4},
+	{kind: "adrl21", width: 8},
+	{kind: "riscv_call_plt", width: 8},
+	{kind: "riscv_pcrel", width: 8},
+}
+
+// relocationFootprint is the number of instruction bytes a relocation may
+// cause the linker to inspect or patch. Some formats encode one relocation
+// entry for a two-instruction pair, so entry count is not a safe width.
+func relocationFootprint(kind string) (int, bool) {
+	for _, known := range relocationKindFootprints {
+		if kind == known.kind {
+			return known.width, true
+		}
+	}
+	return 0, false
+}
+
+// relocationFits checks the complete relocation footprint without adding to
+// an attacker-controlled offset, avoiding signed-integer wraparound.
+func relocationFits(textLen, offset int, kind string) bool {
+	width, known := relocationFootprint(kind)
+	return known && offset >= 0 && width <= textLen && offset <= textLen-width
+}
+
 type definedSymbol struct {
 	name   string
 	offset int64
@@ -248,7 +289,13 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 		l.text = append(l.text, fn.Bytes...)
 		l.defined = append(l.defined, definedSymbol{name: fn.Symbol, offset: start, size: int64(len(fn.Bytes))})
 		for _, r := range fn.Relocs {
-			if int64(r.Offset) < 0 || int64(r.Offset)+4 > int64(len(fn.Bytes)) {
+			if r.Symbol == "" {
+				return nil, fmt.Errorf("object: %s: relocation at %d has no symbol", fn.Symbol, r.Offset)
+			}
+			if _, known := relocationFootprint(r.Kind); !known {
+				return nil, fmt.Errorf("object: %s: relocation kind %q", fn.Symbol, r.Kind)
+			}
+			if !relocationFits(len(fn.Bytes), r.Offset, r.Kind) {
 				return nil, fmt.Errorf("object: %s: relocation at %d outside the function", fn.Symbol, r.Offset)
 			}
 			l.relocs = append(l.relocs, placedReloc{offset: start + int64(r.Offset), kind: r.Kind, symbol: r.Symbol})

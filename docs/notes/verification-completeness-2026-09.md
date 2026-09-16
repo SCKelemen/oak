@@ -334,8 +334,12 @@ and consistency checks. The outputs are inspected by LLVM tools and executed
 under QEMU or on host hardware where available.
 
 The current verification-chain documents nevertheless classify the writers
-as trusted because they have no formal layout and relocation correctness
-theorems. Object-to-binary linking is also explicitly trusted and generally
+as trusted. One bounded seam is now closed: `Oak.ObjectLayout` proves that the
+object writer's relocation-footprint admission keeps the complete four-byte
+word, or both words of an eight-byte `adrl21`/RV64 PC-relative pair, inside
+the defining function. The production decision table is pinned exhaustively
+to the Lean model. This is not yet a section-layout or relocation-semantics
+theorem. Object-to-binary linking is also explicitly trusted and generally
 runs through the C compiler's driver.
 
 Consequently, even for a proven native body, the strict present claim is:

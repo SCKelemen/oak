@@ -207,6 +207,16 @@ decision table is pinned to executable Lean examples by
 the whole seam checker or semantic verifier into a certificate-checked
 implementation.
 
+The object writer's relocation-footprint admission is also **refined** at one
+small boundary. `Oak.ObjectLayout` transliterates the production four/eight
+byte width decision and proves that every admitted first instruction, and the
+second instruction of each `adrl21`, `riscv_pcrel`, or `riscv_call_plt` pair,
+lies inside its defining function. `asm/object_layout_refinement_test.go` pins
+all live kind spellings and their boundary decisions to kernel-checked Lean
+examples. The writer now rejects missing symbols and incomplete pairs before
+format-specific emission. This does not prove ELF/Mach-O record encoding,
+relocation meaning, symbol resolution, section layout, or linking.
+
 ### 2.6 Object → binary
 
 Linking is the C compiler's driver (`compileC`), static for Linux cross

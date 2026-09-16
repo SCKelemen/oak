@@ -1717,6 +1717,15 @@ alignment, calls to other Oak functions as relocations
 from the encoded bytes and checked against the field that carries it; a
 layout the format cannot express (a conditional branch to an external
 symbol on Mach-O, an odd alignment) is an error, never a truncated file.
+Relocation admission checks the complete instruction footprint: four bytes
+for single-word forms and eight bytes for the AArch64 `adrl21` and RV64
+`riscv_pcrel`/`riscv_call_plt` pairs. A missing target symbol or a pair whose
+second word falls outside its defining function is refused before either
+format writer runs. `Oak.ObjectLayout` proves that every admitted first word,
+and both words of an admitted pair, lie inside the function; an exhaustive
+Go-to-Lean decision-table gate pins every live relocation spelling and its
+boundary cases. This closes only footprint admission, not relocation meaning,
+record encoding, symbol resolution, or whole-object layout.
 The compilation's `EmitNative` emits, in one pass, the C with asm units
 as prototypes (`EmitCExtern`: no `__asm__` text; without an Oak fallback
 body the C fails closed off AArch64) and the companion object; `oak run`
