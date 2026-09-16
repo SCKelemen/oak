@@ -455,8 +455,8 @@ waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
 Not yet: aggregate/partial memory-region projection, load insertion for
-uncovered join edges, partial/call-written versions, loop-phi PRE, non-affine
-and symbolic trip-count proofs,
+uncovered join edges, partial/call-written versions, conceptual-entry loop
+phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -941,16 +941,19 @@ live. A verified transform deletes only a dead, whole-region, nonvolatile
 `store.region`, rewrites its metadata, and rebuilds MemorySSA. A verified
 load-forwarding transform then removes canonical nonvolatile region loads only
 when their exact MemorySSA input identifies the same typed value from a
-dominating load or whole-region store. A closed non-loop memory phi is promoted
-only when each predecessor already has the exact typed value, either from the
-direct whole-region nonvolatile store defining its incoming version or from a
-canonical load of that version dominating the predecessor terminator. A fresh
-typed block parameter receives those exact edge values; no load is inserted or
-speculated. Entry and loop phis, uncovered edges, partial/call definitions,
-type mismatches, missing edges, and value-ID exhaustion fail closed. Values
-from loads removed later in the same transform are resolved before edge
-materialization. The transform drops facts bound to removed SSA identities,
-remaps every use and operation site, and rebuilds MemorySSA. Checked Oak
+dominating load or whole-region store. A closed join or loop memory phi is
+promoted only when each real predecessor already has the exact typed value,
+either from the direct whole-region nonvolatile store defining its incoming
+version or from a canonical load of that version dominating the predecessor
+terminator. A fresh typed parameter in the phi block receives those exact edge
+values; loads in the phi block and dominated blocks can share it, so a
+preheader load and latch store carry the value through a loop body and exit.
+No load is inserted or speculated. Conceptual function-entry inputs, uncovered
+edges, partial/call definitions, type mismatches, missing edges, and value-ID
+exhaustion fail closed. Values from loads removed later in the same transform
+are resolved before edge materialization. The transform drops facts bound to
+removed SSA identities, remaps every use and operation site, and rebuilds
+MemorySSA. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a
@@ -978,7 +981,12 @@ against the corresponding Oak loop, including its package-global write.
 RV64's verifier requires exact `la`-derived scalar-global address provenance;
 direct positive and negative tests prove the correct loop and refute an
 incorrect store, removing the previous trusted boundary for package-global
-loop-carried state. Arbitrary and nested memory loops remain refused. Selection
+loop-carried state. The production loop fixture now promotes its MemorySSA phi
+from a preheader load and latch store, removing the body and exit loads. When
+the promoted value has both a result-register carrier and a global-cell
+carrier, the verifier admits the extra global alias only after bounded proofs
+of header equality and one-step preservation; a divergent global store is not
+proven. Arbitrary and nested memory loops remain refused. Selection
 reprojects immutable checked source-access authority over the exact final CFG,
 independently verifies rebuilt MemorySSA, and matches every opaque region
 through typechecker authority to an exact global descriptor already authorized
@@ -988,8 +996,9 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-load insertion for uncovered join edges, partial/call-written versions,
-loop-phi PRE, definite-write summaries, and calls in memory loops remain open;
+load insertion for uncovered join edges, conceptual-entry loop phis,
+partial/call-written versions, definite-write summaries, and calls in memory
+loops remain open;
 exact recursive
 `NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
 checker, and composed Lean structural models of active-authority projection
@@ -999,7 +1008,7 @@ work.
 
 As the projection broadens, region memory SSA should power:
 
-- load insertion for uncovered join edges and loop-phi PRE;
+- load insertion for uncovered join edges and conceptual-entry loop phis;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;

@@ -4333,7 +4333,13 @@ names the cell and the store through it is found by a scan of the body
 (`cellsStoredIn`), the cell takes a fresh symbol at its width with its
 header value the cell as the path holds it, and the coupling pairs it
 with the Oak side's cell local like a register — so the loop is proven
-with the cell's final value (`compiler/e2e_native_loop_cells_test.go`).
+with the cell's final value (`compiler/e2e_native_loop_cells_test.go`). If
+memory promotion keeps that same Oak value both in a result register and in
+the package cell, the primary coupling remains one-to-one and an otherwise
+unused `global:` carrier is added only as an exact identity alias. The verifier
+separately proves its header value and one body iteration under the established
+coupling before accepting the alias; undecided proofs and divergent stores
+fail closed (`asm/rv64_loop_globals_test.go`).
 A flag loop (`while un { st = u8(4); un = false }`, an `if` spelled as a
 loop) whose flag short-circuits before the header still leaves the
 result as evidence: the machine's paths that never reach the loop hold

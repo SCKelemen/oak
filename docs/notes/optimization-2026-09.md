@@ -235,15 +235,18 @@ operation when it is one nonvolatile whole-region write and its exact output is
 dead. It renumbers metadata and rebuilds MemorySSA. A second independently
 verified transform removes a canonical nonvolatile load only when its exact
 MemorySSA input supplies the same typed value from a dominating load or a
-dominating whole-region store. For a closed non-loop join phi, each predecessor
-must already have the exact typed value, either from the direct whole-region
-nonvolatile store defining its incoming version or from a canonical load of
-that version dominating the predecessor terminator. The transform creates a
-fresh typed block parameter and appends those exact values to the edges; it
-does not insert or speculate loads. Entry and loop phis, uncovered edges,
-partial/call definitions, missing edges, type mismatches, and value-ID
-exhaustion fail closed. Later-removed predecessor loads are resolved before
-edge materialization. It drops facts tied to removed SSA identities, renumbers
+dominating whole-region store. For a closed join or loop phi, each real
+predecessor must already have the exact typed value, either from the direct
+whole-region nonvolatile store defining its incoming version or from a
+canonical load of that version dominating the predecessor terminator. The
+transform creates a fresh typed parameter in the phi block and appends those
+exact values to the edges. Loads in the phi block and dominated blocks may
+share it, allowing a preheader load and latch store to carry the value through
+a loop body and exit. It does not insert or speculate loads. Conceptual
+function-entry inputs, uncovered edges, partial/call definitions, missing
+edges, type mismatches, and value-ID exhaustion fail closed. Later-removed
+predecessor loads are resolved before edge materialization. It drops facts
+tied to removed SSA identities, renumbers
 metadata, and rebuilds MemorySSA. Checked Bool/fixed-integer
 package-global reads and whole-cell assignments now bind metadata to exact
 structured operation identities while CFG sites are built, then resolve opaque
@@ -396,7 +399,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, verified whole-region DSE, dominance-scoped load/store forwarding, and available-value join-phi load PRE have landed; changed final scalar-global CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops, load insertion for uncovered join edges, partial/call-written versions, and loop-phi PRE remain fail-closed |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, verified whole-region DSE, dominance-scoped load/store forwarding, and available-value join/loop-phi load PRE have landed; changed final scalar-global CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops, load insertion for uncovered join edges, conceptual-entry loop phis, and partial/call-written versions remain fail-closed |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

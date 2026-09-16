@@ -49,11 +49,13 @@ func (report RegionLoadForwardingReport) Changes() int { return len(report.Repla
 
 // ForwardRegionLoads removes only canonical, nonvolatile region loads whose
 // exact MemorySSA input proves their value is already available from a
-// dominating load, a dominating whole-region store, or a non-loop memory phi
-// whose every predecessor already has the exact typed value from either such
-// a store or a canonical load of its incoming version. The phi case creates an
-// SSA block parameter and supplies each available value on its exact edge. No
-// load is inserted or speculated, and no alias or address fact is inferred.
+// dominating load, a dominating whole-region store, or a memory phi whose
+// every real predecessor already has the exact typed value from either such a
+// store or a canonical load of its incoming version. The phi case creates an
+// SSA block parameter and supplies each available value on its exact edge, so
+// it covers closed joins and loop-carried values without inserting a load.
+// Conceptual function-entry inputs remain unavailable. No load is inserted or
+// speculated, and no alias or address fact is inferred.
 func ForwardRegionLoads(
 	cfg CFG,
 	metadata RegionMemoryMetadata,
@@ -438,17 +440,18 @@ func planRegionLoadPhi(
 	nextValue *ValueID,
 ) (*regionLoadPhiPlan, error) {
 	version, exists := versions[memory]
-	if !exists || version.Kind != MemoryVersionPhi || version.Region != region || version.Block != use.block || len(version.Incoming) < 2 {
+	if !exists || version.Kind != MemoryVersionPhi || version.Region != region || len(version.Incoming) < 2 ||
+		(version.Block != use.block && !dominators[use.block][version.Block]) {
 		return nil, nil
 	}
-	plan := &regionLoadPhiPlan{block: use.block}
+	plan := &regionLoadPhiPlan{block: version.Block}
 	seen := map[BlockID]bool{}
 	for _, incoming := range version.Incoming {
-		if incoming.Entry || seen[incoming.Predecessor] || dominators[incoming.Predecessor][use.block] {
+		if incoming.Entry || seen[incoming.Predecessor] {
 			return nil, nil
 		}
 		predecessor := blocks[incoming.Predecessor]
-		if predecessor == nil || countRegionLoadEdges(predecessor.Terminator, use.block) == 0 {
+		if predecessor == nil || countRegionLoadEdges(predecessor.Terminator, version.Block) == 0 {
 			return nil, nil
 		}
 		predecessorExit := operationLocation{block: incoming.Predecessor, index: len(predecessor.Operations)}
@@ -568,7 +571,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v6")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v7")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

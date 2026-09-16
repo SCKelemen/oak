@@ -4159,10 +4159,46 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if ok, _ := search(0); !ok {
 		return evidence(failure)
 	}
+	// A promoted scalar package cell may have two exact machine carriers:
+	// one register supplies the expression result while the memory cell records
+	// the observable effect. The primary coupling remains one-to-one. Extend it
+	// to an otherwise unused global carrier only after proving both the
+	// induction base and one iteration of the same identity coupling.
+	var aliases []string
+	for _, s := range slots {
+		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
+		candidates, _ := candidatesFor(s)
+		for _, c := range candidates {
+			asmName := asmEv.freshName(c.reg)
+			if !strings.HasPrefix(c.reg, globalParamPrefix) || sigma[asmName] != nil || c.a != 1 || c.b.kind != termConst || c.b.value != 0 {
+				continue
+			}
+			oakHeader := widen(substitute(s.pack(oakEv.header), sigma), c.ext, asmEv.width[c.reg])
+			asmHeader := substitute(asmEv.header[c.reg], sigma)
+			headerEqual, headerDecided := implies(constTerm(1, 1), oakHeader, asmHeader)
+			if !headerDecided || !headerEqual {
+				continue
+			}
+			trial := make(map[string]*term, len(sigma)+1)
+			for name, value := range sigma {
+				trial[name] = value
+			}
+			trial[asmName] = widen(substitute(s.pack(oakEv.fresh), sigma), c.ext, asmEv.width[c.reg])
+			oakNext := widen(substitute(s.pack(oakEv.next), trial), c.ext, asmEv.width[c.reg])
+			asmNext := substitute(asmEv.next[c.reg], trial)
+			stepEqual, stepDecided := implies(bodyPremise(s.event, trial, true), oakNext, asmNext)
+			if !stepDecided || !stepEqual {
+				continue
+			}
+			sigma[asmName] = trial[asmName]
+			aliases = append(aliases, c.show())
+		}
+	}
 	var pairs []string
 	for _, s := range slots {
 		pairs = append(pairs, chosen[s.key].show())
 	}
+	pairs = append(pairs, aliases...)
 	// A source reach condition may replace the machine CFG's larger path
 	// formula below only after the coupling proves they select exactly the
 	// same inputs. Earlier machine traps are outside the verifier's domain;

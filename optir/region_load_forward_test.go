@@ -355,7 +355,7 @@ func TestRegionLoadForwardingMemoryPhiRefusesValueIDOverflow(t *testing.T) {
 	}
 }
 
-func TestRegionLoadForwardingMemoryPhiRefusesLoopHeader(t *testing.T) {
+func TestRegionLoadForwardingPromotesLoopHeaderPhi(t *testing.T) {
 	cfg := CFG{
 		Name: "loop_stores", Entry: 0, Results: []Type{"u32"},
 		Blocks: []Block{
@@ -385,8 +385,99 @@ func TestRegionLoadForwardingMemoryPhiRefusesLoopHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 1 || report.Replacements[0].Kind != RegionLoadFromPhi || report.Replacements[0].Result != 4 || report.Replacements[0].Replacement != 6 {
+		t.Fatalf("loop memory-phi report = %+v", report.Replacements)
+	}
+	if len(result.Blocks[1].Parameters) != 1 || result.Blocks[1].Parameters[0].ID != 6 || len(result.Blocks[1].Operations) != 0 ||
+		!reflect.DeepEqual(result.Blocks[1].Terminator.False.Arguments, []ValueID{6}) {
+		t.Fatalf("loop memory-phi header = %+v", result.Blocks[1])
+	}
+	if !reflect.DeepEqual(result.Blocks[0].Terminator.True.Arguments, []ValueID{2}) ||
+		!reflect.DeepEqual(result.Blocks[2].Terminator.True.Arguments, []ValueID{3}) || len(resultMetadata.Operations) != 2 {
+		t.Fatalf("loop memory-phi edges = entry %v backedge %v, metadata %+v", result.Blocks[0].Terminator.True.Arguments, result.Blocks[2].Terminator.True.Arguments, resultMetadata)
+	}
+}
+
+func TestRegionLoadForwardingPromotesLoadsDominatedByLoopPhi(t *testing.T) {
+	cfg := CFG{
+		Name: "loop_dominated_loads", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{
+				ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}},
+				Operations: []Operation{regionLoadOperation(2, "u32")},
+				Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 1}},
+			},
+			{ID: 1, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 2}, False: Edge{Target: 3}}},
+			{
+				ID: 2,
+				Operations: []Operation{
+					regionLoadOperation(3, "u32"),
+					{Code: OpStoreRegion, Operands: []ValueID{3}, Effects: []Effect{EffectWriteMemory}},
+				},
+				Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 1}},
+			},
+			{ID: 3, Operations: []Operation{regionLoadOperation(4, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		regionLoadMetadata(0, 0, "state", false),
+		regionLoadMetadata(2, 0, "state", false),
+		{Site: OperationSite{Block: 2, Index: 1}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(3, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 2 || report.Replacements[0].Kind != RegionLoadFromPhi || report.Replacements[0].Result != 3 || report.Replacements[0].Replacement != 5 ||
+		report.Replacements[1].Kind != RegionLoadFromPhi || report.Replacements[1].Result != 4 || report.Replacements[1].Replacement != 5 {
+		t.Fatalf("dominated loop-load report = %+v", report.Replacements)
+	}
+	if len(result.Blocks[1].Parameters) != 1 || result.Blocks[1].Parameters[0].ID != 5 ||
+		!reflect.DeepEqual(result.Blocks[0].Terminator.True.Arguments, []ValueID{2}) ||
+		!reflect.DeepEqual(result.Blocks[2].Terminator.True.Arguments, []ValueID{5}) {
+		t.Fatalf("dominated loop-load phi = header %+v, entry %v, backedge %v", result.Blocks[1], result.Blocks[0].Terminator.True.Arguments, result.Blocks[2].Terminator.True.Arguments)
+	}
+	if len(result.Blocks[2].Operations) != 1 || !reflect.DeepEqual(result.Blocks[2].Operations[0].Operands, []ValueID{5}) || len(result.Blocks[3].Operations) != 0 ||
+		!reflect.DeepEqual(result.Blocks[3].Terminator.Values, []ValueID{5}) || len(resultMetadata.Operations) != 2 {
+		t.Fatalf("dominated loop-load output = CFG %+v, metadata %+v", result, resultMetadata)
+	}
+}
+
+func TestRegionLoadForwardingRefusesConceptualEntryLoopPhi(t *testing.T) {
+	cfg := CFG{
+		Name: "entry_loop", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{
+				ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}},
+				Operations: []Operation{regionLoadOperation(3, "u32")},
+				Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2, Arguments: []ValueID{3}}},
+			},
+			{
+				ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}},
+				Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 0, Arguments: []ValueID{1, 2}}},
+			},
+			{ID: 2, Parameters: []Value{{ID: 4, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		regionLoadMetadata(0, 0, "state", false),
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if report.Changes() != 0 || !sameDeadStoreCFG(result, cfg) || !sameDeadStoreMetadata(t, cfg, metadata, result, resultMetadata) {
-		t.Fatalf("loop memory phi was forwarded: report %+v, CFG %+v, metadata %+v", report, result, resultMetadata)
+		t.Fatalf("conceptual entry memory phi changed: report %+v, CFG %+v, metadata %+v", report, result, resultMetadata)
 	}
 }
 
