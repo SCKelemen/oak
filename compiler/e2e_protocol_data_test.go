@@ -93,7 +93,8 @@ func TestProtocolDataTLAModule(t *testing.T) {
 		"Park ==\n    state = \"Running\" /\\ ~(pending) /\\ state' = \"Parked\" /\\ UNCHANGED <<budget, pending>>",
 		"Signal(on) ==\n    \\/ state = \"Parked\" /\\ state' = \"Parked\" /\\ pending' = on /\\ UNCHANGED <<budget>>",
 		"\\/ (\\E on \\in On : Signal(on))",
-		"TypeOK ==\n    state \\in States\n    /\\ budget \\in 0..4294967295\n    /\\ pending \\in BOOLEAN",
+		"TypeOK ==\n    state \\in States\n    /\\ budget \\in 0..(2147483647 + 2147483647 + 1)\n    /\\ pending \\in BOOLEAN",
+		"TLCTypeOK ==\n    state \\in States\n    /\\ budget \\in Nat\n    /\\ pending \\in BOOLEAN",
 	} {
 		if !strings.Contains(module, want) {
 			t.Errorf("module lacks %q:\n%s", want, module)

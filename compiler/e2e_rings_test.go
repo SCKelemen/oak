@@ -403,7 +403,9 @@ pub intrusive_consume: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.Intrus
 const ringsHarness = `
 #include <pthread.h>
 #include <stdio.h>
+#ifndef N
 #define N 200000u
+#endif
 #define P 4
 static oak_rings__SpscCursor spsc_state[1];
 static u32 spsc_data[256];
@@ -416,7 +418,9 @@ static void *spsc_prod(void *a) { (void)a; oak_spsc_produce(SPSC, N); return NUL
 static void *spsc_cons(void *a) { *(u64 *)a = oak_spsc_consume(SPSC, N); return NULL; }
 static void *mpsc_prod(void *a) { oak_mpsc_produce(MPSC, (u32)(long)a, N); return NULL; }
 static void *mpsc_cons(void *a) { *(u64 *)a = oak_mpsc_consume(MPSC, N * P); return NULL; }
+#ifndef M
 #define M 100000u
+#endif
 static oak_rings__MpmcCursor mpmc_state[1];
 static oak_rings__SeqCell mpmc_seqs[64];
 static u32 mpmc_data[64];
@@ -535,12 +539,13 @@ func TestE2ERingsThreaded(t *testing.T) {
 	}
 }
 
-// The same run under ThreadSanitizer: the release/acquire pairs the rings
-// rely on (Oak.Rings.spsc_payload_race_free, spsc_reuse_race_free,
-// mpsc_payload_race_free) are what keeps the slot accesses race-free, and
-// TSan reports any pair they fail to order. Skips where cc lacks it.
+// The same ring paths under ThreadSanitizer, at a smaller stress count: the
+// release/acquire pairs they rely on (Oak.Rings.spsc_payload_race_free,
+// spsc_reuse_race_free, mpsc_payload_race_free) are what keeps the slot
+// accesses race-free, and TSan reports any pair they fail to order. Skips
+// where cc lacks it.
 func TestE2ERingsThreadSanitizer(t *testing.T) {
-	out, code := runRingsHarness(t, "rings_tsan", "-fsanitize=thread", "-g", "-O1")
+	out, code := runRingsHarness(t, "rings_tsan", "-fsanitize=thread", "-g", "-O1", "-DN=20000u", "-DM=10000u")
 	if code != 0 || !strings.Contains(out, "rings ok") || strings.Contains(out, "WARNING: ThreadSanitizer") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}

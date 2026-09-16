@@ -95,7 +95,7 @@ func TestE2ENativeAggregateInline(t *testing.T) {
 }
 
 func TestNativeShapesAggregateInline(t *testing.T) {
-	model, err := New().WithSource("agg_inline.oak", nativeAggregateInlineProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("agg_inline.oak", nativeAggregateInlineProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

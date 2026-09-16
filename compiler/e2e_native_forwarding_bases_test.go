@@ -68,7 +68,7 @@ func TestE2ENativeForwardingBases(t *testing.T) {
 }
 
 func TestNativeShapesForwardingBases(t *testing.T) {
-	model, err := New().WithSource("fwdbases.oak", nativeForwardingBasesProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("fwdbases.oak", nativeForwardingBasesProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

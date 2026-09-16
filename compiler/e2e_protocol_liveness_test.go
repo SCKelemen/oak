@@ -58,7 +58,7 @@ main: (): i32 = 0
 		}
 	}
 	cfg := ProtocolTLCConfig(decls[0])
-	if cfg != "SPECIFICATION Spec\nINVARIANT TypeOK\nPROPERTY Liveness\nCONSTANTS\n    On = {TRUE, FALSE}\n" {
+	if cfg != "SPECIFICATION Spec\nINVARIANT TLCTypeOK\nPROPERTY Liveness\nCONSTANTS\n    On = {TRUE, FALSE}\n" {
 		t.Errorf("cfg:\n%s", cfg)
 	}
 	// The checker still accepts the program: the entries are the model

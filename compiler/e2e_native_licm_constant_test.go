@@ -55,7 +55,7 @@ func TestE2ENativeLICMConstantChain(t *testing.T) {
 }
 
 func TestNativeShapesLICMConstantChain(t *testing.T) {
-	model, err := New().WithSource("licm_const.oak", nativeLICMConstantProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("licm_const.oak", nativeLICMConstantProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

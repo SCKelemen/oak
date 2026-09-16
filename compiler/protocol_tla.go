@@ -104,8 +104,11 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 	return ProtocolTLADeclared(decl, origin, ProtocolDeclarations{Records: records}, nil)
 }
 
-// refinementRanges are the TLA+ ranges of the refinable base scalars.
-var refinementRanges = map[string]string{"u8": "0..255", "u16": "0..65535", "u32": "0..4294967295", "i8": "-128..127", "i16": "-32768..32767", "i32": "-2147483648..2147483647"}
+// refinementRanges are the TLA+ ranges of the refinable base scalars. Wide
+// endpoints are expressions of TLC-representable literals: TLC rejects the
+// equivalent 4294967295 and -2147483648 literals while loading a module, even
+// when only the conservative TLCTypeOK is selected for model checking.
+var refinementRanges = map[string]string{"u8": "0..255", "u16": "0..65535", "u32": "0..(2147483647 + 2147483647 + 1)", "i8": "-128..127", "i16": "-32768..32767", "i32": "-(2147483647 + 1)..2147483647"}
 
 // refinementSet renders a refinement's domain as the set its predicate
 // carves from the base range: `Name == {value \in 0..255 : (value < 2)}`.
@@ -340,10 +343,16 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 	}
 	fmt.Fprintf(&b, "Next ==\n    %s\n\n", strings.Join(nextTerms, "\n    \\/ "))
 	typeTerms := []string{"state \\in States"}
+	tlcTypeTerms := []string{"state \\in States"}
 	for _, f := range fields {
 		typeTerms = append(typeTerms, fmt.Sprintf("%s \\in %s", f.Name, tlaDomainWith(f.Value, env.records)))
+		tlcTypeTerms = append(tlcTypeTerms, fmt.Sprintf("%s \\in %s", f.Name, tlaTLCDomainWith(f.Value, env.records)))
 	}
 	fmt.Fprintf(&b, "TypeOK ==\n    %s\n\n", strings.Join(typeTerms, "\n    /\\ "))
+	// TLC represents integers with a signed machine-sized bound and cannot
+	// execute the exact u32/i32 intervals above. TLCTypeOK conservatively
+	// widens those domains while TypeOK remains the source-width statement.
+	fmt.Fprintf(&b, "TLCTypeOK ==\n    %s\n\n", strings.Join(tlcTypeTerms, "\n    /\\ "))
 	for _, theorem := range theorems {
 		body, err := tlaInvariant(theorem, env)
 		if err != nil {
@@ -526,7 +535,7 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 		return is
 	}
 	var b strings.Builder
-	b.WriteString("SPECIFICATION Spec\nINVARIANT TypeOK\n")
+	b.WriteString("SPECIFICATION Spec\nINVARIANT TLCTypeOK\n")
 	env := &tlaEnv{lengths: map[string]int64{}, records: records}
 	for _, theorem := range theorems {
 		if _, err := tlaInvariant(theorem, env); err == nil {
@@ -669,8 +678,20 @@ func tlaDomain(typ ast.Expression) string {
 // tlaDomainWith is tlaDomain with the program's record declarations: an
 // element record R becomes the record set [f1: D1, f2: D2].
 func tlaDomainWith(typ ast.Expression, records map[string]*ast.RecordLiteral) string {
+	return tlaDomainWithMode(typ, records, false)
+}
+
+// tlaTLCDomainWith is the executable model-checker domain. TLC cannot
+// represent the complete u32/i32 intervals, so those two widths use the
+// conservative domains Nat and Int. The exact TypeOK remains available in
+// the generated module for semantic consumers.
+func tlaTLCDomainWith(typ ast.Expression, records map[string]*ast.RecordLiteral) string {
+	return tlaDomainWithMode(typ, records, true)
+}
+
+func tlaDomainWithMode(typ ast.Expression, records map[string]*ast.RecordLiteral, executable bool) string {
 	if length, element, ok := arrayShape(typ); ok {
-		return fmt.Sprintf("[0..%d -> %s]", length-1, tlaDomainWith(&ast.Identifier{Value: element}, records))
+		return fmt.Sprintf("[0..%d -> %s]", length-1, tlaDomainWithMode(&ast.Identifier{Value: element}, records, executable))
 	}
 	id, ok := typ.(*ast.Identifier)
 	if !ok {
@@ -679,9 +700,17 @@ func tlaDomainWith(typ ast.Expression, records map[string]*ast.RecordLiteral) st
 	if record, isRecord := records[id.Value]; isRecord {
 		var fields []string
 		for _, f := range record.FieldOrder {
-			fields = append(fields, fmt.Sprintf("%s: %s", f.Name, tlaDomainWith(f.Value, records)))
+			fields = append(fields, fmt.Sprintf("%s: %s", f.Name, tlaDomainWithMode(f.Value, records, executable)))
 		}
 		return "[" + strings.Join(fields, ", ") + "]"
+	}
+	if executable {
+		switch id.Value {
+		case "u32", "u64":
+			return "Nat"
+		case "i32", "i64":
+			return "Int"
+		}
 	}
 	// A fixed-width field's domain is its range, so TypeOK states the width
 	// the projection stores (docs/spec/112-protocols.md section 4).
