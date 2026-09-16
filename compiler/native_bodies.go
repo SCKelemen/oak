@@ -322,7 +322,8 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	if analyses.hasMemory {
 		changes += len(analyses.deadStoreElimination.Removed)
 		changes += analyses.regionLoadForwarding.Changes()
-		optimized = analyses.regionLoads
+		changes += analyses.memoryCleanup.Changes()
+		optimized = analyses.memoryCleanup.CFG
 	}
 	if changes == 0 {
 		return nativeOptIRPlan{}
@@ -363,10 +364,11 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	); err != nil {
 		return nativeOptIRPlan{}
 	}
+	if err := verifyOptIRMemoryCleanup(analyses.regionLoads, memoryAuthority, analyses.memoryCleanup); err != nil {
+		return nativeOptIRPlan{}
+	}
 	projection, err := optir.ProjectCheckedMemory(optimized, memoryAuthority)
-	if err != nil || !reflect.DeepEqual(projection.Metadata, analyses.regionLoadMetadata) ||
-		!reflect.DeepEqual(projection.Observability, analyses.memoryProjection.Observability) ||
-		!reflect.DeepEqual(projection, analyses.regionLoadProjection) {
+	if err != nil || !reflect.DeepEqual(projection, analyses.memoryCleanup.Projection) {
 		return nativeOptIRPlan{}
 	}
 	if err := optir.VerifyCheckedMemoryProjection(optimized, memoryAuthority, projection); err != nil {
@@ -379,8 +381,17 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	if err := optir.VerifyRegionMemorySSA(optimized, projection.Metadata, memorySSA); err != nil {
 		return nativeOptIRPlan{}
 	}
-	if !reflect.DeepEqual(memorySSA, analyses.regionLoadMemorySSA) {
+	if !reflect.DeepEqual(memorySSA, analyses.memoryCleanup.MemorySSA) {
 		return nativeOptIRPlan{}
+	}
+	// SCCP can remove every memory-bearing path. The replay above authenticates
+	// that removal; the surviving scalar/call CFG uses the ordinary selector.
+	if len(projection.Metadata.Regions) == 0 {
+		fingerprint, err := optir.FingerprintCFG(optimized)
+		if err != nil {
+			return nativeOptIRPlan{}
+		}
+		return nativeOptIRPlan{cfg: &optimized, changes: changes, fingerprint: fingerprint}
 	}
 	var certificate *optir.CheckedMemoryCallCertificate
 	activeCalls, err := activeOptIRMemoryCalls(optimized, memoryAuthority)
@@ -404,7 +415,7 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEff
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
-	bindings, ok := nativeOptIRRegionBindings(analyses.regionLoadMetadata, tc, globals)
+	bindings, ok := nativeOptIRRegionBindings(projection.Metadata, tc, globals)
 	if !ok {
 		return nativeOptIRPlan{}
 	}

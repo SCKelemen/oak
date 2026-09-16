@@ -82,10 +82,10 @@ main: (): i32 = 0
 	if stores, loads := countOptIRMemoryOperations(replace.ForwardedLoads); stores != 1 || loads != 0 {
 		t.Fatalf("post-forwarding memory operations = stores %d, loads %d", stores, loads)
 	}
-	if err := optir.VerifyCheckedMemoryProjection(replace.ForwardedLoads, replace.CheckedMemory, replace.FinalMemoryProjection); err != nil {
+	if err := optir.VerifyCheckedMemoryProjection(replace.MemoryCleanup.CFG, replace.CheckedMemory, replace.FinalMemoryProjection); err != nil {
 		t.Fatalf("final checked memory projection: %v", err)
 	}
-	if err := optir.VerifyRegionMemorySSA(replace.ForwardedLoads, replace.FinalMemoryProjection.Metadata, replace.FinalMemorySSA); err != nil {
+	if err := optir.VerifyRegionMemorySSA(replace.MemoryCleanup.CFG, replace.FinalMemoryProjection.Metadata, replace.FinalMemorySSA); err != nil {
 		t.Fatalf("final region MemorySSA: %v", err)
 	}
 }
