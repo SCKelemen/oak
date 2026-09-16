@@ -76,7 +76,7 @@ The assembly acceptance test rejects references to `malloc`, `calloc`, `realloc`
 
 ## Formal model
 
-`Oak.AArch64ColdEntry` models the protocol stages:
+`Oak.AArch64ColdEntry.ProtocolStep` models the shape-only protocol stages:
 
 ```text
 start
@@ -89,13 +89,30 @@ start
  -> transferred
 ```
 
+The evidence-bearing `Oak.AArch64ColdEntry.Step` is occurrence-indexed. Its
+`ContextSyncWitness` carries:
+
+- one exact occurrence for each of the eight required system-register writes;
+- one exact `AArch64Encoding.isbSy` occurrence after every write;
+- an explicit external `ArmContextSync` proof for that ISB occurrence.
+
+`Step.eret` separately carries the exact ERET occurrence/action and its
+program-order edge after that same retained ISB witness.
+
 The Lean model proves:
 
-- transition to `transferred` can only occur from `synchronized`;
-- transition to `synchronized` can only occur after guest context installation;
+- shape-only transfer can occur only from `synchronized`;
+- evidence-bearing transfer exposes the retained synchronization witness,
+  exact ERET occurrence, and ISB-before-ERET edge;
+- every required context write precedes ERET by transitivity;
 - `transferred` is terminal in the cold-entry protocol.
 
-These are protocol-order proofs, not bit-level proofs of HCR/VTCR/SPSR values.
+`ArmContextSync` remains an explicit parameter until an official Arm
+execution/state model discharges it. It is not derived from the barrier
+capability Boolean, the pure Sail decoder, or CAT ordering. Caller register
+values also remain outside these protocol-order proofs. Only the eight writes,
+ISB, and ERET are occurrence-classified here; DAIFSet and the remaining phase
+transitions are still shape-only.
 
 ## Executable refinement test
 
@@ -116,6 +133,13 @@ ERET
 ```
 
 It rejects hidden `DMB`, `DSB`, `WFI`, `WFE`, `SEV`, ordinary `RET`, and heap dependencies.
+
+The direct-native gate additionally reads the actual Oak object symbol and
+requires the complete body to be exact DAIFSet, the eight context-register MSR
+words, exact ISB word, and exact ERET word, with no stack frame. This executable
+regression witness pins the observed source-to-object bytes and order for the
+native lane; it is not a kernel-checked compiler trace or an architectural
+synchronization proof.
 
 ## Next milestone
 

@@ -29,7 +29,9 @@ The reference sequence is:
 9. write `SPSR_EL2` (guest PSTATE restore state);
 10. issue explicit `arm64.isb()`.
 
-The final transfer with `ERET` is intentionally absent until Oak can represent a non-returning machine control transfer faithfully as `never`.
+The final transfer with `ERET` is intentionally absent from this returning
+preparation helper. The non-returning companion protocol is chapter 101's
+`el2_cold_enter`.
 
 ## 4. Invariants
 
@@ -45,13 +47,24 @@ The final transfer with `ERET` is intentionally absent until Oak can represent a
 
 `codegen/aarch64_el2_cold_prepare_test.go` cross-compiles the reference Oak source for freestanding ARMv8-A and checks the emitted assembly for the complete ordered instruction sequence. The test also rejects hidden DMB, DSB, WFI, WFE, or SEV instructions and heap dependencies.
 
-The constituent authority/order facts remain covered by the Lean models for AArch64 system registers, barriers, MMIO, and event control. A later guest-entry state-machine model should compose these facts with `ERET`, stage-2 invalidation, and vCPU lifecycle state.
+`compiler/e2e_native_barrier_words_test.go` separately compiles that same source
+through Oak's direct AArch64 backend and requires the complete object-symbol
+body to be exact DAIFSet, the eight context-register writes, exact ISB word,
+and `RET`. The body has no stack frame or other instruction. This is a
+byte-level occurrence/order certificate, not a proof of architectural context
+synchronization.
+
+`Oak.AArch64ColdEntry` now separates the shape-only `ProtocolStep` graph from
+an occurrence-indexed `Step`. Its synchronization witness carries all eight
+exact register-write occurrences before the same exact ISB word plus an
+explicit external Arm context-synchronization proposition. Decoder identity or
+Oak's capability bit cannot manufacture that evidence.
 
 ## 6. Next protocol layers
 
-1. correct bottom-type (`never`) control-flow composition;
-2. `ERET` as a non-returning AArch64 control transfer;
-3. cold prepare + ERET guest entry;
-4. TLBI/DSB primitives and live stage-2 reconfiguration protocol;
-5. virtual interrupt/timer entry/exit integration;
-6. QEMU EL2 smoke test driven by generated Oak code.
+1. TLBI/DSB primitives and a live stage-2 reconfiguration protocol;
+2. discharge `ArmContextSync` against an occurrence-indexed Arm execution
+   model;
+3. typed register/configuration builders for HCR/VTCR/SPSR values;
+4. virtual interrupt/timer entry/exit integration;
+5. QEMU EL2 smoke tests driven by generated Oak code.

@@ -212,6 +212,14 @@ Boolean fields remain Oak profile capabilities until an occurrence-indexed Arm
 execution rule discharges them; positive `IFB-ob` also requires its specified
 dependency.
 
+`compiler/e2e_native_barrier_words_test.go` independently checks occurrence at
+the direct-native object seam. Each of six Oak source functions must be exactly
+one literal barrier word followed by `RET`; the expectation is not computed by
+the encoder being tested. The same gate pins the actual cold prepare/entry
+functions through their eight context writes, exact ISB, and final `RET` or
+`ERET`. This is executable compiler evidence, not an Arm execution-semantics
+proof and not the source of the word-to-decoder theorem.
+
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
 
@@ -228,6 +236,8 @@ The slice is accepted only if all of the following hold:
 - Clang cross-compiles the generated source for freestanding ARMv8-A;
 - each Oak function contains the exact requested DMB/DSB/ISB instruction and no
   additional barrier family;
+- direct-native object bodies contain the independently pinned exact word with
+  no prologue, dispatch, or second instruction before `RET`;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
 - the generated Sail decoder refines all six words into those capabilities,

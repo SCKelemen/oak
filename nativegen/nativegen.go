@@ -3448,6 +3448,13 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 // frameSize is the frame in bytes: the [x29, x30] pair when the body
 // calls, the slots, rounded up to 16.
 func (g *generator) frameSize() int64 {
+	// saveArea is provisioned conservatively before lowering when a function
+	// has scalar parameters. A leaf whose values all remain in their argument
+	// registers consumes none of that reservation and needs no stack movement.
+	if !g.hasCalls && g.usedCallee == 0 && g.usedCalleeV == 0 && g.nslots == 0 &&
+		len(g.stackParams) == 0 && len(g.frameObjects) == 0 {
+		return 0
+	}
 	return (g.saveBase() + g.saveArea + g.saveAreaV + 8*g.nslots + 15) / 16 * 16
 }
 

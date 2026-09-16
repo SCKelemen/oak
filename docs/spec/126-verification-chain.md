@@ -126,6 +126,16 @@ agrees, **trusted** when the unit reaches outside the decided subset
 labeled. Then the assembler encodes the words itself (§9) and writes the
 companion object; the object format and lane are those of `Oak.Target`.
 
+For the six AArch64 barrier forms, an independent executable regression witness
+now checks the direct-native portion of this seam: six Oak source functions must
+produce complete two-word object bodies containing the literal expected
+barrier word and `RET`. The actual cold prepare and entry sources must produce
+literal DAIFSet, their eight context-register MSR words, the exact ISB word, and
+`RET`/`ERET`, with no stack frame. This pins occurrence, order, and zero
+overhead but is not a Lean proof of the compiler. `Oak.AArch64ColdEntry.Step`
+therefore still requires an
+explicit occurrence-indexed external Arm context-synchronization witness.
+
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s
 per-register equality/reconciliation decision, and `meetFact_sound` proves

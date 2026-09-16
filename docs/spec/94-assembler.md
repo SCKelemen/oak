@@ -702,8 +702,16 @@ Sail, and `spec/sail/lean/Bridge.lean` proves the exact words for DMB
 ISHLD/ISH/SY, DSB ISH/SY, and ISB reach the intended operation, shareability
 domain, and access type (`dmb ishld` is inner-shareable reads). The Go drift
 test ties those constants back to `asm/encodings_gen.go` and the real text
-encoder. This closes encoder-to-Arm-decoder correctness for these six barrier
-forms; the general instruction table remains audited rather than proved.
+encoder. A separate native-object gate compiles six Oak source functions and
+requires each complete body to be exactly the corresponding word followed by
+`RET`; the actual cold prepare/entry sources are likewise pinned from DAIFSet
+through their eight context-register writes to the exact ISB word and
+`RET`/`ERET`. This is an executable regression witness that pins the observed
+source-to-object bytes,
+while the encoder-to-Arm-decoder equality is the kernel proof. The same gate
+found and removed an unused
+80-byte frame from register-only AArch64 leaf functions. The general
+instruction table remains audited rather than proved.
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode
