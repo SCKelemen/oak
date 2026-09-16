@@ -1,0 +1,319 @@
+{
+  "schema": "oak-blake3-constant-record-index-investigation-v1",
+  "date": "2026-09-17",
+  "cpu": "Apple M4 Max",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "compiler_base": "fca1c23959450bafb649cdc68ecb77fdf26aa02c",
+  "compiler_after_change": "constant register indices into record arguments in asm/verify.go; no other production source changes",
+  "verifier_source_sha256": {
+    "before": "fb25092abf2e462101ba8ab08ee53a16af2bc123191e975aef19af82922eb165",
+    "after": "c7516fe66125a1dd8cc194bfc7059f1974db4431f417f5cdf2f1bc6b45a25761"
+  },
+  "hash_source_sha256": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+  "runner_source_sha256": "89d24ab549de05b2cd8992bb8fdd13406ea2503772175fbd67cc6cd64fba70c3",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "c_flags": [
+    "-std=c99",
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "size": 1048576,
+  "rounds": 5,
+  "samples": 7,
+  "sample_order": "interleaved implementations, rotating first implementation each sample",
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "load_average_before": "{ 96.69 87.62 71.64 }",
+  "load_average_after": "{ 95.35 87.49 71.69 }",
+  "native_only": {
+    "before-fca1c239": [
+      "hash__blake3_ucompress"
+    ],
+    "constant-record-index": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "variants": [
+    "c-fca1c239",
+    "before-fca1c239",
+    "constant-record-index",
+    "before-full",
+    "after-full"
+  ],
+  "native_blake3_units": {
+    "before-fca1c239": [
+      "hash__blake3_ucompress"
+    ],
+    "constant-record-index": [
+      "hash__blake3_ucompress"
+    ],
+    "before-full": [
+      "hash__blake3_ug",
+      "hash__blake3_upermute",
+      "hash__blake3_ucompress",
+      "hash__blake3_uwords",
+      "hash__blake3_ufirst8",
+      "hash__blake3_uinit",
+      "hash__blake3_ustart_uflag",
+      "hash__blake3_uabsorb_ublock",
+      "hash__blake3_uchunk_ucv",
+      "hash__blake3_uparent_uwords",
+      "hash__blake3_upush_uchunk",
+      "hash__blake3_ufinal",
+      "bench_blake3"
+    ],
+    "after-full": [
+      "hash__blake3_ug",
+      "hash__blake3_upermute",
+      "hash__blake3_ucompress",
+      "hash__blake3_uwords",
+      "hash__blake3_ufirst8",
+      "hash__blake3_uinit",
+      "hash__blake3_ustart_uflag",
+      "hash__blake3_uabsorb_ublock",
+      "hash__blake3_uchunk_ucv",
+      "hash__blake3_uparent_uwords",
+      "hash__blake3_upush_uchunk",
+      "hash__blake3_ufinal",
+      "bench_blake3"
+    ]
+  },
+  "selected_compression": {
+    "before-fca1c239": {
+      "frame_bytes": 448,
+      "instructions": 527,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 17,
+        "ldr": 156,
+        "lsr": 1,
+        "mov": 36,
+        "ret": 1,
+        "ror": 32,
+        "stp": 17,
+        "str": 141,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 305
+    },
+    "constant-record-index": {
+      "frame_bytes": 448,
+      "instructions": 373,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 17,
+        "ldr": 80,
+        "lsr": 1,
+        "mov": 18,
+        "ret": 1,
+        "ror": 32,
+        "stp": 17,
+        "str": 81,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 169
+    },
+    "before-full": {
+      "frame_bytes": 448,
+      "instructions": 527,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 17,
+        "ldr": 156,
+        "lsr": 1,
+        "mov": 36,
+        "ret": 1,
+        "ror": 32,
+        "stp": 17,
+        "str": 141,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 305
+    },
+    "after-full": {
+      "frame_bytes": 448,
+      "instructions": 373,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 17,
+        "ldr": 80,
+        "lsr": 1,
+        "mov": 18,
+        "ret": 1,
+        "ror": 32,
+        "stp": 17,
+        "str": 81,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 169
+    }
+  },
+  "compression_verdict": {
+    "before": "trusted: no dominating constant index guard",
+    "after": "witnessed: all witness inputs agree; bit-level decision exceeded its node budget"
+  },
+  "boundary_checks": [
+    {
+      "size": 0,
+      "checksum": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    },
+    {
+      "size": 1,
+      "checksum": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65"
+    },
+    {
+      "size": 63,
+      "checksum": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09"
+    },
+    {
+      "size": 64,
+      "checksum": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d"
+    },
+    {
+      "size": 65,
+      "checksum": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735"
+    },
+    {
+      "size": 1023,
+      "checksum": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916"
+    },
+    {
+      "size": 1024,
+      "checksum": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539"
+    },
+    {
+      "size": 1025,
+      "checksum": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b"
+    },
+    {
+      "size": 2048,
+      "checksum": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362"
+    },
+    {
+      "size": 2049,
+      "checksum": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b"
+    },
+    {
+      "size": 3072,
+      "checksum": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183"
+    },
+    {
+      "size": 4096,
+      "checksum": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8"
+    },
+    {
+      "size": 5000,
+      "checksum": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+    }
+  ],
+  "results": [
+    {
+      "impl": "c-control",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 2833800.0,
+      "samples": [
+        3140400.0,
+        3140600.0,
+        2989000.0,
+        2833800.0,
+        2710200.0,
+        2661000.0,
+        2808000.0
+      ]
+    },
+    {
+      "impl": "before-constant-record-index",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 8479000.0,
+      "samples": [
+        8229000.0,
+        8620600.0,
+        8722800.0,
+        7579600.0,
+        8479000.0,
+        11210200.0,
+        7819400.0
+      ]
+    },
+    {
+      "impl": "constant-record-index",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 4360800.0,
+      "samples": [
+        5093000.0,
+        4205000.0,
+        4360800.0,
+        4395200.0,
+        4310000.0,
+        4835400.0,
+        4244600.0
+      ]
+    },
+    {
+      "impl": "before-full-native",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 11991200.0,
+      "samples": [
+        16030800.0,
+        10570800.0,
+        11991200.0,
+        10525600.0,
+        14627400.0,
+        11414600.0,
+        12599800.0
+      ]
+    },
+    {
+      "impl": "after-full-native",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 6545400.0,
+      "samples": [
+        6545400.0,
+        5894200.0,
+        7712200.0,
+        12817800.0,
+        5857000.0,
+        6009800.0,
+        10689000.0
+      ]
+    }
+  ]
+}

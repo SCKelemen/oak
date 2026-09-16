@@ -5336,7 +5336,7 @@ verifier; unproved or unprofitable candidates do not displace the prior
 forms. The transform is enabled in AArch64 search, not RV64 search.
 
 The grouping flag is part of both the rewrite cache key and materialization
-recipe v8. Cost-only recurrence hints recognize smaller-vector cleanup as
+recipe v9. Cost-only recurrence hints recognize smaller-vector cleanup as
 bounded: a stride-8 loop followed by stride-4 and scalar loops suggests at
 most one vector-cleanup trip and three scalar trips. Bounded `MaxTrips`
 values count trips, so the cost model must not divide them by stride a
@@ -6833,6 +6833,21 @@ small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
 
+**Constant register indices into record arguments (2026-09-17).** A
+record-array load whose register index is a known constant reads that
+element directly, after checking the constant against the selected array
+field's length. A decided bounds branch records no symbolic guard; this
+previously left even an in-range read in an unrolled counted loop outside
+the verifier. Symbolic indices still require the dominating constant
+guard, and neither path may reach a sibling field. The record-index tests
+cover first, last, and offset-field elements, a counted sum, a wrong
+element, and both constant and symbolic indices past the field. The native
+array-value end-to-end test proves a counted sum over an array parameter
+and runs it against C. BLAKE3 compression now reaches witness comparison
+and admits scheduling and reallocation under the existing evidence policy;
+its full bit-level proof still exceeds the node budget. The measured
+effect is recorded in `benchmarks/native/README.md`.
+
 **Indexed loads through record arguments; the Bits family's cost
 (2026-09-16).** Sixteen bodies of the prover's `Bits` family (`not_bits`,
 `rotate_right`, `shift_const`, `count_leading_zeros`, …) stopped at "an
@@ -7119,6 +7134,22 @@ rewrites the verifier still checks against the original body:
   declarations that follow; closed scopes return theirs. A function without
   calls keeps vector locals in the caller-saved vector registers too,
   leaving four to expression temporaries.
+
+Scalar-replaced arrays share that lifetime with their hidden element homes
+(`nativegen/scalar_arrays.go`). At the parent's last source mention,
+`releaseDead` returns each actual element home in the declaring scope to
+its pool and marks it freed, so scope exit cannot return it twice. The
+synthetic array binding owns no storage: its offset/register must never
+enter either pool. Enclosing-loop/branch and trailing-result mentions
+retain every element just as they retain an ordinary scalar. This releases
+short-lived inlined quarter-round results before the next group is declared,
+instead of keeping every group's homes until the enclosing block ends.
+Tests require both the direct lowering and selected bodies of sequential,
+loop and branch fixtures to be `proven`, check native/C execution agreement,
+and pin repeated release, scope ownership and spill-slot reuse. These are
+translation-validation results for the fixtures, not a universal refinement
+theorem for the Go liveness implementation or a proof of the whole BLAKE3
+body; its existing verifier refusal remains explicit.
 
 Measured (`benchmarks/native/`): the flattened validator has no call and
 runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at

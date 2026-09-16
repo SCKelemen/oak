@@ -86,7 +86,7 @@ The cost model now recognizes a smaller-stride cleanup, not just a scalar
 remainder. An 8-element main loop followed by 4-element cleanup and a scalar
 tail has cost hints of at most one cleanup trip and three scalar trips.
 `MaxTrips` counts trips, so a bounded loop is no longer divided by its stride
-twice. These are cost hints, not proof evidence. Materialization revision v8
+twice. These are cost hints, not proof evidence. Materialization revision v9
 includes the grouping flag; metric/cost artifacts advance to v2.
 
 Use `native-one-vector` as the control for this increment. Original reports

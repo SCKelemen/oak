@@ -14,7 +14,7 @@ func TestScalarArrayBindingDoesNotReleasePhantomSlot(t *testing.T) {
 
 	g := newGenerator()
 	g.releaseDead(map[string]int{"acc": 3}, 3)
-	if len(g.freeSlots8) != 0 || g.scopes[0]["acc"].freed {
+	if len(g.freeSlots8) != 0 || len(g.freeCallee) != 0 {
 		t.Fatalf("last-use release returned a scalar array's phantom slot: %v", g.freeSlots8)
 	}
 
