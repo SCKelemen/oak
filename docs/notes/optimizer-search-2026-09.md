@@ -309,15 +309,34 @@ inner loop — `search` and `page_probe` in `benchmarks/kernels`, the two
 largest gaps left in proven or witnessed code — was eleven instructions
 against clang's nine for the same source, and these two fusions are the
 difference but for clang's `ccmp`, which combines the loop's two exit
-tests into one branch. That fusion is built too (`machine.FuseExits`,
-`Lane.FuseExits`: `b.cond exit; cbz back` → `ccmp wR, #0, #nzcv, !cond;
-b.eq back`, the constant flags failing the branch where the first test
-exited) and the checker reads it — the compare's fact rides through the
-conditional compare to the branch it feeds (`ccmpFact`), so the loop
-body's elided guard stands — but the verifier's loop shapes do not read
-a `ccmp` tail: every such form came back trusted after a path budget
-spent on the unrolled loop, so the transform stays unregistered until the
-verifier learns the shape. Measured on the clock, the two pair fusions
+tests into one branch. That fusion ships too (`machine.FuseExits`, the
+`fuse-exits` candidate, gated): a bottom-tested loop's tail `b.cond exit;
+cbz wR, back` becomes `ccmp wR, #0, #nzcv, !cond; b.eq back`, the
+constant flags failing the branch where the first test exited, and the
+loop's entry test — the same two tests, both to the exit, the mirror the
+verifier's tail shape needs — becomes `ccmp wR, #0, #nzcv, !cond; b.ne
+exit`, the constant flags taking it. Three readers had to learn the
+form. The seam checker carries the compare's fact through the conditional
+compare to the branch it feeds (`ccmpFact`), in both polarities: where
+the constant flags fail the branch, the taken path knows the first
+compare's fact under its condition (the back edge, so the loop body's
+elided guard stands); where they take it, the fall-through knows it (the
+entry test, so the loop is entered under `lo < hi` as before). The
+verifier's tail shape (`tailLoopShape`) accepts a `ccmp` in the tail run
+and before the back edge, so the fused loops are judged by the loop
+argument rather than a path budget spent unrolling them — without it every
+such form came back trusted, which is why the transform sat unregistered
+for a commit. And the search's shape rule: validations were spread over
+shapes with the gated transforms struck from the name, which lumped the
+exit-fused form with its parent and never validated it; gated transforms
+now declare whether they are shape-neutral (`opt.Neutral` — the
+reallocator and the scheduler are, the fusions are not), and only the
+neutral ones drop out of the shape. The exit-fused search loop is ten
+instructions and one branch (clang's nine and one), priced the same as
+the pair-fused form's ten and two — the model prices a branch as an
+arithmetic instruction, and `ccmp` is one — so it wins on the tie-break
+toward more transforms; a branch weight above one would separate them,
+left for a measurement that shows the branch's cost. Measured on the clock, the two pair fusions
 are neutral within noise (`search` 1.11× against 1.12× unfused,
 `page_probe` 1.20× against 1.22×, native over the C backend, three
 interleaved runs each): the loop is bound by its load-compare-select

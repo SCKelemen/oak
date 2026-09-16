@@ -640,6 +640,29 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## The exit-test fusion on the binary searches, 2026-09-16 (evening)
+
+`search` and `page_probe` with the head tree against the same tree
+withholding the exit fusion (`OAK_OPT_SKIP=fuse-exits`; the pair
+fusions in both), three alternated runs of three rounds of five samples,
+1 MiB, load average about 10. The fused `search` loop is ten
+instructions and one branch a trip where the pair-fused one is ten and
+two; `page_probe`'s loop fuses the same way.
+
+| Kernel | oak-native, fused | oak-native, unfused | native / C, fused | native / C, unfused |
+| --- | ---: | ---: | ---: | ---: |
+| search | 7.72 / 7.69 / 7.63 ms | 8.43 / 8.31 / 9.36 ms | 1.18 / 1.22 / 1.19 (median 1.19×) | 1.32 / 1.45 / 1.01 (median 1.32×) |
+| page_probe | 7.16 / 7.88 / 6.57 ms | 7.01 / 7.70 / 9.48 ms | 1.17 / 1.24 / 1.17 (median 1.17×) | 1.16 / 1.15 / 1.23 (median 1.16×) |
+
+`search`'s native time fell about eight percent in the two quiet rounds
+(the third's C side slowed under load, which is the 1.01×), the first
+fusion of the day that moved the clock — the loop is one branch to
+resolve a trip, and the pair fusions' instruction count was not what
+bound it. `page_probe` is within the noise both ways; its four compares a
+trip leave two branches after the fusion, and the remaining gap to clang
+is the loop's compare-select chain. The pair fusions alone were neutral
+(1.11× against 1.12× and 1.20× against 1.22×, above).
+
 ## The ten kernels after the scheduler, the maps, and a miscompile found, 2026-09-16 (night)
 
 The ten kernels through both backends at the head of the day

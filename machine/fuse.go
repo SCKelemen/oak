@@ -90,14 +90,22 @@ func FuseExits(fn *asm.Function) (*asm.Function, int, error) {
 	return out, fused, nil
 }
 
-// fuseExitTests folds a loop tail's two exit tests into one conditional
-// compare: a block ending in `b.c1 exit` whose fall-through block holds
-// only `cbz wR, back` (or cbnz), the exit label being the block after,
-// becomes `ccmp wR, #0, #nzcv, !c1; b.eq back` (b.ne for cbnz) — the
-// second test is taken only where the first did not exit, and where it
-// did the nzcv constant makes the branch fall through to the exit. One
-// branch where there were two (clang's shape for `while lo < hi &&
-// !found`).
+// fuseExitTests folds two exit tests into one conditional compare. A
+// block ending in `b.c1 exit` whose fall-through block holds only `cbz
+// wR, target` (or cbnz), the exit label heading the block after:
+//
+//   - target the loop header (a rotated loop's tail): `ccmp wR, #0,
+//     #nzcv, !c1; b.eq target` (b.ne for cbnz) — the second test is taken
+//     only where the first did not exit, and where it did the constant
+//     flags fail the branch, which falls through to the exit;
+//   - target the exit itself (the loop's entry test, the same conjunction
+//     the other way): `ccmp wR, #0, #nzcv, !c1; b.eq exit` (b.ne for cbz)
+//     — where the first test exits the constant flags take the branch,
+//     else the second test decides.
+//
+// One branch where there were two (clang's shape for `while lo < hi &&
+// !found`), the entry run and the tail run fused alike so the verifier
+// reads the loop as before.
 func (f *Function) fuseExitTests() int {
 	fused := 0
 	for i := 0; i+2 < len(f.Blocks); i++ {
@@ -110,7 +118,7 @@ func (f *Function) fuseExitTests() int {
 			continue
 		}
 		exitSym, isSym := exit.Operands[0].(asm.Symbol)
-		if !isSym || exitSym.Lo12 || exitSym.Name != c.Label {
+		if !isSym || exitSym.Lo12 {
 			continue
 		}
 		inverted, known := invertCondition[exit.Cond]
@@ -126,11 +134,28 @@ func (f *Function) fuseExitTests() int {
 		if !isReg || !isBack || back.Lo12 || (reg.Class != asm.ClassW && reg.Class != asm.ClassX) || reg.ZeroRegister() {
 			continue
 		}
-		// Where the first test exits, the constant flags must fail the
-		// second: Z clear for `b.eq`, Z set (#4) for `b.ne`.
-		branch, nzcv := "eq", int64(0)
-		if test.Mnemonic == "cbnz" {
-			branch, nzcv = "ne", 4
+		if back.Name != exitSym.Name && c.Label != exitSym.Name {
+			// The second test continues elsewhere: its fall-through must
+			// be the first test's exit, or the fused branch's fall-through
+			// would not be.
+			continue
+		}
+		var branch string
+		var nzcv int64
+		if back.Name == exitSym.Name {
+			// Both tests exit: the branch exits where the first did (the
+			// constant flags take it) or where the second does.
+			branch, nzcv = "eq", 4 // cbz exits on zero: Z set takes b.eq
+			if test.Mnemonic == "cbnz" {
+				branch, nzcv = "ne", 0 // Z clear takes b.ne
+			}
+		} else {
+			// The second test continues: where the first exits, the
+			// constant flags must fail the branch.
+			branch, nzcv = "eq", 0
+			if test.Mnemonic == "cbnz" {
+				branch, nzcv = "ne", 4
+			}
 		}
 		ccmp := &Instr{Asm: asm.Instruction{Mnemonic: "ccmp", Operands: []asm.Operand{reg, asm.Immediate{Value: 0}, asm.Immediate{Value: nzcv}, asm.Condition{Code: inverted}}, Line: exit.Line}, Block: a}
 		bck := &Instr{Asm: asm.Instruction{Mnemonic: exit.Mnemonic, Cond: branch, Operands: []asm.Operand{back}, Line: test.Line}, Branch: true, Block: a}

@@ -105,10 +105,20 @@ func laneArch(lane Lane) string {
 
 // gatedTransform ships only on a verifier's verdict (opt.Gated): a body
 // the verifier cannot judge keeps a form without it.
-type gatedTransform struct{ laneTransform }
+type gatedTransform struct {
+	laneTransform
+	// neutral marks a transform that moves and renames but changes no
+	// evaluation shape the verifier reads (a register assignment, an
+	// instruction order): its candidate shares its parent's shape in the
+	// search's validation order (opt.Neutral).
+	neutral bool
+}
 
 // NeedsVerdict marks the transform as gated.
 func (t *gatedTransform) NeedsVerdict() bool { return true }
+
+// ShapeNeutral reports a gated transform that changes no evaluation shape.
+func (t *gatedTransform) ShapeNeutral() bool { return t.neutral }
 
 // elideTransform is the guard elision, refinable by source line: the
 // checker's finding names the line of the access it could not admit, that
@@ -188,7 +198,7 @@ func Transforms() []opt.Transform {
 			// the AArch64 emitter's zero tests dropped.
 			fired: func(fn *asm.Function) int { return StrengthReduced(fn) + Reduced(fn) },
 		},
-		&gatedTransform{laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// The generic SSA middle end's optimized CFG becomes a native
 			// implementation candidate. The closed AArch64 and RV64 selectors
 			// also admit exact whole-region scalar-global stores after verified
@@ -223,7 +233,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ReuseFlags = true; return l },
 			fired:   ReusedCompares,
 		},
-		&gatedTransform{laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// Peephole fusion (machine.Fuse): a shift folded into an add's
 			// shifted operand, an increment folded into a csinc; machine
 			// shape only, shipping only on the verifier's verdict.
@@ -233,14 +243,19 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Fuse = true; return l },
 			fired:   Fused,
 		}},
-		// Exit-test fusion (machine.FuseExits, Lane.FuseExits): a loop
-		// tail's `b.cond exit; cbz back` as `ccmp; b.eq back`, one branch
-		// for two. Built and admitted by the checker (the compare's fact
-		// rides through the ccmp to the branch), but not registered: the
-		// verifier's loop shapes do not read a `ccmp` tail yet, so every
-		// form came back trusted after a path budget spent for nothing.
-		// Register it as a gated transform here once they do.
-		&gatedTransform{laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
+			// Exit-test fusion (machine.FuseExits): a loop's `b.cond exit;
+			// cbz back` as `ccmp; b.eq back`, one branch for two, the entry
+			// test fused alike; gated like Fuse. The checker reads the
+			// compare's fact through the ccmp, the verifier's loop shapes
+			// read the ccmp in a tail run.
+			name: TransformFuseExits, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.FuseExits },
+			apply:   func(l Lane) Lane { l.FuseExits = true; return l },
+			fired:   FusedExits,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			// Instruction scheduling (package machine, Phase B): each block's
 			// instructions reordered between barriers so a consumer follows
 			// its producer by the producer's latency; machine shape only,
@@ -250,7 +265,7 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.Schedule },
 			apply:   func(l Lane) Lane { l.Schedule = true; return l },
 			fired:   Scheduled,
-		}},
+		}, neutral: true},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the
@@ -335,7 +350,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
-		&gatedTransform{laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
 			// linear scan, its slots moved into registers, its copies
@@ -347,7 +362,7 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.Reallocate },
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
-		}},
+		}, neutral: true},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,

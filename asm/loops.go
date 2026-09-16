@@ -476,7 +476,10 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		if !isInstr {
 			break
 		}
-		if instr.Mnemonic == "cmp" {
+		if instr.Mnemonic == "cmp" || instr.Mnemonic == "ccmp" {
+			// A conditional compare is a test fused with the compare
+			// before it (machine.FuseExits): its flags decide the branch
+			// after, and the executor models it as it models cmp.
 			tailStart--
 			continue
 		}
@@ -488,7 +491,7 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		}
 		break
 	}
-	if branch.Mnemonic == "b." && (tailStart == back || items[back-1].(Instruction).Mnemonic != "cmp") {
+	if branch.Mnemonic == "b." && (tailStart == back || (items[back-1].(Instruction).Mnemonic != "cmp" && items[back-1].(Instruction).Mnemonic != "ccmp")) {
 		return loopShape{}, "a conditional back edge whose test is not a compare", false
 	}
 	if header+1 >= tailStart {

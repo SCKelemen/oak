@@ -1781,32 +1781,44 @@ func (c *checker) instruction(instr Instruction) bool {
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
-		if !guard.valid && ccmpGuard.valid && ((instr.Cond == "eq" && !ccmpGuard.zSet) || (instr.Cond == "ne" && ccmpGuard.zSet)) {
-			// `cmp wI, wL; ccmp wR, #k, #nzcv, c; b.eq back`
-			// (machine.FuseExits): where c fails the constant flags fail
-			// the branch, so the branch is taken only where c held and the
-			// second compare agreed — the taken path knows the first
-			// compare's fact under c, as `b.c back`'s would; the
-			// fall-through knows nothing (either compare may have failed).
-			if inverse, known := conditionInverse[ccmpGuard.cond]; known {
-				savedIdx := map[int]idxFact{}
-				for reg, fact := range c.idxFacts {
-					savedIdx[reg] = fact
-				}
-				savedMins := map[*spanFact][2]int64{}
-				for _, fact := range c.spans {
-					has := int64(0)
-					if fact.hasMin {
-						has = 1
+		if !guard.valid && ccmpGuard.valid && (instr.Cond == "eq" || instr.Cond == "ne") {
+			// `cmp wI, wL; ccmp wR, #k, #nzcv, c; b.eq/b.ne target`
+			// (machine.FuseExits): where c fails the constant flags decide
+			// the branch alone. When they fail it (`b.eq` with Z clear,
+			// `b.ne` with Z set — a loop's back edge), the branch is taken
+			// only where c held and the second compare agreed, so the
+			// taken path knows the first compare's fact under c, as `b.c
+			// target`'s would, and the fall-through knows nothing. When
+			// they take it (`b.ne` with Z clear, `b.eq` with Z set — a
+			// loop's entry exit), the fall-through is reached only where c
+			// held and the second compare failed, so it knows the fact,
+			// and the taken path knows nothing.
+			inverse, known := conditionInverse[ccmpGuard.cond]
+			if known {
+				takenKnows := (instr.Cond == "eq" && !ccmpGuard.zSet) || (instr.Cond == "ne" && ccmpGuard.zSet)
+				if takenKnows {
+					savedIdx := map[int]idxFact{}
+					for reg, fact := range c.idxFacts {
+						savedIdx[reg] = fact
 					}
-					savedMins[fact] = [2]int64{has, fact.minLen}
+					savedMins := map[*spanFact][2]int64{}
+					for _, fact := range c.spans {
+						has := int64(0)
+						if fact.hasMin {
+							has = 1
+						}
+						savedMins[fact] = [2]int64{has, fact.minLen}
+					}
+					c.guardFacts(ccmpGuard.guard, inverse)
+					c.branch(instr, false)
+					c.idxFacts = savedIdx
+					for fact, saved := range savedMins {
+						fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
+					}
+					return false
 				}
-				c.guardFacts(ccmpGuard.guard, inverse)
 				c.branch(instr, false)
-				c.idxFacts = savedIdx
-				for fact, saved := range savedMins {
-					fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
-				}
+				c.guardFacts(ccmpGuard.guard, inverse)
 				return false
 			}
 		}

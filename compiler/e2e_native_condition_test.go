@@ -89,8 +89,11 @@ func TestE2ENativeConditionSelection(t *testing.T) {
 		// The one eor is `acc ^ arg`; `!seen_end` must not materialize one.
 		t.Errorf("want exactly one eor (the xor of the body), got %d", counts["eor"])
 	}
-	if counts["cbnz"] < 1 {
-		t.Errorf("`!seen_end` must branch on the Bool's own register with cbnz; mnemonics: %v", counts)
+	if counts["cbnz"] < 1 && counts["ccmp"] < 1 {
+		// Or, the exit tests fused (machine.FuseExits), the Bool's register
+		// is the ccmp's operand against zero — still no materialized
+		// compare.
+		t.Errorf("`!seen_end` must branch on the Bool's own register with cbnz, or test it in a ccmp; mnemonics: %v", counts)
 	}
 	if materializedCompares != 0 {
 		// The remaining movz are the multiplier 3 and the Bool `true`.

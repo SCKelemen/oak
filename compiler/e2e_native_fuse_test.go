@@ -66,11 +66,17 @@ func TestE2ENativeFuse(t *testing.T) {
 	if n := nativegen.Fused(unit); n < 2 {
 		t.Errorf("search must fuse its shift and its increment, fused %d:\n%s\n%s", n, nativegen.Describe(unit), joined)
 	}
-	shifted, incremented := false, false
+	if n := nativegen.FusedExits(unit); n < 1 {
+		t.Errorf("search must fuse its loop's exit tests into a ccmp, fused %d:\n%s\n%s", n, nativegen.Describe(unit), joined)
+	}
+	shifted, incremented, compared := false, false, false
 	for _, item := range unit.Items {
 		ins, ok := item.(asm.Instruction)
 		if !ok {
 			continue
+		}
+		if ins.Mnemonic == "ccmp" {
+			compared = true
 		}
 		if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
 			if _, isShifted := ins.Operands[2].(asm.Shifted); isShifted {
@@ -83,8 +89,8 @@ func TestE2ENativeFuse(t *testing.T) {
 			}
 		}
 	}
-	if !shifted || !incremented {
-		t.Errorf("search's loop must carry a shifted add and a csinc (shifted %v, csinc %v):\n%s", shifted, incremented, nativegen.Describe(unit))
+	if !shifted || !incremented || !compared {
+		t.Errorf("search's loop must carry a shifted add, a csinc, and a ccmp (shifted %v, csinc %v, ccmp %v):\n%s", shifted, incremented, compared, nativegen.Describe(unit))
 	}
 	if strings.Contains(joined, "disagrees") {
 		t.Fatalf("a mismatch:\n%s", joined)

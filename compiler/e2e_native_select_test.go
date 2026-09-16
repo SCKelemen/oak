@@ -150,7 +150,14 @@ func TestE2ENativeIfConversion(t *testing.T) {
 			branches++
 		}
 	}
-	if want := 3 - nativegen.RotatedLoops(units["count_hits"]); branches != want {
+	// Exit-test fusion (machine.FuseExits) folds the loop's second exit
+	// test into a ccmp, one branch fewer in the loop (the entry test's
+	// fusion sits before the header).
+	want := 3 - nativegen.RotatedLoops(units["count_hits"])
+	if nativegen.FusedExits(units["count_hits"]) > 0 {
+		want--
+	}
+	if branches != want {
 		t.Errorf("count_hits's loop must hold exactly its exits and the back edge (%d branches), got %d", want, branches)
 	}
 	// `found = true` is a csinc from wzr, no constant built in the loop;
@@ -162,8 +169,18 @@ func TestE2ENativeIfConversion(t *testing.T) {
 		}
 		return counts
 	}
-	if counts := mnemonics("count_hits"); counts["csinc"] != 1 || counts["movz"] != 0 {
-		t.Errorf("count_hits's flag must be one csinc with no constant in the loop, got %v", counts)
+	// The increment fusion (machine.Fuse) may make `hits + 1` a csinc
+	// of a register too, so the flag's is the one incrementing wzr.
+	flags := 0
+	for _, ins := range loopBody(units["count_hits"]) {
+		if ins.Mnemonic == "csinc" && len(ins.Operands) == 4 {
+			if r, isReg := ins.Operands[2].(asm.Register); isReg && r.ZeroRegister() {
+				flags++
+			}
+		}
+	}
+	if counts := mnemonics("count_hits"); flags != 1 || counts["movz"] != 0 {
+		t.Errorf("count_hits's flag must be one csinc over wzr with no constant in the loop, got %d flag(s) in %v", flags, counts)
 	}
 	if counts := mnemonics("tally"); counts["cinc"] != 1 || counts["cbz"]+counts["cbnz"] != 0 {
 		t.Errorf("tally's conditional increment must be one cinc with no branch on the Bool, got %v", counts)

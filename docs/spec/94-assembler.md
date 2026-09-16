@@ -4819,6 +4819,32 @@ wMid, wLo, wT, lsr #k` under `wT = hi - lo` is `wMid < wHi`, the lemma of
 `lsr` then `add`, Oak.Assembler.midpoint_below). The binary search's
 inner loop is ten instructions from twelve.
 
+**Exit-test fusion (2026-09-16, AArch64 lane; `machine.FuseExits`, the
+`fuse-exits` candidate).** A loop whose two exit tests are a compare and
+a branch on a register against zero — `while lo < hi && !found` — spends
+two branches a trip; AArch64's conditional compare spends one. In a
+bottom-tested loop's tail (§9), `cmp wI, wL; b.cond exit; cbz wR, back`
+becomes `cmp wI, wL; ccmp wR, #0, #nzcv, !cond; b.eq back`: where `cond`
+held the flags are the second compare's, and where it failed they are the
+constant `nzcv`, chosen to fail the branch (Z clear for `b.eq`, Z set for
+`b.ne` where the register test was `cbnz`). The loop's entry test — the
+same compare and register test, both branching to the exit — becomes
+`ccmp wR, #0, #nzcv, !cond; b.ne exit` with the constant flags chosen to
+take it, so the entry and the tail stay mirrors, which the verifier's
+tail shape needs. Machine shape only, gated on the verifier's verdict,
+and read by all three readers: the seam checker carries the first
+compare's fact through the `ccmp` to the branch it feeds — the taken
+path knows it where the constant flags fail the branch (the back edge,
+so the body's elided guard stands), the fall-through knows it where they
+take the branch (the entry, so the loop begins under `lo < hi`); the
+verifier's tail shape accepts a `ccmp` in the tail run and before the
+back edge and judges the fused loop by the loop argument; and the search
+validates the fused form as its own shape — gated transforms declare
+whether they are shape-neutral (`opt.Neutral`: the reallocator and the
+scheduler are, the fusions are not), and only the neutral ones drop out
+of the shape a validation is spent on. The binary search's inner loop is
+ten instructions and one branch, clang's shape but for one instruction.
+
 **Multiply-add forms (2026-09-16, AArch64 lane;
 `nativegen/multiply_add.go`).** AArch64 computes a product and its addend
 in one instruction, so the integer expressions `a + b * c`, `b * c + a`,
