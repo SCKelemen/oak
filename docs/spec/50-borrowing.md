@@ -1150,7 +1150,14 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   arrays of records with array fields — is proven when
   `(U₁ - 1) * K + (U₂ - 1) * M + c < len(v)` (`scaled2_under_bound`;
   `compiler/e2e_scaled2_test.go`). An index the facts do not bound stays
-  checked.
+  checked. Source inlining may bind this expression before the access, as in
+  `cell: u32 = u32(i) * entries + j; v[cell]`. Such a binding inherits the
+  computed exclusive bound only when the scales are exact unsigned globals
+  that no statement can mutate, both source bindings have live literal
+  bounds, value conversions are unsigned and non-narrowing, and the complete
+  maximum fits the binding's word (`scaled2_binding_upper`). A mutable scale,
+  missing source bound, narrowing conversion, or possible wrap keeps the
+  element check.
 - **Upper bound through a binding**: `n <= len(v)` or `n < len(v)` as a
   condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
   for indices into `v`, so a later `i < n` proves `v[i]`

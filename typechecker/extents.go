@@ -9,7 +9,8 @@ package typechecker
 // the resolution pattern of typechecker/mono.go), and the backend emits it
 // as direct element access instead of the checked helper. Every access the
 // checker cannot prove stays checked; facts are never derived from anything
-// a callee could invalidate (globals are excluded).
+// a callee could invalidate (the only global values admitted are exact
+// compile-time integers that a whole-program scan proves never mutated).
 //
 // Facts are flow-sensitive (third increment): an assignment to a
 // participating binding kills the fact from that statement on, for the
@@ -251,6 +252,32 @@ func pathOf(expr ast.Expression) (string, bool) {
 	return "", false
 }
 
+// extentContainerPath names the fixed-shape container of an element access.
+// Unlike pathOf, it may pass through an element of an array/span of records:
+// every `s[dom].pages` has the same declared extent, so the inner array's
+// checked identity is `s.pages`. The outer `s[dom]` keeps its own independent
+// dynamic guard; this helper licenses only the inner fixed-array access.
+func extentContainerPath(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, true
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return extentContainerPath(e.Left)
+		}
+		base, ok := extentContainerPath(e.Left)
+		if !ok {
+			return "", false
+		}
+		field, isIdent := e.Index.(*ast.Identifier)
+		if !isIdent {
+			return "", false
+		}
+		return base + "." + field.Value, true
+	}
+	return "", false
+}
+
 // pathRoot is the binding a path is rooted at.
 func pathRoot(path string) string {
 	if dot := strings.IndexByte(path, '.'); dot >= 0 {
@@ -343,6 +370,17 @@ func constantIndex(expr ast.Expression) (int64, bool) {
 		return constantIndex(e.Arguments[0])
 	}
 	return 0, false
+}
+
+// extentConstant is constantIndex plus an exact never-mutated integer global
+// already checked earlier in declaration order. Unknown, mutable, measured,
+// placed, signed, or otherwise unsupported globals remain ordinary bindings.
+func (tc *TypeChecker) extentConstant(expr ast.Expression) (int64, bool) {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		value, exact := tc.extentIntegerGlobals[ident.Value]
+		return value, exact
+	}
+	return constantIndex(expr)
 }
 
 // lenOf recognizes len(name) over an identifier.
@@ -674,8 +712,8 @@ func (tc *TypeChecker) factsFromConditionAs(cond ast.Expression, earlier []exten
 	}
 	leftLen, leftIsLen := lenOf(infix.Left)
 	rightLen, rightIsLen := lenOf(infix.Right)
-	leftConst, leftIsConst := constantIndex(infix.Left)
-	rightConst, rightIsConst := constantIndex(infix.Right)
+	leftConst, leftIsConst := tc.extentConstant(infix.Left)
+	rightConst, rightIsConst := tc.extentConstant(infix.Right)
 	leftIndex, leftOffset, leftIsIndex := offsetIndex(infix.Left)
 	rightIndex, rightOffset, rightIsIndex := offsetIndex(infix.Right)
 	// A binding declared as a length reads as that length (factLenAlias),
@@ -1144,7 +1182,7 @@ func unionDead(a, b []bool) []bool {
 // recordIndexProof marks v[index] proven when a fact or a static extent
 // bounds it; the backend then elides the check.
 func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayType) {
-	name, isPath := pathOf(expr.Left)
+	name, isPath := extentContainerPath(expr.Left)
 	if !isPath || arr == nil {
 		return
 	}
@@ -1335,6 +1373,15 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 	if mask, isMasked := maskedIndex(decl.Value); isMasked && mask < math.MaxInt64 {
 		return []extentFact{{kind: factIndexLit, other: decl.Name.Value, bound: mask + 1}}
 	}
+	// Source inlining binds a pure helper used as an index to a temporary:
+	// `cell(i, j)` becomes `t: u32 = u32(i) * entries + j`. Preserve the
+	// caller's two loop bounds through that binding when both scale constants
+	// are exact and the complete affine result fits the declared unsigned
+	// word. The latter condition proves the fixed-width operations cannot wrap;
+	// Oak.Extents.scaled2_binding_upper then gives `t < bound`.
+	if bound, ok := tc.scaled2DeclarationBound(decl); ok {
+		return []extentFact{{kind: factIndexLit, other: decl.Name.Value, bound: bound}}
+	}
 	// The midpoint `m = a + (b - a) / K` (K a literal >= 2) under a live
 	// `a < b` is below b (Oak.Extents.midpoint_under_bound: the
 	// subtraction and the sum are the natural ones because a < b), so m
@@ -1466,6 +1513,195 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 		return nil
 	}
 	return []extentFact{{kind: factMinLen, container: decl.Name.Value, bound: length}}
+}
+
+// scaled2DeclarationBound recognizes the affine initializer left by source
+// inlining for a two-dimensional fixed array:
+//
+//	t: u32 = u32(i) * entries + j
+//
+// It returns an exclusive literal upper bound for t only when both source
+// bindings have live literal bounds, every scale is an exact nonnegative
+// constant, and the complete maximum fits the declared unsigned word. That
+// last check is essential: Oak integer arithmetic is modular, so the natural
+// number inequality is a valid fact about t only when no intermediate sum or
+// product can wrap.
+func (tc *TypeChecker) scaled2DeclarationBound(decl *ast.VariableDeclaration) (int64, bool) {
+	if decl == nil || decl.Type == nil || decl.Value == nil {
+		return 0, false
+	}
+	typeName, isIdent := decl.Type.(*ast.Identifier)
+	if !isIdent {
+		return 0, false
+	}
+	fixed := tc.FixedWidthName(typeName.Value)
+	if fixed == "" || fixed[0] != 'u' {
+		return 0, false
+	}
+	wordBits := PrimitiveBits(fixed)
+	if wordBits == 0 {
+		return 0, false
+	}
+
+	var addends []ast.Expression
+	var flatten func(ast.Expression)
+	flatten = func(expr ast.Expression) {
+		if infix, ok := expr.(*ast.InfixExpression); ok && infix.Operator == "+" {
+			flatten(infix.Left)
+			flatten(infix.Right)
+			return
+		}
+		addends = append(addends, expr)
+	}
+	flatten(decl.Value)
+
+	type affineTerm struct {
+		name  string
+		scale int64
+		bits  int
+	}
+	terms := make([]affineTerm, 0, 2)
+	offset := int64(0)
+	for _, addend := range addends {
+		if constant, exact := tc.extentConstant(addend); exact {
+			if constant < 0 || offset > math.MaxInt64-constant {
+				return 0, false
+			}
+			offset += constant
+			continue
+		}
+
+		bindingExpr := addend
+		scale := int64(1)
+		if product, ok := addend.(*ast.InfixExpression); ok && product.Operator == "*" {
+			switch {
+			case tc.nonnegativeExtentConstant(product.Right, &scale):
+				bindingExpr = product.Left
+			case tc.nonnegativeExtentConstant(product.Left, &scale):
+				bindingExpr = product.Right
+			default:
+				return 0, false
+			}
+		}
+		name, bits, ok := tc.unsignedExtentBinding(bindingExpr)
+		if !ok {
+			return 0, false
+		}
+		terms = append(terms, affineTerm{name: name, scale: scale, bits: bits})
+		if len(terms) > 2 {
+			return 0, false
+		}
+	}
+	if len(terms) != 2 || terms[0].name == terms[1].name {
+		return 0, false
+	}
+
+	maximum := offset
+	for _, term := range terms {
+		upper, ok := tc.literalUpperBound(term.name)
+		if !ok || upper <= 0 || !fitsUnsignedExclusive(upper, term.bits) {
+			return 0, false
+		}
+		factor := upper - 1
+		if term.scale != 0 && factor > math.MaxInt64/term.scale {
+			return 0, false
+		}
+		contribution := factor * term.scale
+		if maximum > math.MaxInt64-contribution {
+			return 0, false
+		}
+		maximum += contribution
+	}
+	if maximum == math.MaxInt64 {
+		return 0, false
+	}
+	bound := maximum + 1
+	if !fitsUnsignedExclusive(bound, wordBits) {
+		return 0, false
+	}
+	return bound, true
+}
+
+// nonnegativeExtentConstant reads one exact scale without letting a failed
+// constant parse turn the other product operand into trusted data.
+func (tc *TypeChecker) nonnegativeExtentConstant(expr ast.Expression, out *int64) bool {
+	value, exact := tc.extentConstant(expr)
+	if !exact || value < 0 {
+		return false
+	}
+	*out = value
+	return true
+}
+
+// unsignedExtentBinding recognizes a local unsigned binding, optionally
+// beneath value-preserving unsigned primitive constructors. The type checker
+// has already recorded both sides of every accepted constructor; re-reading
+// those types here prevents a narrowing cast from manufacturing a bound.
+func (tc *TypeChecker) unsignedExtentBinding(expr ast.Expression) (string, int, bool) {
+	if ident, ok := expr.(*ast.Identifier); ok && tc.localBinding(ident.Value) {
+		tok, positioned := ast.ExpressionToken(ident)
+		typ, typed := tc.ExpressionTypeAt(tok)
+		prim, primitive := typ.(*PrimitiveType)
+		if !positioned || !typed || !primitive {
+			return "", 0, false
+		}
+		fixed := tc.FixedWidthName(prim.Name)
+		if fixed == "" || fixed[0] != 'u' {
+			return "", 0, false
+		}
+		return ident.Value, PrimitiveBits(fixed), true
+	}
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return "", 0, false
+	}
+	target, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return "", 0, false
+	}
+	targetFixed := tc.FixedWidthName(target.Value)
+	if targetFixed == "" || targetFixed[0] != 'u' {
+		return "", 0, false
+	}
+	argToken, positioned := ast.ExpressionToken(call.Arguments[0])
+	argType, typed := tc.ExpressionTypeAt(argToken)
+	argPrimitive, primitive := argType.(*PrimitiveType)
+	if !positioned || !typed || !primitive {
+		return "", 0, false
+	}
+	sourceFixed := tc.FixedWidthName(argPrimitive.Name)
+	if sourceFixed == "" || sourceFixed[0] != 'u' || PrimitiveBits(targetFixed) < PrimitiveBits(sourceFixed) {
+		return "", 0, false
+	}
+	name, _, binding := tc.unsignedExtentBinding(call.Arguments[0])
+	if !binding {
+		return "", 0, false
+	}
+	return name, PrimitiveBits(targetFixed), true
+}
+
+// literalUpperBound returns the strongest live exclusive literal bound for a
+// binding. Dead flow facts never participate in declaration refinement.
+func (tc *TypeChecker) literalUpperBound(name string) (int64, bool) {
+	upper := int64(math.MaxInt64)
+	found := false
+	for _, fact := range tc.extentFacts {
+		if !fact.dead && fact.kind == factIndexLit && fact.other == name && fact.bound < upper {
+			upper = fact.bound
+			found = true
+		}
+	}
+	return upper, found
+}
+
+func fitsUnsignedExclusive(bound int64, bits int) bool {
+	if bound <= 0 || bits <= 0 {
+		return false
+	}
+	if bits >= 64 {
+		return true
+	}
+	return uint64(bound) <= uint64(1)<<uint(bits)
 }
 
 // enterDeclarationFacts pushes a declaration's fact when the remaining
