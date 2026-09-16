@@ -707,8 +707,13 @@ arithmetic. A separate, bounded transform consumes only exact independently
 recomputed evidence to replace known closed total-pure results, select known
 branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
 preserves effectful and trapping operations and independently verifies its
-output. Dominance-scoped GVN and fixed-point DCE then produce another verified
-CFG from a closed vocabulary of total pure scalar operations. Plain
+output. Before GVN, a bounded cleanup removes a phi-like block parameter only
+when every explicit incoming edge supplies the same dominating SSA value (or
+the parameter itself on a loop backedge). Entry parameters are excluded because
+their ABI inputs are implicit CFG predecessors. It removes corresponding edge
+arguments and remaps operands and facts, then verifies the CFG. Dominance-scoped
+GVN and fixed-point DCE produce another verified CFG from a closed vocabulary
+of total pure scalar operations. Plain
 copies share a value number; exact commutative integer/equality operations and
 inverse order comparisons receive one canonical key. Result types and ordered
 attributes remain exact, and any unknown attribute disables operand
@@ -719,9 +724,12 @@ substrate consumes explicit checked region metadata beside operation effects.
 It gives each region deterministic entry/definition/join versions, expands an
 opaque call to a clobber of every declared region, handles loop phis, and binds
 its independently recomputed evidence to exact CFG and metadata fingerprints.
-Missing or inconsistent Mod/Ref information fails closed. It is analysis-only:
-dead-store elimination and load forwarding still wait for memory projection
-from checked Oak plus their own legality transforms. `Compilation.OptIR()` returns
+Missing or inconsistent Mod/Ref information fails closed. A second analysis,
+under an explicit list of regions observable at normal return, propagates live
+definitions through reads and join/loop phis and reports overwritten exact
+writes as dead candidates. Opaque clobbers preserve both input and output.
+Neither analysis deletes code: DSE and load forwarding still wait for memory
+projection from checked Oak plus their own legality transforms. `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
 loop analysis reports dominators,
@@ -742,8 +750,10 @@ abstract colors; dead block parameters may share a color only with one another,
 while live and conditional-edge values remain distinct. A deterministic
 target-neutral spill planner partitions high-pressure SSA values between colors
 and typed/aligned abstract stack slots, never spills ABI precolors, and
-independently verifies interference and safe slot reuse. It does not yet insert
-loads/stores, so both selectors still refuse remaining pressure.
+independently verifies interference and safe slot reuse. AArch64 materializes
+the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
+using width- and signedness-correct traffic plus register/slot parallel copies.
+RV64 still refuses pressure that strict coloring cannot assign.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and
@@ -756,15 +766,16 @@ zero through eight matching Bool or 8/16/32/64-bit scalar arguments and exactly
 one matching scalar result. Its OptIR operation must carry exactly `EffectCall`
 and one nonempty `callee` attribute, with no other effect or attribute metadata.
 Because every allocatable color is caller-saved, every other non-unit value
-must be dead across the call. An admitted calling body uses a sixteen-byte
-frame to save and restore AArch64 `x30` or RV64 `ra`, places all arguments in
-the eight integer ABI registers with one cycle-safe simultaneous parallel-copy
-step using the selector's reserved scratch, moves the result from the ABI result
-register, and reapplies the target's Bool/narrow normalization. A ninth or stack
-argument refuses, as do unknown, indirect, method, generic, external, or
-multi-result calls, other effects, traps, memory, stack parameters, unfamiliar
-operations, or remaining pressure. The abstract spill plan still emits no
-loads, stores, or frame layout, so it is not composed with this call frame yet.
+must be dead across the call. An admitted calling body saves and restores
+AArch64 `x30` or RV64 `ra`, places zero through eight arguments simultaneously
+in the integer ABI registers with a cycle-safe parallel copy, and reapplies the
+target's Bool/narrow normalization to the result. AArch64 may source arguments
+from verified spill slots and composes spill storage with the link-register
+save in one checked frame; RV64 uses a sixteen-byte call frame and still
+requires strict coloring. A ninth or stack argument refuses, as do unknown,
+indirect, method, generic, external, or multi-result calls, other effects,
+traps, source memory, stack parameters, unfamiliar operations, an oversized
+AArch64 frame, or remaining RV64 pressure.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1

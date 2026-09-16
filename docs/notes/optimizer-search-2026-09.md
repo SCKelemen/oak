@@ -288,7 +288,12 @@ remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
 
-GVN then runs on the SCCP-rewritten CFG. It numbers
+Before GVN, trivial phi-like block parameters are removed only when every
+explicit incoming edge resolves to the same dominating SSA definition (with a
+self loop edge allowed for an invariant). Entry parameters are never inferred
+from backedges because their ABI inputs are implicit. Edge argument positions,
+uses, and facts are remapped under a bounded fixed point and the CFG verifies
+again. GVN then runs on that CFG. It numbers
 plain copies alike, canonicalizes exact commutative integer/equality operations
 and inverse order comparisons, then shares a congruent expression only from a
 dominating definition. DCE removes the exposed unused pure chains and copies to
@@ -353,8 +358,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: join/loop-parameter value congruence, checked memory-region projection
-and the dead-store/load transforms that consume the landed region MemorySSA,
+Not yet: checked memory-region projection and the dead-store/load transforms
+that consume the landed region MemorySSA and definition-liveness candidates,
 non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
@@ -792,8 +797,12 @@ The first explicit-metadata region MemorySSA has landed. It represents each
 declared region independently with deterministic entry, definition, join, and
 loop versions; exact Mod/Ref must agree with the operation effects, while an
 opaque call clobbers every declared region. Exact CFG/metadata fingerprints and
-independent recomputation reject stale or mutated evidence. Checked Oak memory
-operations do not project into it yet, and it licenses no transform or emission.
+independent recomputation reject stale or mutated evidence. Memory-definition
+liveness now takes an explicit set of regions observable on normal return,
+roots reads, opaque clobbers, and those terminal versions, and propagates
+through join/loop phis. It reports only exact write definitions as dead
+candidates. Checked Oak memory operations do not project into it yet, and the
+evidence licenses no transform or emission.
 
 Once that projection exists, region memory SSA should power:
 
@@ -977,7 +986,8 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
-    plan landed; machine insertion remains**);
+    plan and verifier-gated AArch64 scalar insertion landed; splitting, broader
+    MachineIR, and RV64 insertion remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
     and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);

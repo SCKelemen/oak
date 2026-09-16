@@ -1,11 +1,70 @@
 package compiler
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
 )
+
+func TestE2ENativeSelectsAndExecutesSpilledOptIR(t *testing.T) {
+	requireArm64Host(t)
+	const values = 20
+	var source strings.Builder
+	source.WriteString("pressure: (x: u32): u32 = {\n")
+	for index := 1; index <= values; index++ {
+		fmt.Fprintf(&source, "  v%d: u32 = x + u32(%d)\n", index, index)
+		fmt.Fprintf(&source, "  d%d: u32 = x + u32(%d)\n", index, index)
+	}
+	source.WriteString("  ")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "v%d + d%d", index, index)
+	}
+	source.WriteString("\n}\n\nmain: (): i32 = pressure(u32(1)) == u32(460) ? i32(42) | i32(1)\n")
+
+	var diagnostics []string
+	comp := New().WithSource("native_optir_spills.oak", source.String()).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			diagnostics = append(diagnostics, d.Message)
+		}
+	})
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(diagnostics, "\n")
+	if !strings.Contains(joined, "pressure: optimized OptIR selected") {
+		t.Fatalf("spilled optimized SSA candidate was not selected:\n%s", joined)
+	}
+	if verdict := model.NativeVerdicts["pressure"]; verdict.Kind.String() != "proven" {
+		t.Fatalf("pressure verdict = %s (%s)", verdict.Kind, verdict.Message)
+	}
+	var pressureFrame int64
+	var spilled bool
+	for _, function := range model.AsmFunctions {
+		if function.Name != "pressure" {
+			continue
+		}
+		pressureFrame = function.Frame
+		for _, item := range function.Items {
+			instruction, ok := item.(asm.Instruction)
+			if ok && (instruction.Mnemonic == "ldr" || instruction.Mnemonic == "str") {
+				spilled = true
+			}
+		}
+	}
+	if pressureFrame == 0 || !spilled {
+		t.Fatalf("selected pressure body did not materialize a spill frame: frame=%d", pressureFrame)
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "native_optir_spills", comp); abnormal || code != 42 {
+		t.Fatalf("spilled native execution = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
 
 const nativeOptIRProgram = `
 common: (x: u32): u32 {

@@ -1,6 +1,8 @@
 package machine
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +14,310 @@ import (
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 )
+
+func TestLowerOptIRArm64MaterializesVerifiedSpills(t *testing.T) {
+	const values = 20
+	var source strings.Builder
+	source.WriteString("pressure: (x: u32): u32 = {\n")
+	for index := 1; index <= values; index++ {
+		fmt.Fprintf(&source, "  v%d: u32 = x + u32(%d)\n", index, index)
+	}
+	source.WriteString("  ")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "v%d", index)
+	}
+	source.WriteString("\n}\n")
+
+	parsed := parser.New(layout.New(scanner.New(source.String())))
+	program := parsed.ParseProgram()
+	if errs := parsed.Errors(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	declaration, ok := program.Statements[0].(*ast.FunctionStatement)
+	if !ok {
+		t.Fatalf("parsed declaration is %T", program.Statements[0])
+	}
+	template := &asm.Function{
+		Name: "pressure", Arch: asm.ArchArm64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: w(0), Param: "x"}},
+	}
+	cfg := optIRPressureCFG(values)
+	if _, err := optir.ColorRegisters(cfg, optIRArm64Registers, map[optir.ValueID]int{1: 0}); err == nil {
+		t.Fatal("test CFG did not exceed the strict register pool")
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered.Frame == 0 || lowered.Frame%16 != 0 || lowered.Frame > optIRArm64MaxSpillFrame {
+		t.Fatalf("materialized spill frame = %d", lowered.Frame)
+	}
+	body := text(lowered.Items)
+	if !strings.Contains(body, "str ") || !strings.Contains(body, "ldr ") {
+		t.Fatalf("high-pressure lowering did not materialize spills:\n%s", body)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"pressure": true}); len(findings) != 0 {
+		t.Fatalf("spilled body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestLowerOptIRArm64ComposesSpillsWithDirectCallFrame(t *testing.T) {
+	const values = 20
+	var source strings.Builder
+	source.WriteString("inc_pressure: (x: u32): u32 = x + u32(1)\n")
+	source.WriteString("call_pressure: (x: u32): u32 = {\n")
+	for index := 1; index <= values; index++ {
+		fmt.Fprintf(&source, "  v%d: u32 = x + u32(%d)\n", index, index)
+	}
+	source.WriteString("  inc_pressure(")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "v%d", index)
+	}
+	source.WriteString(")\n}\n")
+
+	functions := parseOptIRArm64CallFunctions(t, source.String())
+	callee, caller := functions["inc_pressure"], functions["call_pressure"]
+	cfg := optIRPressureCFG(values)
+	cfg.Name = "call_pressure"
+	block := &cfg.Blocks[0]
+	argument := block.Terminator.Values[0]
+	result := optir.ValueID(3*values + 1)
+	block.Operations = append(block.Operations, optir.Operation{
+		Code: optir.OpCall, Results: []optir.Value{{ID: result, Type: "u32"}}, Operands: []optir.ValueID{argument},
+		Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "inc_pressure"}},
+	})
+	block.Terminator.Values[0] = result
+	if _, err := optir.ColorRegisters(cfg, optIRArm64Registers, map[optir.ValueID]int{1: 0}); err == nil {
+		t.Fatal("test CFG did not exceed the strict register pool")
+	}
+	template := &asm.Function{
+		Name: cfg.Name, Arch: asm.ArchArm64, Signature: caller, Fallback: true,
+		Bindings: []asm.Binding{{Register: w(0), Param: "x"}},
+		Callees:  map[string]*ast.FunctionStatement{"inc_pressure": callee},
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame <= 16 || lowered.Frame%16 != 0 || !strings.Contains(body, "bl inc_pressure") {
+		t.Fatalf("spill/call frame was not composed: frame=%d\n%s", lowered.Frame, body)
+	}
+	if strings.Contains(body, "[sp,#-16]!") || strings.Contains(body, "[sp],#16") {
+		t.Fatalf("spill/call body unexpectedly uses a second pre/post-index frame:\n%s", body)
+	}
+	if findings := asm.Check(lowered, caller, map[string]bool{"inc_pressure": true}); len(findings) != 0 {
+		t.Fatalf("spill/call body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, caller, caller.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spill/call body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestLowerOptIRArm64SpillsPreserveNarrowRepresentations(t *testing.T) {
+	for _, test := range []struct {
+		typ, store, load string
+	}{
+		{typ: "u8", store: "strb", load: "ldrb"},
+		{typ: "i8", store: "strb", load: "ldrsb"},
+		{typ: "u16", store: "strh", load: "ldrh"},
+		{typ: "i16", store: "strh", load: "ldrsh"},
+	} {
+		t.Run(test.typ, func(t *testing.T) {
+			const values = 18
+			var source strings.Builder
+			fmt.Fprintf(&source, "pressure_%s: (x: %s): %s = {\n", test.typ, test.typ, test.typ)
+			for index := 1; index <= values; index++ {
+				fmt.Fprintf(&source, "  v%d: %s = x + %s(%d)\n", index, test.typ, test.typ, index)
+			}
+			source.WriteString("  ")
+			for index := 1; index <= values; index++ {
+				if index > 1 {
+					source.WriteString(" + ")
+				}
+				fmt.Fprintf(&source, "v%d", index)
+			}
+			source.WriteString("\n}\n")
+			parsed := parser.New(layout.New(scanner.New(source.String())))
+			program := parsed.ParseProgram()
+			if errs := parsed.Errors(); len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			declaration := program.Statements[0].(*ast.FunctionStatement)
+			cfg := optIRTypedPressureCFG("pressure_"+test.typ, optir.Type(test.typ), values)
+			template := &asm.Function{
+				Name: cfg.Name, Arch: asm.ArchArm64, Signature: declaration, Fallback: true,
+				Bindings: []asm.Binding{{Register: w(0), Param: "x"}},
+			}
+			lowered, err := LowerOptIRArm64(cfg, template)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := text(lowered.Items)
+			if !strings.Contains(body, test.store+" ") || !strings.Contains(body, test.load+" ") {
+				t.Fatalf("%s spills do not use %s/%s:\n%s", test.typ, test.store, test.load, body)
+			}
+			if findings := asm.Check(lowered, declaration, map[string]bool{cfg.Name: true}); len(findings) != 0 {
+				t.Fatalf("%s spilled body fails seam check: %v\n%s", test.typ, findings, body)
+			}
+			if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+				t.Fatalf("%s spilled body verdict = %s (%s)\n%s", test.typ, verdict.Kind, verdict.Message, body)
+			}
+		})
+	}
+}
+
+func TestOptIRArm64SpillLayoutFailsClosed(t *testing.T) {
+	var oversized []optir.SpillSlot
+	for id := 1; id <= 511; id++ {
+		oversized = append(oversized, optir.SpillSlot{ID: optir.SpillSlotID(id), WidthBytes: 8, AlignmentBytes: 8, Values: []optir.ValueID{optir.ValueID(id)}})
+	}
+	if _, _, err := optIRArm64LayoutSpills(oversized); err == nil || !strings.Contains(err.Error(), "spill frame needs") {
+		t.Fatalf("oversized frame error = %v", err)
+	}
+	if _, _, err := optIRArm64LayoutSpills([]optir.SpillSlot{{ID: 1, WidthBytes: 3, AlignmentBytes: 3, Values: []optir.ValueID{1}}}); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported slot error = %v", err)
+	}
+	if _, ok := optIRCheckedAlign(math.MaxInt64, 16); ok {
+		t.Fatal("overflowing frame alignment was accepted")
+	}
+}
+
+func TestLowerOptIRArm64SpillsAcrossSSAEdges(t *testing.T) {
+	const values = 18
+	var source strings.Builder
+	source.WriteString("edge_pressure: (flag: Bool): u32 = flag ? (")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString(") | (")
+	for index := 2; index <= values+1; index++ {
+		if index > 2 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString(")\n")
+	parsed := parser.New(layout.New(scanner.New(source.String())))
+	program := parsed.ParseProgram()
+	if errs := parsed.Errors(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	declaration := program.Statements[0].(*ast.FunctionStatement)
+	cfg := optIREdgePressureCFG(values)
+	fixed := map[optir.ValueID]int{1: 0}
+	plan, err := optir.PlanRegisters(cfg, optIRArm64SpillRegisters, fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spilledParameter := false
+	for _, parameter := range cfg.Blocks[3].Parameters {
+		_, spilledParameter = plan.Spills[parameter.ID]
+		if spilledParameter {
+			break
+		}
+	}
+	if !spilledParameter {
+		t.Fatalf("test plan has no spilled merge parameter: %+v", plan.Spills)
+	}
+	template := &asm.Function{
+		Name: cfg.Name, Arch: asm.ArchArm64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: w(0), Param: "flag"}},
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame == 0 || !strings.Contains(body, "str ") || !strings.Contains(body, "ldr ") {
+		t.Fatalf("edge lowering did not materialize spilled parallel copies:\n%s", body)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{cfg.Name: true}); len(findings) != 0 {
+		t.Fatalf("spilled edge body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled edge body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func optIREdgePressureCFG(values int) optir.CFG {
+	entry := optir.Block{ID: 0, Parameters: []optir.Value{{ID: 1, Type: optir.TypeBool, Name: "flag"}}, Terminator: optir.Terminator{
+		Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 1}, False: optir.Edge{Target: 2},
+	}}
+	next := optir.ValueID(2)
+	branch := func(id optir.BlockID, start int) optir.Block {
+		block := optir.Block{ID: id}
+		for index := 0; index < values; index++ {
+			value := next
+			next++
+			block.Operations = append(block.Operations, optir.Operation{
+				Code: optir.OpConstInt, Results: []optir.Value{{ID: value, Type: "u32"}},
+				Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: fmt.Sprint(start + index)}},
+			})
+			block.Terminator.True.Arguments = append(block.Terminator.True.Arguments, value)
+		}
+		block.Terminator.Kind = optir.TerminatorBranch
+		block.Terminator.True.Target = 3
+		return block
+	}
+	left, right := branch(1, 1), branch(2, 2)
+	merge := optir.Block{ID: 3}
+	for index := 0; index < values; index++ {
+		merge.Parameters = append(merge.Parameters, optir.Value{ID: optir.ValueID(100 + index), Type: "u32", Name: fmt.Sprintf("v%d", index+1)})
+	}
+	result := merge.Parameters[0].ID
+	for _, parameter := range merge.Parameters[1:] {
+		sum := optir.ValueID(200 + len(merge.Operations))
+		merge.Operations = append(merge.Operations, optir.Operation{Code: optir.OpIntAdd, Results: []optir.Value{{ID: sum, Type: "u32"}}, Operands: []optir.ValueID{result, parameter.ID}})
+		result = sum
+	}
+	merge.Terminator = optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}
+	return optir.CFG{Name: "edge_pressure", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{entry, left, right, merge}}
+}
+
+func optIRPressureCFG(values int) optir.CFG {
+	return optIRTypedPressureCFG("pressure", "u32", values)
+}
+
+func optIRTypedPressureCFG(name string, typ optir.Type, values int) optir.CFG {
+	cfg := optir.CFG{Name: name, Entry: 0, Results: []optir.Type{typ}}
+	block := optir.Block{ID: 0, Parameters: []optir.Value{{ID: 1, Type: typ, Name: "x"}}}
+	next := optir.ValueID(2)
+	terms := make([]optir.ValueID, 0, values)
+	for index := 1; index <= values; index++ {
+		constant := next
+		next++
+		term := next
+		next++
+		block.Operations = append(block.Operations,
+			optir.Operation{Code: optir.OpConstInt, Results: []optir.Value{{ID: constant, Type: typ}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: fmt.Sprint(index)}}},
+			optir.Operation{Code: optir.OpIntAdd, Results: []optir.Value{{ID: term, Type: typ}}, Operands: []optir.ValueID{1, constant}},
+		)
+		terms = append(terms, term)
+	}
+	result := terms[0]
+	for _, term := range terms[1:] {
+		sum := next
+		next++
+		block.Operations = append(block.Operations, optir.Operation{Code: optir.OpIntAdd, Results: []optir.Value{{ID: sum, Type: typ}}, Operands: []optir.ValueID{result, term}})
+		result = sum
+	}
+	block.Terminator = optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}
+	cfg.Blocks = []optir.Block{block}
+	return cfg
+}
 
 func TestLowerOptIRArm64DestroysSSAEdgesAndPassesSeam(t *testing.T) {
 	u32 := &ast.Identifier{Value: "u32"}

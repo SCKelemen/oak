@@ -16,14 +16,21 @@ import (
 // only when no other allocated value must survive them.
 var optIRArm64Registers = []int{0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16}
 
-const optIRCopyScratch = 17
+var optIRArm64SpillRegisters = []int{0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14}
+
+const (
+	optIRSpillOperand0 = 15
+	optIRSpillOperand1 = 16
+	optIRCopyScratch   = 17
+)
 
 // LowerOptIRArm64 selects an admitted AArch64 body from a verified optimized
 // OptIR CFG. It deliberately supports a small closed vocabulary: Bool and
 // fixed-width integer constants, copies, widening casts, total arithmetic,
 // comparisons, branches, SSA edge arguments, and scalar direct calls with no
-// live-across value. Other effects, trapping operations, stack arguments, and
-// excess register pressure refuse the candidate.
+// unrelated live-across value. Excess register pressure is materialized through
+// a verified, bounded scalar spill plan. Other effects, trapping operations,
+// and stack arguments refuse the candidate.
 // Narrow integers stay normalized in W registers: unsigned values are
 // zero-extended and signed values are sign-extended within the word. The native
 // search independently seam-checks and translation-validates every returned
@@ -65,13 +72,20 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	if err != nil {
 		return nil, err
 	}
-	coloring, err := optir.ColorRegisters(cfg, optIRArm64Registers, fixed)
+	allocation, err := optIRArm64Allocate(cfg, types, fixed)
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}
-	hasCalls, err := validateOptIRArm64Calls(cfg, coloring.LiveOut, template.Callees)
+	hasCalls, err := validateOptIRArm64Calls(cfg, allocation.liveOut, template.Callees)
 	if err != nil {
 		return nil, err
+	}
+	spillFrame, frame := allocation.frame, allocation.frame
+	if hasCalls {
+		if spillFrame > optIRArm64MaxSpillFrame-16 {
+			return nil, fmt.Errorf("machine: OptIR AArch64 spill/call frame needs more than %d bytes", optIRArm64MaxSpillFrame)
+		}
+		frame += 16
 	}
 	layout, err := optir.AnalyzeBlockLayout(cfg)
 	if err != nil {
@@ -82,7 +96,8 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	}
 
 	selector := &optIRArm64Selector{
-		cfg: cfg, types: types, colors: coloring.Colors,
+		cfg: cfg, types: types, colors: allocation.colors, spills: allocation.spills,
+		slots: allocation.slots, spillFrame: spillFrame, frame: frame,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, order: layout.Order,
 		hasCalls: hasCalls,
 	}
@@ -98,10 +113,7 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	out.Items = selector.items
 	out.Bindings = append([]asm.Binding(nil), template.Bindings...)
 	out.Clobbers = nil
-	out.Frame = 0
-	if hasCalls {
-		out.Frame = 16
-	}
+	out.Frame = selector.frame
 	out.System = false
 	out.Globals = nil
 	out.StackArgs = 0
@@ -126,18 +138,29 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 }
 
 type optIRArm64Selector struct {
-	cfg      optir.CFG
-	types    map[optir.ValueID]optir.Type
-	colors   map[optir.ValueID]int
-	labels   map[optir.BlockID]string
-	items    []asm.Item
-	written  map[int]bool
-	edges    int
-	order    []optir.BlockID
-	hasCalls bool
+	cfg        optir.CFG
+	types      map[optir.ValueID]optir.Type
+	colors     map[optir.ValueID]int
+	spills     map[optir.ValueID]optir.SpillSlotID
+	slots      map[optir.SpillSlotID]optIRArm64FrameSlot
+	spillFrame int64
+	frame      int64
+	labels     map[optir.BlockID]string
+	items      []asm.Item
+	written    map[int]bool
+	edges      int
+	order      []optir.BlockID
+	hasCalls   bool
 }
 
 func (selector *optIRArm64Selector) lower() error {
+	if selector.spillFrame != 0 {
+		entry := optIRBlock(selector.cfg, selector.cfg.Entry)
+		if entry == nil {
+			return fmt.Errorf("machine: OptIR stack frame has no entry block %d", selector.cfg.Entry)
+		}
+		selector.emit("sub", optIRBlockLine(*entry), optIRSP(), optIRSP(), asm.Immediate{Value: selector.frame})
+	}
 	for index, id := range selector.order {
 		block := optIRBlock(selector.cfg, id)
 		if block == nil {
@@ -147,15 +170,22 @@ func (selector *optIRArm64Selector) lower() error {
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
 			if selector.hasCalls {
-				frame := spMem(-16)
-				frame.Mode = asm.MemPreIndex
+				frame := asm.Memory{Base: optIRSP(), Offset: selector.spillFrame}
+				if selector.spillFrame == 0 {
+					frame.Offset = -16
+					frame.Mode = asm.MemPreIndex
+				}
 				selector.emit("str", line, arm64X(30), frame)
 			}
 			// AAPCS64 leaves the register bits above narrow scalar arguments
 			// unspecified. Establish the representation invariant before any
 			// selected operation can observe them.
 			for _, parameter := range block.Parameters {
-				selector.normalize(selector.register(parameter.ID), parameter.Type, line)
+				register, ok := selector.colors[parameter.ID]
+				if !ok {
+					return fmt.Errorf("machine: OptIR entry parameter %d is not register-resident", parameter.ID)
+				}
+				selector.normalize(register, parameter.Type, line)
 			}
 		}
 		for _, operation := range block.Operations {
@@ -189,7 +219,6 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 	if line <= 0 {
 		line = result.Source.Line
 	}
-	destination := selector.register(result.ID)
 	switch operation.Code {
 	case optir.OpConstUnit:
 		if result.Type != optir.Type("()") || len(operation.Operands) != 0 || len(operation.Attributes) != 0 {
@@ -208,8 +237,12 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 		if value == "true" {
 			bits = 1
 		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
 		selector.constant(destination, bits, 32, line)
-		return nil
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpConstInt:
 		_, _, ok := optIRArm64Type(result.Type)
 		if !ok || len(operation.Operands) != 0 {
@@ -223,32 +256,71 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 		if err != nil {
 			return fmt.Errorf("invalid %s constant %q", result.Type, spelling)
 		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
 		selector.constant(destination, value, optIRBits(result.Type), line)
-		return nil
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpCopy:
 		if len(operation.Operands) != 1 || selector.types[operation.Operands[0]] != result.Type || len(operation.Attributes) != 0 {
 			return fmt.Errorf("malformed copy")
 		}
-		selector.move(destination, selector.register(operation.Operands[0]), optIRBits(result.Type), line)
-		return nil
+		source, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+		if err != nil {
+			return err
+		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
+		selector.move(destination, source, optIRBits(result.Type), line)
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpCastInt:
 		if len(operation.Operands) != 1 || len(operation.Attributes) != 0 {
 			return fmt.Errorf("malformed integer cast")
 		}
-		return selector.cast(destination, result.Type, operation.Operands[0], line)
+		source, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+		if err != nil {
+			return err
+		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
+		if err := selector.cast(destination, result.Type, source, selector.types[operation.Operands[0]], line); err != nil {
+			return err
+		}
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpBoolNot:
 		if len(operation.Operands) != 1 || result.Type != optir.TypeBool || selector.types[operation.Operands[0]] != optir.TypeBool || len(operation.Attributes) != 0 {
 			return fmt.Errorf("malformed Bool negation")
 		}
-		selector.emit("eor", line, optIRW(destination), optIRW(selector.register(operation.Operands[0])), asm.Immediate{Value: 1})
-		return nil
+		source, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+		if err != nil {
+			return err
+		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
+		selector.emit("eor", line, optIRW(destination), optIRW(source), asm.Immediate{Value: 1})
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpIntNeg:
 		if err := selector.sameIntegerOperation(operation, 1); err != nil {
 			return err
 		}
-		selector.emit("neg", line, selector.valueRegister(result.ID), selector.valueRegister(operation.Operands[0]))
+		source, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+		if err != nil {
+			return err
+		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
+		selector.emit("neg", line, optIRRegister(destination, optIRBits(result.Type)), optIRRegister(source, optIRBits(result.Type)))
 		selector.normalize(destination, result.Type, line)
-		return nil
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpIntAdd, optir.OpIntSub, optir.OpIntMul, optir.OpIntAnd, optir.OpIntOr, optir.OpIntXor:
 		if err := selector.sameIntegerOperation(operation, 2); err != nil {
 			return err
@@ -257,9 +329,22 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 			optir.OpIntAdd: "add", optir.OpIntSub: "sub", optir.OpIntMul: "mul",
 			optir.OpIntAnd: "and", optir.OpIntOr: "orr", optir.OpIntXor: "eor",
 		}[operation.Code]
-		selector.emit(mnemonic, line, selector.valueRegister(result.ID), selector.valueRegister(operation.Operands[0]), selector.valueRegister(operation.Operands[1]))
+		left, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+		if err != nil {
+			return err
+		}
+		right, err := selector.readValue(operation.Operands[1], optIRSpillOperand1, line)
+		if err != nil {
+			return err
+		}
+		destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+		if err != nil {
+			return err
+		}
+		bits := optIRBits(result.Type)
+		selector.emit(mnemonic, line, optIRRegister(destination, bits), optIRRegister(left, bits), optIRRegister(right, bits))
 		selector.normalize(destination, result.Type, line)
-		return nil
+		return selector.commitValue(result.ID, destination, line)
 	case optir.OpEqual, optir.OpNotEqual, optir.OpLess, optir.OpLessEqual, optir.OpGreater, optir.OpGreaterEqual:
 		return selector.compare(operation, line)
 	default:
@@ -279,20 +364,29 @@ func (selector *optIRArm64Selector) call(operation optir.Operation) error {
 	if line <= 0 {
 		line = operation.Results[0].Source.Line
 	}
-	var moves []optIRRegisterMove
+	var moves []optIRLocationMove
 	for index, operand := range operation.Operands {
-		destination, source := index, selector.register(operand)
+		destination := optIRValueLocation{register: index}
+		source, err := selector.valueLocation(operand)
+		if err != nil {
+			return err
+		}
 		if destination != source {
-			moves = append(moves, optIRRegisterMove{destination: destination, source: source, bits: optIRBits(selector.types[operand])})
+			moves = append(moves, optIRLocationMove{destination: destination, source: source, typ: selector.types[operand]})
 		}
 	}
-	selector.emitEdgeCopies(moves, line)
+	if err := selector.emitEdgeCopies(moves, line); err != nil {
+		return err
+	}
 	selector.emit("bl", line, asm.Symbol{Name: callee})
 	result := operation.Results[0]
-	destination := selector.register(result.ID)
+	destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+	if err != nil {
+		return err
+	}
 	selector.move(destination, 0, optIRBits(result.Type), line)
 	selector.normalize(destination, result.Type, line)
-	return nil
+	return selector.commitValue(result.ID, destination, line)
 }
 
 func (selector *optIRArm64Selector) sameIntegerOperation(operation optir.Operation, arity int) error {
@@ -311,14 +405,12 @@ func (selector *optIRArm64Selector) sameIntegerOperation(operation optir.Operati
 	return nil
 }
 
-func (selector *optIRArm64Selector) cast(destination int, resultType optir.Type, operand optir.ValueID, line int) error {
+func (selector *optIRArm64Selector) cast(destination int, resultType optir.Type, source int, fromType optir.Type, line int) error {
 	toBits, _, toOK := optIRArm64Type(resultType)
-	fromType := selector.types[operand]
 	fromBits, fromSigned, fromOK := optIRArm64Type(fromType)
 	if !toOK || !fromOK || fromBits > toBits {
 		return fmt.Errorf("unsupported value-preserving cast %s to %s", fromType, resultType)
 	}
-	source := selector.register(operand)
 	switch {
 	case fromBits == toBits:
 		selector.move(destination, source, optIRBits(resultType), line)
@@ -369,9 +461,21 @@ func (selector *optIRArm64Selector) compare(operation optir.Operation, line int)
 			condition = map[string]string{optir.OpLess: "lo", optir.OpLessEqual: "ls", optir.OpGreater: "hi", optir.OpGreaterEqual: "hs"}[operation.Code]
 		}
 	}
-	selector.emit("cmp", line, optIRRegister(selector.register(operation.Operands[0]), bits), optIRRegister(selector.register(operation.Operands[1]), bits))
-	selector.emit("cset", line, optIRW(selector.register(operation.Results[0].ID)), asm.Condition{Code: condition})
-	return nil
+	left, err := selector.readValue(operation.Operands[0], optIRSpillOperand0, line)
+	if err != nil {
+		return err
+	}
+	right, err := selector.readValue(operation.Operands[1], optIRSpillOperand1, line)
+	if err != nil {
+		return err
+	}
+	destination, err := selector.writeValue(operation.Results[0].ID, optIRCopyScratch)
+	if err != nil {
+		return err
+	}
+	selector.emit("cmp", line, optIRRegister(left, bits), optIRRegister(right, bits))
+	selector.emit("cset", line, optIRW(destination), asm.Condition{Code: condition})
+	return selector.commitValue(operation.Results[0].ID, destination, line)
 }
 
 func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.BlockID, hasNext bool, line int) error {
@@ -382,12 +486,22 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 		}
 		value := terminator.Values[0]
 		if selector.types[value] != optir.Type("()") {
-			selector.move(0, selector.register(value), optIRBits(selector.types[value]), line)
+			register, err := selector.readValue(value, optIRSpillOperand0, line)
+			if err != nil {
+				return err
+			}
+			selector.move(0, register, optIRBits(selector.types[value]), line)
 		}
 		if selector.hasCalls {
-			frame := spMem(16)
-			frame.Mode = asm.MemPostIndex
+			frame := asm.Memory{Base: optIRSP(), Offset: selector.spillFrame}
+			if selector.spillFrame == 0 {
+				frame.Offset = 16
+				frame.Mode = asm.MemPostIndex
+			}
 			selector.emit("ldr", line, arm64X(30), frame)
+		}
+		if selector.spillFrame != 0 {
+			selector.emit("add", line, optIRSP(), optIRSP(), asm.Immediate{Value: selector.frame})
 		}
 		selector.emit("ret", line)
 		return nil
@@ -402,6 +516,10 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 	case optir.TerminatorCondBranch:
 		if selector.types[terminator.Condition] != optir.TypeBool {
 			return fmt.Errorf("condition %d is not Bool", terminator.Condition)
+		}
+		condition, err := selector.readValue(terminator.Condition, optIRSpillOperand0, line)
+		if err != nil {
+			return err
 		}
 		trueMoves, err := selector.edgeMoves(terminator.True)
 		if err != nil {
@@ -419,24 +537,28 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 					selector.emit("b", line, asm.Symbol{Name: selector.labels[trueTarget]})
 				}
 			case hasNext && trueTarget == next:
-				selector.emit("cbz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[falseTarget]})
+				selector.emit("cbz", line, optIRW(condition), asm.Symbol{Name: selector.labels[falseTarget]})
 			case hasNext && falseTarget == next:
-				selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[trueTarget]})
+				selector.emit("cbnz", line, optIRW(condition), asm.Symbol{Name: selector.labels[trueTarget]})
 			default:
-				selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[trueTarget]})
+				selector.emit("cbnz", line, optIRW(condition), asm.Symbol{Name: selector.labels[trueTarget]})
 				selector.emit("b", line, asm.Symbol{Name: selector.labels[falseTarget]})
 			}
 			return nil
 		}
 		trueLabel := selector.edgeLabel(block.ID, "true")
 		falseLabel := selector.edgeLabel(block.ID, "false")
-		selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: trueLabel})
+		selector.emit("cbnz", line, optIRW(condition), asm.Symbol{Name: trueLabel})
 		selector.emit("b", line, asm.Symbol{Name: falseLabel})
 		selector.items = append(selector.items, asm.Label{Name: trueLabel, Line: line})
-		selector.emitEdgeCopies(trueMoves, line)
+		if err := selector.emitEdgeCopies(trueMoves, line); err != nil {
+			return err
+		}
 		selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
 		selector.items = append(selector.items, asm.Label{Name: falseLabel, Line: line})
-		selector.emitEdgeCopies(falseMoves, line)
+		if err := selector.emitEdgeCopies(falseMoves, line); err != nil {
+			return err
+		}
 		selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.False.Target]})
 		return nil
 	default:
@@ -444,10 +566,15 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 	}
 }
 
-type optIRRegisterMove struct {
-	destination int
-	source      int
-	bits        int
+type optIRValueLocation struct {
+	register int
+	slot     optir.SpillSlotID
+}
+
+type optIRLocationMove struct {
+	destination optIRValueLocation
+	source      optIRValueLocation
+	typ         optir.Type
 }
 
 func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error {
@@ -455,16 +582,15 @@ func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error 
 	if err != nil {
 		return err
 	}
-	selector.emitEdgeCopies(moves, line)
-	return nil
+	return selector.emitEdgeCopies(moves, line)
 }
 
-func (selector *optIRArm64Selector) edgeMoves(edge optir.Edge) ([]optIRRegisterMove, error) {
+func (selector *optIRArm64Selector) edgeMoves(edge optir.Edge) ([]optIRLocationMove, error) {
 	target := optIRBlock(selector.cfg, edge.Target)
 	if target == nil || len(target.Parameters) != len(edge.Arguments) {
 		return nil, fmt.Errorf("invalid edge to block %d", edge.Target)
 	}
-	var moves []optIRRegisterMove
+	var moves []optIRLocationMove
 	for index, parameter := range target.Parameters {
 		argument := edge.Arguments[index]
 		if parameter.Type == optir.Type("()") {
@@ -473,15 +599,22 @@ func (selector *optIRArm64Selector) edgeMoves(edge optir.Edge) ([]optIRRegisterM
 		if selector.types[argument] != parameter.Type {
 			return nil, fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
 		}
-		destination, source := selector.register(parameter.ID), selector.register(argument)
+		destination, err := selector.valueLocation(parameter.ID)
+		if err != nil {
+			return nil, err
+		}
+		source, err := selector.valueLocation(argument)
+		if err != nil {
+			return nil, err
+		}
 		if destination != source {
-			moves = append(moves, optIRRegisterMove{destination: destination, source: source, bits: optIRBits(parameter.Type)})
+			moves = append(moves, optIRLocationMove{destination: destination, source: source, typ: parameter.Type})
 		}
 	}
 	return moves, nil
 }
 
-func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRRegisterMove, line int) {
+func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRLocationMove, line int) error {
 	for len(moves) > 0 {
 		progress := false
 		for index, move := range moves {
@@ -492,7 +625,9 @@ func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRRegisterMove, li
 			if usedAsSource {
 				continue
 			}
-			selector.move(move.destination, move.source, move.bits, line)
+			if err := selector.emitLocationMove(move, line); err != nil {
+				return err
+			}
 			moves = append(moves[:index], moves[index+1:]...)
 			progress = true
 			break
@@ -503,13 +638,31 @@ func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRRegisterMove, li
 		// A cycle: save one destination's old value, then replace every
 		// use of it with the reserved scratch and continue acyclically.
 		cycle := moves[0].destination
-		selector.move(optIRCopyScratch, cycle, 64, line)
+		var cycleType optir.Type
+		for _, move := range moves {
+			if move.source == cycle {
+				cycleType = move.typ
+				break
+			}
+		}
+		if cycleType == "" {
+			return fmt.Errorf("parallel-copy cycle has no source for destination")
+		}
+		if cycle.slot == 0 {
+			// Preserve the strict register-only path's full-width cycle save.
+			// Individual destinations still select their declared width.
+			selector.move(optIRCopyScratch, cycle.register, 64, line)
+		} else if err := selector.readLocation(cycle, optIRCopyScratch, cycleType, line); err != nil {
+			return err
+		}
+		scratch := optIRValueLocation{register: optIRCopyScratch}
 		for index := range moves {
 			if moves[index].source == cycle {
-				moves[index].source = optIRCopyScratch
+				moves[index].source = scratch
 			}
 		}
 	}
+	return nil
 }
 
 func (selector *optIRArm64Selector) constant(destination int, value uint64, bits int, line int) {
@@ -571,8 +724,9 @@ func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...
 	}
 	if destination, ok := operands[0].(asm.Register); ok {
 		switch mnemonic {
-		case "mov", "movz", "movk", "sxtb", "sxth", "sxtw", "uxtb", "uxth", "eor", "neg", "add", "sub", "mul", "and", "orr", "cset":
-			if !destination.ZeroRegister() {
+		case "mov", "movz", "movk", "sxtb", "sxth", "sxtw", "uxtb", "uxth", "eor", "neg", "add", "sub", "mul", "and", "orr", "cset",
+			"ldr", "ldrb", "ldrh", "ldrsb", "ldrsh":
+			if (destination.Class == asm.ClassW || destination.Class == asm.ClassX) && !destination.ZeroRegister() {
 				selector.written[destination.Num] = true
 			}
 		}
@@ -672,12 +826,6 @@ func optIRArm64ASTScalarType(expression ast.Expression) (optir.Type, bool) {
 	}
 	_, _, ok = optIRArm64Type(typ)
 	return typ, ok
-}
-
-func (selector *optIRArm64Selector) register(value optir.ValueID) int { return selector.colors[value] }
-
-func (selector *optIRArm64Selector) valueRegister(value optir.ValueID) asm.Register {
-	return optIRRegister(selector.register(value), optIRBits(selector.types[value]))
 }
 
 func (selector *optIRArm64Selector) edgeLabel(block optir.BlockID, side string) string {

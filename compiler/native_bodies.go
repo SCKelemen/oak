@@ -272,7 +272,7 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeC
 	if err != nil {
 		return nil, 0, ""
 	}
-	changes := analyses.sccpSimplification.Changes() + analyses.simplification.GVN.EliminatedOperations + analyses.simplification.DCE.EliminatedOperations + analyses.loopMotion.HoistedOperations
+	changes := analyses.sccpSimplification.Changes() + analyses.simplification.Changes() + analyses.loopMotion.HoistedOperations
 	if changes == 0 {
 		return nil, 0, ""
 	}

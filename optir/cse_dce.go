@@ -29,8 +29,13 @@ type DCEReport struct {
 }
 
 type GVNDCEReport struct {
-	GVN GVNReport
-	DCE DCEReport
+	BlockParameters BlockParameterCongruenceReport
+	GVN             GVNReport
+	DCE             DCEReport
+}
+
+func (report GVNDCEReport) Changes() int {
+	return report.BlockParameters.EliminatedParameters + report.GVN.EliminatedOperations + report.DCE.EliminatedOperations
 }
 
 type operationLocation struct {
@@ -208,12 +213,17 @@ func EliminateDeadCode(cfg CFG) (CFG, DCEReport, error) {
 	return result, report, nil
 }
 
-// SimplifyGVNDCE is the generic scalar cleanup order. GVN exposes unused
-// congruent producers and copies, and DCE then removes dead pure chains. The
-// result remains an analysis-only candidate until an emission equivalence gate
+// SimplifyGVNDCE is the generic scalar cleanup order. Trivial phi-like block
+// parameters are removed first so GVN can see dominating values through joins;
+// GVN then exposes unused producers and copies, and DCE removes dead pure
+// chains. The result remains a candidate until an emission equivalence gate
 // consumes it.
 func SimplifyGVNDCE(cfg CFG) (CFG, GVNDCEReport, error) {
-	common, gvn, err := EliminateGlobalValueRedundancies(cfg)
+	parameters, parameterReport, err := EliminateCongruentBlockParameters(cfg)
+	if err != nil {
+		return CFG{}, GVNDCEReport{}, err
+	}
+	common, gvn, err := EliminateGlobalValueRedundancies(parameters)
 	if err != nil {
 		return CFG{}, GVNDCEReport{}, err
 	}
@@ -221,7 +231,7 @@ func SimplifyGVNDCE(cfg CFG) (CFG, GVNDCEReport, error) {
 	if err != nil {
 		return CFG{}, GVNDCEReport{}, err
 	}
-	return dead, GVNDCEReport{GVN: gvn, DCE: dce}, nil
+	return dead, GVNDCEReport{BlockParameters: parameterReport, GVN: gvn, DCE: dce}, nil
 }
 
 func validateAnalysisCFG(cfg CFG) error {
