@@ -6,17 +6,19 @@ import Oak.FloatOps
 `Oak.LoweringRefinement` relates the extraction and verifier lowerings for the
 shared integer and aggregate language.  This module starts the corresponding
 floating-point seam with the binary32 operations emitted by
-`oak build -lean-floats bits`: `+`, `-`, `*`, `/`, and the six comparisons.
+`oak build -lean-floats bits`: `+`, `-`, `*`, `/`, `fma`, and the six
+comparisons.
 
-For addition, subtraction, and multiplication, the source side uses the exact
-`Oak.FloatOps` carriers, modulo their documented canonical-NaN reading of
-Lean's `Float32`. Division uses Lean's `Float32` division, the same semantic
-primitive the extraction emits; its refinement establishes operation identity
-and operand order, not a new bit-level proof of division rounding. The verifier
-side has the operation names used by `asm/floats_lowering.go` and
-`asm/floats_ops.go`: `fadd`, `fsub`, `fmul`, and `fdiv`, each at width 32. The
-Go render test in `asm/lowering_refinement_test.go` pins production lowering to
-the `lowerF` shapes below.
+For addition, subtraction, multiplication, and fused multiply-add, the source
+side uses the exact `Oak.FloatOps` carriers, modulo their documented
+canonical-NaN reading of Lean's `Float32`. Division uses Lean's `Float32`
+division, the same semantic primitive the extraction emits; its refinement
+establishes operation identity and operand order, not a new bit-level proof of
+division rounding. The verifier side has the operation names used by
+`asm/floats_lowering.go` and `asm/floats_ops.go`: `fadd`, `fsub`, `fmul`,
+`fdiv`, and ternary `fma`, each at width 32. The Go render test in
+`asm/lowering_refinement_test.go` pins production lowering to the `lowerF`
+shapes below.
 
 The second increment adds literals after decimal parsing has rounded them to
 binary32 bits, plus straight-line local declarations and rebindings.  The
@@ -32,6 +34,8 @@ any finite sequence of scalar `f32` bindings: both arms start from the same
 scope, execute assignments in order, and merge every written name.
 The eighth adds operation-preserving binary32 division throughout that existing
 pure control-flow and call surface.
+The ninth adds the extraction's exact `Oak.FloatOps.fma32` carrier and the
+verifier's ordered ternary `fma` application throughout the same surface.
 Decimal parsing itself, conversions, spans, nested/effectful statement control
 flow, borrowing/recursive/effectful calls, binary64, and SIMD remain outside
 this theorem.
@@ -172,6 +176,7 @@ inductive Expr
   | param (name : String)
   | literal (bits : UInt32)
   | binary (op : SourceOp) (left right : Expr)
+  | fma (multiplicand multiplier addend : Expr)
   | unary (op : SourceUnaryOp) (operand : Expr)
   | copysign (magnitude sign : Expr)
   /-- A local declaration or rebinding.  The initializer is evaluated in the
@@ -191,6 +196,9 @@ def Expr.eval : Expr → SourceEnv → Float32
   | .param name, ρ => ρ name
   | .literal bits, _ => Float32.ofBits bits
   | .binary op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+  | .fma multiplicand multiplier addend, ρ =>
+      Oak.FloatOps.fma32
+        (multiplicand.eval ρ) (multiplier.eval ρ) (addend.eval ρ)
   | .unary op operand, ρ => op.eval (operand.eval ρ)
   | .copysign magnitude sign, ρ =>
       Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
@@ -204,6 +212,7 @@ mutual
     | param (name : String)
     | literal (bits : UInt32)
     | float (op : VerifierOp) (left right : Term)
+    | fma (multiplicand multiplier addend : Term)
     | unary (op : VerifierUnaryOp) (operand : Term)
     | copysign (magnitude sign : Term)
     | ite (guard : BoolTerm) (whenTrue whenFalse : Term)
@@ -234,6 +243,9 @@ mutual
     | .param name, ρ => ρ name
     | .literal bits, _ => Float32.ofBits bits
     | .float op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+    | .fma multiplicand multiplier addend, ρ =>
+        Oak.FloatOps.fma32
+          (multiplicand.eval ρ) (multiplier.eval ρ) (addend.eval ρ)
     | .unary op operand, ρ => op.eval (operand.eval ρ)
     | .copysign magnitude sign, ρ =>
         Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
@@ -256,6 +268,9 @@ def lowerWith : Expr → TermEnv → Term
   | .literal bits, _ => .literal bits
   | .binary op left right, σ =>
       .float (lowerOp op) (lowerWith left σ) (lowerWith right σ)
+  | .fma multiplicand multiplier addend, σ =>
+      .fma (lowerWith multiplicand σ) (lowerWith multiplier σ)
+        (lowerWith addend σ)
   | .unary op operand, σ =>
       .unary (lowerUnaryOp op) (lowerWith operand σ)
   | .copysign magnitude sign, σ =>
@@ -290,6 +305,10 @@ theorem lowerWith_eval (e : Expr) (parameters current : SourceEnv) (σ : TermEnv
       simp only [lowerWith, Term.eval, Expr.eval]
       rw [ihLeft current σ hσ, ihRight current σ hσ]
       exact lowerOp_eval op (left.eval current) (right.eval current)
+  | fma multiplicand multiplier addend ihMultiplicand ihMultiplier ihAddend =>
+      simp only [lowerWith, Term.eval, Expr.eval]
+      rw [ihMultiplicand current σ hσ, ihMultiplier current σ hσ,
+          ihAddend current σ hσ]
   | unary op operand ih =>
       simp only [lowerWith, Term.eval, Expr.eval]
       rw [ih current σ hσ]
@@ -792,6 +811,8 @@ example : lowerF (.binary .add a b) = .float .fadd (.param "a") (.param "b") := 
 example : lowerF (.binary .sub a b) = .float .fsub (.param "a") (.param "b") := rfl
 example : lowerF (.binary .mul a b) = .float .fmul (.param "a") (.param "b") := rfl
 example : lowerF (.binary .div a b) = .float .fdiv (.param "a") (.param "b") := rfl
+example : lowerF (.fma a b c) =
+    .fma (.param "a") (.param "b") (.param "c") := rfl
 example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
 example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
 example : lowerF (.copysign (.unary .neg a) b) =
