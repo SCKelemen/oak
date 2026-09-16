@@ -7,6 +7,17 @@ emitted C), how far behind is it, and why? The OS pilot is moving to the
 native backend, so this is the gap that decides whether the golden-case
 results hold there.
 
+## Numerical optimization experiments
+
+[Measured FMA maps and reductions](exact_fma/README.md) compare C, native
+identity, native without map vectorization, and native optimized, with
+interleaved timings and raw assembly/verdict reports. At clean revision
+`1ef944b1` on an M4 Max, extending map vectorization to checked explicit
+FMA improved its f32/f64 kernels by 3.40×/1.70× over the no-map control,
+with proven verdicts. Native still trails C. Sequential byte-dot FMA was
+slower, so automatic contraction was not enabled. These loaded-host
+microbenchmarks do not replace a representative-suite performance gate.
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

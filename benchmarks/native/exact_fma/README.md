@@ -63,3 +63,49 @@ and retained proven native verdicts. Both experiments remain reproducible here.
 Core placement and machine contention are uncontrolled; use the raw samples
 and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
+
+## Recorded results: M4 Max, 2026-09-17
+
+Clean revision `1ef944b1537ec1dbad9653ff42f7068f7415c669`, Apple clang
+21.0.0, default 4,096 elements × 4,096 calls, nine interleaved samples per
+variant. Dates here are local (Europe/Stockholm); reports use UTC. Entries
+are median ns/element, not best times. The host was heavily loaded:
+one-minute load averages 78.40–79.69 during dot and 75.91–72.47 during map.
+These are observed kernel improvements, not a quiet-host regression gate
+or a claim about other workloads or machines.
+
+### Independent explicit-FMA maps
+
+| Width | C | Native identity | Native without maps | Native optimized | Speedup over no-map control | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| f32 | 0.0591 | 0.5596 | 0.3855 | 0.1134 | 3.40× | 1.92× |
+| f64 | 0.1455 | 0.5767 | 0.3861 | 0.2276 | 1.70× | 1.56× |
+
+Every native map body, including the strict controls, has a `proven`
+verdict. The scalar FMA body is 76 encoded bytes; its vectorized form is
+156 bytes, including the scalar remainder. This is a runtime win with a
+code-size cost, not an instruction-count-only result. All sample checksums
+agree. Native still trails C; that remaining gap must not disappear from
+the performance record. Full timing distributions, strict-map controls,
+assembly and verdicts are in the [raw map report](results/map-m4-max-2026-09-17.json).
+
+### Sequential byte dot products: contraction rejected
+
+| Width | C strict | C explicit FMA | Native optimized strict | Native optimized explicit FMA | Native FMA / strict |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 | 0.9331 | 1.6208 | 1.0355 | 1.3772 | 1.33× |
+| f64 | 0.9809 | 1.5376 | 1.0481 | 1.4322 | 1.37× |
+
+Contraction makes this sequential loop slower despite reducing optimized
+body size from 120 to 116 bytes. The generated fused loop carries its
+accumulator through `fmadd`, whereas the strict loop carries it through
+`fadd` after an independent `fmul`; the result is consistent with a
+loop-carried dependency cost, not a measurement of instruction latency.
+There is no map here: the no-map and optimized controls have identical
+assembly, and their timing variation illustrates the host noise.
+
+Strict native dot bodies remain `witness-checked`, not proven; explicit
+FMA bodies are proven against their own source. Checksum agreement does
+not upgrade those verdicts or establish a general contraction license.
+Full results, including identity and no-map controls, are in the
+[raw dot report](results/dot-m4-max-2026-09-17.json).
