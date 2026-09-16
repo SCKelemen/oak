@@ -2989,6 +2989,19 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
 				continue
 			}
+			// Unification reads a refined primitive as its base: a refined
+			// parameter takes only its own refinement's values (a base value
+			// gets there through the checked construction; instantiations of
+			// one template are distinct types, docs/spec/20-types.md
+			// section 12), while a refined value erases into a base
+			// parameter.
+			if expectedPrim, isPrim := expectedType.(*PrimitiveType); isPrim && expectedPrim.Refinement != "" {
+				if argPrim, isArgPrim := argType.(*PrimitiveType); !isArgPrim || argPrim.Refinement != expectedPrim.Refinement {
+					validCall = false
+					tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
+					continue
+				}
+			}
 			bindings = merged
 			continue
 		}
@@ -4759,6 +4772,13 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		if (valuePrim.Name[0] == 'i') == (varPrim.Name[0] == 'i') {
 			valueWidth := tc.getBitWidth(valuePrim.Name)
 			varWidth := tc.getBitWidth(varPrim.Name)
+			// Only fixed widths widen: the untyped literal type `int` and
+			// the platform-width integers have no width here, and an `int`
+			// that flowed into a fixed type would reach the emitter as a
+			// type it does not have (`identity(7)` with no type argument).
+			if valueWidth == 0 || varWidth == 0 {
+				return false
+			}
 			// Widening is allowed (value can be narrower)
 			return valueWidth <= varWidth
 		}
