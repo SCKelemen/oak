@@ -95,7 +95,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
 			return nil, err
 		}
-		plan, planFixed, planErr := planOptIRRV64Spills(cfg, spillRegisters, fixed)
+		plan, planFixed, planErr := planOptIRSpillsKeepingCanonicalLoopCondition(cfg, spillRegisters, fixed)
 		if planErr != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 allocation: %v; spill plan: %w", coloringErr, planErr)
 		}

@@ -28,27 +28,37 @@ type optIRArm64Allocation struct {
 	liveOut            map[optir.BlockID][]optir.ValueID
 }
 
-// optIRArm64Allocate preserves the strict coloring path byte-for-byte. Only a
-// pressure refusal constructs and independently verifies an abstract spill
-// plan using a pool that leaves three caller-saved scratch registers outside
-// the allocator.
+// optIRArm64Allocate preserves the production strict/spill register sets.
 func optIRArm64Allocate(cfg optir.CFG, types map[optir.ValueID]optir.Type, fixed map[optir.ValueID]int) (optIRArm64Allocation, error) {
-	coloring, strictErr := optir.ColorRegisters(cfg, optIRArm64Registers, fixed)
+	return optIRArm64AllocateWithRegisters(cfg, types, fixed, optIRArm64Registers, optIRArm64SpillRegisters)
+}
+
+// optIRArm64AllocateWithRegisters preserves the strict coloring path
+// byte-for-byte. Only a pressure refusal constructs and independently verifies
+// an abstract spill plan using a pool that leaves the three scratch registers
+// outside the allocator.
+func optIRArm64AllocateWithRegisters(cfg optir.CFG, types map[optir.ValueID]optir.Type, fixed map[optir.ValueID]int, strictRegisters, spillRegisters []int) (optIRArm64Allocation, error) {
+	coloring, strictErr := optir.ColorRegisters(cfg, strictRegisters, fixed)
 	if strictErr == nil {
 		return optIRArm64Allocation{colors: coloring.Colors, liveOut: coloring.LiveOut}, nil
 	}
-	plan, err := optir.PlanRegisters(cfg, optIRArm64SpillRegisters, fixed)
+	for _, register := range spillRegisters {
+		if register == optIRSpillOperand0 || register == optIRSpillOperand1 || register == optIRCopyScratch {
+			return optIRArm64Allocation{}, fmt.Errorf("spill register pool aliases reserved scratch x%d", register)
+		}
+	}
+	plan, planFixed, err := planOptIRSpillsKeepingCanonicalLoopCondition(cfg, spillRegisters, fixed)
 	if err != nil {
 		return optIRArm64Allocation{}, fmt.Errorf("strict coloring: %v; spill planning: %w", strictErr, err)
 	}
-	if err := optir.VerifyRegisterPlan(cfg, optIRArm64SpillRegisters, fixed, plan); err != nil {
+	if err := optir.VerifyRegisterPlan(cfg, spillRegisters, planFixed, plan); err != nil {
 		return optIRArm64Allocation{}, fmt.Errorf("spill plan evidence: %w", err)
 	}
-	rematerialization, err := optir.AnalyzeRematerialization(cfg, optIRArm64SpillRegisters, fixed, plan)
+	rematerialization, err := optir.AnalyzeRematerialization(cfg, spillRegisters, planFixed, plan)
 	if err != nil {
 		return optIRArm64Allocation{}, fmt.Errorf("rematerialization analysis: %w", err)
 	}
-	if err := optir.VerifyRematerializationPlan(cfg, optIRArm64SpillRegisters, fixed, plan, rematerialization); err != nil {
+	if err := optir.VerifyRematerializationPlan(cfg, spillRegisters, planFixed, plan, rematerialization); err != nil {
 		return optIRArm64Allocation{}, fmt.Errorf("rematerialization evidence: %w", err)
 	}
 	definitions := optIRArm64Definitions(cfg)

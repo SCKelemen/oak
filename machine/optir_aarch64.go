@@ -36,6 +36,10 @@ const (
 // search independently seam-checks and translation-validates every returned
 // body before it may ship.
 func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, error) {
+	return lowerOptIRArm64(cfg, template, optIRArm64Registers, optIRArm64SpillRegisters)
+}
+
+func lowerOptIRArm64(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int) (*asm.Function, error) {
 	if template == nil || template.Signature == nil || template.Signature.Name == nil {
 		return nil, fmt.Errorf("machine: OptIR lowering needs an assembler function template")
 	}
@@ -72,7 +76,7 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	if err != nil {
 		return nil, err
 	}
-	allocation, err := optIRArm64Allocate(cfg, types, fixed)
+	allocation, err := optIRArm64AllocateWithRegisters(cfg, types, fixed, strictRegisters, spillRegisters)
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}

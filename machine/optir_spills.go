@@ -162,13 +162,14 @@ func optIRRV64SpillCFGAcyclic(cfg optir.CFG) (bool, error) {
 	return visited == len(cfg.Blocks), nil
 }
 
-// planOptIRRV64Spills keeps the predicate of the one admitted spill-loop shape
-// in a register. The generic cost model otherwise (correctly) prefers spilling
-// that cheap Bool, but byte-width loop stores are outside the instruction
-// verifier's frame-memory model. Each attempted precolor is checked by the
-// generic planner; failure remains an ordinary candidate refusal.
-func planOptIRRV64Spills(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int) (optir.RegisterPlan, map[optir.ValueID]int, error) {
-	condition, canonicalLoop := optIRRV64CanonicalSpillLoopCondition(cfg)
+// planOptIRSpillsKeepingCanonicalLoopCondition keeps the predicate of the one
+// admitted spill-loop shape in a register. The generic cost model otherwise
+// (correctly) prefers spilling that cheap Bool, but byte-width loop stores are
+// outside the instruction verifier's frame-memory model. Each attempted
+// precolor is checked by the generic planner; failure remains an ordinary
+// candidate refusal.
+func planOptIRSpillsKeepingCanonicalLoopCondition(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int) (optir.RegisterPlan, map[optir.ValueID]int, error) {
+	condition, canonicalLoop := optIRCanonicalSpillLoopCondition(cfg)
 	if canonicalLoop {
 		if _, alreadyFixed := fixed[condition]; alreadyFixed {
 			plan, err := optir.PlanRegisters(cfg, pool, fixed)
@@ -273,7 +274,7 @@ func optIRRV64LIWords(value int64) uint64 {
 	return 2
 }
 
-func optIRRV64CanonicalSpillLoopCondition(cfg optir.CFG) (optir.ValueID, bool) {
+func optIRCanonicalSpillLoopCondition(cfg optir.CFG) (optir.ValueID, bool) {
 	structure, err := optir.AnalyzeLoopStructure(cfg)
 	if err != nil || len(structure.Loops) != 1 || len(structure.BackEdges) != 1 {
 		return 0, false
@@ -337,7 +338,7 @@ func validateOptIRRV64SpillLoop(cfg optir.CFG, plan optir.RegisterPlan) error {
 			}
 		}
 	}
-	if _, canonical := optIRRV64CanonicalSpillLoopCondition(cfg); !canonical {
+	if _, canonical := optIRCanonicalSpillLoopCondition(cfg); !canonical {
 		return refuse()
 	}
 	return nil

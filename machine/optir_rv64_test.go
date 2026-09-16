@@ -424,7 +424,7 @@ func TestLowerOptIRRV64KeepsExpensiveConstantsInVerifiedSpillSlots(t *testing.T)
 	source.WriteByte('\n')
 	declaration := optIRRV64Declaration(t, source.String())
 	cfg := optIRExpensiveConstantPressureCFG(values)
-	plan, planFixed, err := planOptIRRV64Spills(cfg, optIRRV64SpillRegisters, nil)
+	plan, planFixed, err := planOptIRSpillsKeepingCanonicalLoopCondition(cfg, optIRRV64SpillRegisters, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ loop_spill: (n: u32): u32 = {
 	}}
 	fixed := map[optir.ValueID]int{1: 10}
 	spillRegisters := []int{10, 5}
-	plan, planFixed, err := planOptIRRV64Spills(cfg, spillRegisters, fixed)
+	plan, planFixed, err := planOptIRSpillsKeepingCanonicalLoopCondition(cfg, spillRegisters, fixed)
 	if err != nil {
 		t.Fatal(err)
 	}

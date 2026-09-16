@@ -67,6 +67,93 @@ func TestLowerOptIRArm64MaterializesVerifiedSpills(t *testing.T) {
 	}
 }
 
+func TestLowerOptIRArm64MaterializesCanonicalLoopCarriedSpillAndVerifies(t *testing.T) {
+	declaration := parseOptIRArm64CallFunctions(t, `
+loop_spill_a64: (n: u32): u32 = {
+  i: u32 = 0
+  acc: u32 = 0
+  while i < n {
+    acc = acc + i
+    i = i + u32(1)
+  }
+  acc
+}
+`)["loop_spill_a64"]
+	cfg := optir.CFG{Name: "loop_spill_a64", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
+		{ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "n"}}, Operations: []optir.Operation{
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 3, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{2, 3}}}},
+		{ID: 1, Parameters: []optir.Value{{ID: 4, Type: "u32", Name: "i"}, {ID: 5, Type: "u32", Name: "acc"}}, Operations: []optir.Operation{
+			{Code: optir.OpLess, Results: []optir.Value{{ID: 6, Type: optir.TypeBool}}, Operands: []optir.ValueID{4, 1}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 6, True: optir.Edge{Target: 2}, False: optir.Edge{Target: 3}}},
+		{ID: 2, Operations: []optir.Operation{
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 7, Type: "u32"}}, Operands: []optir.ValueID{5, 4}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 8, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 9, Type: "u32"}}, Operands: []optir.ValueID{4, 8}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{9, 7}}}},
+		{ID: 3, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{5}}},
+	}}
+	strictRegisters, spillRegisters := []int{0, 9}, []int{0, 9}
+	fixed := map[optir.ValueID]int{1: 0}
+	if _, err := optir.ColorRegisters(cfg, strictRegisters, fixed); err == nil {
+		t.Fatal("test CFG did not exceed the compact strict register pool")
+	}
+	plan, planFixed, err := planOptIRSpillsKeepingCanonicalLoopCondition(cfg, spillRegisters, fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planFixed[6] != 9 || plan.Colors[6] != 9 {
+		t.Fatalf("loop condition allocation = fixed %d/color %d, want x9", planFixed[6], plan.Colors[6])
+	}
+	if _, spilled := plan.Spills[6]; spilled {
+		t.Fatalf("loop condition was spilled: %+v", plan.Spills)
+	}
+	if _, spilledI := plan.Spills[4]; !spilledI {
+		if _, spilledAcc := plan.Spills[5]; !spilledAcc {
+			t.Fatalf("test plan has no loop-carried spill: %+v", plan.Spills)
+		}
+	}
+	for _, slot := range plan.Slots {
+		if slot.WidthBytes != 4 || slot.AlignmentBytes != 4 {
+			t.Fatalf("loop plan has non-word spill slot: %+v", slot)
+		}
+	}
+	if err := optir.VerifyRegisterPlan(cfg, spillRegisters, planFixed, plan); err != nil {
+		t.Fatalf("loop spill plan evidence: %v", err)
+	}
+	template := &asm.Function{
+		Name: cfg.Name, Arch: asm.ArchArm64, Signature: declaration,
+		Bindings: []asm.Binding{{Register: w(0), Param: "n"}},
+	}
+	lowered, err := lowerOptIRArm64(cfg, template, strictRegisters, spillRegisters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame == 0 || lowered.Frame%16 != 0 {
+		t.Fatalf("loop spill frame = %d, want a nonzero aligned frame", lowered.Frame)
+	}
+	for _, instruction := range []string{"str ", "ldr ", "cbz ", "b optir_b1"} {
+		if !strings.Contains(body, instruction) {
+			t.Errorf("loop-spill body lacks %q:\n%s", instruction, body)
+		}
+	}
+	if findings := asm.Check(lowered, declaration, nil); len(findings) != 0 {
+		t.Fatalf("loop-spill body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("loop-spill body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestOptIRArm64SpillPoolRefusesReservedScratchAliasing(t *testing.T) {
+	cfg := optIRPressureCFG(3)
+	if _, err := optIRArm64AllocateWithRegisters(cfg, optIRTypes(cfg), map[optir.ValueID]int{1: 0}, []int{0}, []int{0, optIRSpillOperand0}); err == nil || !strings.Contains(err.Error(), "aliases reserved scratch") {
+		t.Fatalf("scratch-aliasing spill pool error = %v", err)
+	}
+}
+
 func TestLowerOptIRArm64RematerializesConstantSpills(t *testing.T) {
 	const values = 20
 	var source strings.Builder
