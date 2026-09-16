@@ -637,6 +637,25 @@ func isFrameSpill(instr Instruction) bool {
 	return isLoad(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Loads[instr.Mnemonic] != 0 || rv64Stores[instr.Mnemonic] != 0
 }
 
+// isGlobalArrayAddress reports `add xA, xN, :lo12:G` for a top-level array
+// G the executor reads as a span (bindGlobalAddress).
+func isGlobalArrayAddress(x *pathExecutor, instr Instruction) bool {
+	if instr.Mnemonic != "add" || len(instr.Operands) != 3 {
+		return false
+	}
+	sym, isSym := instr.Operands[2].(Symbol)
+	if !isSym || !sym.Lo12 {
+		return false
+	}
+	_, isSpan := x.spans[sym.Name]
+	global, known := x.globals[sym.Name]
+	if !isSpan || !known {
+		return false
+	}
+	_, _, _, isArray := globalArrayShape(global)
+	return isArray
+}
+
 // isHeaderLoad reports a scalar load through a register base (a span or
 // table element) that an exit test may read: not the frame, not a vector.
 func isHeaderLoad(instr Instruction) bool {
@@ -1999,6 +2018,14 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 				reason, ok = x.frameAccess(instr, st)
 			case isHeaderLoad(instr):
 				reason, ok = x.load(instr, st)
+			case isGlobalArrayAddress(x, instr):
+				_, reason, ok = x.bindGlobalAddress(instr, st)
+			case instr.Mnemonic == "ldp" && !hasVectorOperand(instr):
+				// A pair load through a register base ahead of the exit
+				// test (a record copied before the loop): two loads
+				// (loadPair). Fifteen of the prover's bodies stopped here
+				// with "instruction ldp".
+				reason, ok = x.loadPair(instr, st)
 			default:
 				reason, ok = step(instr, st)
 			}
@@ -2694,6 +2721,13 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				}
 				if hasVectorOperand(instr) {
 					if reason, ok := x.stepVector(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
+				if handled, reason, ok := x.bindGlobalAddress(instr, st); handled {
+					if !ok {
 						return nil, reason, false
 					}
 					pc++
