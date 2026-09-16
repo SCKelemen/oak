@@ -238,6 +238,11 @@ type Instruction struct {
 	Cond     string // condition suffix for b.cond ("ne", "eq", ...), else ""
 	Operands []Operand
 	Line     int
+	// OptIRCallSite is the nonzero SSA result ID of an OptIR call emitted as
+	// this instruction. It is compiler-owned, is not parsed or encoded, and
+	// lets post-materialization admission bind the final call target back to
+	// the exact fingerprinted CFG occurrence after scheduling and rewriting.
+	OptIRCallSite uint32
 	// CheckedFacts are instruction-local references to semantic facts
 	// established before lowering. They are not parsed from .oakasm and are
 	// powerless under Check; CheckWithFacts must match them against an

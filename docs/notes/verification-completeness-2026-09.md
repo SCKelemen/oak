@@ -322,9 +322,15 @@ checks exact child access claims, typed effect joins, closure, and root order;
 trace model. Selected production decisions at both seams are pinned to Lean
 examples. This does not yet remove the surrounding TCB: the models abstract
 concrete CFG extraction and SSA verification, source and operation/type
-validation, authority construction, SHA identity, callee-summary truth,
-source lowering, and machine-callee identity; universal Go-to-Lean
-correspondence remains open.
+validation, authority construction, SHA identity, callee-summary truth, and
+source lowering. Static machine-callee occurrence identity is now closed for
+the current scalar OptIR subset by a separate post-materialization gate:
+nonzero SSA call-site IDs survive through final scheduling, and
+`Oak.OptIRMachineCallIdentity` proves that acceptance contains exactly the
+authorized `{site ID, callee}` occurrences, modulo physical order. The bounded
+Go-to-Lean pins cover both native targets and all rejection shapes. Call
+placement/control flow, dynamic counts, argument ABI, callee implementation
+equivalence, and universal Go-to-Lean correspondence remain open.
 
 ### 3.4 Object, executable, relocation, and linking are not formally closed
 

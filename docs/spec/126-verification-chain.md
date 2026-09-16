@@ -140,8 +140,22 @@ decisions at both seams are pinned to kernel-checked examples. This is a
 **proved structural model with bounded correspondence**, not full
 implementation refinement: concrete CFG extraction and SSA verification,
 source and opcode/type validators, authority construction, SHA identity,
-callee-summary truth, source re-lowering, and machine-callee identity remain
-outside the theorems.
+callee-summary truth, and source re-lowering remain outside the theorems.
+
+The downstream static machine-callee identity seam is now separately
+**proved with bounded correspondence** for every current scalar OptIR call,
+whether or not it carries memory effects. Each call's nonzero SSA result ID is
+retained as non-emitted metadata on its final AArch64 `bl` or RV64 `call`.
+After cleanup, reallocation, and scheduling, candidate admission re-verifies
+the exact CFG and block-layout evidence and rejects an untagged, missing,
+extra, duplicated, retargeted, malformed, or indirect occurrence.
+`Oak.OptIRMachineCallIdentity.check_sound` proves that acceptance gives an
+exact permutation of certified `{site ID, callee}` occurrences with unique
+IDs; compiler tests exhaust both target classifiers and pin the
+accepting/refusing occurrence decisions to Lean examples. This proves static
+occurrence identity, not control-flow placement,
+dynamic call counts, arguments/ABI, callee implementation equivalence,
+encoding, relocation, or the non-OptIR native path.
 
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register

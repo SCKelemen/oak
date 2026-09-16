@@ -87,7 +87,16 @@ func (d *nativeDriver) Check(c *opt.Candidate) []string {
 	if d.tc != nil {
 		facts = d.tc.IndexProofs()
 	}
-	return asm.CheckWithFacts(c.Body.(*asm.Function), d.source, d.symbols, facts)
+	function := c.Body.(*asm.Function)
+	findings := asm.CheckWithFacts(function, d.source, d.symbols, facts)
+	if lane, ok := c.Config.(nativegen.Lane); ok && lane.UseOptIR {
+		if lane.OptIR == nil {
+			findings = append(findings, "compiler: OptIR machine-call identity has no CFG authority")
+		} else if err := checkOptIRMachineCallIdentity(*lane.OptIR, function); err != nil {
+			findings = append(findings, err.Error())
+		}
+	}
+	return findings
 }
 
 // Validate runs the verifier, through the verdict cache

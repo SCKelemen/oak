@@ -536,8 +536,8 @@ func (selector *optIRArm64Selector) call(operation optir.Operation) error {
 	if err := selector.emitEdgeCopies(moves, line); err != nil {
 		return err
 	}
-	selector.emit("bl", line, asm.Symbol{Name: callee})
 	result := operation.Results[0]
+	selector.emitCall("bl", line, result.ID, asm.Symbol{Name: callee})
 	destination, err := selector.writeValue(result.ID, optIRCopyScratch)
 	if err != nil {
 		return err
@@ -893,6 +893,14 @@ func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...
 			}
 		}
 	}
+}
+
+func (selector *optIRArm64Selector) emitCall(mnemonic string, line int, site optir.ValueID, operands ...asm.Operand) {
+	selector.emit(mnemonic, line, operands...)
+	index := len(selector.items) - 1
+	instruction := selector.items[index].(asm.Instruction)
+	instruction.OptIRCallSite = uint32(site)
+	selector.items[index] = instruction
 }
 
 // validateOptIRArm64Calls closes the first call subset before selection. Every

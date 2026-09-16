@@ -849,8 +849,21 @@ regions, load PRE from entry/read/call-produced versions or loop phis,
 definite-write summaries, and calls in memory loops remain open; exact
 recursive `NoModRef`, `Ref`, `Mod`,
 and `ModRef` may-effect summaries and their standalone graph checker are
-implemented. Universal concrete CFG/validator-to-Lean refinement, source
-re-lowering, and exact machine-callee identity remain TCB-closure work.
+implemented. Every OptIR direct call now carries its nonzero SSA result ID as
+non-emitted machine metadata. After all cleanup, register reallocation, and
+scheduling, candidate admission independently re-verifies the exact CFG and
+block-layout evidence, then requires the final AArch64 `bl` or RV64 `call`
+occurrences to be an exact permutation of the CFG's `{site ID, callee}`
+authority. Untagged, duplicated, missing, added, retargeted, malformed, or
+indirect calls fail closed before a cached or fresh semantic verdict can
+license selection. `Oak.OptIRMachineCallIdentity` proves the small
+collection/permutation checker; bounded production pins cover both targets
+and every refusal shape. This closes static machine-callee occurrence identity
+for all current scalar OptIR calls, including the certificate-bearing memory
+path. It does not prove call placement, dynamic invocation count, argument ABI
+correctness, callee implementation equivalence, or non-OptIR lowering.
+Universal concrete CFG/validator-to-Lean refinement and source re-lowering
+remain TCB-closure work.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its

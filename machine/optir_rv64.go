@@ -590,7 +590,7 @@ func (selector *optIRRV64Selector) call(operation optir.Operation) error {
 	if err := selector.emitLocationCopies(moves, line); err != nil {
 		return err
 	}
-	selector.emit("call", line, asm.Symbol{Name: callee})
+	selector.emitCall("call", line, result.ID, asm.Symbol{Name: callee})
 
 	destination, err := selector.valueLocation(result.ID)
 	if err != nil {
@@ -1145,6 +1145,14 @@ func (selector *optIRRV64Selector) emit(mnemonic string, line int, operands ...a
 			selector.written[destination.Num] = true
 		}
 	}
+}
+
+func (selector *optIRRV64Selector) emitCall(mnemonic string, line int, site optir.ValueID, operands ...asm.Operand) {
+	selector.emit(mnemonic, line, operands...)
+	index := len(selector.items) - 1
+	instruction := selector.items[index].(asm.Instruction)
+	instruction.OptIRCallSite = uint32(site)
+	selector.items[index] = instruction
 }
 
 func (selector *optIRRV64Selector) register(value optir.ValueID) int {
