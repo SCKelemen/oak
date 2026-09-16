@@ -4505,8 +4505,8 @@ element-wise map over span parameters — `while i < len(a) { dst[i] =
 E(…); i = i + u32(1) }`, `E` over elements at `i` of span parameters of
 one element type (a zip reads several: `dst[i] = a[i] + b[i]`),
 loop-invariant scalars of that type, and constants under `+`, `-`, `&`,
-`|`, `^` for `u32` or `u64` lanes and `+`, `-`, `*`, `/` for `f32` or
-`f64` lanes; `dst` a writable span; the index a `u32`; every span read
+`|`, `^` for `u8`, `u16`, `u32`, or `u64` lanes (sixteen, eight, four,
+or two a trip) and `+`, `-`, `*`, `/` for `f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
 or written the loop's own span `a` or one known to have its length from
 an enclosing `len(dst) == len(a) && len(b) == len(a) ? { … }` (the
 equalities close transitively), or `dst` itself in place (`v[i] = (v[i]
@@ -4531,7 +4531,7 @@ memories through loops", "Loops that never ran keep the entry memory",
 "Loops that never ran keep their variables"). Not rewritten: a value
 reading an element at another index or a scalar the loop assigns, spans
 bound in the body, spans of different element types or without the
-equal-length guard, narrow or Bool lanes, integer multiplication and
+equal-length guard, Bool or signed lanes, integer multiplication and
 shifts, and the remainder loop of a map this rewrite made (the loop
 after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20

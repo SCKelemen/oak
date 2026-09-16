@@ -15,8 +15,8 @@ import (
 //
 // — E built from elements at i of span parameters of one element type
 // (a zip reads several), loop-invariant scalars, and constants with the
-// lane-wise operators (+, -, &, |, ^ over u32 or u64 lanes; +, -, *, /
-// over f32 or f64 lanes, each one rounding per lane as the scalar
+// lane-wise operators (+, -, &, |, ^ over u8, u16, u32, or u64 lanes; +,
+// -, *, / over f32 or f64 lanes, each one rounding per lane as the scalar
 // operator is); dst a writable span parameter of that type; every span
 // read or written either the loop's own span a or one known to have its
 // length, from an enclosing `len(dst) == len(a) && …` — is rewritten,
@@ -48,7 +48,7 @@ import (
 // Not rewritten: a map whose value reads an element at another index
 // (a[j], a[i + 1]) or a non-invariant scalar, one over spans bound in the
 // body rather than parameters, one over spans of different element types
-// or without the equal-length guard, a narrow or Bool lane, an integer
+// or without the equal-length guard, a Bool or signed lane, an integer
 // multiplication or a shift (not in this increment), and the remainder
 // loop of a map this rewrite made.
 
@@ -81,6 +81,10 @@ type mapConstant struct {
 // the simd suffix, the type, and the lane count.
 func mapShapeFor(elem scalar) (suffix, vecType string, lanes int64, ok bool) {
 	switch elem.name {
+	case "u8":
+		return "u8x16", "simd.U8x16", 16, true
+	case "u16":
+		return "u16x8", "simd.U16x8", 8, true
 	case "u32":
 		return "u32x4", "simd.U32x4", 4, true
 	case "u64":

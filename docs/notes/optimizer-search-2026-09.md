@@ -1050,7 +1050,8 @@ This phase targets the measured UTF-8 call/spill gap directly.
     `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
     map or zip over span parameters — `dst[i] = E(a[i], b[i], …)` with `E`
     over the elements at `i`, invariant scalars, and constants under
-    `+ - & | ^` for `u32`/`u64` lanes and `+ - * /` for `f32`/`f64` lanes,
+    `+ - & | ^` for `u8`/`u16`/`u32`/`u64` lanes and `+ - * /` for
+    `f32`/`f64` lanes,
     in place or under an enclosing conjunction of `len(x) == len(y)`
     guards (closed transitively) — runs one vector a trip (the `ldr q`s,
     the lane-wise operations, `str q`) under the slack guard with the
@@ -1071,7 +1072,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
     `asm/loops.go`: a loop ran, or each of its symbols is its header
     value, in every premise that can read an earlier sibling's symbols).
     Still to do: integer multiplication (no integer `mul` lane in v1) and
-    shifts, narrow lanes, spans bound in the body, elements at `i ± k`
+    shifts, signed lanes, spans bound in the body, elements at `i ± k`
     (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
