@@ -7134,7 +7134,13 @@ func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
 	returned, ok := lo.oakTypeOf(callee.ReturnType)
-	if !ok || !sameType(returned, typ) {
+	// An owned array result is matched by identity, not by shape: inlining
+	// an array-returning callee as an aggregate value modeled
+	// hash.blake3_chunk_cv wrongly (the verifier refuted it on a state where
+	// the machine and the C oracle agree exactly), so a caller of such a
+	// callee stays trusted until the aggregate inlining carries the array
+	// result faithfully (docs/spec/125-verification.md section 3).
+	if !ok || returned == nil || (returned.kind == oakArray && returned != typ) || !sameType(returned, typ) {
 		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.describe()), false
 	}
 	restore, reason, ok := lo.enterCall(callee, call)
