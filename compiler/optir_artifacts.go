@@ -27,7 +27,7 @@ const (
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
 	optIRDSERevision              = "oak.optir.dead-store-elimination.v4"
 	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v10"
-	optIRMemoryCleanupRevision    = "oak.optir.memory-cleanup.v2/" + optIRSCCPRevision + "/" + optIRSCCPRewriteRevision + "/" + optIRGVNDCERevision + "/" + optIRMemoryProjectionRevision + "/" + optIRMemorySSARevision + "/" + optIRMemoryLivenessRevision + "/" + optIRDSERevision
+	optIRMemoryCleanupRevision    = "oak.optir.memory-cleanup.v3/" + optIRSCCPRevision + "/" + optIRSCCPRewriteRevision + "/" + optIRGVNDCERevision + "/" + optIRMemoryProjectionRevision + "/" + optIRMemorySSARevision + "/" + optIRMemoryLivenessRevision + "/" + optIRDSERevision + "/" + optIRLoopStructureRevision + "/" + optIRLoopsRevision + "/" + optIRLICMRevision
 )
 
 type optIRSCCPRewriteArtifact struct {

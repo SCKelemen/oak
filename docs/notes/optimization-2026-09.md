@@ -253,16 +253,25 @@ One scalar cleanup round now follows forwarding: SCCP folds newly exposed
 constants and branches, then phi cleanup/GVN/DCE removes redundant parameters
 and pure operations. Fresh checked projection, MemorySSA, and definition
 liveness then drive one more verified DSE pass; pure DCE removes the deleted
-stores' unused producers without deleting effectful calls. Intermediate CFGs
-and both reports remain replayable within the same cleanup artifact.
+stores' unused producers without deleting effectful calls. A fresh loop
+analysis then drives one pure LICM pass on that exact DCE result, so arithmetic
+made invariant by memory promotion and phi elimination leaves the loop too.
+Memory, calls, trapping operations, and loop-carried arithmetic are not hoisted
+by this pass. Intermediate CFGs and reports remain replayable within the same
+cleanup artifact.
 Checked memory projection and MemorySSA are rebuilt for
 the final `MemoryCleanup.CFG`, and native selection replays that composition.
 Source-only global declarations remain available to the verifier when an
 unreachable access or call disappears; no removed machine access is restored.
 Both native targets prove the constant-branch, wrapping-arithmetic, and
-post-forwarding dead-store fixtures (including reachable readers and live-out
-state preservation),
-which also execute on the host and under RV64 QEMU.
+post-forwarding dead-store and scalar-LICM fixtures (including reachable
+readers, live-out state preservation, zero-trip loops, and wrapping values),
+which also execute on the host and under RV64 QEMU. The scalar-LICM regression
+checks both verified SSA candidates have neither a load nor a multiplication
+in the machine loop. Normal cost selection is retained (RV64 selects SSA for
+this fixture; AArch64 can prefer its existing bottom-tested candidate);
+changing its arithmetic must not receive a proof, even if finite witnesses
+alone happen to agree.
 The transform moves the removed canonical load's checked source/access identity
 to that edge block, creates a fresh typed parameter in the phi block, and
 appends the edge values. Loads in the phi block and dominated blocks may share

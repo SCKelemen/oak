@@ -8,8 +8,8 @@ import (
 )
 
 // OptIRMemoryCleanup records one bounded cleanup after memory forwarding:
-// SCCP -> phi/GVN/DCE -> memory DSE -> pure DCE. Each intermediate CFG belongs
-// to the preceding report. Projection and MemorySSA belong to the final CFG.
+// SCCP -> phi/GVN/DCE -> memory DSE -> pure DCE -> pure LICM. Intermediate
+// CFGs retain each stage's result. Projection and MemorySSA belong to final CFG.
 type OptIRMemoryCleanup struct {
 	Constants            optir.SCCPResult
 	SCCPSimplified       optir.CFG
@@ -18,15 +18,17 @@ type OptIRMemoryCleanup struct {
 	Simplification       optir.GVNDCEReport
 	DeadStores           optir.CFG
 	DeadStoreElimination optir.DeadStoreEliminationReport
-	CFG                  optir.CFG
+	DCECleaned           optir.CFG
 	DCE                  optir.DCEReport
+	CFG                  optir.CFG
+	LoopMotion           optir.LICMReport
 	Projection           optir.CheckedMemoryProjection
 	MemorySSA            optir.RegionMemorySSA
 }
 
 func (cleanup OptIRMemoryCleanup) Changes() int {
 	return cleanup.SCCPRewrite.Changes() + cleanup.Simplification.Changes() +
-		len(cleanup.DeadStoreElimination.Removed) + cleanup.DCE.EliminatedOperations
+		len(cleanup.DeadStoreElimination.Removed) + cleanup.DCE.EliminatedOperations + cleanup.LoopMotion.HoistedOperations
 }
 
 func cleanupOptIRMemory(cfg optir.CFG, authority optir.CheckedMemoryAuthority) (OptIRMemoryCleanup, error) {
@@ -72,7 +74,18 @@ func cleanupOptIRMemory(cfg optir.CFG, authority optir.CheckedMemoryAuthority) (
 	}
 	// Only the existing closed, total, pure vocabulary may lose its now-unused
 	// producers. Calls and other effects remain even when their results are dead.
-	result, dce, err := optir.EliminateDeadCode(deadStores)
+	dceCleaned, dce, err := optir.EliminateDeadCode(deadStores)
+	if err != nil {
+		return OptIRMemoryCleanup{}, err
+	}
+	// Memory promotion and phi cleanup can expose new invariant scalar chains.
+	// Earlier loop evidence belongs to a different CFG: analyze this exact
+	// snapshot before moving only the existing total, pure LICM vocabulary.
+	loops, err := optir.AnalyzeLoops(dceCleaned)
+	if err != nil {
+		return OptIRMemoryCleanup{}, err
+	}
+	result, loopMotion, err := optir.HoistLoopInvariantsWithAnalysis(dceCleaned, loops)
 	if err != nil {
 		return OptIRMemoryCleanup{}, err
 	}
@@ -84,7 +97,8 @@ func cleanupOptIRMemory(cfg optir.CFG, authority optir.CheckedMemoryAuthority) (
 		Constants: constants, SCCPSimplified: sccp, SCCPRewrite: rewrite,
 		ScalarCFG: scalar, Simplification: simplification,
 		DeadStores: deadStores, DeadStoreElimination: stores,
-		CFG: result, DCE: dce, Projection: projection, MemorySSA: memorySSA,
+		DCECleaned: dceCleaned, DCE: dce, CFG: result, LoopMotion: loopMotion,
+		Projection: projection, MemorySSA: memorySSA,
 	}, nil
 }
 
