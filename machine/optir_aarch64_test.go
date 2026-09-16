@@ -67,6 +67,198 @@ func TestLowerOptIRArm64MaterializesVerifiedSpills(t *testing.T) {
 	}
 }
 
+func TestLowerOptIRArm64RematerializesConstantSpills(t *testing.T) {
+	const values = 20
+	var source strings.Builder
+	source.WriteString("constant_pressure: (): u32 = ")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString("\n")
+	parsed := parser.New(layout.New(scanner.New(source.String())))
+	program := parsed.ParseProgram()
+	if errs := parsed.Errors(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	declaration := program.Statements[0].(*ast.FunctionStatement)
+	cfg := optIRConstantPressureCFG(values)
+	registers, err := optir.PlanRegisters(cfg, optIRArm64SpillRegisters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, baselineFrame, err := optIRArm64LayoutSpills(registers.Slots)
+	if err != nil || baselineFrame == 0 {
+		t.Fatalf("test plan has no physical spill baseline: frame=%d err=%v", baselineFrame, err)
+	}
+	rematerialization, err := optir.AnalyzeRematerialization(cfg, optIRArm64SpillRegisters, nil, registers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rematerialization.Decisions) == 0 {
+		t.Fatalf("test plan has no rematerializable constants: %+v", registers.Spills)
+	}
+	lowered, err := LowerOptIRArm64(cfg, &asm.Function{Name: cfg.Name, Arch: asm.ArchArm64, Signature: declaration, Fallback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame >= baselineFrame || strings.Contains(body, "ldr ") || strings.Contains(body, "str ") {
+		t.Fatalf("constant rematerialization did not remove the spill frame/traffic: baseline=%d lowered=%d\n%s", baselineFrame, lowered.Frame, body)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{cfg.Name: true}); len(findings) != 0 {
+		t.Fatalf("rematerialized body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("rematerialized body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestLowerOptIRArm64RematerializesCopyChains(t *testing.T) {
+	const values = 20
+	var source strings.Builder
+	source.WriteString("copy_pressure: (): u32 = ")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString("\n")
+	parsed := parser.New(layout.New(scanner.New(source.String())))
+	program := parsed.ParseProgram()
+	if errs := parsed.Errors(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	declaration := program.Statements[0].(*ast.FunctionStatement)
+	cfg := optIRConstantCopyPressureCFG(values)
+	registers, err := optir.PlanRegisters(cfg, optIRArm64SpillRegisters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, baselineFrame, err := optIRArm64LayoutSpills(registers.Slots)
+	if err != nil || baselineFrame == 0 {
+		t.Fatalf("test plan has no physical spill baseline: frame=%d err=%v", baselineFrame, err)
+	}
+	rematerialization, err := optir.AnalyzeRematerialization(cfg, optIRArm64SpillRegisters, nil, registers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyDecision := false
+	for _, decision := range rematerialization.Decisions {
+		copyDecision = copyDecision || decision.Code == optir.OpCopy
+	}
+	if !copyDecision {
+		t.Fatalf("test plan has no rematerializable copy: decisions=%+v spills=%+v", rematerialization.Decisions, registers.Spills)
+	}
+	lowered, err := LowerOptIRArm64(cfg, &asm.Function{Name: cfg.Name, Arch: asm.ArchArm64, Signature: declaration, Fallback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame >= baselineFrame {
+		t.Fatalf("copy rematerialization did not reduce the spill frame: baseline=%d lowered=%d\n%s", baselineFrame, lowered.Frame, body)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{cfg.Name: true}); len(findings) != 0 {
+		t.Fatalf("copy-rematerialized body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("copy-rematerialized body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
+func TestOptIRArm64RematerializationRefusesExpensiveConstants(t *testing.T) {
+	const values = 20
+	cfg := optIRExpensiveConstantPressureCFG(values)
+	allocation, err := optIRArm64Allocate(cfg, optIRTypes(cfg), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allocation.rematerializations) != 0 {
+		t.Fatalf("four-instruction constants were rematerialized for one use: %+v", allocation.rematerializations)
+	}
+	if allocation.frame == 0 {
+		t.Fatal("conservatively retained expensive constants have no spill frame")
+	}
+}
+
+func optIRConstantPressureCFG(values int) optir.CFG {
+	block := optir.Block{ID: 0}
+	terms := make([]optir.ValueID, 0, values)
+	for index := 1; index <= values; index++ {
+		value := optir.ValueID(index)
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpConstInt, Results: []optir.Value{{ID: value, Type: "u32"}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: fmt.Sprint(index)}},
+		})
+		terms = append(terms, value)
+	}
+	next, result := optir.ValueID(values+1), terms[0]
+	for _, term := range terms[1:] {
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpIntAdd, Results: []optir.Value{{ID: next, Type: "u32"}}, Operands: []optir.ValueID{result, term},
+		})
+		result = next
+		next++
+	}
+	block.Terminator = optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}
+	return optir.CFG{Name: "constant_pressure", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{block}}
+}
+
+func optIRConstantCopyPressureCFG(values int) optir.CFG {
+	block := optir.Block{ID: 0}
+	for index := 1; index <= values; index++ {
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpConstInt, Results: []optir.Value{{ID: optir.ValueID(index), Type: "u32"}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: fmt.Sprint(index)}},
+		})
+	}
+	terms := make([]optir.ValueID, 0, values)
+	for index := 1; index <= values; index++ {
+		copy := optir.ValueID(values + index)
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpCopy, Results: []optir.Value{{ID: copy, Type: "u32"}}, Operands: []optir.ValueID{optir.ValueID(index)},
+		})
+		terms = append(terms, copy)
+	}
+	next, result := optir.ValueID(2*values+1), terms[0]
+	for _, term := range terms[1:] {
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpIntAdd, Results: []optir.Value{{ID: next, Type: "u32"}}, Operands: []optir.ValueID{result, term},
+		})
+		result = next
+		next++
+	}
+	block.Terminator = optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}
+	return optir.CFG{Name: "copy_pressure", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{block}}
+}
+
+func optIRExpensiveConstantPressureCFG(values int) optir.CFG {
+	const base uint64 = 0x123456789abcdef0
+	block := optir.Block{ID: 0}
+	terms := make([]optir.ValueID, 0, values)
+	for index := 0; index < values; index++ {
+		value := optir.ValueID(index + 1)
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpConstInt, Results: []optir.Value{{ID: value, Type: "u64"}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: fmt.Sprint(base + uint64(index))}},
+		})
+		terms = append(terms, value)
+	}
+	next, result := optir.ValueID(values+1), terms[0]
+	for _, term := range terms[1:] {
+		block.Operations = append(block.Operations, optir.Operation{
+			Code: optir.OpIntAdd, Results: []optir.Value{{ID: next, Type: "u64"}}, Operands: []optir.ValueID{result, term},
+		})
+		result = next
+		next++
+	}
+	block.Terminator = optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}
+	return optir.CFG{Name: "expensive_constants", Entry: 0, Results: []optir.Type{"u64"}, Blocks: []optir.Block{block}}
+}
+
 func TestLowerOptIRArm64ComposesSpillsWithDirectCallFrame(t *testing.T) {
 	const values = 20
 	var source strings.Builder

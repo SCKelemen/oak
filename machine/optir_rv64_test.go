@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,7 +68,7 @@ choose: (flag: Bool, x: u32): u32 = flag ? x + u32(1) | x + u32(2)
 			}
 		}
 	}
-	if branches < 4 || labels < 4 {
+	if branches != 1 || labels != 4 {
 		t.Fatalf("SSA control flow was not selected: %d branches, %d labels\n%s", branches, labels, text(lowered.Items))
 	}
 	if !boolNormalized {
@@ -412,6 +413,60 @@ spilled_sum: (): u32 = u32(20) + u32(22)
 	}
 }
 
+func TestLowerOptIRRV64MaterializesProductionPressureAcrossSSAEdges(t *testing.T) {
+	const values = 18
+	var source strings.Builder
+	source.WriteString("edge_pressure: (flag: Bool): u32 = flag ? (")
+	for index := 1; index <= values; index++ {
+		if index > 1 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString(") | (")
+	for index := 2; index <= values+1; index++ {
+		if index > 2 {
+			source.WriteString(" + ")
+		}
+		fmt.Fprintf(&source, "u32(%d)", index)
+	}
+	source.WriteString(")\n")
+	declaration := optIRRV64Declaration(t, source.String())
+	cfg := optIREdgePressureCFG(values)
+	plan, err := optir.PlanRegisters(cfg, optIRRV64SpillRegisters, map[optir.ValueID]int{1: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spilledParameter := false
+	for _, parameter := range cfg.Blocks[3].Parameters {
+		_, spilledParameter = plan.Spills[parameter.ID]
+		if spilledParameter {
+			break
+		}
+	}
+	if !spilledParameter {
+		t.Fatalf("test plan has no spilled merge parameter: %+v", plan.Spills)
+	}
+	template := &asm.Function{
+		Name: cfg.Name, Arch: asm.ArchRV64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "flag"}},
+	}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := text(lowered.Items)
+	if lowered.Frame == 0 || !strings.Contains(body, "sw ") || !strings.Contains(body, "lw ") {
+		t.Fatalf("edge lowering did not materialize spilled parallel copies:\n%s", body)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{cfg.Name: true}); len(findings) != 0 {
+		t.Fatalf("spilled edge body fails seam check: %v\n%s", findings, body)
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled edge body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+	}
+}
+
 func TestLowerOptIRRV64MaterializesNarrowSignedSpills(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 spilled_narrow: (): i8 = i8(120) + i8(10)
@@ -483,36 +538,175 @@ spilled_return: (): u32 = u32(42)
 	}
 }
 
-func TestLowerOptIRRV64SpillFallbackRefusesControlFlowAndCalls(t *testing.T) {
+func TestLowerOptIRRV64MaterializesSpillsAcrossEdgesAndCalls(t *testing.T) {
 	branchDeclaration := optIRRV64Declaration(t, `
-spilled_branch: (): u32 = true ? u32(1) | u32(2)
+spilled_branch: (): i8 = true ? i8(120) | i8(-120)
 `)
-	branchCFG := optir.CFG{Name: "spilled_branch", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
+	branchCFG := optir.CFG{Name: "spilled_branch", Entry: 0, Results: []optir.Type{"i8"}, Blocks: []optir.Block{
 		{ID: 0, Operations: []optir.Operation{
 			{Code: optir.OpConstBool, Results: []optir.Value{{ID: 1, Type: optir.TypeBool}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "true"}}},
-			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
-			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 3, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "2"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "i8"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "120"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 3, Type: "i8"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "-120"}}},
 		}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{2}}, False: optir.Edge{Target: 1, Arguments: []optir.ValueID{3}}}},
-		{ID: 1, Parameters: []optir.Value{{ID: 4, Type: "u32", Name: "result"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{4}}},
+		{ID: 1, Parameters: []optir.Value{{ID: 4, Type: "i8", Name: "result"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{4}}},
 	}}
-	if _, err := lowerOptIRRV64WithRegisters(branchCFG, &asm.Function{Name: "spilled_branch", Arch: asm.ArchRV64, Signature: branchDeclaration}, []int{5}); err == nil || !strings.Contains(err.Error(), "one return-terminated block") {
-		t.Fatalf("spilled control-flow refusal = %v", err)
+	branchPlan, err := optir.PlanRegisters(branchCFG, []int{5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, spilled := branchPlan.Spills[1]; !spilled {
+		t.Fatalf("test plan did not spill the Bool condition: %+v", branchPlan.Spills)
+	}
+	branchBody, err := lowerOptIRRV64WithRegisters(branchCFG, &asm.Function{Name: "spilled_branch", Arch: asm.ArchRV64, Signature: branchDeclaration}, []int{5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(branchBody, branchDeclaration, nil); len(findings) != 0 {
+		t.Fatalf("spilled branch body fails seam check: %v\n%s", findings, text(branchBody.Items))
+	}
+	if verdict := asm.Verify(branchBody, branchDeclaration, branchDeclaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled branch body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(branchBody.Items))
+	}
+	branchText := text(branchBody.Items)
+	if !strings.Contains(branchText, "sb ") || !strings.Contains(branchText, "lb ") || !strings.Contains(branchText, "lbu t5") {
+		t.Fatalf("spilled branch lacks edge store/reload traffic:\n%s", branchText)
+	}
+
+	loopCFG := optir.CFG{Name: "spilled_loop", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
+		{ID: 0, Operations: []optir.Operation{
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "2"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{1, 2}}}},
+		{ID: 1, Parameters: []optir.Value{{ID: 3, Type: "u32", Name: "x"}, {ID: 4, Type: "u32", Name: "y"}}, Operations: []optir.Operation{
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 5, Type: "u32"}}, Operands: []optir.ValueID{3, 4}},
+			{Code: optir.OpConstBool, Results: []optir.Value{{ID: 6, Type: optir.TypeBool}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "false"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 6, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{5, 4}}, False: optir.Edge{Target: 2, Arguments: []optir.ValueID{5}}}},
+		{ID: 2, Parameters: []optir.Value{{ID: 7, Type: "u32", Name: "result"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{7}}},
+	}}
+	loopDeclaration := optIRRV64Declaration(t, `
+spilled_loop: (): u32 = u32(3)
+`)
+	if _, err := lowerOptIRRV64WithRegisters(loopCFG, &asm.Function{Name: "spilled_loop", Arch: asm.ArchRV64, Signature: loopDeclaration}, []int{5}); err == nil || !strings.Contains(err.Error(), "loop spill slot") {
+		t.Fatalf("narrow spilled loop refusal = %v", err)
 	}
 
 	declarations := optIRRV64Declarations(t, `
 add: (x: u32, y: u32): u32 = x + y
-spilled_call: (): u32 = add(u32(20), u32(22))
+spilled_call: (): u32 = add(u32(20), u32(22)) + (u32(1) + u32(2))
 `)
 	callCFG := optir.CFG{Name: "spilled_call", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
 		ID: 0, Operations: []optir.Operation{
 			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "20"}}},
 			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "22"}}},
 			{Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{1, 2}, Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "add"}}},
-		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 4, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 5, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "2"}}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 6, Type: "u32"}}, Operands: []optir.ValueID{4, 5}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 7, Type: "u32"}}, Operands: []optir.ValueID{3, 6}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{7}},
 	}}}
 	callTemplate := &asm.Function{Name: "spilled_call", Arch: asm.ArchRV64, Signature: declarations["spilled_call"], Callees: map[string]*ast.FunctionStatement{"add": declarations["add"]}}
-	if _, err := lowerOptIRRV64WithRegisters(callCFG, callTemplate, []int{5}); err == nil || !strings.Contains(err.Error(), "refuses calls and effects") {
-		t.Fatalf("spilled call refusal = %v", err)
+	callPlan, err := optir.PlanRegisters(callCFG, []int{5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spilledArgument := false
+	for _, operand := range callCFG.Blocks[0].Operations[2].Operands {
+		_, spilledArgument = callPlan.Spills[operand]
+		if spilledArgument {
+			break
+		}
+	}
+	if !spilledArgument {
+		t.Fatalf("test plan has no spilled call argument: %+v", callPlan.Spills)
+	}
+	if _, spilled := callPlan.Spills[3]; !spilled {
+		t.Fatalf("test plan has no spilled call result: %+v", callPlan.Spills)
+	}
+	callBody, err := lowerOptIRRV64WithRegisters(callCFG, callTemplate, []int{5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callBody.Frame != 32 {
+		t.Fatalf("composed spill/call frame = %d, want 32", callBody.Frame)
+	}
+	if findings := asm.Check(callBody, declarations["spilled_call"], map[string]bool{"add": true}); len(findings) != 0 {
+		t.Fatalf("spilled call body fails seam check: %v\n%s", findings, text(callBody.Items))
+	}
+	if verdict := asm.Verify(callBody, declarations["spilled_call"], declarations["spilled_call"].Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("spilled call body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(callBody.Items))
+	}
+	callText := text(callBody.Items)
+	for _, instruction := range []string{"addi sp, sp, #-32", "sd ra, [sp,#24]", "sw ", "lw ", "call add", "ld ra, [sp,#24]", "addi sp, sp, #32"} {
+		if !strings.Contains(callText, instruction) {
+			t.Errorf("spilled call body lacks %q:\n%s", instruction, callText)
+		}
+	}
+}
+
+func TestLowerOptIRRV64MaterializesCanonicalLoopCarriedSpillAndVerifies(t *testing.T) {
+	declaration := optIRRV64Declaration(t, `
+loop_spill: (n: u32): u32 = {
+  i: u32 = 0
+  acc: u32 = 0
+  while i < n {
+    acc = acc + i
+    i = i + u32(1)
+  }
+  acc
+}
+`)
+	cfg := optir.CFG{Name: "loop_spill", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
+		{ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "n"}}, Operations: []optir.Operation{
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 3, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{2, 3}}}},
+		{ID: 1, Parameters: []optir.Value{{ID: 4, Type: "u32", Name: "i"}, {ID: 5, Type: "u32", Name: "acc"}}, Operations: []optir.Operation{
+			{Code: optir.OpLess, Results: []optir.Value{{ID: 6, Type: optir.TypeBool}}, Operands: []optir.ValueID{4, 1}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 6, True: optir.Edge{Target: 2}, False: optir.Edge{Target: 3}}},
+		{ID: 2, Operations: []optir.Operation{
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 7, Type: "u32"}}, Operands: []optir.ValueID{5, 4}},
+			{Code: optir.OpConstInt, Results: []optir.Value{{ID: 8, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
+			{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 9, Type: "u32"}}, Operands: []optir.ValueID{4, 8}},
+		}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1, Arguments: []optir.ValueID{9, 7}}}},
+		{ID: 3, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{5}}},
+	}}
+	fixed := map[optir.ValueID]int{1: 10}
+	spillRegisters := []int{10, 5}
+	plan, planFixed, err := planOptIRRV64Spills(cfg, spillRegisters, fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planFixed[6] != 5 {
+		t.Fatalf("loop condition precolor = %d, want t0", planFixed[6])
+	}
+	if _, spilledI := plan.Spills[4]; !spilledI {
+		if _, spilledAcc := plan.Spills[5]; !spilledAcc {
+			t.Fatalf("test plan has no loop-carried spill: %+v", plan.Spills)
+		}
+	}
+	template := &asm.Function{
+		Name: "loop_spill", Arch: asm.ArchRV64, Signature: declaration,
+		Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "n"}},
+	}
+	lowered, err := lowerOptIRRV64(cfg, template, []int{10}, spillRegisters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered.Frame == 0 || lowered.Frame%16 != 0 {
+		t.Fatalf("loop spill frame = %d, want a nonzero aligned frame", lowered.Frame)
+	}
+	if findings := asm.Check(lowered, declaration, nil); len(findings) != 0 {
+		t.Fatalf("loop-spill body fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("loop-spill body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	body := text(lowered.Items)
+	for _, instruction := range []string{"sw ", "lw ", "beqz ", "j optir_b1"} {
+		if !strings.Contains(body, instruction) {
+			t.Errorf("loop-spill body lacks %q:\n%s", instruction, body)
+		}
 	}
 }
 
@@ -642,7 +836,7 @@ func TestLowerOptIRRV64RefusesMixedSignCast(t *testing.T) {
 		Operations: []optir.Operation{{Code: optir.OpCastInt, Results: []optir.Value{{ID: 2, Type: "u64"}}, Operands: []optir.ValueID{1}}},
 		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
 	}}}
-	if _, err := LowerOptIRRV64(cfg, template); err == nil || !strings.Contains(err.Error(), "value-preserving cast i32 to u64") {
+	if _, err := LowerOptIRRV64(cfg, template); err == nil || !strings.Contains(err.Error(), "cast from i32 to u64 is not value-preserving") {
 		t.Fatalf("mixed-sign i32-to-u64 cast was not refused precisely: %v", err)
 	}
 	for _, valid := range [][2]optir.Type{{"u8", "u8"}, {"i8", "i64"}, {"u32", "u64"}, {"u32", "i64"}} {

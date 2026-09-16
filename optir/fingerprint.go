@@ -186,10 +186,16 @@ func fingerprintValues(digest hash.Hash, values []Value) {
 func fingerprintFacts(digest hash.Hash, facts []Fact) {
 	fingerprintUint64(digest, uint64(len(facts)))
 	for _, fact := range facts {
+		fingerprintString(digest, fact.ID)
 		fingerprintString(digest, fact.Name)
 		fingerprintValueIDs(digest, fact.Values)
 		fingerprintString(digest, fact.Provenance)
 		fingerprintString(digest, fact.Witness)
+		fingerprintString(digest, fact.Scope)
+		fingerprintUint64(digest, uint64(len(fact.Dependencies)))
+		for _, dependency := range fact.Dependencies {
+			fingerprintString(digest, dependency)
+		}
 	}
 }
 

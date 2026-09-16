@@ -31,22 +31,36 @@ func TestLayoutOptIRRV64SpillsAlignsAndBoundsCanonicalSlots(t *testing.T) {
 	}
 }
 
-func TestOptIRRV64SpillAdmissionRejectsControlFlowEffectsAndScratchAliasing(t *testing.T) {
+func TestOptIRRV64SpillAdmissionAllowsAcyclicCFGAndRejectsCyclesEffectsAndScratchAliasing(t *testing.T) {
 	plan := optir.RegisterPlan{Spills: map[optir.ValueID]optir.SpillSlotID{1: 1}}
 	branching := optir.CFG{Name: "branching", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{
 		{ID: 0, Parameters: []optir.Value{{ID: 1, Type: optir.TypeBool}}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 1}, False: optir.Edge{Target: 1}}},
 		{ID: 1, Parameters: []optir.Value{{ID: 2, Type: "u32"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}}},
 	}}
-	if err := validateOptIRRV64StraightLineSpills(branching, plan); err == nil || !strings.Contains(err.Error(), "one return-terminated block") {
-		t.Fatalf("branching spill admission error = %v", err)
+	if err := validateOptIRRV64SpillCFG(branching, plan); err != nil {
+		t.Fatalf("acyclic branching spill admission error = %v", err)
+	}
+
+	cyclic := optir.CFG{Name: "cyclic", Entry: 0, Blocks: []optir.Block{
+		{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}}},
+		{ID: 1, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 0}}},
+	}}
+	if err := validateOptIRRV64SpillCFG(cyclic, plan); err == nil || !strings.Contains(err.Error(), "unsupported cyclic control flow") {
+		t.Fatalf("cyclic spill admission error = %v", err)
 	}
 
 	call := optir.CFG{Name: "call", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
 		ID: 0, Operations: []optir.Operation{{Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall}}},
 		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
 	}}}
-	if err := validateOptIRRV64StraightLineSpills(call, plan); err == nil || !strings.Contains(err.Error(), "refuses calls and effects") {
-		t.Fatalf("call spill admission error = %v", err)
+	if err := validateOptIRRV64SpillCFG(call, plan); err != nil {
+		t.Fatalf("direct-call spill admission error = %v", err)
+	}
+	call.Blocks[0].Operations[0] = optir.Operation{
+		Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectReadMemory},
+	}
+	if err := validateOptIRRV64SpillCFG(call, plan); err == nil || !strings.Contains(err.Error(), "non-call effects") {
+		t.Fatalf("non-call effect spill admission error = %v", err)
 	}
 
 	for name, test := range map[string]struct {
@@ -61,5 +75,30 @@ func TestOptIRRV64SpillAdmissionRejectsControlFlowEffectsAndScratchAliasing(t *t
 				t.Fatal("invalid scratch set was accepted")
 			}
 		})
+	}
+}
+
+func TestComposeOptIRRV64FrameBoundsAndSeparatesReturnAddress(t *testing.T) {
+	for name, test := range map[string]struct {
+		spill, frame, ra int64
+		calls            bool
+	}{
+		"no frame":       {},
+		"call only":      {calls: true, frame: 16, ra: 8},
+		"spill only":     {spill: 16, frame: 16},
+		"spill and call": {spill: 16, calls: true, frame: 32, ra: 24},
+		"maximum":        {spill: 2016, calls: true, frame: 2032, ra: 2024},
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame, ra, err := composeOptIRRV64Frame(test.spill, test.calls)
+			if err != nil || frame != test.frame || ra != test.ra {
+				t.Fatalf("compose frame = %d, ra = %d, err = %v; want %d/%d", frame, ra, err, test.frame, test.ra)
+			}
+		})
+	}
+	for _, spill := range []int64{-16, 8, 2032} {
+		if _, _, err := composeOptIRRV64Frame(spill, true); err == nil {
+			t.Fatalf("invalid spill/call frame %d was accepted", spill)
+		}
 	}
 }

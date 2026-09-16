@@ -310,12 +310,13 @@ remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
 
-Before GVN, trivial phi-like block parameters are removed only when every
-explicit incoming edge resolves to the same dominating SSA definition (with a
-self loop edge allowed for an invariant). Entry parameters are never inferred
-from backedges because their ABI inputs are implicit. Edge argument positions,
-uses, and facts are remapped under a bounded fixed point and the CFG verifies
-again. GVN then runs on that CFG. It numbers
+Before GVN, unused non-entry block parameters and their exact incoming edge
+positions are removed to a bounded fixed point; proof facts count as uses. Then
+trivial phi-like block parameters are removed only when every explicit incoming
+edge resolves to the same dominating SSA definition (with a self loop edge
+allowed for an invariant). Entry parameters are never inferred from backedges
+because their ABI inputs are implicit. Edge argument positions, uses, and facts
+are remapped and the CFG verifies again. GVN then runs on that CFG. It numbers
 plain copies alike, canonicalizes exact commutative integer/equality operations
 and inverse order comparisons, then shares a congruent expression only from a
 dominating definition. DCE removes the exposed unused pure chains and copies to
@@ -340,8 +341,11 @@ Its first loop transform is LICM. After GVN/DCE it moves a closed
 total-pure operation to a canonical preheader only when all operands are
 available there. Potential traps, effects, calls, memory, unknown operations,
 noncanonical entries, and facts other than the definition-local checked type
-fact pin the operation. The cloned result passes the independent verifier and
-is retained with deterministic movement evidence. A changed final CFG enters
+fact pin the operation. The checked type fact carries an opaque source/type
+proof ID and is matched against immutable typechecker authority after every CFG
+rewrite; transformed metadata cannot authorize itself. The cloned result passes
+the independent verifier and is retained with deterministic movement evidence.
+A changed final CFG enters
 native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
 liveness/interference coloring precedes closed AArch64 and RV64 selectors. The
 RV64 selector preserves canonical sign-extended 32-bit values and explicitly
@@ -351,19 +355,28 @@ Bool/8/16/32/64-bit scalar arguments and exactly one
 matching scalar result, represented by exactly `EffectCall` plus one nonempty
 `callee` attribute. Since the available colors are caller-saved, any other
 non-unit value live across the call refuses the candidate. An admitted calling
-function reserves sixteen bytes to save/restore AArch64 `x30` or RV64 `ra`,
+function reserves a sixteen-byte save area for AArch64 `x30` or RV64 `ra`,
 places the ABI register arguments as a simultaneous parallel copy whose cycles
 use the selector's reserved scratch, and normalizes the result at the boundary.
 A ninth or stack argument, all broader call forms, and other effects still
-refuse. AArch64 materializes the independently verified spill plan across its
-supported CFG and composes it with the call frame. RV64 now materializes a
-closed first subset: one return-terminated block without calls or effects,
-canonical scalar slots in a bounded 16-byte-aligned frame, and at most two
-spilled operands through reserved `t5`/`t6` scratches. Width-correct stores,
-signed/narrow reloads, and spilled returns are machine-proven; RV64 edges,
-loops, calls, and call-frame composition still refuse. The direct lowering
-remains the identity, and every selected OptIR body must pass seam admission
-and semantic translation validation; refusal or a trusted verdict falls back.
+refuse. The independently verified abstract spill plan is materialized on
+AArch64 and composed with this call frame. Spilled constants and bounded copy
+chains may instead be rematerialized after independent recipe verification and
+a target cost check; accepted recipes remove their physical slots, while
+expensive literals stay spilled. RV64 materializes acyclic CFGs with no effect
+except an admitted direct call, plus one exact call-free natural loop with a
+unique preheader, conditional header, straight-line latch, and return exit.
+The loop predicate remains in a register, only aligned four- or eight-byte
+spill slots cross its backedge, and broader cycles refuse. Canonical scalar
+slots live in a bounded 16-byte-aligned frame, at most two ordinary spilled
+operands use reserved `t5`/`t6` scratches, and simultaneous register/slot copies
+cover SSA edges and call arguments. Its `ra` save area sits above the spill
+slots in the same frame. Width-correct stores, signed/narrow reloads,
+production-pressure diamonds, spilled returns, a composed spill/call frame,
+and a loop-carried `u32` spill are machine-proven; broader RV64 loops and calls
+and rematerialization still refuse. The direct lowering remains the identity,
+and every selected OptIR body must pass seam admission and semantic translation
+validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -385,8 +398,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: checked memory-region projection and the dead-store/load transforms
-that consume the landed region MemorySSA and definition-liveness candidates,
+Not yet: checked memory-region projection that can make the landed closed
+whole-region DSE transform a production candidate, load GVN,
 non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
@@ -826,10 +839,12 @@ loop versions; exact Mod/Ref must agree with the operation effects, while an
 opaque call clobbers every declared region. Exact CFG/metadata fingerprints and
 independent recomputation reject stale or mutated evidence. Memory-definition
 liveness now takes an explicit set of regions observable on normal return,
-roots reads, opaque clobbers, and those terminal versions, and propagates
-through join/loop phis. It reports only exact write definitions as dead
-candidates. Checked Oak memory operations do not project into it yet, and the
-evidence licenses no transform or emission.
+roots reads, volatile accesses, opaque clobbers, and those terminal versions,
+and propagates through join/loop phis. Partial writes keep their predecessors
+live. A verified transform deletes only a dead, whole-region, nonvolatile
+`store.region`, rewrites its metadata, and rebuilds MemorySSA. Checked Oak
+memory operations do not project into it yet, so the transform cannot currently
+affect emitted programs.
 
 Once that projection exists, region memory SSA should power:
 
@@ -1013,11 +1028,12 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
-    plan and verifier-gated AArch64 scalar insertion landed; splitting, broader
-    MachineIR, and RV64 insertion remain**);
+    plan, verifier-gated AArch64 scalar insertion, and the first closed RV64
+    loop-carried insertion landed; splitting, broader MachineIR/RV64 loops, and
+    RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
-    and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);
+    and AArch64/RV64 fallthrough cleanup landed; edge-copy cleanup remains**);
 13. simple pre/post-allocation scheduling.
 
 This phase targets the measured UTF-8 call/spill gap directly.

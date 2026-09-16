@@ -29,13 +29,14 @@ type DCEReport struct {
 }
 
 type GVNDCEReport struct {
-	BlockParameters BlockParameterCongruenceReport
-	GVN             GVNReport
-	DCE             DCEReport
+	DeadBlockParameters DeadBlockParameterReport
+	BlockParameters     BlockParameterCongruenceReport
+	GVN                 GVNReport
+	DCE                 DCEReport
 }
 
 func (report GVNDCEReport) Changes() int {
-	return report.BlockParameters.EliminatedParameters + report.GVN.EliminatedOperations + report.DCE.EliminatedOperations
+	return report.DeadBlockParameters.EliminatedParameters + report.BlockParameters.EliminatedParameters + report.GVN.EliminatedOperations + report.DCE.EliminatedOperations
 }
 
 type operationLocation struct {
@@ -213,13 +214,17 @@ func EliminateDeadCode(cfg CFG) (CFG, DCEReport, error) {
 	return result, report, nil
 }
 
-// SimplifyGVNDCE is the generic scalar cleanup order. Trivial phi-like block
-// parameters are removed first so GVN can see dominating values through joins;
-// GVN then exposes unused producers and copies, and DCE removes dead pure
-// chains. The result remains a candidate until an emission equivalence gate
-// consumes it.
+// SimplifyGVNDCE is the generic scalar cleanup order. Unused and then trivial
+// congruent phi-like block parameters are removed first so GVN can see
+// dominating values through joins; GVN then exposes unused producers and
+// copies, and DCE removes dead pure chains. The result remains a candidate
+// until an emission equivalence gate consumes it.
 func SimplifyGVNDCE(cfg CFG) (CFG, GVNDCEReport, error) {
-	parameters, parameterReport, err := EliminateCongruentBlockParameters(cfg)
+	liveParameters, deadParameterReport, err := EliminateDeadBlockParameters(cfg)
+	if err != nil {
+		return CFG{}, GVNDCEReport{}, err
+	}
+	parameters, parameterReport, err := EliminateCongruentBlockParameters(liveParameters)
 	if err != nil {
 		return CFG{}, GVNDCEReport{}, err
 	}
@@ -231,7 +236,7 @@ func SimplifyGVNDCE(cfg CFG) (CFG, GVNDCEReport, error) {
 	if err != nil {
 		return CFG{}, GVNDCEReport{}, err
 	}
-	return dead, GVNDCEReport{BlockParameters: parameterReport, GVN: gvn, DCE: dce}, nil
+	return dead, GVNDCEReport{DeadBlockParameters: deadParameterReport, BlockParameters: parameterReport, GVN: gvn, DCE: dce}, nil
 }
 
 func validateAnalysisCFG(cfg CFG) error {
@@ -449,12 +454,15 @@ func remapCFGUses(cfg *CFG, replacements map[ValueID]ValueID) {
 
 func containsFact(facts []Fact, want Fact) bool {
 	for _, fact := range facts {
-		if fact.Name != want.Name || fact.Provenance != want.Provenance || fact.Witness != want.Witness || len(fact.Values) != len(want.Values) {
+		if fact.ID != want.ID || fact.Name != want.Name || fact.Provenance != want.Provenance || fact.Witness != want.Witness || fact.Scope != want.Scope || len(fact.Values) != len(want.Values) || len(fact.Dependencies) != len(want.Dependencies) {
 			continue
 		}
 		equal := true
 		for index := range fact.Values {
 			equal = equal && fact.Values[index] == want.Values[index]
+		}
+		for index := range fact.Dependencies {
+			equal = equal && fact.Dependencies[index] == want.Dependencies[index]
 		}
 		if equal {
 			return true

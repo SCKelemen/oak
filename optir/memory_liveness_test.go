@@ -248,7 +248,7 @@ func mustMemorySSA(t *testing.T, cfg CFG, metadata RegionMemoryMetadata) RegionM
 func memoryMetadata(block BlockID, index int, region RegionID, kind MemoryAccessKind) MemoryOperationMetadata {
 	return MemoryOperationMetadata{
 		Site:     OperationSite{Block: block, Index: index},
-		Accesses: []MemoryAccessSpec{{Region: region, Kind: kind}},
+		Accesses: []MemoryAccessSpec{{Region: region, Kind: kind, WholeRegion: kind == MemoryWrite}},
 	}
 }
 

@@ -97,7 +97,8 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 
 	selector := &optIRArm64Selector{
 		cfg: cfg, types: types, colors: allocation.colors, spills: allocation.spills,
-		slots: allocation.slots, spillFrame: spillFrame, frame: frame,
+		slots: allocation.slots, rematerializations: allocation.rematerializations,
+		definitions: optIRArm64Definitions(cfg), spillFrame: spillFrame, frame: frame,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, order: layout.Order,
 		hasCalls: hasCalls,
 	}
@@ -138,19 +139,21 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 }
 
 type optIRArm64Selector struct {
-	cfg        optir.CFG
-	types      map[optir.ValueID]optir.Type
-	colors     map[optir.ValueID]int
-	spills     map[optir.ValueID]optir.SpillSlotID
-	slots      map[optir.SpillSlotID]optIRArm64FrameSlot
-	spillFrame int64
-	frame      int64
-	labels     map[optir.BlockID]string
-	items      []asm.Item
-	written    map[int]bool
-	edges      int
-	order      []optir.BlockID
-	hasCalls   bool
+	cfg                optir.CFG
+	types              map[optir.ValueID]optir.Type
+	colors             map[optir.ValueID]int
+	spills             map[optir.ValueID]optir.SpillSlotID
+	slots              map[optir.SpillSlotID]optIRArm64FrameSlot
+	rematerializations map[optir.ValueID]optir.RematerializationDecision
+	definitions        map[optir.ValueID]optir.Operation
+	spillFrame         int64
+	frame              int64
+	labels             map[optir.BlockID]string
+	items              []asm.Item
+	written            map[int]bool
+	edges              int
+	order              []optir.BlockID
+	hasCalls           bool
 }
 
 func (selector *optIRArm64Selector) lower() error {
@@ -218,6 +221,12 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 	line := operation.Source.Line
 	if line <= 0 {
 		line = result.Source.Line
+	}
+	if decision, rematerialized := selector.rematerializations[result.ID]; rematerialized {
+		if decision.Code != operation.Code {
+			return fmt.Errorf("rematerialization decision for value %d names %s, got %s", result.ID, decision.Code, operation.Code)
+		}
+		return nil
 	}
 	switch operation.Code {
 	case optir.OpConstUnit:
@@ -567,8 +576,9 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 }
 
 type optIRValueLocation struct {
-	register int
-	slot     optir.SpillSlotID
+	register       int
+	slot           optir.SpillSlotID
+	rematerialized optir.ValueID
 }
 
 type optIRLocationMove struct {
@@ -647,6 +657,9 @@ func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRLocationMove, li
 		}
 		if cycleType == "" {
 			return fmt.Errorf("parallel-copy cycle has no source for destination")
+		}
+		if cycle.rematerialized != 0 {
+			return fmt.Errorf("parallel-copy cycle cannot overwrite rematerialized value %d", cycle.rematerialized)
 		}
 		if cycle.slot == 0 {
 			// Preserve the strict register-only path's full-width cycle save.

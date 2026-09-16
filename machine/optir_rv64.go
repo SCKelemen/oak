@@ -21,7 +21,7 @@ var optIRRV64SpillRegisters = []int{5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28,
 const (
 	optIRRV64SpillScratchA = 30
 	optIRRV64CopyScratch   = 31
-	optIRRV64MaxSpillFrame = 2032
+	optIRRV64MaxFrame      = 2032
 )
 
 // LowerOptIRRV64 selects an admitted RV64 body from a verified optimized
@@ -29,8 +29,8 @@ const (
 // integer constants, copies, widening casts, total arithmetic, comparisons,
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
-// values live across calls, and spills outside one straight-line return block
-// refuse the candidate.
+// values live across calls, broad spill-loop shapes, and unsupported spill
+// pressure refuse the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -93,17 +93,17 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
 			return nil, err
 		}
-		plan, planErr := optir.PlanRegisters(cfg, spillRegisters, fixed)
+		plan, planFixed, planErr := planOptIRRV64Spills(cfg, spillRegisters, fixed)
 		if planErr != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 allocation: %v; spill plan: %w", coloringErr, planErr)
 		}
-		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, fixed, plan); err != nil {
+		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, planFixed, plan); err != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 spill-plan evidence: %w", err)
 		}
-		if err := validateOptIRRV64StraightLineSpills(cfg, plan); err != nil {
+		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
 			return nil, err
 		}
-		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxSpillFrame)
+		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxFrame)
 		if err != nil {
 			return nil, err
 		}
@@ -113,16 +113,23 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	if err != nil {
 		return nil, err
 	}
-	if len(calls) != 0 && spillLayout.Frame != 0 {
-		return nil, fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls")
+	spillFrame := spillLayout.Frame
+	frame, raOffset, err := composeOptIRRV64Frame(spillFrame, len(calls) != 0)
+	if err != nil {
+		return nil, err
+	}
+	layout, err := optir.AnalyzeBlockLayout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 block layout: %w", err)
+	}
+	if err := optir.VerifyBlockLayout(cfg, layout); err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 block layout evidence: %w", err)
 	}
 
 	selector := &optIRRV64Selector{
-		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets, frame: spillLayout.Frame,
-		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls,
-	}
-	if len(calls) != 0 {
-		selector.frame = 16
+		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets,
+		frame: frame, raOffset: raOffset,
+		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls, order: layout.Order,
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -168,16 +175,22 @@ type optIRRV64Selector struct {
 	spills       map[optir.ValueID]optir.SpillSlotID
 	spillOffsets map[optir.SpillSlotID]int64
 	frame        int64
+	raOffset     int64
 	labels       map[optir.BlockID]string
 	items        []asm.Item
 	written      map[int]bool
 	calls        map[optir.ValueID]string
 	edges        int
+	order        []optir.BlockID
 }
 
 func (selector *optIRRV64Selector) lower() error {
-	for _, block := range selector.cfg.Blocks {
-		line := optIRBlockLine(block)
+	for index, id := range selector.order {
+		block := optIRBlock(selector.cfg, id)
+		if block == nil {
+			return fmt.Errorf("machine: OptIR layout names missing block %d", id)
+		}
+		line := optIRBlockLine(*block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
 			if selector.frame != 0 {
@@ -186,7 +199,7 @@ func (selector *optIRRV64Selector) lower() error {
 			}
 			if len(selector.calls) != 0 {
 				sp := optIRRV64SP()
-				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: selector.raOffset, Mode: asm.MemOffset})
 			}
 			// Do not let unspecified ABI padding become part of an Oak value.
 			// Bool retains one bit; narrow integers are restored to their
@@ -200,7 +213,11 @@ func (selector *optIRRV64Selector) lower() error {
 				return fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
 			}
 		}
-		if err := selector.terminator(block, line); err != nil {
+		next, hasNext := optir.BlockID(0), index+1 < len(selector.order)
+		if hasNext {
+			next = selector.order[index+1]
+		}
+		if err := selector.terminator(*block, next, hasNext, line); err != nil {
 			return fmt.Errorf("machine: OptIR block %d terminator: %w", block.ID, err)
 		}
 	}
@@ -210,6 +227,9 @@ func (selector *optIRRV64Selector) lower() error {
 func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 	if len(selector.spills) == 0 {
 		return selector.registerOperation(operation)
+	}
+	if operation.Code == optir.OpCall {
+		return selector.call(operation)
 	}
 	line := operation.Source.Line
 	if line <= 0 && len(operation.Results) != 0 {
@@ -351,25 +371,52 @@ func (selector *optIRRV64Selector) registerOperation(operation optir.Operation) 
 	case optir.OpEqual, optir.OpNotEqual, optir.OpLess, optir.OpLessEqual, optir.OpGreater, optir.OpGreaterEqual:
 		return selector.compare(operation, line)
 	case optir.OpCall:
-		callee, admitted := selector.calls[result.ID]
-		if !admitted {
-			return fmt.Errorf("call is outside the admitted direct-call set")
-		}
-		moves := make([]optIRRV64Move, 0, len(operation.Operands))
-		for index, operand := range operation.Operands {
-			destination, source := 10+index, selector.register(operand)
-			if destination != source {
-				moves = append(moves, optIRRV64Move{destination: destination, source: source})
-			}
-		}
-		selector.parallelCopies(moves, line)
-		selector.emit("call", line, asm.Symbol{Name: callee})
-		selector.move(destination, 10, line)
-		selector.normalize(destination, result.Type, line)
-		return nil
+		return selector.call(operation)
 	default:
 		return fmt.Errorf("operation %s is outside the closed selector vocabulary", operation.Code)
 	}
+}
+
+func (selector *optIRRV64Selector) call(operation optir.Operation) error {
+	if len(operation.Results) != 1 {
+		return fmt.Errorf("call has %d results, want one", len(operation.Results))
+	}
+	result := operation.Results[0]
+	callee, admitted := selector.calls[result.ID]
+	if !admitted {
+		return fmt.Errorf("call is outside the admitted direct-call set")
+	}
+	line := operation.Source.Line
+	if line <= 0 {
+		line = result.Source.Line
+	}
+	moves := make([]optIRRV64LocationMove, 0, len(operation.Operands))
+	for index, operand := range operation.Operands {
+		destination := optIRRV64Location{register: 10 + index}
+		source, err := selector.valueLocation(operand)
+		if err != nil {
+			return err
+		}
+		if destination != source {
+			moves = append(moves, optIRRV64LocationMove{destination: destination, source: source, typ: selector.types[operand]})
+		}
+	}
+	if err := selector.emitLocationCopies(moves, line); err != nil {
+		return err
+	}
+	selector.emit("call", line, asm.Symbol{Name: callee})
+
+	destination, err := selector.valueLocation(result.ID)
+	if err != nil {
+		return err
+	}
+	if destination.slot == 0 {
+		selector.move(destination.register, 10, line)
+		selector.normalize(destination.register, result.Type, line)
+		return nil
+	}
+	selector.normalize(10, result.Type, line)
+	return selector.storeSpillSlot(destination.slot, 10, result.Type, line)
 }
 
 func (selector *optIRRV64Selector) sameIntegerOperation(operation optir.Operation, arity int) error {
@@ -459,7 +506,7 @@ func (selector *optIRRV64Selector) compare(operation optir.Operation, line int) 
 	return nil
 }
 
-func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error {
+func (selector *optIRRV64Selector) terminator(block optir.Block, next optir.BlockID, hasNext bool, line int) error {
 	switch terminator := block.Terminator; terminator.Kind {
 	case optir.TerminatorReturn:
 		if len(terminator.Values) != 1 {
@@ -477,7 +524,7 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		}
 		if len(selector.calls) != 0 {
 			sp := optIRRV64SP()
-			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: selector.raOffset, Mode: asm.MemOffset})
 		}
 		if selector.frame != 0 {
 			sp := optIRRV64SP()
@@ -489,23 +536,54 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		if err := selector.edgeCopies(terminator.True, line); err != nil {
 			return err
 		}
-		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		if !hasNext || terminator.True.Target != next {
+			selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		}
 		return nil
 	case optir.TerminatorCondBranch:
 		if selector.types[terminator.Condition] != optir.TypeBool {
 			return fmt.Errorf("condition %d is not Bool", terminator.Condition)
 		}
+		condition, err := selector.readValue(terminator.Condition, optIRRV64SpillScratchA, line)
+		if err != nil {
+			return err
+		}
+		trueMoves, err := selector.edgeMoves(terminator.True)
+		if err != nil {
+			return err
+		}
+		falseMoves, err := selector.edgeMoves(terminator.False)
+		if err != nil {
+			return err
+		}
+		if len(trueMoves) == 0 && len(falseMoves) == 0 {
+			trueTarget, falseTarget := terminator.True.Target, terminator.False.Target
+			switch {
+			case trueTarget == falseTarget:
+				if !hasNext || trueTarget != next {
+					selector.emit("j", line, asm.Symbol{Name: selector.labels[trueTarget]})
+				}
+			case hasNext && trueTarget == next:
+				selector.emit("beqz", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[falseTarget]})
+			case hasNext && falseTarget == next:
+				selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[trueTarget]})
+			default:
+				selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[trueTarget]})
+				selector.emit("j", line, asm.Symbol{Name: selector.labels[falseTarget]})
+			}
+			return nil
+		}
 		trueLabel := selector.edgeLabel(block.ID, "true")
 		falseLabel := selector.edgeLabel(block.ID, "false")
-		selector.emit("bnez", line, optIRRV64Register(selector.register(terminator.Condition)), asm.Symbol{Name: trueLabel})
+		selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: trueLabel})
 		selector.emit("j", line, asm.Symbol{Name: falseLabel})
 		selector.items = append(selector.items, asm.Label{Name: trueLabel, Line: line})
-		if err := selector.edgeCopies(terminator.True, line); err != nil {
+		if err := selector.emitLocationCopies(trueMoves, line); err != nil {
 			return err
 		}
 		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
 		selector.items = append(selector.items, asm.Label{Name: falseLabel, Line: line})
-		if err := selector.edgeCopies(terminator.False, line); err != nil {
+		if err := selector.emitLocationCopies(falseMoves, line); err != nil {
 			return err
 		}
 		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.False.Target]})
@@ -515,35 +593,109 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 	}
 }
 
-type optIRRV64Move struct {
-	destination int
-	source      int
+type optIRRV64Location struct {
+	register int
+	slot     optir.SpillSlotID
+}
+
+type optIRRV64LocationMove struct {
+	destination optIRRV64Location
+	source      optIRRV64Location
+	typ         optir.Type
+}
+
+func (selector *optIRRV64Selector) valueLocation(value optir.ValueID) (optIRRV64Location, error) {
+	register, colored := selector.colors[value]
+	slot, spilled := selector.spills[value]
+	if colored == spilled {
+		return optIRRV64Location{}, fmt.Errorf("value %d does not have exactly one RV64 machine location", value)
+	}
+	if colored {
+		return optIRRV64Location{register: register}, nil
+	}
+	if slot == 0 {
+		return optIRRV64Location{}, fmt.Errorf("value %d has invalid RV64 spill slot zero", value)
+	}
+	if _, exists := selector.spillOffsets[slot]; !exists {
+		return optIRRV64Location{}, fmt.Errorf("value %d names missing RV64 spill slot %d", value, slot)
+	}
+	return optIRRV64Location{slot: slot}, nil
+}
+
+func (selector *optIRRV64Selector) readValue(value optir.ValueID, scratch, line int) (int, error) {
+	location, err := selector.valueLocation(value)
+	if err != nil {
+		return 0, err
+	}
+	if location.slot == 0 {
+		return location.register, nil
+	}
+	if err := selector.loadSpillSlot(location.slot, scratch, selector.types[value], line); err != nil {
+		return 0, err
+	}
+	return scratch, nil
+}
+
+func (selector *optIRRV64Selector) readLocation(location optIRRV64Location, destination int, typ optir.Type, line int) error {
+	if location.slot != 0 {
+		return selector.loadSpillSlot(location.slot, destination, typ, line)
+	}
+	selector.move(destination, location.register, line)
+	return nil
+}
+
+func (selector *optIRRV64Selector) emitLocationMove(move optIRRV64LocationMove, line int) error {
+	if move.destination.slot == 0 {
+		return selector.readLocation(move.source, move.destination.register, move.typ, line)
+	}
+	source := move.source.register
+	if move.source.slot != 0 {
+		source = optIRRV64SpillScratchA
+		if err := selector.loadSpillSlot(move.source.slot, source, move.typ, line); err != nil {
+			return err
+		}
+	}
+	return selector.storeSpillSlot(move.destination.slot, source, move.typ, line)
 }
 
 func (selector *optIRRV64Selector) edgeCopies(edge optir.Edge, line int) error {
+	moves, err := selector.edgeMoves(edge)
+	if err != nil {
+		return err
+	}
+	return selector.emitLocationCopies(moves, line)
+}
+
+func (selector *optIRRV64Selector) edgeMoves(edge optir.Edge) ([]optIRRV64LocationMove, error) {
 	target := optIRBlock(selector.cfg, edge.Target)
 	if target == nil || len(target.Parameters) != len(edge.Arguments) {
-		return fmt.Errorf("invalid edge to block %d", edge.Target)
+		return nil, fmt.Errorf("invalid edge to block %d", edge.Target)
 	}
-	var moves []optIRRV64Move
+	var moves []optIRRV64LocationMove
 	for index, parameter := range target.Parameters {
 		argument := edge.Arguments[index]
 		if parameter.Type == optir.Type("()") {
 			continue
 		}
 		if selector.types[argument] != parameter.Type {
-			return fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
+			return nil, fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
 		}
-		destination, source := selector.register(parameter.ID), selector.register(argument)
+		destination, err := selector.valueLocation(parameter.ID)
+		if err != nil {
+			return nil, err
+		}
+		source, err := selector.valueLocation(argument)
+		if err != nil {
+			return nil, err
+		}
 		if destination != source {
-			moves = append(moves, optIRRV64Move{destination: destination, source: source})
+			moves = append(moves, optIRRV64LocationMove{destination: destination, source: source, typ: parameter.Type})
 		}
 	}
-	selector.parallelCopies(moves, line)
-	return nil
+	return moves, nil
 }
 
-func (selector *optIRRV64Selector) parallelCopies(moves []optIRRV64Move, line int) {
+func (selector *optIRRV64Selector) emitLocationCopies(moves []optIRRV64LocationMove, line int) error {
 	for len(moves) > 0 {
 		progress := false
 		for index, move := range moves {
@@ -554,7 +706,9 @@ func (selector *optIRRV64Selector) parallelCopies(moves []optIRRV64Move, line in
 			if usedAsSource {
 				continue
 			}
-			selector.move(move.destination, move.source, line)
+			if err := selector.emitLocationMove(move, line); err != nil {
+				return err
+			}
 			moves = append(moves[:index], moves[index+1:]...)
 			progress = true
 			break
@@ -562,14 +716,31 @@ func (selector *optIRRV64Selector) parallelCopies(moves []optIRRV64Move, line in
 		if progress {
 			continue
 		}
+
+		// Preserve one old destination in t6, then make the cycle acyclic.
+		// Slot-to-slot traffic uses t5, so it cannot overwrite this value.
 		cycle := moves[0].destination
-		selector.move(optIRRV64CopyScratch, cycle, line)
+		var cycleType optir.Type
+		for _, move := range moves {
+			if move.source == cycle {
+				cycleType = move.typ
+				break
+			}
+		}
+		if cycleType == "" {
+			return fmt.Errorf("parallel-copy cycle has no source for destination")
+		}
+		if err := selector.readLocation(cycle, optIRRV64CopyScratch, cycleType, line); err != nil {
+			return err
+		}
+		scratch := optIRRV64Location{register: optIRRV64CopyScratch}
 		for index := range moves {
 			if moves[index].source == cycle {
-				moves[index].source = optIRRV64CopyScratch
+				moves[index].source = scratch
 			}
 		}
 	}
+	return nil
 }
 
 func (selector *optIRRV64Selector) constant(destination int, value int64, line int) {
@@ -596,29 +767,43 @@ func (selector *optIRRV64Selector) move(destination, source, line int) {
 
 func (selector *optIRRV64Selector) loadSpill(value optir.ValueID, register int, line int) error {
 	slot, spilled := selector.spills[value]
-	offset, laidOut := selector.spillOffsets[slot]
-	if !spilled || !laidOut {
+	if !spilled {
 		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
 	}
-	mnemonic, ok := optIRRV64SpillLoad(selector.types[value])
+	return selector.loadSpillSlot(slot, register, selector.types[value], line)
+}
+
+func (selector *optIRRV64Selector) loadSpillSlot(slot optir.SpillSlotID, register int, typ optir.Type, line int) error {
+	offset, laidOut := selector.spillOffsets[slot]
+	if slot == 0 || !laidOut {
+		return fmt.Errorf("load names missing RV64 spill slot %d", slot)
+	}
+	mnemonic, ok := optIRRV64SpillLoad(typ)
 	if !ok {
-		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+		return fmt.Errorf("RV64 spill slot %d has unsupported type %s", slot, typ)
 	}
 	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
 	selector.written[register] = true
-	selector.normalize(register, selector.types[value], line)
+	selector.normalize(register, typ, line)
 	return nil
 }
 
 func (selector *optIRRV64Selector) storeSpill(value optir.ValueID, register int, line int) error {
 	slot, spilled := selector.spills[value]
-	offset, laidOut := selector.spillOffsets[slot]
-	if !spilled || !laidOut {
+	if !spilled {
 		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
 	}
-	mnemonic, ok := optIRRV64SpillStore(selector.types[value])
+	return selector.storeSpillSlot(slot, register, selector.types[value], line)
+}
+
+func (selector *optIRRV64Selector) storeSpillSlot(slot optir.SpillSlotID, register int, typ optir.Type, line int) error {
+	offset, laidOut := selector.spillOffsets[slot]
+	if slot == 0 || !laidOut {
+		return fmt.Errorf("store names missing RV64 spill slot %d", slot)
+	}
+	mnemonic, ok := optIRRV64SpillStore(typ)
 	if !ok {
-		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+		return fmt.Errorf("RV64 spill slot %d has unsupported type %s", slot, typ)
 	}
 	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
 	return nil
