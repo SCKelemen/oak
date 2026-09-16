@@ -8505,6 +8505,7 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 // load's destination, so it is returned separately).
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *token.Token) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
+	elide := g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
 		// A constant element: its place — rebased through a temporary when
 		// the offset is past the load's immediate (a field far into a large
@@ -8530,8 +8531,12 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 		} else {
 			g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 		}
-		if err := g.constantGuard(home, arr.length); err != nil {
-			return asm.Memory{}, 0, 0, err
+		if elide {
+			g.elided++
+		} else {
+			if err := g.constantGuard(home, arr.length); err != nil {
+				return asm.Memory{}, 0, 0, err
+			}
 		}
 		idx := wr(home)
 		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, base, nil
@@ -8548,7 +8553,7 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 	// bound, Oak.Assembler.masked_index_bound) or the compiler keeps this
 	// line's guards.
 	guard := true
-	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+	if elide {
 		guard = false
 		g.elided++
 	}
