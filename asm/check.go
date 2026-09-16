@@ -1677,11 +1677,24 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// registers are equal — two spans' lengths, so an index guarded below
 	// one is below the other (Oak.Assembler.index_under_equal_len).
 	if guard.valid && guard.rightReg >= 0 && cond == "ne" && guard.left != guard.rightReg {
-		if c.lenEqual == nil {
-			c.lenEqual = map[int]int{}
-		}
-		c.lenEqual[guard.left] = guard.rightReg
-		c.lenEqual[guard.rightReg] = guard.left
+		c.recordLenEqual(guard.left, guard.rightReg)
+	}
+}
+
+// recordLenEqual records that w registers a and b hold one value. The map
+// keeps one partner per register, so a register already paired keeps its
+// pair — `len(dst) == len(a) && len(b) == len(a)` leaves a paired with
+// dst and b pointing at a — and equalLenReg reads the pairs as a graph,
+// in both directions, so every register the compares chained is reached.
+func (c *checker) recordLenEqual(a, b int) {
+	if c.lenEqual == nil {
+		c.lenEqual = map[int]int{}
+	}
+	if _, paired := c.lenEqual[a]; !paired {
+		c.lenEqual[a] = b
+	}
+	if _, paired := c.lenEqual[b]; !paired {
+		c.lenEqual[b] = a
 	}
 }
 
@@ -1692,25 +1705,50 @@ func (c *checker) measuresLen(f *spanFact, n int) bool {
 }
 
 // equalLenReg returns a register holding span f's length that `cmp wA,
-// wB; b.ne` proved equal (lenEqual) to w register n — directly, or to
-// another register holding the same length as n (a span's copies of its
-// length are one value, and the compare may have read the copy where a
+// wB; b.ne` proved equal (lenEqual) to w register n — through the chain
+// of compares in either direction, and through the other registers
+// holding the same length as any register on it (a span's copies of its
+// length are one value, and a compare may have read the copy where a
 // slack fact names the primary) — or -1.
 func (c *checker) equalLenReg(f *spanFact, n int) int {
-	if other, equal := c.lenEqual[n]; equal && f.holdsLen(other) {
-		return other
+	if len(c.lenEqual) == 0 {
+		return -1
 	}
-	for _, g := range c.spans {
-		if g == f || !g.holdsLen(n) {
-			continue
+	reached := map[int]bool{n: true}
+	queue := []int{n}
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		var next []int
+		if other, equal := c.lenEqual[r]; equal {
+			next = append(next, other)
 		}
-		for r := range g.lenRegs {
-			if other, equal := c.lenEqual[r]; equal && f.holdsLen(other) {
-				return other
+		for key, value := range c.lenEqual {
+			if value == r {
+				next = append(next, key)
+			}
+		}
+		for _, g := range c.spans {
+			if g != f && g.holdsLen(r) {
+				for alias := range g.lenRegs {
+					next = append(next, alias)
+				}
+			}
+		}
+		for _, m := range next {
+			if !reached[m] {
+				reached[m] = true
+				queue = append(queue, m)
 			}
 		}
 	}
-	return -1
+	best := -1
+	for r := range reached {
+		if r != n && f.holdsLen(r) && (best < 0 || r < best) {
+			best = r
+		}
+	}
+	return best
 }
 
 // forgetGuards drops every span length guard: control merged (label) or
@@ -2486,9 +2524,17 @@ func (c *checker) boundVector(num int) bool {
 // the result register, or a declared clobber. wN/xN alias: writing either
 // width is a write of the physical register.
 func (c *checker) write(instr Instruction, reg Register) {
-	if other, equal := c.lenEqual[reg.Num]; equal && (reg.Class == ClassW || reg.Class == ClassX) {
-		delete(c.lenEqual, reg.Num)
-		delete(c.lenEqual, other)
+	if reg.Class == ClassW || reg.Class == ClassX {
+		// Every equality the register took part in lapses: its own pair
+		// and every register paired with it.
+		if _, equal := c.lenEqual[reg.Num]; equal {
+			delete(c.lenEqual, reg.Num)
+		}
+		for key, value := range c.lenEqual {
+			if value == reg.Num {
+				delete(c.lenEqual, key)
+			}
+		}
 	}
 	if reg.Class == ClassW || reg.Class == ClassX {
 		delete(c.sumFacts, reg.Num)
