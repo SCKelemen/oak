@@ -309,7 +309,20 @@ inner loop — `search` and `page_probe` in `benchmarks/kernels`, the two
 largest gaps left in proven or witnessed code — was eleven instructions
 against clang's nine for the same source, and these two fusions are the
 difference but for clang's `ccmp`, which combines the loop's two exit
-tests into one branch (the next candidate). The seam checker had to learn
+tests into one branch. That fusion is built too (`machine.FuseExits`,
+`Lane.FuseExits`: `b.cond exit; cbz back` → `ccmp wR, #0, #nzcv, !cond;
+b.eq back`, the constant flags failing the branch where the first test
+exited) and the checker reads it — the compare's fact rides through the
+conditional compare to the branch it feeds (`ccmpFact`), so the loop
+body's elided guard stands — but the verifier's loop shapes do not read
+a `ccmp` tail: every such form came back trusted after a path budget
+spent on the unrolled loop, so the transform stays unregistered until the
+verifier learns the shape. Measured on the clock, the two pair fusions
+are neutral within noise (`search` 1.11× against 1.12× unfused,
+`page_probe` 1.20× against 1.22×, native over the C backend, three
+interleaved runs each): the loop is bound by its load-compare-select
+chain, not its instruction count, which is the argument for the exit
+fusion — one branch to resolve per trip instead of two. The seam checker had to learn
 the fused midpoint: its bound arithmetic followed `sub; lsr; add` to
 `mid < hi` (Oak.Assembler.midpoint_below) and read the shifted-operand
 add as nothing, so the fused form kept its element guard and priced
