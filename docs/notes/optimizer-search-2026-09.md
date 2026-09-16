@@ -263,7 +263,13 @@ being charged stalls the guarded form skipped), a pair whose two
 instructions lie in different loops counts once and in no loop's share,
 and a fall-through block without a label counts under the label before
 it (the top-tested loop's body block has none, and its load's stall was
-being lost while the rotated form's was charged).
+being lost while the rotated form's was charged). And one correction to
+the scheduler itself: the RV64 checker reads the length normalization
+`slli rX, len, 32; srli rX, rX, 32` as one definition only as adjacent
+halves, so a schedule that slid a copy between them lost every guard on
+the length and was refused; the target now names such *bonded* pairs
+(`target.bonded`) and the scheduler moves them as one unit, after which
+the RV64 binary search's scheduled form is admitted and proven.
 
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers

@@ -72,6 +72,10 @@ type target struct {
 	// latency is the cycles an instruction's result takes on the lane's
 	// reference core (the scheduler's and the stall estimate's model).
 	latency func(asm.Instruction) int
+	// bonded reports two adjacent instructions the seam checker reads as
+	// one idiom — a definition in two halves — which the scheduler keeps
+	// together; nil when the lane has none.
+	bonded func(a, b asm.Instruction) bool
 	// writesFlags reports an instruction that sets the condition flags.
 	writesFlags func(asm.Instruction) bool
 	// increment reads `r = r + k` / `r = r - k` with an immediate: the
@@ -667,6 +671,22 @@ var rv64Target = &target{
 			return 12
 		}
 		return 1
+	},
+	bonded: func(a, b asm.Instruction) bool {
+		// The length normalization `slli rX, len, 32; srli rX, rX, 32` is
+		// one definition of rX to the checker only as adjacent halves
+		// (asm/rv64_check.go, isNormalization): apart, rX is written twice
+		// and its length facts are lost, and every guard on it with them.
+		// The fused zero-extend-and-scale `slli 32; srli 32-s` is the same
+		// shape.
+		if a.Mnemonic != "slli" || b.Mnemonic != "srli" || len(a.Operands) != 3 || len(b.Operands) != 3 {
+			return false
+		}
+		d1, ok1 := a.Operands[0].(asm.Register)
+		i1, ok2 := a.Operands[2].(asm.Immediate)
+		d2, ok3 := b.Operands[0].(asm.Register)
+		s2, ok4 := b.Operands[1].(asm.Register)
+		return ok1 && ok2 && ok3 && ok4 && i1.Value == 32 && d1.Class == d2.Class && d1.Num == d2.Num && s2.Class == d2.Class && s2.Num == d2.Num
 	},
 	writesFlags: func(asm.Instruction) bool { return false },
 	increment: func(a asm.Instruction) (Reg, int64, bool) {

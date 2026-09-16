@@ -1179,3 +1179,34 @@ func TestScheduleRV64(t *testing.T) {
 		t.Fatalf("moved %d:\n%s", moved, got)
 	}
 }
+
+func TestScheduleKeepsBondedPairs(t *testing.T) {
+	// The RV64 length normalization `slli s3, s2, 32; srli s3, s3, 32` is
+	// one definition to the checker only as adjacent halves: the scheduler
+	// moves the independent copies around the pair, never between.
+	f := rvfn(
+		ins("mv", rx(18), rx(11)),
+		ins("slli", rx(19), rx(18), imm(32)),
+		ins("mv", rx(9), rx(10)),
+		ins("mv", rx(20), rx(12)),
+		ins("srli", rx(19), rx(19), imm(32)),
+		ins("ld", rx(5), mem(rx(9), 0)),
+		ins("add", rx(10), rx(5), rx(19)),
+		ins("ret"),
+	)
+	out, _, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	lines := strings.Split(got, "\n")
+	adjacent := false
+	for i := 0; i+1 < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "slli s3") && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "srli s3") {
+			adjacent = true
+		}
+	}
+	if !adjacent {
+		t.Fatalf("the normalization halves came apart:\n%s", got)
+	}
+}

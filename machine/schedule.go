@@ -65,9 +65,11 @@ func (f *Function) scheduleBlock(b *Block) int {
 }
 
 // scheduleRegion list-schedules one barrier-free region by critical
-// path, ties in original order.
+// path, ties in original order. Instructions the checker reads as one
+// idiom (target.bonded) schedule as one unit.
 func (f *Function) scheduleRegion(region []*Instr) []*Instr {
-	n := len(region)
+	units := f.units(region)
+	n := len(units)
 	if n < 2 {
 		return region
 	}
@@ -76,18 +78,29 @@ func (f *Function) scheduleRegion(region []*Instr) []*Instr {
 	succs := make([][]int, n)
 	for j := 1; j < n; j++ {
 		for i := j - 1; i >= 0; i-- {
-			if w, dep := f.dependence(region[i], region[j]); dep {
+			w, dep := 0, false
+			for _, a := range units[i] {
+				for _, b := range units[j] {
+					if wab, dab := f.dependence(a, b); dab {
+						dep = true
+						if wab > w {
+							w = wab
+						}
+					}
+				}
+			}
+			if dep {
 				preds[j] = append(preds[j], i)
 				weights[j] = append(weights[j], w)
 				succs[i] = append(succs[i], j)
 			}
 		}
 	}
-	// Priority: the longest latency path from the instruction to the
-	// region's end.
+	// Priority: the longest latency path from the unit to the region's
+	// end, a unit's latency its last instruction's.
 	priority := make([]int, n)
 	for i := n - 1; i >= 0; i-- {
-		lat := f.t.latency(region[i].Asm)
+		lat := f.t.latency(units[i][len(units[i])-1].Asm)
 		priority[i] = lat
 		for _, s := range succs[i] {
 			if p := lat + priority[s]; p > priority[i] {
@@ -97,9 +110,9 @@ func (f *Function) scheduleRegion(region []*Instr) []*Instr {
 	}
 	scheduled := make([]bool, n)
 	cycleOf := make([]int, n)
-	var out []*Instr
+	out := make([]*Instr, 0, len(region))
 	cycle := 0
-	for len(out) < n {
+	for len(out) < len(region) {
 		best, bestReady := -1, 0
 		for i := 0; i < n; i++ {
 			if scheduled[i] {
@@ -122,8 +135,8 @@ func (f *Function) scheduleRegion(region []*Instr) []*Instr {
 				best, bestReady = i, ready
 				continue
 			}
-			// Prefer an instruction ready now with the longest path; among
-			// those not yet ready, the one ready first; ties keep order.
+			// Prefer a unit ready now with the longest path; among those
+			// not yet ready, the one ready first; ties keep order.
 			nowBest, nowI := bestReady <= cycle, ready <= cycle
 			switch {
 			case nowI && !nowBest:
@@ -137,8 +150,23 @@ func (f *Function) scheduleRegion(region []*Instr) []*Instr {
 		}
 		scheduled[best] = true
 		cycleOf[best] = cycle
-		out = append(out, region[best])
-		cycle++
+		out = append(out, units[best]...)
+		cycle += len(units[best])
+	}
+	return out
+}
+
+// units groups a region into the units the scheduler moves: each
+// instruction alone, or with the next when the target bonds the two.
+func (f *Function) units(region []*Instr) [][]*Instr {
+	var out [][]*Instr
+	for i := 0; i < len(region); i++ {
+		if i+1 < len(region) && f.t.bonded != nil && f.t.bonded(region[i].Asm, region[i+1].Asm) {
+			out = append(out, []*Instr{region[i], region[i+1]})
+			i++
+			continue
+		}
+		out = append(out, []*Instr{region[i]})
 	}
 	return out
 }
