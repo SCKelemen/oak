@@ -366,6 +366,27 @@ count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
 
+## Chain condition operands, 2026-09-16
+
+A three-arm chain whose second condition needs a computed operand,
+`x < lo ? { a = x } | x + 1 < hi ? { a = hi } | { a = lo }`, inside a
+loop. The whole chain is if-converted where before the first arm branched
+and only the remainder was (`docs/spec/94-assembler.md` §9
+"If-conversion"): twelve body instructions with two branches become
+eleven with none.
+
+| three-arm chain over 2^12 `u32` elements, best of seven over three runs | half converted | converted |
+| --- | ---: | ---: |
+| the comparisons always take one arm | 0.48–0.71 ns/element | 0.52–0.63 |
+| the comparisons are unpredictable | 1.01–1.10 | 0.54–0.62 |
+
+A factor of 1.8 where the data decides the arm, and nothing where it does
+not — one instruction fewer is again below the noise, and the mispredict
+is again the whole of the win. Two increments in a row have now come out
+this way, which is worth stating as a rule for this backend: on a wide
+core the branches are what the clock sees, and the instruction counts the
+cost model ranks by are a proxy that happens to point the same direction.
+
 ## Select forms, 2026-09-16
 
 A conditional in value position is a compare and one conditional select
