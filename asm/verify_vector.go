@@ -1026,13 +1026,17 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 			asmTerm = packLanes(machine, bits)[0]
 		}
 		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
+		verdict = verdictWithCallees(verdict, exec.summarized)
 		if verdict.Kind == VerdictMismatch {
 			return verdict
 		}
 		verdicts = append(verdicts, verdict)
 	}
 	if verdicts[0].Kind == VerdictProven && verdicts[1].Kind == VerdictProven {
-		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name)}
+		return verdictWithCallees(
+			Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name)},
+			verdicts[0].Callees, verdicts[1].Callees,
+		)
 	}
 	for _, verdict := range verdicts {
 		if verdict.Kind == VerdictWitnessed {

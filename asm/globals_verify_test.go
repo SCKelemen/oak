@@ -117,6 +117,10 @@ func TestVerifyGlobalsThroughCalls(t *testing.T) {
 	if after.Kind != VerdictProven || !strings.Contains(after.Message, "package state it writes (st)") {
 		t.Fatalf("a unit callee's write must reach the caller's read and cell, got %s: %s", after.Kind, after.Message)
 	}
+	unitAfter := run("unit_after: () -> ()", "{\n  bump_st()\n}", prologue+"  bl bump_st\n"+epilogue)
+	if unitAfter.Kind != VerdictProven || strings.Join(unitAfter.Callees, ",") != "bump_st" {
+		t.Fatalf("a proven unit caller must retain its callee dependency, got %s: %s, callees %v", unitAfter.Kind, unitAfter.Message, unitAfter.Callees)
+	}
 	// seed: (k: u32) -> u32 { st = k; read_st() }: the caller's store is what the callee reads.
 	seed := run("seed: (k: u32) -> u32", "{\n  st = k\n  read_st()\n}", "  bind w0 = k\n"+prologue+address+"  str w0, [x9]\n  bl read_st\n"+epilogue)
 	if seed.Kind != VerdictProven || !strings.Contains(seed.Message, "package state it writes (st)") {

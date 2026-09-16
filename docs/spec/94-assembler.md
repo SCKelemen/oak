@@ -5664,7 +5664,18 @@ it for the full check. `TestVerdictCache` pins the cold build, the warm
 build with identical verdicts, the callee change that re-verifies the
 callee, its caller, and `main` but not an unrelated body, and the
 bypass. On the prover a warm rebuild takes 30 seconds where the cold
-build takes over three minutes. Second, a mask of every bit at a term's
+build takes over three minutes. The version-2 record stores the verdict kind,
+message, and the exact `Callees` proof-dependency list; the reader rejects a
+legacy, partial, malformed, duplicate, or no-longer-known dependency instead
+of reconstructing a weaker verdict. Its key includes both source-reachable
+functions and every known function named by a direct machine `bl`/`call`, so
+an optimizer-introduced call cannot leave a stale proof after that callee's
+body changes. Unit, two-register aggregate, deferred-memory, and vector-result
+verifier paths preserve the union of summarized callees before the record is
+written. Cold and warm tests require identical dependency closure and rerun
+the verified-profile fixpoint over the cached result. The cache remains local
+proof-engine state rather than an independently checked proof certificate.
+Second, a mask of every bit at a term's
 width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
 bits is `x`; a truncation of a zero-extension is the extended term), and
 `x - x`, `x ^ x`, `x & x`, `x | x` fold when the two sides are the same

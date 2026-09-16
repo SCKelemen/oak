@@ -101,7 +101,7 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 	if d.cacheDir != "" {
 		key = verdictCacheKey(fn, d.source, d.functions, d.declarations)
 	}
-	verdict, cached := cachedVerdict(d.cacheDir, key)
+	verdict, cached := cachedVerdict(d.cacheDir, key, d.functions)
 	if !cached {
 		verdict = asm.Verify(fn, d.source, verifiedBody(fn, d.source))
 		storeVerdict(d.cacheDir, key, verdict)

@@ -136,6 +136,16 @@ graph. Selected Go decisions are pinned to kernel-checked examples. This is a
 refinement: CFG-to-trace projection, SHA identity, source re-lowering, and
 machine-callee identity remain outside the theorem.
 
+Native verifier verdicts carry the Oak callees whose summaries they used.
+Every successful result shape—including unit effects, multi-register
+aggregates, deferred span decisions, and two-half vectors—preserves that
+dependency union. The versioned on-disk verdict cache stores and validates the
+same list, and its key includes direct machine-call targets as well as source
+reachability. Thus cold and warm builds feed the same dependency graph to the
+verified-profile closure; malformed or legacy records are cache misses. This
+closes metadata preservation, not the larger proof-engine TCB: the cache does
+not yet contain independently checkable native-equivalence certificates.
+
 For the six AArch64 barrier forms, an independent executable regression witness
 now checks the direct-native portion of this seam: six Oak source functions must
 produce complete two-word object bodies containing the literal expected

@@ -47,6 +47,25 @@ type Verdict struct {
 	Callees []string
 }
 
+// verdictWithCallees attaches the exact dependency union accumulated by
+// independent verifier runs (result chunks or vector halves). First occurrence
+// determines the stable order; the returned slice never aliases an executor.
+func verdictWithCallees(verdict Verdict, groups ...[]string) Verdict {
+	seen := make(map[string]bool)
+	callees := make([]string, 0)
+	for _, group := range groups {
+		for _, callee := range group {
+			if seen[callee] {
+				continue
+			}
+			seen[callee] = true
+			callees = append(callees, callee)
+		}
+	}
+	verdict.Callees = callees
+	return verdict
+}
+
 type VerdictKind int
 
 const (
@@ -8384,7 +8403,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		if first.Kind != VerdictProven {
 			return first
 		}
-		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+		return verdictWithCallees(
+			Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"},
+			first.Callees, second.Callees,
+		)
 	}
 	return verifyChunk(fn, sig, oakBody, 0)
 }
@@ -8493,7 +8515,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if exec != nil && exec.deferredSpans != nil {
 			// The first run left its memory decision (the logs differed
 			// in length) for after the joined run: decided now.
-			return exec.deferredSpans()
+			return verdictWithCallees(exec.deferredSpans(), exec.summarized)
 		}
 	}
 	return verdict
@@ -8564,12 +8586,15 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 			// The span memories and the package cells are the comparison,
 			// under the loop coupling.
-			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
+			return verdictWithCallees(
+				verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0),
+				exec.summarized,
+			)
 		}
 		if verdict, refuted := trapClaim(); refuted {
 			return verdict
 		}
-		return decideEffects(fn, lowering, exec, nil)
+		return verdictWithCallees(decideEffects(fn, lowering, exec, nil), exec.summarized)
 	}
 	// A record result through memory: the run delivered every word
 	// (exec.moreResults), the lowering packs every word from one value,
