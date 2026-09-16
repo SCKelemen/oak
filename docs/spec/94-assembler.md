@@ -5950,9 +5950,15 @@ sixty-four trips inside sixty-four trips for minutes. Two more followed
 the measurements: an implication charges the proof its terms' distinct
 nodes whether or not it decides (two thousand small decided ones over a
 long write log took seven minutes), and each implication of a loop proof
-gets a quarter of the straight-line decision's nodes, the proof four
-such failures' worth (three cost ten proofs, six a quarter of an hour on
-one body). Prover build per body, measured at three failures' worth:
+gets half of the straight-line decision's nodes, the proof sixteen such
+failures' worth. The cap was a quarter and the proof four failures at
+first: a quarter lost the vectorized map's sixteen-lane store (one
+implication needs more than that), four whole diagrams lost the UTF-8
+kernel's three-loop coupling (it decides hundreds and loses a few), and
+the half with sixteen holds both; only a loop proof's budget carries the
+cap (`nodeBudget.loop`), the theorem decider and the straight-line
+coupling keep the whole diagram. Prover build per body, measured at
+three failures' worth:
 proven 536, evidence 205, trusted 216, no disagreement — the `Bits`
 family moved from trusted to evidence, and ten proofs at the budget's
 edge came back at four. The one execution and one coupling for all of a

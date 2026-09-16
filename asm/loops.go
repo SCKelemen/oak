@@ -3404,7 +3404,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// proof on the prover and the kernels needs 291 nodes (`valid_with`),
 	// and the seven bodies past 512 all end as evidence.
 	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
-	budget := &nodeBudget{remaining: proofNodes}
+	budget := &nodeBudget{remaining: proofNodes, loop: true}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
@@ -4632,6 +4632,11 @@ type nodeBudget struct {
 	remaining int // diagram nodes the proof may still spend
 	calls     int // implications tried so far (implicationCallLimit)
 	decided   map[decisionKey]decisionResult
+	// loop marks a loop proof's budget, whose implications are each
+	// capped at loopDecisionNodeBudget; a straight-line decision's
+	// allowance (synthesized in impliesEqualDepth) lets one diagram grow
+	// to the full blastNodeBudget.
+	loop bool
 }
 
 // decisionKey identifies one implication within a proof: its premise and
@@ -4646,19 +4651,20 @@ type decisionResult struct{ holds, decided bool }
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
 // loopDecisionNodeBudget bounds each of its implications. Each of a loop
-// proof's implications gets a quarter of the straight-line decision's
-// nodes: the implications that hold do so in tens of thousands, and a
-// failing one at two million nodes cost half a minute per order under
-// load. The proof holds four such failures' worth, and every implication
-// charges its terms' nodes as well (impliesEqualDepth), so a write
-// coupling of dozens of stores over large terms fits where a search that
-// keeps failing does not: three failures' worth cost ten proofs
-// (`load_bits`, `diagram_ite`, `t_andbit`), six let one body
-// (`protocol_line_done`) spend a quarter of an hour a candidate, eight a
-// body with sixty-four-way selects seven minutes.
+// proof's implications gets half of the straight-line decision's nodes:
+// the implications that hold mostly do so in tens of thousands, a
+// vectorized map's sixteen-lane memory equality needs more than a quarter
+// of the diagram, and a failing one at two million nodes cost half a
+// minute per order under load. The proof holds sixteen such failures'
+// worth, and every implication charges its terms' nodes as well
+// (impliesEqualDepth), so the UTF-8 kernel's three-loop coupling, which
+// decides hundreds of implications over wide terms and loses a few, fits,
+// while a search that keeps failing ends within a few minutes. Only a
+// loop proof's budget carries the cap (nodeBudget.loop): the theorem
+// decider and the straight-line coupling keep the whole diagram.
 const (
-	loopDecisionNodeBudget = blastNodeBudget / 4
-	loopProofNodeBudget    = 4 * loopDecisionNodeBudget
+	loopDecisionNodeBudget = blastNodeBudget / 2
+	loopProofNodeBudget    = 16 * loopDecisionNodeBudget
 )
 
 // impliesEqual decides premise → (a = b) at the terms' common width:
@@ -4691,7 +4697,7 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
 		// implication budget). One decision's allowance bounds it; past
 		// the allowance the implication is undecided, not unending.
-		budget = &nodeBudget{remaining: loopDecisionNodeBudget}
+		budget = &nodeBudget{remaining: blastNodeBudget}
 	}
 	key := decisionKey{premise, a, b, depth}
 	if r, seen := budget.decided[key]; seen {
@@ -4813,7 +4819,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			// shared budget bounds the diagrams as they grow, not only the
 			// number of implications tried — and no more than a loop
 			// proof's per-implication cap (loopDecisionNodeBudget).
-			if bl.bdd.budget > loopDecisionNodeBudget {
+			if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
 				bl.bdd.budget = loopDecisionNodeBudget
 			}
 			if budget.remaining < bl.bdd.budget {
