@@ -251,13 +251,16 @@ shared refinement are separate completion conditions.
 
 The first two burn-down increments landed with this assessment:
 `Oak.FloatLoweringRefinement.lowerF_eval` covers straight-line `f32` `+`, `-`,
-and `*` over parameters, post-rounding bit-pattern literals, and local
+`*`, and `/` over parameters, post-rounding bit-pattern literals, and local
 declarations and rebindings. `lowerWith_eval` maintains an explicit agreement
 invariant between the extraction scope and the verifier's substituted terms.
-Production render tests pin the three operations, non-contraction of
+Production render tests pin the four operations, non-contraction of
 multiply-then-add, the literal bits, and both local forms. Decimal parsing into
-those bits, comparisons, conversions, memory, control flow, calls, `f64`, and
+those bits, conversions, memory, effectful control flow and calls, `f64`, and
 SIMD remain outside the theorem, so the broader gap and the score above remain.
+The division case relates the extraction and verifier to the same
+`Float32.div` operation and operand order; it is not a separate proof of IEEE
+rounding or NaN-payload behavior.
 
 ### 3.3 The native verifier remains materially inside the TCB
 

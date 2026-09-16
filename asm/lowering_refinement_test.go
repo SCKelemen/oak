@@ -33,12 +33,14 @@ var loweringRenders = []struct {
 	{"f: (a, b: i32) -> i32", "a / b", "(((sdiv32(a, b) and 4294967295) shl 0) sar 0)"},
 	{"f: (a, b: i8) -> i8", "a % b", "((((a sub (sdiv8(a, b) mul b)) and 255) shl 0) sar 0)"},
 	// Exact binary32 arithmetic (FloatLoweringRefinement.lowerF): the
-	// extraction's add32/sub32/mul32 and the verifier's width-32 termFloat
-	// keep the same operation and operand order. Multiplication followed by
-	// addition stays two operations; it is never contracted implicitly.
+	// extraction's add32/sub32/mul32 or Float32 division and the verifier's
+	// width-32 termFloat keep the same operation and operand order.
+	// Multiplication followed by addition stays two operations; it is never
+	// contracted implicitly.
 	{"f: (a, b: f32) -> f32", "a + b", "fadd32(a, b)"},
 	{"f: (a, b: f32) -> f32", "a - b", "fsub32(a, b)"},
 	{"f: (a, b: f32) -> f32", "a * b", "fmul32(a, b)"},
+	{"f: (a, b: f32) -> f32", "a / b", "fdiv32(a, b)"},
 	{"f: (a, b, c: f32) -> f32", "a * b + c", "fadd32(fmul32(a, b), c)"},
 	// Exact sign operations (FloatLoweringRefinement): negation flips the
 	// sign bit, abs clears it, and copysign combines the magnitude and sign.

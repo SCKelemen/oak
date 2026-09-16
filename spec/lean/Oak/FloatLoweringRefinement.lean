@@ -6,13 +6,16 @@ import Oak.FloatOps
 `Oak.LoweringRefinement` relates the extraction and verifier lowerings for the
 shared integer and aggregate language.  This module starts the corresponding
 floating-point seam with the binary32 operations emitted by
-`oak build -lean-floats bits`: `+`, `-`, `*`, and the six comparisons.
+`oak build -lean-floats bits`: `+`, `-`, `*`, `/`, and the six comparisons.
 
-The source side uses the exact `Oak.FloatOps` carriers, modulo their documented
-canonical-NaN reading of Lean's `Float32`. The verifier side has
-the operation names used by `asm/floats_lowering.go` and
-`asm/floats_ops.go`: `fadd`, `fsub`, and `fmul`, each at width 32.  The Go
-render test in `asm/lowering_refinement_test.go` pins production lowering to
+For addition, subtraction, and multiplication, the source side uses the exact
+`Oak.FloatOps` carriers, modulo their documented canonical-NaN reading of
+Lean's `Float32`. Division uses Lean's `Float32` division, the same semantic
+primitive the extraction emits; its refinement establishes operation identity
+and operand order, not a new bit-level proof of division rounding. The verifier
+side has the operation names used by `asm/floats_lowering.go` and
+`asm/floats_ops.go`: `fadd`, `fsub`, `fmul`, and `fdiv`, each at width 32. The
+Go render test in `asm/lowering_refinement_test.go` pins production lowering to
 the `lowerF` shapes below.
 
 The second increment adds literals after decimal parsing has rounded them to
@@ -27,6 +30,8 @@ those guards and straight-line float leaves. The sixth closes pure calls over
 ordered arguments. The seventh closes statement-position conditionals over
 any finite sequence of scalar `f32` bindings: both arms start from the same
 scope, execute assignments in order, and merge every written name.
+The eighth adds operation-preserving binary32 division throughout that existing
+pure control-flow and call surface.
 Decimal parsing itself, conversions, spans, nested/effectful statement control
 flow, borrowing/recursive/effectful calls, binary64, and SIMD remain outside
 this theorem.
@@ -34,12 +39,14 @@ this theorem.
 
 namespace Oak.FloatLoweringRefinement
 
-/-- The binary32 operations whose extraction uses the bit-exact carriers in
-`Oak.FloatOps`. -/
+/-- The binary32 operations in this refinement. Addition, subtraction, and
+multiplication use the bit-exact carriers in `Oak.FloatOps`; division is the
+shared Lean `Float32` primitive. -/
 inductive SourceOp
   | add
   | sub
   | mul
+  | div
   deriving DecidableEq, Repr
 
 /-- The corresponding `termFloat` operation names in the verifier. -/
@@ -47,6 +54,7 @@ inductive VerifierOp
   | fadd
   | fsub
   | fmul
+  | fdiv
   deriving DecidableEq, Repr
 
 /-- Exact unary operations on a binary32 bit pattern. -/
@@ -86,6 +94,7 @@ def lowerOp : SourceOp → VerifierOp
   | .add => .fadd
   | .sub => .fsub
   | .mul => .fmul
+  | .div => .fdiv
 
 /-- The spelling map for unary sign operations. -/
 def lowerUnaryOp : SourceUnaryOp → VerifierUnaryOp
@@ -100,11 +109,12 @@ def lowerCompareOp : SourceCompareOp → VerifierCompareOp
   | .gt => .gt
   | .ge => .ge
 
-/-- The extraction's `-lean-floats bits` reading of the three operations. -/
+/-- The extraction's `-lean-floats bits` reading of the four operations. -/
 def SourceOp.eval : SourceOp → Float32 → Float32 → Float32
   | .add => Oak.FloatOps.add32
   | .sub => Oak.FloatOps.sub32
   | .mul => Oak.FloatOps.mul32
+  | .div => fun a b => a / b
 
 /-- The formal reading of the verifier's `termFloat` names.  The verifier
 treats a non-constant application as uninterpreted when deciding equality;
@@ -113,6 +123,7 @@ def VerifierOp.eval : VerifierOp → Float32 → Float32 → Float32
   | .fadd => Oak.FloatOps.add32
   | .fsub => Oak.FloatOps.sub32
   | .fmul => Oak.FloatOps.mul32
+  | .fdiv => fun a b => a / b
 
 /-- The extraction's bit-level reading of binary32 sign operations. -/
 def SourceUnaryOp.eval : SourceUnaryOp → Float32 → Float32
@@ -142,7 +153,7 @@ def VerifierCompareOp.eval : VerifierCompareOp → Float32 → Float32 → Bool
   | .gt => Oak.FloatOps.gt32
   | .ge => Oak.FloatOps.ge32
 
-/-- Mapping a source operation to the verifier operation preserves its exact
+/-- Mapping a source operation to the verifier operation preserves its shared
 binary32 meaning. -/
 @[simp] theorem lowerOp_eval (op : SourceOp) (a b : Float32) :
     (lowerOp op).eval a b = op.eval a b := by
@@ -780,6 +791,7 @@ private def c : Expr := .param "c"
 example : lowerF (.binary .add a b) = .float .fadd (.param "a") (.param "b") := rfl
 example : lowerF (.binary .sub a b) = .float .fsub (.param "a") (.param "b") := rfl
 example : lowerF (.binary .mul a b) = .float .fmul (.param "a") (.param "b") := rfl
+example : lowerF (.binary .div a b) = .float .fdiv (.param "a") (.param "b") := rfl
 example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
 example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
 example : lowerF (.copysign (.unary .neg a) b) =

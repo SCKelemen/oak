@@ -27,6 +27,13 @@ func TestVerifyFloatScalar(t *testing.T) {
 	if separate.Kind != VerdictProven {
 		t.Fatalf("fmul then fadd must be proven, got %s: %s", separate.Kind, separate.Message)
 	}
+	divide := "divide: (a, b: f32) -> f32"
+	if v := verifyCase(t, divide, "a / b", "  bind s0 = a\n  bind s1 = b\n  fdiv s0, s0, s1\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("a / b against fdiv must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, divide, "a / b", "  bind s0 = a\n  bind s1 = b\n  fdiv s0, s1, s0\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("a / b against b / a must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
 	// Reordering the operands of a non-commutative operation is caught;
 	// commutativity is not assumed either (x*a is another application).
 	swapped := verifyCase(t, decl, "a - x", "  bind d0 = a\n  bind d1 = x\n  bind d2 = y\n  fsub d0, d1, d0\n  ret")

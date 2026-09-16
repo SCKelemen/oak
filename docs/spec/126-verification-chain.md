@@ -440,8 +440,8 @@ iteration's values.
 The first float seam is `Oak.FloatLoweringRefinement` (2026-09-15). Its
 `lowerF_eval` proves, for every straight-line expression over `f32` parameters,
 post-rounding bit-pattern literals, and local declarations or rebindings using
-`+`, `-`, and `*`, plus unary negation, `abs`, and `copysign`, that the
-extraction's exact `Oak.FloatOps` reading equals the verifier term's matching
+`+`, `-`, `*`, and `/`, plus unary negation, `abs`, and `copysign`, that the
+extraction's operation reading equals the verifier term's matching
 arithmetic or sign-bit reading. The generalized `lowerWith_eval` maintains
 the agreement invariant while the verifier substitutes a local's lowered
 initializer. The operation map, operand order, literal bits, and substitution
@@ -471,7 +471,9 @@ one-local corollary. This is deliberately still a first slice: decimal parsing
 into the literal bits, conversions, spans, effectful conditions, nested or
 effectful statement arms, borrowing/recursive/effectful calls, `f64`, and
 vector operations remain related to the extraction by tests rather than this
-theorem.
+theorem. Division here proves operation identity and operand order through
+Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
+division or payload-observing NaN behavior.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -538,7 +540,7 @@ for a workload):
    machine behavior" from a statement about expressions into one about
    functions on arm64. **First float slice (2026-09-15):**
    `Oak.FloatLoweringRefinement.lowerF_eval` connects exact `f32` `+`, `-`,
-   `*`, unary negation, `abs`, and `copysign` over parameters, post-rounding
+   `*`, `/`, unary negation, `abs`, and `copysign` over parameters, post-rounding
    literal bits, and straight-line local declaration/rebinding to the verifier's
    width-32 operation/sign-bit terms and local substitution; the production
    render pins cover those shapes and a multiply followed by an add.
