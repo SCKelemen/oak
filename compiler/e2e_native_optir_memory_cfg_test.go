@@ -7,6 +7,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/target"
 )
 
 const nativeOptIRMemoryCFGProgram = `
@@ -47,6 +48,18 @@ func TestE2ENativeRV64OptIRSelectsVerifiedRegionDSEAcrossBranch(t *testing.T) {
 	}
 	if len(native.Object) < 20 || binary.LittleEndian.Uint16(native.Object[18:20]) != 243 {
 		t.Fatal("verified acyclic region-DSE candidate did not produce an EM_RISCV object")
+	}
+}
+
+func TestE2ENativeRV64OptIRMemoryPhiUnderQEMU(t *testing.T) {
+	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
+	native, diagnostics := nativeRV64Lower(t, bare, nativeOptIRMemoryCFGProgram)
+	joined := strings.Join(diagnostics, "\n")
+	if !strings.Contains(joined, "guarded_overwrite: optimized OptIR selected") || !strings.Contains(joined, "generic SSA change(s), proven") {
+		t.Fatalf("verified RV64 memory-phi candidate was not selected:\n%s", joined)
+	}
+	if out := runNativeRV64Bare(t, "native_rv64_optir_memory_phi", native); !strings.Contains(out, "0000002a\n") {
+		t.Fatalf("optimized RV64 memory-phi program did not exit 42:\n%s", out)
 	}
 }
 

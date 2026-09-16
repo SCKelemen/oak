@@ -139,6 +139,12 @@ main: (): i32 = 0
 	if len(choose.MemoryProjection.Metadata.Operations) != 3 || len(choose.DeadStoreElimination.Removed) != 0 {
 		t.Fatalf("branch memory analysis = projection %+v, DSE %+v", choose.MemoryProjection, choose.DeadStoreElimination)
 	}
+	if choose.RegionLoadForwarding.Changes() != 1 || choose.RegionLoadForwarding.Replacements[0].Kind != optir.RegionLoadFromPhi {
+		t.Fatalf("branch memory-phi forwarding = %+v", choose.RegionLoadForwarding)
+	}
+	if stores, loads := countOptIRMemoryOperations(choose.ForwardedLoads); stores != 2 || loads != 0 {
+		t.Fatalf("post-memory-phi operations = stores %d, loads %d", stores, loads)
+	}
 	if _, ok := optIRFunction(module, "read_item"); ok {
 		t.Fatal("aggregate global unexpectedly entered the closed scalar memory vocabulary")
 	}

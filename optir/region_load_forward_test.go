@@ -191,6 +191,116 @@ func TestRegionLoadForwardingStopsAtWriteBearingCall(t *testing.T) {
 	}
 }
 
+func TestRegionLoadForwardingReplacesJoinLoadWithEdgeSuppliedParameter(t *testing.T) {
+	cfg := CFG{
+		Name: "join_stores", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}, {ID: 3, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2}}},
+			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3, Arguments: []ValueID{2}}}},
+			{ID: 2, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{3}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3, Arguments: []ValueID{3}}}},
+			{
+				ID: 3, Parameters: []Value{{ID: 4, Type: "u32"}},
+				Operations: []Operation{
+					regionLoadOperation(5, "u32"),
+					{Code: OpIntAdd, Results: []Value{{ID: 6, Type: "u32"}}, Operands: []ValueID{4, 5}},
+				},
+				Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{6}},
+			},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		{Site: OperationSite{Block: 2, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(3, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	wantReplacement := RegionLoadReplacement{
+		Access: 3, Site: OperationSite{Block: 3, Index: 0}, Region: "state", Memory: 2,
+		Result: 5, Replacement: 7, Kind: RegionLoadFromPhi,
+	}
+	if !reflect.DeepEqual(report.Replacements, []RegionLoadReplacement{wantReplacement}) {
+		t.Fatalf("memory-phi forwarding report = %+v, want %+v", report.Replacements, wantReplacement)
+	}
+	join := result.Blocks[3]
+	if len(join.Parameters) != 2 || join.Parameters[1].ID != 7 || join.Parameters[1].Type != "u32" || len(join.Operations) != 1 ||
+		!reflect.DeepEqual(join.Operations[0].Operands, []ValueID{4, 7}) {
+		t.Fatalf("memory-phi join = %+v", join)
+	}
+	if !reflect.DeepEqual(result.Blocks[1].Terminator.True.Arguments, []ValueID{2, 2}) ||
+		!reflect.DeepEqual(result.Blocks[2].Terminator.True.Arguments, []ValueID{3, 3}) {
+		t.Fatalf("memory-phi edge arguments = then %v else %v", result.Blocks[1].Terminator.True.Arguments, result.Blocks[2].Terminator.True.Arguments)
+	}
+	if len(resultMetadata.Operations) != 2 || resultMetadata.Operations[0].Site != (OperationSite{Block: 1, Index: 0}) || resultMetadata.Operations[1].Site != (OperationSite{Block: 2, Index: 0}) {
+		t.Fatalf("memory-phi metadata = %+v", resultMetadata)
+	}
+	if len(cfg.Blocks[3].Parameters) != 1 || len(cfg.Blocks[1].Terminator.True.Arguments) != 1 {
+		t.Fatal("memory-phi forwarding mutated its input CFG")
+	}
+}
+
+func TestRegionLoadForwardingMemoryPhiRefusesValueIDOverflow(t *testing.T) {
+	cfg := CFG{
+		Name: "join_overflow", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}, {ID: 3, Type: "u32"}, {ID: ^ValueID(0), Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2}}},
+			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+			{ID: 2, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{3}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+			{ID: 3, Operations: []Operation{regionLoadOperation(4, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		{Site: OperationSite{Block: 2, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(3, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	if _, _, _, err := ForwardRegionLoads(cfg, metadata, memorySSA); err == nil || !strings.Contains(err.Error(), "value identity overflow") {
+		t.Fatalf("memory-phi overflow = %v", err)
+	}
+}
+
+func TestRegionLoadForwardingMemoryPhiRefusesLoopHeader(t *testing.T) {
+	cfg := CFG{
+		Name: "loop_stores", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{
+				ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}, {ID: 3, Type: "u32"}},
+				Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}},
+				Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 1}},
+			},
+			{
+				ID: 1, Operations: []Operation{regionLoadOperation(4, "u32")},
+				Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 2}, False: Edge{Target: 3, Arguments: []ValueID{4}}},
+			},
+			{
+				ID: 2, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{3}, Effects: []Effect{EffectWriteMemory}}},
+				Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 1}},
+			},
+			{ID: 3, Parameters: []Value{{ID: 5, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{5}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 0, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(1, 0, "state", false),
+		{Site: OperationSite{Block: 2, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 0 || !sameDeadStoreCFG(result, cfg) || !sameDeadStoreMetadata(t, cfg, metadata, result, resultMetadata) {
+		t.Fatalf("loop memory phi was forwarded: report %+v, CFG %+v, metadata %+v", report, result, resultMetadata)
+	}
+}
+
 func TestRegionLoadForwardingKeepsJoinVersionAndVolatileLoads(t *testing.T) {
 	t.Run("join phi", func(t *testing.T) {
 		cfg := CFG{

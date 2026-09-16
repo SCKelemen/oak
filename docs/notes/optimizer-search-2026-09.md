@@ -431,8 +431,9 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: aggregate/partial memory-region projection, load PRE through proven
-memory phis, non-affine and symbolic trip-count proofs,
+Not yet: aggregate/partial memory-region projection, load PRE from
+entry/read/call-produced versions or loop phis, non-affine and symbolic
+trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -902,9 +903,13 @@ live. A verified transform deletes only a dead, whole-region, nonvolatile
 `store.region`, rewrites its metadata, and rebuilds MemorySSA. A verified
 load-forwarding transform then removes canonical nonvolatile region loads only
 when their exact MemorySSA input identifies the same typed value from a
-dominating load or whole-region store. It deliberately refuses phi versions,
-drops facts bound to removed SSA identities, remaps every use and operation
-site, and rebuilds MemorySSA. Checked Oak
+dominating load or whole-region store. A closed non-loop memory phi composed
+entirely of exact direct whole-region nonvolatile stores is promoted to a
+fresh typed block parameter, with each predecessor edge supplying its stored
+value. Entry and loop phis, partial/call definitions, type mismatches, missing
+edges, and value-ID exhaustion fail closed. The transform drops facts bound to
+removed SSA identities, remaps every use and operation site, and rebuilds
+MemorySSA. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a
@@ -942,15 +947,16 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-broader load PRE through memory phis, definite-write summaries, and calls in
-memory loops remain open; exact recursive `NoModRef`/`Ref`/`Mod`/`ModRef`
+load PRE from entry/read/call-produced versions or loop phis, definite-write
+summaries, and calls in memory loops remain open; exact recursive
+`NoModRef`/`Ref`/`Mod`/`ModRef`
 may-effect summaries and their standalone graph checker have landed. Formal
 refinement of the checker, or a smaller proof-certificate consumer beneath it,
 remains TCB-closure work.
 
 As the projection broadens, region memory SSA should power:
 
-- broader load PRE through proven memory phis;
+- load PRE from entry/read/call-produced versions or loop phis;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;
