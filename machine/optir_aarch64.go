@@ -124,8 +124,8 @@ func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegis
 	if err != nil {
 		return nil, err
 	}
-	if memory != nil && hasCalls && !memory.admitsNoModRefCalls(cfg) {
-		return nil, fmt.Errorf("machine: OptIR AArch64 region memory call lacks authenticated no-ModRef evidence")
+	if memory != nil && hasCalls && !memory.admitsMemoryCalls(cfg) {
+		return nil, fmt.Errorf("machine: OptIR AArch64 region memory call lacks authenticated memory-effect evidence")
 	}
 	spillFrame, frame := allocation.frame, allocation.frame
 	if hasCalls {
@@ -147,7 +147,7 @@ func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegis
 		slots: allocation.slots, rematerializations: allocation.rematerializations,
 		definitions: optIRArm64Definitions(cfg), spillFrame: spillFrame, frame: frame,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, order: layout.Order,
-		hasCalls: hasCalls, memory: memory, globals: map[string]asm.Global{},
+		hasCalls: hasCalls, memory: memory, globals: memory.selectedGlobals(),
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)

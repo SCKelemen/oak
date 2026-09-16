@@ -104,6 +104,130 @@ func TestCheckedMemoryAuthorityProjectsExactNoModRefCall(t *testing.T) {
 	}
 }
 
+func TestCheckedMemoryAuthorityProjectsCanonicalRefCall(t *testing.T) {
+	source := Source{Context: "calls.oak", Line: 7, Column: 5}
+	input := []CheckedMemoryCallAccess{
+		{Region: "global:right", Kind: MemoryRead, ValueType: "u64"},
+		{Region: "global:left", Kind: MemoryRead, ValueType: "u32"},
+	}
+	call, err := NewCheckedMemoryCallRecordWithAccesses(source, "sum", "summary:sum:v1", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input[0].Region = "forged"
+	if got := call.Accesses[0].Region; got != "global:left" {
+		t.Fatalf("canonical call access starts with %q", got)
+	}
+	canonicalAgain, err := NewCheckedMemoryCallRecordWithAccesses(source, "sum", "summary:sum:v1", []CheckedMemoryCallAccess{
+		{Region: "global:left", Kind: MemoryRead, ValueType: "u32"},
+		{Region: "global:right", Kind: MemoryRead, ValueType: "u64"},
+	})
+	if err != nil || canonicalAgain.ID != call.ID {
+		t.Fatalf("canonical call IDs = %q and %q, err=%v", call.ID, canonicalAgain.ID, err)
+	}
+	authority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{call})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authority.HasMemoryEffects() {
+		t.Fatal("Ref-only authority reports no memory effects")
+	}
+	cfg := CFG{Name: "caller", Entry: 0, Results: []Type{"u64"}, Blocks: []Block{{
+		ID: 0, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u64"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "sum"}}, Source: source, MemoryCallID: call.ID,
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	projection, err := ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	wantAccesses := []MemoryAccessSpec{
+		{Region: "global:left", Kind: MemoryRead},
+		{Region: "global:right", Kind: MemoryRead},
+	}
+	if got := projection.Metadata; !reflect.DeepEqual(got.Regions, []RegionID{"global:left", "global:right"}) ||
+		len(got.Operations) != 1 || got.Operations[0].CallEffect != MemoryCallRef || !reflect.DeepEqual(got.Operations[0].Accesses, wantAccesses) {
+		t.Fatalf("Ref projection = %+v", got)
+	}
+	ssa, err := AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ssa.Accesses) != 2 || ssa.Accesses[0].Kind != MemoryRead || ssa.Accesses[1].Kind != MemoryRead ||
+		ssa.Accesses[0].Output != 0 || ssa.Accesses[1].Output != 0 {
+		t.Fatalf("Ref call memory SSA = %+v", ssa.Accesses)
+	}
+
+	inspection := authority.CallRecords()
+	inspection[0].Accesses[0].Region = "forged"
+	if authority.CallRecords()[0].Accesses[0].Region != "global:left" {
+		t.Fatal("call access inspection aliases authority")
+	}
+	changed, err := NewCheckedMemoryCallRecordWithAccesses(source, "sum", "summary:sum:v1", []CheckedMemoryCallAccess{{
+		Region: "global:left", Kind: MemoryRead, ValueType: "u64",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{changed})
+	if err != nil || authority.Fingerprint() == other.Fingerprint() {
+		t.Fatalf("call access change retained authority fingerprint, err=%v", err)
+	}
+}
+
+func TestCheckedMemoryCallRefAuthorityRejectsUnsafeOrInconsistentAccesses(t *testing.T) {
+	source := Source{Context: "calls.oak", Line: 3, Column: 4}
+	tests := []struct {
+		name   string
+		access []CheckedMemoryCallAccess
+		want   string
+	}{
+		{name: "write", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryWrite, ValueType: "u32", WholeRegion: true}}, want: "unsupported access"},
+		{name: "read-write", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryReadWrite, ValueType: "u32"}}, want: "unsupported access"},
+		{name: "whole read", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "u32", WholeRegion: true}}, want: "unsupported access"},
+		{name: "volatile", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "u32", Volatile: true}}, want: "unsupported access"},
+		{name: "empty region", access: []CheckedMemoryCallAccess{{Kind: MemoryRead, ValueType: "u32"}}, want: "malformed access"},
+		{name: "unsupported type", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "f32"}}, want: "malformed access"},
+		{name: "duplicate", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "u32"}, {Region: "global:x", Kind: MemoryRead, ValueType: "u32"}}, want: "unique canonical"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NewCheckedMemoryCallRecordWithAccesses(source, "read", "summary:read:v1", test.access); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	call, err := NewCheckedMemoryCallRecordWithAccesses(source, "read", "summary:read:v1", []CheckedMemoryCallAccess{{
+		Region: "global:x", Kind: MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := call
+	forged.Accesses = append([]CheckedMemoryCallAccess(nil), call.Accesses...)
+	forged.Accesses[0].ValueType = "u64"
+	if _, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{forged}); err == nil || !strings.Contains(err.Error(), "stale or forged") {
+		t.Fatalf("forged call access error = %v", err)
+	}
+	direct := checkedMemoryRecord(t, Source{Context: "calls.oak", Line: 2, Column: 2}, "global:x", MemoryRead, "u64", false)
+	if _, err := NewCheckedMemoryAuthorityWithCalls([]CheckedMemoryAccessRecord{direct}, []CheckedMemoryCallRecord{call}); err == nil || !strings.Contains(err.Error(), "both u64 and u32") {
+		t.Fatalf("inconsistent call/direct type error = %v", err)
+	}
+	pure, err := NewCheckedMemoryCallRecord(source, "pure", "summary:pure:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pureAuthority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{pure})
+	if err != nil || pureAuthority.HasMemoryEffects() {
+		t.Fatalf("NoModRef-only authority memory effects = %v, err=%v", pureAuthority.HasMemoryEffects(), err)
+	}
+}
+
 func TestCheckedMemoryCallAuthorityRejectsMissingForgedAndMismatchedCalls(t *testing.T) {
 	call, err := NewCheckedMemoryCallRecord(Source{Context: "calls.oak", Line: 2, Column: 5}, "identity", "summary:identity:v1")
 	if err != nil {
@@ -174,6 +298,36 @@ func TestProjectWithCheckedMemoryCarriesStructuredNoModRefCall(t *testing.T) {
 	}
 	if got := projection.Metadata.Operations; len(got) != 1 || got[0].CallEffect != MemoryCallNoModRef || len(got[0].Accesses) != 0 {
 		t.Fatalf("structured no-ModRef projection = %+v", got)
+	}
+}
+
+func TestProjectWithCheckedMemoryCarriesStructuredRefCall(t *testing.T) {
+	source := Source{Context: "calls.oak", Line: 5, Column: 7}
+	callRecord, err := NewCheckedMemoryCallRecordWithAccesses(source, "read", "summary:read:v1", []CheckedMemoryCallAccess{{
+		Region: "global:state", Kind: MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := &Operation{
+		Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+		Attributes: []Attribute{{Name: AttributeCallee, Value: "read"}}, Source: source, MemoryCallID: callRecord.ID,
+	}
+	function := Function{Name: "caller", Results: []Type{"u32"}, Body: Region{Nodes: []Node{{Operation: call}}, Yield: []ValueID{1}}}
+	cfg, projection, err := ProjectWithCheckedMemory(function, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	want := []MemoryAccessSpec{{Region: "global:state", Kind: MemoryRead}}
+	if got := projection.Metadata.Operations; len(got) != 1 || got[0].CallEffect != MemoryCallRef || !reflect.DeepEqual(got[0].Accesses, want) {
+		t.Fatalf("structured Ref projection = %+v", got)
 	}
 }
 

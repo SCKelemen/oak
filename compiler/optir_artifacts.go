@@ -21,12 +21,12 @@ const (
 	optIRPreservationRevision     = "oak.optir.preservation.v1"
 	optIRLICMRevision             = "oak.optir.licm.v1"
 	optIRFinalCFGRevision         = "oak.optir.final-cfg.v1"
-	optIRMemoryProjectionRevision = "oak.optir.checked-memory-projection.v2"
-	optIRMemorySSARevision        = "oak.optir.region-memory-ssa.v3"
+	optIRMemoryProjectionRevision = "oak.optir.checked-memory-projection.v3"
+	optIRMemorySSARevision        = "oak.optir.region-memory-ssa.v4"
 	optIRMemoryLivenessRevision   = "oak.optir.memory-liveness.v2"
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
-	optIRDSERevision              = "oak.optir.dead-store-elimination.v2"
-	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v2"
+	optIRDSERevision              = "oak.optir.dead-store-elimination.v3"
+	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v3"
 )
 
 type optIRSCCPRewriteArtifact struct {
@@ -319,7 +319,7 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 		cfgV3:           cfgV3,
 	}
 	tasks := []opt.ArtifactTask{cfgV0Task, sccpTask, sccpRewriteTask, cfgV1Task, loopStructureV1Task, loopsV1Task, cleanupTask, cfgV2Task, preservationTask, loopsV2Task, licmTask, cfgV3Task}
-	if len(memoryAuthority.Records()) != 0 {
+	if memoryAuthority.HasMemoryEffects() {
 		memoryAuthorityRef, memoryAuthorityTask := opt.RootArtifact(opt.ArtifactKey{
 			Kind: opt.ArtifactChecked, Name: "optir.checked-memory", Version: memoryAuthority.Fingerprint(),
 		}, memoryAuthority)

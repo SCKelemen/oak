@@ -114,6 +114,41 @@ func TestRegionLoadForwardingCrossesAndPreservesNoModRefCall(t *testing.T) {
 	}
 }
 
+func TestRegionLoadForwardingCrossesAndPreservesRefCall(t *testing.T) {
+	cfg := CFG{
+		Name: "store_ref_load", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{{
+			ID: 0, Parameters: []Value{{ID: 1, Type: "u32"}},
+			Operations: []Operation{
+				{Code: OpStoreRegion, Operands: []ValueID{1}, Effects: []Effect{EffectWriteMemory}},
+				{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "read-state"}}},
+				regionLoadOperation(3, "u32"),
+			},
+			Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{3}},
+		}},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 0, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		{Site: OperationSite{Block: 0, Index: 1}, CallEffect: MemoryCallRef, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryRead}}},
+		regionLoadMetadata(0, 2, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 1 || len(result.Blocks[0].Operations) != 2 || !reflect.DeepEqual(result.Blocks[0].Terminator.Values, []ValueID{1}) {
+		t.Fatalf("Ref forwarding result=%+v report=%+v", result, report)
+	}
+	if got := resultMetadata.Operations; len(got) != 2 || got[1].Site != (OperationSite{Block: 0, Index: 1}) ||
+		got[1].CallEffect != MemoryCallRef || !reflect.DeepEqual(got[1].Accesses, []MemoryAccessSpec{{Region: "state", Kind: MemoryRead}}) {
+		t.Fatalf("Ref forwarding metadata = %+v", got)
+	}
+}
+
 func TestRegionLoadForwardingKeepsJoinVersionAndVolatileLoads(t *testing.T) {
 	t.Run("join phi", func(t *testing.T) {
 		cfg := CFG{

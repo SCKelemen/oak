@@ -118,7 +118,7 @@ touch: (value: Bool): Bool {
 }
 stateful_wrapper: (value: Bool): Bool = touch(value)
 stateful: (value: Bool): Bool {
-  flag = touch(value)
+  flag = stateful_wrapper(value)
   flag
 }
 main: (): i32 = 0
@@ -171,7 +171,7 @@ main: (): i32 = 0
 	}
 	foundStatefulRefusal := false
 	for _, refusal := range module.Refusals {
-		if refusal.Function == "stateful" && strings.Contains(refusal.Reason, "directly accesses checked global memory") {
+		if refusal.Function == "stateful" && strings.Contains(refusal.Reason, "may write checked global memory") {
 			foundStatefulRefusal = true
 		}
 	}
@@ -191,6 +191,80 @@ main: (): i32 = 0
 				t.Fatalf("call-only stateful wrapper carries unauthorized summary ID %s", operation.MemoryCallID)
 			}
 		}
+	}
+}
+
+func TestCheckedGlobalMemoryAcceptsDirectAndTransitiveReaderSummaries(t *testing.T) {
+	module, err := New().WithSource("optir_memory_reader.oak", `
+observed: u32 = u32(7)
+result: u32 = u32(0)
+
+read_observed: (): u32 = observed
+forward_read: (): u32 = read_observed()
+mixed_read: (value: u32): u32 {
+  result = value
+  loaded: u32 = forward_read()
+  result = loaded
+  result
+}
+main: (): i32 = 0
+`).OptIR().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward, ok := optIRFunction(module, "forward_read")
+	if !ok {
+		t.Fatalf("call-only reader was refused: %+v", module.Refusals)
+	}
+	forwardCalls := forward.CheckedMemory.CallRecords()
+	if len(forwardCalls) != 1 || forwardCalls[0].Callee != "read_observed" || len(forwardCalls[0].Accesses) != 1 {
+		t.Fatalf("direct reader summary = %+v", forwardCalls)
+	}
+	read := forwardCalls[0].Accesses[0]
+	if read.Region == "" || read.Kind != optir.MemoryRead || read.ValueType != "u32" || read.WholeRegion || read.Volatile {
+		t.Fatalf("direct reader access = %+v", read)
+	}
+	if !forward.CheckedMemory.HasMemoryEffects() || len(forward.MemoryProjection.Metadata.Regions) != 1 {
+		t.Fatalf("call-only Ref authority skipped memory artifacts: authority=%+v projection=%+v", forward.CheckedMemory, forward.MemoryProjection)
+	}
+	seenRef := false
+	for _, operation := range forward.MemoryProjection.Metadata.Operations {
+		seenRef = seenRef || operation.CallEffect == optir.MemoryCallRef
+	}
+	if !seenRef {
+		t.Fatalf("call-only reader projection has no Ref operation: %+v", forward.MemoryProjection.Metadata)
+	}
+
+	mixed, ok := optIRFunction(module, "mixed_read")
+	if !ok {
+		t.Fatalf("transitive reader mixed with global memory was refused: %+v", module.Refusals)
+	}
+	mixedCalls := mixed.CheckedMemory.CallRecords()
+	if len(mixedCalls) != 1 || mixedCalls[0].Callee != "forward_read" ||
+		!reflect.DeepEqual(mixedCalls[0].Accesses, []optir.CheckedMemoryCallAccess{read}) {
+		t.Fatalf("transitive reader summary = %+v, want access %+v", mixedCalls, read)
+	}
+	if mixedCalls[0].SummaryFingerprint == "" || mixedCalls[0].SummaryFingerprint == forwardCalls[0].SummaryFingerprint {
+		t.Fatalf("transitive summary did not bind its own CFG and child: direct=%q transitive=%q", forwardCalls[0].SummaryFingerprint, mixedCalls[0].SummaryFingerprint)
+	}
+	fingerprint, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{read})
+	if err != nil || fingerprint != mixedCalls[0].SummaryFingerprint {
+		t.Fatalf("transitive summary fingerprint = %q, err=%v, want %q", fingerprint, err, mixedCalls[0].SummaryFingerprint)
+	}
+	changed := read
+	changed.Region += ":changed"
+	changedRegion, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
+	if err != nil || changedRegion == fingerprint {
+		t.Fatalf("read-region change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedRegion, err)
+	}
+	changed = read
+	changed.ValueType = "u64"
+	changedType, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
+	if err != nil || changedType == fingerprint {
+		t.Fatalf("read-type change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedType, err)
+	}
+	if err := optir.VerifyCheckedMemoryProjection(mixed.LoopInvariant, mixed.CheckedMemory, mixed.MemoryProjection); err != nil {
+		t.Fatalf("transitive reader checked projection: %v", err)
 	}
 }
 

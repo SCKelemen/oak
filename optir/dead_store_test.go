@@ -77,6 +77,41 @@ func TestDeadStoreEliminationPreservesNoModRefCallMetadata(t *testing.T) {
 	}
 }
 
+func TestDeadStoreEliminationUsesAndPreservesRefCallReads(t *testing.T) {
+	cfg := deadStoreCFG("ref_call", []Operation{
+		deadStoreOperation(),
+		deadStoreOperation(),
+		{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "read-state"}}},
+		deadStoreOperation(),
+	})
+	metadata := RegionMemoryMetadata{
+		Regions: []RegionID{"other", "state"},
+		Operations: []MemoryOperationMetadata{
+			deadStoreMetadata(0, "state", MemoryWrite, true, false),
+			deadStoreMetadata(1, "other", MemoryWrite, true, false),
+			{Site: OperationSite{Block: 1, Index: 2}, CallEffect: MemoryCallRef, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryRead}}},
+			deadStoreMetadata(3, "other", MemoryWrite, true, false),
+		},
+	}
+	observability := RegionMemoryObservability{LiveOut: []RegionID{"other"}}
+	memorySSA, liveness := deadStoreEvidence(t, cfg, metadata, observability)
+	result, resultMetadata, report, err := EliminateDeadRegionStores(cfg, metadata, memorySSA, observability, liveness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDeadStoreElimination(cfg, metadata, memorySSA, observability, liveness, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Removed) != 1 || report.Removed[0].Region != "other" || report.Removed[0].Site != (OperationSite{Block: 1, Index: 1}) {
+		t.Fatalf("Ref DSE report = %+v", report)
+	}
+	if got := resultMetadata.Operations; len(got) != 3 || got[0].Accesses[0].Region != "state" ||
+		got[1].CallEffect != MemoryCallRef || !reflect.DeepEqual(got[1].Accesses, []MemoryAccessSpec{{Region: "state", Kind: MemoryRead}}) ||
+		got[2].Accesses[0].Region != "other" {
+		t.Fatalf("Ref DSE metadata = %+v", got)
+	}
+}
+
 func TestDeadStoreEliminationPreservesReadAndLiveOutDefinitions(t *testing.T) {
 	tests := []struct {
 		name          string

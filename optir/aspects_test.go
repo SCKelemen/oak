@@ -144,15 +144,28 @@ func TestMemoryEffectAspectTreatsUnknownOperationsAsObservable(t *testing.T) {
 	}
 }
 
-func TestCallAuthorityIdentityIsAnOperationAndMemoryEffectAspect(t *testing.T) {
+func TestCallRefAuthorityIdentityIsAnOperationAndMemoryEffectAspect(t *testing.T) {
+	source := Source{Context: "calls.oak", Line: 2, Column: 3}
+	left, err := NewCheckedMemoryCallRecordWithAccesses(source, "read", "summary:read:v1", []CheckedMemoryCallAccess{{
+		Region: "global:left", Kind: MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := NewCheckedMemoryCallRecordWithAccesses(source, "read", "summary:read:v1", []CheckedMemoryCallAccess{{
+		Region: "global:right", Kind: MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := CFG{Name: "call-authority", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
 		ID: 0, Operations: []Operation{{
 			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
-			Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}}, MemoryCallID: "summary-a",
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "read"}}, MemoryCallID: left.ID,
 		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
 	}}}
 	after := cloneCFG(before)
-	after.Blocks[0].Operations[0].MemoryCallID = "summary-b"
+	after.Blocks[0].Operations[0].MemoryCallID = right.ID
 	certificate, err := CheckCFGPreservation(
 		aspectTestKey("cfg.v0", "call-a"), before,
 		aspectTestKey("cfg.v1", "call-b"), after,

@@ -73,7 +73,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	verified, fromCache := 0, 0 // the verdict cache's tally, reported once
 	constants := constantGlobals(root, tc)
 	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
-	optIRPlanner := newOptIRNoModRefPlanner(root, tc, checkedOptIRGlobals(root, tc))
+	optIRPlanner := newOptIRReadOnlyPlanner(root, tc, checkedOptIRGlobals(root, tc))
 	tables, data := nativeGlobalArrays(root)
 	// The verdict cache (compiler/verdict_cache.go), the optimization
 	// report (opt.Report; printed under -opt-report or OAK_OPT_REPORT), and
@@ -287,7 +287,7 @@ func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
 	lane.OptIRRegionGlobals = plan.bindings
 }
 
-func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRNoModRefPlanner, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
+func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRReadOnlyPlanner, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
 	if planner == nil {
 		return nativeOptIRPlan{}
 	}

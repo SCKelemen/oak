@@ -212,6 +212,63 @@ func TestRegionMemorySSANoModRefCallCreatesNoAccess(t *testing.T) {
 	}
 }
 
+func TestRegionMemorySSARefCallReadsExactRegions(t *testing.T) {
+	cfg := CFG{Name: "read_call", Entry: 1, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 1, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "read"}},
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"left", "right"}, Operations: []MemoryOperationMetadata{{
+		Site: OperationSite{Block: 1, Index: 0}, CallEffect: MemoryCallRef,
+		Accesses: []MemoryAccessSpec{{Region: "right", Kind: MemoryRead}, {Region: "left", Kind: MemoryRead}},
+	}}}
+	analysis, err := AnalyzeRegionMemorySSA(cfg, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []MemoryAccess{
+		{ID: 1, Site: OperationSite{Block: 1, Index: 0}, Region: "left", Kind: MemoryRead, Input: 1},
+		{ID: 2, Site: OperationSite{Block: 1, Index: 0}, Region: "right", Kind: MemoryRead, Input: 2},
+	}
+	if !reflect.DeepEqual(analysis.Accesses, want) {
+		t.Fatalf("Ref call accesses = %+v, want %+v", analysis.Accesses, want)
+	}
+	reordered := metadata
+	reordered.Operations = append([]MemoryOperationMetadata(nil), metadata.Operations...)
+	reordered.Operations[0].Accesses = []MemoryAccessSpec{{Region: "left", Kind: MemoryRead}, {Region: "right", Kind: MemoryRead}}
+	if err := VerifyRegionMemorySSA(cfg, reordered, analysis); err != nil {
+		t.Fatalf("canonical access order changed evidence: %v", err)
+	}
+	mutated := metadata
+	mutated.Operations = append([]MemoryOperationMetadata(nil), metadata.Operations...)
+	mutated.Operations[0].Accesses = []MemoryAccessSpec{{Region: "left", Kind: MemoryRead}}
+	if err := VerifyRegionMemorySSA(cfg, mutated, analysis); err == nil || !strings.Contains(err.Error(), "different metadata") {
+		t.Fatalf("changed Ref set verification error = %v", err)
+	}
+
+	invalid := []struct {
+		name   string
+		access []MemoryAccessSpec
+		want   string
+	}{
+		{name: "empty", want: "has no accesses"},
+		{name: "write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryWrite, WholeRegion: true}}, want: "exact nonvolatile reads"},
+		{name: "read-write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryReadWrite}}, want: "exact nonvolatile reads"},
+		{name: "volatile", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryRead, Volatile: true}}, want: "exact nonvolatile reads"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := RegionMemoryMetadata{Regions: []RegionID{"left"}, Operations: []MemoryOperationMetadata{{
+				Site: OperationSite{Block: 1, Index: 0}, CallEffect: MemoryCallRef, Accesses: test.access,
+			}}}
+			if _, err := AnalyzeRegionMemorySSA(cfg, candidate); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRegionMemorySSAFailsClosedOnMissingOrMalformedMetadata(t *testing.T) {
 	cfg := memoryStraightLineCFG()
 	tests := []struct {

@@ -123,6 +123,120 @@ func TestLowerOptIRRegionMemoryCallRequiresUntamperedCheckedAuthority(t *testing
 	}
 }
 
+func TestLowerOptIRCheckedRegionMemoryRefCallOnlyVerifies(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRMemoryRefCallFixture(t, target, false)
+			lowered, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := text(lowered.Items)
+			if !strings.Contains(body, target.callInstruction[:strings.IndexByte(target.callInstruction, ' ')+1]+"read_state") {
+				t.Fatalf("selected checked Ref body lacks call to read_state:\n%s", body)
+			}
+			if strings.Contains(body, target.addressText) || strings.Contains(body, target.storeText) {
+				t.Fatalf("call-only checked Ref body emits a caller memory access:\n%s", body)
+			}
+			if len(lowered.Globals) != 1 || lowered.Globals["state"] != fixture.global {
+				t.Fatalf("selected checked Ref globals = %#v, want callee-only state", lowered.Globals)
+			}
+			if lowered.Frame == 0 || lowered.Frame%16 != 0 {
+				t.Fatalf("selected checked Ref frame = %d, want nonzero 16-byte alignment", lowered.Frame)
+			}
+			if findings := asm.Check(lowered, fixture.declaration, map[string]bool{"read_state": true}); len(findings) != 0 {
+				t.Fatalf("selected checked Ref body fails seam check: %v\n%s", findings, body)
+			}
+			verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+			if verdict.Kind != asm.VerdictProven {
+				t.Fatalf("selected checked Ref verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+			}
+			if !strings.Contains(verdict.Message, "callees taken at their Oak bodies: read_state") {
+				t.Fatalf("proven Ref verdict does not name the admitted callee: %s", verdict.Message)
+			}
+		})
+	}
+}
+
+func TestLowerOptIRRegionMemoryRefCallFailsClosed(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRMemoryRefCallFixture(t, target, false)
+
+			if _, err := target.lowerUnchecked(fixture.cfg, fixture.template, fixture.projection.Metadata, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "requires checked memory authority") {
+				t.Fatalf("caller-owned Ref metadata refusal = %v", err)
+			}
+
+			wrongBinding := map[optir.RegionID]OptIRRegionGlobal{}
+			for region, binding := range fixture.bindings {
+				wrongBinding[region] = OptIRRegionGlobal{Symbol: binding.Symbol, Global: asm.Global{Type: "i32", Bits: 32}}
+			}
+			if _, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, wrongBinding); err == nil || !strings.Contains(err.Error(), "storage is i32/32") {
+				t.Fatalf("Ref descriptor mismatch refusal = %v", err)
+			}
+
+			missingGlobal := *fixture.template
+			missingGlobal.Globals = nil
+			if _, err := target.lowerChecked(fixture.cfg, &missingGlobal, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "not authorized by the assembler template") {
+				t.Fatalf("Ref missing-global refusal = %v", err)
+			}
+
+			tampered := fixture.projection
+			tampered.Metadata.Operations = append([]optir.MemoryOperationMetadata(nil), fixture.projection.Metadata.Operations...)
+			tampered.Metadata.Operations[0].Accesses = append([]optir.MemoryAccessSpec(nil), fixture.projection.Metadata.Operations[0].Accesses...)
+			tampered.Metadata.Operations[0].Accesses[0].Kind = optir.MemoryWrite
+			if _, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, tampered, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "mutated") {
+				t.Fatalf("tampered Ref/write refusal = %v", err)
+			}
+
+			cyclic := newOptIRMemoryRefCallFixture(t, target, true)
+			if _, err := target.lowerChecked(cyclic.cfg, cyclic.template, cyclic.authority, cyclic.projection, cyclic.memorySSA, cyclic.bindings); err == nil || !strings.Contains(err.Error(), "calls require acyclic control flow") {
+				t.Fatalf("cyclic Ref-call refusal = %v", err)
+			}
+		})
+	}
+}
+
+func TestLowerOptIRForgedRefSummaryCannotReceiveProvenVerdict(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRMemoryRefCallFixture(t, target, false)
+			declarations := optIRRV64Declarations(t, `
+read_state: (): u32 = other
+call_read: (): u32 = read_state()
+`)
+			fixture.declaration = declarations["call_read"]
+			fixture.template.Signature = fixture.declaration
+			fixture.template.Callees = map[string]*ast.FunctionStatement{"read_state": declarations["read_state"]}
+			fixture.template.Globals["other"] = fixture.global
+			lowered, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+			if verdict.Kind == asm.VerdictProven {
+				t.Fatalf("caller-minted Ref summary received a proven verdict: %s\n%s", verdict.Message, text(lowered.Items))
+			}
+		})
+	}
+}
+
+func TestLowerOptIRForgedRefWriteAcrossForwardedLoadCannotReceiveProvenVerdict(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRForgedForwardedRefFixture(t, target)
+			lowered, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+			if verdict.Kind == asm.VerdictProven {
+				t.Fatalf("forged Ref write across a forwarded load received a proven verdict: %s\n%s", verdict.Message, text(lowered.Items))
+			}
+		})
+	}
+}
+
 func TestLowerOptIRForgedNoModRefSummaryCannotReceiveProvenVerdict(t *testing.T) {
 	for _, target := range optIRMemoryCallTargets() {
 		t.Run(target.name, func(t *testing.T) {
@@ -160,6 +274,154 @@ type optIRMemoryCallFixture struct {
 	memorySSA   optir.RegionMemorySSA
 	bindings    map[optir.RegionID]OptIRRegionGlobal
 	global      asm.Global
+}
+
+func newOptIRForgedForwardedRefFixture(t *testing.T, target optIRMemoryCallTarget) optIRMemoryCallFixture {
+	t.Helper()
+	declarations := optIRRV64Declarations(t, `
+clobber: (value: u32): u32 = {
+  state = u32(41)
+  value
+}
+store_call_load: (value: u32): u32 = {
+  state = value
+  passthrough: u32 = clobber(value)
+  state
+}
+`)
+	declaration := declarations["store_call_load"]
+	const region optir.RegionID = "opaque:checked-state"
+	storeSource := optir.Source{Context: "forged-forwarded-ref.oak", Line: 7, Column: 3}
+	callSource := optir.Source{Context: "forged-forwarded-ref.oak", Line: 8, Column: 22}
+	storeRecord, err := optir.NewCheckedMemoryAccessRecord(storeSource, region, optir.MemoryWrite, "u32", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callRecord, err := optir.NewCheckedMemoryCallRecordWithAccesses(callSource, "clobber", "forged-ref:clobber", []optir.CheckedMemoryCallAccess{{
+		Region: region, Kind: optir.MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls([]optir.CheckedMemoryAccessRecord{storeRecord}, []optir.CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This candidate has the same observable result as forwarding the final
+	// source load across a falsely summarized call. Returning the call's equal
+	// passthrough result keeps the fixture inside the closed call selector, which
+	// does not admit an unrelated value live across a call.
+	cfg := optir.CFG{
+		Name: "store_call_load", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "value"}},
+			Operations: []optir.Operation{
+				{Code: optir.OpStoreRegion, Operands: []optir.ValueID{1}, Effects: []optir.Effect{optir.EffectWriteMemory}, Source: storeSource, MemoryAccessID: storeRecord.ID},
+				{
+					Code: optir.OpCall, Results: []optir.Value{{ID: 2, Type: "u32"}}, Operands: []optir.ValueID{1},
+					Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "clobber"}},
+					Source: callSource, MemoryCallID: callRecord.ID,
+				},
+			},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
+		}},
+	}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	global := asm.Global{Type: "u32", Bits: 32}
+	template := &asm.Function{
+		Name: "store_call_load", Arch: target.arch, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: target.parameter, Param: "value"}},
+		Globals:  map[string]asm.Global{"state": global},
+		Callees:  map[string]*ast.FunctionStatement{"clobber": declarations["clobber"]},
+	}
+	return optIRMemoryCallFixture{
+		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,
+		bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
+	}
+}
+
+func newOptIRMemoryRefCallFixture(t *testing.T, target optIRMemoryCallTarget, cyclic bool) optIRMemoryCallFixture {
+	t.Helper()
+	declarations := optIRRV64Declarations(t, `
+read_state: (): u32 = state
+call_read: (): u32 = read_state()
+`)
+	declaration := declarations["call_read"]
+	const region optir.RegionID = "opaque:checked-state"
+	callSource := optir.Source{Context: "checked-ref-call-memory.oak", Line: 2, Column: 24}
+	callRecord, err := optir.NewCheckedMemoryCallRecordWithAccesses(callSource, "read_state", "checked-transitive-ref:read_state", []optir.CheckedMemoryCallAccess{{
+		Region: region, Kind: optir.MemoryRead, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls(nil, []optir.CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{
+		Name: "call_read", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0,
+			Operations: []optir.Operation{{
+				Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall},
+				Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "read_state"}}, Source: callSource, MemoryCallID: callRecord.ID,
+			}},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+		}},
+	}
+	if cyclic {
+		cfg.Blocks = []optir.Block{
+			{
+				ID: 0,
+				Operations: []optir.Operation{
+					{Code: optir.OpConstBool, Results: []optir.Value{{ID: 1, Type: optir.TypeBool}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "false"}}},
+					{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}},
+				},
+				Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}},
+			},
+			{ID: 1, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 2}, False: optir.Edge{Target: 3}}},
+			{
+				ID: 2,
+				Operations: []optir.Operation{{
+					Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall},
+					Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "read_state"}}, Source: callSource, MemoryCallID: callRecord.ID,
+				}},
+				Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}},
+			},
+			{ID: 3, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}}},
+		}
+	}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyRegionMemorySSA(cfg, projection.Metadata, memorySSA); err != nil {
+		t.Fatal(err)
+	}
+	global := asm.Global{Type: "u32", Bits: 32}
+	template := &asm.Function{
+		Name: "call_read", Arch: target.arch, Signature: declaration, Fallback: true,
+		Globals: map[string]asm.Global{"state": global}, Callees: map[string]*ast.FunctionStatement{"read_state": declarations["read_state"]},
+	}
+	return optIRMemoryCallFixture{
+		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,
+		bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
+	}
 }
 
 func newOptIRMemoryCallFixture(t *testing.T, target optIRMemoryCallTarget) optIRMemoryCallFixture {

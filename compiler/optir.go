@@ -76,11 +76,11 @@ type optIRUnsupported struct {
 
 func (unsupported *optIRUnsupported) Error() string { return unsupported.reason }
 
-// optIRNoModRefPlanner derives call summaries from exact checked projections,
-// never from a source-level purity annotation. A cached projection is suitable
-// as a call summary only when it has no direct checked global access records;
-// its own calls have already passed through the same recursive check.
-type optIRNoModRefPlanner struct {
+// optIRReadOnlyPlanner derives call summaries from exact checked projections,
+// never from a source-level effect annotation. A cached projection is suitable
+// as a call summary only when every direct access and recursively summarized
+// call is read-only.
+type optIRReadOnlyPlanner struct {
 	tc        *typechecker.TypeChecker
 	globals   map[string]optir.Type
 	functions map[string]*ast.FunctionStatement
@@ -89,14 +89,20 @@ type optIRNoModRefPlanner struct {
 }
 
 type optIRCheckedProjection struct {
-	structured         optir.Function
-	facts              optir.CheckedFactAuthority
-	memory             optir.CheckedMemoryAuthority
-	cfg                optir.CFG
-	summaryFingerprint string
+	structured optir.Function
+	facts      optir.CheckedFactAuthority
+	memory     optir.CheckedMemoryAuthority
+	cfg        optir.CFG
+	summary    optIRReadOnlyCallSummary
 }
 
-func newOptIRNoModRefPlanner(root *ast.Program, tc *typechecker.TypeChecker, globals map[string]optir.Type) *optIRNoModRefPlanner {
+type optIRReadOnlyCallSummary struct {
+	fingerprint string
+	accesses    []optir.CheckedMemoryCallAccess
+	available   bool
+}
+
+func newOptIRReadOnlyPlanner(root *ast.Program, tc *typechecker.TypeChecker, globals map[string]optir.Type) *optIRReadOnlyPlanner {
 	functions := map[string]*ast.FunctionStatement{}
 	if root != nil {
 		for _, statement := range root.Statements {
@@ -106,15 +112,15 @@ func newOptIRNoModRefPlanner(root *ast.Program, tc *typechecker.TypeChecker, glo
 			}
 		}
 	}
-	return &optIRNoModRefPlanner{
+	return &optIRReadOnlyPlanner{
 		tc: tc, globals: globals, functions: functions,
 		visiting: map[string]bool{}, cache: map[string]optIRCheckedProjection{},
 	}
 }
 
-func (planner *optIRNoModRefPlanner) lower(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
+func (planner *optIRReadOnlyPlanner) lower(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
 	if function == nil || function.Name == nil || function.Name.Value == "" {
-		return optIRCheckedProjection{}, refuseOptIR(token.Token{}, "unnamed call target cannot receive a checked no-ModRef summary")
+		return optIRCheckedProjection{}, refuseOptIR(token.Token{}, "unnamed call target cannot receive a checked read-only summary")
 	}
 	name := function.Name.Value
 	if cached, exists := planner.cache[name]; exists {
@@ -130,12 +136,12 @@ func (planner *optIRNoModRefPlanner) lower(function *ast.FunctionStatement) (opt
 		return optIRCheckedProjection{}, refuseOptIR(function.Token, "callee %s has target-dispatched realizations", name)
 	}
 	if planner.visiting[name] {
-		return optIRCheckedProjection{}, refuseOptIR(function.Token, "recursive call cycle through %s has no finite no-ModRef summary", name)
+		return optIRCheckedProjection{}, refuseOptIR(function.Token, "recursive call cycle through %s has no finite read-only summary", name)
 	}
 	planner.visiting[name] = true
 	defer delete(planner.visiting, name)
 
-	structured, facts, memory, err := lowerCheckedOptIRFunctionWithCalls(function, planner.tc, planner.globals, planner.authorizePureCall)
+	structured, facts, memory, err := lowerCheckedOptIRFunctionWithCalls(function, planner.tc, planner.globals, planner.authorizeReadOnlyCall)
 	if err != nil {
 		return optIRCheckedProjection{}, err
 	}
@@ -146,13 +152,12 @@ func (planner *optIRNoModRefPlanner) lower(function *ast.FunctionStatement) (opt
 	if err := optir.VerifyCFGCheckedFacts(cfg, facts); err != nil {
 		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after projection: %w", name, err)
 	}
-	summaryFingerprint, err := fingerprintOptIRNoModRefSummary(cfg, memory.CallRecords())
+	summary, err := deriveOptIRReadOnlySummary(cfg, memory)
 	if err != nil {
-		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR no-ModRef summary for %s: %w", name, err)
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR read-only summary for %s: %w", name, err)
 	}
 	projection := optIRCheckedProjection{
-		structured: structured, facts: facts, memory: memory, cfg: cfg,
-		summaryFingerprint: summaryFingerprint,
+		structured: structured, facts: facts, memory: memory, cfg: cfg, summary: summary,
 	}
 	planner.cache[name] = projection
 	return projection, nil
@@ -164,7 +169,7 @@ func (planner *optIRNoModRefPlanner) lower(function *ast.FunctionStatement) (opt
 // lowering may still succeed when the caller has no direct checked memory.
 // The old mixed-memory guard remains in that lowering, so this fallback cannot
 // authorize a memory transform.
-func (planner *optIRNoModRefPlanner) lowerRoot(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
+func (planner *optIRReadOnlyPlanner) lowerRoot(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
 	checked, strictErr := planner.lower(function)
 	if strictErr == nil {
 		return checked, nil
@@ -187,22 +192,64 @@ func (planner *optIRNoModRefPlanner) lowerRoot(function *ast.FunctionStatement) 
 	return optIRCheckedProjection{structured: structured, facts: facts, memory: memory, cfg: cfg}, nil
 }
 
-func (planner *optIRNoModRefPlanner) authorizePureCall(name string) (string, error) {
+func (planner *optIRReadOnlyPlanner) authorizeReadOnlyCall(name string) (optIRReadOnlyCallSummary, error) {
 	function, exists := planner.functions[name]
 	if !exists {
-		return "", refuseOptIR(token.Token{}, "callee %s is unknown or not an internal function", name)
+		return optIRReadOnlyCallSummary{}, refuseOptIR(token.Token{}, "callee %s is unknown or not an internal function", name)
 	}
 	projection, err := planner.lower(function)
 	if err != nil {
-		return "", err
+		return optIRReadOnlyCallSummary{}, err
 	}
-	if len(projection.memory.Records()) != 0 {
-		return "", refuseOptIR(function.Token, "callee %s directly accesses checked global memory", name)
+	if !projection.summary.available {
+		return optIRReadOnlyCallSummary{}, refuseOptIR(function.Token, "callee %s may write checked global memory", name)
 	}
-	return projection.summaryFingerprint, nil
+	return projection.summary, nil
 }
 
-func fingerprintOptIRNoModRefSummary(cfg optir.CFG, calls []optir.CheckedMemoryCallRecord) (string, error) {
+func deriveOptIRReadOnlySummary(cfg optir.CFG, memory optir.CheckedMemoryAuthority) (optIRReadOnlyCallSummary, error) {
+	byRegion := map[optir.RegionID]optir.CheckedMemoryCallAccess{}
+	add := func(access optir.CheckedMemoryCallAccess) error {
+		if access.Region == "" || access.Kind != optir.MemoryRead || access.ValueType == "" || access.WholeRegion || access.Volatile {
+			return fmt.Errorf("malformed read-only access for region %q", access.Region)
+		}
+		if prior, exists := byRegion[access.Region]; exists && prior != access {
+			return fmt.Errorf("read-only region %q has conflicting access types %s and %s", access.Region, prior.ValueType, access.ValueType)
+		}
+		byRegion[access.Region] = access
+		return nil
+	}
+	for _, record := range memory.Records() {
+		if record.Kind != optir.MemoryRead {
+			return optIRReadOnlyCallSummary{}, nil
+		}
+		if err := add(optir.CheckedMemoryCallAccess{
+			Region: record.Region, Kind: record.Kind, ValueType: record.ValueType,
+			WholeRegion: record.WholeRegion, Volatile: record.Volatile,
+		}); err != nil {
+			return optIRReadOnlyCallSummary{}, err
+		}
+	}
+	for _, call := range memory.CallRecords() {
+		for _, access := range call.Accesses {
+			if err := add(access); err != nil {
+				return optIRReadOnlyCallSummary{}, err
+			}
+		}
+	}
+	accesses := make([]optir.CheckedMemoryCallAccess, 0, len(byRegion))
+	for _, access := range byRegion {
+		accesses = append(accesses, access)
+	}
+	sort.Slice(accesses, func(i, j int) bool { return accesses[i].Region < accesses[j].Region })
+	fingerprint, err := fingerprintOptIRReadOnlySummary(cfg, memory.CallRecords(), accesses)
+	if err != nil {
+		return optIRReadOnlyCallSummary{}, err
+	}
+	return optIRReadOnlyCallSummary{fingerprint: fingerprint, accesses: accesses, available: true}, nil
+}
+
+func fingerprintOptIRReadOnlySummary(cfg optir.CFG, calls []optir.CheckedMemoryCallRecord, accesses []optir.CheckedMemoryCallAccess) (string, error) {
 	cfgFingerprint, err := optir.FingerprintCFG(cfg)
 	if err != nil {
 		return "", err
@@ -225,7 +272,7 @@ func fingerprintOptIRNoModRefSummary(cfg optir.CFG, calls []optir.CheckedMemoryC
 		_, _ = digest.Write(size[:])
 		_, _ = digest.Write([]byte(value))
 	}
-	writePart("oak.compiler.optir-no-mod-ref-summary.v1")
+	writePart("oak.compiler.optir-read-only-summary.v1")
 	writePart(cfgFingerprint)
 	var count [8]byte
 	binary.LittleEndian.PutUint64(count[:], uint64(len(children)))
@@ -233,6 +280,23 @@ func fingerprintOptIRNoModRefSummary(cfg optir.CFG, calls []optir.CheckedMemoryC
 	for _, child := range children {
 		writePart(child.callee)
 		writePart(child.fingerprint)
+	}
+	binary.LittleEndian.PutUint64(count[:], uint64(len(accesses)))
+	_, _ = digest.Write(count[:])
+	for _, access := range accesses {
+		writePart(string(access.Region))
+		writePart(string(access.Kind))
+		writePart(string(access.ValueType))
+		if access.WholeRegion {
+			writePart("whole")
+		} else {
+			writePart("partial")
+		}
+		if access.Volatile {
+			writePart("volatile")
+		} else {
+			writePart("nonvolatile")
+		}
 	}
 	return fmt.Sprintf("%x", digest.Sum(nil)), nil
 }
@@ -243,7 +307,7 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 	}
 	var module OptIRModule
 	globals := checkedOptIRGlobals(model.Tree.Root, model.TypeChecker)
-	planner := newOptIRNoModRefPlanner(model.Tree.Root, model.TypeChecker, globals)
+	planner := newOptIRReadOnlyPlanner(model.Tree.Root, model.TypeChecker, globals)
 	for _, statement := range model.Tree.Root.Statements {
 		function, isFunction := statement.(*ast.FunctionStatement)
 		if !isFunction || function.Name == nil || function.Body == nil || function.ExternSymbol != "" || function.AsmBacked || len(function.TypeParams) != 0 {
@@ -324,7 +388,7 @@ type optIRMemoryBuilder struct {
 	globals          map[string]optir.Type
 	records          map[string]optir.CheckedMemoryAccessRecord
 	callRecords      map[string]optir.CheckedMemoryCallRecord
-	authorizeCall    func(string) (string, error)
+	authorizeCall    func(string) (optIRReadOnlyCallSummary, error)
 	unsummarizedCall bool
 	err              error
 }
@@ -333,7 +397,7 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 	return lowerCheckedOptIRFunctionWithCalls(function, tc, globals, nil)
 }
 
-func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (string, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
+func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (optIRReadOnlyCallSummary, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
 	if function.Receiver != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
 	}
@@ -769,15 +833,15 @@ func (lowerer *optIRLowerer) lowerCall(call *ast.InvocationExpression, resultTyp
 	if lowerer.memory.authorizeCall == nil {
 		lowerer.memory.unsummarizedCall = true
 	} else {
-		summaryFingerprint, err := lowerer.memory.authorizeCall(callee.Value)
+		summary, err := lowerer.memory.authorizeCall(callee.Value)
 		if err != nil {
 			var unsupported *optIRUnsupported
 			if errors.As(err, &unsupported) {
-				return optir.Value{}, refuseOptIR(call.Token, "call to %s has no checked no-ModRef summary: %s", callee.Value, unsupported.reason)
+				return optir.Value{}, refuseOptIR(call.Token, "call to %s has no checked read-only summary: %s", callee.Value, unsupported.reason)
 			}
 			return optir.Value{}, err
 		}
-		record, err := optir.NewCheckedMemoryCallRecord(optIRSource(call.Token), callee.Value, summaryFingerprint)
+		record, err := optir.NewCheckedMemoryCallRecordWithAccesses(optIRSource(call.Token), callee.Value, summary.fingerprint, summary.accesses)
 		if err != nil {
 			return optir.Value{}, fmt.Errorf("compiler: checked memory call to %s: %w", callee.Value, err)
 		}

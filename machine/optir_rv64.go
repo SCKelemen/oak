@@ -159,8 +159,8 @@ func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegist
 	if err != nil {
 		return nil, err
 	}
-	if memory != nil && len(calls) != 0 && !memory.admitsNoModRefCalls(cfg) {
-		return nil, fmt.Errorf("machine: OptIR RV64 region memory call lacks authenticated no-ModRef evidence")
+	if memory != nil && len(calls) != 0 && !memory.admitsMemoryCalls(cfg) {
+		return nil, fmt.Errorf("machine: OptIR RV64 region memory call lacks authenticated memory-effect evidence")
 	}
 	spillFrame := spillLayout.Frame
 	frame, raOffset, err := composeOptIRRV64Frame(spillFrame, len(calls) != 0)
@@ -180,7 +180,7 @@ func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegist
 		rematerializations: rematerializations, definitions: optIRRV64Definitions(cfg),
 		frame: frame, raOffset: raOffset,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls, order: layout.Order,
-		memory: memory, globals: map[string]asm.Global{},
+		memory: memory, globals: memory.selectedGlobals(),
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)

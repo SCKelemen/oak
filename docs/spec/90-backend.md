@@ -701,8 +701,10 @@ calls. Reads and whole-cell assignments of checked package globals whose types
 are Bool or fixed-width integers project as explicit region operations. A call
 mixed with those operations is admitted only when its exact direct internal
 callee and every transitive callee successfully project with no checked global
-access; foreign, bodyless, stateful, or recursive call graphs receive no such
-summary. Arrays, spans, pointers, partial accesses, methods, kernels, protocol
+writes. A summary is either empty `NoModRef` or an exact typed set of
+nonvolatile scalar-global reads (`Ref`); foreign, bodyless, writing, or
+recursive call graphs receive no such summary. Arrays, spans, pointers,
+partial accesses, methods, kernels, protocol
 lowerings, and richer algebraic forms are per-function refusals, never partial
 projections.
 
@@ -731,8 +733,10 @@ every explicitly effectful operation remain roots. The first region-memory SSA
 substrate consumes explicit checked region metadata beside operation effects.
 It gives each region deterministic entry/definition/join versions, expands an
 opaque call to a clobber of every declared region, gives an authenticated
-`NoModRef` call no memory version or access, handles loop phis, and binds its
-independently recomputed evidence to exact CFG and metadata fingerprints.
+`NoModRef` call no memory version or access, and represents an authenticated
+`Ref` call as exact reads that consume but do not define region versions. It
+handles loop phis and binds its independently recomputed evidence to exact CFG
+and metadata fingerprints.
 Missing or inconsistent Mod/Ref information fails closed. A second analysis,
 under an explicit list of regions observable at normal return, propagates live
 definitions through reads and join/loop phis and reports overwritten exact
@@ -753,8 +757,9 @@ access kind, scalar type, whole-region contract, and volatility must all match,
 the two projections must agree, and missing, duplicated, forged, or stale IDs
 fail closed. The same authority may carry an exact call-site record binding its
 source, resolved callee, and transitive summary fingerprint. That fingerprint
-covers the callee CFG and the sorted fingerprints of its child summaries;
-absence never implies purity. Authority is an upper bound after verified
+also covers the canonical typed read set, while child summaries bind the exact
+callee graph recursively; absence never implies purity or read-only behavior.
+Authority is an upper bound after verified
 rewrites, so a removed operation may leave an unused record, but every active
 operation must resolve exactly once. The record constructor seals supplied
 summary text; the normal compiler derives that text, while final semantic
@@ -766,7 +771,10 @@ after LICM; each transform independently reruns its complete verifier before
 publishing a candidate. Changed final CFGs now enter AArch64 or RV64 native
 search for closed acyclic control flow containing exact scalar package-global
 reads and whole nonvolatile writes; direct scalar calls may be present only
-with authenticated `NoModRef` summaries. Both targets also admit
+with authenticated `NoModRef` or exact `Ref` summaries. A `Ref` call keeps the
+definitions it observes live for DSE, does not clobber load-forwarding facts,
+and causes callee-only globals to be retained in the selected machine body
+without synthesizing a caller load. Both targets also admit
 exactly one call-free canonical natural loop with a unique preheader, conditional
 header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
 must contain the header phi joining entry memory with the exact body-store
@@ -788,9 +796,9 @@ and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
 semantic-verifier verdict before selection. Broader memory loops, aggregate
-regions, broader load PRE through memory phis, and interprocedural
-`Ref`/`ModRef` summaries remain open; the exact empty `NoModRef` case is
-implemented.
+regions, broader load PRE through memory phis, interprocedural write-bearing
+`Mod`/`ModRef` summaries, and stateful calls in memory loops remain open; exact
+empty `NoModRef` and nonempty read-only `Ref` summaries are implemented.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
@@ -868,9 +876,13 @@ multi-result calls, other effects, traps, unauthenticated source-memory/call
 combinations, stack parameters, unfamiliar operations, an oversized frame, or
 unsupported RV64 pressure. When checked scalar region memory is present, the
 production selector reprojects immutable call authority over the exact final
-CFG and accepts only zero-access `NoModRef` sites. Caller-supplied metadata,
-unknown clobbers, stale call IDs, changed callees/effects, and mutated
-projections refuse. The ordinary call frame, live-across-call restrictions,
+CFG and accepts only zero-access `NoModRef` or exact typed nonvolatile `Ref`
+sites. A `Ref` site must resolve every region through the checked authority and
+the exact pre-authorized assembler global; the selector retains those globals
+but emits no caller memory operation for the summary itself. Caller-supplied
+metadata, unknown clobbers, stale call IDs, changed callees/effects, and mutated
+projections refuse, as do all memory-carrying calls in cyclic CFGs. The ordinary
+call frame, live-across-call restrictions,
 seam checker, and semantic verifier remain unchanged; target tests require both
 the callee and package-global state to appear in a proven verdict.
 
