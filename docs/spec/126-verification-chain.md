@@ -165,6 +165,18 @@ source-to-object TLBI occurrence are explicit remaining obligations. Sail's
 coarse single-model-TLB reset implementation, which ignores architectural
 target granularity, is not used to discharge them.
 
+The adjacent encoding seam now proves one concrete Inner Shareable instruction
+encoding and named Sail call-target identity without conflating either with
+those obligations or with plain, local-PE `TLBI VMALLS12E1`:
+`Oak.AArch64Encoding` computes
+`TLBI VMALLS12E1IS` as `0xd50c83df`, and generated Sail Lean proves that word
+selects `TLBI_VMALLS12E1IS` in Oak's pure projection. The drift gate ties the
+projection to the generated Arm XML row, pinned generic SYS field decode, and
+official nested dispatch. No source/native intrinsic or refinement from that
+word into the stage-2 trace has landed yet. The downstream OS currently emits
+the plain VMALLS12E1 sequence, so this encoding theorem is not evidence for
+that consumer path.
+
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s
 per-register equality/reconciliation decision, and `meetFact_sound` proves
@@ -185,7 +197,7 @@ QEMU where present.
 
 | Target | Source → C | C → object | Asm/native lane | ISA semantics the lane is held to | Encoding | Execution check |
 | --- | --- | --- | --- | --- | --- | --- |
-| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); every trusted-core helper translation-validated through the verifier, as clang builds it at armv8.0, at armv8.1-a and for the Apple cores (73 proven, 20 witnessed) | arm64: verifier proof/evidence/trusted; atomics and division decided under the sequential model | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics` (including complete NZCV equality for addition, subtraction, and `ccmp`; signed overflow is proved generically with direct 32-/64-bit corollaries); the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc`; DMB ISHLD/ISH/SY, DSB ISH/SY, and ISB exact words **proved through Arm's Sail decoder** (`Oak.AArch64Encoding`, `spec/sail/lean/Bridge.lean`); the general decoder proof remains open | silicon **differential** (181 bodies × 60 inputs on the host core) |
+| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); every trusted-core helper translation-validated through the verifier, as clang builds it at armv8.0, at armv8.1-a and for the Apple cores (73 proven, 20 witnessed) | arm64: verifier proof/evidence/trusted; atomics and division decided under the sequential model | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics` (including complete NZCV equality for addition, subtraction, and `ccmp`; signed overflow is proved generically with direct 32-/64-bit corollaries); the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc`; DMB ISHLD/ISH/SY, DSB ISH/SY, and ISB exact words **proved through Arm's Sail decoder**; exact Inner Shareable `TLBI VMALLS12E1IS` word (not plain `VMALLS12E1`) and named SYS call target **proved through the pinned Sail projection** (`Oak.AArch64Encoding`, `spec/sail/lean/Bridge.lean`); the general decoder and TLBI effects remain open | silicon **differential** (181 bodies × 60 inputs on the host core) |
 | linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); every trusted-core helper translation-validated through the verifier (75 proven, 18 witnessed) | rv64: same verifier, RISC-V semantics (`Oak.RiscV`); loads, stores and the A extension's `lr`/`sc`/`amo*` through spans decided under the sequential model | **bridged to the Sail RISC-V model**: `spec/lean-sail` builds against the export itself (Sail from git, sail-riscv 497209b9) — 53 semantics theorems (every integer instruction the verifier decides, the pure parts of loads and stores) and 30 encoding theorems; `Oak.SailRiscVBridge` keeps the R/W/B subset checkable without the export; the memory monad stays audited | own encoder (`rv64_encodings_gen`, RV64IMAFD + the V and C subsets) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
 | linux/amd64, darwin/amd64, freestanding/amd64 | refined core + differential | trusted (cc) | **none** (`Oak.Target.lane = none`) | **none**: no Oak semantics of x86-64 and no bridge to a machine-readable x86 specification | none | host execution (differential) |
 | freestanding/arm (Cortex-M), freestanding/riscv32 | refined core + differential; ILP32 proved | trusted (cc) | none | none (Arm's M-profile ASL is not public; `docs/notes/oak-cortex-m-deferred`) | none | cross build only |

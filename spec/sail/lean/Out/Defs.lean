@@ -48,6 +48,10 @@ inductive BarrierExecutionTarget where | BarrierExecutionTarget_DataSynchronizat
   deriving BEq, Inhabited, Repr
   open BarrierExecutionTarget
 
+inductive TLBIOperationTarget where | TLBIOperationTarget_VMALLS12E1IS
+  deriving BEq, Inhabited, Repr
+  open TLBIOperationTarget
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

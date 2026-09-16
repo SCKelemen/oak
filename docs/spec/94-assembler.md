@@ -717,8 +717,22 @@ all six projection arms against the pinned official barrier dispatch and
 confirms that `InstructionSynchronizationBarrier` and
 `SynchronizeContext` are still unit-returning stubs in this model; call-target
 identity therefore does not masquerade as a context-synchronization state
-proof. The general
-instruction table remains audited rather than proved.
+proof.
+
+The same encoding/dispatch seam now covers the exact nullary Inner Shareable
+variant, `TLBI VMALLS12E1IS`, word `0xd50c83df`. Lean computes it from the
+generated SYS field layout and proves that Sail's pure projection selects the
+named `TLBI_VMALLS12E1IS` target. Go independently pins the committed
+XML-generated table row, encoder word, generic SYS decode path, official nested
+dispatch, and the target's syntactic delegation to `_TLB_Invalidate`. This
+proves word and call-target identity only; access checks, VMID/scope suitability,
+broadcast effects, invalidation, and completion remain outside the projection.
+There is not yet an Oak source/native intrinsic for this word. This is distinct
+from plain `TLBI VMALLS12E1`, whose invalidation is local to the executing PE;
+no proof in this section applies to that word or to the downstream OS sequence
+that currently uses it. The general instruction table remains audited rather
+than proved.
+
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode

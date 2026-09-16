@@ -2,7 +2,8 @@
  * Arm's ASL primitives behind the Oak assembler's semantics, as Sail
  * (docs/spec/94-assembler.md §8, grounding stage 3).
  *
- * Every function body below is copied from the Sail model of Armv8.5-A that
+ * The instruction-semantic function bodies below are copied from the Sail
+ * model of Armv8.5-A that
  * Arm and the REMS group generated from Arm's ASL (`sail-arm`,
  * arm-v8.5-a/model/aarch64.sail and aarch_mem.sail; BSD-3-Clause-Clear,
  * copyright Arm Limited and the authors named in its LICENSE). This file
@@ -24,6 +25,9 @@
  *     `integer_conditional_compare_register` read `X(n)`/`X(m)` and write
  *     `X(d)`/`PSTATE`; here the operands are parameters and the result is
  *     returned. The flags they consult arrive as `nzcv`.
+ *   - the final barrier and TLBI decoder/dispatch projections preserve the
+ *     official decoded fields or named call target as pure return values;
+ *     access checks and architecture state effects are explicitly erased.
  */
 
 default Order dec
@@ -873,5 +877,49 @@ function decode64_barrier_pure op_code = {
         system_barriers_decode_pure(0b10, CRm)
     } else {
         (false, MemBarrierOp_DSB, MBReqDomain_FullSystem, MBReqTypes_All)
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * The A64 TLBI VMALLS12E1IS SYS-field dispatch.
+ *
+ * aarch_decode.sail's generic SYS-write clause extracts op0/op1/CRn/CRm/
+ * op2/Rt and the pinned aarch64.sail AArch64_AutoGen_SysOpsWrite function
+ * selects TLBI_VMALLS12E1IS for op0=01, op1=100, CRn=8, op2=110, CRm=3.
+ * This pure projection records
+ * only that named call target. It erases the execution-level access/trap
+ * checks and every invalidation, shareability, broadcast, visibility, and
+ * completion effect. Rt is irrelevant to this target dispatch; Oak's
+ * canonical nullary encoding uses Rt = 31.
+ */
+
+enum TLBIOperationTarget = {TLBIOperationTarget_VMALLS12E1IS}
+
+val aarch64_sysops_write_tlbi_target_pure :
+  (bits(2), bits(3), bits(4), bits(3), bits(4)) ->
+    (bool, TLBIOperationTarget)
+
+function aarch64_sysops_write_tlbi_target_pure (op0, op1, CRn, op2, CRm) = {
+    if op0 == 0b01 & op1 == 0b100 & CRn == 0x8 &
+        op2 == 0b110 & CRm == 0x3 then {
+        (true, TLBIOperationTarget_VMALLS12E1IS)
+    } else {
+        (false, TLBIOperationTarget_VMALLS12E1IS)
+    }
+}
+
+val decode64_tlbi_target_pure :
+  bits(32) -> (bool, TLBIOperationTarget)
+
+function decode64_tlbi_target_pure (op_code) = {
+    let op0 : bits(2) = slice(op_code, 19, 2);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    if (op_code & 0xFFF80000) == 0xD5080000 then {
+        aarch64_sysops_write_tlbi_target_pure(op0, op1, CRn, op2, CRm)
+    } else {
+        (false, TLBIOperationTarget_VMALLS12E1IS)
     }
 }

@@ -335,6 +335,28 @@ produce the full scalar `DSB-ob` edge. ISB is proved not to receive a DMB or
 DSB data-order edge; the official CAT outcome confirms that a bare ISB is not a
 data fence.
 
+The first translation-maintenance encoding seam is separate from those barrier
+capabilities and covers only the Inner Shareable spelling,
+`TLBI VMALLS12E1IS`. It does not cover plain `TLBI VMALLS12E1`, whose
+invalidation is local to the executing PE and which has a different encoding.
+`Oak.AArch64Encoding.tlbiVmalls12e1is` constructs the exact Inner Shareable
+word (`0xd50c83df`) from the generated SYS field layout.
+Generated Lean proves that exact word selects `TLBI_VMALLS12E1IS` in Oak's pure
+Sail projection, while the zero word selects none. Go gates tie the fields
+and nullary `Rt = 31` form to Oak's generated Arm XML table, require the exact
+encoder word, and tie the projection's field decode and named call target to
+the generic SYS clause and nested dispatch in the pinned official Sail source.
+
+This is syntactic call-target classification only. It does not prove EL2 access
+admission, current-VMID selection, inner-shareable broadcast, invalidation of a
+particular translation, absence of stale entries, or completion. The pinned
+Sail target delegates to a coarse reset of its single modeled TLB; that model
+effect is not used as architectural evidence. The word has not yet been
+connected to `AArch64Stage2Maintenance.Action` or to an Oak source/native
+intrinsic. In particular, this result does not verify or refine the downstream
+OS boot/revoke sequence, which currently emits plain `TLBI VMALLS12E1` between
+DSB ISH operations.
+
 The completion and instruction-synchronization fields are Oak profile
 capabilities, not consequences of the extracted Sail artifact. Oak's pure Sail
 fragment intentionally projects decoding to the operation/domain/access tuple

@@ -31,6 +31,10 @@ def dsb : Encoding := ⟨"DSB_BO_barriers", "dsb", 0xd503309f#32, 0xfffff0ff#32,
 def isb : Encoding := ⟨"ISB_BI_barriers", "isb", 0xd50330df#32, 0xfffff0ff#32, [⟨"CRm", 11, 4⟩]⟩
 -- OAK-A64-BARRIER-ENC-END
 
+-- OAK-A64-TLBI-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def tlbi : Encoding := ⟨"TLBI_SYS_CR_systeminstrs", "tlbi", 0xd5088000#32, 0xfff8e000#32, [⟨"L", 21, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-TLBI-ENC-END
+
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
   deriving DecidableEq, Repr
@@ -54,6 +58,14 @@ structure BarrierDecode where
 def encodeCRm (encoding : Encoding) (crm : BitVec 4) : BitVec 32 :=
   (encoding.value &&& 0xfffff0ff#32) ||| (crm.setWidth 32 <<< 8)
 
+/-- Fill the generated TLBI SYS encoding's table-selected fields. The caller
+    must choose a tuple admitted by the generated Arm XML operand table. -/
+def encodeTlbiSys (op1 : BitVec 3) (crn crm : BitVec 4)
+    (op2 : BitVec 3) (rt : BitVec 5) : BitVec 32 :=
+  (tlbi.value &&& tlbi.mask) |||
+    (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
+    (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
+
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
 def dmbSy : BitVec 32 := encodeCRm dmb 0xf#4
@@ -69,6 +81,12 @@ theorem dsb_ish_word : dsbIsh = 0xd5033b9f#32 := by native_decide
 theorem dsb_sy_word : dsbSy = 0xd5033f9f#32 := by native_decide
 theorem isb_word : isbSy = 0xd5033fdf#32 := by native_decide
 -- OAK-A64-BARRIER-WORD-END
+
+-- OAK-A64-TLBI-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def tlbiVmalls12e1is : BitVec 32 :=
+  encodeTlbiSys 0b100#3 0b1000#4 0b0011#4 0b110#3 0b11111#5
+theorem tlbi_vmalls12e1is_word : tlbiVmalls12e1is = 0xd50c83df#32 := by native_decide
+-- OAK-A64-TLBI-WORD-END
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

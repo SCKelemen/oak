@@ -289,6 +289,26 @@ theorem isb_decoder_not_dsb_ordering :
   rw [isb_decoder]
   simp
 
+/-! The pinned generic SYS-write dispatch for Oak's first stage-2 TLBI target.
+This proves only exact word-to-call-target classification. Access admission,
+trap behavior, invalidation effects, broadcast scope, and completion remain
+outside the pure Sail projection. -/
+
+def decodedTLBITarget (word : BitVec 32) : Option _root_.TLBIOperationTarget :=
+  let result := Out.Functions.decode64_tlbi_target_pure word
+  match result.1 with
+  | false => none
+  | true => some result.2
+
+theorem tlbi_vmalls12e1is_decoder_execution_target :
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS := by
+  rfl
+
+theorem invalid_tlbi_has_no_execution_target :
+    decodedTLBITarget 0#32 = none := by
+  rfl
+
 end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/
