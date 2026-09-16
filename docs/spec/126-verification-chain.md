@@ -260,6 +260,15 @@ kernel-pins sixteen production outcomes, including alias/count/memo corruption
 hidden behind false roots. Full Go admission/coverage refinement and compiler
 verdict authority remain separate; this does not add a compiler consumer.
 
+`Oak.CNFMetadataSettled.check` now gates settled equality with the complete
+header check. Its returned ordered parameters are the ones used by word
+projection; `check_sound` derives their validity, exact names, and equal word
+widths/values for every typed input from one acceptance. Twenty-four production
+fixtures kernel-pin the composition, including malformed unused metadata,
+disabled modes, changed declared widths, allocation failures, and true/pending
+roots. Recording coverage still needs binding to this same semantic snapshot;
+this does not establish full Go admission or verdict authority.
+
 The constructor metadata seam now has `Oak.CNFReplayHeader`: exact ordered
 names, explicit index presence, widths, unique keys/counts, and disabled modes
 yield valid parameters with no extra table keys. The Go check rejects missing

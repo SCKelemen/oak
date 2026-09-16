@@ -423,6 +423,14 @@ values for every typed input from accepted allocation, projection, and a
 replayed false difference. It needs no clauses or RUP. Sixteen production
 outcomes are kernel-pinned, including malformed allocation hidden by constant
 folds. True and pending roots refuse this checker without implying inequality.
+`Oak.CNFMetadataSettled.check_sound` now composes complete header admission
+with this equality-only path: the same returned ordered parameters are valid,
+match the header's names, and bind the equal words. Twenty-four production
+fixtures kernel-pin the combined decisions, including malformed unused
+metadata and unsupported modes behind constant-only equality. Valid metadata
+also cannot excuse a changed used width, malformed allocation, or a
+true/pending root. Connecting recording coverage to the same semantic
+snapshot remains separate.
 This does not close arbitrary Go admission/coverage, source-to-machine
 refinement, or verdict authority; native certificate material remains audit-only.
 
