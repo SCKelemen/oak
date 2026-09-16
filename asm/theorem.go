@@ -185,12 +185,15 @@ func decideLowered(lowered *loweredTheorem) Decision {
 		exceeded bool
 	}
 	results := make(chan attempt, len(blasters))
+	// Number the shared term DAG once before the variable-order attempts run.
+	// Each attempt gets private value/stamp storage without writing term ids.
+	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
-		go func(bl *blaster) {
-			decision, exceeded := decideBlasted(bl, traps, t, names)
+		go func(bl *blaster, evaluator *termEvaluator) {
+			decision, exceeded := decideBlasted(bl, traps, t, names, evaluator)
 			results <- attempt{decision, exceeded}
-		}(bl)
+		}(bl, evaluator.fork())
 	}
 	for range blasters {
 		if a := <-results; !a.exceeded {
@@ -248,7 +251,8 @@ func DecideWithOrder(sig *ast.FunctionStatement, functions map[string]*ast.Funct
 		if orderNames[bl.label] != order {
 			continue
 		}
-		decision, exceeded := decideBlasted(bl, lowered.traps, lowered.claim, lowered.names)
+		evaluator := newTermEvaluator(append([]*term{lowered.claim}, lowered.traps...)...)
+		decision, exceeded := decideBlasted(bl, lowered.traps, lowered.claim, lowered.names, evaluator)
 		if exceeded {
 			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget under the " + order + " order"}
 		}
@@ -355,7 +359,7 @@ func selectorParams(terms []*term) map[string]bool {
 // condition must be impossible and the claim must be the true node. The
 // second result reports a blown node budget, which the caller may answer
 // with another variable order.
-func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decision, bool) {
+func decideBlasted(bl *blaster, traps []*term, t *term, names []string, evaluator *termEvaluator) (Decision, bool) {
 	// A refutation is the assignment the diagrams found, evaluated on the
 	// terms themselves: the diagrams abstract an uninterpreted operation
 	// (integer division by a constant that is not a power of two, a
@@ -364,7 +368,6 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 	// is not any function of its operands. Only an assignment the
 	// evaluation confirms is a counterexample; otherwise the claim stays
 	// undecided at the bit level (open for Lean, as before).
-	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
 	for _, trap := range traps {
 		bits := bl.blast(trap)
 		if bits == nil || bl.exceeded() {
