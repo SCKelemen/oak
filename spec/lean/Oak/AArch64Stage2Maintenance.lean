@@ -107,6 +107,98 @@ def ProjectedCATBBM {Occurrence : Type}
       ProjectedCATTLBCacheableTTD cat.descriptorTags make
 /- OAK-A64-CAT-BBM-END -/
 
+/- OAK-A64-CAT-DSB-FULL-BEGIN -/
+/-- Additional supplied occurrence predicates used by the unconditional full
+    `DSB-ob` arm. The memory, TTD, TLBI, and final `ob` predicates are shared
+    with `ProjectedCATBBMRelations`; these inputs add only the remaining
+    operands. Nothing here constructs an official CAT execution. -/
+structure ProjectedCATDSBFullInputs (Occurrence : Type) where
+  isDCCVAU : Occurrence → Prop
+  isIC : Occurrence → Prop
+  isImplicit : Occurrence → Prop
+  isInstruction : Occurrence → Prop
+  isRead : Occurrence → Prop
+  isDSBFull : Occurrence → Prop
+  po : Occurrence → Occurrence → Prop
+
+/-- Exact source filter `M | DC.CVAU | IC | TLBI` of the pinned unconditional
+    full-DSB arm. -/
+def ProjectedCATDSBFullSource {Occurrence : Type}
+    (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence)
+    (event : Occurrence) : Prop :=
+  cat.descriptorTags.isMemory event ∨ inputs.isDCCVAU event ∨
+    inputs.isIC event ∨ cat.isTLBI event
+
+/-- Exact destination filter
+    `~(Imp & TTD & M | Imp & Instr & R)` of that arm. -/
+def ProjectedCATDSBFullDestination {Occurrence : Type}
+    (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence)
+    (event : Occurrence) : Prop :=
+  ¬((inputs.isImplicit event ∧ cat.descriptorTags.isTTD event ∧
+        cat.descriptorTags.isMemory event) ∨
+      (inputs.isImplicit event ∧ inputs.isInstruction event ∧
+        inputs.isRead event))
+
+/-- Exact occurrence-level reading of the pinned unconditional arm
+
+`[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;
+ [~(Imp & TTD & M | Imp & Instr & R)]`.
+
+Its inclusion in `DSB-ob` and ultimately `ob` remains a supplied one-way
+refinement fact. -/
+def ProjectedCATDSBFullArm {Occurrence : Type}
+    (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence)
+    (before after : Occurrence) : Prop :=
+  ∃ dsbEvent,
+    ProjectedCATDSBFullSource cat inputs before ∧
+      inputs.po before dsbEvent ∧ inputs.isDSBFull dsbEvent ∧
+      inputs.po dsbEvent after ∧
+      ProjectedCATDSBFullDestination cat inputs after
+/- OAK-A64-CAT-DSB-FULL-END -/
+
+/-- Kernel-checked expansion of the pinned unconditional arm's source set. -/
+theorem projected_cat_dsb_full_source_formula
+    {Occurrence : Type} (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence) (event : Occurrence) :
+    ProjectedCATDSBFullSource cat inputs event ↔
+      cat.descriptorTags.isMemory event ∨ inputs.isDCCVAU event ∨
+        inputs.isIC event ∨ cat.isTLBI event :=
+  Iff.rfl
+
+/-- Kernel-checked expansion of the pinned unconditional arm's destination
+    complement. -/
+theorem projected_cat_dsb_full_destination_formula
+    {Occurrence : Type} (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence) (event : Occurrence) :
+    ProjectedCATDSBFullDestination cat inputs event ↔
+      ¬((inputs.isImplicit event ∧ cat.descriptorTags.isTTD event ∧
+          cat.descriptorTags.isMemory event) ∨
+        (inputs.isImplicit event ∧ inputs.isInstruction event ∧
+          inputs.isRead event)) :=
+  Iff.rfl
+
+/-- Kernel-checked, fully expanded formula for the pinned unconditional
+    full-DSB arm. This is the semantic check paired with the lexical source
+    drift guard. -/
+theorem projected_cat_dsb_full_arm_formula
+    {Occurrence : Type} (cat : ProjectedCATBBMRelations Occurrence)
+    (inputs : ProjectedCATDSBFullInputs Occurrence)
+    (before after : Occurrence) :
+    ProjectedCATDSBFullArm cat inputs before after ↔
+      ∃ dsbEvent,
+        (cat.descriptorTags.isMemory before ∨ inputs.isDCCVAU before ∨
+            inputs.isIC before ∨ cat.isTLBI before) ∧
+          inputs.po before dsbEvent ∧ inputs.isDSBFull dsbEvent ∧
+          inputs.po dsbEvent after ∧
+          ¬((inputs.isImplicit after ∧ cat.descriptorTags.isTTD after ∧
+              cat.descriptorTags.isMemory after) ∨
+            (inputs.isImplicit after ∧ inputs.isInstruction after ∧
+              inputs.isRead after)) :=
+  Iff.rfl
+
 /-- Interpret Oak's two abstract descriptor classes through the projected CAT
     set formulas. This definition does not classify an event by itself. -/
 def ProjectedCATTTDClass {Occurrence : Type}
@@ -520,22 +612,86 @@ inductive ProjectedOrderedBefore {Occurrence Target : Type}
       ProjectedOrderedBefore trace a c
 
 /-- Factored one-way obligations from Oak's local maintenance trace into the
-    occurrence predicates of `ProjectedCATBBM`. In particular, local
-    `ProjectedOrderedBefore` is not definitionally CAT `ob`, and an abstract
-    TLBI action is not definitionally CAT TLBI membership. -/
+    occurrence predicates of `ProjectedCATBBM` and the exact unconditional
+    full-DSB arm. Primitive CAT tags, event identity, `po`, and arm inclusion
+    remain supplied refinement facts. -/
 structure TraceToProjectedCATBBMSoundness {Occurrence Target : Type}
     (trace : Trace Occurrence Target)
-    (cat : ProjectedCATBBMRelations Occurrence) : Prop where
+    (cat : ProjectedCATBBMRelations Occurrence)
+    (dsbFullInputs : ProjectedCATDSBFullInputs Occurrence) : Prop where
   descriptorTagsSound :
     DescriptorActionCATTagSoundness trace cat.descriptorTags
   coherenceAfterSound : ∀ {before after},
     trace.coherenceAfter before after → cat.ca before after
-  orderedBeforeSound : ∀ {before after},
-    ProjectedOrderedBefore trace before after → cat.ob before after
+  poSound : ∀ {before after},
+    trace.po before after → dsbFullInputs.po before after
+  fullDsbMembershipSound : ∀ {event decode},
+    trace.action event = .barrier decode →
+      decodeDsbOrdersBefore decode → dsbFullInputs.isDSBFull event
+  descriptorWriteMemorySound : ∀ {event slot ttdClass},
+    trace.action event = .descriptor slot .explicitWrite ttdClass →
+      cat.descriptorTags.isMemory event
+  descriptorWriteDestinationSound : ∀ {event slot ttdClass},
+    trace.action event = .descriptor slot .explicitWrite ttdClass →
+      ProjectedCATDSBFullDestination cat dsbFullInputs event
   tlbiMembershipSound : ∀ {event target},
     trace.action event = .tlbi target → cat.isTLBI event
+  tlbiDestinationSound : ∀ {event target},
+    trace.action event = .tlbi target →
+      ProjectedCATDSBFullDestination cat dsbFullInputs event
+  fullDsbArmObSound : ∀ {before after},
+    ProjectedCATDSBFullArm cat dsbFullInputs before after →
+      cat.ob before after
+  obTrans : ∀ {before middle after},
+    cat.ob before middle → cat.ob middle after → cat.ob before after
   invScopeSound : ∀ {before after},
     trace.invScope before after → cat.invScope before after
+
+/-- A local decoded full-DSB occurrence and the two local program-order edges
+    enter the exact CAT arm once its source and destination set memberships
+    are supplied. This is an ordering projection, not a completion theorem. -/
+theorem full_dsb_ordering_projects_cat_full_arm
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {cat : ProjectedCATBBMRelations Occurrence}
+    {inputs : ProjectedCATDSBFullInputs Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat inputs)
+    {before dsbEvent after : Occurrence} {decode : BarrierDecode}
+    (source : ProjectedCATDSBFullSource cat inputs before)
+    (destination : ProjectedCATDSBFullDestination cat inputs after)
+    (ordering : FullDsbOrderingBetween trace decode before dsbEvent after) :
+    ProjectedCATDSBFullArm cat inputs before after :=
+  ⟨dsbEvent, source, soundness.poSound ordering.beforeDsb,
+    soundness.fullDsbMembershipSound ordering.barrierIsExact
+      ordering.ordersBefore,
+    soundness.poSound ordering.dsbAfter, destination⟩
+
+/-- The two direct local stage-2 DSB edges project through the exact full arm;
+    local transitivity then uses only supplied CAT-`ob` transitivity. This
+    replaces a monolithic `ProjectedOrderedBefore → ob` assumption. -/
+theorem projected_ordered_before_projects_cat_ob
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {cat : ProjectedCATBBMRelations Occurrence}
+    {inputs : ProjectedCATDSBFullInputs Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat inputs)
+    {before after : Occurrence}
+    (ordering : ProjectedOrderedBefore trace before after) :
+    cat.ob before after := by
+  induction ordering with
+  | descriptorWriteBeforeTlbi beforeIsWrite afterIsTlbi barrier =>
+      apply soundness.fullDsbArmObSound
+      apply full_dsb_ordering_projects_cat_full_arm soundness
+      · exact Or.inl (soundness.descriptorWriteMemorySound beforeIsWrite)
+      · exact soundness.tlbiDestinationSound afterIsTlbi
+      · exact barrier
+  | tlbiBeforeDescriptorWrite beforeIsTlbi afterIsWrite barrier =>
+      apply soundness.fullDsbArmObSound
+      apply full_dsb_ordering_projects_cat_full_arm soundness
+      · exact Or.inr (Or.inr (Or.inr
+          (soundness.tlbiMembershipSound beforeIsTlbi)))
+      · exact soundness.descriptorWriteDestinationSound afterIsWrite
+      · exact barrier
+  | trans _ _ ihBefore ihAfter =>
+      exact soundness.obTrans ihBefore ihAfter
 
 /-- The seven operands of the pinned CAT definition
 
@@ -585,15 +741,16 @@ theorem projected_bbm_witness_projects_cat_descriptor_tags
       soundness.classifies make slot .explicitWrite .tlbCacheable
         witness.makeIsCacheableTTD
 
-/-- Under the five explicit one-way refinement obligations, the existing
+/-- Under the explicit one-way refinement obligations, the existing
     indexed Oak witness inhabits every operand of the exact projected CAT
     `BBM` relation. No official event identity or relation is constructed. -/
 theorem projected_bbm_witness_projects_exact_cat_bbm
     {Occurrence Target : Type} {trace : Trace Occurrence Target}
     {cat : ProjectedCATBBMRelations Occurrence}
+    {inputs : ProjectedCATDSBFullInputs Occurrence}
     {old make breakEvent tlbiEvent : Occurrence}
     {slot : Nat} {oldAccess : DescriptorAccess} {target : Target}
-    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    (soundness : TraceToProjectedCATBBMSoundness trace cat inputs)
     (witness : ProjectedBBMWitness trace old make slot oldAccess target
       breakEvent tlbiEvent) :
     ProjectedCATBBM cat old make := by
@@ -603,9 +760,11 @@ theorem projected_bbm_witness_projects_exact_cat_bbm
     descriptorTags.1,
     soundness.coherenceAfterSound witness.oldCoherenceBeforeBreak,
     descriptorTags.2.1,
-    soundness.orderedBeforeSound witness.breakBeforeTlbi,
+    projected_ordered_before_projects_cat_ob soundness
+      witness.breakBeforeTlbi,
     soundness.tlbiMembershipSound witness.tlbiHasTarget,
-    soundness.orderedBeforeSound witness.tlbiBeforeMake,
+    projected_ordered_before_projects_cat_ob soundness
+      witness.tlbiBeforeMake,
     soundness.invScopeSound witness.tlbiInScopeForMake,
     descriptorTags.2.2⟩
 
@@ -620,7 +779,8 @@ def ProjectedBBM {Occurrence Target : Type}
 theorem projected_bbm_projects_exact_cat_bbm
     {Occurrence Target : Type} {trace : Trace Occurrence Target}
     {cat : ProjectedCATBBMRelations Occurrence} {old make : Occurrence}
-    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    {inputs : ProjectedCATDSBFullInputs Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat inputs)
     (witness : ProjectedBBM trace old make) :
     ProjectedCATBBM cat old make := by
   rcases witness with
@@ -892,7 +1052,8 @@ theorem maintained_old_events_exclude_exact_projected_cat_bbm_warning
     {catNeedsBBM : Occurrence → Occurrence → Prop}
     {trace : Trace Occurrence Target}
     {cat : ProjectedCATBBMRelations Occurrence}
-    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    {inputs : ProjectedCATDSBFullInputs Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat inputs)
     (maintains : ∀ old, MaintainsOldEvent catNeedsBBM trace old) :
     ¬ProjectedCATBBMWarning catNeedsBBM (ProjectedCATBBM cat) := by
   rintro ⟨old, make, needsBBM, lacksBBM⟩
