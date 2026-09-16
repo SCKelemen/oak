@@ -90,6 +90,9 @@ func TestLitmusAArch64OfficialModel(t *testing.T) {
 		{file: "SB-dmb-sy.litmus", observation: "Never"},
 		{file: "LB-dmb-ishld.litmus", observation: "Never"},
 		{file: "SB-dmb-ishld.litmus", observation: "Sometimes"},
+		{file: "SB-dsb-ish.litmus", observation: "Never"},
+		{file: "SB-dsb-sy.litmus", observation: "Never"},
+		{file: "SB-isb.litmus", observation: "Sometimes"},
 		{file: "IRIW-seq-cst.litmus", observation: "Never"},
 		{file: "LB-seq-cst.litmus", observation: "Sometimes"},
 	}

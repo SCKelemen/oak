@@ -31,6 +31,11 @@ var errCATLispTooLarge = errors.New("CAT parser output exceeds the configured li
 var pinnedAArch64ProjectionHashes = map[string]string{
 	"dmb.full":      "7f0e43f97632346b01cfb634eb6d58a9ceb4a51dabf60aa378f2a0b72ea76555",
 	"dmb.ld":        "9f29bd95706acf92340db7085c5dd409e0d2c4458c416557d2e12cb9290d5f9d",
+	"dsb.full":      "4fdbe77c686677c1c1a133ba17b7a5e6930bdf3c2f87563976cce7ec47ef3fdf",
+	"dsb.ld":        "2c9e7a6a7a2e46caf783099840744699b3da701c6739b1e3e10b05a84cff35e5",
+	"DSB-ob":        "2c2d1203a9426dcbce587d994668dd5996870cd6dae02a9c9ae08937fec08abb",
+	"IFB":           "a58fe8df59d374ab93bbd99a0f8c531cecf0f4a963faba7583715c6291c33e8f",
+	"IFB-ob":        "fb843e22617036291fa424a8b744854f5980d51c21502d12a8ebfe1ef05253f9",
 	"bob":           "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
 	"lob":           "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
 	"local-hw-reqs": "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
@@ -49,6 +54,9 @@ var pinnedAArch64BobArmHashes = []string{
 }
 
 const pinnedAArch64ExternalIrreflexiveHash = "0d3935d123120064a5f8c4cb229df1eb5e8df41fe0bd0adb56d62d27a7c4a6cf"
+
+const pinnedAArch64DSBFullArmHash = "5591f902cc9e242fb058023293d939a414688205aab118ca61d6994814c13e98"
+const pinnedAArch64IFBControlArmHash = "66f0c45e72f09b9c2d28952a625953ef422f4e40d470b5a1377a8874e5f41527"
 
 type catLispNode struct {
 	atom   string
@@ -503,6 +511,17 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	if !directUnionContainsVariable(definition["dmb.ld"], "DMB.ISHLD") {
 		return errors.New("dmb.ld does not directly contain DMB.ISHLD")
 	}
+	if !directUnionContainsVariable(definition["dsb.full"], "DSB.ISH") ||
+		!directUnionContainsVariable(definition["dsb.full"], "DSB.SY") {
+		return errors.New("dsb.full does not directly contain DSB.ISH and DSB.SY")
+	}
+	if !directUnionContainsVariable(definition["dsb.ld"], "DSB.ISHLD") ||
+		!directUnionContainsVariable(definition["dsb.ld"], "DSB.LD") {
+		return errors.New("dsb.ld does not directly contain DSB.ISHLD and DSB.LD")
+	}
+	if !directUnionContainsVariable(definition["IFB"], "ISB") {
+		return errors.New("IFB does not directly contain ISB")
+	}
 	bobArms, ok := catOperator(definition["bob"], ":union")
 	if !ok {
 		return errors.New("bob is not a union")
@@ -526,6 +545,40 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	if !fullDMB || !loadDMB || !beforeRelease || !afterAcquire || !releaseAcquire {
 		return fmt.Errorf("bob scalar arms: full-dmb=%t load-dmb=%t before-release=%t after-acquire=%t release-acquire=%t",
 			fullDMB, loadDMB, beforeRelease, afterAcquire, releaseAcquire)
+	}
+	dsbArms, ok := catOperator(definition["DSB-ob"], ":union")
+	if !ok {
+		return errors.New("DSB-ob is not a union")
+	}
+	var fullDSB bool
+	for _, arm := range dsbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("dsb.full") && has("po") && has("M") && has("Imp") &&
+			has("TTD") && has("Instr") && has("R") {
+			fullDSB = true
+		}
+	}
+	if !fullDSB {
+		return errors.New("DSB-ob lacks the full scalar-memory arm")
+	}
+	ifbArms, ok := catOperator(definition["IFB-ob"], ":union")
+	if !ok {
+		return errors.New("IFB-ob is not a union")
+	}
+	var controlIFB bool
+	for _, arm := range ifbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("Exp") && has("R") && has("ctrl") && has("IFB") && has("po") &&
+			!has("pick-ctrl-dep") {
+			controlIFB = true
+		}
+	}
+	if !controlIFB {
+		return errors.New("IFB-ob lacks the explicit-read control arm")
+	}
+	if !directUnionContainsVariable(definition["lob"], "DSB-ob") ||
+		!directUnionContainsVariable(definition["lob"], "IFB-ob") {
+		return errors.New("lob does not directly contain DSB-ob and IFB-ob")
 	}
 	chain := []struct{ definition, member string }{
 		{"lob", "bob"},
@@ -594,6 +647,30 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	if len(wantArms) != len(armHashes) || strings.Join(wantArms, ",") != strings.Join(armHashes, ",") {
 		missing = append(missing, "bob-arms="+strings.Join(armHashes, ","))
 	}
+	dsbArms, _ := catOperator(projection.definitions["DSB-ob"], ":union")
+	var dsbFullArmHash string
+	for _, arm := range dsbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("dsb.full") && has("po") && has("M") && has("Imp") &&
+			has("TTD") && has("Instr") && has("R") {
+			dsbFullArmHash = expressionHash(arm)
+		}
+	}
+	if dsbFullArmHash != pinnedAArch64DSBFullArmHash {
+		return fmt.Errorf("DSB-ob full arm AST hash %s, want %s", dsbFullArmHash, pinnedAArch64DSBFullArmHash)
+	}
+	ifbArms, _ := catOperator(projection.definitions["IFB-ob"], ":union")
+	var ifbControlArmHash string
+	for _, arm := range ifbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("Exp") && has("R") && has("ctrl") && has("IFB") && has("po") &&
+			!has("pick-ctrl-dep") {
+			ifbControlArmHash = expressionHash(arm)
+		}
+	}
+	if ifbControlArmHash != pinnedAArch64IFBControlArmHash {
+		return fmt.Errorf("IFB-ob control arm AST hash %s, want %s", ifbControlArmHash, pinnedAArch64IFBControlArmHash)
+	}
 	externalHash := expressionHash(projection.external)
 	if pinnedAArch64ExternalIrreflexiveHash == "" {
 		missing = append(missing, "external="+externalHash)
@@ -631,9 +708,18 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"dmb.full", "DMB.ISH"},
 		{"dmb.full", "DMB.SY"},
 		{"dmb.ld", "DMB.ISHLD"},
+		{"dsb.full", "DSB.ISH"},
+		{"dsb.full", "DSB.SY"},
+		{"dsb.ld", "DSB.ISHLD"},
+		{"dsb.ld", "DSB.LD"},
+		{"DSB-ob", "dsb.full"},
+		{"IFB", "ISB"},
+		{"IFB-ob", "ctrl"},
 		{"bob", "dmb.full"},
 		{"bob", "dmb.ld"},
 		{"bob", "NoRet"},
+		{"lob", "DSB-ob"},
+		{"lob", "IFB-ob"},
 		{"lob", "bob"},
 		{"local-hw-reqs", "lob"},
 		{"hw-reqs", "local-hw-reqs"},

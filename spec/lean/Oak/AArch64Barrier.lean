@@ -77,6 +77,15 @@ def decodeDataOrdersBefore (decode : BarrierDecode) (beforeIsLoad : Prop) : Prop
     decode.op = .dmb ∧
     (capability barrier).dataOrdering.ordersBefore beforeIsLoad
 
+/-- The separate full-data-order class contributed by CAT's `DSB-ob`.  Oak
+    currently admits only full ISH and SY DSBs, so no load-only case is hidden
+    in this predicate.  Architectural completion is a distinct obligation. -/
+def decodeDsbOrdersBefore (decode : BarrierDecode) : Prop :=
+  ∃ barrier,
+    ofDecode decode = some barrier ∧
+    decode.op = .dsb ∧
+    (capability barrier).dataOrdering = .full
+
 @[simp] theorem dmb_ishld_decode_orders_before (beforeIsLoad : Prop) :
     decodeDataOrdersBefore dmbIshldDecode beforeIsLoad ↔ beforeIsLoad := by
   simp [decodeDataOrdersBefore, ofDecode, dmbIshldDecode, capability,
@@ -103,6 +112,18 @@ def decodeDataOrdersBefore (decode : BarrierDecode) (beforeIsLoad : Prop) : Prop
 @[simp] theorem isb_decode_not_dmb_ordering (beforeIsLoad : Prop) :
     ¬ decodeDataOrdersBefore isbDecode beforeIsLoad := by
   simp [decodeDataOrdersBefore, ofDecode, isbDecode]
+
+@[simp] theorem dsb_ish_decode_orders_before :
+    decodeDsbOrdersBefore dsbIshDecode := by
+  simp [decodeDsbOrdersBefore, ofDecode, dsbIshDecode, capability]
+
+@[simp] theorem dsb_sy_decode_orders_before :
+    decodeDsbOrdersBefore dsbSyDecode := by
+  simp [decodeDsbOrdersBefore, ofDecode, dsbSyDecode, capability]
+
+@[simp] theorem isb_decode_not_dsb_ordering :
+    ¬ decodeDsbOrdersBefore isbDecode := by
+  simp [decodeDsbOrdersBefore, ofDecode, isbDecode]
 
 /-- DMB is modeled as ordering, never as completion. -/
 theorem dmb_does_not_claim_completion (b : Barrier)

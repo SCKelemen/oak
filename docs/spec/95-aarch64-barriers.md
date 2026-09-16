@@ -68,8 +68,10 @@ full inner-shareable data barrier.
 
 ### 3.2 DSB
 
-DSB provides the full data-ordering profile in the selected domain and adds the
-completion property on which Oak machine code may rely.
+DSB provides the full data-ordering profile in the selected domain. Oak's
+barrier capability also records the architectural completion obligation on
+which machine code may rely once an execution-level Arm refinement discharges
+it.
 
 `dsb_ish` is inner-shareable.
 
@@ -178,7 +180,7 @@ instruction synchronization
 scope: inner-shareable / system
 ```
 
-Lean proves:
+Lean proves these facts about Oak's profile capability record:
 
 - admitted DMB variants do not claim completion;
 - admitted DSB variants do claim completion;
@@ -194,9 +196,21 @@ instruction words into these exact capabilities through Arm's decoded
 operation/domain/access tuple. The decoded DMB ISHLD/ISH/SY tuples index the
 restricted weak-memory `bob` rule: ISHLD orders only a returning load before
 following scalar memory, while ISH and SY provide full scalar data ordering.
-The pinned CAT certificate covers `dmb.ld`, `DMB.ISHLD`, `DMB.SY`, and the
-load-DMB arm. DSB and ISB remain on their distinct CAT paths (`DSB-ob` and
-`IFB-ob`) and are not smuggled through DMB ordering.
+Decoded DSB ISH/SY tuples index a separate full scalar `DSB-ob` rule. The pinned
+CAT certificate covers `dmb.full`, `dmb.ld`, the selected `bob` arms,
+`dsb.full`, the full scalar `DSB-ob` arm, ISB membership in `IFB`, a
+dependency-sensitive `IFB-ob` arm, and their routes through `lob`. DSB and ISB
+are not smuggled through DMB ordering. Eleven official-model Herd cases include
+forbidden DSB ISH/SY store buffering and allowed bare-ISB store buffering.
+
+Oak's pure Sail fragment intentionally projects barrier decoding to the
+operation/domain/access tuple and omits architectural state changes and the
+final barrier execution call. Consequently the bridge proves exact
+decode/dispatch identity and the selected DMB/DSB CAT ordering, but it does not
+yet prove DSB completion or ISB context synchronization. The corresponding
+Boolean fields remain Oak profile capabilities until an occurrence-indexed Arm
+execution rule discharges them; positive `IFB-ob` also requires its specified
+dependency.
 
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
@@ -216,10 +230,11 @@ The slice is accepted only if all of the following hold:
   additional barrier family;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
-- the generated Sail decoder refines all six words into those capabilities and
-  the three decoded DMB forms into their restricted weak-memory ordering;
-- pinned Herd tests cover DMB SY and both the ordering and non-ordering
-  directions of DMB ISHLD;
+- the generated Sail decoder refines all six words into those capabilities,
+  the three decoded DMB forms into restricted weak-memory ordering, and both
+  decoded DSB forms into the separate full scalar ordering;
+- pinned Herd tests cover DMB SY, DSB ISH/SY, bare ISB, and both the ordering
+  and non-ordering directions of DMB ISHLD;
 - ordinary Go/race, golden, and AArch64-refinement CI remain green.
 
 ## 10. Relationship to atomics and volatile access

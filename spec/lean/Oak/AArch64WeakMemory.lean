@@ -10,14 +10,15 @@ The names deliberately follow the CAT model:
 
 * `bob` orders memory before a release write, an acquire read before following
   memory, a release write before a following acquire read, and memory accesses
-  separated by a full DMB;
+  separated by the admitted DMB classes;
+* `DSB-ob` orders scalar memory across Oak's full DSB classes;
 * external reads-from and coherence-after edges enter `obs`;
 * `ob` contains those relations, is transitively closed, and is irreflexive.
 
 The primitive execution below is deliberately smaller than the complete Arm
 event structure.  `OrderedBefore` is the least transitive relation containing
-the six scalar `bob` / `obs` edge classes used by Oak.  A separate structural
-gate checks those constructors against the pinned CAT parser AST.  This is a
+the scalar `bob` / `DSB-ob` / `obs` edge classes used by Oak. A separate
+structural gate checks those constructors against the pinned CAT parser AST. This is a
 mechanically pinned projection, not a translation of the complete CAT model.
 The theorems then prove the MP, SB, and IRIW outcomes on which Oak's AArch64 OS
 profile relies.
@@ -74,6 +75,11 @@ inductive OrderedBefore {Event : Type} (x : BaseExecution Event) : Event → Eve
       `[Exp & (R \\ NoRet)]; po; [dmb.ld]; po; [Exp & M]` in `bob`. -/
   | bobDmb : ∀ decode a b,
       decodeDataOrdersBefore decode (x.op a).IsReturningLoad →
+      x.barrierBetween decode a b → OrderedBefore x a b
+  /-- The explicit-scalar subset of
+      `[M]; po; [dsb.full]; po; [~(Imp & TTD & M | Imp & Instr & R)]`. -/
+  | dsbFull : ∀ decode a b,
+      decodeDsbOrdersBefore decode →
       x.barrierBetween decode a b → OrderedBefore x a b
   /-- External reads-from is in `Exp-obs`, hence in `obs` and `ob`. -/
   | obsExternalReadsFrom : ∀ store load,
@@ -192,6 +198,27 @@ theorem dmb_ishld_does_not_order_no_return_load (loc : Nat) :
 theorem dmb_ishld_does_not_order_store (loc : Nat) :
     ¬ decodeDataOrdersBefore dmbIshldDecode (Op.store loc).IsReturningLoad := by
   simp [Op.IsReturningLoad]
+
+/-- A full DSB between each store and load excludes store buffering through
+    CAT's distinct `DSB-ob` path. This theorem makes no completion claim. -/
+theorem full_dsb_store_buffering_forbidden
+    (decode : BarrierDecode)
+    (hOrders : decodeDsbOrdersBefore decode)
+    (writeX readY writeY readX : Event)
+    (hDsb0 : x.barrierBetween decode writeX readY)
+    (hDsb1 : x.barrierBetween decode writeY readX)
+    (hCoherenceY : x.coherenceAfter readY writeY)
+    (hCoherenceX : x.coherenceAfter readX writeX)
+    (hExternalY : x.thread readY ≠ x.thread writeY)
+    (hExternalX : x.thread readX ≠ x.thread writeX) : False := by
+  have h₁ : x.ob writeX readY := .dsbFull _ _ _ hOrders hDsb0
+  have h₂ : x.ob readY writeY :=
+    .obsExternalCoherenceAfter _ _ hCoherenceY hExternalY
+  have h₃ : x.ob writeY readX := .dsbFull _ _ _ hOrders hDsb1
+  have h₄ : x.ob readX writeX :=
+    .obsExternalCoherenceAfter _ _ hCoherenceX hExternalX
+  exact x.obIrrefl writeX
+    (.trans _ _ _ h₁ (.trans _ _ _ h₂ (.trans _ _ _ h₃ h₄)))
 
 /-- Two seq-cst readers cannot observe two seq-cst writers in contradictory
     orders.  Each first LDAR orders the following LDAR; external reads-from and

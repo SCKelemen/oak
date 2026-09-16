@@ -34,14 +34,14 @@ Lean AArch64 local-order model
         +----> kernel-checked instruction-class capability proofs
         |
 Lean Arm ordered-before projection
-        +----> inductive MP / SB / IRIW / full- and load-DMB proofs
+        +----> inductive MP / SB / IRIW / DMB / full-DSB proofs
         |
 Pinned CAT sources + cat2lisp AST
         +----> byte identity + structural projection certificate
         |
 Oak barrier words -> Arm Sail decoder
         +----> kernel-checked operation / domain / access type
-        +----> fail-closed Oak capability + decoded DMB `bob` class
+        +----> fail-closed Oak capability + decoded DMB/DSB order classes
 ```
 
 These layers make different claims.
@@ -53,14 +53,16 @@ These layers make different claims.
   acquire/release/RCsc capabilities Oak requires.
 - Litmus tests verify the language model permits and forbids the intended
   outcomes.
-- Lean proves the corresponding machine outcomes from the `bob`, `obs`, and
-  irreflexive/transitive `ob` consequences of Arm's official A-profile model.
+- Lean proves the corresponding machine outcomes from the `bob`, `DSB-ob`,
+  `obs`, and irreflexive/transitive `ob` consequences of Arm's official
+  A-profile model.
 - Herd's pinned parser structurally certifies that the exact CAT sources contain
   those restricted consequences and their route into `ob`.
 - Lean generated from the Arm Sail fragment proves Oak's six barrier words
   decode to their intended DMB, DSB, or ISB operation and option. The decoded
   records refine fail-closed into Oak's capability classes; the three DMB
-  records also index the corresponding restricted `bob` ordering theorem.
+  records index the restricted `bob` theorem and both full DSB records index
+  the restricted `DSB-ob` theorem.
 
 No one of these alone is called a complete C/LLVM/Arm axiomatic refinement
 proof.
@@ -194,11 +196,13 @@ ordered-before projection used by Arm's official `aarch64hwreqs.cat` and
 The assembly litmus programs in `spec/litmus/aarch64` run with Herdtools7 and
 that repository's official `aarch64.cat`, both fixed at commit
 `76d5bd259d4c4b553a0f52158b9638559b79a5b5`.  The gate requires `Never` for
-the MP stale-payload, STLR/LDAR SB both-zero, DMB ISH/SY SB both-zero,
-load→DMB ISHLD→store cyclic, and LDAR IRIW split observations. It requires
-`Sometimes` for LDAR/STLR LB both-zero and store→DMB ISHLD→load SB both-zero,
-so an oracle that rejects every weak-looking execution or treats ISHLD as a
-full barrier cannot pass.
+the MP stale-payload, STLR/LDAR SB both-zero, DMB ISH/SY SB both-zero, DSB
+ISH/SY SB both-zero, load→DMB ISHLD→store cyclic, and LDAR IRIW split
+observations. It requires `Sometimes` for LDAR/STLR LB both-zero,
+store→DMB ISHLD→load SB both-zero, and store→ISB→load SB both-zero. Thus an
+oracle that rejects every weak-looking execution, treats ISHLD as a full
+barrier, or treats a bare ISB as a data fence cannot pass. There are eleven
+official-model cases.
 
 ### 7.1 Message passing (MP)
 
@@ -264,7 +268,8 @@ Lean proves:
 
 `spec/lean/Oak/AArch64WeakMemory.lean` defines the least transitive relation over
 the exact global consequences used from Arm's model: `bob` edges for STLR,
-LDAR, STLR-followed-by-LDAR, full DMB, and returning-load-before-DMB-LD; and external reads-from and
+LDAR, STLR-followed-by-LDAR, full DMB, and returning-load-before-DMB-LD;
+full-DSB scalar ordering through `DSB-ob`; and external reads-from and
 coherence-after edges through `obs`. A valid projected execution supplies only
 Arm's external irreflexivity condition. Lean proves:
 
@@ -273,6 +278,8 @@ Arm's external irreflexivity condition. Lean proves:
 - STLR/LDAR seq-cst store buffering cannot return both initial values;
 - two LDAR seq-cst readers cannot make the IRIW split observation;
 - a full DMB in each thread also excludes the store-buffering outcome;
+- a full DSB in each thread excludes the same outcome through its distinct
+  `DSB-ob` constructor, without making a completion claim;
 - DMB ISHLD orders a returning load before following scalar memory, while
   neither a store nor a CAT `NoRet` load receives that edge;
 - Oak's selected instruction classes are exactly STLR, LDAR, and DMB ISH for
@@ -282,8 +289,10 @@ Arm's external irreflexivity condition. Lean proves:
 relation to the pinned model. It byte-compares all 156 tracked
 `herd/libdir/*.cat` blobs (and rejects untracked CAT inputs), invokes the pinned
 `cat2lisp` beside `herd7`, and checks the include-expanded AST for DMB ISH and
-DMB SY in `dmb.full`, DMB ISHLD in `dmb.ld`, the five required scalar `bob` arms, the
-`bob -> lob -> local-hw-reqs -> hw-reqs -> ob` and
+DMB SY in `dmb.full`, DMB ISHLD in `dmb.ld`, the five required scalar `bob`
+arms, DSB ISH/SY membership and the full scalar `DSB-ob` arm, ISB membership
+and a dependency-sensitive `IFB-ob` arm, the `bob/DSB-ob/IFB-ob -> lob ->
+local-hw-reqs -> hw-reqs -> ob` and
 `rf/ca -> Exp-obs -> obs -> ob` paths, `ob; ob`, and external
 `irreflexive ob`. Exact AST hashes make any pin/model drift a reviewed change;
 mutation checks show each required edge is fail-closed.
@@ -299,9 +308,20 @@ ISHLD/ISH/SY, DSB ISH/SY, and ISB are pinned to the generated encoder table and
 proved to decode to the intended operation, shareability domain, and access
 types. A fail-closed refinement maps only those six exact decoder records into
 Oak's barrier capabilities. Sail-decoded DMB ISHLD/ISH/SY occurrences then
-produce the load/full `bob` edges above. Sail-decoded DSB records prove their
-completion capability and the ISB record proves instruction synchronization;
-neither is incorrectly admitted through the DMB `bob` arm.
+produce the load/full `bob` edges above, and decoded DSB ISH/SY occurrences
+produce the full scalar `DSB-ob` edge. ISB is proved not to receive a DMB or
+DSB data-order edge; the official CAT outcome confirms that a bare ISB is not a
+data fence.
+
+The completion and instruction-synchronization fields are Oak profile
+capabilities, not consequences of the extracted Sail artifact. Oak's pure Sail
+fragment intentionally projects decoding to the operation/domain/access tuple
+and omits architectural state changes and the final barrier execution call.
+Therefore this bridge proves decode/dispatch identity and the selected CAT
+ordering consequences, but not DSB completion or ISB context synchronization.
+Those require an occurrence-indexed Arm execution rule; a positive `IFB-ob`
+projection additionally requires the model's control/address or other admitted
+dependency.
 
 ## 9. CI gate
 
@@ -340,6 +360,8 @@ This chapter does **not** claim:
   Arm model into Lean;
 - a proof that STLR/LDAR/DMB executions generate the assumed Exp/W/R/L/A event
   tags, decoded barrier-occurrence relation, reads-from, and coherence-after relations;
+- a proof of DSB completion or ISB context synchronization from an Arm
+  execution model;
 - exhaustive compiler-version correctness;
 - stochastic execution of weak-memory litmus tests on real AArch64 hardware;
 - cache/coherency/DMA/device-memory correctness;
@@ -357,8 +379,9 @@ The next machine-memory work should add:
    and prove the instruction-to-event-tag and `rf`/`ca` generation seams;
 2. retained assembly artifacts/version metadata so failures are diagnosable;
 3. real AArch64 hardware litmus execution when a CI runner is available;
-4. pin and project the separate CAT `DSB-ob` completion and dependency-sensitive
-   `IFB-ob`/ISB chains, then extend MMIO state/effect contracts;
+4. add the occurrence-indexed execution bridge needed for DSB completion and
+   positive dependency-sensitive `IFB-ob`/ISB chains, then extend MMIO
+   state/effect contracts;
 5. DMA/coherency and interrupt-boundary ordering;
 6. selective implementation-to-Lean refinement where the proof cost is
    justified.

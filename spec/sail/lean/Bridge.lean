@@ -131,21 +131,21 @@ theorem isb_barrier :
   rw [isb_decoder]
   rfl
 
-theorem dsb_ish_decoder_claims_completion :
+theorem dsb_ish_decoder_oak_completion_capability :
     ∃ barrier,
       ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) =
         some barrier ∧
       (capability barrier).completion = true := by
   exact ⟨.dsbIsh, dsb_ish_barrier, rfl⟩
 
-theorem dsb_sy_decoder_claims_completion :
+theorem dsb_sy_decoder_oak_completion_capability :
     ∃ barrier,
       ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) =
         some barrier ∧
       (capability barrier).completion = true := by
   exact ⟨.dsbSy, dsb_sy_barrier, rfl⟩
 
-theorem isb_decoder_claims_instruction_sync :
+theorem isb_decoder_oak_instruction_sync_capability :
     ∃ barrier,
       ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) =
         some barrier ∧
@@ -186,6 +186,24 @@ theorem dmb_sy_decoder_orders {Event : Type}
   rw [dmb_sy_decoder]
   simp
 
+theorem dsb_ish_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.dsbFull _ _ _ ?_ hBetween
+  rw [dsb_ish_decoder]
+  simp
+
+theorem dsb_sy_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.dsbFull _ _ _ ?_ hBetween
+  rw [dsb_sy_decoder]
+  simp
+
 theorem dsb_ish_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
     ¬ decodeDataOrdersBefore
       (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) beforeIsLoad := by
@@ -201,6 +219,12 @@ theorem dsb_sy_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
 theorem isb_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
     ¬ decodeDataOrdersBefore
       (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) beforeIsLoad := by
+  rw [isb_decoder]
+  simp
+
+theorem isb_decoder_not_dsb_ordering :
+    ¬ decodeDsbOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) := by
   rw [isb_decoder]
   simp
 
