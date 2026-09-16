@@ -36,6 +36,8 @@ on:
       - 'spec/lean/Oak/RiscV.lean'
       - 'spec/lean/Oak/ArmASL.lean'
       - 'spec/lean/Oak/AssemblerSemantics.lean'
+      - 'spec/lean/Oak/AArch64Encoding.lean'
+      - 'spec/lean/Oak/AArch64SysReg.lean'
       - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
       - '.github/workflows/formal-sail.yml'
@@ -136,7 +138,7 @@ jobs:
       - name: Run the oracle tests, every oracle required
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

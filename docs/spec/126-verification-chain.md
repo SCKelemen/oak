@@ -251,6 +251,16 @@ assignment. Access/trap admission, dynamic occurrence, runtime X1-to-source
 argument provenance, register-field validity, table publication, BBM, TLBI
 effects, completion, synchronization, and other machine state remain open.
 
+The following `MSR VTCR_EL2, X2` is computed as `0xd51c2142`. Generated Lean
+proves its decoder target and component transition. The official register is
+32-bit, so the direct EL2 result is exactly X2 bits 31:0; bits 63:32 are not
+preserved. The source gate pins the distinct `op2 = 010` nested route, five
+HCR/SCR predicate aliases, low-32 direct assignment, NVMem(64) alternative,
+and 32-bit register declaration. Access/traps, occurrence, runtime X2
+provenance, predicate consistency with machine state, VTCR validity and VTTBR
+compatibility, stage-2 behavior, NVMem effects, other state, publication,
+ordering, BBM/TLBI completion, and context synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

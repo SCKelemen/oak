@@ -130,6 +130,12 @@ def msrVttbrEl2X1 : BitVec 32 :=
 theorem msr_vttbr_el2_x1_word : msrVttbrEl2X1 = 0xd51c2101#32 := by native_decide
 -- OAK-A64-VTTBR-EL2-WORD-END
 
+-- OAK-A64-VTCR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrVtcrEl2X2 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b010#3 0b00010#5
+theorem msr_vtcr_el2_x2_word : msrVtcrEl2X2 = 0xd51c2142#32 := by native_decide
+-- OAK-A64-VTCR-EL2-WORD-END
+
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩
 def dmbSyDecode : BarrierDecode := ⟨true, .dmb, .fullSystem, .all⟩

@@ -155,6 +155,13 @@ alternative, Lean records a redirect flag and leaves that component unchanged;
 it does not model NVMem contents or effects. A source-drift gate separately
 audits the assignment to NVMem and pins the route to the official Sail model.
 
+The adjacent stage-2 control write is also exact. Lean computes
+`MSR VTCR_EL2, X2` as `0xd51c2142`, selects VTCR_EL2/X2, and proves the direct
+EL2 component transition. Unlike VTTBR_EL2, the pinned official model declares
+VTCR_EL2 as `bits(32)`: the direct result is exactly X2 bits 31:0, not the full
+64-bit argument. The EL1 redirect leaves the projected component unchanged;
+the source gate audits the corresponding low-32-bit NVMem(64) assignment.
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -181,6 +188,13 @@ compatibility, desired VM/RW/interrupt-routing configuration, stage-2
 enablement, exception routing, or observation by later writes. It supplies no
 ordering, synchronization, publication, BBM, or TLBI fact.
 
+The VTCR theorem proves no access admission, trap absence, dynamic execution,
+runtime X2 provenance, or preservation of X2 bits 63:32. It validates no VTCR
+field, RES0/RES1, feature, granule, or address-size constraint and no VTTBR
+compatibility. It proves no stage-2 enablement or walk behavior, publication,
+ordering, BBM, TLBI effect/completion, context synchronization, NVMem effect,
+or preservation of other machine state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -194,6 +208,7 @@ ordering, synchronization, publication, BBM, or TLBI fact.
 | exact `MRS`/`MSR` register selection | AArch64 assembly-refinement tested |
 | exact HCR_EL2/X0 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact VTTBR_EL2/X1 word and conditional component update | Lean/Sail proved; official source drift-pinned |
+| exact VTCR_EL2/X2 word and low-32 conditional component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

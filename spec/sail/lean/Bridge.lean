@@ -556,6 +556,73 @@ theorem vttbr_el2_generated_body_el1_nv_redirect_preserves_component
       true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! The adjacent VTCR_EL2/X2 projection follows the distinct `op2 = 010`
+general-MSR route. The official register is 32-bit, so a direct write retains
+only X2 bits 31:0. Access admission, traps, runtime value provenance, NVMem(64),
+and every other state component remain outside these pure facts. -/
+
+def decodedVtcrSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_vtcr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem vtcr_el2_x2_decoder_execution_target :
+    decodedVtcrSystemRegisterWriteTarget msrVtcrEl2X2 =
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 0b00010#5) := by
+  rfl
+
+theorem vtcr_el2_x3_decoder_rt_is_preserved :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c2143#32 =
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 0b00011#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_vtcr_target :
+    decodedVtcrSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_vtcr_el2_x2_not_projected_to_write :
+    decodedVtcrSystemRegisterWriteTarget 0xd53c2142#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_vtcr :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vttbr_el2_x1_not_projected_to_vtcr :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c2101#32 = none := by
+  rfl
+
+def vtcrWriteComponentToPair (result : VTCRWriteComponent) : Bool × BitVec 32 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem vtcr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      vtcrWriteComponentToPair
+        (writeVtcrEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem vtcr_el2_generated_body_at_el2_is_direct_low32
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue.setWidth 32) := by
+  rfl
+
+theorem vtcr_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

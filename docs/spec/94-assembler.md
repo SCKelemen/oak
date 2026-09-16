@@ -807,8 +807,16 @@ audit keeps the EL1 nested-virtualization assignment to NVMem explicit. Lean's
 component projection records only the redirect flag and unchanged VTTBR_EL2;
 it erases NVMem contents and effects. The source gate pins the generic
 MSR access-check/decode route, X-register handoff, architectural register
-declaration, and direct/redirect branch. This proves neither access admission
-nor runtime X0/X1 value provenance, HCR/VTTBR field validity, desired
+declaration, and direct/redirect branch.
+
+The following `MSR VTCR_EL2, X2` is `0xd51c2142`. Its route differs at
+`op2 = 010`; the official register is 32-bit. Generated Lean proves the exact
+VTCR_EL2/X2 target and that the direct EL2 body stores X2 bits 31:0. The source
+gate pins that truncating assignment and the identically truncated NVMem(64)
+redirect. The projection preserves old VTCR_EL2 on redirect and erases NVMem.
+
+These seams prove neither access admission nor runtime X0/X1/X2 value
+provenance, HCR/VTTBR/VTCR field validity, desired
 virtualization or exception-routing configuration, publication, BBM, TLBI
 effects, completion, context synchronization, or a CAT edge.
 

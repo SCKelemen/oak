@@ -83,6 +83,13 @@ projection to the component assignment and proves it writes the supplied value
 at EL2. Access/trap admission, runtime X1 value provenance, valid VTTBR fields,
 table publication, and a dynamic `ColdEntry.Step` occurrence remain external.
 
+The VTCR seam pins static `MSR VTCR_EL2, X2` word `0xd51c2142` and the official
+32-bit register declaration. Generated Lean proves that its direct EL2 body
+stores only X2 bits 31:0; the nested EL1 alternative preserves the projected
+VTCR component while the source gate audits NVMem(64). It proves no runtime X2
+provenance, control-bit consistency with machine state, VTCR field validity,
+VTTBR compatibility, stage-2 behavior, ordering, or dynamic occurrence.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

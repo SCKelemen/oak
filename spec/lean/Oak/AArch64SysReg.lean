@@ -51,6 +51,42 @@ theorem write_vttbr_el2_el1_nv_redirect_preserves_component
       oldValue newValue = ⟨true, oldValue⟩ := by
   rfl
 
+/-- The pinned model uses the same nested-virtualization predicate for VTCR_EL2.
+    Its Boolean arguments are projections of old architectural control bits;
+    their consistency with the surrounding machine state is external. -/
+def vtcrEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 32-bit VTCR_EL2 component. The source
+    X register is 64-bit, but the pinned Arm model stores only its low 32 bits.
+    NVMem(64), other state, and access/trap effects are omitted. -/
+structure VTCRWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeVtcrEl2Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) : VTCRWriteComponent :=
+  if vtcrEl2RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue.setWidth 32⟩
+
+theorem write_vtcr_el2_at_el2_is_direct_low32
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    writeVtcrEl2Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue.setWidth 32⟩ := by
+  rfl
+
+theorem write_vtcr_el2_el1_nv_redirect_preserves_component
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    writeVtcrEl2Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

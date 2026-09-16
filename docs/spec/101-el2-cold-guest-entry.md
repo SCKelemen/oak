@@ -142,6 +142,13 @@ VTTBR_EL2 assignment at EL2. It retains the distinct EL1 nested-virtualization
 redirect. This does not prove access/trap admission, runtime X1 value
 provenance, valid VTTBR fields, table publication, or dynamic occurrence.
 
+The following VTCR theorem computes static `MSR VTCR_EL2, X2` word
+`0xd51c2142`. The pinned Arm model declares VTCR_EL2 as 32-bit, and generated
+Lean proves the direct EL2 body installs exactly X2 bits 31:0. Its EL1 redirect
+records unchanged VTCR_EL2 while the official source assigns NVMem(64). This
+does not prove access/trap admission, runtime X2 provenance, upper-bit
+preservation, valid VTCR fields, VTTBR compatibility, ordering, or occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:
