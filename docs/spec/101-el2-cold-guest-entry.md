@@ -26,7 +26,8 @@ fn el2_cold_enter(...) -> never
 
 The sequence is:
 
-1. mask EL2 IRQ delivery with `arm64.daifset_irq()`;
+1. execute `arm64.daifset_irq()`; on access-admitted execution its `#2`
+   operand sets `PSTATE.I`;
 2. install `HCR_EL2`;
 3. install `VTTBR_EL2`;
 4. install `VTCR_EL2`;
@@ -121,6 +122,12 @@ register values also remain outside these protocol-order proofs. Only the eight
 writes, ISB, and ERET are occurrence-classified here; DAIFSet and the remaining
 phase transitions are still shape-only.
 
+Independently, `Oak.AArch64Encoding` computes the static DAIFSet word as
+`0xd50342df`, and the generated Sail bridge proves that successful dispatch
+with operand `#2` runs a D/A/I/F body that sets I and preserves D/A/F. This
+does not supply the missing `Step.maskIrq` occurrence, discharge access/trap
+checks, or prove maskable IRQ delivery remains disabled over the interval.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:
@@ -144,9 +151,9 @@ It rejects hidden `DMB`, `DSB`, `WFI`, `WFE`, `SEV`, ordinary `RET`, and heap de
 The direct-native gate additionally reads the actual Oak object symbol and
 requires the complete body to be exact DAIFSet, the eight context-register MSR
 words, exact ISB word, and exact ERET word, with no stack frame. This executable
-regression witness pins the observed source-to-object bytes and order for the
-native lane; it is not a kernel-checked compiler trace or an architectural
-synchronization proof.
+regression witness pins the observed static source-to-object bytes and order
+for the native lane; it is not a kernel-checked dynamic compiler/execution
+trace or an architectural synchronization proof.
 
 ## Next milestone
 

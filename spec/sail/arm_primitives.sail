@@ -923,3 +923,55 @@ function decode64_tlbi_target_pure (op_code) = {
         (false, TLBIOperationTarget_VMALLS12E1IS)
     }
 }
+
+/* ---------------------------------------------------------------------
+ * The A64 PSTATE-immediate DAIFSet dispatch and state body.
+ *
+ * The pinned aarch_decode.sail PSTATE-immediate clause extracts op1/CRm/op2
+ * and system_register_cpsr_decode selects PSTATEField_DAIFSet when
+ * op1 @ op2 = 0b011110. system_register_cpsr then ORs operand[3:0] into
+ * PSTATE.{D,A,I,F}. These pure functions preserve that target and body only.
+ * They erase AArch64_CheckSystemAccess, EL/feature trap checks, PostDecode,
+ * dynamic execution occurrence, all other PSTATE fields, and interrupt
+ * recognition or delivery. Interpreting a true result as an executed state
+ * transition therefore requires those erased checks to admit execution.
+ */
+
+enum PSTATEWriteTarget = {PSTATEWriteTarget_DAIFSet}
+
+val system_register_cpsr_daifset_target_pure :
+  (bits(3), bits(4), bits(3)) -> (bool, PSTATEWriteTarget, bits(4))
+
+function system_register_cpsr_daifset_target_pure (op2, CRm, op1) = {
+    if op1 @ op2 == 0b011110 then {
+        (true, PSTATEWriteTarget_DAIFSet, CRm)
+    } else {
+        (false, PSTATEWriteTarget_DAIFSet, CRm)
+    }
+}
+
+val decode64_pstate_write_target_pure :
+  bits(32) -> (bool, PSTATEWriteTarget, bits(4))
+
+function decode64_pstate_write_target_pure (op_code) = {
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    if (op_code & 0xFFF8F01F) == 0xD500401F then {
+        system_register_cpsr_daifset_target_pure(op2, CRm, op1)
+    } else {
+        (false, PSTATEWriteTarget_DAIFSet, CRm)
+    }
+}
+
+val system_register_cpsr_daifset_pure :
+  (bits(1), bits(1), bits(1), bits(1), bits(4)) ->
+    (bits(1), bits(1), bits(1), bits(1))
+
+function system_register_cpsr_daifset_pure (d, a, i, f, operand) = {
+    let d_out : bits(1) = d | [operand[3]];
+    let a_out : bits(1) = a | [operand[2]];
+    let i_out : bits(1) = i | [operand[1]];
+    let f_out : bits(1) = f | [operand[0]];
+    (d_out, a_out, i_out, f_out)
+}

@@ -1,6 +1,7 @@
 import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
+import Oak.AArch64EventControl
 import Oak.AArch64Barrier
 import Oak.AArch64ColdEntry
 import Oak.AArch64Stage2Maintenance
@@ -419,6 +420,70 @@ theorem sail_vmalls12e1is_dsb_isb_sequence_projects_ifb_ob
     ProjectedTlbiIfbOb code trace target tlbiEvent postTlbiDsb isbEvent
       afterEvent :=
   vmalls12e1is_dsb_isb_sequence_projects_ifb_ob sequence.1 isbBeforeAfter
+
+/-! The pinned PSTATE-immediate decoder and DAIFSet body. The generated pure
+projection erases access/trap admission; interpreting its body as an executed
+transition requires those obligations separately. These facts do not establish
+dynamic occurrence or interrupt recognition/delivery. -/
+
+def decodedPSTATEWriteTarget (word : BitVec 32) :
+    Option (_root_.PSTATEWriteTarget × BitVec 4) :=
+  let result := Out.Functions.decode64_pstate_write_target_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem daifset_irq_decoder_execution_target :
+    decodedPSTATEWriteTarget msrDaifSetIrq =
+      some (.PSTATEWriteTarget_DAIFSet, 0b0010#4) := by
+  rfl
+
+theorem invalid_pstate_write_has_no_execution_target :
+    decodedPSTATEWriteTarget 0#32 = none := by
+  rfl
+
+/-- The nearby DAIFClr encoding cannot be accepted by the deliberately
+    DAIFSet-only projection. -/
+theorem daifclr_irq_not_projected_to_daifset :
+    decodedPSTATEWriteTarget 0xd50342ff#32 = none := by
+  rfl
+
+open Oak.AArch64EventControl
+
+def daifStateToSailFields (state : DAIFState) :
+    BitVec 1 × BitVec 1 × BitVec 1 × BitVec 1 :=
+  (BitVec.ofBool state.d, BitVec.ofBool state.a,
+    BitVec.ofBool state.i, BitVec.ofBool state.f)
+
+/-- The generated pure body is Oak's local four-bit transition for every
+    DAIFSet operand. This is state-body correspondence after successful
+    dispatch, not evidence that architectural access checks succeed. -/
+theorem daifset_body_bridge (state : DAIFState) (operand : BitVec 4) :
+    Out.Functions.system_register_cpsr_daifset_pure
+      (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+      (BitVec.ofBool state.i) (BitVec.ofBool state.f) operand =
+      daifStateToSailFields (state.applySet operand) := by
+  obtain ⟨d, a, i, f⟩ := state
+  cases d <;> cases a <;> cases i <;> cases f <;>
+    revert operand <;> decide
+
+theorem daifset_irq_body_bridge (state : DAIFState) :
+    Out.Functions.system_register_cpsr_daifset_pure
+      (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+      (BitVec.ofBool state.i) (BitVec.ofBool state.f) 0b0010#4 =
+      daifStateToSailFields state.maskIrq := by
+  exact daifset_body_bridge state 0b0010#4
+
+theorem daifset_irq_generated_body_masks_and_preserves (state : DAIFState) :
+    Out.Functions.system_register_cpsr_daifset_pure
+        (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+        (BitVec.ofBool state.i) (BitVec.ofBool state.f) 0b0010#4 =
+        daifStateToSailFields state.maskIrq ∧
+      (state.maskIrq).i = true ∧
+      (state.maskIrq).d = state.d ∧
+      (state.maskIrq).a = state.a ∧
+      (state.maskIrq).f = state.f :=
+  ⟨daifset_irq_body_bridge state, daifset_irq_masks_and_preserves state⟩
 
 end A64Encoding
 

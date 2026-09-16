@@ -52,6 +52,10 @@ inductive TLBIOperationTarget where | TLBIOperationTarget_VMALLS12E1IS
   deriving BEq, Inhabited, Repr
   open TLBIOperationTarget
 
+inductive PSTATEWriteTarget where | PSTATEWriteTarget_DAIFSet
+  deriving BEq, Inhabited, Repr
+  open PSTATEWriteTarget
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

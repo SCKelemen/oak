@@ -1,12 +1,12 @@
 import Std.Tactic.BVDecide
 
 /-!
-# AArch64 barrier encodings
+# AArch64 system encodings
 
-The A64 barrier words emitted by Oak, with the fixed bits and `CRm` field
+The A64 barrier, TLBI, and PSTATE-immediate words emitted by Oak, with fields
 generated from Arm's ISA XML.  `spec/sail/lean/Bridge.lean` proves these words
-reach the corresponding clauses of Arm's Sail `decode64` and that
-`system_barriers_decode` returns the operation, domain, and access types below.
+reach the corresponding clauses of Arm's Sail `decode64` and projects the
+successful decoder results into Oak's deliberately narrow local semantics.
 -/
 
 namespace Oak.AArch64Encoding
@@ -34,6 +34,10 @@ def isb : Encoding := ⟨"ISB_BI_barriers", "isb", 0xd50330df#32, 0xfffff0ff#32,
 -- OAK-A64-TLBI-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
 def tlbi : Encoding := ⟨"TLBI_SYS_CR_systeminstrs", "tlbi", 0xd5088000#32, 0xfff8e000#32, [⟨"L", 21, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
 -- OAK-A64-TLBI-ENC-END
+
+-- OAK-A64-PSTATE-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def msrPstate : Encoding := ⟨"MSR_SI_pstate", "msr", 0xd500401f#32, 0xfff8f01f#32, [⟨"op1", 18, 3⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-PSTATE-ENC-END
 
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
@@ -66,6 +70,14 @@ def encodeTlbiSys (op1 : BitVec 3) (crn crm : BitVec 4)
     (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
     (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
 
+/-- Fill the generated PSTATE-immediate MSR encoding's table-selected fields.
+    The caller must choose a tuple admitted by the generated Arm XML table. -/
+def encodePstateImmediate (op1 : BitVec 3) (crm : BitVec 4)
+    (op2 : BitVec 3) : BitVec 32 :=
+  (msrPstate.value &&& msrPstate.mask) |||
+    (op1.setWidth 32 <<< 16) ||| (crm.setWidth 32 <<< 8) |||
+    (op2.setWidth 32 <<< 5)
+
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
 def dmbSy : BitVec 32 := encodeCRm dmb 0xf#4
@@ -87,6 +99,12 @@ def tlbiVmalls12e1is : BitVec 32 :=
   encodeTlbiSys 0b100#3 0b1000#4 0b0011#4 0b110#3 0b11111#5
 theorem tlbi_vmalls12e1is_word : tlbiVmalls12e1is = 0xd50c83df#32 := by native_decide
 -- OAK-A64-TLBI-WORD-END
+
+-- OAK-A64-DAIFSET-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrDaifSetIrq : BitVec 32 :=
+  encodePstateImmediate 0b011#3 0b0010#4 0b110#3
+theorem msr_daifset_irq_word : msrDaifSetIrq = 0xd50342df#32 := by native_decide
+-- OAK-A64-DAIFSET-WORD-END
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

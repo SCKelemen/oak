@@ -8,6 +8,33 @@ inductive Operation where
   | sev
   deriving DecidableEq, Repr
 
+/-- The four PSTATE DAIF mask bits updated by Arm's DAIFSet pseudocode. This
+    record deliberately excludes every other PSTATE field and interrupt
+    recognition/delivery state. -/
+structure DAIFState where
+  d : Bool
+  a : Bool
+  i : Bool
+  f : Bool
+  deriving DecidableEq, Repr
+
+/-- Arm's successful DAIFSet body, restricted to its four visible DAIF bits. -/
+def DAIFState.applySet (state : DAIFState) (operand : BitVec 4) : DAIFState :=
+  ⟨state.d || operand.getLsbD 3, state.a || operand.getLsbD 2,
+    state.i || operand.getLsbD 1, state.f || operand.getLsbD 0⟩
+
+/-- `MSR DAIFSet, #2`: set PSTATE.I while preserving D, A, and F. -/
+def DAIFState.maskIrq (state : DAIFState) : DAIFState :=
+  state.applySet 0b0010#4
+
+theorem daifset_irq_masks_and_preserves (state : DAIFState) :
+    (state.maskIrq).i = true ∧
+    (state.maskIrq).d = state.d ∧
+    (state.maskIrq).a = state.a ∧
+    (state.maskIrq).f = state.f := by
+  obtain ⟨d, a, i, f⟩ := state
+  cases d <;> cases a <;> cases i <;> cases f <;> decide
+
 structure Capability where
   changesIrqMask : Bool
   mayWait : Bool

@@ -749,6 +749,15 @@ decorator conjoins the generated DSB, TLBI, and ISB decode/call-target facts
 with the external occurrence witness. It returns that witness unchanged and
 therefore proves neither DSB completion nor ISB context synchronization.
 
+The event-control seam also computes `arm64.daifset_irq()` as
+`0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
+`#2` and proves its pure D/A/I/F body sets I while preserving D/A/F. A Go
+drift gate pins the decoder, access-check boundary, dispatch, and four
+assignments to the pinned official Sail source. This is conditional state-body
+correspondence, not proof that access succeeds, the instruction dynamically
+executes, or maskable IRQ delivery remains excluded over an interval. It
+supplies no memory ordering or synchronization fact.
+
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode

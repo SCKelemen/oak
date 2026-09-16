@@ -18,7 +18,8 @@ In particular, it does **not** authorize changing VTTBR_EL2 or VTCR_EL2 undernea
 
 The reference sequence is:
 
-1. mask IRQ delivery with `arm64.daifset_irq()`;
+1. execute `arm64.daifset_irq()`; on access-admitted execution its `#2`
+   operand sets `PSTATE.I`;
 2. write `HCR_EL2`;
 3. write `VTTBR_EL2`;
 4. write `VTCR_EL2`;
@@ -35,7 +36,10 @@ preparation helper. The non-returning companion protocol is chapter 101's
 
 ## 4. Invariants
 
-- IRQs remain masked throughout preparation.
+- Protocol intent/assumption: maskable IRQ delivery on the executing PE
+  remains disabled throughout preparation. The DAIFSet seam proves only the
+  access-admitted PSTATE transition, not dynamic occurrence or preservation
+  throughout the sequence.
 - Every machine register is selected statically by source identity; there is no runtime register dispatch.
 - No heap allocation is introduced by the protocol or its machine helpers.
 - No DMB or DSB is silently inserted. This protocol is cold initialization, not live translation reconfiguration.
@@ -51,14 +55,19 @@ preparation helper. The non-returning companion protocol is chapter 101's
 through Oak's direct AArch64 backend and requires the complete object-symbol
 body to be exact DAIFSet, the eight context-register writes, exact ISB word,
 and `RET`. The body has no stack frame or other instruction. This is a
-byte-level occurrence/order certificate, not a proof of architectural context
-synchronization.
+static object-code occurrence/order certificate, not a proof of dynamic
+execution or architectural context synchronization.
 
 `Oak.AArch64ColdEntry` now separates the shape-only `ProtocolStep` graph from
 an occurrence-indexed `Step`. Its synchronization witness carries all eight
 exact register-write occurrences before the same exact ISB word plus an
 explicit external Arm context-synchronization proposition. Decoder identity or
 Oak's capability bit cannot manufacture that evidence.
+
+The independent DAIFSet theorem computes the first static word, follows the
+pinned Sail decoder to the successful DAIFSet body, and proves that body sets
+I while preserving D/A/F. `ColdEntry.Step.maskIrq` is not yet connected to a
+dynamic occurrence of that instruction.
 
 ## 6. Next protocol layers
 
