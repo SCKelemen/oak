@@ -1831,12 +1831,13 @@ func writableSpanMemories(fn *Function, spans map[string]int64, recordSpans map[
 	return out
 }
 
-// cellsStoredIn names the package cells a loop body stores: the body
-// materializes a cell's address as `adrp xA, G; add xA, xA, :lo12:G` and
-// stores through `[xA]` (nativegen globalAddress; the checker admits no
-// other access), so the scan follows the symbol into the register it
-// names and the store through it. Sorted; an aggregate global or one the
-// function does not declare is left to the executor's refusal.
+// cellsStoredIn names the package cells a loop body stores: AArch64
+// materializes a cell's address as `adrp xA, G; add xA, xA, :lo12:G`, while
+// RV64 uses `la xA, G`; each stores through offset zero from that register.
+// The target checkers admit no other scalar-global access, so the scan follows
+// the exact symbol provenance until any write to the address register. Sorted;
+// an aggregate global or one the function does not declare is left to the
+// executor's refusal.
 func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
 	named := map[int]string{}
 	stored := map[string]bool{}
@@ -1845,9 +1846,11 @@ func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
 		if !isInstr || len(instr.Operands) == 0 {
 			continue
 		}
-		if isStoreMnemonic(instr.Mnemonic) && len(instr.Operands) == 2 {
+		_, isRV64Store := rv64Stores[instr.Mnemonic]
+		if (isStoreMnemonic(instr.Mnemonic) || isRV64Store) && len(instr.Operands) == 2 {
 			if mem, isMem := instr.Operands[1].(Memory); isMem && mem.Index == nil && mem.Offset == 0 {
-				if name, isCell := named[mem.Base.Num]; isCell && mem.Base.Class == ClassX {
+				classMatches := (mem.Base.Class == ClassX && !isRV64Store) || (mem.Base.Class == ClassRV64X && isRV64Store)
+				if name, isCell := named[mem.Base.Num]; isCell && classMatches {
 					if global, declared := x.globals[name]; declared && !global.Aggregate {
 						stored[name] = true
 					}
@@ -1860,7 +1863,10 @@ func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
 			continue
 		}
 		delete(named, dest.Num)
-		if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym && (instr.Mnemonic == "adrp" || instr.Mnemonic == "add") {
+		sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol)
+		aarch64Address := isSym && dest.Class == ClassX && (instr.Mnemonic == "adrp" || instr.Mnemonic == "add")
+		rv64Address := isSym && instr.Mnemonic == "la" && len(instr.Operands) == 2 && dest.Class == ClassRV64X && dest.Num != 0 && sym.Name != "" && !sym.Lo12
+		if aarch64Address || rv64Address {
 			named[dest.Num] = sym.Name
 		}
 	}
