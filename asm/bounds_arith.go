@@ -78,7 +78,7 @@ func (c *checker) lenLike(f *spanFact, n int) bool {
 	if f.holdsLen(n) {
 		return true
 	}
-	if other, equal := c.lenEqual[n]; equal && f.holdsLen(other) {
+	if c.equalLenReg(f, n) >= 0 {
 		return true
 	}
 	if k, isConst := c.constFacts[n]; isConst {

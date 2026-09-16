@@ -350,6 +350,51 @@ the operand — the same lemma, one instruction. With that the search
 selects the fused forms for both kernels (`search`'s loop 10 instructions
 from 12 with the guard, cost 3732 against 4116).
 
+### Phase D, second increment: order-preserving fold vectorization
+
+The kernel table's `dot` at 1.31× was the last gap in proven code with a
+transform behind it: clang vectorizes the products (`fmul.4s` over four
+elements, sixteen a trip) and keeps the additions in source order, one
+`fadd` per element, where the native loop ran scalar — two loads, a
+multiply, an add, and the loop's three instructions per element. Float
+addition does not reassociate, so `vectorize-reductions`' four strided
+accumulators are out; but the element work vectorizes without touching
+the order. `vectorize-folds` (`nativegen/vector_fold.go`) rewrites a
+reduction whose element expression is lane-wise over span parameters of
+one length — the map vectorization's reading of the expression, spans at
+the loop's index, invariant scalars, constants, and the lane-wise
+operators — into a main loop that computes one vector of element values
+and adds its lanes to the accumulator in element order through
+`simd.extract`, under the slack guard, with the remainder loop as written.
+The license is `Oak.Fold.blocked_eq` (`spec/lean/Oak/Fold.lean`): the
+blocked fold equals the sequential fold for any lane function and any
+accumulation, so no law of the element type is used and the float
+accumulator rounds as before. The verifier already read every instruction
+the form needs (vector loads at wider lanes, `fmul` over an arrangement,
+the lane move `mov sD, vN.s[k]`), so the dot products prove
+(`compiler/e2e_native_vector_fold_test.go`: `f32` and `f64` dot products
+and a scaled sum; a bare float sum is left scalar, a vector saving it
+nothing). The first form of `bench_dot`'s loop was twenty instructions for four
+elements — two vector loads, the multiply, four lane moves, four adds,
+and six instructions of tests it did not need. The second span's slack
+test stood although the loop sits under `len(a) == len(b)`: the vector
+load decides its own guard from the enclosing loop conditions
+(`provenLanes`), which name the first span only, so the lowering now
+carries the conditionals' length equalities (`equalLens`, read as the
+map recognizer reads an arm) and a slack fact over one span is the
+fact over its equals. The checker then had to agree, in three places
+where it read a length register literally: the minimum a `cmp wL, #K;
+b.lo` proves (`measuresLen`), the element region an `add xE, xB, wI,
+uxtw #s` derives (the bound's register substituted for the span's own
+before the Lean-mirrored decision, Oak.Assembler.index_under_equal_len),
+and `lenLike` — each resolving the equality through any register that
+holds the same length, since the compare reads the copy (`w20`) where
+the slack fact names the primary (`w1`). And with no guard left to peel,
+the invariant pass hoists the condition's invariant half instead of
+leaving it in the header for the rotation to copy into the tail. The
+loop is sixteen instructions for four elements, one compare a trip,
+priced 1789 against the identity's 5537, proven.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

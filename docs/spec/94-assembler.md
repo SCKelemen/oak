@@ -5019,6 +5019,35 @@ after a slack guard over the same span and index). One vector a trip, not four: 
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
 elements (`benchmarks/native/README.md`, "Map vectorization").
 
+**Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
+`spec/lean/Oak/Fold.lean`, the `vectorize-folds` candidate).** A float
+reduction whose element expression is lane-wise over span parameters of
+one length — `total = total + a[i] * b[i]`, the dot product — computes one
+vector of element values a trip (the map vectorization's reading of the
+expression: `simd.load` per span, the lane-wise operation per operator,
+invariant scalars and constants splatted before the loop) and adds the
+vector's lanes to the accumulator one at a time, in element order
+(`simd.extract`), under the slack guard, the remainder loop as written.
+Nothing is reassociated: the accumulator meets the products in the order
+the scalar loop did and rounds the same, which is why a float reduction
+vectorizes here where `vectorize-reductions`' strided accumulators take
+integers only. The license is `Oak.Fold.blocked_eq` — the blocked fold
+equals the sequential fold for any lane function and any accumulation —
+and the verifier proves the assembly against the rewritten body, reading
+the lane moves (`mov sD, vN.s[k]`) as the lanes. A bare element
+(`acc = acc + v[i]`) saves no work as a vector and is left to the scalar
+loop. `bench_dot`'s selected loop is sixteen instructions for four
+elements against the scalar loop's seven for one: two vector loads, one
+`fmul.4s`, four lane moves and four `fadd`, the index step, and one slack
+test — the second span's lanes stand under the first span's test, the
+loop sitting under `len(a) == len(b)`: the lowering carries a
+conditional's length equalities into its vector guards (`equalLens`), and
+the checker reads a bound against a register proven equal to a span's
+length as a bound against the length (§7, `lenEqual`, resolved through
+any register holding the same length — the compare reads a copy where a
+slack fact names the primary), for the proven minimum, the element
+region, and the access alike.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
