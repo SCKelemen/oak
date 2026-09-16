@@ -159,8 +159,8 @@ func TestVerdictCacheRejectsMalformedDependencyRecords(t *testing.T) {
 }
 
 func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
-	functionMap := func(helperBody string) (map[string]*ast.FunctionStatement, *ast.FunctionStatement) {
-		source := "root: (x: u32): u32 = x\nhelper: (x: u32): u32 = " + helperBody + "\n"
+	functionMap := func(rootBody, helperBody string) (map[string]*ast.FunctionStatement, *ast.FunctionStatement) {
+		source := "root: (x: u32): u32 = " + rootBody + "\nhelper: (x: u32): u32 = " + helperBody + "\n"
 		p := parser.New(layout.New(scanner.New(source)))
 		program := p.ParseProgram()
 		if errs := p.Errors(); len(errs) != 0 {
@@ -176,8 +176,8 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 	}
 
 	for _, symbol := range []string{"helper", "helper" + asm.VectorEntrySuffix(asm.ArchArm64)} {
-		before, rootBefore := functionMap("x + u32(1)")
-		after, rootAfter := functionMap("x + u32(2)")
+		before, rootBefore := functionMap("x", "x + u32(1)")
+		after, rootAfter := functionMap("x", "x + u32(2)")
 		machine := &asm.Function{
 			Name:      "root",
 			Arch:      asm.ArchArm64,
@@ -192,5 +192,16 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 		if beforeKey == afterKey {
 			t.Fatalf("machine-only callee %q did not contribute its source identity to the cache key", symbol)
 		}
+	}
+
+	before, rootBefore := functionMap("x", "x + u32(1)")
+	after, rootAfter := functionMap("x", "x + u32(2)")
+	_, rewritten := functionMap("helper(x)", "x")
+	machine := &asm.Function{Name: "root", Arch: asm.ArchArm64, Signature: rootBefore, Body: rewritten.Body}
+	beforeKey := verdictCacheKey(machine, rootBefore, before, "")
+	machine.Signature = rootAfter
+	afterKey := verdictCacheKey(machine, rootAfter, after, "")
+	if beforeKey == afterKey {
+		t.Fatal("a callee reachable only from the verified rewritten body did not contribute to the cache key")
 	}
 }

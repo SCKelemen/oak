@@ -96,17 +96,25 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 	// over-approximation of the calls, the safe direction for a key).
 	reached := map[string]bool{}
 	var reach func(f *ast.FunctionStatement)
+	var reachName func(name string)
+	reachName = func(name string) {
+		callee, isFunction := functions[name]
+		if !isFunction || reached[name] {
+			return
+		}
+		reached[name] = true
+		reach(callee)
+	}
 	reach = func(f *ast.FunctionStatement) {
-		identifiersUnder(f.Body, func(name string) {
-			callee, isFunction := functions[name]
-			if !isFunction || reached[name] {
-				return
-			}
-			reached[name] = true
-			reach(callee)
-		})
+		identifiersUnder(f.Body, reachName)
 	}
 	reach(fn)
+	if asmFn.Body != nil {
+		// A theorem-licensed rewrite is the verifier's reference body. Its
+		// call graph may differ from the original body even though both texts
+		// are already part of the key.
+		identifiersUnder(asmFn.Body, reachName)
+	}
 	// Candidate construction is untrusted. Include every known Oak function
 	// named by a direct machine call even when the original source body did not
 	// call it: asm.Verify may summarize that callee and make this verdict depend
