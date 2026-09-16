@@ -5808,8 +5808,14 @@ thousands of implications of a write coupling on a memory's selects:
 each implication now costs a call from the proof's allowance
 (`implicationCallLimit`, 2048) first, and terms over
 `implicationNodeLimit` distinct nodes (65536) are undecided at once,
-charged a failed diagram. `add_bits` is evidence in two minutes a
-candidate. The native prover's shell on `adts.oak`, which ran three
+charged a failed diagram. An implication the proof has met before is
+answered from its record (`nodeBudget.decided`, by the terms' identity
+and case-split depth) and costs no call: the congruence rule descends
+both sides by operand pairs, and the sides are DAGs whose tree unfolding
+may be exponential, so a shared pair recurred once per parent —
+`crc32c_chunk`'s decision made half a million implications in 150 s
+without finishing, and is proven in 6 s decided once each. `add_bits`
+is evidence in two minutes a candidate. The native prover's shell on `adts.oak`, which ran three
 hours and three quarters without finishing in the root suite, agrees on
 7 of 7 rows once its build completes. Prover build per body: proven
 551, evidence 136, trusted 265, no disagreement — the backend's
