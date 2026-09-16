@@ -77,6 +77,24 @@ type RegionMemoryMetadata struct {
 	Operations []MemoryOperationMetadata
 }
 
+// StructuredMemoryOperationMetadata binds checked memory behavior to the
+// exact structured operation that produced it. The pointer identity is used
+// only while ProjectWithRegionMemory constructs a CFG; the returned metadata
+// contains stable CFG operation sites instead.
+type StructuredMemoryOperationMetadata struct {
+	Operation *Operation
+	Accesses  []MemoryAccessSpec
+}
+
+// StructuredRegionMemoryMetadata is the lossless handoff between a checked
+// structured projection and CFG region-memory analysis. It deliberately does
+// not infer memory identity from source positions, operands, or operation
+// spelling.
+type StructuredRegionMemoryMetadata struct {
+	Regions    []RegionID
+	Operations []StructuredMemoryOperationMetadata
+}
+
 // MemoryIncoming is one incoming definition of a memory phi. Entry is true for
 // the conceptual function-entry definition used when the CFG entry is also a
 // loop header; otherwise Predecessor names the incoming CFG block.
