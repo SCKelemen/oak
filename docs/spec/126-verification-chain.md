@@ -249,6 +249,16 @@ complete replay roots, and typed-normalized sampled values over a bounded
 projection, pointer memoization, full intermediate-root/reachability checks,
 complete admission and settled-outcome policy, and the remaining
 source/serialization/verdict seams are still outside the theorem.
+The constant-false path now has its own model checker:
+`Oak.CNFWordSettled.checkEqual` requires accepted dense allocation, complete
+nonempty word projection, and replay of the exact difference to zero.
+`checkEqual_sound` derives matching widths and equality for every typed input
+without clauses or RUP, using the shared checked-replay and word-projection
+lemmas. A true or nonconstant root refuses this equality-only checker; that
+refusal is not an inequality theorem. `TestNativeCNFReplaySettledMatchesLean`
+kernel-pins sixteen production outcomes, including alias/count/memo corruption
+hidden behind false roots. Full Go admission/coverage refinement and compiler
+verdict authority remain separate; this does not add a compiler consumer.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`

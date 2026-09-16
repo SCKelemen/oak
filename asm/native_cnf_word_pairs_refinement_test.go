@@ -1,17 +1,11 @@
 package asm
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // renderNativeCNFReplayWord projects syntax and allocated input slots, never
@@ -316,48 +310,7 @@ example : (CNFReplayCertificate.resultWord pairs Prod.snd initial).toNat = %d :=
 end Oak.CNFReplayTerm
 `, snapshot, pairs, strings.Join(indices, ", "), len(left), roots(left), roots(right), difference, test.want[0], test.want[1])
 			t.Run("kernel", func(t *testing.T) {
-				lake, err := exec.LookPath("lake")
-				if err != nil {
-					requireOracle(t, "lake not on PATH; the formal workflow runs this kernel oracle")
-				}
-				path := filepath.Join(t.TempDir(), "NativeCNFReplayWordProductionPins.lean")
-				if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-				defer cancel()
-				// Resolve Lake's environment, then run Lean directly: cancelling
-				// a lake wrapper can leave its child evaluating after the deadline.
-				environment := exec.CommandContext(ctx, lake, "env")
-				environment.Dir = filepath.Join("..", "spec", "lean")
-				environment.WaitDelay = 2 * time.Second
-				envOutput, err := environment.Output()
-				if err != nil {
-					t.Fatalf("resolving Lean environment: %v", err)
-				}
-				variables := strings.Split(strings.TrimSuffix(string(envOutput), "\n"), "\n")
-				var sysroot string
-				for i, variable := range variables {
-					variable = strings.TrimSuffix(variable, "\r")
-					variables[i] = variable
-					if value, found := strings.CutPrefix(variable, "LEAN_SYSROOT="); found {
-						sysroot = value
-					}
-				}
-				if sysroot == "" {
-					t.Fatal("Lake did not report LEAN_SYSROOT")
-				}
-				lean := filepath.Join(sysroot, "bin", "lean")
-				if runtime.GOOS == "windows" {
-					lean += ".exe"
-				}
-				command := exec.CommandContext(ctx, lean, path)
-				command.Dir = environment.Dir
-				command.Env = append(os.Environ(), variables...)
-				command.WaitDelay = 2 * time.Second
-				if output, err := command.CombinedOutput(); err != nil {
-					t.Fatalf("kernel-checking word replay: %v (context: %v)\n%s", err, ctx.Err(), output)
-				}
+				checkNativeCNFLean(t, "NativeCNFReplayWordProductionPins.lean", source)
 			})
 		})
 	}

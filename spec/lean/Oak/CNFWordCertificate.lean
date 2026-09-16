@@ -92,6 +92,35 @@ private theorem eval_getD (initial : Assignment) (bits : List Term) (bit : Nat) 
   | cons head tail induction =>
       cases bit <;> simp_all
 
+/-- Shared projection step for certificate-backed and constant-settled roots.
+The caller establishes Boolean pair equality; projection derives its named
+word meaning rather than accepting a word/root correspondence premise. -/
+theorem projected_bits_equal_of_pairs {snapshot : Oak.CNFDenseAllocation.Snapshot}
+    {gates : List Oak.TseitinCNF.RawGate}
+    (allocation : Oak.CNFDenseAllocation.check snapshot = some gates)
+    {parameters : List Parameter} {maxInt : Nat} {left right : WordTerm}
+    {pairs : List (Term × Term)}
+    (projected : projectPair snapshot parameters maxInt left right = some pairs)
+    (inputs : Inputs)
+    (equalPairs : ∀ pair ∈ pairs,
+      pair.1.eval (initialAssignment snapshot parameters inputs) =
+        pair.2.eval (initialAssignment snapshot parameters inputs)) :
+    left.width = right.width ∧ ∀ bit, left.bitValue inputs bit = right.bitValue inputs bit := by
+  obtain ⟨leftBits, rightBits, leftProjection, rightProjection, sameLength, pairsEq⟩ :=
+    projectPair_spec projected
+  let initial := initialAssignment snapshot parameters inputs
+  rw [pairsEq] at equalPairs
+  have equalValues := paired_evaluations_equal initial sameLength equalPairs
+  refine ⟨(projectWord_length leftProjection).symm.trans
+    (sameLength.trans (projectWord_length rightProjection)), ?_⟩
+  intro bit
+  have leftMeaning := projectWord_sound_all allocation leftProjection inputs bit
+  have rightMeaning := projectWord_sound_all allocation rightProjection inputs bit
+  rw [← leftMeaning, ← rightMeaning]
+  change (leftBits.getD bit (.constant false)).eval initial =
+    (rightBits.getD bit (.constant false)).eval initial
+  rw [eval_getD, eval_getD, equalValues]
+
 /-- Accepted word projection constructs the input binding and result-bit
 meaning used by the certificate theorem. Both widths and every bit agree;
 no semantic model-word-to-bit or named-input-to-slot equality is supplied as a premise.
@@ -107,23 +136,23 @@ theorem projected_bits_equal {snapshot : Oak.CNFClauseTrace.Snapshot}
     (singleton : snapshot.obligation = [edge])
     (certificateAccepted : Oak.RupCheck.Accepted database) (inputs : Inputs) :
     left.width = right.width ∧ ∀ bit, left.bitValue inputs bit = right.bitValue inputs bit := by
-  obtain ⟨leftBits, rightBits, leftProjection, rightProjection, sameLength, pairsEq⟩ :=
-    projectPair_spec projected
-  have allocation := (Oak.CNFClauseTrace.check_accepted traceAccepted).allocation
-  let initial := initialAssignment snapshot.allocation parameters inputs
-  have equalPairs := Oak.CNFReplayCertificate.replayed_pairs_equal
-    traceAccepted decoded replayed singleton certificateAccepted initial
-  rw [pairsEq] at equalPairs
-  have equalValues := paired_evaluations_equal initial sameLength equalPairs
-  refine ⟨(projectWord_length leftProjection).symm.trans
-    (sameLength.trans (projectWord_length rightProjection)), ?_⟩
-  intro bit
-  have leftMeaning := projectWord_sound_all allocation leftProjection inputs bit
-  have rightMeaning := projectWord_sound_all allocation rightProjection inputs bit
-  rw [← leftMeaning, ← rightMeaning]
-  change (leftBits.getD bit (.constant false)).eval initial =
-    (rightBits.getD bit (.constant false)).eval initial
-  rw [eval_getD, eval_getD, equalValues]
+  exact projected_bits_equal_of_pairs
+    (Oak.CNFClauseTrace.check_accepted traceAccepted).allocation projected inputs
+    (Oak.CNFReplayCertificate.replayed_pairs_equal traceAccepted decoded replayed singleton
+      certificateAccepted (initialAssignment snapshot.allocation parameters inputs))
+
+/-- Pack equal-width, pointwise-equal independent word semantics. -/
+theorem words_equal_of_bits {left right : WordTerm} (inputs : Inputs)
+    (sameWidth : left.width = right.width)
+    (equalBits : ∀ bit, left.bitValue inputs bit = right.bitValue inputs bit) :
+    (left.eval inputs).toNat = (right.eval inputs).toNat := by
+  have equalLists : (List.range left.width).map (left.bitValue inputs) =
+      (List.range right.width).map (right.bitValue inputs) := by
+    rw [sameWidth]
+    exact List.map_congr_left (fun bit _ => equalBits bit)
+  change (BitVec.ofBoolListLE ((List.range left.width).map (left.bitValue inputs))).toNat =
+    (BitVec.ofBoolListLE ((List.range right.width).map (right.bitValue inputs))).toNat
+  rw [equalLists]
 
 /-- Equality of the independently interpreted model words, with matching
 widths derived from admission. The remaining boundary is faithful projection
@@ -142,14 +171,7 @@ theorem projected_words_equal {snapshot : Oak.CNFClauseTrace.Snapshot}
     left.width = right.width ∧ (left.eval inputs).toNat = (right.eval inputs).toNat := by
   obtain ⟨sameWidth, equalBits⟩ := projected_bits_equal
     traceAccepted decoded projected replayed singleton certificateAccepted inputs
-  refine ⟨sameWidth, ?_⟩
-  have equalLists : (List.range left.width).map (left.bitValue inputs) =
-      (List.range right.width).map (right.bitValue inputs) := by
-    rw [sameWidth]
-    exact List.map_congr_left (fun bit _ => equalBits bit)
-  change (BitVec.ofBoolListLE ((List.range left.width).map (left.bitValue inputs))).toNat =
-    (BitVec.ofBoolListLE ((List.range right.width).map (right.bitValue inputs))).toNat
-  rw [equalLists]
+  exact ⟨sameWidth, words_equal_of_bits inputs sameWidth equalBits⟩
 
 example : pairBits [] [] = none := by decide
 example : pairBits [.constant false] [] = none := by decide

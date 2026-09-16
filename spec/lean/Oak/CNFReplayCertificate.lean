@@ -22,6 +22,18 @@ namespace Oak.CNFReplayCertificate
 open Oak.RupCheck Oak.TseitinCNF Oak.CNFBuilderTrace
 open Oak.CNFReplayApply Oak.CNFReplayTerm
 
+/-- Checked allocation discharges both memo meaning and input stability for
+any replayed edge, including the constant roots that need no clause or RUP. -/
+theorem checked_replay_sound {snapshot : Oak.CNFDenseAllocation.Snapshot}
+    {gates : List RawGate} {maxInt edge : Nat} {term : Term}
+    (accepted : Oak.CNFDenseAllocation.check snapshot = some gates)
+    (replayed : replayTerm snapshot maxInt term = some edge) (initial : Assignment) :
+    evalEdge (evalSequence gates initial) edge = term.eval initial := by
+  have consistent := evalSequence_gateConsistent
+    (Oak.CNFDenseAllocation.check_wellFormed accepted) initial
+  exact replayTerm_sound (Oak.CNFReplayMemo.check_memo_sound accepted _ consistent)
+    (fun index member => check_input_stable accepted initial member) replayed
+
 /-- The singleton final clause reads exactly the supplied nonconstant root,
 with its original polarity. Its equality to the root is obtained from the
 accepted clause trace, not supplied as a semantic premise. -/

@@ -557,6 +557,21 @@ projection, pointer memoization, reachable coverage, machine representation,
 source lowering, symbolic execution, DIMACS/LRAT implementation refinement,
 and compiler verdict authority remain separate obligations.
 
+`Oak.CNFWordSettled.checkEqual` separately covers constant-false disequality.
+It checks dense allocation even when the result folds to a constant, projects
+both complete nonempty words, and replays their exact difference to zero.
+`checkEqual_sound` proves equal widths and values at every typed model input
+without a singleton clause, DIMACS, RUP, or an assumed word/root equality.
+The certificate and settled paths share the word-projection proof. True and
+nonconstant roots refuse this equality-only checker; a semantically equal
+distributivity case can still need a certificate, so refusal is not inequality.
+`TestNativeCNFReplaySettledMatchesLean` pins sixteen production outcomes to the
+kernel, including identity, commuted gates, width adaptation, high-bit
+constants, true/pending roots, malformed widths/constants, and allocator/memo
+corruption behind false roots. The native audit's complete header and
+pointer/intermediate-root coverage policy, arbitrary Go-to-model refinement,
+source/ISA closure, and compiler verdict authority remain separate obligations.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and

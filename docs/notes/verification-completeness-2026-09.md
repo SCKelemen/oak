@@ -417,6 +417,14 @@ across 1/8/16/32/64-bit fixtures. The theorem remains the
 nonconstant certificate path over supplied model syntax, not universal Go
 graph/table projection, pointer-memo or intermediate-root/reachability
 refinement, complete admission/settled policy, or source-to-machine closure.
+The equality-only settled slice now has a separate executable model:
+`Oak.CNFWordSettled.checkEqual_sound` derives equal named-word widths and
+values for every typed input from accepted allocation, projection, and a
+replayed false difference. It needs no clauses or RUP. Sixteen production
+outcomes are kernel-pinned, including malformed allocation hidden by constant
+folds. True and pending roots refuse this checker without implying inequality.
+This does not close arbitrary Go admission/coverage, source-to-machine
+refinement, or verdict authority; native certificate material remains audit-only.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
