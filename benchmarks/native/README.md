@@ -18,6 +18,46 @@ with proven verdicts. Native still trails C. Sequential byte-dot FMA was
 slower, so automatic contraction was not enabled. These loaded-host
 microbenchmarks do not replace a representative-suite performance gate.
 
+## OS stage-2: unblock input-consuming allocation, 2026-09-17
+
+At baseline `b0b0cdc6`, stage-2 `translate` rejected the reallocated
+candidate at `umaddl x0, w11, w9, x0`: the seam did not derive an element
+region when the destination consumed the span base. The checker now derives
+indexed ADD/UMADDL results from the pre-write facts and installs only the
+bounded result after normal invalidation. The same optimizer's reallocated
+candidate is selected and remains `proven`; no checks or proof gates were
+disabled. The frame stays 80 bytes.
+
+| Selected body | Before | After |
+| --- | ---: | ---: |
+| `translate` instructions, including prologue/epilogue/trap | 137 | 120 |
+| `translate` `mov` instructions | 25 | 8 |
+| `alloc_table` / `map_page` / `unmap_page` instructions | 127 / 210 / 339 | unchanged |
+
+The actual OS pilot (`SCKelemen/os` at `37ba2112`) was built using both
+compiler binaries, then linked with its unchanged `stage2_native_shim.c`,
+`ring_bench_time.c`, and `stage2_bench.zig`; Zig 0.16.0, ReleaseFast, C shim
+`-O2`. Seven pairs alternated baseline-first and candidate-first. Each binary
+times 20 million translations and two million decoder cycles, with the Zig
+oracle in the same process. The M4 Max's load average was roughly 85–108;
+the host was not isolated. No compiler builds ran during these samples.
+
+Median translation time was **7.31 → 6.76 ns/op** (7.5% lower), but the
+median *paired* candidate/baseline ratio was **0.962** (3.8% lower), with
+five of seven pairs improving. Treat this as a noisy trend, not a precise
+speedup claim. Decoder medians were 955.4 and 928.2 ns/cycle, with mixed
+paired results: **no decoder-cycle gain is claimed**. Its dominant
+page-zeroing loop has not changed. All checksums agree, and the candidate
+passes all five OS differential tests: round trip, invalid addresses, pool
+exhaustion, shadow-model random operations, and three-regime isolation.
+
+[Raw observations and provenance](results/stage2-inplace-m4-max-2026-09-17.json).
+To reproduce with each compiler, use the OS pilot's existing
+`zig build bench-stage2-native -Doptimize=ReleaseFast -Doakc=/path/to/oak`
+from `pilots/oak`, with separate build/cache directories for each compiler;
+alternate the resulting binaries. Do not substitute the vendored generated
+C for the newly built native object.
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

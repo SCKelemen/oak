@@ -4707,6 +4707,21 @@ the shifted add — and through a second add in place (`add xA, xA, #48`),
 reading the region the source held before the write (the OS pilot's N2,
 a 409 600-byte regime, and N8's field at 393 264 bytes).
 
+**An element address may consume its inputs (2026-09-17).** The checker's
+indexed `add xD, xB, wI, uxtw #s` and `umaddl xD, wI, wK, xB` derive
+their result from the complete pre-write state. The destination may therefore
+reuse the base, index, stride, or length register: all operands are read
+before that register is written. The usual write invalidation still removes
+the old span, index, constant, and length facts; only the derived bounded
+region is installed afterwards, with its writability and nominal record
+provenance intact. The existing `elementRegionOf` decision and its
+`Oak.CheckerRefinement` model are unchanged; this is implementation coverage,
+not a new aliasing or memory-permission assumption. Refusal tests retain
+guards, exact strides, read-only restrictions, and field boundaries.
+This lets the reallocated stage-2 `translate` be selected and remain `proven`:
+137 instructions and 25 `mov`s become 120 and 8. Loaded-host timings and
+their limitations are recorded in `benchmarks/native/README.md`.
+
 **Array fields of elements, read anywhere.** `pool[i].f[j]` — an owned
 array inside a record element of a span, view, or array — is addressed
 once, when the access is lowered: the element idiom, then the field

@@ -2354,6 +2354,11 @@ func (c *checker) instruction(instr Instruction) bool {
 	if len(regs) >= 2 {
 		priorRegion, hadRegion = c.regions[regs[1].Num]
 	}
+	// Address operands are read before the destination is written, even
+	// when allocation reuses the base, index, stride, or length register.
+	// Derive the bounded result now; keep none of the overwritten inputs'
+	// old authority after write invalidates their facts.
+	element, hasElement := c.elementBeforeWrite(instr, dest)
 	c.write(instr, dest)
 	if instr.Mnemonic == "cset" && guard.valid && c.flagsValid && len(instr.Operands) == 2 {
 		if cond, isCond := instr.Operands[1].(Condition); isCond {
@@ -2375,6 +2380,9 @@ func (c *checker) instruction(instr Instruction) bool {
 	c.applyArithmeticFacts(dest, newUpper, newIdx, newMid)
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest, priorRegion, hadRegion)
+	if hasElement {
+		c.regions[dest.Num] = element
+	}
 	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
 	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
@@ -2763,14 +2771,11 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 	}
 }
 
-// deriveElement advances the array-of-records idiom, producing a bounded
-// writable region for one element of a frame array (docs/spec/94-assembler.md
-// §9): `movz wK, #c` / `mov wK, #c` records the constant; `add xE, xB, wI,
-// uxtw #s` over a frame address xB with wI guarded below a constant K and
-// base + K·2^s inside the frame makes xE a 2^s-byte region; `umaddl xE, wI,
-// wK, xB` likewise with the stride c in wK makes xE a c-byte region; `add
-// xD, xS, #imm` over a region of n bytes with 0 <= imm <= n makes xD the
-// region's tail of n - imm bytes (a field inside the element).
+// deriveElement records constants and immediate region tails after a write:
+// `movz wK, #c` / `mov wK, #c` records the constant; `add xD, xS, #imm`
+// over the source's saved region of n bytes with 0 <= imm <= n makes xD
+// its n-imm byte tail. Indexed ADD/UMADDL addresses are derived separately
+// by elementBeforeWrite, before any input facts can be invalidated.
 func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion region, hadRegion bool) {
 	switch instr.Mnemonic {
 	case "movz", "mov":
@@ -2802,11 +2807,6 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 			return
 		}
 		switch tail := instr.Operands[2].(type) {
-		case Extended:
-			if dest.Num == base.Num || tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
-				return
-			}
-			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
 			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
 			// bytes into a large element) narrows the region by the value —
@@ -2821,23 +2821,48 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 				}
 			}
 		}
+	}
+}
+
+// elementBeforeWrite derives only an address result, from the complete
+// pre-instruction state. It never mutates that state or preserves the base's
+// span/length authority in the destination. The same elementRegionOf decision
+// applies whether or not the destination aliases any input register.
+func (c *checker) elementBeforeWrite(instr Instruction, dest Register) (region, bool) {
+	if dest.Class != ClassX || dest.ZeroRegister() {
+		return region{}, false
+	}
+	switch instr.Mnemonic {
+	case "add":
+		if len(instr.Operands) != 3 {
+			return region{}, false
+		}
+		base, okB := instr.Operands[1].(Register)
+		tail, okT := instr.Operands[2].(Extended)
+		if okB && okT && base.Class == ClassX && !base.ZeroRegister() &&
+			tail.Kind == "uxtw" && tail.Reg.Class == ClassW && !tail.Reg.ZeroRegister() &&
+			tail.Amount >= 0 && tail.Amount <= 4 {
+			return c.elementRegion(base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
+		}
 	case "umaddl":
-		if dest.Class != ClassX || len(instr.Operands) != 4 {
-			return
+		if len(instr.Operands) != 4 {
+			return region{}, false
 		}
 		index, okI := instr.Operands[1].(Register)
 		stride, okS := instr.Operands[2].(Register)
 		base, okB := instr.Operands[3].(Register)
-		if !okI || !okS || !okB || index.Class != ClassW || stride.Class != ClassW || base.Class != ClassX || dest.Num == base.Num {
-			return
+		if !okI || !okS || !okB || index.Class != ClassW || stride.Class != ClassW ||
+			base.Class != ClassX || index.ZeroRegister() || stride.ZeroRegister() || base.ZeroRegister() {
+			return region{}, false
 		}
 		if size, known := c.constFacts[stride.Num]; known && size > 0 {
-			c.elementRegion(dest, base, index.Num, size)
+			return c.elementRegion(base, index.Num, size)
 		}
 	}
+	return region{}, false
 }
 
-// elementRegion records xE = xB + wI·size as a region of size bytes: over
+// elementRegion derives xE = xB + wI·size as a region of size bytes: over
 // a frame address xB when wI is guarded below a constant K and every one
 // of the K elements lies inside the declared frame; over a span at xB
 // whose elements are size bytes when wI is guarded below the span's
@@ -2845,10 +2870,10 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 // element of a span of records, writable iff the span is; over a bounded
 // region at xB (a constant table, docs/spec/94-assembler.md §9) when wI
 // is guarded below a constant K with K·size inside the region.
-func (c *checker) elementRegion(dest, base Register, index int, size int64) {
+func (c *checker) elementRegion(base Register, index int, size int64) (region, bool) {
 	bound, guarded := c.idxFacts[index]
 	if !guarded {
-		return
+		return region{}, false
 	}
 	// A bound against a register proven equal to this span's length
 	// (`cmp wA, wB; b.ne`, lenEqual) is a bound against the length: the
@@ -2869,9 +2894,7 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 		r = narrowRecordArrayRegion(c.fn.Composites, r)
 		extent = &r
 	}
-	if derived, ok := elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size); ok {
-		c.regions[dest.Num] = derived
-	}
+	return elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size)
 }
 
 // elementRegionOf is the decision of elementRegion over the facts on the
