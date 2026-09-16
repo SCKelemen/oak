@@ -201,6 +201,7 @@ import Oak.BddComplement
 import Oak.RupCheck
 import Oak.SolverLaws
 import Oak.Tseitin
+import Oak.TseitinCNF
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction

@@ -10,7 +10,8 @@ package asm
 // trap fires, or the claim is false": the formula is unsatisfiable exactly
 // when the theorem holds, and a model of it is a counterexample read back
 // through the parameter bits. The solver that decides it is untrusted; its
-// LRAT certificate is checked (prove/lrat.go, prove/solver/lrat.oak), and
+// LRAT certificate is checked (internal/lrat/lrat.go through prove's
+// compatibility surface, and prove/solver/lrat.oak), and
 // the checker, not the solver's verdict, settles the row.
 
 import (
@@ -298,7 +299,7 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 	case trapAlways:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the body traps on every input"}
 		return out, "", true
-	case claimBits[0] == bddFalse && len(obligation) == 0:
+	case claimBits[0] == bddFalse:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the claim is false on every input"}
 		return out, "", true
 	case claimBits[0] != bddTrue:

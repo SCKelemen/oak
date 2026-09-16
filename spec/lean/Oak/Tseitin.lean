@@ -22,9 +22,10 @@ on, over Booleans:
   counterexample after `asm.CNF.Evaluate` recomputes the gates from the
   inputs alone.
 
-The encoder's code is cross-checked against the diagram engine over the
-corpus (`prove/lrat_test.go`), not proved; these are the laws the check
-rests on.
+`Oak.TseitinCNF` proves that the encoder's exact raw signed-literal clause
+lists have these gate meanings. The complete builder remains cross-checked
+against the diagram engine over the corpus (`prove/lrat_test.go`), not proved;
+these are the laws that larger correspondence still rests on.
 -/
 
 namespace Oak.Tseitin
