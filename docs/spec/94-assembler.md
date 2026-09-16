@@ -6650,3 +6650,25 @@ multi-versioning of implementations that
 between whole implementations of one operation and may defer the choice to
 run time, while this chooses nothing at all — it only checks the one
 implementation more carefully.
+
+
+**Loops that never ran keep the entry memory (2026-09-16).** A peeled,
+rotated, or conditionally reached machine loop makes its memory marker
+conditional where the Oak side's is not — `(0 < n) ? loop1.m : m`, or
+`(dom < len(s)) ? loop1.m : m` for a loop inside a domain check, against
+the Oak side's `loop1.m` — and the hoisted forms of `zero_page`
+(`TestE2ENativeLoopInvariants`) and of the page-zeroing `z`
+(`TestE2ENativeFarField`) stayed witnessed for it while their plain
+forms proved. A loop that never ran leaves memory as it found it, so
+when the direct comparison of two span memories closes as unequal, the
+decision splits on whether each marking loop ran — its condition over
+the header values and the machine's condition for reaching it: entered
+and reached, both sides keep the marker; otherwise the loop's unknown
+memory is rewritten to the entry memory on both sides
+(`renameLoopMemory`, `spanEqualSplitting`), up to two loops at once, at
+the three comparisons: the top-level loops after the loops, a loop's
+earlier siblings at its entry, its children within one iteration. The
+split runs only after a closed unequal decision, never past a budget,
+so it adds nothing to a body that proves directly or exhausts its
+budget. `zero_page` and `z` are **proven** in their hoisted, rotated
+forms.

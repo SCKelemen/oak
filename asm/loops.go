@@ -3822,7 +3822,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// agree only under it.
 			entryPremise = binaryTerm("and", entryPremise, truncate(substitute(reached, sigma), 1))
 		}
-		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies); !ok {
+		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies, splitsFor(earlierSiblings(k, oakLoops), oakLoops, asmLoops, sigma)); !ok {
 			return evidence(reason)
 		}
 		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
@@ -3830,7 +3830,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// may still be one memory (stores in another order, a guarded
 			// store against a split path): the iteration's memories are
 			// compared whole at a fresh index.
-			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !memOk {
+			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies, splitsFor(children[k], oakLoops, asmLoops, sigma)); !memOk {
 				return evidence(reason + "; " + memReason)
 			}
 		}
@@ -3854,11 +3854,16 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	premise := constTerm(1, 1)
+	var topLevel []int
 	for k, ev := range oakLoops {
 		if ev.parent == 0 {
 			premise = binaryTerm("and", premise, exitPremise(k, sigma))
+			topLevel = append(topLevel, k)
 		}
 	}
+	// The loops whose markers the memories after the loops may carry
+	// conditionally on the machine side (spanEqualSplitting).
+	topSplits := splitsFor(topLevel, oakLoops, asmLoops, sigma)
 	if asmTerm != nil {
 		equal, decided := implies(premise, oakTerm, substitute(truncate(asmTerm, width), sigma))
 		if !decided || !equal {
@@ -3935,9 +3940,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		entry := selectTerm(name, at, elemWidth)
 		asmMemory := substitute(memoryAt(exec.writes[name], at, entry), sigma)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		if equal, decided := spanEqualSplitting(premise, name, elemWidth, oakMemory, asmMemory, topSplits, implies); !decided || !equal {
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakMemory, asmMemory)
+				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, name, decided, oakMemory, asmMemory, premise)
 			}
 			return evidence(fmt.Sprintf("the memory of the span %s after the loops was not proven equal", name))
 		}
@@ -4042,7 +4047,7 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 // entry equal, span by span: the stores before the loop over the span's
 // entry memory, at a fresh index, the asm side under the coupling. This
 // is the induction's base; the iteration's stores are its step.
-func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool), splits []loopSplit) (string, bool) {
 	spans := map[string]bool{}
 	for span := range oakEv.entry {
 		spans[span] = true
@@ -4073,7 +4078,7 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 		entry := selectTerm(span, at, elemWidth)
 		oakMemory := memoryAt(oakLog, at, entry)
 		asmMemory := substitute(memoryAt(asmLog, at, entry), sigma)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		if equal, decided := spanEqualSplitting(premise, span, elemWidth, oakMemory, asmMemory, splits, implies); !decided || !equal {
 			reason := fmt.Sprintf("the memory of %s at loop %d's entry was not proven equal", span, k+1)
 			if !decided {
 				reason += " (the bit-level decision exceeded its node budget)"
@@ -4088,7 +4093,7 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 // leaves, span by span, as memories rather than store by store: the
 // iteration's stores over the loop's unknown memory, at a fresh index,
 // the asm side under the coupling and the body premise.
-func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool), splits []loopSplit) (string, bool) {
 	spans := map[string]bool{}
 	for span := range oakEv.writes {
 		spans[span] = true
@@ -4111,7 +4116,7 @@ func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*
 		unknown := selectTerm(loopMemoryName(oakEv.index, span), at, elemWidth)
 		oakMemory := memoryAt(oakEv.writes[span], at, unknown)
 		asmMemory := substitute(memoryAt(asmEv.writes[span], at, unknown), sigma)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		if equal, decided := spanEqualSplitting(premise, span, elemWidth, oakMemory, asmMemory, splits, implies); !decided || !equal {
 			reason := fmt.Sprintf("one iteration of loop %d was not proven to leave the memory of %s equal", k+1, span)
 			if !decided {
 				reason += " (the bit-level decision exceeded its node budget)"
@@ -5562,4 +5567,141 @@ func sigmaShow(sigma map[string]*term) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+// renameLoopMemory rewrites every read of the loop's unknown memory
+// `from` in the term as a read of the memory the loop found on entry —
+// the entry log's element at the index over the span's entry memory —
+// for the case in which the loop ran no iteration. Shared subterms are
+// rewritten once.
+func renameLoopMemory(t *term, from string, entryLog []*spanWrite, base string, width int, memo map[*term]*term) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	var out *term
+	switch t.kind {
+	case termConst, termParam:
+		out = t
+	case termSelect:
+		index := renameLoopMemory(t.left, from, entryLog, base, width, memo)
+		if t.name == from {
+			out = memoryAt(entryLog, index, selectTerm(base, index, t.width))
+		} else if index != t.left {
+			copied := *t
+			copied.left = index
+			out = &copied
+		} else {
+			out = t
+		}
+	default:
+		left := renameLoopMemory(t.left, from, entryLog, base, width, memo)
+		right := renameLoopMemory(t.right, from, entryLog, base, width, memo)
+		cond := renameLoopMemory(t.cond, from, entryLog, base, width, memo)
+		if left == t.left && right == t.right && cond == t.cond {
+			out = t
+		} else {
+			copied := *t
+			copied.left, copied.right, copied.cond = left, right, cond
+			copied.id = 0
+			out = &copied
+		}
+	}
+	memo[t] = out
+	return out
+}
+
+// loopSplit is a loop whose memory marker the two sides may place under
+// different conditions: the Oak side where the loop is lowered, the
+// machine side only where its path reached the loop and entered it — a
+// peeled or rotated loop, a loop inside a conditional arm.
+type loopSplit struct {
+	ev      *loopEvent // the Oak side's event
+	reached *term      // the machine's condition for reaching the loop, over the Oak symbols; nil when always
+}
+
+// splitsFor builds the splits for the listed loops (indices into the
+// matched events).
+func splitsFor(indices []int, oakLoops, asmLoops []*loopEvent, sigma map[string]*term) []loopSplit {
+	var out []loopSplit
+	for _, k := range indices {
+		if k < 0 || k >= len(oakLoops) || k >= len(asmLoops) {
+			continue
+		}
+		s := loopSplit{ev: oakLoops[k]}
+		if reached := asmLoops[k].reached; reached != nil {
+			s.reached = truncate(substitute(reached, sigma), 1)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// earlierSiblings lists the loops before k under the same parent: the
+// loops whose markers loop k's entry memory may carry.
+func earlierSiblings(k int, oakLoops []*loopEvent) []int {
+	var out []int
+	for i := 0; i < k && i < len(oakLoops); i++ {
+		if oakLoops[i].parent == oakLoops[k].parent {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// spanEqualSplitting decides that two span memories agree. When the
+// direct decision closes as unequal, it splits on whether each listed
+// loop ran — reached and entered, over the header values: then both
+// sides keep the loop's marker; otherwise the loop's unknown memory is
+// the memory it found on entry, on both sides (renameLoopMemory), which
+// is what the machine's conditional marker spells. A loop that never ran
+// leaves memory as it found it. At most two loops split, four cases.
+func spanEqualSplitting(premise *term, name string, elemWidth int, oakMemory, asmMemory *term, splits []loopSplit, implies func(premise, a, b *term) (bool, bool)) (equal, decided bool) {
+	if equal, decided = implies(premise, oakMemory, asmMemory); !decided || equal {
+		return equal, decided // closed, or past the budget: the cases would be too
+	}
+	var marking []loopSplit
+	for _, s := range splits {
+		if _, marked := s.ev.entry[name]; marked {
+			marking = append(marking, s)
+		}
+	}
+	if len(marking) == 0 || len(marking) > 2 {
+		return equal, decided
+	}
+	allEqual := true
+	for mask := 0; mask < 1<<len(marking); mask++ {
+		p, o, a := premise, oakMemory, asmMemory
+		for i, s := range marking {
+			ev := s.ev
+			headerSigma := map[string]*term{}
+			for v, fresh := range ev.fresh {
+				if header, ok := ev.header[v]; ok {
+					headerSigma[fresh.name] = header
+				}
+			}
+			runs := truncate(substitute(ev.cond, headerSigma), 1)
+			if s.reached != nil {
+				runs = binaryTerm("and", runs, s.reached)
+			}
+			if mask&(1<<i) != 0 {
+				p = binaryTerm("and", p, runs)
+				continue
+			}
+			p = binaryTerm("and", p, binaryTerm("xor", runs, constTerm(1, 1)))
+			from := loopMemoryName(ev.index, name)
+			o = renameLoopMemory(o, from, ev.entry[name], name, elemWidth, map[*term]*term{})
+			a = renameLoopMemory(a, from, ev.entry[name], name, elemWidth, map[*term]*term{})
+		}
+		caseEqual, caseDecided := implies(p, o, a)
+		if !caseDecided {
+			return false, false
+		}
+		if !caseEqual {
+			allEqual = false
+		}
+	}
+	return allEqual, true
 }
