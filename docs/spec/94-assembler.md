@@ -6517,6 +6517,28 @@ gigabytes in `pruneWritesUnder`/`pruneUnderFacts` (the unit verified in
 5.6 s a candidate on the morning's binary), and a full build's optimizer
 materialization holds ten more at its end on either binary; the last
 complete tally stands at 536 proven, 205 evidence, 216 trusted.
+
+**Trap guards get their own budget; pruning in one pass (2026-09-16).**
+The OS pilot filed that `reset` — two nested counted loops over module
+constants (24 pages of 2048 entries), a guarded store each iteration —
+regressed from proven at its pin (949ff50c) to "more paths than the
+verifier's budget" since 3ba8b5ae. The cause was the path budget
+counting every trap guard as a path (the set_clear fix of the same
+week): a guard forks nothing, but the unrolled iterations meet one each.
+Guards now draw on `guardBudget`, sixteen paths' worth, since a counted
+loop past `countedTripLimit` trips is inducted rather than unrolled and
+the loops that do unroll meet at most 64 guards a level; `reset` proves
+on both walkers again (stage2 and addr_space: three nested loops
+coupled inductively under `i < 24`, `j < 2048`), and
+`TestE2ENativeNestedZeroingLoopProven` holds the shape at the scale
+that unrolls (four pages of sixty-four). The optimizer's rotated-loop
+candidates of `reset` still exceed the guard budget and are declined,
+which keeps the plain form. Alongside, `pruneWritesUnder` prunes a
+log's guards in one pass with one canonical memo (a pass per guard
+canonicalized the guards' shared subgraph once per write):
+`ap_certificate_after_proven` fits in 2.4 GB and 45 s a candidate
+where it exceeded ten gigabytes, though its coupling is still eight
+times the 5.6 s of the morning's binary.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.

@@ -835,22 +835,40 @@ func substituteWriteLog(log []*spanWrite, sigma map[string]*term) []*spanWrite {
 // pruneWritesUnder removes stores whose guards a postcondition refutes
 // and strips guards it implies. Doing this before memoryAt combines a
 // guard with a symbolic index equality avoids constructing a large,
-// irrelevant lookup branch on paths where the store never happened.
+// irrelevant lookup branch on paths where the store never happened. The
+// log's guards prune in one pass (one fact walk, one small diagram, one
+// canonical memo): a pass per guard walked and canonicalized the guards'
+// shared subgraph once per write, and ap_certificate_after_proven's
+// twenty-six-slot coupling grew past ten gigabytes in the copies.
 func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int) []*spanWrite {
 	if len(log) == 0 {
 		return log
 	}
 	one, zero := constTerm(1, 1), constTerm(0, 1)
+	var selected []*term
+	var guarded []int
+	for k, w := range log {
+		if w != nil && w.guard != nil {
+			selected = append(selected, iteTerm(truncate(w.guard, 1), one, zero))
+			guarded = append(guarded, k)
+		}
+	}
+	if len(selected) == 0 {
+		return log
+	}
+	pruned := pruneUnder(premise, selected, widthOf)
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
 	out := make([]*spanWrite, 0, len(log))
-	for _, w := range log {
-		if w == nil || w.guard == nil {
+	next := 0
+	for k, w := range log {
+		if next >= len(guarded) || guarded[next] != k {
 			out = append(out, w)
 			continue
 		}
-		selected := iteTerm(truncate(w.guard, 1), one, zero)
-		selected = canonical(pruneUnder(premise, []*term{selected}, widthOf)[0])
-		if selected.kind == termConst {
-			if selected.value&1 == 0 {
+		guard := canonicalMemo(pruned[next], cmemo, cbool)
+		next++
+		if guard.kind == termConst {
+			if guard.value&1 == 0 {
 				continue
 			}
 			copy := *w
@@ -859,7 +877,7 @@ func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int)
 			continue
 		}
 		copy := *w
-		copy.guard = selected
+		copy.guard = guard
 		out = append(out, &copy)
 	}
 	return out
@@ -5799,7 +5817,11 @@ func maskedZeroTestRelation(a, b *term) int {
 // of its conjuncts directly settles a guard in the terms. Unknown formulas
 // remain in place, so this pass proves and never guesses.
 func pruneUnderFacts(premise *term, terms []*term) []*term {
-	premise = canonical(truncate(premise, 1))
+	// One canonical memo for the pass: the terms' Boolean nodes share
+	// their subgraph, and a canonicalization from scratch per node copied
+	// it once per node.
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	premise = canonicalMemo(truncate(premise, 1), cmemo, cbool)
 	var facts []*term
 	var collectFacts func(*term)
 	collectFacts = func(t *term) {
@@ -5809,7 +5831,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 			return
 		}
 		if t.kind != termConst {
-			facts = append(facts, canonical(truncate(t, 1)))
+			facts = append(facts, canonicalMemo(truncate(t, 1), cmemo, cbool))
 		}
 	}
 	collectFacts(premise)
@@ -5828,7 +5850,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		// mask. Mark it in progress before normalization so structural descent
 		// through that wrapper stops rather than recursing.
 		truthMemo[t] = knownTruth{}
-		normalized := canonical(truncate(t, 1))
+		normalized := canonicalMemo(truncate(t, 1), cmemo, cbool)
 		result := knownTruth{}
 		if normalized.kind == termConst {
 			result = knownTruth{value: normalized.value != 0, known: true}
