@@ -1,7 +1,8 @@
 /-!
 # Soundness of the LRAT certificate check
 
-`prove/lrat.go` and `prove/solver/lrat.oak` accept a clausal certificate
+`internal/lrat/lrat.go` (through `prove/lrat.go`'s compatibility surface) and
+`prove/solver/lrat.oak` accept a clausal certificate
 step by step (docs/spec/125-verification.md §3, the certificate rung):
 an addition names a clause and, in order, the live clauses whose unit
 propagation under the clause's negation reaches a conflict; a deletion

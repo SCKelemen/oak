@@ -1,14 +1,15 @@
 // The LRAT certificate checker written in Oak (docs/spec/125-verification.md
-// §3, the certificate rung; prove/lrat.go is the Go twin, Oak.RupCheck the
-// soundness statement). A certificate is a sequence of steps over a clause
-// database: an addition names a clause and, in order, the live clauses
+// §3, the certificate rung; internal/lrat/lrat.go is the Go twin and
+// Oak.RupCheck the soundness statement). A certificate is a sequence of
+// steps over a clause database: an addition names a clause and, in order,
+// the live clauses
 // whose unit propagation under the clause's negation reaches a conflict;
 // a deletion names live clauses to drop. Checking is one linear pass per
 // step over caller-owned storage — no allocation, no recursion, every
 // loop bounded by a count read from the input and checked against the
 // storage it indexes — and the empty clause must be derived.
 //
-// Word protocol (u32, prove/lrat.go encodeLRAT): header of LRAT_HEADER_WORDS
+// Word protocol (u32, prove/lrat.go EncodeLRATWords): header of LRAT_HEADER_WORDS
 // { magic, variables, clause_count, literal_words, step_words, max_id,
 // store_words, 0 }; then each initial clause as { n, lit... } (clause ids 1,
 // 2, ...); then the steps: { 0, id, n, lit..., m, hint... } for an addition
