@@ -5053,6 +5053,17 @@ nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
 did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
 
+**The chain's assignment cap (2026-09-17).** A chain of more than four
+assignments is left to the branch form. The bound reads as register
+pressure, and by that measure it is loose — a right-hand side already in
+a register is read where it lies and needs no temporary — but counting
+only the values that need one, and converting the chains that then fit,
+is slower: nothing where the comparison is unpredictable, and a factor
+of 1.6 to 2.8 where it is not (`benchmarks/native/README.md` "The chain
+assignment cap"). A branch skips the arms after it, while a converted
+chain's selects all execute and, per variable, form a serial dependency
+that lengthens a loop's critical path. The cap stays at four.
+
 **A computed condition operand in any arm (2026-09-16, AArch64 lane;
 `nativegen/select.go`).** The chain's compares are emitted before its
 selects, so a condition operand the compare cannot take directly — a
