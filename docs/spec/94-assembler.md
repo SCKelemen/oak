@@ -5322,6 +5322,35 @@ gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
 result, a conditional store; both lanes), the `fill` case of
 `compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
 
+**A loop's memory marker holds where the loop is entered (2026-09-16).**
+The marker says a span's contents past the loop are the unknown memory
+`loop<K>.<span>`, but a loop whose condition is false at entry runs no
+iteration and touches nothing, so what it says is true only under the
+loop's own entry test — its continue condition at the header's entry
+values (`loopEvent.entryCondition`). Both sides now guard the marker with
+it (`guardMarker`), and the guarded marker reads as
+`(entered ? loop<K>.<span> : <span>)` in `memoryAt`, the shape a guarded
+marker already had for an inner loop reached on some of a body's paths.
+
+Without the guard the two sides disagreed exactly where the trip count is
+zero, and only when one side's code tested entry before the loop while
+the other's model did not: the machine side reaches the guarded shape on
+its own, by merging the path that skips the loop into the path that runs
+it, so a body with a peeled entry test compared a conditional memory
+against the Oak model's unconditional one and the memory after the loops
+went unproven. Loop-invariant hoisting peels exactly such a test, so
+every hoisted form of a loop over a record span lost its proof and the
+search kept the plain body — the os pilot's page-zeroing loop stopped
+hoisting anything (`compiler/e2e_native_licm_test.go`, the regression).
+
+A memory no path of the iteration stores to is dropped with the same
+argument, for the entry memory it replaced: the marker over-approximated
+it and nothing wrote it. This matters because a span of records marks one
+memory per leaf, so a loop writing one field marked every field, and each
+unwritten leaf then had to be proven as an unknown function of its entry
+memory. The two sides prune alike; a divergence fails closed, naming the
+memory one side marked (`coupledEntryMemories`).
+
 **The loop proof's budgets (2026-09-14).** Recognizing the loops that
 call functions and store through spans made the prover's native build
 (the shell test's `OAK_SOLVER_NATIVE=1`) run without end on one body:
