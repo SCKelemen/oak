@@ -366,6 +366,42 @@ count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
 
+## Select forms, 2026-09-16
+
+A conditional in value position is a compare and one conditional select
+(`docs/spec/94-assembler.md` §9 "Select forms"). On a clamp over a span,
+`total = total + (x < cap ? x | cap)`, the loop body:
+
+```
+  ldr  w5, [x0, w4, uxtw #2]        ldr  w5, [x0, w4, uxtw #2]
+  cmp  w5, w2                       cmp  w5, w2
+  b.hs +8                      ->   csel w9, w5, w2, lo
+  b    +8                           add  w3, w3, w9
+  mov  w5, w2                       add  w4, w4, #1
+  add  w3, w3, w5
+  add  w4, w4, #1
+```
+
+| clamp over 2^12 `u32` elements, best of seven over three runs | branch | select |
+| --- | ---: | ---: |
+| the comparison always takes one arm | 0.419–0.431 ns/element | 0.404–0.450 |
+| the comparison is unpredictable | 1.38–1.59 | 0.395–0.420 |
+
+Free where the branch predicts, and 3.4 times faster where it does not.
+This is the first increment in this run whose win the clock sees, and the
+reason is not the instruction count — six body instructions against seven
+— but the mispredict: half of a 16 KiB array at a cap in the middle of
+the data's range is the worst case for a predictor, and about a
+nanosecond an element is what it costs. The same data through the select
+runs at the speed of the loads.
+
+Worth recording as a limit of the cost model: it counts a branch at
+weight one whether or not the data decides it, so it cannot tell these
+two rows apart. It priced the select form below the branch form here for
+the right reason by accident — one instruction fewer — and would have
+made the same choice had the arms been ten instructions and the branch
+perfectly predicted.
+
 ## Multiply-add forms, 2026-09-16
 
 An integer product and its addend are one instruction

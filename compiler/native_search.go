@@ -188,6 +188,7 @@ var setAside = map[string]string{
 	nativegen.TransformVectorMaps:  "keeps its scalar map",
 	nativegen.TransformVecBlocks:   "addresses each vector load",
 	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",
+	nativegen.TransformValueSelect: "branches around its conditional",
 	nativegen.TransformReallocate:  "keeps its register assignment",
 	nativegen.TransformSchedule:    "keeps its instruction order",
 }

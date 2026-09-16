@@ -47,6 +47,7 @@ const (
 	TransformVectorMaps  = "vectorize-maps"
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
+	TransformValueSelect = "value-select"
 	TransformReallocate  = "reallocate"
 	TransformSchedule    = "schedule"
 	TransformRotate      = "rotate-loops"
@@ -329,6 +330,7 @@ func Transforms() []opt.Transform {
 			fired:   Reallocated,
 		}},
 		multiplyAddTransform,
+		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
 	}
@@ -359,6 +361,20 @@ var multiplyAddTransform = &laneTransform{
 	applied: func(l Lane) bool { return l.MultiplyAdd },
 	apply:   func(l Lane) Lane { l.MultiplyAdd = true; return l },
 	fired:   FusedMultiplies,
+}
+
+// valueSelectTransform lowers a value-position conditional as one
+// conditional select (nativegen/value_select.go).
+var valueSelectTransform = &laneTransform{
+	// Select forms (docs/spec/94-assembler.md §9 "Select forms"): a
+	// compare and one csel — or csinc, csneg, csinv where the arms share
+	// an operand — where the lowering branched over two moves. The
+	// verifier models all four already.
+	name: TransformValueSelect, phase: opt.PhaseMachine, proof: opt.Mechanical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.ValueSelect },
+	apply:   func(l Lane) Lane { l.ValueSelect = true; return l },
+	fired:   ValueSelects,
 }
 
 // vecBlocksTransform reads a block's vector loads off one element address
@@ -395,6 +411,7 @@ func PlainLane(lane Lane) Lane {
 	lane.Cleanup = false
 	lane.VectorBlocks = false
 	lane.MultiplyAdd = false
+	lane.ValueSelect = false
 	lane.Reallocate = false
 	lane.Schedule = false
 	lane.VectorReductions = false

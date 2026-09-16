@@ -3191,6 +3191,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The sixty-first increment is value-position select forms (§9 "Select
+forms"): a compare and one `csel` — or `csinc`, `csneg`, `csinv` where
+the arms share a variable — where the lowering branched over two moves.
+The verifier modeled all four already. Free where the branch predicts,
+3.4 times faster where it does not.
+
 The sixtieth increment is multiply-add forms (§9 "Multiply-add forms"):
 an integer product and its addend in one instruction — `madd`, `msub`,
 `mneg` — which the verifier already modeled, so no extension came with
@@ -4409,6 +4415,48 @@ of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
 did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
+
+**Select forms (2026-09-16, AArch64 lane;
+`nativegen/value_select.go`).** A conditional in value position lowered
+to a branch over two moves, where the machine selects between two
+registers on the flags in one instruction:
+
+```
+pick: (a: u32, b: u32): u32 = a < b ? b | a
+
+cmp w0, w1                        cmp w0, w1
+b.hs else_4                  ->   csel w0, w1, w0, lo
+mov w0, w1
+b endif_5
+else_4: endif_5:
+```
+
+Three arms are one instruction on their own, when both arms share a
+variable the machine can transform inside the select: `c ? x + 1 | x` is
+`csinc`, `c ? T(0) - x | x` is `csneg`, and `c ? ^x | x` is `csinv`. Each
+is spelled with the condition inverted, since the machine applies its
+increment, negation, or complement to the *false* operand. The verifier
+models all four already (`asm/isa_semantics.go`), so the bodies are
+judged with no extension.
+
+Both arms are evaluated before the compare, as if-conversion does below:
+the select has no untaken path, so an arm that reads memory through a
+guard, calls, or divides would run where the source never ran it, and
+`speculable` decides. A float result keeps the branch — a float compare
+sets the flags the same way, but its unordered case belongs with the
+branch form that handles it. The transforming forms read one variable and
+let the machine do the arithmetic, so they need only that variable to be
+readable, not the whole arm to be speculable.
+
+Measured on a clamp over 2^12 `u32` elements
+(`benchmarks/native/README.md` "Select forms"): where the comparison is
+unpredictable the loop goes from 1.38–1.59 ns an element to 0.40–0.42, a
+factor of 3.4, and where it always takes one arm the two are the same
+within noise. That is the shape of the change — it costs nothing when the
+branch predicts and removes a mispredict when it does not — and it is
+also why the branch mattered beyond its instruction: a value conditional
+inside a loop body split the body into blocks that the loop shape the
+verifier recognizes has to step around.
 
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares
