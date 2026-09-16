@@ -43,6 +43,9 @@ var loweringRenders = []struct {
 	{"f: (a, b: f32) -> f32", "a / b", "fdiv32(a, b)"},
 	{"f: (a, b, c: f32) -> f32", "fma(a, b, c)", "fma32(a, b, c)"},
 	{"f: (a, b, c: f32) -> f32", "a * b + c", "fadd32(fmul32(a, b), c)"},
+	// Exact f32-to-f64 widening retains the source's width-32 operation
+	// beneath one ordered width-changing fcvt node.
+	{"f: (a, b: f32) -> f64", "f64(a + b)", "fcvt64(fadd32(a, b))"},
 	// Exact sign operations (FloatLoweringRefinement): negation flips the
 	// sign bit, abs clears it, and copysign combines the magnitude and sign.
 	{"f: (a: f32) -> f32", "-a", "(a xor 2147483648)"},

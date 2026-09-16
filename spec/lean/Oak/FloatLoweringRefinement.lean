@@ -36,9 +36,14 @@ The eighth adds operation-preserving binary32 division throughout that existing
 pure control-flow and call surface.
 The ninth adds the extraction's exact `Oak.FloatOps.fma32` carrier and the
 verifier's ordered ternary `fma` application throughout the same surface.
-Decimal parsing itself, conversions, spans, nested/effectful statement control
-flow, borrowing/recursive/effectful calls, binary64, and SIMD remain outside
-this theorem.
+The tenth adds the explicit widening `f64(e)` for every straight-line `f32`
+expression already covered: the extraction and verifier models both apply
+`Float32.toFloat` to the same binary32 value, and the verifier shape retains
+the width-changing `fcvt` node. This is operation identity and operand
+composition, not an independent proof of IEEE widening, the Go evaluator, or
+an ISA instruction. Decimal parsing itself, all other conversions, spans,
+nested/effectful statement control flow, borrowing/recursive/effectful calls,
+binary64 arithmetic, and SIMD remain outside this theorem.
 -/
 
 namespace Oak.FloatLoweringRefinement
@@ -341,6 +346,52 @@ assignment. -/
 theorem lowerF_eval (e : Expr) (ρ : SourceEnv) :
     (lowerF e).eval ρ = e.eval ρ := by
   exact lowerWith_eval e ρ ρ parameterTerms (parameterTerms_agree ρ)
+
+/-! ## Carrier-level binary32-to-binary64 widening -/
+
+/-- The extraction-side explicit `f64(e)` over the existing binary32 slice. -/
+inductive WidenExpr
+  | fromF32 (source : Expr)
+  deriving Repr
+
+/-- The verifier's width-changing unary `termFloat("fcvt", 64, source)`.
+The source term remains width 32. -/
+inductive WidenTerm
+  | fcvt (source : Term)
+  deriving Repr
+
+/-- Extraction reading: `codegen/lean` emits `Float32.toFloat`. -/
+def WidenExpr.eval : WidenExpr → SourceEnv → Float
+  | .fromF32 source, ρ => (source.eval ρ).toFloat
+
+/-- Verifier-model reading of the ordered width-changing `fcvt` operation.
+This deliberately uses the same carrier as extraction; it does not prove the
+production evaluator or an ISA implementation of that carrier. -/
+def WidenTerm.eval : WidenTerm → SourceEnv → Float
+  | .fcvt source, ρ => (source.eval ρ).toFloat
+
+/-- Lower the operand in its binary32 scope, then retain one widening node. -/
+def lowerWidenWith : WidenExpr → TermEnv → WidenTerm
+  | .fromF32 source, σ => .fcvt (lowerWith source σ)
+
+theorem lowerWidenWith_eval (widen : WidenExpr)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerWidenWith widen σ).eval parameters = widen.eval current := by
+  cases widen with
+  | fromF32 source =>
+      simp only [lowerWidenWith, WidenTerm.eval, WidenExpr.eval]
+      rw [lowerWith_eval source parameters current σ hσ]
+
+/-- Closed carrier-level seam for explicit binary32-to-binary64
+widening from a function's initial parameter scope. -/
+def lowerWiden (widen : WidenExpr) : WidenTerm :=
+  lowerWidenWith widen parameterTerms
+
+theorem lowerWiden_eval (widen : WidenExpr) (ρ : SourceEnv) :
+    (lowerWiden widen).eval ρ = widen.eval ρ := by
+  exact lowerWidenWith_eval widen ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
 
 /-- A Boolean condition over two float expressions. -/
 inductive Condition
@@ -813,6 +864,8 @@ example : lowerF (.binary .mul a b) = .float .fmul (.param "a") (.param "b") := 
 example : lowerF (.binary .div a b) = .float .fdiv (.param "a") (.param "b") := rfl
 example : lowerF (.fma a b c) =
     .fma (.param "a") (.param "b") (.param "c") := rfl
+example : lowerWiden (.fromF32 (.binary .add a b)) =
+    .fcvt (.float .fadd (.param "a") (.param "b")) := rfl
 example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
 example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
 example : lowerF (.copysign (.unary .neg a) b) =
