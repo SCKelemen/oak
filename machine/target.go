@@ -500,10 +500,34 @@ func init() {
 		"fcvt.w.s", "fcvt.wu.s", "fcvt.l.s", "fcvt.lu.s", "fcvt.w.d", "fcvt.wu.d", "fcvt.l.d", "fcvt.lu.d", "fcvt.s.w", "fcvt.s.wu", "fcvt.s.l", "fcvt.s.lu", "fcvt.d.w", "fcvt.d.wu", "fcvt.d.l", "fcvt.d.lu", "fcvt.s.d", "fcvt.d.s",
 		"feq.s", "feq.d", "flt.s", "flt.d", "fle.s", "fle.d", "fclass.s", "fclass.d",
 		"vsetvli", "vsetivli",
+		// The vector extension as the lane emits it (nativegen/rv64_simd.go):
+		// whole-register loads, lane-wise arithmetic, splats, merges, mask
+		// compares, gathers and slides, reductions. A vector instruction's
+		// configuration is the `vsetivli` before it, a barrier that keeps
+		// its place, so no vector instruction crosses one.
+		"vle8.v", "vle16.v", "vle32.v", "vle64.v",
+		"vadd.vv", "vadd.vx", "vadd.vi", "vsub.vv", "vsub.vx", "vrsub.vx", "vrsub.vi", "vand.vv", "vand.vx", "vand.vi", "vor.vv", "vor.vx", "vor.vi", "vxor.vv", "vxor.vx", "vxor.vi",
+		"vminu.vv", "vminu.vx", "vmaxu.vv", "vmaxu.vx", "vmin.vv", "vmax.vv", "vssubu.vv", "vsaddu.vv", "vssub.vv", "vsadd.vv", "vmul.vv", "vmul.vx", "vmulhu.vv", "vmulh.vv",
+		"vsll.vv", "vsll.vx", "vsll.vi", "vsrl.vv", "vsrl.vx", "vsrl.vi", "vsra.vv", "vsra.vx", "vsra.vi",
+		"vfadd.vv", "vfadd.vf", "vfsub.vv", "vfsub.vf", "vfmul.vv", "vfmul.vf", "vfdiv.vv", "vfdiv.vf", "vfmin.vv", "vfmax.vv", "vfsqrt.v", "vfneg.v", "vfabs.v", "vfsgnj.vv", "vfsgnjn.vv", "vfsgnjx.vv",
+		"vfmv.v.f", "vfmv.f.s", "vmv.v.x", "vmv.v.i", "vmv.v.v", "vmv.x.s", "vid.v", "vmerge.vvm", "vmerge.vxm", "vmerge.vim", "vfmerge.vfm",
+		"vmseq.vv", "vmseq.vx", "vmseq.vi", "vmsne.vv", "vmsne.vx", "vmsne.vi", "vmslt.vv", "vmslt.vx", "vmsltu.vv", "vmsltu.vx", "vmsle.vv", "vmsleu.vv", "vmsleu.vx", "vmsgtu.vx", "vmfeq.vv", "vmfne.vv", "vmflt.vv", "vmfle.vv",
+		"vmand.mm", "vmor.mm", "vmxor.mm", "vmnand.mm", "vmnot.m", "vcpop.m", "vfirst.m",
+		"vrgather.vv", "vrgather.vx", "vrgather.vi", "vslidedown.vi", "vslidedown.vx", "vslide1down.vx",
+		"vredsum.vs", "vredmaxu.vs", "vredminu.vs", "vredmax.vs", "vredmin.vs", "vredand.vs", "vredor.vs", "vredxor.vs", "vfredusum.vs", "vfredosum.vs",
+		"vzext.vf2", "vzext.vf4", "vzext.vf8", "vsext.vf2", "vsext.vf4", "vwaddu.vv", "vwadd.vv", "vwmulu.vv", "vnsrl.wi", "vnsrl.wx", "vncvt.x.x.w",
 	} {
 		rv64Shapes[m] = def0
 	}
-	for _, m := range []string{"sb", "sh", "sw", "sd", "fsw", "fsd",
+	for _, m := range []string{
+		// The destination is read too: a multiply-accumulate, a slide up
+		// (the lanes below the offset keep their values), a scalar moved
+		// into lane zero.
+		"vfmacc.vv", "vfmacc.vf", "vfnmacc.vv", "vfmsac.vv", "vfnmsac.vv", "vmacc.vv", "vmacc.vx", "vnmsac.vv", "vslideup.vi", "vslideup.vx", "vslide1up.vx", "vmv.s.x", "vfmv.s.f",
+	} {
+		rv64Shapes[m] = accum0
+	}
+	for _, m := range []string{"sb", "sh", "sw", "sd", "fsw", "fsd", "vse8.v", "vse16.v", "vse32.v", "vse64.v",
 		"beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "blez", "bgez", "bltz", "bgtz", "bgt", "ble", "bgtu", "bleu",
 		"j", "jal", "call", "ret", "ebreak", "unimp", "fence", "fence.i", "nop"} {
 		rv64Shapes[m] = noDef
@@ -533,13 +557,24 @@ var rv64Target = &target{
 				return Reg{}, 0, false, false, fmt.Errorf("register %s", r.Text)
 			}
 			return Reg{FPR, r.Num}, 64, false, true, nil
+		case asm.ClassRV64V:
+			// The lane's vectors are its sixteen-byte simd values, one
+			// register each under an m1 configuration.
+			if r.Num < 0 || r.Num > 31 {
+				return Reg{}, 0, false, false, fmt.Errorf("register %s", r.Text)
+			}
+			return Reg{VEC, r.Num}, 128, false, true, nil
 		}
 		return Reg{}, 0, false, false, fmt.Errorf("register %s of a class the lift does not allocate", r.Text)
 	},
 	spell: rv64Spell,
 	reserved: func(r Reg) bool {
 		// ra, gp, tp; s0 is the frame pointer by convention and left alone.
-		return r.Class == GPR && (r.Num == 1 || r.Num == 3 || r.Num == 4 || r.Num == 8)
+		// The vector registers keep their assignment in this increment: the
+		// RVV psABI binds v8 at the boundary and the checker's fixed
+		// configurations name registers, so the lift reads them and moves
+		// nothing (a vector web is never recolored, never deleted).
+		return r.Class == VEC || (r.Class == GPR && (r.Num == 1 || r.Num == 3 || r.Num == 4 || r.Num == 8))
 	},
 	calleeSaved: func(r Reg) bool {
 		if r.Class != GPR && r.Class != FPR {
@@ -547,9 +582,11 @@ var rv64Target = &target{
 		}
 		return r.Num == 8 || r.Num == 9 || (r.Num >= 18 && r.Num <= 27)
 	},
-	callUses: append(gprs(10, 17, 64), fprs(10, 17, 64)...),
-	callDefs: append(append(append(append(append(gprs(1, 1, 64), gprs(5, 7, 64)...), gprs(10, 17, 64)...), gprs(28, 31, 64)...), append(fprs(0, 7, 64), fprs(10, 17, 64)...)...), fprs(28, 31, 64)...),
-	retUses:  []Access{{Implicit: true, Reg: Reg{GPR, 10}, Bits: 64}, {Implicit: true, Reg: Reg{GPR, 11}, Bits: 64}, {Implicit: true, Reg: Reg{GPR, 1}, Bits: 64}, {Implicit: true, Reg: Reg{FPR, 10}, Bits: 64}, {Implicit: true, Reg: Reg{FPR, 11}, Bits: 64}},
+	// Vector arguments and results ride v8–v23 and every vector register
+	// is caller-saved (the RVV psABI).
+	callUses: append(append(gprs(10, 17, 64), fprs(10, 17, 64)...), vecs(8, 23, 128)...),
+	callDefs: append(append(append(append(append(append(gprs(1, 1, 64), gprs(5, 7, 64)...), gprs(10, 17, 64)...), gprs(28, 31, 64)...), append(fprs(0, 7, 64), fprs(10, 17, 64)...)...), fprs(28, 31, 64)...), vecs(0, 31, 128)...),
+	retUses:  []Access{{Implicit: true, Reg: Reg{GPR, 10}, Bits: 64}, {Implicit: true, Reg: Reg{GPR, 11}, Bits: 64}, {Implicit: true, Reg: Reg{GPR, 1}, Bits: 64}, {Implicit: true, Reg: Reg{FPR, 10}, Bits: 64}, {Implicit: true, Reg: Reg{FPR, 11}, Bits: 64}, {Implicit: true, Reg: Reg{VEC, 8}, Bits: 128}},
 	kind: func(a asm.Instruction) (call, ret, trap, branch bool, err error) {
 		switch a.Mnemonic {
 		case "call", "jal":
@@ -669,6 +706,17 @@ var rv64Target = &target{
 			return 4
 		case "fdiv.s", "fdiv.d", "fsqrt.s", "fsqrt.d":
 			return 12
+		case "vle8.v", "vle16.v", "vle32.v", "vle64.v":
+			return 3
+		case "vfdiv.vv", "vfdiv.vf", "vfsqrt.v":
+			return 12
+		case "vmul.vv", "vmul.vx", "vmulhu.vv", "vmulh.vv", "vfmul.vv", "vfmul.vf", "vfmacc.vv", "vfmacc.vf", "vfnmacc.vv", "vfmsac.vv", "vfnmsac.vv", "vmacc.vv", "vmacc.vx", "vnmsac.vv", "vwmulu.vv", "vrgather.vv", "vrgather.vx", "vrgather.vi":
+			return 4
+		case "vredsum.vs", "vredmaxu.vs", "vredminu.vs", "vredmax.vs", "vredmin.vs", "vredand.vs", "vredor.vs", "vredxor.vs", "vfredusum.vs", "vfredosum.vs", "vcpop.m", "vfirst.m", "vmv.x.s", "vfmv.f.s":
+			return 4
+		}
+		if strings.HasPrefix(a.Mnemonic, "v") && a.Mnemonic != "vsetvli" && a.Mnemonic != "vsetivli" {
+			return 2 // a lane-wise vector form
 		}
 		return 1
 	},
@@ -767,9 +815,12 @@ var rv64Target = &target{
 func rv64Spell(r asm.Register, to Reg) asm.Register {
 	out := r
 	out.Num = to.Num
-	if r.Class == asm.ClassRV64F {
+	switch r.Class {
+	case asm.ClassRV64F:
 		out.Text = rv64FNames[to.Num]
-	} else {
+	case asm.ClassRV64V:
+		out.Text = "v" + itoa(to.Num)
+	default:
 		out.Text = rv64Names[to.Num]
 	}
 	return out
@@ -777,8 +828,11 @@ func rv64Spell(r asm.Register, to Reg) asm.Register {
 
 // rv64Register spells a register operand.
 func rv64Register(r Reg) asm.Register {
-	if r.Class == FPR {
+	switch r.Class {
+	case FPR:
 		return asm.Register{Text: rv64FNames[r.Num], Class: asm.ClassRV64F, Num: r.Num, Lane: -1}
+	case VEC:
+		return asm.Register{Text: "v" + itoa(r.Num), Class: asm.ClassRV64V, Num: r.Num, Lane: -1}
 	}
 	return asm.Register{Text: rv64Names[r.Num], Class: asm.ClassRV64X, Num: r.Num, Lane: -1}
 }
@@ -834,6 +888,15 @@ func arm64Pure(a asm.Instruction) bool {
 // rv64Pure: the ALU, move, and floating forms (RISC-V integer division
 // and conversions do not trap), and loads from the frame.
 func rv64Pure(a asm.Instruction) bool {
+	if a.Mnemonic == "addi" && len(a.Operands) == 3 {
+		// A frame address (`addi tX, sp, off`) stays where the lane put
+		// it, beside the vector access it serves: the RV64 checker admits
+		// vector memory through a frame address it saw formed there, and
+		// a hoisted one written twice is no address to it.
+		if base, ok := a.Operands[1].(asm.Register); ok && (base.Class == asm.ClassSP || (base.Class == asm.ClassRV64X && base.Num == 2)) {
+			return false
+		}
+	}
 	if rv64PureSet[a.Mnemonic] {
 		return true
 	}

@@ -275,6 +275,26 @@ Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
 
+### Phase B, sixth increment: the lift reads the vector extension
+
+The RV64 target knows the RVV instructions the lane emits
+(`machine/target.go`): the vector registers are the lift's `VEC` class at
+128 bits and keep their assignment (reserved: the RVV psABI binds v8 at
+the boundary and the checker's fixed configurations name registers), the
+configuration `vsetivli` is a barrier no vector instruction crosses,
+loads and stores carry their memory operand, the accumulating forms
+(`vfmacc`, `vslideup`, `vmv.s.x`) read their destination, and every
+vector register is caller-saved with v8–v23 as arguments. A frame address
+(`addi tX, sp, off`) is not pure on this lane: the checker admits vector
+memory through a frame address formed beside the access, and a hoisted
+one written twice is no address to it. The recurrence analysis reads a
+register-form stride (`li t0, 4; addw t1, t1, t0`), takes a loop's single
+induction as its index when the exit test is a computed flag, and bounds
+the remainder loop after such a strided loop. With that, RV64 vector
+bodies lift, schedule (`vsetivli` regions), reallocate their scalar
+registers, and price by stride — what the RV64 map vectorization needed
+from this side (item 24 below).
+
 ### Phase D, first rewrite after the reductions: map vectorization
 
 `vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
@@ -1142,14 +1162,17 @@ This phase targets the measured UTF-8 call/spill gap directly.
     variable index through a span bound over a frame array — "memory
     operands go through the declared sp frame or a bound span base" — so
     the checker's frame idiom has to learn the element address first),
-    and the RV64 lane (tried 2026-09-16 with V: the rewritten shape lowers
-    to RVV and proves, but is priced 23717 against the scalar loop's 7451
-    — the machine lift reads no RVV instruction (`vmv.v.x` and the rest
-    are unknown to it), so `LoopShapes` finds no stride and the main
-    loop is charged all 256 trips, and the lane's RVV lowering stores
-    vectors through the frame, 46 instructions and 5 stores a trip; the
-    plumbing through `compileRV64` stays, the transform stays AArch64
-    only until the lift knows RVV), elements at `i ± k`
+    and the RV64 lane (2026-09-16: the machine lift now reads the RVV
+    instructions the lane emits — a vector register class that keeps its
+    assignment, `vsetivli` a barrier, register-form strides `li t0, 4;
+    addw t1, t1, t0`, a single induction standing in for an unread exit
+    test, the remainder bounded after it — so the vectorized form is
+    priced 3822 against the scalar loop's 7451 under `reallocate`; but
+    the verifier on that lane does not yet model a vector store in a
+    data-dependent loop body ("a span store in a data-dependent loop
+    body"), so the form comes back trusted and the proven scalar loop
+    keeps winning; the transform stays AArch64 only until the RV64
+    verifier takes `vse` in loops), elements at `i ± k`
     (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:

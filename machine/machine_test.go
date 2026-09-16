@@ -594,10 +594,11 @@ func TestRV64LiftAndCoalesce(t *testing.T) {
 	if alloc.Coalesced+alloc.Propagated != 2 || !strings.Contains(got, "addi a0, a0, #1") {
 		t.Fatalf("coalesced %d propagated %d:\n%s", alloc.Coalesced, alloc.Propagated, got)
 	}
-	// Unknown shapes refuse: an indirect jump, a vector register.
+	// Unknown shapes refuse: an indirect jump, an instruction the lane
+	// never emits.
 	for _, body := range [][]asm.Item{
 		{ins("jr", rx(5))},
-		{ins("vadd.vv", asm.Register{Text: "v1", Class: asm.ClassRV64V, Num: 1, Lane: -1}, asm.Register{Text: "v2", Class: asm.ClassRV64V, Num: 2, Lane: -1}, asm.Register{Text: "v3", Class: asm.ClassRV64V, Num: 3, Lane: -1}), ins("ret")},
+		{ins("vfwcvt.f.x.v", asm.Register{Text: "v1", Class: asm.ClassRV64V, Num: 1, Lane: -1}, asm.Register{Text: "v2", Class: asm.ClassRV64V, Num: 2, Lane: -1}), ins("ret")},
 	} {
 		if _, err := Lift(rvfn(body...)); err == nil {
 			t.Errorf("lift admitted %s", text(body))
@@ -1208,5 +1209,79 @@ func TestScheduleKeepsBondedPairs(t *testing.T) {
 	}
 	if !adjacent {
 		t.Fatalf("the normalization halves came apart:\n%s", got)
+	}
+}
+
+func rvv(n int) asm.Register {
+	return asm.Register{Text: "v" + itoa(n), Class: asm.ClassRV64V, Num: n, Lane: -1}
+}
+
+func vopt(name string) asm.Option { return asm.Option{Name: name} }
+
+// The RV64 lane's vector loop lifts: the vector registers are a class of
+// their own that keeps its assignment, the configuration is a barrier no
+// vector instruction crosses, and the recurrence analysis reads the
+// index's stride off the loop.
+func TestLiftRV64VectorLoop(t *testing.T) {
+	f := rvfn(
+		ins("li", rx(14), imm(0)),
+		asm.Label{Name: "loop_1"},
+		ins("bgeu", rx(14), rx(11), asm.Symbol{Name: "done_2"}),
+		ins("slli", rx(5), rx(14), imm(2)),
+		ins("add", rx(5), rx(10), rx(5)),
+		ins("vsetivli", rx(0), imm(16), vopt("e8"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vle8.v", rvv(1), mem(rx(5), 0)),
+		ins("vsetivli", rx(0), imm(4), vopt("e32"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vmv.v.x", rvv(2), rx(12)),
+		ins("vadd.vv", rvv(1), rvv(1), rvv(2)),
+		ins("vsetivli", rx(0), imm(16), vopt("e8"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vse8.v", rvv(1), mem(rx(5), 0)),
+		ins("addi", rx(14), rx(14), imm(4)),
+		ins("j", asm.Symbol{Name: "loop_1"}),
+		asm.Label{Name: "done_2"},
+		ins("ret"),
+	)
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatalf("lift: %v", err)
+	}
+	shapes, err := lifted.Shapes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 1 || shapes[0].Stride != 4 {
+		t.Fatalf("shapes %v: want one loop of stride 4", shapes)
+	}
+	out, _, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	// Every vector instruction stays between the configurations it was
+	// emitted under.
+	lines := strings.Split(got, "\n")
+	config := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "vsetivli"):
+			config = line
+		case strings.HasPrefix(line, "vle8") || strings.HasPrefix(line, "vse8"):
+			if !strings.Contains(config, "16") {
+				t.Fatalf("%s under %q:\n%s", line, config, got)
+			}
+		case strings.HasPrefix(line, "vadd") || strings.HasPrefix(line, "vmv"):
+			if !strings.Contains(config, "#4") { // the four-lane e32 configuration
+
+				t.Fatalf("%s under %q:\n%s", line, config, got)
+			}
+		}
+	}
+	re, alloc, err := ReallocateWith(f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text(re.Items), "vadd.vv v1, v1, v2") {
+		t.Fatalf("the vector registers must keep their assignment (%d renamed):\n%s", alloc.Renamed, text(re.Items))
 	}
 }
