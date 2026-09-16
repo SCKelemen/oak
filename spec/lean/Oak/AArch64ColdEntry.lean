@@ -231,7 +231,7 @@ inductive Action where
   | sysReg (op : AArch64SysReg.Operation) (reg : AArch64SysReg.Reg)
       (word : BitVec 32) (rt : BitVec 5)
   | barrier (word : BitVec 32)
-  | controlTransfer (op : AArch64ControlTransfer.Operation)
+  | controlTransfer (op : AArch64ControlTransfer.Operation) (word : BitVec 32)
   deriving DecidableEq, Repr
 
 /-- An occurrence-indexed execution interface. The architecture refinement must
@@ -291,7 +291,8 @@ inductive Step {Occurrence : Type} (trace : Trace Occurrence)
       Step trace armContextSync .guestContextInstalled (.synchronized sync)
   | eret (sync : ContextSyncWitness trace armContextSync) (eretOccurrence : Occurrence)
       (hAction : trace.action eretOccurrence =
-        .controlTransfer AArch64ControlTransfer.Operation.eret)
+        .controlTransfer AArch64ControlTransfer.Operation.eret
+          AArch64Encoding.eretWord)
       (hPo : trace.po sync.isbOccurrence eretOccurrence) :
       Step trace armContextSync (.synchronized sync) .transferred
 
@@ -338,7 +339,8 @@ theorem verified_eret_requires_context_sync
       (eretOccurrence : Occurrence),
       src = .synchronized sync ∧
       trace.action eretOccurrence =
-        .controlTransfer AArch64ControlTransfer.Operation.eret ∧
+        .controlTransfer AArch64ControlTransfer.Operation.eret
+          AArch64Encoding.eretWord ∧
       trace.po sync.isbOccurrence eretOccurrence := by
   cases h with
   | eret sync eretOccurrence hAction hPo =>
@@ -354,7 +356,8 @@ theorem verified_eret_orders_context_writes
     ∃ (sync : ContextSyncWitness trace armContextSync)
       (eretOccurrence : Occurrence),
       trace.action eretOccurrence =
-        .controlTransfer AArch64ControlTransfer.Operation.eret ∧
+        .controlTransfer AArch64ControlTransfer.Operation.eret
+          AArch64Encoding.eretWord ∧
       ∀ write, trace.po (sync.writeOccurrence write) eretOccurrence := by
   cases h with
   | eret sync eretOccurrence hAction hPo =>

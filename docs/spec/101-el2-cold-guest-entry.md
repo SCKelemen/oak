@@ -198,6 +198,21 @@ The Lean word list is drift-checked against the native prefix below. The theorem
 still supplies no dynamic occurrence/program-order witness and says nothing
 about ISB or ERET state semantics, memory order, traps, or unprojected state.
 
+The final transfer is separately tied to the official instruction model.
+`Oak.AArch64Encoding` pins the generated plain-ERET row and exact word
+`0xd69f03e0`. Generated Sail Lean proves the exact decoded fields and non-PAC
+ERET target under an explicit non-EL0 input to the pre-`__PostDecode` checks,
+and rejection of EL0, authenticated, and corrupted inputs. Applied to the
+installed projected state, its EL2 selectors supply
+exactly the installed ELR_EL2 target and low SPSR_EL2 word. The dedicated NV
+ERET-trap route is false at EL2 because the official predicate requires EL1.
+The official-source gate also pins the decode body, execution call route,
+selectors, and the textual order of `SynchronizeContext`, PSTATE restoration,
+and ERET branching. These are static decode/input/source-order facts. They do
+not prove `__PostDecode` admission, freedom from every trap or synchronization
+error, SPSR legality, context-synchronization effects, PSTATE restoration, PC
+canonicalization, exclusive/event effects, or successful dynamic transfer.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

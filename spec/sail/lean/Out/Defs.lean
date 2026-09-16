@@ -60,6 +60,23 @@ inductive SystemRegisterWriteTarget where | SystemRegisterWriteTarget_VTTBR_EL2 
   deriving BEq, Inhabited, Repr
   open SystemRegisterWriteTarget
 
+inductive ExceptionReturnExecutionTarget where | ExceptionReturnExecutionTarget_ERET
+  deriving BEq, Inhabited, Repr
+  open ExceptionReturnExecutionTarget
+
+structure PlainERETDecode where
+  encoding_valid : Bool
+  pre_postdecode_checks_pass : Bool
+  target : ExceptionReturnExecutionTarget
+  op4 : (BitVec 5)
+  Rn : (BitVec 5)
+  M : (BitVec 1)
+  A : (BitVec 1)
+  op2 : (BitVec 5)
+  pac : Bool
+  use_key_a : Bool
+  deriving BEq, Inhabited, Repr
+
 structure ColdEntryRegisterState where
   hcr_el2 : (BitVec 64)
   vttbr_el2 : (BitVec 64)
@@ -92,6 +109,12 @@ structure ColdEntryRegisterSequenceResult where
   write5 : SystemRegisterWriteTarget
   write6 : SystemRegisterWriteTarget
   write7 : SystemRegisterWriteTarget
+  deriving BEq, Inhabited, Repr
+
+structure PlainERETInputsAtEL2 where
+  dedicated_nv_trap : Bool
+  target : (BitVec 64)
+  spsr : (BitVec 32)
   deriving BEq, Inhabited, Repr
 
 abbrev Register := PEmpty

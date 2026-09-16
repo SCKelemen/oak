@@ -43,6 +43,10 @@ def msrPstate : Encoding := ⟨"MSR_SI_pstate", "msr", 0xd500401f#32, 0xfff8f01f
 def msrSystem : Encoding := ⟨"MSR_SR_systemmove", "msr", 0xd5100000#32, 0xfff00000#32, [⟨"L", 21, 1⟩, ⟨"o0", 19, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
 -- OAK-A64-SYSREG-WRITE-ENC-END
 
+-- OAK-A64-ERET-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def eret : Encoding := ⟨"ERET_64E_branch_reg", "eret", 0xd69f03e0#32, 0xffffffff#32, [⟨"opc", 24, 4⟩, ⟨"op2", 20, 5⟩, ⟨"A", 11, 1⟩, ⟨"M", 10, 1⟩, ⟨"Rn", 9, 5⟩, ⟨"op4", 4, 5⟩]⟩
+-- OAK-A64-ERET-ENC-END
+
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
   deriving DecidableEq, Repr
@@ -165,6 +169,11 @@ def msrSpsrEl2X7 : BitVec 32 :=
   encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b000#3 0b00111#5
 theorem msr_spsr_el2_x7_word : msrSpsrEl2X7 = 0xd51c4007#32 := by native_decide
 -- OAK-A64-SPSR-EL2-WORD-END
+
+-- OAK-A64-ERET-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def eretWord : BitVec 32 := eret.value
+theorem eret_word : eretWord = 0xd69f03e0#32 := by native_decide
+-- OAK-A64-ERET-WORD-END
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

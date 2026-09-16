@@ -1158,6 +1158,100 @@ theorem cold_entry_register_sequence_end_to_end
     cold_entry_register_sequence_generated_bridge redirect inputs initial,
     install_cold_entry_registers_at_el2_exact redirect inputs initial⟩
 
+/-! ## Plain ERET at EL2
+
+This final cold-entry instruction is projected only through exact decode,
+the non-PAC call route, and the ELR_EL2/SPSR_EL2 inputs selected for
+`AArch64_ExceptionReturn`. Its stateful body remains in the external Arm
+execution obligation. -/
+
+theorem plain_eret_assumed_non_el0_predecode_exact :
+    Out.Functions.decode64_plain_eret_pure eretWord false = {
+      encoding_valid := true
+      pre_postdecode_checks_pass := true
+      target := .ExceptionReturnExecutionTarget_ERET
+      op4 := 0b00000#5
+      Rn := 0b11111#5
+      M := 0b0#1
+      A := 0b0#1
+      op2 := 0b11111#5
+      pac := false
+      use_key_a := true
+    } := by
+  rfl
+
+theorem plain_eret_el0_pre_postdecode_checks_fail :
+    (Out.Functions.decode64_plain_eret_pure eretWord true).encoding_valid = true ∧
+      (Out.Functions.decode64_plain_eret_pure eretWord true).pre_postdecode_checks_pass =
+        false := by
+  exact ⟨rfl, rfl⟩
+
+theorem eretaa_not_plain_eret :
+    (Out.Functions.decode64_plain_eret_pure 0xd69f0bff#32 false).encoding_valid =
+        false ∧
+      (Out.Functions.decode64_plain_eret_pure
+        0xd69f0bff#32 false).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
+
+theorem eretab_not_plain_eret :
+    (Out.Functions.decode64_plain_eret_pure 0xd69f0fff#32 false).encoding_valid =
+        false ∧
+      (Out.Functions.decode64_plain_eret_pure
+        0xd69f0fff#32 false).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
+
+theorem corrupted_plain_eret_pre_postdecode_checks_fail :
+    (Out.Functions.decode64_plain_eret_pure
+      0xd69f03e1#32 false).pre_postdecode_checks_pass = false := by
+  rfl
+
+/-- The dedicated nested-virtualization ERET-trap predicate requires EL1, so
+    it is false at EL2 for every feature/control-bit projection. This is not a
+    theorem that the complete ERET path is trap-free. -/
+theorem eret_dedicated_nv_trap_route_at_el2_is_false
+    (haveNvExt el2Enabled hcrNv : Bool) :
+    Out.Functions.eret_nv_trap_route_pure
+      haveNvExt el2Enabled false hcrNv = false := by
+  cases haveNvExt <;> cases el2Enabled <;> cases hcrNv <;> rfl
+
+/-- After the generated register prefix, the generated EL2 selector presents
+    the installed ELR_EL2 and low SPSR_EL2 word as `AArch64_ExceptionReturn`
+    inputs, while the dedicated NV trap route remains false. -/
+theorem cold_entry_installed_plain_eret_inputs_exact
+    (haveNvExt el2Enabled : Bool) (redirect : RedirectInputs)
+    (inputs : RegisterInputs) (initial : ProjectedRegisterState) :
+    Out.Functions.aarch64_plain_eret_at_el2_inputs_pure haveNvExt el2Enabled
+      (projectedRegisterStateToSail
+        (installColdEntryRegistersAtEL2 redirect inputs initial).state) = {
+      dedicated_nv_trap := false
+      target := inputs.elrEl2
+      spsr := inputs.spsrEl2.setWidth 32
+    } := by
+  cases haveNvExt <;> cases el2Enabled <;> rfl
+
+/-- An evidence-bearing cold-entry transfer exposes the exact plain ERET word
+    and generated non-PAC target in addition to ISB-before-ERET program order.
+    The pre-PostDecode Boolean is evaluated under an explicit assumed-non-EL0
+    input; it is not a current-EL fact derived from the trace. The occurrence,
+    current EL, PostDecode, and execution remain external premises. -/
+theorem cold_entry_eret_occurrence_has_generated_plain_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    {src : VerifiedStage trace external}
+    (h : Step trace external src .transferred) :
+    ∃ (sync : ContextSyncWitness trace external)
+      (eretOccurrence : Occurrence),
+      trace.action eretOccurrence =
+          .controlTransfer AArch64ControlTransfer.Operation.eret eretWord ∧
+        (Out.Functions.decode64_plain_eret_pure
+          eretWord false).pre_postdecode_checks_pass = true ∧
+        (Out.Functions.decode64_plain_eret_pure eretWord false).target =
+          .ExceptionReturnExecutionTarget_ERET ∧
+        trace.po sync.isbOccurrence eretOccurrence := by
+  cases h with
+  | eret sync eretOccurrence hAction hPo =>
+      exact ⟨sync, eretOccurrence, hAction, rfl, rfl, hPo⟩
+
 end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/

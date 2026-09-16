@@ -896,6 +896,22 @@ input values with VTCR, CNTHCTL, and SPSR truncated to 32 bits. A Go drift gate
 requires the Lean numeric list to equal the native object's register prefix.
 This is static/projected composition, not a full Arm-state execution trace.
 
+The terminal plain `ERET` seam is now exact as well. Lean pins the generated
+encoding-table row and word `0xd69f03e0`; generated Sail Lean passes that word
+under an explicit non-EL0 input to its pre-`__PostDecode` checks as the non-PAC
+ERET target with the exact decoded fields, and rejects an EL0 input, ERETAA,
+ERETAB, and a corrupted word. After the composed prefix,
+the EL2 selector projection returns the installed ELR_EL2 and low SPSR_EL2 as
+the inputs to `AArch64_ExceptionReturn`. Its dedicated nested-virtualization
+trap predicate is false at EL2 because the pinned official predicate requires
+EL1. A fail-closed Go gate pins the official decode clause, decoder body,
+non-PAC call route, predicate, EL2 selectors, and the source ordering of
+`SynchronizeContext` before PSTATE restoration and the eventual ERET branch.
+This proves exact static decode and selected inputs only: it does not execute
+`__PostDecode` or `AArch64_ExceptionReturn`, establish global trap freedom or
+SPSR legality, give `SynchronizeContext` a formal effect, or prove the branch
+occurs or is observed.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization

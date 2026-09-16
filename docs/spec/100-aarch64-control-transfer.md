@@ -119,8 +119,17 @@ The acceptance surface includes:
 4. Freestanding AArch64 assembly tests requiring `ERET` and rejecting an ordinary `RET` path, hidden barriers, wait/event instructions, and heap dependencies.
 5. Lean `Oak.AArch64ControlTransfer` proofs that ERET is non-returning, is an exception-context transfer, and supplies no hidden barrier capability; that `eret_x0` has exactly ERET's capability (`eret_x0_is_eret`) and carries `x0` alone (`eret_x0_carries_x0`); and that no transfer returns or hides a barrier (`no_transfer_returns_or_hides_barrier`).
 6. An end-to-end test that the EL0 entry compiles in both forms — Oak source through `eret_x0`, and an `.oakasm` unit — and that the unit's instruction sequence assembles (`compiler/e2e_el0_entry_test.go`).
+7. The cold-entry EL2 seam pins plain `ERET` as `0xd69f03e0` from the generated
+   Arm encoding table. Generated Sail Lean proves its exact non-PAC decode
+   fields under an explicit non-EL0 pre-`__PostDecode` input and its
+   ELR_EL2/SPSR_EL2 input selection after the register prefix. A source gate
+   pins the corresponding official Arm Sail decode/call route and the textual
+   occurrence of `SynchronizeContext` before PSTATE restoration and branching.
 
 These facts prove the declared abstraction and test its implementation/refinement boundary. They do not by themselves prove that arbitrary values written to `ELR_EL2`/`SPSR_EL2` form a valid guest context. That obligation belongs to the higher-level EL2 guest-entry protocol.
+The Sail seam likewise does not prove successful dynamic decode, global trap
+freedom, legal SPSR contents, context-synchronization effects, PSTATE/PC state
+transition, or branch observation.
 
 ## Next protocol
 

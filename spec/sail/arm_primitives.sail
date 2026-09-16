@@ -999,6 +999,52 @@ enum SystemRegisterWriteTarget = {
   SystemRegisterWriteTarget_HCR_EL2
 }
 
+/* Plain ERET's exact decode/call target. Authenticated ERETAA/ERETAB are
+ * deliberately not members of this projection. */
+enum ExceptionReturnExecutionTarget = {
+  ExceptionReturnExecutionTarget_ERET
+}
+
+struct PlainERETDecode = {
+  encoding_valid : bool,
+  pre_postdecode_checks_pass : bool,
+  target : ExceptionReturnExecutionTarget,
+  op4 : bits(5),
+  Rn : bits(5),
+  M : bits(1),
+  A : bits(1),
+  op2 : bits(5),
+  pac : bool,
+  use_key_a : bool
+}
+
+val decode64_plain_eret_pure : (bits(32), bool) -> PlainERETDecode
+
+function decode64_plain_eret_pure (op_code, at_el0) = {
+    let op4 : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let M : bits(1) = slice(op_code, 10, 1);
+    let A : bits(1) = slice(op_code, 11, 1);
+    let op2 : bits(5) = slice(op_code, 16, 5);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    let encoding_valid : bool = op_code == 0xD69F03E0;
+    let pre_postdecode_checks_pass : bool = encoding_valid & ~(at_el0) & ~(pac) &
+      op4 == 0b00000 & Rn == 0b11111;
+    struct {
+      encoding_valid = encoding_valid,
+      pre_postdecode_checks_pass = pre_postdecode_checks_pass,
+      target = ExceptionReturnExecutionTarget_ERET,
+      op4 = op4,
+      Rn = Rn,
+      M = M,
+      A = A,
+      op2 = op2,
+      pac = pac,
+      use_key_a = use_key_a
+    }
+}
+
 /* One parsing pass for the eight register tuples in Oak's cold-entry prefix.
  * As in the per-register projections below, Rt is preserved rather than fixed
  * here; the bridge separately proves the exact X0 through X7 words. */
@@ -1422,6 +1468,35 @@ struct ColdEntryRegisterSequenceResult = {
   write5 : SystemRegisterWriteTarget,
   write6 : SystemRegisterWriteTarget,
   write7 : SystemRegisterWriteTarget
+}
+
+/* The dedicated AArch64_CheckForERetTrap NV predicate after projecting its
+ * feature/EL/HCR reads to Booleans. False is not a global trap-freedom claim. */
+val eret_nv_trap_route_pure : (bool, bool, bool, bool) -> bool
+
+function eret_nv_trap_route_pure (have_nv_ext, el2_enabled, at_el1, hcr_nv) = {
+    ((have_nv_ext & el2_enabled) & at_el1) & hcr_nv
+}
+
+struct PlainERETInputsAtEL2 = {
+  dedicated_nv_trap : bool,
+  target : bits(64),
+  spsr : bits(32)
+}
+
+/* At AArch64 EL2, ELR() and SPSR() select ELR_EL2 and SPSR_EL2. This returns
+ * those projected inputs to AArch64_ExceptionReturn; it does not execute it. */
+val aarch64_plain_eret_at_el2_inputs_pure :
+  (bool, bool, ColdEntryRegisterState) -> PlainERETInputsAtEL2
+
+function aarch64_plain_eret_at_el2_inputs_pure (have_nv_ext, el2_enabled, state) = {
+    let hcr_nv : bool = state.hcr_el2[42] == bitone;
+    struct {
+      dedicated_nv_trap = eret_nv_trap_route_pure(
+        have_nv_ext, el2_enabled, false, hcr_nv),
+      target = state.elr_el2,
+      spsr = state.spsr_el2
+    }
 }
 
 val aarch64_cold_entry_register_sequence_at_el2_pure :

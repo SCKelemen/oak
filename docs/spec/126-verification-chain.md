@@ -333,6 +333,19 @@ oracle. This closes static projected composition only: full Arm state,
 access/traps, runtime value provenance, dynamic occurrence/order, memory
 ordering, ISB effects, and ERET semantics remain outside the theorem.
 
+The terminal plain `ERET` now has its own narrow generated seam. The generated
+instruction table and Lean both fix it as `0xd69f03e0`; generated Sail Lean
+proves the exact non-PAC decode fields under an explicit non-EL0 input to its
+pre-`__PostDecode` checks, excludes EL0/authenticated/corrupted inputs, and
+projects the composed EL2 state to the installed ELR_EL2/SPSR_EL2 inputs.
+Its dedicated nested-virtualization trap predicate is false at EL2 under the
+official predicate's required EL1 conjunct. A Go source gate pins the official
+decode clause and bodies, EL2 selectors, and `SynchronizeContext` before
+PSTATE restoration and branch. This closes exact static encoding, decode
+target, and selected inputs—not dynamic occurrence, `__PostDecode`, global
+trap freedom, SPSR validity, synchronization semantics, architectural state
+transition, branch success, or observation.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
