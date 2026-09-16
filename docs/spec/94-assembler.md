@@ -7825,24 +7825,51 @@ Three rules close it, each a generalization of one already there.
   and an offset raises the bound: `wI < B` leaves `wI + j < B + j`. Both
   cap below 2^31, so neither 32-bit result wraps.
 
-Measured on the stdlib-bearing program against the commit this work
-branched from (`a045071b`, the merge of §9.ai), with the verdict cache
-off:
+Measured on the stdlib-bearing program against the commit this branch
+merged (`9893f1d5`), with the verdict cache off, in the shipping
+configuration (beam 4):
 
 | | base | after |
 |---|---|---|
-| element guards elided | 144 | **154** |
-| bodies eliding a guard | 59 | **63** |
-| trap branches emitted | 1461 | **1433** |
-| units proven equal | 338 | 338 |
+| trap branches emitted | 1682 | **1661** |
+| units proven equal | 337 | **338** |
+| bodies eliding a guard | 64 | **65** |
+| refused elided forms | 300 | **298** |
+| element guards elided | 157 | 156 |
 
-Five bodies improved and none regressed: `grapheme_class` 0 → 2,
-`normalize_compose_pair` 0 → 3, `normalize_find` 0 → 2,
-`normalize_props` 0 → 2, `unicode_lookup` 1 → 2. All 290 units keep their
-verdicts, and the refused elided forms fall from 228 to 216 — the three
-bodies named above each halve theirs. The RV64 lane is unchanged on every
-count (277 proven, 28 guards over 19 bodies, 119 refused forms on both
-sides), as its checker shares none of this machinery.
+The checker is strictly more precise, and that is the part this section
+claims: run both checkers over one and the same body — the un-hoisted
+form of `grapheme_class` taken from the dump — and this one reports a
+single refusal where the previous one reported three.
+
+**The selection does not follow, and the honest reading is that the
+three bodies this rule was written for come out worse.** `grapheme_class`
+and `normalize_props` go from 55 instructions and no trap branch to 59 or
+60 instructions and one; `normalize_compose_pair` from 133 and none to
+137 and two. Two other bodies improve — `normalize_find` from two trap
+branches to none, `unicode_lookup` from five to four — and across the
+program 21 trap branches go. So the aggregate improves while the named
+targets regress.
+
+The cause is not precision and not the beam width. The base compiles a
+form of these bodies in which the loop-invariant `movz wK, #3` is hoisted
+and the loop is bottom-tested, and on that form the checker already
+elided every guard before this rule existed. Admitting more candidates
+changes which bodies survive the search's frontier, and the hoisted form
+is no longer among them; the body that wins instead is cheaper on the
+cost model's reading than the alternatives it was compared against, but
+worse than the body the base found. Widening the beam to eight does not
+recover it, and makes the whole program worse (2111 trap branches against
+1682), because the validation budget is then spent on candidates that do
+not pay.
+
+That is a property of the search rather than of this rule: an admission
+that is strictly better locally can cost a better body globally, because
+the frontier is pruned by cost before validation and a transform that
+would have applied to the pruned parent never fires. Recording it here
+because it will recur with every new fact rule, and because the fix
+belongs to the search — carrying the best body seen for a region
+regardless of frontier churn — not to the checker.
 
 What stays refused is the read inside the search loop. There the bound
 register is rewritten on the back edge by a conditional select, so no

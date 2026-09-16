@@ -158,16 +158,22 @@ The mechanism is kept, gated to the findings a lost guard could explain,
 because the shapes it does fix are real and because each new fact rule is
 worth more when a fact that holds on one path survives the next label.
 
-**And the follow-through confirms it, 2026-09-16.** The missing rule was
-written (`94-assembler.md` §9.aj): a divided bound the checker follows
-through a `udiv` by any constant, and an index multiplied back by it.
-That one rule took the program from 144 elided guards across 59 bodies to
-154 across 63, and cut 28 trap branches, with every verdict unchanged.
-Ten guards from one fact rule against nothing from the versioning is the
-measurement's own answer to which lever was larger, and it is worth
-keeping in mind before the next mechanism on this list is built: on this
-compiler the facts, not the machinery that carries them, have been the
-binding constraint every time it has been measured.
+**And the follow-through, 2026-09-16, says something sharper than
+expected.** The missing rule was written (`94-assembler.md` §9.aj): a
+divided bound the checker follows through a `udiv` by any constant, and
+an index multiplied back by it. On one and the same body it reports a
+single refusal where the checker before it reported three, and across the
+program it removes 21 trap branches and proves one more unit. But the
+three bodies it was written for come out **worse**, because admitting
+more candidates changes which bodies survive the search's frontier and
+the better form the base happened to find is no longer among them.
+
+So the lesson is not simply "facts beat machinery". It is that on this
+compiler a local improvement is not yet a global one: the search prunes
+by cost before validation and keeps no memory of the best body it has
+seen, so every new fact rule perturbs selection in ways its own
+measurement has to check body by body. That is the item this note should
+carry next, ahead of any further borrowed mechanism.
 
 It is not the multi-versioning that `mojo-futhark-optimization-2026-09.md` §8
 already records from Futhark's incremental flattening, and the two should not
