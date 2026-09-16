@@ -869,16 +869,17 @@ The first explicit-metadata region MemorySSA has landed. It represents each
 declared region independently with deterministic entry, definition, join, and
 loop versions; exact Mod/Ref must agree with the operation effects, while an
 opaque call clobbers every declared region. An exact direct internal call may
-instead carry positive read-only authority derived recursively from checked
-OptIR projections. An empty set is `NoModRef`; a nonempty `Ref` set lists the
-exact typed nonvolatile scalar-global regions the callee may read. The callee
-has no checked global write, every child call has the same evidence, and the
-summary fingerprint binds the exact callee CFG, sorted child summaries, and
-canonical read set. Foreign, bodyless, writing, and recursive graphs fail
-closed; absence of authority never means purity or read-only behavior. Exact
-CFG and metadata fingerprints plus independent recomputation reject stale or
-mutated evidence. Memory-definition
-liveness now takes an explicit set of regions observable on normal return,
+instead carry positive Mod/Ref authority derived recursively from checked
+OptIR projections. An empty set is `NoModRef`; a nonempty set lists exact typed
+nonvolatile scalar-global `Ref`, `Mod`, or `ModRef` may-effects. Write-bearing
+entries are partial definitions, never definite whole-region replacements,
+because a callee may execute an assignment conditionally. Every child call has
+the same evidence, and the summary fingerprint binds the exact callee CFG,
+sorted child summaries, and canonical effect set. Foreign, bodyless, and
+recursive graphs fail closed; absence of authority never implies an effect.
+Exact CFG and metadata fingerprints plus independent recomputation reject
+stale or mutated evidence. Memory-definition liveness now takes an explicit
+set of regions observable on normal return,
 roots reads, volatile accesses, opaque clobbers, and those terminal versions,
 and propagates through join/loop phis. Partial writes keep their predecessors
 live. A verified transform deletes only a dead, whole-region, nonvolatile
@@ -900,11 +901,12 @@ forwarding after LICM; both transforms independently verify their complete
 rewrites before publishing them. Changed final CFGs can enter native search on
 AArch64 and RV64 when the memory vocabulary is acyclic control flow over exact
 scalar package-global reads and whole nonvolatile writes, optionally composed
-with authenticated `NoModRef` or exact `Ref` scalar calls. A `Ref` call creates
-read accesses with no output version, so DSE retains the reaching definitions
-the callee may observe while load forwarding can cross the call. Selection
-also retains callee-only globals without emitting a caller memory operation for
-the summary. Both targets also
+with authenticated exact `NoModRef`/`Ref`/`Mod`/`ModRef` scalar calls. A `Ref`
+call creates reads with no output version, so DSE retains the definitions the
+callee may observe while load forwarding can cross it. `Mod` and `ModRef`
+create partial output versions, retain their predecessors conservatively, and
+block forwarding across the call. Selection retains callee-only globals
+without emitting caller memory operations for the summary. Both targets also
 admit one exact call-free canonical natural loop with a unique preheader,
 conditional header, straight-line body/latch, backedge, and return exit. Its
 RegionMemorySSA contains the loop-header phi joining the entry memory version
@@ -924,9 +926,9 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-broader load PRE through memory phis, write-bearing interprocedural
-`Mod`/`ModRef` summaries, and calls in memory loops remain open; exact empty
-`NoModRef` and nonempty read-only `Ref` summaries have landed.
+broader load PRE through memory phis, definite-write summaries, and calls in
+memory loops remain open; exact recursive `NoModRef`/`Ref`/`Mod`/`ModRef`
+may-effect summaries have landed.
 
 As the projection broadens, region memory SSA should power:
 
@@ -1139,9 +1141,9 @@ This phase targets the measured UTF-8 call/spill gap directly.
 17. recurrence/trip-count analysis;
 18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate,
     checked scalar-global projection, and one verifier-proved canonical memory
-    loop on both targets landed; exact recursive `NoModRef`/`Ref` call summaries
-    also landed, while broader loops, aggregate regions, and write summaries
-    remain**);
+    loop on both targets landed; exact recursive
+    `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries also landed, while broader
+    loops, aggregate regions, and definite-write summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
 21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address

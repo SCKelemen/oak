@@ -149,6 +149,48 @@ func TestRegionLoadForwardingCrossesAndPreservesRefCall(t *testing.T) {
 	}
 }
 
+func TestRegionLoadForwardingStopsAtWriteBearingCall(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		effect MemoryCallEffect
+		kind   MemoryAccessKind
+	}{
+		{name: "mod", effect: MemoryCallMod, kind: MemoryWrite},
+		{name: "mod-ref", effect: MemoryCallModRef, kind: MemoryReadWrite},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := CFG{
+				Name: "store_call_load", Entry: 0, Results: []Type{"u32"},
+				Blocks: []Block{{
+					ID: 0, Parameters: []Value{{ID: 1, Type: "u32"}},
+					Operations: []Operation{
+						{Code: OpStoreRegion, Operands: []ValueID{1}, Effects: []Effect{EffectWriteMemory}},
+						{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "effect"}}},
+						regionLoadOperation(3, "u32"),
+					},
+					Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{3}},
+				}},
+			}
+			metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+				{Site: OperationSite{Block: 0, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+				{Site: OperationSite{Block: 0, Index: 1}, CallEffect: test.effect, Accesses: []MemoryAccessSpec{{Region: "state", Kind: test.kind}}},
+				regionLoadMetadata(0, 2, "state", false),
+			}}
+			memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+			result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Changes() != 0 || !sameDeadStoreCFG(result, cfg) || !sameDeadStoreMetadata(t, cfg, metadata, result, resultMetadata) {
+				t.Fatalf("forwarded through %s: result=%+v metadata=%+v report=%+v", test.effect, result, resultMetadata, report)
+			}
+		})
+	}
+}
+
 func TestRegionLoadForwardingKeepsJoinVersionAndVolatileLoads(t *testing.T) {
 	t.Run("join phi", func(t *testing.T) {
 		cfg := CFG{

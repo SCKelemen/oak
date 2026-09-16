@@ -90,7 +90,7 @@ main: (): i32 = 0
 	}
 }
 
-func TestCheckedGlobalMemoryKeepsBranchStoresAndAcceptsProvenPureCalls(t *testing.T) {
+func TestCheckedGlobalMemoryKeepsBranchStoresAndAcceptsExactCallEffects(t *testing.T) {
 	module, err := New().WithSource("optir_memory_branch.oak", `
 flag: Bool = false
 items: [2]u32
@@ -121,6 +121,12 @@ stateful: (value: Bool): Bool {
   flag = stateful_wrapper(value)
   flag
 }
+set_flag: (value: Bool): Bool {
+  flag = value
+  value
+}
+set_wrapper: (value: Bool): Bool = set_flag(value)
+set_forward: (value: Bool): Bool = set_wrapper(value)
 main: (): i32 = 0
 `).OptIR().Get()
 	if err != nil {
@@ -169,27 +175,64 @@ main: (): i32 = 0
 	if !ok || len(forward.CheckedMemory.CallRecords()) != 1 || forward.CheckedMemory.CallRecords()[0].Callee != "identity" {
 		t.Fatalf("transitive pure summary was not projected: function=%+v refusals=%+v", forward, module.Refusals)
 	}
-	foundStatefulRefusal := false
-	for _, refusal := range module.Refusals {
-		if refusal.Function == "stateful" && strings.Contains(refusal.Reason, "may write checked global memory") {
-			foundStatefulRefusal = true
-		}
-	}
-	if !foundStatefulRefusal {
-		t.Fatalf("stateful call/global refusal = %+v", module.Refusals)
+	stateful, ok := optIRFunction(module, "stateful")
+	if !ok {
+		t.Fatalf("write-bearing call mixed with global state was refused: %+v", module.Refusals)
 	}
 	wrapper, ok := optIRFunction(module, "stateful_wrapper")
 	if !ok {
-		t.Fatalf("call-only stateful wrapper lost the unsummarized OptIR fallback: %+v", module.Refusals)
+		t.Fatalf("call-only stateful wrapper was refused: %+v", module.Refusals)
 	}
-	if len(wrapper.CheckedMemory.Records()) != 0 || len(wrapper.CheckedMemory.CallRecords()) != 0 {
-		t.Fatalf("call-only stateful wrapper received memory authority: %+v", wrapper.CheckedMemory)
+	wrapperCalls := wrapper.CheckedMemory.CallRecords()
+	if len(wrapper.CheckedMemory.Records()) != 0 || len(wrapperCalls) != 1 || wrapperCalls[0].Callee != "touch" || len(wrapperCalls[0].Accesses) != 1 {
+		t.Fatalf("call-only stateful wrapper authority = %+v", wrapper.CheckedMemory)
 	}
-	for _, block := range wrapper.CFG.Blocks {
-		for _, operation := range block.Operations {
-			if operation.Code == optir.OpCall && operation.MemoryCallID != "" {
-				t.Fatalf("call-only stateful wrapper carries unauthorized summary ID %s", operation.MemoryCallID)
-			}
+	stateEffect := wrapperCalls[0].Accesses[0]
+	if stateEffect.Kind != optir.MemoryReadWrite || stateEffect.WholeRegion || stateEffect.Volatile {
+		t.Fatalf("read/write callee effect = %+v", stateEffect)
+	}
+	seenModRef := false
+	for _, operation := range wrapper.MemoryProjection.Metadata.Operations {
+		seenModRef = seenModRef || operation.CallEffect == optir.MemoryCallModRef
+	}
+	if !seenModRef {
+		t.Fatalf("stateful wrapper projection has no ModRef call: %+v", wrapper.MemoryProjection.Metadata)
+	}
+	statefulCalls := stateful.CheckedMemory.CallRecords()
+	if len(statefulCalls) != 1 || !reflect.DeepEqual(statefulCalls[0].Accesses, wrapperCalls[0].Accesses) {
+		t.Fatalf("transitive stateful effect = %+v, want %+v", statefulCalls, wrapperCalls[0].Accesses)
+	}
+
+	setWrapper, ok := optIRFunction(module, "set_wrapper")
+	if !ok {
+		t.Fatalf("write-only wrapper was refused: %+v", module.Refusals)
+	}
+	setCalls := setWrapper.CheckedMemory.CallRecords()
+	if len(setCalls) != 1 || len(setCalls[0].Accesses) != 1 {
+		t.Fatalf("write-only wrapper authority = %+v", setCalls)
+	}
+	write := setCalls[0].Accesses[0]
+	if write.Kind != optir.MemoryWrite || write.WholeRegion || write.Volatile {
+		t.Fatalf("write-only callee did not become conservative may-Mod: %+v", write)
+	}
+	seenMod := false
+	for _, operation := range setWrapper.MemoryProjection.Metadata.Operations {
+		seenMod = seenMod || operation.CallEffect == optir.MemoryCallMod
+	}
+	if !seenMod {
+		t.Fatalf("write-only wrapper projection has no Mod call: %+v", setWrapper.MemoryProjection.Metadata)
+	}
+	setForward, ok := optIRFunction(module, "set_forward")
+	if !ok {
+		t.Fatalf("transitive write-only wrapper was refused: %+v", module.Refusals)
+	}
+	forwardWrites := setForward.CheckedMemory.CallRecords()
+	if len(forwardWrites) != 1 || !reflect.DeepEqual(forwardWrites[0].Accesses, []optir.CheckedMemoryCallAccess{write}) {
+		t.Fatalf("transitive write-only summary = %+v, want %+v", forwardWrites, write)
+	}
+	for _, refusal := range module.Refusals {
+		if refusal.Function == "stateful" || refusal.Function == "stateful_wrapper" || refusal.Function == "set_wrapper" || refusal.Function == "set_forward" {
+			t.Fatalf("representable writer was refused: %+v", refusal)
 		}
 	}
 }
@@ -247,21 +290,27 @@ main: (): i32 = 0
 	if mixedCalls[0].SummaryFingerprint == "" || mixedCalls[0].SummaryFingerprint == forwardCalls[0].SummaryFingerprint {
 		t.Fatalf("transitive summary did not bind its own CFG and child: direct=%q transitive=%q", forwardCalls[0].SummaryFingerprint, mixedCalls[0].SummaryFingerprint)
 	}
-	fingerprint, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{read})
+	fingerprint, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{read})
 	if err != nil || fingerprint != mixedCalls[0].SummaryFingerprint {
 		t.Fatalf("transitive summary fingerprint = %q, err=%v, want %q", fingerprint, err, mixedCalls[0].SummaryFingerprint)
 	}
 	changed := read
 	changed.Region += ":changed"
-	changedRegion, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
+	changedRegion, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
 	if err != nil || changedRegion == fingerprint {
 		t.Fatalf("read-region change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedRegion, err)
 	}
 	changed = read
 	changed.ValueType = "u64"
-	changedType, err := fingerprintOptIRReadOnlySummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
+	changedType, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
 	if err != nil || changedType == fingerprint {
 		t.Fatalf("read-type change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedType, err)
+	}
+	changed = read
+	changed.Kind = optir.MemoryWrite
+	changedKind, err := fingerprintOptIRCallEffectSummary(forward.CFG, forwardCalls, []optir.CheckedMemoryCallAccess{changed})
+	if err != nil || changedKind == fingerprint {
+		t.Fatalf("effect-kind change retained summary fingerprint %q (changed=%q, err=%v)", fingerprint, changedKind, err)
 	}
 	if err := optir.VerifyCheckedMemoryProjection(mixed.LoopInvariant, mixed.CheckedMemory, mixed.MemoryProjection); err != nil {
 		t.Fatalf("transitive reader checked projection: %v", err)
@@ -302,7 +351,7 @@ main: (): i32 = 0
 	}
 }
 
-func TestCheckedPureCallSummaryRefusesRecursiveSCC(t *testing.T) {
+func TestCheckedCallEffectSummaryRefusesRecursiveSCC(t *testing.T) {
 	module, err := New().WithSource("optir_recursive_call.oak", `
 flag: Bool = false
 first: (value: Bool): Bool = second(value)
@@ -317,7 +366,7 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	if _, ok := optIRFunction(module, "mixed"); ok {
-		t.Fatal("recursive call SCC unexpectedly received a checked no-ModRef summary")
+		t.Fatal("recursive call SCC unexpectedly received a checked call-effect summary")
 	}
 	found := false
 	for _, refusal := range module.Refusals {

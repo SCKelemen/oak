@@ -41,7 +41,7 @@ func FingerprintRegionMemoryInput(
 	}
 
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-input.v3")
+	fingerprintString(digest, "oak.optir.region-memory-input.v4")
 	fingerprintString(digest, fingerprintCFG(cfg))
 	fingerprintString(digest, fingerprintNormalizedMemoryMetadata(normalizedMetadata))
 	fingerprintString(digest, fingerprintRegionMemoryObservability(normalizedObservability))

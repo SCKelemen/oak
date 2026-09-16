@@ -39,6 +39,25 @@ observe_then_overwrite: (): u32 {
 main: (): i32 = i32_bits_u32(observe_then_overwrite())
 `
 
+const nativeOptIRMemoryModRefCallProgram = `
+state: u32 = u32(0)
+
+bump: (delta: u32): u32 {
+  state = state + delta
+  state
+}
+
+observe_bump: (): u32 {
+  state = u32(20)
+  changed: u32 = bump(u32(1))
+  current: u32 = state
+  again: u32 = state
+  current + again
+}
+
+main: (): i32 = i32_bits_u32(observe_bump())
+`
+
 func TestE2ENativeOptIRSelectsVerifiedNoModRefCallRegionDSE(t *testing.T) {
 	requireArm64Host(t)
 	comp, diagnostics := nativeOptIRMemoryCallCompilation("")
@@ -109,6 +128,47 @@ func TestE2ENativeRV64OptIRRefCallRegionMemoryUnderQEMU(t *testing.T) {
 	}
 }
 
+func TestE2ENativeOptIRSelectsVerifiedModRefCallRegionMemory(t *testing.T) {
+	requireArm64Host(t)
+	comp, diagnostics := nativeOptIRMemoryModRefCallCompilation("")
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVerifiedOptIRMemoryModRefCall(t, diagnostics, model)
+	if _, code, abnormal := buildAndRunFrom(t, "native_optir_memory_modref_calls", comp); abnormal || code != 42 {
+		t.Fatalf("native ModRef call/region-memory execution = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+func TestE2ENativeRV64OptIRSelectsVerifiedModRefCallRegionMemory(t *testing.T) {
+	comp, diagnostics := nativeOptIRMemoryModRefCallCompilation(asm.ArchRV64)
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVerifiedOptIRMemoryModRefCall(t, diagnostics, model)
+	native, err := comp.EmitNative(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(native.Object) == 0 {
+		t.Fatal("RV64 ModRef call/region-memory candidate produced no object")
+	}
+}
+
+func TestE2ENativeRV64OptIRModRefCallRegionMemoryUnderQEMU(t *testing.T) {
+	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
+	native, diagnostics := nativeRV64Lower(t, bare, nativeOptIRMemoryModRefCallProgram)
+	joined := strings.Join(diagnostics, "\n")
+	if !strings.Contains(joined, "observe_bump: optimized OptIR selected") {
+		t.Fatalf("verified RV64 ModRef call/region-memory candidate was not selected:\n%s", joined)
+	}
+	if out := runNativeRV64Bare(t, "native_rv64_optir_memory_modref_calls", native); !strings.Contains(out, "0000002a\n") {
+		t.Fatalf("optimized RV64 ModRef call/region-memory did not exit 42:\n%s", out)
+	}
+}
+
 func nativeOptIRMemoryCallCompilation(arch string) (Compilation, *[]string) {
 	diagnostics := []string{}
 	comp := New().WithSource("native_optir_memory_calls.oak", nativeOptIRMemoryCallProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
@@ -125,6 +185,19 @@ func nativeOptIRMemoryCallCompilation(arch string) (Compilation, *[]string) {
 func nativeOptIRMemoryRefCallCompilation(arch string) (Compilation, *[]string) {
 	diagnostics := []string{}
 	comp := New().WithSource("native_optir_memory_ref_calls.oak", nativeOptIRMemoryRefCallProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			diagnostics = append(diagnostics, d.Message)
+		}
+	})
+	if arch == asm.ArchRV64 {
+		comp = comp.WithTarget(rv64Linux)
+	}
+	return comp, &diagnostics
+}
+
+func nativeOptIRMemoryModRefCallCompilation(arch string) (Compilation, *[]string) {
+	diagnostics := []string{}
+	comp := New().WithSource("native_optir_memory_modref_calls.oak", nativeOptIRMemoryModRefCallProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {
 			diagnostics = append(diagnostics, d.Message)
 		}
@@ -156,5 +229,17 @@ func assertVerifiedOptIRMemoryRefCall(t *testing.T, diagnostics *[]string, model
 	verdict := model.NativeVerdicts["observe_then_overwrite"]
 	if verdict.Kind != asm.VerdictProven || !strings.Contains(verdict.Message, "callees taken at their Oak bodies: read_plus") || !strings.Contains(verdict.Message, "package state it writes (state)") {
 		t.Fatalf("observe_then_overwrite verdict = %s (%s)", verdict.Kind, verdict.Message)
+	}
+}
+
+func assertVerifiedOptIRMemoryModRefCall(t *testing.T, diagnostics *[]string, model *SemanticModel) {
+	t.Helper()
+	joined := strings.Join(*diagnostics, "\n")
+	if !strings.Contains(joined, "observe_bump: optimized OptIR selected") || !strings.Contains(joined, "generic SSA change(s), proven") {
+		t.Fatalf("verified ModRef call/region-memory candidate was not selected:\n%s", joined)
+	}
+	verdict := model.NativeVerdicts["observe_bump"]
+	if verdict.Kind != asm.VerdictProven || !strings.Contains(verdict.Message, "callees taken at their Oak bodies: bump") || !strings.Contains(verdict.Message, "package state it writes (state)") {
+		t.Fatalf("observe_bump verdict = %s (%s)", verdict.Kind, verdict.Message)
 	}
 }

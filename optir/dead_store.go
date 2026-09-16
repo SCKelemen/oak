@@ -274,7 +274,7 @@ func eliminateDeadRegionStores(
 
 func fingerprintDeadStoreEliminationReport(report DeadStoreEliminationReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.dead-store-elimination.v3")
+	fingerprintString(digest, "oak.optir.dead-store-elimination.v4")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

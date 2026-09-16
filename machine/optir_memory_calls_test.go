@@ -221,6 +221,92 @@ call_read: (): u32 = read_state()
 	}
 }
 
+func TestLowerOptIRCheckedRegionMemoryWriteCallsVerify(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		for _, effect := range []optir.MemoryCallEffect{optir.MemoryCallMod, optir.MemoryCallModRef} {
+			t.Run(target.name+"/"+string(effect), func(t *testing.T) {
+				fixture := newOptIRMemoryWriteCallFixture(t, target, effect)
+				lowered, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				callee := "write_state"
+				if effect == optir.MemoryCallModRef {
+					callee = "update_state"
+				}
+				body := text(lowered.Items)
+				callPrefix := target.callInstruction[:strings.IndexByte(target.callInstruction, ' ')+1]
+				if !strings.Contains(body, callPrefix+callee) {
+					t.Fatalf("selected checked %s body lacks call to %s:\n%s", effect, callee, body)
+				}
+				if strings.Contains(body, target.addressText) {
+					t.Fatalf("call-only checked %s body emits a synthetic caller memory access:\n%s", effect, body)
+				}
+				if len(lowered.Globals) != 1 || lowered.Globals["state"] != fixture.global {
+					t.Fatalf("selected checked %s globals = %#v, want callee-only state", effect, lowered.Globals)
+				}
+				if lowered.Frame == 0 || lowered.Frame%16 != 0 {
+					t.Fatalf("selected checked %s frame = %d, want nonzero 16-byte alignment", effect, lowered.Frame)
+				}
+				if findings := asm.Check(lowered, fixture.declaration, map[string]bool{callee: true}); len(findings) != 0 {
+					t.Fatalf("selected checked %s body fails seam check: %v\n%s", effect, findings, body)
+				}
+				verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+				if verdict.Kind != asm.VerdictProven {
+					t.Fatalf("selected checked %s verdict = %s (%s)\n%s", effect, verdict.Kind, verdict.Message, body)
+				}
+				if !strings.Contains(verdict.Message, "callees taken at their Oak bodies: "+callee) {
+					t.Fatalf("proven %s verdict does not name the admitted callee: %s", effect, verdict.Message)
+				}
+			})
+		}
+	}
+}
+
+func TestLowerOptIRRegionMemoryWriteCallsFailClosed(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		for _, effect := range []optir.MemoryCallEffect{optir.MemoryCallMod, optir.MemoryCallModRef} {
+			t.Run(target.name+"/"+string(effect), func(t *testing.T) {
+				fixture := newOptIRMemoryWriteCallFixture(t, target, effect)
+				if _, err := target.lowerUnchecked(fixture.cfg, fixture.template, fixture.projection.Metadata, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "requires checked memory authority") {
+					t.Fatalf("caller-owned %s metadata refusal = %v", effect, err)
+				}
+
+				wrongEffect := fixture.projection
+				wrongEffect.Metadata.Operations = append([]optir.MemoryOperationMetadata(nil), fixture.projection.Metadata.Operations...)
+				wrongEffect.Metadata.Operations[0].CallEffect = optir.MemoryCallRef
+				if _, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, wrongEffect, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "mutated") {
+					t.Fatalf("tampered %s effect refusal = %v", effect, err)
+				}
+
+				wholeWrite := fixture.projection
+				wholeWrite.Metadata.Operations = append([]optir.MemoryOperationMetadata(nil), fixture.projection.Metadata.Operations...)
+				wholeWrite.Metadata.Operations[0].Accesses = append([]optir.MemoryAccessSpec(nil), fixture.projection.Metadata.Operations[0].Accesses...)
+				wholeWrite.Metadata.Operations[0].Accesses[0].WholeRegion = true
+				if _, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, wholeWrite, fixture.memorySSA, fixture.bindings); err == nil || !strings.Contains(err.Error(), "mutated") {
+					t.Fatalf("tampered %s whole-write refusal = %v", effect, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLowerOptIRForgedModSummaryCannotReceiveProvenVerdict(t *testing.T) {
+	for _, target := range optIRMemoryCallTargets() {
+		t.Run(target.name, func(t *testing.T) {
+			fixture := newOptIRForgedModDSEFixture(t, target)
+			lowered, err := target.lowerChecked(fixture.cfg, fixture.template, fixture.authority, fixture.projection, fixture.memorySSA, fixture.bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdict := asm.Verify(lowered, fixture.declaration, fixture.declaration.Body)
+			if verdict.Kind == asm.VerdictProven {
+				t.Fatalf("caller-minted Mod summary received a proven verdict: %s\n%s", verdict.Message, text(lowered.Items))
+			}
+		})
+	}
+}
+
 func TestLowerOptIRForgedRefWriteAcrossForwardedLoadCannotReceiveProvenVerdict(t *testing.T) {
 	for _, target := range optIRMemoryCallTargets() {
 		t.Run(target.name, func(t *testing.T) {
@@ -274,6 +360,78 @@ type optIRMemoryCallFixture struct {
 	memorySSA   optir.RegionMemorySSA
 	bindings    map[optir.RegionID]OptIRRegionGlobal
 	global      asm.Global
+}
+
+func newOptIRForgedModDSEFixture(t *testing.T, target optIRMemoryCallTarget) optIRMemoryCallFixture {
+	t.Helper()
+	declarations := optIRRV64Declarations(t, `
+read_then_write: (value: u32): u32 = {
+  old: u32 = state
+  state = value
+  old
+}
+call_write: (value: u32): u32 = {
+  state = u32(7)
+  old: u32 = read_then_write(value)
+  state = u32(9)
+  old
+}
+`)
+	declaration := declarations["call_write"]
+	const region optir.RegionID = "opaque:checked-state"
+	callSource := optir.Source{Context: "forged-mod-dse.oak", Line: 8, Column: 14}
+	storeSource := optir.Source{Context: "forged-mod-dse.oak", Line: 9, Column: 3}
+	callRecord, err := optir.NewCheckedMemoryCallRecordWithAccesses(callSource, "read_then_write", "forged-mod:read_then_write", []optir.CheckedMemoryCallAccess{{
+		Region: region, Kind: optir.MemoryWrite, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeRecord, err := optir.NewCheckedMemoryAccessRecord(storeSource, region, optir.MemoryWrite, "u32", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls([]optir.CheckedMemoryAccessRecord{storeRecord}, []optir.CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A forged write-only summary makes the source's first store look dead once
+	// the final whole store is considered. The candidate is that store-elided
+	// form; the real callee read makes its returned value observably different.
+	cfg := optir.CFG{
+		Name: "call_write", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "value"}},
+			Operations: []optir.Operation{
+				{
+					Code: optir.OpCall, Results: []optir.Value{{ID: 2, Type: "u32"}}, Operands: []optir.ValueID{1},
+					Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "read_then_write"}},
+					Source: callSource, MemoryCallID: callRecord.ID,
+				},
+				{Code: optir.OpConstInt, Results: []optir.Value{{ID: 3, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "9"}}},
+				{Code: optir.OpStoreRegion, Operands: []optir.ValueID{3}, Effects: []optir.Effect{optir.EffectWriteMemory}, Source: storeSource, MemoryAccessID: storeRecord.ID},
+			},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
+		}},
+	}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	global := asm.Global{Type: "u32", Bits: 32}
+	template := &asm.Function{
+		Name: "call_write", Arch: target.arch, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: target.parameter, Param: "value"}}, Globals: map[string]asm.Global{"state": global},
+		Callees: map[string]*ast.FunctionStatement{"read_then_write": declarations["read_then_write"]},
+	}
+	return optIRMemoryCallFixture{
+		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,
+		bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
+	}
 }
 
 func newOptIRForgedForwardedRefFixture(t *testing.T, target optIRMemoryCallTarget) optIRMemoryCallFixture {
@@ -417,6 +575,79 @@ call_read: (): u32 = read_state()
 	template := &asm.Function{
 		Name: "call_read", Arch: target.arch, Signature: declaration, Fallback: true,
 		Globals: map[string]asm.Global{"state": global}, Callees: map[string]*ast.FunctionStatement{"read_state": declarations["read_state"]},
+	}
+	return optIRMemoryCallFixture{
+		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,
+		bindings: map[optir.RegionID]OptIRRegionGlobal{region: {Symbol: "state", Global: global}}, global: global,
+	}
+}
+
+func newOptIRMemoryWriteCallFixture(t *testing.T, target optIRMemoryCallTarget, effect optir.MemoryCallEffect) optIRMemoryCallFixture {
+	t.Helper()
+	callee, caller, kind := "write_state", "call_write", optir.MemoryWrite
+	source := `
+write_state: (value: u32): u32 = {
+  state = value
+  value
+}
+call_write: (value: u32): u32 = write_state(value)
+`
+	if effect == optir.MemoryCallModRef {
+		callee, caller, kind = "update_state", "call_update", optir.MemoryReadWrite
+		source = `
+update_state: (value: u32): u32 = {
+  state = state + value
+  state
+}
+call_update: (value: u32): u32 = update_state(value)
+`
+	} else if effect != optir.MemoryCallMod {
+		t.Fatalf("unsupported write-call fixture effect %q", effect)
+	}
+	declarations := optIRRV64Declarations(t, source)
+	declaration := declarations[caller]
+	const region optir.RegionID = "opaque:checked-state"
+	callSource := optir.Source{Context: "checked-write-call-memory.oak", Line: 6, Column: 32}
+	callRecord, err := optir.NewCheckedMemoryCallRecordWithAccesses(callSource, callee, "checked-transitive-"+string(effect)+":"+callee, []optir.CheckedMemoryCallAccess{{
+		Region: region, Kind: kind, ValueType: "u32",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls(nil, []optir.CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{
+		Name: caller, Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "value"}},
+			Operations: []optir.Operation{{
+				Code: optir.OpCall, Results: []optir.Value{{ID: 2, Type: "u32"}}, Operands: []optir.ValueID{1}, Effects: []optir.Effect{optir.EffectCall},
+				Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: callee}}, Source: callSource, MemoryCallID: callRecord.ID,
+			}},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
+		}},
+	}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyRegionMemorySSA(cfg, projection.Metadata, memorySSA); err != nil {
+		t.Fatal(err)
+	}
+	global := asm.Global{Type: "u32", Bits: 32}
+	template := &asm.Function{
+		Name: caller, Arch: target.arch, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: target.parameter, Param: "value"}}, Globals: map[string]asm.Global{"state": global},
+		Callees: map[string]*ast.FunctionStatement{callee: declarations[callee]},
 	}
 	return optIRMemoryCallFixture{
 		cfg: cfg, template: template, declaration: declaration, authority: authority, projection: projection, memorySSA: memorySSA,

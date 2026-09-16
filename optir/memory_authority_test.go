@@ -187,7 +187,7 @@ func TestCheckedMemoryCallRefAuthorityRejectsUnsafeOrInconsistentAccesses(t *tes
 		want   string
 	}{
 		{name: "write", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryWrite, ValueType: "u32", WholeRegion: true}}, want: "unsupported access"},
-		{name: "read-write", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryReadWrite, ValueType: "u32"}}, want: "unsupported access"},
+		{name: "unknown kind", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: "forged", ValueType: "u32"}}, want: "unsupported access"},
 		{name: "whole read", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "u32", WholeRegion: true}}, want: "unsupported access"},
 		{name: "volatile", access: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryRead, ValueType: "u32", Volatile: true}}, want: "unsupported access"},
 		{name: "empty region", access: []CheckedMemoryCallAccess{{Kind: MemoryRead, ValueType: "u32"}}, want: "malformed access"},
@@ -225,6 +225,59 @@ func TestCheckedMemoryCallRefAuthorityRejectsUnsafeOrInconsistentAccesses(t *tes
 	pureAuthority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{pure})
 	if err != nil || pureAuthority.HasMemoryEffects() {
 		t.Fatalf("NoModRef-only authority memory effects = %v, err=%v", pureAuthority.HasMemoryEffects(), err)
+	}
+}
+
+func TestCheckedMemoryCallAuthorityDerivesCanonicalModAndModRef(t *testing.T) {
+	source := Source{Context: "calls.oak", Line: 9, Column: 2}
+	tests := []struct {
+		name     string
+		accesses []CheckedMemoryCallAccess
+		want     MemoryCallEffect
+	}{
+		{name: "mod", accesses: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryWrite, ValueType: "u32"}}, want: MemoryCallMod},
+		{name: "single-region mod-ref", accesses: []CheckedMemoryCallAccess{{Region: "global:x", Kind: MemoryReadWrite, ValueType: "u32"}}, want: MemoryCallModRef},
+		{name: "disjoint mod-ref", accesses: []CheckedMemoryCallAccess{
+			{Region: "global:written", Kind: MemoryWrite, ValueType: "u64"},
+			{Region: "global:read", Kind: MemoryRead, ValueType: "u32"},
+		}, want: MemoryCallModRef},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record, err := NewCheckedMemoryCallRecordWithAccesses(source, "effect", "summary:effect:v1", test.accesses)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, access := range record.Accesses {
+				if access.WholeRegion || access.Volatile {
+					t.Fatalf("call MAY effect gained overwrite/volatile authority: %+v", access)
+				}
+			}
+			authority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := CFG{Name: "caller", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+				ID: 0, Operations: []Operation{{
+					Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+					Attributes: []Attribute{{Name: AttributeCallee, Value: "effect"}}, Source: source, MemoryCallID: record.ID,
+				}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+			}}}
+			projection, err := ProjectCheckedMemory(cfg, authority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := projection.Metadata.Operations; len(got) != 1 || got[0].CallEffect != test.want {
+				t.Fatalf("projected effect = %+v, want %s", got, test.want)
+			}
+		})
+	}
+
+	if _, err := NewCheckedMemoryCallRecordWithAccesses(source, "effect", "summary:effect:v1", []CheckedMemoryCallAccess{
+		{Region: "global:x", Kind: MemoryRead, ValueType: "u32"},
+		{Region: "global:x", Kind: MemoryWrite, ValueType: "u32"},
+	}); err == nil || !strings.Contains(err.Error(), "unique canonical") {
+		t.Fatalf("unmerged same-region effects error = %v", err)
 	}
 }
 

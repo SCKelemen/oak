@@ -31,14 +31,16 @@ const (
 )
 
 // MemoryCallEffect is the complete checked memory-effect summary vocabulary
-// for calls. NoModRef means that the call neither reads nor writes memory; Ref
-// means that its attached exact accesses are all reads. Absence of a summary
-// never implies either property.
+// for calls. NoModRef means neither read nor write; Ref means read-only; Mod
+// means write-only; and ModRef means both. Absence of a summary never implies
+// any of these properties.
 type MemoryCallEffect string
 
 const (
 	MemoryCallNoModRef MemoryCallEffect = "no-mod-ref"
 	MemoryCallRef      MemoryCallEffect = "ref"
+	MemoryCallMod      MemoryCallEffect = "mod"
+	MemoryCallModRef   MemoryCallEffect = "mod-ref"
 )
 
 // MemoryVersionKind distinguishes entry definitions, control-flow joins, and
@@ -275,14 +277,15 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 			return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata repeats operation %d:%d", operation.Site.Block, operation.Site.Index)
 		}
 		if operation.CallEffect != "" {
-			if operation.CallEffect != MemoryCallNoModRef && operation.CallEffect != MemoryCallRef {
+			if operation.CallEffect != MemoryCallNoModRef && operation.CallEffect != MemoryCallRef &&
+				operation.CallEffect != MemoryCallMod && operation.CallEffect != MemoryCallModRef {
 				return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d has unknown call effect %q", operation.Site.Block, operation.Site.Index, operation.CallEffect)
 			}
 			if operation.CallEffect == MemoryCallNoModRef && len(operation.Accesses) != 0 {
 				return normalizedMemoryMetadata{}, fmt.Errorf("optir: no-mod-ref call metadata for operation %d:%d cannot carry accesses", operation.Site.Block, operation.Site.Index)
 			}
-			if operation.CallEffect == MemoryCallRef && len(operation.Accesses) == 0 {
-				return normalizedMemoryMetadata{}, fmt.Errorf("optir: ref call metadata for operation %d:%d has no accesses", operation.Site.Block, operation.Site.Index)
+			if operation.CallEffect != MemoryCallNoModRef && len(operation.Accesses) == 0 {
+				return normalizedMemoryMetadata{}, fmt.Errorf("optir: %s call metadata for operation %d:%d has no accesses", operation.CallEffect, operation.Site.Block, operation.Site.Index)
 			}
 			callEffects[operation.Site] = operation.CallEffect
 			if operation.CallEffect == MemoryCallNoModRef {
@@ -296,8 +299,8 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 		unknown := false
 		seenRegions := map[RegionID]bool{}
 		for _, access := range operation.Accesses {
-			if operation.CallEffect == MemoryCallRef && (access.Kind != MemoryRead || access.WholeRegion || access.Volatile) {
-				return normalizedMemoryMetadata{}, fmt.Errorf("optir: ref call metadata for operation %d:%d requires exact nonvolatile reads", operation.Site.Block, operation.Site.Index)
+			if operation.CallEffect != "" && (access.WholeRegion || access.Volatile) {
+				return normalizedMemoryMetadata{}, fmt.Errorf("optir: checked call metadata for operation %d:%d requires partial nonvolatile accesses", operation.Site.Block, operation.Site.Index)
 			}
 			switch access.Kind {
 			case MemoryRead, MemoryWrite, MemoryReadWrite:
@@ -334,6 +337,12 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 			sort.Slice(operation.Accesses, func(i, j int) bool {
 				return operation.Accesses[i].Region < operation.Accesses[j].Region
 			})
+		}
+		if operation.CallEffect != "" {
+			reads, writes := memoryAccessModes(operation.Accesses)
+			if want := classifyMemoryCallEffect(reads, writes); operation.CallEffect != want {
+				return normalizedMemoryMetadata{}, fmt.Errorf("optir: call effect %s for operation %d:%d does not match %s accesses", operation.CallEffect, operation.Site.Block, operation.Site.Index, want)
+			}
 		}
 		bySite[operation.Site] = append([]MemoryAccessSpec(nil), operation.Accesses...)
 	}
@@ -377,7 +386,7 @@ func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAcces
 		opaque = true
 	}
 	if opaque {
-		if callEffect == MemoryCallNoModRef || callEffect == MemoryCallRef {
+		if callEffect == MemoryCallNoModRef || callEffect == MemoryCallRef || callEffect == MemoryCallMod || callEffect == MemoryCallModRef {
 			if operation.Code != OpCall || len(operation.Effects) != 1 || operation.Effects[0] != EffectCall ||
 				len(operation.Attributes) != 1 || operation.Attributes[0].Name != AttributeCallee || operation.Attributes[0].Value == "" {
 				return fmt.Errorf("checked call summary requires one canonical call effect")
@@ -385,8 +394,12 @@ func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAcces
 			if callEffect == MemoryCallNoModRef && len(accesses) != 0 {
 				return fmt.Errorf("no-mod-ref summary cannot carry accesses")
 			}
-			if callEffect == MemoryCallRef && len(accesses) == 0 {
-				return fmt.Errorf("ref summary requires exact reads")
+			if callEffect != MemoryCallNoModRef && len(accesses) == 0 {
+				return fmt.Errorf("%s summary requires exact accesses", callEffect)
+			}
+			reads, writes := memoryAccessModes(accesses)
+			if want := classifyMemoryCallEffect(reads, writes); callEffect != want {
+				return fmt.Errorf("call summary %s does not match %s accesses", callEffect, want)
 			}
 			return nil
 		}
@@ -423,6 +436,27 @@ func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAcces
 		return fmt.Errorf("region metadata ModRef does not match operation effects")
 	}
 	return nil
+}
+
+func memoryAccessModes(accesses []MemoryAccessSpec) (reads, writes bool) {
+	for _, access := range accesses {
+		reads = reads || access.Kind == MemoryRead || access.Kind == MemoryReadWrite
+		writes = writes || access.Kind == MemoryWrite || access.Kind == MemoryReadWrite
+	}
+	return reads, writes
+}
+
+func classifyMemoryCallEffect(reads, writes bool) MemoryCallEffect {
+	switch {
+	case reads && writes:
+		return MemoryCallModRef
+	case reads:
+		return MemoryCallRef
+	case writes:
+		return MemoryCallMod
+	default:
+		return MemoryCallNoModRef
+	}
 }
 
 func isKnownMemoryOperation(code string) bool {
@@ -638,7 +672,7 @@ func allocateMemoryAccess(next *MemoryAccessID) (MemoryAccessID, error) {
 
 func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-metadata.v4")
+	fingerprintString(digest, "oak.optir.region-memory-metadata.v5")
 	fingerprintUint64(digest, uint64(len(metadata.regions)))
 	for _, region := range metadata.regions {
 		fingerprintString(digest, string(region))
@@ -661,7 +695,7 @@ func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) stri
 
 func fingerprintRegionMemorySSA(analysis RegionMemorySSA) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-ssa.v4")
+	fingerprintString(digest, "oak.optir.region-memory-ssa.v5")
 	fingerprintString(digest, analysis.inputFingerprint)
 	fingerprintString(digest, analysis.metadataFingerprint)
 	fingerprintUint64(digest, uint64(len(analysis.Regions)))

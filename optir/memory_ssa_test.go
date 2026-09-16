@@ -253,9 +253,9 @@ func TestRegionMemorySSARefCallReadsExactRegions(t *testing.T) {
 		want   string
 	}{
 		{name: "empty", want: "has no accesses"},
-		{name: "write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryWrite, WholeRegion: true}}, want: "exact nonvolatile reads"},
-		{name: "read-write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryReadWrite}}, want: "exact nonvolatile reads"},
-		{name: "volatile", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryRead, Volatile: true}}, want: "exact nonvolatile reads"},
+		{name: "write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryWrite, WholeRegion: true}}, want: "partial nonvolatile"},
+		{name: "read-write", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryReadWrite}}, want: "does not match mod-ref"},
+		{name: "volatile", access: []MemoryAccessSpec{{Region: "left", Kind: MemoryRead, Volatile: true}}, want: "partial nonvolatile"},
 	}
 	for _, test := range invalid {
 		t.Run(test.name, func(t *testing.T) {
@@ -264,6 +264,42 @@ func TestRegionMemorySSARefCallReadsExactRegions(t *testing.T) {
 			}}}
 			if _, err := AnalyzeRegionMemorySSA(cfg, candidate); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRegionMemorySSACallModAndModRefDefinePartialVersions(t *testing.T) {
+	tests := []struct {
+		name       string
+		effect     MemoryCallEffect
+		accessKind MemoryAccessKind
+	}{
+		{name: "mod", effect: MemoryCallMod, accessKind: MemoryWrite},
+		{name: "mod-ref", effect: MemoryCallModRef, accessKind: MemoryReadWrite},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := CFG{Name: test.name, Entry: 1, Results: []Type{"u32"}, Blocks: []Block{{
+				ID: 1, Operations: []Operation{{
+					Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+					Attributes: []Attribute{{Name: AttributeCallee, Value: "effect"}},
+				}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+			}}}
+			metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{{
+				Site: OperationSite{Block: 1, Index: 0}, CallEffect: test.effect,
+				Accesses: []MemoryAccessSpec{{Region: "state", Kind: test.accessKind}},
+			}}}
+			analysis, err := AnalyzeRegionMemorySSA(cfg, metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := MemoryAccess{ID: 1, Site: OperationSite{Block: 1, Index: 0}, Region: "state", Kind: test.accessKind, Input: 1, Output: 2}
+			if len(analysis.Accesses) != 1 || analysis.Accesses[0] != want {
+				t.Fatalf("%s access = %+v, want %+v", test.effect, analysis.Accesses, want)
+			}
+			if len(analysis.Versions) != 2 || !reflect.DeepEqual(analysis.Versions[1], MemoryVersion{ID: 2, Region: "state", Kind: MemoryVersionDefinition, Block: 1, Definition: 1}) {
+				t.Fatalf("%s versions = %+v", test.effect, analysis.Versions)
 			}
 		})
 	}

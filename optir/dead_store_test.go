@@ -112,6 +112,33 @@ func TestDeadStoreEliminationUsesAndPreservesRefCallReads(t *testing.T) {
 	}
 }
 
+func TestDeadStoreEliminationKeepsPredecessorOfPartialCallMod(t *testing.T) {
+	cfg := deadStoreCFG("call_mod", []Operation{
+		deadStoreOperation(),
+		{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "maybe-write"}}},
+		{Code: "memory.load", Effects: []Effect{EffectReadMemory}},
+	})
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		deadStoreMetadata(0, "state", MemoryWrite, true, false),
+		{Site: OperationSite{Block: 1, Index: 1}, CallEffect: MemoryCallMod, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite}}},
+		deadStoreMetadata(2, "state", MemoryRead, false, false),
+	}}
+	memorySSA, liveness := deadStoreEvidence(t, cfg, metadata, RegionMemoryObservability{})
+	result, resultMetadata, report, err := EliminateDeadRegionStores(cfg, metadata, memorySSA, RegionMemoryObservability{}, liveness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDeadStoreElimination(cfg, metadata, memorySSA, RegionMemoryObservability{}, liveness, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Removed) != 0 || !sameDeadStoreCFG(cfg, result) || !sameDeadStoreMetadata(t, cfg, metadata, result, resultMetadata) {
+		t.Fatalf("partial call Mod lost predecessor: result=%+v metadata=%+v report=%+v", result, resultMetadata, report)
+	}
+	if !reflect.DeepEqual(liveness.LiveAccesses, []MemoryAccessID{1, 2, 3}) {
+		t.Fatalf("partial call Mod liveness = %+v", liveness)
+	}
+}
+
 func TestDeadStoreEliminationPreservesReadAndLiveOutDefinitions(t *testing.T) {
 	tests := []struct {
 		name          string

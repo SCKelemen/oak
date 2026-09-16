@@ -345,7 +345,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v3")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v4")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

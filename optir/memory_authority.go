@@ -20,9 +20,10 @@ type CheckedMemoryAccessRecord struct {
 	Volatile    bool
 }
 
-// CheckedMemoryCallAccess is one exact read in a compiler-derived direct-call
-// summary. The closed initial vocabulary admits only nonvolatile, non-whole
-// reads; writes remain conservatively unsupported.
+// CheckedMemoryCallAccess is one exact region effect in a compiler-derived
+// direct-call summary. Call effects are may-effects, so even write-bearing
+// entries are nonvolatile partial definitions rather than definite whole-region
+// replacements.
 type CheckedMemoryCallAccess struct {
 	Region      RegionID
 	Kind        MemoryAccessKind
@@ -33,10 +34,11 @@ type CheckedMemoryCallAccess struct {
 
 // CheckedMemoryCallRecord transports compiler-derived authority that one exact
 // direct call has the transitive summary named by SummaryFingerprint. An empty
-// access set denotes NoModRef; a nonempty set denotes exact Ref regions. ID
-// binds the call source, exact callee, summary fingerprint, and canonical
-// accesses. Constructing this record checks its canonical identity; it does not
-// by itself prove that an arbitrary fingerprint denotes a callee summary.
+// access set denotes NoModRef; nonempty sets canonically derive Ref, Mod, or
+// ModRef from their exact region effects. ID binds the call source, exact
+// callee, summary fingerprint, and canonical accesses. Constructing this record
+// checks its canonical identity; it does not by itself prove that an arbitrary
+// fingerprint denotes a callee summary.
 // Production derives the fingerprint and accesses from checked callee CFGs and
 // still requires final semantic translation validation.
 type CheckedMemoryCallRecord struct {
@@ -82,8 +84,8 @@ func NewCheckedMemoryCallRecord(source Source, callee, summaryFingerprint string
 }
 
 // NewCheckedMemoryCallRecordWithAccesses constructs the canonical identity for
-// a direct call with an exact compiler-derived read set. Access order is not
-// semantic and is canonicalized by region identity.
+// a direct call with an exact compiler-derived memory-effect set. Access order
+// is not semantic and is canonicalized by region identity.
 func NewCheckedMemoryCallRecordWithAccesses(source Source, callee, summaryFingerprint string, accesses []CheckedMemoryCallAccess) (CheckedMemoryCallRecord, error) {
 	record := CheckedMemoryCallRecord{
 		Source: source, Callee: callee, SummaryFingerprint: summaryFingerprint,
@@ -104,7 +106,7 @@ func NewCheckedMemoryAuthority(records []CheckedMemoryAccessRecord) (CheckedMemo
 }
 
 // NewCheckedMemoryAuthorityWithCalls validates and defensively copies exact
-// scalar accesses and exact NoModRef/Ref direct-call summaries.
+// scalar accesses and exact direct-call ModRef summaries.
 func NewCheckedMemoryAuthorityWithCalls(records []CheckedMemoryAccessRecord, calls []CheckedMemoryCallRecord) (CheckedMemoryAuthority, error) {
 	authority := CheckedMemoryAuthority{
 		records:     make(map[string]CheckedMemoryAccessRecord, len(records)),
@@ -152,7 +154,7 @@ func NewCheckedMemoryAuthorityWithCalls(records []CheckedMemoryAccessRecord, cal
 func (authority CheckedMemoryAuthority) Fingerprint() string { return authority.fingerprint }
 
 // HasMemoryEffects reports whether the authority contains a direct access or a
-// summarized call read without exposing its internal record maps.
+// summarized call memory effect without exposing its internal record maps.
 func (authority CheckedMemoryAuthority) HasMemoryEffects() bool {
 	if len(authority.records) != 0 {
 		return true
@@ -463,13 +465,17 @@ func projectedCheckedMemoryCall(record CheckedMemoryCallRecord) ([]MemoryAccessS
 		return nil, MemoryCallNoModRef
 	}
 	accesses := make([]MemoryAccessSpec, len(record.Accesses))
+	reads := false
+	writes := false
 	for index, access := range record.Accesses {
 		accesses[index] = MemoryAccessSpec{
 			Region: access.Region, Kind: access.Kind,
 			WholeRegion: access.WholeRegion, Volatile: access.Volatile,
 		}
+		reads = reads || access.Kind == MemoryRead || access.Kind == MemoryReadWrite
+		writes = writes || access.Kind == MemoryWrite || access.Kind == MemoryReadWrite
 	}
-	return accesses, MemoryCallRef
+	return accesses, classifyMemoryCallEffect(reads, writes)
 }
 
 func validateCheckedMemoryOperation(operation Operation, record CheckedMemoryAccessRecord, types map[ValueID]Type) error {
@@ -537,7 +543,7 @@ func validateCheckedMemoryCallRecord(record CheckedMemoryCallRecord, requireID b
 		if access.Region == "" || !supportedCheckedMemoryType(access.ValueType) {
 			return fmt.Errorf("optir: checked memory call %q has malformed access for region %q", record.ID, access.Region)
 		}
-		if access.Kind != MemoryRead || access.WholeRegion || access.Volatile {
+		if access.Kind != MemoryRead && access.Kind != MemoryWrite && access.Kind != MemoryReadWrite || access.WholeRegion || access.Volatile {
 			return fmt.Errorf("optir: checked memory call %q has unsupported access for region %q", record.ID, access.Region)
 		}
 		if index != 0 && access.Region <= previous {
@@ -627,7 +633,7 @@ func fingerprintCheckedMemoryAccess(record CheckedMemoryAccessRecord) string {
 
 func fingerprintCheckedMemoryCall(record CheckedMemoryCallRecord) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.checked-memory-call.v2")
+	fingerprintString(digest, "oak.optir.checked-memory-call.v3")
 	fingerprintSource(digest, record.Source)
 	fingerprintString(digest, record.Callee)
 	fingerprintString(digest, record.SummaryFingerprint)
@@ -644,7 +650,7 @@ func fingerprintCheckedMemoryCall(record CheckedMemoryCallRecord) string {
 
 func fingerprintCheckedMemoryAuthority(records map[string]CheckedMemoryAccessRecord, calls map[string]CheckedMemoryCallRecord) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.checked-memory-authority.v3")
+	fingerprintString(digest, "oak.optir.checked-memory-authority.v4")
 	ids := make([]string, 0, len(records))
 	for id := range records {
 		ids = append(ids, id)
@@ -670,7 +676,7 @@ func fingerprintCheckedMemoryAuthority(records map[string]CheckedMemoryAccessRec
 
 func fingerprintCheckedMemoryProjection(projection CheckedMemoryProjection) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.checked-memory-projection.v3")
+	fingerprintString(digest, "oak.optir.checked-memory-projection.v4")
 	fingerprintString(digest, projection.cfgFingerprint)
 	fingerprintString(digest, projection.authorityFingerprint)
 	normalized := normalizedMemoryMetadata{

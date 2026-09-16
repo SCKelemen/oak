@@ -237,7 +237,8 @@ func buildMemoryDefinitionLiveness(cfg CFG, memorySSA RegionMemorySSA, observabi
 				return MemoryDefinitionLiveness{}, err
 			}
 		case MemoryWrite:
-			// A write-only ModRef definition does not itself read its input.
+			// A write-only definition does not itself read its input. Partial
+			// writes retain it if their output becomes live.
 		default:
 			return MemoryDefinitionLiveness{}, fmt.Errorf("optir: memory access %d has unknown kind %q", access.ID, access.Kind)
 		}

@@ -47,10 +47,10 @@ func validateCheckedOptIRRegionMemory(
 // validateOptIRRegionMemory closes the first memory-emission subset before a
 // target sees it. It deliberately admits only acyclic control flow or one
 // canonical natural loop. Exact scalar package-cell reads, whole nonvolatile
-// replacements, and (on acyclic CFGs) production-authenticated NoModRef/Ref
-// calls are the only memory vocabulary. The independent MemorySSA verifier
-// binds operation sites and merge/loop versions to the exact CFG and checked
-// region metadata.
+// replacements, and (on acyclic CFGs) production-authenticated exact call
+// summaries are the only memory vocabulary. The independent MemorySSA
+// verifier binds operation sites and merge/loop versions to the exact CFG and
+// checked region metadata.
 func validateOptIRRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
@@ -120,7 +120,7 @@ func validateOptIRRegionMemoryWithCalls(
 	calls := make(map[optir.OperationSite]optir.MemoryCallEffect)
 	selectedGlobals := make(map[string]asm.Global, len(metadata.Regions))
 	accessed := make(map[optir.RegionID]bool, len(metadata.Regions))
-	summaryReads := 0
+	summaryAccesses := 0
 	for _, operationMetadata := range metadata.Operations {
 		site := operationMetadata.Site
 		block := optIRBlock(cfg, site.Block)
@@ -139,43 +139,34 @@ func validateOptIRRegionMemoryWithCalls(
 			if !authenticated {
 				return nil, fmt.Errorf("machine: OptIR call %d:%d has no authenticated call record", site.Block, site.Index)
 			}
-			switch operationMetadata.CallEffect {
-			case optir.MemoryCallNoModRef:
-				if len(operationMetadata.Accesses) != 0 || len(record.Accesses) != 0 {
-					return nil, fmt.Errorf("machine: OptIR no-ModRef call %d:%d carries memory accesses", site.Block, site.Index)
+			if expected, valid := optIRCheckedCallEffect(record.Accesses); !valid || expected != operationMetadata.CallEffect {
+				return nil, fmt.Errorf("machine: OptIR call %d:%d effect %q does not match its checked accesses", site.Block, site.Index, operationMetadata.CallEffect)
+			}
+			if len(record.Accesses) != len(operationMetadata.Accesses) {
+				return nil, fmt.Errorf("machine: OptIR call %d:%d lacks its exact checked accesses", site.Block, site.Index)
+			}
+			checkedByRegion := make(map[optir.RegionID]optir.CheckedMemoryCallAccess, len(record.Accesses))
+			for _, checked := range record.Accesses {
+				if _, duplicate := checkedByRegion[checked.Region]; duplicate {
+					return nil, fmt.Errorf("machine: OptIR call %d:%d repeats checked region %q", site.Block, site.Index, checked.Region)
 				}
-			case optir.MemoryCallRef:
-				if len(operationMetadata.Accesses) == 0 || len(record.Accesses) != len(operationMetadata.Accesses) {
-					return nil, fmt.Errorf("machine: OptIR Ref call %d:%d lacks its exact checked reads", site.Block, site.Index)
+				checkedByRegion[checked.Region] = checked
+			}
+			for _, access := range operationMetadata.Accesses {
+				checked, exact := checkedByRegion[access.Region]
+				if !exact || access.Kind != checked.Kind || access.WholeRegion != checked.WholeRegion || access.Volatile != checked.Volatile || access.WholeRegion || access.Volatile {
+					return nil, fmt.Errorf("machine: OptIR call %d:%d does not carry one exact nonvolatile partial access to region %q", site.Block, site.Index, access.Region)
 				}
-				checkedByRegion := make(map[optir.RegionID]optir.CheckedMemoryCallAccess, len(record.Accesses))
-				for _, checked := range record.Accesses {
-					if checked.Kind != optir.MemoryRead || checked.WholeRegion || checked.Volatile {
-						return nil, fmt.Errorf("machine: OptIR Ref call %d:%d has a non-read checked access to region %q", site.Block, site.Index, checked.Region)
-					}
-					if _, duplicate := checkedByRegion[checked.Region]; duplicate {
-						return nil, fmt.Errorf("machine: OptIR Ref call %d:%d repeats checked region %q", site.Block, site.Index, checked.Region)
-					}
-					checkedByRegion[checked.Region] = checked
+				binding, exists := bindings[access.Region]
+				if !exists {
+					return nil, fmt.Errorf("machine: OptIR call %d:%d names unbound region %q", site.Block, site.Index, access.Region)
 				}
-				for _, access := range operationMetadata.Accesses {
-					checked, exact := checkedByRegion[access.Region]
-					if !exact || access.Kind != checked.Kind || access.WholeRegion != checked.WholeRegion || access.Volatile != checked.Volatile || access.Kind != optir.MemoryRead || access.WholeRegion || access.Volatile {
-						return nil, fmt.Errorf("machine: OptIR Ref call %d:%d does not carry one exact nonvolatile read of region %q", site.Block, site.Index, access.Region)
-					}
-					binding, exists := bindings[access.Region]
-					if !exists {
-						return nil, fmt.Errorf("machine: OptIR Ref call %d:%d names unbound region %q", site.Block, site.Index, access.Region)
-					}
-					if err := validateOptIRRegionGlobalBinding(template, access.Region, checked.ValueType, binding); err != nil {
-						return nil, fmt.Errorf("machine: OptIR Ref call %d:%d: %w", site.Block, site.Index, err)
-					}
-					accessed[access.Region] = true
-					selectedGlobals[binding.Symbol] = binding.Global
-					summaryReads++
+				if err := validateOptIRRegionGlobalBinding(template, access.Region, checked.ValueType, binding); err != nil {
+					return nil, fmt.Errorf("machine: OptIR call %d:%d: %w", site.Block, site.Index, err)
 				}
-			default:
-				return nil, fmt.Errorf("machine: OptIR call %d:%d has unsupported checked effect %q", site.Block, site.Index, operationMetadata.CallEffect)
+				accessed[access.Region] = true
+				selectedGlobals[binding.Symbol] = binding.Global
+				summaryAccesses++
 			}
 			calls[site] = operationMetadata.CallEffect
 			continue
@@ -232,7 +223,7 @@ func validateOptIRRegionMemoryWithCalls(
 	if !acyclic && len(calls) != 0 {
 		return nil, fmt.Errorf("machine: OptIR region memory calls require acyclic control flow")
 	}
-	if len(stores)+len(loads)+summaryReads == 0 {
+	if len(stores)+len(loads)+summaryAccesses == 0 {
 		return nil, fmt.Errorf("machine: OptIR region memory has no accesses")
 	}
 	for _, region := range metadata.Regions {
@@ -241,6 +232,35 @@ func validateOptIRRegionMemoryWithCalls(
 		}
 	}
 	return &optIRRegionMemorySelection{stores: stores, loads: loads, calls: calls, globals: selectedGlobals}, nil
+}
+
+func optIRCheckedCallEffect(accesses []optir.CheckedMemoryCallAccess) (optir.MemoryCallEffect, bool) {
+	reads, writes := false, false
+	for _, access := range accesses {
+		if access.Region == "" || access.ValueType == "" || access.WholeRegion || access.Volatile {
+			return "", false
+		}
+		switch access.Kind {
+		case optir.MemoryRead:
+			reads = true
+		case optir.MemoryWrite:
+			writes = true
+		case optir.MemoryReadWrite:
+			reads, writes = true, true
+		default:
+			return "", false
+		}
+	}
+	switch {
+	case reads && writes:
+		return optir.MemoryCallModRef, true
+	case writes:
+		return optir.MemoryCallMod, true
+	case reads:
+		return optir.MemoryCallRef, true
+	default:
+		return optir.MemoryCallNoModRef, true
+	}
 }
 
 func (selection *optIRRegionMemorySelection) admitsMemoryCalls(cfg optir.CFG) bool {
