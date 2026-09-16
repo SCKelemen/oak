@@ -79,6 +79,22 @@ const blastNodeBudget = 2000000
 // NodeBudget is the decider's node budget, which the Oak solver is sized to.
 const NodeBudget = blastNodeBudget
 
+// escalatedNodeBudget is the budget a small equality — a few hundred term
+// nodes whose diagrams still exceed blastNodeBudget under every order: the
+// 64-bit address arithmetic of a page-table walk — is retried under
+// (decideEqual). escalationTermNodes bounds the terms that may claim it;
+// a large term past the budget stays evidence, as before.
+const (
+	escalatedNodeBudget = 16000000
+	escalationTermNodes = 400
+)
+
+// withBudget gives the blaster a fresh diagram store of the budget.
+func (bl *blaster) withBudget(budget int) *blaster {
+	bl.bdd = newBDD(budget)
+	return bl
+}
+
 func newBlaster(params []string, widths map[string]int) *blaster {
 	index := make(map[string]int, len(params))
 	for i, name := range params {

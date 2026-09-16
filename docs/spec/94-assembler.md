@@ -387,7 +387,12 @@ recurrences verbatim, `rippleCarry_eq_carry` identifies the chain's carry
 with `BitVec.carry`, `rippleSum_eq_add` gives bit i of `a + b`, and
 `rippleSum_eq_sub` gives bit i of `a - b` through the complement chain with
 carry-in 1), **witness-checked** only when the bit-level decision exceeds
-its node budget (evidence, labeled so), and **trusted** when the body or the
+its node budget (evidence, labeled so — a small equality, a few hundred
+term nodes, is first retried under an eight-times larger budget with the
+orders racing as before: the OS pilot's `translate` and `unmap_page`,
+64-bit descriptor arithmetic over three memory reads, close at eleven
+million nodes where two million left them evidence; a large term past the
+budget is not retried), and **trusted** when the body or the
 Oak expression is outside the executable subset (labels, calls, memory,
 system instructions, non-constant shift counts on the Oak side — Oak traps
 where the machine wraps the count).

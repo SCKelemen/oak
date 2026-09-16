@@ -10486,6 +10486,31 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	if holds, decided := splitDecide(constTerm(1, 1), asmTerm, adaptWidth(oakTerm, width), lowering.declaredWidth, nil, 0); decided && holds {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, under a case split on its branch conditions)%s", fn.Name, width, note)}
 	}
+	// A small equality past the budget under every order and the split
+	// — the OS pilot's translate and unmap_page: two hundred term nodes of
+	// 64-bit descriptor arithmetic over three memory reads, whose diagrams
+	// close at eleven million nodes — is retried once under the escalated
+	// budget, the orders racing as before. Only small terms claim the
+	// time: a large term past the budget stays evidence.
+	if termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
+		var stopEscalated atomic.Bool
+		escalated := equalityBlasters(names, params, asmTerm, oakTerm)
+		escalatedResults := make(chan attempt, len(escalated))
+		for _, bl := range escalated {
+			bl.withBudget(escalatedNodeBudget)
+			bl.bdd.stop = &stopEscalated
+			go func(bl *blaster) {
+				verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
+				escalatedResults <- attempt{verdict, exceeded}
+			}(bl)
+		}
+		for range escalated {
+			if a := <-escalatedResults; !a.exceeded {
+				stopEscalated.Store(true)
+				return a.verdict
+			}
+		}
+	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
 
