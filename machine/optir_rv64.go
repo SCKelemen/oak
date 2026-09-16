@@ -11,18 +11,26 @@ import (
 )
 
 // The RV64 OptIR selector allocates only caller-saved integer registers.
-// x31/t6 is deliberately absent: it breaks parallel-copy cycles and provides
-// the temporary low half when a constant needs more than one `li`.
+// x31/t6 is absent from ordinary coloring because it breaks parallel-copy
+// cycles and provides the temporary low half when a constant needs more than
+// one `li`. A pressured fallback also reserves x30/t5 as its second scratch;
+// keeping it in the strict pool preserves the no-spill selector's capacity.
 var optIRRV64Registers = []int{5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30}
+var optIRRV64SpillRegisters = []int{5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29}
 
-const optIRRV64CopyScratch = 31
+const (
+	optIRRV64SpillScratchA = 30
+	optIRRV64CopyScratch   = 31
+	optIRRV64MaxSpillFrame = 2032
+)
 
 // LowerOptIRRV64 selects an admitted RV64 body from a verified optimized
 // OptIR CFG. Its vocabulary is deliberately closed: Bool and fixed-width
 // integer constants, copies, widening casts, total arithmetic, comparisons,
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
-// values live across calls, and excess register pressure refuse the candidate.
+// values live across calls, and spills outside one straight-line return block
+// refuse the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -30,6 +38,14 @@ const optIRRV64CopyScratch = 31
 // candidate search must still seam-check and translation-validate the body
 // before it may ship.
 func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error) {
+	return lowerOptIRRV64(cfg, template, optIRRV64Registers, optIRRV64SpillRegisters)
+}
+
+func lowerOptIRRV64WithRegisters(cfg optir.CFG, template *asm.Function, registers []int) (*asm.Function, error) {
+	return lowerOptIRRV64(cfg, template, registers, registers)
+}
+
+func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int) (*asm.Function, error) {
 	if template == nil || template.Signature == nil || template.Signature.Name == nil {
 		return nil, fmt.Errorf("machine: OptIR lowering needs an assembler function template")
 	}
@@ -66,18 +82,47 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 	if err != nil {
 		return nil, err
 	}
-	coloring, err := optir.ColorRegisters(cfg, optIRRV64Registers, fixed)
-	if err != nil {
-		return nil, fmt.Errorf("machine: OptIR RV64 allocation: %w", err)
+	colors := map[optir.ValueID]int{}
+	liveOut := map[optir.BlockID][]optir.ValueID{}
+	spills := map[optir.ValueID]optir.SpillSlotID{}
+	spillLayout := optIRRV64SpillLayout{Offsets: map[optir.SpillSlotID]int64{}}
+	coloring, coloringErr := optir.ColorRegisters(cfg, strictRegisters, fixed)
+	if coloringErr == nil {
+		colors, liveOut = coloring.Colors, coloring.LiveOut
+	} else {
+		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
+			return nil, err
+		}
+		plan, planErr := optir.PlanRegisters(cfg, spillRegisters, fixed)
+		if planErr != nil {
+			return nil, fmt.Errorf("machine: OptIR RV64 allocation: %v; spill plan: %w", coloringErr, planErr)
+		}
+		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, fixed, plan); err != nil {
+			return nil, fmt.Errorf("machine: OptIR RV64 spill-plan evidence: %w", err)
+		}
+		if err := validateOptIRRV64StraightLineSpills(cfg, plan); err != nil {
+			return nil, err
+		}
+		spillLayout, err = layoutOptIRRV64Spills(plan, optIRRV64MaxSpillFrame)
+		if err != nil {
+			return nil, err
+		}
+		colors, liveOut, spills = plan.Colors, plan.LiveOut, plan.Spills
 	}
-	calls, err := optIRRV64Calls(cfg, template, types, coloring.LiveOut)
+	calls, err := optIRRV64Calls(cfg, template, types, liveOut)
 	if err != nil {
 		return nil, err
 	}
+	if len(calls) != 0 && spillLayout.Frame != 0 {
+		return nil, fmt.Errorf("machine: OptIR RV64 spill materialization refuses calls")
+	}
 
 	selector := &optIRRV64Selector{
-		cfg: cfg, types: types, colors: coloring.Colors,
+		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets, frame: spillLayout.Frame,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls,
+	}
+	if len(calls) != 0 {
+		selector.frame = 16
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -91,10 +136,7 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 	out.Items = selector.items
 	out.Bindings = append([]asm.Binding(nil), template.Bindings...)
 	out.Clobbers = nil
-	out.Frame = 0
-	if len(calls) != 0 {
-		out.Frame = 16
-	}
+	out.Frame = selector.frame
 	out.System = false
 	out.Globals = nil
 	out.StackArgs = 0
@@ -120,14 +162,17 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 }
 
 type optIRRV64Selector struct {
-	cfg     optir.CFG
-	types   map[optir.ValueID]optir.Type
-	colors  map[optir.ValueID]int
-	labels  map[optir.BlockID]string
-	items   []asm.Item
-	written map[int]bool
-	calls   map[optir.ValueID]string
-	edges   int
+	cfg          optir.CFG
+	types        map[optir.ValueID]optir.Type
+	colors       map[optir.ValueID]int
+	spills       map[optir.ValueID]optir.SpillSlotID
+	spillOffsets map[optir.SpillSlotID]int64
+	frame        int64
+	labels       map[optir.BlockID]string
+	items        []asm.Item
+	written      map[int]bool
+	calls        map[optir.ValueID]string
+	edges        int
 }
 
 func (selector *optIRRV64Selector) lower() error {
@@ -135,9 +180,12 @@ func (selector *optIRRV64Selector) lower() error {
 		line := optIRBlockLine(block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
+			if selector.frame != 0 {
+				sp := optIRRV64SP()
+				selector.emit("addi", line, sp, sp, asm.Immediate{Value: -selector.frame})
+			}
 			if len(selector.calls) != 0 {
 				sp := optIRRV64SP()
-				selector.emit("addi", line, sp, sp, asm.Immediate{Value: -16})
 				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
 			}
 			// Do not let unspecified ABI padding become part of an Oak value.
@@ -160,6 +208,54 @@ func (selector *optIRRV64Selector) lower() error {
 }
 
 func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
+	if len(selector.spills) == 0 {
+		return selector.registerOperation(operation)
+	}
+	line := operation.Source.Line
+	if line <= 0 && len(operation.Results) != 0 {
+		line = operation.Results[0].Source.Line
+	}
+	original := map[optir.ValueID]int{}
+	loaded := map[optir.ValueID]int{}
+	nextScratch := optIRRV64SpillScratchA
+	for _, operand := range operation.Operands {
+		if _, spilled := selector.spills[operand]; !spilled {
+			continue
+		}
+		if _, exists := loaded[operand]; exists {
+			continue
+		}
+		if nextScratch > optIRRV64CopyScratch {
+			return fmt.Errorf("operation %s needs more than two spilled operands", operation.Code)
+		}
+		original[operand] = selector.colors[operand]
+		selector.colors[operand] = nextScratch
+		loaded[operand] = nextScratch
+		if err := selector.loadSpill(operand, nextScratch, line); err != nil {
+			return err
+		}
+		nextScratch++
+	}
+	var spilledResult optir.Value
+	if len(operation.Results) == 1 {
+		result := operation.Results[0]
+		if _, spilled := selector.spills[result.ID]; spilled {
+			spilledResult = result
+			original[result.ID] = selector.colors[result.ID]
+			selector.colors[result.ID] = optIRRV64SpillScratchA
+		}
+	}
+	err := selector.registerOperation(operation)
+	if err == nil && spilledResult.ID != 0 {
+		err = selector.storeSpill(spilledResult.ID, selector.register(spilledResult.ID), line)
+	}
+	for value := range original {
+		delete(selector.colors, value)
+	}
+	return err
+}
+
+func (selector *optIRRV64Selector) registerOperation(operation optir.Operation) error {
 	if operation.Code != optir.OpCall && len(operation.Effects) != 0 {
 		return fmt.Errorf("effectful operation %s", operation.Code)
 	}
@@ -371,12 +467,21 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		}
 		value := terminator.Values[0]
 		if selector.types[value] != optir.Type("()") {
-			selector.move(10, selector.register(value), line)
+			if _, spilled := selector.spills[value]; spilled {
+				if err := selector.loadSpill(value, 10, line); err != nil {
+					return err
+				}
+			} else {
+				selector.move(10, selector.register(value), line)
+			}
 		}
 		if len(selector.calls) != 0 {
 			sp := optIRRV64SP()
 			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
-			selector.emit("addi", line, sp, sp, asm.Immediate{Value: 16})
+		}
+		if selector.frame != 0 {
+			sp := optIRRV64SP()
+			selector.emit("addi", line, sp, sp, asm.Immediate{Value: selector.frame})
 		}
 		selector.emit("ret", line)
 		return nil
@@ -487,6 +592,72 @@ func (selector *optIRRV64Selector) move(destination, source, line int) {
 		return
 	}
 	selector.emit("mv", line, optIRRV64Register(destination), optIRRV64Register(source))
+}
+
+func (selector *optIRRV64Selector) loadSpill(value optir.ValueID, register int, line int) error {
+	slot, spilled := selector.spills[value]
+	offset, laidOut := selector.spillOffsets[slot]
+	if !spilled || !laidOut {
+		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
+	}
+	mnemonic, ok := optIRRV64SpillLoad(selector.types[value])
+	if !ok {
+		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+	}
+	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
+	selector.written[register] = true
+	selector.normalize(register, selector.types[value], line)
+	return nil
+}
+
+func (selector *optIRRV64Selector) storeSpill(value optir.ValueID, register int, line int) error {
+	slot, spilled := selector.spills[value]
+	offset, laidOut := selector.spillOffsets[slot]
+	if !spilled || !laidOut {
+		return fmt.Errorf("spilled value %d has no RV64 frame slot", value)
+	}
+	mnemonic, ok := optIRRV64SpillStore(selector.types[value])
+	if !ok {
+		return fmt.Errorf("spilled value %d has unsupported RV64 type %s", value, selector.types[value])
+	}
+	selector.emit(mnemonic, line, optIRRV64Register(register), asm.Memory{Base: optIRRV64SP(), Offset: offset, Mode: asm.MemOffset})
+	return nil
+}
+
+func optIRRV64SpillLoad(typ optir.Type) (string, bool) {
+	switch typ {
+	case optir.TypeBool, "u8":
+		return "lbu", true
+	case "i8":
+		return "lb", true
+	case "u16":
+		return "lhu", true
+	case "i16":
+		return "lh", true
+	case "u32", "i32":
+		// Both 32-bit Oak representations use RV64's canonical sign-extended
+		// W value; u32 is zero-extended only by an explicit widening cast.
+		return "lw", true
+	case "u64", "i64":
+		return "ld", true
+	default:
+		return "", false
+	}
+}
+
+func optIRRV64SpillStore(typ optir.Type) (string, bool) {
+	switch typ {
+	case optir.TypeBool, "u8", "i8":
+		return "sb", true
+	case "u16", "i16":
+		return "sh", true
+	case "u32", "i32":
+		return "sw", true
+	case "u64", "i64":
+		return "sd", true
+	default:
+		return "", false
+	}
 }
 
 func (selector *optIRRV64Selector) normalize(register int, typ optir.Type, line int) {

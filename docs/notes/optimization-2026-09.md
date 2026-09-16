@@ -149,7 +149,7 @@ conditional-edge arguments still interfere. Both selectors support Bool and
 normalizes narrow values in W registers. RV64 preserves canonical sign-extended
 32-bit values, explicitly zero-extends `u32` when widening to `u64`, and
 canonicalizes Bool/narrow ABI inputs before use. They refuse effects, traps,
-memory, stack arguments, unknown operations, and remaining pressure. The first
+memory, stack arguments, unknown operations, and unsupported pressure. The first
 direct-call slice is deliberately smaller than the projected call vocabulary:
 it admits only a known direct Oak callee with zero through eight matching
 Bool/8/16/32/64-bit scalar arguments and exactly one matching scalar result.
@@ -160,8 +160,9 @@ AArch64 or `ra` on RV64, place all register arguments simultaneously with a
 cycle-safe parallel copy, and normalize the ABI result after return. AArch64
 may source that copy from verified spill slots and composes spill storage with
 the link-register save in one bounded frame; RV64 uses a sixteen-byte call
-frame and still refuses excess pressure. A ninth or stack argument and every
-broader call form refuse the OptIR candidate and retain the ordinary lowering.
+frame and still refuses pressure in a calling CFG. A ninth or stack argument
+and every broader call form refuse the OptIR candidate and retain the ordinary
+lowering.
 Before selection, a target-independent layout analysis gives loop
 continuation/backedges an 8:1 static preference and leaves other branches
 neutral. Its fingerprint-bound order is an exact block permutation. AArch64
@@ -181,7 +182,14 @@ materializes it with three reserved scratch registers and an overflow-checked,
 16-byte-aligned frame of at most 4080 bytes. Loads preserve narrow signedness,
 stores use the represented width, and edge-copy cycles work across registers
 and slots. The resulting high-pressure candidate still passes the seam checker
-and semantic verifier before selection.
+and semantic verifier before selection. RV64 consumes the same verified plan
+for a closed first shape: one block, one return, no call or effect. Canonical
+slots become an overflow-checked, 16-byte-aligned frame of at most 2032 bytes;
+at most two spilled operands reload through reserved `t5`/`t6`, signed and
+narrow representations are restored, and each spilled result stores
+immediately. Machine tests prove `u32`, wrapping `i8`, and spilled-return
+traffic. Control-flow edges, loops, calls, and call-frame composition remain
+RV64 refusals.
 
 Region-aware MemorySSA has its first explicit analysis substrate as well.
 Checked metadata names regions and exact read/write/read-write behavior beside

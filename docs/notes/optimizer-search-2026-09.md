@@ -255,11 +255,33 @@ loads past loads). The cost model gains a stall term
 producer does not cover, at most eight apart), straight and per loop, so
 a better-scheduled body is priced lower; the first version without the
 compare barrier scheduled bodies past the verifier's path budget, which
-the vector-homes test caught.
+the vector-homes test caught. Three corrections to the measure followed
+from the suite: it counts across barriers and block boundaries (a guard
+branch between a divide and its consumer hides none of the latency on
+the fall-through path, so the branch-free strength-reduced form was
+being charged stalls the guarded form skipped), a pair whose two
+instructions lie in different loops counts once and in no loop's share,
+and a fall-through block without a label counts under the label before
+it (the top-tested loop's body block has none, and its load's stall was
+being lost while the rotated form's was charged).
 
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
+
+### Phase D, first rewrite after the reductions: map vectorization
+
+`vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
+first layer-A rewrite whose license is lane-wise semantics alone
+(`Oak.Map.blocked_eq`, `spec/lean/Oak/Map.lean`: the blocked map over a
+list is the element-wise map, for any function of one element), so it
+carries no fact requirement and its remainder loop is the source loop
+itself. It reads span parameters only, and it knows two spans have one
+length only from an enclosing `len(dst) == len(a) ? { … }`, the shape
+the seam checker admits for a store through one span under the other's
+guard. The increment's cost was in the verifier, not the rewrite: the
+hoisted form's remainder loop proved only once a premise could say that
+a skipped loop leaves its variables at their header values.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
@@ -333,10 +355,15 @@ function reserves sixteen bytes to save/restore AArch64 `x30` or RV64 `ra`,
 places the ABI register arguments as a simultaneous parallel copy whose cycles
 use the selector's reserved scratch, and normalizes the result at the boundary.
 A ninth or stack argument, all broader call forms, and other effects still
-refuse. The independently verified abstract spill plan emits no traffic and is
-not yet composed with this frame. The direct lowering remains the identity, and
-every selected OptIR body must pass seam admission and semantic translation
-validation; refusal or a trusted verdict falls back.
+refuse. AArch64 materializes the independently verified spill plan across its
+supported CFG and composes it with the call frame. RV64 now materializes a
+closed first subset: one return-terminated block without calls or effects,
+canonical scalar slots in a bounded 16-byte-aligned frame, and at most two
+spilled operands through reserved `t5`/`t6` scratches. Width-correct stores,
+signed/narrow reloads, and spilled returns are machine-proven; RV64 edges,
+loops, calls, and call-frame composition still refuse. The direct lowering
+remains the identity, and every selected OptIR body must pass seam admission
+and semantic translation validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -1024,19 +1051,34 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization — **surveyed 2026-09-16, blocked on the
-    verifier**: a hand-written vector map (`simd.store_u32x4(dst, i,
-    simd.add_u32x4(simd.load_u32x4(a, i), kv))` under
-    `len(dst) == len(a)` and the slack guard) is admitted by the seam
-    checker and modeled by the verifier lane by lane, but comes out
-    *witnessed*: "the memory of the span dst after the loops was not
-    proven equal". The scalar map is proven with its span memory, so
-    what is missing is coupling a span's memory across two loops — the
-    vector main loop and the scalar remainder. Two notes for whoever
-    takes it: an index guarded against two spans keeps only the last
-    bound, so the equal-length shape (`len(dst) == len(a)`) is the one
-    the checker admits; and a map needs no reassociation at all, so the
-    law is far weaker than the reduction's and floats vectorize too;
+24. map/zip vectorization — **landed 2026-09-16** (`vectorize-maps`,
+    `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
+    map or zip over span parameters — `dst[i] = E(a[i], b[i], …)` with `E`
+    over the elements at `i`, invariant scalars, and constants under
+    `+ - & | ^` for `u8`/`u16`/`u32`/`u64` lanes and `+ - * /` for
+    `f32`/`f64` lanes,
+    in place or under an enclosing conjunction of `len(x) == len(y)`
+    guards (closed transitively) — runs one vector a trip (the `ldr q`s,
+    the lane-wise operations, `str q`) under the slack guard with the
+    scalar remainder as written, licensed by `Oak.Map.blocked_eq`
+    (lane-wise semantics alone: no law of the element type, so no fact of
+    the body is required and floats vectorize where a reduction's cannot),
+    and proven by the verifier with the span memory it writes. Measured
+    over 2^20 elements (`benchmarks/native/README.md`, "Map
+    vectorization"): 2.8–3.0× on a `u32` map, 3.2–3.6× in place, 2.6–2.8×
+    on an `f32` multiply-add map, 2.2–2.3× on a zip. Two
+    verifier increments made it provable: the store-loop split (§0,
+    "loops that never ran keep the entry memory") proved the hand-written
+    shape that the 2026-09-16 survey found *witnessed*; and the hoisted
+    form — a guard peeled around the vector loop skips it when `len(a) <
+    4`, carrying the index's header value into the remainder loop where
+    the Oak side carries the loop symbol — needed the scalar counterpart,
+    "loops that never ran keep their variables" (`notRunPins` in
+    `asm/loops.go`: a loop ran, or each of its symbols is its header
+    value, in every premise that can read an earlier sibling's symbols).
+    Still to do: integer multiplication (no integer `mul` lane in v1) and
+    shifts, signed lanes, spans bound in the body, elements at `i ± k`
+    (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

@@ -4502,6 +4502,44 @@ sixteen-element main loop's fifteen-trip remainder half the work, so no
 strided form could pay for its tail; it is 256 now, calibrated from
 these rows (`opt/cost.go`, §16 of `90-backend.md`).
 
+**Map vectorization (2026-09-16, AArch64 lane; `nativegen/vector_map.go`,
+`spec/lean/Oak/Map.lean`, the `vectorize-maps` candidate).** An
+element-wise map over span parameters — `while i < len(a) { dst[i] =
+E(…); i = i + u32(1) }`, `E` over elements at `i` of span parameters of
+one element type (a zip reads several: `dst[i] = a[i] + b[i]`),
+loop-invariant scalars of that type, and constants under `+`, `-`, `&`,
+`|`, `^` for `u8`, `u16`, `u32`, or `u64` lanes (sixteen, eight, four,
+or two a trip) and `+`, `-`, `*`, `/` for `f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
+or written the loop's own span `a` or one known to have its length from
+an enclosing `len(dst) == len(a) && len(b) == len(a) ? { … }` (the
+equalities close transitively), or `dst` itself in place (`v[i] = (v[i]
+^ k) + u32(1)`) — is rewritten before lowering into a main loop over one
+vector a trip under the slack guard the vector kernels spell, `len(a) >=
+u32(L) && i <= len(a) - u32(L)` for `L` lanes, each invariant scalar and
+constant splatted once before it (`k_v: simd.U32x4 = simd.splat_u32x4(k)`),
+the body one `simd.load` per span read, the lane-wise operations, one
+`simd.store` into `dst` at `i`, and the remainder loop as written. The
+main loop is the `ldr q`s, the vector arithmetic, and a `str q`, no
+scalar element access. The license is the lane-wise semantics of
+`93-simd.md` §1 alone — `load` reads and `store` writes consecutive
+elements, the integer operations wrap per lane as the scalar operators
+do (`20-types.md`), the float operations round once per lane as the
+scalar operators do — so the blocked map is the element-wise map for any
+function of the elements (`Oak.Map.blocked_eq`, `block_eq`); nothing
+reassociates, no fact of the body is required, and the remainder loop is
+the source loop itself. The lowering sees the rewritten body and the
+verifier proves the assembly against it: the two loops coupled
+inductively and the span memory of `dst` compared after them (§9 "Span
+memories through loops", "Loops that never ran keep the entry memory",
+"Loops that never ran keep their variables"). Not rewritten: a value
+reading an element at another index or a scalar the loop assigns, spans
+bound in the body, spans of different element types or without the
+equal-length guard, Bool or signed lanes, integer multiplication and
+shifts, and the remainder loop of a map this rewrite made (the loop
+after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
+and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
+elements (`benchmarks/native/README.md`, "Map vectorization").
+
 **Multiply-add forms (2026-09-16, AArch64 lane;
 `nativegen/multiply_add.go`).** AArch64 computes a product and its addend
 in one instruction, so the integer expressions `a + b * c`, `b * c + a`,
@@ -6780,3 +6818,23 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**Loops that never ran keep their variables (2026-09-16).** The scalar
+counterpart: the Oak side's summary of a loop leaves each variable at
+the loop's symbol (`loop1.i`) whether the loop ran or not, and the
+machine that skips the loop under a hoisted guard — `len(a) < 4` peeled
+around a vector main loop — carries the header value (`0`) into the next
+loop instead. The two are one only under the fact that a loop which
+never ran leaves its variables at their header values, which no premise
+stated. A loop's body premise now carries it for the earlier siblings
+whose symbols the loop's header values or continue condition mention,
+and the exit comparison for the top-level loops whose symbols the two
+results mention: the loop ran (its guard held at the header and the
+machine's path reached it), or each such symbol equals its header value
+(`notRunPins`, `asm/loops.go`). Only scalars whose header value is a
+constant or a symbol are pinned — a vector kernel's sixteen lane
+variables, each pinned to a lane of the loop before, took the UTF-8
+validator's exit comparison past the node budget for nothing. The
+vectorized map's hoisted form — the form the search prices lowest — is
+proven with it where it was witnessed before ("loop 2's continue
+conditions were not proven equal").

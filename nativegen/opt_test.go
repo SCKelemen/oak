@@ -107,6 +107,12 @@ func TestMetricsCountsLoopsAndGuards(t *testing.T) {
 	}}
 	fn.Items[3] = asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_5"}}}
 	m := Metrics(fn)
+	// The stall estimate is the latency model's (machine.StallEstimate,
+	// tested with the scheduler); the counts are what this test pins.
+	m.Stalls, m.LoopStalls = 0, 0
+	for k := range m.LoopBodies {
+		m.LoopBodies[k].Stalls = 0
+	}
 	want := opt.Metrics{Instructions: 13, Branches: 3, Loads: 1, Calls: 1, Multiplies: 1, Divides: 1, Guards: 1, Loops: 1, LoopInstructions: 8, LoopBranches: 3, LoopLoads: 1, LoopGuards: 1,
 		LoopBodies: []opt.LoopMetrics{{Instructions: 8, Branches: 3, Loads: 1, Guards: 1, Stride: 1}}}
 	if fmt.Sprint(m) != fmt.Sprint(want) {
@@ -157,11 +163,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 14 {
+	if got := len(registry.Transforms()); got != 15 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true})
-	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.VectorReductions || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true, VectorMaps: true})
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.VectorReductions || plain.VectorMaps || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)

@@ -226,7 +226,10 @@ func TestE2ENativeCellsAroundLoopProven(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "and the span memory it writes (s.free_count, s.pages) and the package state it writes (st)") {
+	// The note names both memories, in the order the proving route spells
+	// them (cells before spans in the loop coupling's note, spans after a
+	// straight-line note).
+	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "the span memory it writes (s.free_count, s.pages)") || !strings.Contains(joined, "the package state it writes (st)") {
 		t.Errorf("reset must be proven with its cell and leaf memories:\n%s", joined)
 	}
 	// A cell stored in the loop body is loop-carried on the machine side

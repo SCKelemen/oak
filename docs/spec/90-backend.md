@@ -753,7 +753,13 @@ and typed/aligned abstract stack slots, never spills ABI precolors, and
 independently verifies interference and safe slot reuse. AArch64 materializes
 the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
 using width- and signedness-correct traffic plus register/slot parallel copies.
-RV64 still refuses pressure that strict coloring cannot assign.
+RV64's first consumer is narrower: only a one-block, return-terminated, call-
+and effect-free CFG may materialize. It verifies the same plan again, checks
+canonical slot widths and alignments, lays out a 16-byte-aligned frame bounded
+to 2032 bytes, and uses reserved `t5`/`t6` scratches for at most two spilled
+operands. Loads preserve the target's canonical signed/narrow representation,
+and each spilled result is stored immediately. RV64 branch, loop, SSA-edge, and
+call spill traffic still refuses.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and
@@ -772,10 +778,10 @@ in the integer ABI registers with a cycle-safe parallel copy, and reapplies the
 target's Bool/narrow normalization to the result. AArch64 may source arguments
 from verified spill slots and composes spill storage with the link-register
 save in one checked frame; RV64 uses a sixteen-byte call frame and still
-requires strict coloring. A ninth or stack argument refuses, as do unknown,
-indirect, method, generic, external, or multi-result calls, other effects,
-traps, source memory, stack parameters, unfamiliar operations, an oversized
-AArch64 frame, or remaining RV64 pressure.
+requires strict coloring for calling CFGs. A ninth or stack argument refuses,
+as do unknown, indirect, method, generic, external, or multi-result calls,
+other effects, traps, source memory, stack parameters, unfamiliar operations,
+an oversized AArch64 frame, or remaining RV64 pressure.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1
