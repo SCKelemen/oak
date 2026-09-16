@@ -4645,19 +4645,19 @@ type decisionKey struct {
 type decisionResult struct{ holds, decided bool }
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
-// loopDecisionNodeBudget bounds each of its implications. Three failed
-// diagrams end the proof: a coupling that fails three implications at
-// the per-decision budget is not about to succeed, and each such failure
-// is four orders of two million nodes raced — a minute or more — so the
-// eight of before let a body with sixty-four-way selects (`count_leading_
-// zeros`) spend seven minutes a candidate deciding nothing. Each of a
-// loop proof's implications gets a quarter of the straight-line
-// decision's nodes: the implications that hold do so in tens of
-// thousands, and a failing one at two million nodes cost half a minute
-// per order under load (`protocol_line_done`, seven minutes a candidate).
+// loopDecisionNodeBudget bounds each of its implications. Each of a loop
+// proof's implications gets a quarter of the straight-line decision's
+// nodes: the implications that hold do so in tens of thousands, and a
+// failing one at two million nodes cost half a minute per order under
+// load. The proof holds six such failures' worth, and every implication
+// charges its terms' nodes as well (impliesEqualDepth), so a write
+// coupling of dozens of stores over large terms fits where a search that
+// keeps failing does not: three failures' worth cost ten proofs
+// (`load_bits`, `diagram_ite`, `t_andbit`), eight let a body with
+// sixty-four-way selects spend seven minutes a candidate.
 const (
 	loopDecisionNodeBudget = blastNodeBudget / 4
-	loopProofNodeBudget    = 3 * loopDecisionNodeBudget
+	loopProofNodeBudget    = 6 * loopDecisionNodeBudget
 )
 
 // impliesEqual decides premise → (a = b) at the terms' common width:
