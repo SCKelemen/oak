@@ -1102,3 +1102,80 @@ func TestShapesInvariantBoundInHeader(t *testing.T) {
 		t.Fatalf("%v", shapes[0])
 	}
 }
+
+func TestScheduleSeparatesLoadsFromUses(t *testing.T) {
+	// The load's consumer waits four cycles; two independent adds fill
+	// the gap. The store keeps its order against the load, and the compare
+	// stays before its branch.
+	f := fn(
+		ins("ldr", w(9), mem(x(0), 0)),
+		ins("add", w(10), w(9), imm(1)),
+		ins("add", w(11), w(1), imm(2)),
+		ins("add", w(12), w(2), imm(3)),
+		ins("str", w(11), mem(x(0), 8)),
+		ins("cmp", w(10), w(12)),
+		bcond("hs", "done_1"),
+		ins("ret"),
+		label("done_1"),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11), x(12)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := lifted.Stalls()
+	moved := lifted.Schedule()
+	after, _ := lifted.Stalls()
+	got := text(lifted.Items())
+	if moved == 0 || after >= before {
+		t.Fatalf("moved %d, stalls %d -> %d:\n%s", moved, before, after, got)
+	}
+	ldr, use, st, cmp, br := strings.Index(got, "ldr w9"), strings.Index(got, "add w10, w9"), strings.Index(got, "str w11"), strings.Index(got, "cmp w10"), strings.Index(got, "b.hs")
+	if !(ldr < use && use < cmp && cmp < br && ldr < st) {
+		t.Fatalf("order:\n%s", got)
+	}
+	if strings.Index(got, "add w11") > use || strings.Index(got, "add w12") > use {
+		t.Fatalf("the gap was not filled:\n%s", got)
+	}
+}
+
+func TestScheduleKeepsMemoryAndCallOrder(t *testing.T) {
+	f := fn(
+		ins("str", w(1), mem(x(0), 0)),
+		ins("ldr", w(9), mem(x(0), 4)),
+		ins("add", w(10), w(9), imm(1)),
+		ins("bl", sym("g")),
+		ins("ldr", w(11), mem(x(0), 8)),
+		ins("add", w(0), w(11), w(10)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11), x(30)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifted.Schedule()
+	got := text(lifted.Items())
+	if strings.Index(got, "str w1") > strings.Index(got, "ldr w9") || strings.Index(got, "bl g") > strings.Index(got, "ldr w11") || strings.Index(got, "add w10") > strings.Index(got, "bl g") {
+		t.Fatalf("order:\n%s", got)
+	}
+}
+
+func TestScheduleRV64(t *testing.T) {
+	f := rvfn(
+		ins("ld", rx(5), mem(rx(10), 0)),
+		ins("addi", rx(6), rx(5), imm(1)),
+		ins("addi", rx(7), rx(11), imm(2)),
+		ins("add", rx(10), rx(6), rx(7)),
+		ins("ret"),
+	)
+	out, moved, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if moved == 0 || strings.Index(got, "addi t2") > strings.Index(got, "addi t1") {
+		t.Fatalf("moved %d:\n%s", moved, got)
+	}
+}

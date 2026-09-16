@@ -157,7 +157,7 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 13 {
+	if got := len(registry.Transforms()); got != 14 {
 		t.Fatalf("%d transforms", got)
 	}
 	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, VectorReductions: true})
@@ -183,7 +183,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate) {
+		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}

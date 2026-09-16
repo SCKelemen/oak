@@ -169,6 +169,7 @@ var setAside = map[string]string{
 	nativegen.TransformVecBlocks:   "addresses each vector load",
 	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",
 	nativegen.TransformReallocate:  "keeps its register assignment",
+	nativegen.TransformSchedule:    "keeps its instruction order",
 }
 
 // setAsideReasons reads, from the function's remarks, the transforms the

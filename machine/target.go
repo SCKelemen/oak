@@ -3,6 +3,7 @@ package machine
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/SCKelemen/oak/asm"
 )
@@ -64,6 +65,15 @@ type target struct {
 	readsFlags func(asm.Instruction) bool
 	// frame is the lowering's prologue and epilogue shape (growCalleeSaved).
 	frame frameShape
+	// barrier reports an instruction the scheduler never moves or moves
+	// past: a call, a return, a trap, a branch, a memory barrier, an
+	// atomic, an sp write, a system instruction.
+	barrier func(*Instr) bool
+	// latency is the cycles an instruction's result takes on the lane's
+	// reference core (the scheduler's and the stall estimate's model).
+	latency func(asm.Instruction) int
+	// writesFlags reports an instruction that sets the condition flags.
+	writesFlags func(asm.Instruction) bool
 	// increment reads `r = r + k` / `r = r - k` with an immediate: the
 	// register and its signed step (recurrence analysis).
 	increment func(asm.Instruction) (reg Reg, step int64, ok bool)
@@ -182,6 +192,50 @@ var arm64Target = &target{
 		return asm.Register{Text: "x" + itoa(r.Num), Class: asm.ClassX, Num: r.Num, Lane: -1}
 	},
 	pure: arm64Pure,
+	barrier: func(ins *Instr) bool {
+		if ins.Call || ins.Ret || ins.Trap || ins.Branch {
+			return true
+		}
+		switch ins.Asm.Mnemonic {
+		case "dmb", "dsb", "isb", "ldar", "ldarb", "ldarh", "stlr", "stlrb", "stlrh", "ldxr", "ldaxr", "stxr", "stlxr", "ldxrb", "ldaxrb", "stxrb", "stlxrb", "ldxrh", "ldaxrh", "stxrh", "stlxrh", "mrs", "msr", "svc", "hint", "yield", "wfe", "wfi", "sev", "sevl":
+			return true
+		}
+		if len(ins.Asm.Operands) > 0 {
+			if r, ok := ins.Asm.Operands[0].(asm.Register); ok && r.Class == asm.ClassSP {
+				return true // the frame's adjustment
+			}
+		}
+		return false
+	},
+	latency: func(a asm.Instruction) int {
+		switch a.Mnemonic {
+		case "ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrsw", "ldur", "ldp", "ld1", "ld1r":
+			return 4
+		case "mul", "madd", "msub", "mneg", "smull", "umull", "smulh", "umulh", "umaddl", "smaddl":
+			return 3
+		case "udiv", "sdiv":
+			return 12
+		case "fadd", "fsub", "fmul", "fmla", "fmls", "fmadd", "fmsub", "fnmadd", "fnmsub", "fcvt", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "fabs", "fneg", "fmax", "fmin":
+			return 3
+		case "fdiv", "fsqrt":
+			return 10
+		case "addv", "uaddlv", "saddlv", "umaxv", "uminv", "smaxv", "sminv", "tbl", "ext", "umov", "smov", "dup", "ins", "cmeq", "cmhi", "cmhs", "cmgt", "cmge", "cmlt", "cmle", "cmtst", "pmull", "pmull2":
+			return 3
+		}
+		if len(a.Operands) > 0 {
+			if r, ok := a.Operands[0].(asm.Register); ok && r.Class == asm.ClassV {
+				return 2 // a vector ALU form
+			}
+		}
+		return 1
+	},
+	writesFlags: func(a asm.Instruction) bool {
+		switch a.Mnemonic {
+		case "cmp", "cmn", "tst", "adds", "subs", "ands", "bics", "negs", "ccmp", "ccmn", "fcmp", "fcmpe":
+			return true
+		}
+		return false
+	},
 	increment: func(a asm.Instruction) (Reg, int64, bool) {
 		if (a.Mnemonic != "add" && a.Mnemonic != "sub") || len(a.Operands) != 3 {
 			return Reg{}, 0, false
@@ -581,6 +635,40 @@ var rv64Target = &target{
 	},
 	clobber: rv64Register,
 	pure:    rv64Pure,
+	barrier: func(ins *Instr) bool {
+		if ins.Call || ins.Ret || ins.Trap || ins.Branch {
+			return true
+		}
+		switch ins.Asm.Mnemonic {
+		case "fence", "fence.i", "ecall", "ebreak", "lr.w", "lr.d", "sc.w", "sc.d", "vsetvli", "vsetivli":
+			return true
+		}
+		if strings.HasPrefix(ins.Asm.Mnemonic, "amo") || strings.HasPrefix(ins.Asm.Mnemonic, "csr") {
+			return true
+		}
+		if len(ins.Asm.Operands) > 0 {
+			if r, ok := ins.Asm.Operands[0].(asm.Register); ok && (r.Class == asm.ClassSP || (r.Class == asm.ClassRV64X && r.Num == 2)) {
+				return true
+			}
+		}
+		return false
+	},
+	latency: func(a asm.Instruction) int {
+		switch a.Mnemonic {
+		case "lb", "lh", "lw", "ld", "lbu", "lhu", "lwu", "flw", "fld":
+			return 3
+		case "mul", "mulh", "mulhu", "mulhsu", "mulw":
+			return 3
+		case "div", "divu", "divw", "divuw", "rem", "remu", "remw", "remuw":
+			return 16
+		case "fadd.s", "fadd.d", "fsub.s", "fsub.d", "fmul.s", "fmul.d", "fmadd.s", "fmadd.d", "fmsub.s", "fmsub.d", "fnmadd.s", "fnmadd.d", "fnmsub.s", "fnmsub.d":
+			return 4
+		case "fdiv.s", "fdiv.d", "fsqrt.s", "fsqrt.d":
+			return 12
+		}
+		return 1
+	},
+	writesFlags: func(asm.Instruction) bool { return false },
 	increment: func(a asm.Instruction) (Reg, int64, bool) {
 		if (a.Mnemonic != "addi" && a.Mnemonic != "addiw") || len(a.Operands) != 3 {
 			return Reg{}, 0, false

@@ -1619,6 +1619,11 @@ type Lane struct {
 	// emitted. A body the lift refuses does not lower under the flag, so
 	// the candidate search keeps the body as emitted.
 	Reallocate bool
+	// Schedule reorders each block\'s instructions between barriers so a
+	// value\'s consumer follows its producer by its latency where the
+	// block has independent work (machine.Schedule); the candidate search
+	// keeps the body as emitted where the lift refuses.
+	Schedule bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1766,7 +1771,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
 		}
 		if !lane.Reallocate {
-			return out, nil
+			return scheduleLane(lane, out)
 		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
@@ -1778,11 +1783,14 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		out.Items, out.Clobbers = re.Items, re.Clobbers
 		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
-		return out, nil
+		return scheduleLane(lane, out)
 	case asm.ArchRV64:
 		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
-		if err != nil || !lane.Reallocate {
-			return out, err
+		if err != nil {
+			return nil, err
+		}
+		if !lane.Reallocate {
+			return scheduleLane(lane, out)
 		}
 		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
 		if rerr != nil {
@@ -1791,7 +1799,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		out.Items, out.Clobbers = re.Items, re.Clobbers
 		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
-		return out, nil
+		return scheduleLane(lane, out)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1804,6 +1812,28 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false)
 }
+
+// scheduleLane applies the machine scheduler under Lane.Schedule; a lift
+// the machine package refuses leaves the configuration without a
+// lowering, so the candidate search keeps the body as emitted.
+func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
+	if !lane.Schedule {
+		return out, nil
+	}
+	scheduled, moved, err := machine.Schedule(out)
+	if err != nil {
+		return nil, unsupported("%v", err)
+	}
+	out.Items = scheduled.Items
+	scheduledOf[out] = moved
+	return out, nil
+}
+
+// Scheduled reports how many instructions a lowering moved under
+// Lane.Schedule.
+func Scheduled(fn *asm.Function) int { return scheduledOf[fn] }
+
+var scheduledOf = map[*asm.Function]int{}
 
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.

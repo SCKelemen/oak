@@ -241,9 +241,25 @@ the recurrence analysis, and a loop the analysis cannot read keeps the
 heuristic's stride rather than losing it — the vectorized reduction's
 sixteen-element trips were priced at stride one for one test run.
 
+Fifth increment: post-allocation instruction scheduling
+(`machine.Schedule`, the `schedule` transform, gated). Within a block,
+between barriers — calls, returns, traps, branches, memory barriers,
+atomics, sp writes, system instructions, and the flag-setting compares,
+which keep their place so the verifier's loop and condition shapes
+survive — instructions list-schedule by critical path over a dependence
+graph of register reads-after-writes at the producer's latency, writes
+after reads and writes, the condition flags as a pseudo-register, and a
+conservative memory order (a store against every memory instruction,
+loads past loads). The cost model gains a stall term
+(`machine.StallEstimate`: the latency a consumer's distance from its
+producer does not cover, at most eight apart), straight and per loop, so
+a better-scheduled body is priced lower; the first version without the
+compare barrier scheduled bodies past the verifier's path budget, which
+the vector-homes test caught.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, scheduling, and exact trip counts against register bounds.
+directly, and exact trip counts against register bounds.
 
 ### Phase C, checked projection and first analysis: `optir/`
 

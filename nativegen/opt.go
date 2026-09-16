@@ -47,6 +47,7 @@ const (
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
 	TransformReallocate  = "reallocate"
+	TransformSchedule    = "schedule"
 	TransformRotate      = "rotate-loops"
 )
 
@@ -216,6 +217,17 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ReuseFlags = true; return l },
 			fired:   ReusedCompares,
 		},
+		&gatedTransform{laneTransform{
+			// Instruction scheduling (package machine, Phase B): each block's
+			// instructions reordered between barriers so a consumer follows
+			// its producer by the producer's latency; machine shape only,
+			// shipping only on the verifier's verdict.
+			name: TransformSchedule, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return l.Schedule },
+			apply:   func(l Lane) Lane { l.Schedule = true; return l },
+			fired:   Scheduled,
+		}},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the
@@ -362,6 +374,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorBlocks = false
 	lane.MultiplyAdd = false
 	lane.Reallocate = false
+	lane.Schedule = false
 	lane.VectorReductions = false
 	lane.NoReductions = true
 	return lane
@@ -547,6 +560,10 @@ func Metrics(fn *asm.Function) opt.Metrics {
 	}
 	m.Instructions, m.Branches, m.Loads, m.Stores, m.Guards = whole.Instructions, whole.Branches, whole.Loads, whole.Stores, whole.Guards
 	m.LoopInstructions, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards = inLoops.Instructions, inLoops.Branches, inLoops.Loads, inLoops.Stores, inLoops.Guards
+	// The stall estimate (machine.StallEstimate): the total, and per loop
+	// the blocks the loop spans, by label.
+	stalls, stallsByLabel := machine.StallEstimate(fn)
+	m.Stalls = stalls
 	// The recurrence analysis (machine.LoopShapes) reads each loop's
 	// index, stride, and trip bound off the lifted body; a body the lift
 	// refuses keeps the register-increment heuristic below.
@@ -600,6 +617,12 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				body.MaxTrips = prev.Stride - 1
 			}
 		}
+		for i := loop.from; i <= loop.to; i++ {
+			if label, ok := fn.Items[i].(asm.Label); ok {
+				body.Stalls += stallsByLabel[label.Name]
+			}
+		}
+		m.LoopStalls += body.Stalls
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
 			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
 				// The analysis found the index: its stride and bound
