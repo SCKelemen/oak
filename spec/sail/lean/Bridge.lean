@@ -556,6 +556,73 @@ theorem vttbr_el2_generated_body_el1_nv_redirect_preserves_component
       true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
+The redirect predicate reads separately supplied projections of old HCR_EL2;
+no theorem below relates them to `oldValue`, derives them from the incoming
+value, or models the NVMem(120) target. -/
+
+def decodedHcrSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_hcr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem hcr_el2_x0_decoder_execution_target :
+    decodedHcrSystemRegisterWriteTarget msrHcrEl2X0 =
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0b00000#5) := by
+  rfl
+
+theorem hcr_el2_x1_decoder_rt_is_preserved :
+    decodedHcrSystemRegisterWriteTarget 0xd51c1101#32 =
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0b00001#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_hcr_target :
+    decodedHcrSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_hcr_el2_x0_not_projected_to_write :
+    decodedHcrSystemRegisterWriteTarget 0xd53c1100#32 = none := by
+  rfl
+
+theorem msr_vttbr_el2_x1_not_projected_to_hcr :
+    decodedHcrSystemRegisterWriteTarget 0xd51c2101#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_hcr :
+    decodedHcrSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+def hcrWriteComponentToPair (result : HCRWriteComponent) : Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem hcr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure currentEL.isEL1
+      oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 oldValue newValue =
+      hcrWriteComponentToPair
+        (writeHcrEl2Component currentEL oldHcrNv oldHcrNv2 oldHcrTge
+          scrNs scrEel2 oldValue newValue) := by
+  cases currentEL <;> cases oldHcrNv <;> cases oldHcrNv2 <;>
+    cases oldHcrTge <;> cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem hcr_el2_generated_body_at_el2_is_direct
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure ExceptionLevel.el2.isEL1
+      oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem hcr_el2_generated_body_el1_old_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
 end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/

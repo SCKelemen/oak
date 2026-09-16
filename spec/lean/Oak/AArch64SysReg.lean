@@ -51,6 +51,42 @@ theorem write_vttbr_el2_el1_nv_redirect_preserves_component
       oldValue newValue = ⟨true, oldValue⟩ := by
   rfl
 
+/-- The pinned model tests these old HCR_EL2 control-bit projections before
+    writing HCR_EL2. They must not be derived from the incoming new value.
+    Their consistency with `oldValue` remains a separate refinement premise. -/
+def hcrEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && oldHcrNv && oldHcrNv2 && !oldHcrTge && (scrNs || scrEel2)
+
+/-- The HCR_EL2 component of the successful official write body. NVMem(120),
+    every other state component, and every access/trap effect are omitted. -/
+structure HCRWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeHcrEl2Component (currentEL : ExceptionLevel)
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : HCRWriteComponent :=
+  if hcrEl2RedirectsToNVMem currentEL oldHcrNv oldHcrNv2 oldHcrTge
+      scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_hcr_el2_at_el2_is_direct
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeHcrEl2Component .el2 oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_hcr_el2_el1_old_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeHcrEl2Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
 def writable : Reg -> Bool
   | .currentel | .esrEl2 | .farEl2 | .hpfarEl2 | .cntvctEl0 => false
   | _ => true

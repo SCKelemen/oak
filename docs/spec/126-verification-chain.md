@@ -229,7 +229,19 @@ source. Access admission, traps, dynamic occurrence, other architectural
 state, interrupt delivery, and interval-wide masking remain outside this
 conditional state-body proof; it adds no ordering or synchronization edge.
 
-The next cold-entry word, `MSR VTTBR_EL2, X1`, is computed as
+The next cold-entry word, `MSR HCR_EL2, X0`, is computed as `0xd51c1100`.
+Generated Lean proves its HCR_EL2/X0 target and component transition: EL2
+directly installs the supplied value. The source gate pins the generic MSR
+chain, exact nested route, old HCR NV/NV2/TGE aliases, SCR NS/EEL2 aliases,
+direct assignment, and EL1 NVMem(120) alternative. Lean models only the
+redirect flag and HCR component; consistency between its old-bit inputs and
+the old 64-bit HCR value is an external premise. Access/traps, dynamic
+occurrence, runtime X0
+provenance, HCR validity and desired configuration, stage-2 enablement,
+exception routing, later observation, ordering, and synchronization remain
+open.
+
+The following `MSR VTTBR_EL2, X1` is computed as
 `0xd51c2101` from generated instruction and SysReg tables. Generated Lean
 proves its pure decoder target and component transition: at EL2 the VTTBR_EL2
 component becomes the supplied 64-bit value, while the official EL1

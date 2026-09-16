@@ -128,6 +128,14 @@ with operand `#2` runs a D/A/I/F body that sets I and preserves D/A/F. This
 does not supply the missing `Step.maskIrq` occurrence, discharge access/trap
 checks, or prove maskable IRQ delivery remains disabled over the interval.
 
+The next theorem computes static `MSR HCR_EL2, X0` word `0xd51c1100` and
+proves the generated pure component body takes Arm's direct HCR_EL2 assignment
+at EL2. It retains the EL1 redirect predicate over old HCR and SCR bit
+projections without modeling NVMem(120). It proves no access/trap admission,
+old-bit-to-old-value consistency, runtime X0 provenance, valid HCR
+configuration, stage-2 enablement, exception routing, observation by later
+writes, or dynamic occurrence.
+
 The adjacent VTTBR theorem computes static `MSR VTTBR_EL2, X1` word
 `0xd51c2101` and proves the generated pure component body takes Arm's direct
 VTTBR_EL2 assignment at EL2. It retains the distinct EL1 nested-virtualization

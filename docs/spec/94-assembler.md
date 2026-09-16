@@ -792,16 +792,24 @@ correspondence, not proof that access succeeds, the instruction dynamically
 executes, or maskable IRQ delivery remains excluded over an interval. It
 supplies no memory ordering or synchronization fact.
 
-The general system-register seam now also computes the cold-entry
-`MSR VTTBR_EL2, X1` as `0xd51c2101`. Generated Lean proves the local pure
-decoder selects VTTBR_EL2/X1 and that its component-only state projection
+The general system-register seam computes cold-entry `MSR HCR_EL2, X0` as
+`0xd51c1100`. Generated Lean selects HCR_EL2/X0 and proves the component-only
+body directly installs the supplied value at EL2. The official-source audit
+pins the generic MSR chain, the exact nested register route, and the five old
+HCR/SCR predicate-bit aliases. Its distinct EL1 branch assigns NVMem(120);
+Lean records only a redirect flag and unchanged HCR_EL2, not NVMem state or
+consistency between the old-bit inputs and the old 64-bit HCR component.
+
+The adjacent `MSR VTTBR_EL2, X1` is `0xd51c2101`. Generated Lean proves the
+local pure decoder selects VTTBR_EL2/X1 and that its component-only state projection
 matches the pinned official direct assignment at EL2. The official-source
 audit keeps the EL1 nested-virtualization assignment to NVMem explicit. Lean's
 component projection records only the redirect flag and unchanged VTTBR_EL2;
 it erases NVMem contents and effects. The source gate pins the generic
 MSR access-check/decode route, X-register handoff, architectural register
 declaration, and direct/redirect branch. This proves neither access admission
-nor runtime X1 value provenance, field validity, publication, BBM, TLBI
+nor runtime X0/X1 value provenance, HCR/VTTBR field validity, desired
+virtualization or exception-routing configuration, publication, BBM, TLBI
 effects, completion, context synchronization, or a CAT edge.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**

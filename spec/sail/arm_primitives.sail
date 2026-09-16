@@ -977,17 +977,21 @@ function system_register_cpsr_daifset_pure (d, a, i, f, operand) = {
 }
 
 /* ---------------------------------------------------------------------
- * The general system-register MSR dispatch to VTTBR_EL2 and the component
- * update in the pinned AArch64_AutoGen_SysRegWrite body.
+ * General system-register MSR dispatch to selected cold-entry registers and
+ * component updates from the pinned AArch64_AutoGen_SysRegWrite body.
  *
  * This pure projection erases AArch64_CheckSystemAccess, PostDecode, the
  * X-register read, dynamic occurrence, traps, and every state component other
- * than VTTBR_EL2. The nested-virtualization redirect is retained explicitly:
- * interpreting the direct update as execution requires separate access/trap
+ * than the selected register. Nested-virtualization redirects are retained as
+ * a flag plus unchanged selected-register component; NVMem itself is erased.
+ * Interpreting a direct update as execution requires separate access/trap
  * admission and an architectural proof for the projected predicate inputs.
  */
 
-enum SystemRegisterWriteTarget = {SystemRegisterWriteTarget_VTTBR_EL2}
+enum SystemRegisterWriteTarget = {
+  SystemRegisterWriteTarget_VTTBR_EL2,
+  SystemRegisterWriteTarget_HCR_EL2
+}
 
 val system_register_vttbr_el2_target_pure :
   (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
@@ -1027,6 +1031,51 @@ function aarch64_sysregwrite_vttbr_el2_pure (at_el1, hcr_nv, hcr_nv2,
     hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
     let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
       (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
+}
+
+val system_register_hcr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_hcr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x1 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_hcr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_hcr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_hcr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_hcr_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_hcr_el2_pure (at_el1, old_hcr_nv,
+    old_hcr_nv2, old_hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & old_hcr_nv & old_hcr_nv2 &
+      ~(old_hcr_tge) & (scr_ns | scr_eel2);
     if redirected then {
         (true, old_value)
     } else {

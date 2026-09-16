@@ -69,6 +69,14 @@ pinned Sail decoder to the successful DAIFSet body, and proves that body sets
 I while preserving D/A/F. `ColdEntry.Step.maskIrq` is not yet connected to a
 dynamic occurrence of that instruction.
 
+The HCR seam pins static `MSR HCR_EL2, X0` and proves the generated pure
+component body directly writes the supplied value at EL2. Its EL1 redirect is
+computed from projected old HCR control bits and SCR bits; Lean erases the
+official NVMem(120) effect. This proves no HCR configuration validity, stage-2
+enablement, exception routing, later-write observation, access/trap admission,
+old-bit-to-old-value consistency, runtime X0 provenance, or dynamic
+`ColdEntry.Step` occurrence.
+
 The following VTTBR seam is likewise independent: the native gate pins the
 static `MSR VTTBR_EL2, X1` word, while generated Lean follows the general-MSR
 projection to the component assignment and proves it writes the supplied value

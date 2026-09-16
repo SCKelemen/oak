@@ -56,7 +56,7 @@ inductive PSTATEWriteTarget where | PSTATEWriteTarget_DAIFSet
   deriving BEq, Inhabited, Repr
   open PSTATEWriteTarget
 
-inductive SystemRegisterWriteTarget where | SystemRegisterWriteTarget_VTTBR_EL2
+inductive SystemRegisterWriteTarget where | SystemRegisterWriteTarget_VTTBR_EL2 | SystemRegisterWriteTarget_HCR_EL2
   deriving BEq, Inhabited, Repr
   open SystemRegisterWriteTarget
 

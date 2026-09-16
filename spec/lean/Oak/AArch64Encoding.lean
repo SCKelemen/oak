@@ -118,6 +118,12 @@ def msrDaifSetIrq : BitVec 32 :=
 theorem msr_daifset_irq_word : msrDaifSetIrq = 0xd50342df#32 := by native_decide
 -- OAK-A64-DAIFSET-WORD-END
 
+-- OAK-A64-HCR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrHcrEl2X0 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0001#4 0b0001#4 0b000#3 0b00000#5
+theorem msr_hcr_el2_x0_word : msrHcrEl2X0 = 0xd51c1100#32 := by native_decide
+-- OAK-A64-HCR-EL2-WORD-END
+
 -- OAK-A64-VTTBR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
 def msrVttbrEl2X1 : BitVec 32 :=
   encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b000#3 0b00001#5
