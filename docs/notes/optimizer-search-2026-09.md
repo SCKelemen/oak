@@ -295,6 +295,29 @@ bodies lift, schedule (`vsetivli` regions), reallocate their scalar
 registers, and price by stride — what the RV64 map vectorization needed
 from this side (item 24 below).
 
+### Found by the harness: a miscompile in the plain lowering (2026-09-16)
+
+The kernel harness (`benchmarks/kernels/run.py`) refuses timings until
+every implementation's checksum agrees, and the night's run of the ten
+kernels found `blake3` disagreeing between the C backend and the native
+one. The search played no part — withholding every transform
+(`OAK_OPT_SKIP`) changed nothing — so the plain lowering was wrong, in a
+body the verifier trusts (an indexed load through a record argument) and
+whose callers it trusts for calling it. Three debugging knobs came out of
+finding it, all default off: `OAK_OPT_SKIP` withholds named transforms,
+`OAK_NATIVE_ONLY` lowers only the named functions natively (the rest stay
+with the C backend, so a disagreement bisects to one function), and
+`OAK_NATIVE_TRACE_SLOTS` prints every frame-slot event. The defect was in
+slot recycling: a scalar-replaced array's binding carries a zero offset
+and none of the markers the release paths check for, so its last use
+returned frame slot zero — a live array's — to the pool
+(`nativegen/liveness.go`, `popScope`; the write-up is in
+`benchmarks/kernels/RESULTS.md`). Two lessons for the architecture: the
+verifier's trust boundary is where miscompiles live, so the harness's
+checksum gate is part of the landing rule, not a benchmark nicety; and a
+loop-free cut of the same body was refuted by the verifier at once, which
+is the argument for keeping bodies decidable wherever the source allows.
+
 ### Phase D, first rewrite after the reductions: map vectorization
 
 `vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
