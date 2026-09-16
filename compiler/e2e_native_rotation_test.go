@@ -105,9 +105,12 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 	if shapes["at_least_once"] != "top" {
 		t.Errorf("a disjunction keeps the top-tested shape; shapes %v\n%s", shapes, joined)
 	}
-	for _, name := range []string{"fill", "first_zero"} {
-		if !strings.Contains(joined, name+": 1 loop(s) bottom-tested, proven") || !strings.Contains(joined, "asm unit "+name+": proven equal to its Oak body") {
-			t.Errorf("%s's rotated loop must be proven; diagnostics:\n%s", name, joined)
+	// fill is a map of a constant: vectorized, its main loop and its
+	// remainder both rotate (two loops bottom-tested); first_zero rotates
+	// its one loop.
+	for name, loops := range map[string]string{"fill": "2 loop(s)", "first_zero": "1 loop(s)"} {
+		if !strings.Contains(joined, name+": "+loops+" bottom-tested, proven") || !strings.Contains(joined, "asm unit "+name+": proven equal to its Oak body") {
+			t.Errorf("%s's rotated loop(s) must be proven; diagnostics:\n%s", name, joined)
 		}
 	}
 	_, code, abnormal := buildAndRunFrom(t, "native_rotation", comp)

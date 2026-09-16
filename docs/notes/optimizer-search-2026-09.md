@@ -255,7 +255,15 @@ loads past loads). The cost model gains a stall term
 producer does not cover, at most eight apart), straight and per loop, so
 a better-scheduled body is priced lower; the first version without the
 compare barrier scheduled bodies past the verifier's path budget, which
-the vector-homes test caught.
+the vector-homes test caught. Three corrections to the measure followed
+from the suite: it counts across barriers and block boundaries (a guard
+branch between a divide and its consumer hides none of the latency on
+the fall-through path, so the branch-free strength-reduced form was
+being charged stalls the guarded form skipped), a pair whose two
+instructions lie in different loops counts once and in no loop's share,
+and a fall-through block without a label counts under the label before
+it (the top-tested loop's body block has none, and its load's stall was
+being lost while the rotated form's was charged).
 
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers

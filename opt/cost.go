@@ -78,8 +78,14 @@ func (m Metrics) String() string {
 		parts = append(parts, fmt.Sprintf("divides %d", m.Divides))
 	}
 	parts = append(parts, fmt.Sprintf("guards %d", m.Guards))
+	if m.Stalls > 0 {
+		parts = append(parts, fmt.Sprintf("stalls %d", m.Stalls))
+	}
 	for _, loop := range m.LoopBodies {
 		shape := fmt.Sprintf("loop[%d instructions, %d branches, %d loads, %d stores, %d guards", loop.Instructions, loop.Branches, loop.Loads, loop.Stores, loop.Guards)
+		if loop.Stalls > 0 {
+			shape += fmt.Sprintf(", %d stalls", loop.Stalls)
+		}
 		if loop.Stride > 1 {
 			shape += fmt.Sprintf(", stride %d", loop.Stride)
 		}
