@@ -272,8 +272,11 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 	var obligation []int
 	trapAlways := false
 	for _, trap := range traps {
+		if trap == nil {
+			return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
+		}
 		bits := bl.blast(trap)
-		if bits == nil || bl.exceeded() {
+		if len(bits) != 1 || bl.exceeded() {
 			return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 		}
 		switch bits[0] {
@@ -285,8 +288,11 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 			obligation = append(obligation, bits[0])
 		}
 	}
+	if claim == nil {
+		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
+	}
 	claimBits := bl.blast(claim)
-	if claimBits == nil || bl.exceeded() {
+	if len(claimBits) != 1 || bl.exceeded() {
 		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 	}
 	out := CNF{Owners: map[int]VariableOwner{}, Names: names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: claim, traps: traps}
@@ -298,16 +304,28 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 	switch {
 	case trapAlways:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the body traps on every input"}
+		if err := validateCNFObligation(bl, traps, claim, cnfObligationTrapAlways, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
 	case claimBits[0] == bddFalse:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the claim is false on every input"}
+		if err := validateCNFObligation(bl, traps, claim, cnfObligationClaimFalse, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
 	case claimBits[0] != bddTrue:
 		obligation = append(obligation, claimBits[0]^1)
 	}
 	if len(obligation) == 0 {
 		out.Settled = &Decision{Kind: DecisionProven, Message: "at the bit level (the obligation is constant)"}
+		if err := validateCNFObligation(bl, traps, claim, cnfObligationConstantProven, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
+	}
+	if err := validateCNFObligation(bl, traps, claim, cnfObligationFormula, obligation); err != nil {
+		return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
 	}
 	final := make([]int, len(obligation))
 	for i, edge := range obligation {
