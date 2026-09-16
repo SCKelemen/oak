@@ -5333,6 +5333,27 @@ gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
 result, a conditional store; both lanes), the `fill` case of
 `compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
 
+**A match arm's payload binder belongs to its arm (2026-09-16).** The
+Oak side lowers a match by running each arm from the locals the match
+forked from (`selectMatch`, `lowerMatchStatement` restore them before
+each arm) and selecting the arms' outcomes on the arms' conditions. The
+pattern's payload binding was installed before that restore, so the
+restore put the binder's name back to whatever it held beforehand — and
+for a binder reused across two matches in one body, that was the previous
+match's last arm. Every match after the first in a body therefore read
+its arms' payloads as the earlier match's, which for a dead arm is zero,
+and folded to its fallback.
+
+The binding is now installed inside the arm, after the caller's restore,
+and dropped when the arm ends, which is also the binder's real scope
+(`matchArms` hands the caller a `bind` to call). It was a refusal, not a
+weaker verdict: `area_sum`'s Oak term came out `3*r` where the machine
+computed `3*r + w*w`, and the verifier refuted a correct body, which
+fails the native build of any program with two matches over a union.
+Pinned: `compiler/e2e_native_union_binder_test.go`, and the rv64 union
+program (`compiler/e2e_native_rv64_test.go`), whose `area_sum` is three
+matches in one body.
+
 **A loop's memory marker holds where the loop is entered (2026-09-16).**
 The marker says a span's contents past the loop are the unknown memory
 `loop<K>.<span>`, but a loop whose condition is false at entry runs no

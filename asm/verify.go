@@ -5598,7 +5598,7 @@ type matchArm struct {
 // arm, which becomes the fallback. Without a wildcard the checker proved
 // the arms exhaustive, so the last arm is the fallback. A scrutinee that
 // folds decides statically through the same chain.
-func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index int, body ast.Expression) (string, bool)) (cases []matchArm, fallback int, reason string, ok bool) {
+func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index int, body ast.Expression, bind func()) (string, bool)) (cases []matchArm, fallback int, reason string, ok bool) {
 	fallback = -1
 	place, _, isAggregate := lo.readPlace(match.Scrutinee)
 	var tag, scrutinee *term
@@ -5617,8 +5617,29 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 		}
 		scrutinee = value
 	}
+	// bindArm installs the arm's pattern binding where the caller asks for
+	// it — after the caller has restored the locals the arms fork from —
+	// and unbindArm drops it when the arm is done, since a payload binder
+	// belongs to its arm. Binding before the caller's restore lost the
+	// payload of every match after the first in a body: the restore put
+	// back the value the name held before, which for a reused binder was
+	// the previous match's last arm (asm/verify.go, selectMatch).
+	bindArm := func() {}
+	unbindArm := func() {}
+	bindLocal := func(name string, local *oakLocal) {
+		prior, had := lo.locals[name]
+		bindArm = func() { lo.locals[name] = local }
+		unbindArm = func() {
+			if had {
+				lo.locals[name] = prior
+				return
+			}
+			delete(lo.locals, name)
+		}
+	}
 	taken := constTerm(0, 1)
 	for i, arm := range match.Arms {
+		bindArm, unbindArm = func() {}, func() {}
 		var cond *term
 		switch pattern := arm.Pattern.(type) {
 		case *ast.VariantPattern:
@@ -5637,9 +5658,9 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 				}
 				payload := place.fields[variant.name].copy()
 				if payload.typ.kind == oakScalar {
-					lo.locals[binding.Name.Value] = &oakLocal{value: payload.scalar, width: payload.typ.width, signed: payload.typ.signed}
+					bindLocal(binding.Name.Value, &oakLocal{value: payload.scalar, width: payload.typ.width, signed: payload.typ.signed})
 				} else {
-					lo.locals[binding.Name.Value] = &oakLocal{agg: payload}
+					bindLocal(binding.Name.Value, &oakLocal{agg: payload})
 				}
 			case pattern.Payload == nil, isBinding:
 			default:
@@ -5663,7 +5684,7 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 				if tag == nil {
 					return nil, -1, "a binding pattern over a scalar", false
 				}
-				lo.locals[pattern.Name.Value] = &oakLocal{agg: place.copy()}
+				bindLocal(pattern.Name.Value, &oakLocal{agg: place.copy()})
 			}
 		default:
 			return nil, -1, fmt.Sprintf("the pattern %s", arm.Pattern.String()), false
@@ -5675,7 +5696,8 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 			taken = binaryTerm("or", taken, cond)
 		}
 		restore := lo.underPath(armPath)
-		reason, ok := visit(i, arm.Body)
+		reason, ok := visit(i, arm.Body, bindArm)
+		unbindArm()
 		restore()
 		if !ok {
 			return nil, -1, reason, false
@@ -5705,8 +5727,9 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 	// (as lowerMatchStatement merges them): an arm's block may assign.
 	before := lo.snapshotLocals()
 	outcomes := map[int]map[string]localSnapshot{}
-	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression) (string, bool) {
+	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression, bind func()) (string, bool) {
 		lo.restoreLocals(before)
+		bind()
 		value, reason, ok := body(armBody)
 		if !ok {
 			return reason, false
@@ -6382,8 +6405,9 @@ func (lo *oakLowering) mergeLocals(cond *term, afterTrue map[string]localSnapsho
 func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, bool) {
 	before := lo.snapshotLocals()
 	outcomes := map[int]map[string]localSnapshot{}
-	cases, fallback, reason, ok := lo.matchArms(match, func(index int, body ast.Expression) (string, bool) {
+	cases, fallback, reason, ok := lo.matchArms(match, func(index int, body ast.Expression, bind func()) (string, bool) {
 		lo.restoreLocals(before)
+		bind()
 		if reason, ok := lo.lowerArm(body); !ok {
 			return reason, false
 		}
