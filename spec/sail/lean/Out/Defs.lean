@@ -117,6 +117,26 @@ structure PlainERETInputsAtEL2 where
   spsr : (BitVec 32)
   deriving BEq, Inhabited, Repr
 
+inductive BranchRegisterExecutionTarget where | BranchRegisterExecutionTarget_RET
+  deriving BEq, Inhabited, Repr
+  open BranchRegisterExecutionTarget
+
+structure OrdinaryRETDecode where
+  encoding_valid : Bool
+  pre_postdecode_checks_pass : Bool
+  target : BranchRegisterExecutionTarget
+  Rm : (BitVec 5)
+  Rn : (BitVec 5)
+  M : (BitVec 1)
+  A : (BitVec 1)
+  op2 : (BitVec 5)
+  op : (BitVec 2)
+  Z : (BitVec 1)
+  pac : Bool
+  source_is_sp : Bool
+  use_key_a : Bool
+  deriving BEq, Inhabited, Repr
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

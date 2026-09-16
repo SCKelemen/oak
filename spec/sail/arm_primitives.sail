@@ -1549,3 +1549,59 @@ function aarch64_cold_entry_register_sequence_at_el2_pure (old_state, inputs, sc
       write7 = SystemRegisterWriteTarget_SPSR_EL2
     }
 }
+
+/* Ordinary RET's pure decoder and BranchType_RET call target. Pointer
+ * authentication, the X-register read, PostDecode, BTypeNext, and BranchTo
+ * are deliberately not members of this projection. */
+enum BranchRegisterExecutionTarget = {
+  BranchRegisterExecutionTarget_RET
+}
+
+struct OrdinaryRETDecode = {
+  encoding_valid : bool,
+  pre_postdecode_checks_pass : bool,
+  target : BranchRegisterExecutionTarget,
+  Rm : bits(5),
+  Rn : bits(5),
+  M : bits(1),
+  A : bits(1),
+  op2 : bits(5),
+  op : bits(2),
+  Z : bits(1),
+  pac : bool,
+  source_is_sp : bool,
+  use_key_a : bool
+}
+
+val decode64_ordinary_ret_pure : bits(32) -> OrdinaryRETDecode
+
+function decode64_ordinary_ret_pure (op_code) = {
+    let Rm : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let M : bits(1) = slice(op_code, 10, 1);
+    let A : bits(1) = slice(op_code, 11, 1);
+    let op2 : bits(5) = slice(op_code, 16, 5);
+    let op : bits(2) = slice(op_code, 21, 2);
+    let Z : bits(1) = slice(op_code, 24, 1);
+    let pac : bool = A == 0b1;
+    let source_is_sp : bool = Z == 0b1 & Rm == 0b11111;
+    let use_key_a : bool = M == 0b0;
+    let encoding_valid : bool = (op_code & 0xFFFFFC1F) == 0xD65F0000;
+    let pre_postdecode_checks_pass : bool = encoding_valid & ~(pac) &
+      Rm == 0b00000 & op == 0b10;
+    struct {
+      encoding_valid = encoding_valid,
+      pre_postdecode_checks_pass = pre_postdecode_checks_pass,
+      target = BranchRegisterExecutionTarget_RET,
+      Rm = Rm,
+      Rn = Rn,
+      M = M,
+      A = A,
+      op2 = op2,
+      op = op,
+      Z = Z,
+      pac = pac,
+      source_is_sp = source_is_sp,
+      use_key_a = use_key_a
+    }
+}

@@ -1,6 +1,7 @@
 import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
+import Oak.AArch64ReturnEncoding
 import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 import Oak.AArch64Barrier
@@ -1171,6 +1172,46 @@ theorem cold_entry_register_sequence_end_to_end
   exact ⟨register_write_words_exact, cold_entry_register_words_decode_exact,
     cold_entry_register_sequence_generated_bridge redirect inputs initial,
     install_cold_entry_registers_at_el2_exact redirect inputs initial⟩
+
+/-! ## Ordinary RET decoder dispatch
+
+This projection covers the static decode of the generated operandless `RET`
+word through the official `branch_unconditional_register_decode` route to
+`BranchType_RET`.  It does not execute `BranchTo`, read X30, establish X30's
+provenance or value, validate the target, establish an ABI/frame return, or
+model authenticated-return dynamics.
+-/
+
+/-- Oak's generated operandless `RET` word is the ordinary non-PAC RET class,
+    selects X30, and reaches the projection of Arm's `BranchType_RET` route. -/
+theorem ordinary_ret_x30_generated_decode_exact :
+    Out.Functions.decode64_ordinary_ret_pure
+      Oak.AArch64ReturnEncoding.retX30 = {
+        encoding_valid := true
+        pre_postdecode_checks_pass := true
+        target := .BranchRegisterExecutionTarget_RET
+        Rm := 0b00000#5
+        Rn := 0b11110#5
+        M := 0b0#1
+        A := 0b0#1
+        op2 := 0b11111#5
+        op := 0b10#2
+        Z := 0b0#1
+        pac := false
+        source_is_sp := false
+        use_key_a := true
+      } := by
+  rw [Oak.AArch64ReturnEncoding.ret_x30_word]
+  rfl
+
+/-- A fixed low opcode bit is part of the decoder class, not an immediate or
+    register field; corrupting it therefore fails both class and route checks. -/
+theorem corrupted_ordinary_ret_fixed_bit_rejected :
+    (Out.Functions.decode64_ordinary_ret_pure
+      0xd65f03c1#32).encoding_valid = false ∧
+    (Out.Functions.decode64_ordinary_ret_pure
+      0xd65f03c1#32).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
 
 /-! ## Plain ERET at EL2
 
