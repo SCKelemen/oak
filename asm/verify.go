@@ -8791,6 +8791,20 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
 		ev.at = x.callAt
+		// The callee's loop is reached where the machine's path reached
+		// the call and the callee's own Oak path reached the loop (an arm
+		// inside the callee): the coupling's premises assume both — a
+		// store before the loop inside `ok ? { … }` is unguarded on the
+		// machine's side and guarded by ok on the Oak side, and the two
+		// agree exactly there (walk_leaf calling alloc_table).
+		ev.reached = ev.oakPath
+		if callPath := state.pathCondition(); callPath != nil {
+			if ev.reached != nil {
+				ev.reached = binaryTerm("and", truncate(callPath, 1), truncate(ev.reached, 1))
+			} else {
+				ev.reached = callPath
+			}
+		}
 	}
 	if siteSeen {
 		if len(lo.loops) != priorSite.count {
