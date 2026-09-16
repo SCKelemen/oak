@@ -12,10 +12,11 @@ import (
 // expression's result meets the place it is used — `mov w10, w24; cbz w10,
 // else`, `movz w10, #1; mov w9, w10`, `mov x10, x12; mov x22, x10` — and
 // a branch to the label that follows it when an arm's tail is empty. The
-// verifier proves each cleaned body equal to its Oak text as it proves the
-// uncleaned one; the pass changes machine shape only (Lane.Cleanup,
-// TransformCleanup), and the compiler keeps the uncleaned lowering where
-// the checker or the verifier refuses the cleaned form.
+// pass changes machine shape only (Lane.Cleanup, TransformCleanup). Every
+// candidate must pass the seam checker. The whole-function verifier judges it
+// where its subset applies; on trusted bodies, the local rules instead remain
+// compiler obligations backed by the narrow equalities named below and by the
+// fail-closed matcher tests. A trusted verdict is not a verifier proof.
 //
 // The rules are block-local, under a whole-function liveness of the
 // general registers over the item list (blocks split at labels and after
@@ -33,6 +34,10 @@ import (
 //     writes rD and the mov goes.
 //  3. `b L` followed by the label L: the branch goes.
 //  4. `mov rA, rA`: goes.
+//  5. `mov rV, rS; mov wI, wzr; str rV, [rB, wI, uxtw #scale]`
+//     becomes `str rS, [rB]` when both temporaries are dead. The source may
+//     be the matching zero register; aliases that would change the base or
+//     source are rejected (`Oak.Forwarding.zero_index_store`).
 //
 // The pass runs to a fixpoint; cleanedCopies counts the instructions it
 // removed.
@@ -73,6 +78,63 @@ func isRegisterMove(ins asm.Instruction) (dst, src asm.Register, ok bool) {
 		return asm.Register{}, asm.Register{}, false
 	}
 	return d, s, true
+}
+
+// isRegisterOrZeroMove extends the ordinary move recognizer only for a source
+// zero register of the same width. It deliberately excludes sp and every
+// vector/RV64 register class.
+func isRegisterOrZeroMove(ins asm.Instruction) (dst, src asm.Register, ok bool) {
+	if ins.Mnemonic != "mov" || len(ins.Operands) != 2 {
+		return asm.Register{}, asm.Register{}, false
+	}
+	dst, ok = generalReg(ins.Operands[0])
+	src, isReg := ins.Operands[1].(asm.Register)
+	if !ok || !isReg || src.Class != dst.Class {
+		return asm.Register{}, asm.Register{}, false
+	}
+	if _, ordinary := generalReg(src); !ordinary && !src.ZeroRegister() {
+		return asm.Register{}, asm.Register{}, false
+	}
+	return dst, src, true
+}
+
+// foldZeroIndexStore replaces exactly the scalar STR shape emitted for a
+// constant-zero span index. It does not reason about bounds: the rewritten
+// direct access must still pass the independent seam checker. The local
+// address/value equality is `Oak.Forwarding.zero_index_store`; a trusted
+// whole-body verifier verdict does not strengthen that claim.
+func foldZeroIndexStore(dataMove, indexMove, store asm.Instruction) (asm.Instruction, int, int, bool) {
+	dataTmp, dataSource, dataOK := isRegisterOrZeroMove(dataMove)
+	indexTmp, indexSource, indexOK := isRegisterOrZeroMove(indexMove)
+	if !dataOK || !indexOK || indexTmp.Class != asm.ClassW || !indexSource.ZeroRegister() ||
+		dataMove.Cond != "" || indexMove.Cond != "" || store.Cond != "" ||
+		store.Mnemonic != "str" || len(store.Operands) != 2 {
+		return asm.Instruction{}, 0, 0, false
+	}
+	stored, isStored := store.Operands[0].(asm.Register)
+	memory, isMemory := store.Operands[1].(asm.Memory)
+	expectedShift := 3
+	if dataTmp.Class == asm.ClassW {
+		expectedShift = 2
+	}
+	if !isStored || !isMemory || stored.Class != dataTmp.Class || stored.Num != dataTmp.Num ||
+		memory.Mode != asm.MemOffset || memory.Offset != 0 || memory.Index == nil ||
+		memory.Index.Class != asm.ClassW || memory.Index.Num != indexTmp.Num ||
+		memory.Extend != "uxtw" || memory.Shift != expectedShift || memory.MulVL ||
+		memory.Base.Class != asm.ClassX || memory.Base.ZeroRegister() ||
+		dataTmp.Num == memory.Base.Num || indexTmp.Num == memory.Base.Num ||
+		indexTmp.Num == dataTmp.Num || (!dataSource.ZeroRegister() && indexTmp.Num == dataSource.Num) {
+		return asm.Instruction{}, 0, 0, false
+	}
+	memory.Index = nil
+	memory.Shift = 0
+	memory.Extend = ""
+	out := store
+	out.Operands = []asm.Operand{dataSource, memory}
+	// The indexed proof no longer describes an operand. A direct span access
+	// must stand on a dominating length guard or the seam checker rejects it.
+	out.CheckedFacts = nil
+	return out, dataTmp.Num, indexTmp.Num, true
 }
 
 // liveAfter computes, for every instruction, the set of general registers
@@ -221,6 +283,21 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 		if !isIns {
 			out = append(out, items[i])
 			continue
+		}
+		if i+2 < len(items) {
+			second, secondOK := items[i+1].(asm.Instruction)
+			third, thirdOK := items[i+2].(asm.Instruction)
+			if secondOK && thirdOK {
+				// Rule 5: forward the data source and erase a materialized zero
+				// index only when neither temporary survives the store.
+				if folded, dataTmp, indexTmp, ok := foldZeroIndexStore(ins, second, third); ok &&
+					dead(i+2, dataTmp) && dead(i+2, indexTmp) {
+					out = append(out, folded)
+					removed += 2
+					i += 2
+					continue
+				}
+			}
 		}
 		var next asm.Instruction
 		hasNext := false

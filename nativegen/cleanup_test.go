@@ -67,3 +67,85 @@ func TestCleanupCopies(t *testing.T) {
 		t.Fatalf("an argument copy before a call must stay (%d removed):\n%s", n, out)
 	}
 }
+
+func TestCleanupZeroIndexStore(t *testing.T) {
+	out, n := cleanupText(t, "  mov x9, x2\n  mov w10, wzr\n  str x9, [x0, w10, uxtw #3]\n  ret")
+	if n != 2 || !strings.Contains(out, "str x2, [x0]") ||
+		strings.Contains(out, "mov x9") || strings.Contains(out, "mov w10") {
+		t.Fatalf("zero-index store must consume both temporaries (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  mov x9, xzr\n  mov w10, wzr\n  str x9, [x0, w10, uxtw #3]\n  ret")
+	if n != 2 || !strings.Contains(out, "str xzr, [x0]") {
+		t.Fatalf("zero data/index store must use XZR directly (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  mov w9, w1\n  mov w10, wzr\n  str w9, [x0, w10, uxtw #2]\n  ret")
+	if n != 2 || !strings.Contains(out, "str w1, [x0]") {
+		t.Fatalf("32-bit zero-index store must use the matching scale (%d removed):\n%s", n, out)
+	}
+
+	dataMove := asm.Instruction{Mnemonic: "mov", Operands: []asm.Operand{
+		asm.Register{Class: asm.ClassX, Num: 9}, asm.Register{Class: asm.ClassX, Num: 2},
+	}}
+	indexMove := asm.Instruction{Mnemonic: "mov", Operands: []asm.Operand{
+		asm.Register{Class: asm.ClassW, Num: 10}, asm.Register{Class: asm.ClassW, Num: 31},
+	}}
+	index := asm.Register{Class: asm.ClassW, Num: 10}
+	store := asm.Instruction{Mnemonic: "str", Operands: []asm.Operand{
+		asm.Register{Class: asm.ClassX, Num: 9}, asm.Memory{
+			Base: asm.Register{Class: asm.ClassX, Num: 0}, Index: &index,
+			Mode: asm.MemOffset, Extend: "uxtw", Shift: 3,
+		},
+	}, CheckedFacts: []asm.CheckedFactRef{{ID: "stale", Operand: 1}}}
+	folded, _, _, ok := foldZeroIndexStore(dataMove, indexMove, store)
+	if !ok || folded.CheckedFacts != nil {
+		t.Fatalf("direct store must fold while dropping stale indexed facts: %#v", folded.CheckedFacts)
+	}
+
+	for name, mutate := range map[string]func(*asm.Instruction, *asm.Instruction, *asm.Instruction){
+		"decorated data move":  func(d, _, _ *asm.Instruction) { d.Cond = "eq" },
+		"decorated index move": func(_, i, _ *asm.Instruction) { i.Cond = "eq" },
+		"decorated store":      func(_, _, s *asm.Instruction) { s.Cond = "eq" },
+		"nonzero offset": func(_, _, s *asm.Instruction) {
+			m := s.Operands[1].(asm.Memory)
+			m.Offset = 8
+			s.Operands[1] = m
+		},
+		"pre-index mode": func(_, _, s *asm.Instruction) {
+			m := s.Operands[1].(asm.Memory)
+			m.Mode = asm.MemPreIndex
+			s.Operands[1] = m
+		},
+		"mul-vl address": func(_, _, s *asm.Instruction) {
+			m := s.Operands[1].(asm.Memory)
+			m.MulVL = true
+			s.Operands[1] = m
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, i, s := dataMove, indexMove, store
+			d.Operands = append([]asm.Operand(nil), dataMove.Operands...)
+			i.Operands = append([]asm.Operand(nil), indexMove.Operands...)
+			s.Operands = append([]asm.Operand(nil), store.Operands...)
+			mutate(&d, &i, &s)
+			if _, _, _, ok := foldZeroIndexStore(d, i, s); ok {
+				t.Fatal("addressing near miss unexpectedly folded")
+			}
+		})
+	}
+
+	for name, body := range map[string]string{
+		"wrong scale":   "  mov x9, x2\n  mov w10, wzr\n  str x9, [x0, w10, uxtw #2]",
+		"wrong extend":  "  mov x9, x2\n  mov x10, xzr\n  str x9, [x0, x10, lsl #3]",
+		"live data":     "  mov x9, x2\n  mov w10, wzr\n  str x9, [x0, w10, uxtw #3]\n  add x0, x9, #1",
+		"live index":    "  mov x9, x2\n  mov w10, wzr\n  str x9, [x0, w10, uxtw #3]\n  add w0, w10, #1",
+		"data is base":  "  mov x0, x2\n  mov w10, wzr\n  str x0, [x0, w10, uxtw #3]",
+		"index is data": "  mov x10, x2\n  mov w10, wzr\n  str x10, [x0, w10, uxtw #3]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, _ := cleanupText(t, body+"\n  ret")
+			if strings.Contains(out, "str x2, [x0]") {
+				t.Fatalf("near miss unexpectedly became the direct source store:\n%s", out)
+			}
+		})
+	}
+}

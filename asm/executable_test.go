@@ -109,25 +109,71 @@ func TestWriteExecutableArm64(t *testing.T) {
 		if file.Machine != elf.EM_AARCH64 || file.Type != elf.ET_EXEC {
 			t.Fatalf("%s: machine %v type %v", o.OS, file.Machine, file.Type)
 		}
-		symbols, _ := file.Symbols()
-		addr := map[string]uint64{}
+		symbols, err := file.Symbols()
+		if err != nil {
+			t.Fatal(err)
+		}
+		symbolByName := map[string]elf.Symbol{}
 		for _, s := range symbols {
-			addr[s.Name] = s.Value
+			symbolByName[s.Name] = s
 		}
-		text, _ := file.Section(".text").Data()
-		// The stub's bl: the first word on Linux; after the FP/SIMD enable
-		// (mrs, orr, msr, isb) and the stack setup on the freestanding board.
-		blAt := 0
-		if o.OS == OSFreestanding {
-			blAt = 24
+		start, hasStart := symbolByName["_start"]
+		mainSymbol, hasMain := symbolByName["oak_main"]
+		if !hasStart || !hasMain {
+			t.Fatalf("%s: symbols lack _start or oak_main: %v", o.OS, symbolByName)
 		}
-		bl := binary.LittleEndian.Uint32(text[blAt : blAt+4])
-		if bl>>26 != 0x25 {
-			t.Fatalf("%s: word %#x at %d is not bl", o.OS, bl, blAt)
+		if file.Entry != start.Value {
+			t.Fatalf("%s: ELF entry %#x is not _start at %#x", o.OS, file.Entry, start.Value)
 		}
-		delta := int64(int32(bl<<6)>>6) * 4
-		if got := int64(file.Entry) + int64(blAt) + delta; got != int64(addr["oak_main"]) {
-			t.Fatalf("%s: the start stub calls %#x, oak_main is at %#x", o.OS, got, addr["oak_main"])
+		textSection := file.Section(".text")
+		if textSection == nil {
+			t.Fatalf("%s: executable has no .text section", o.OS)
+		}
+		text, err := textSection.Data()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if start.Value < textSection.Addr || start.Value-textSection.Addr > uint64(len(text)) || start.Size > uint64(len(text))-uint64(start.Value-textSection.Addr) {
+			t.Fatalf("%s: _start [%#x,%#x) is outside .text [%#x,%#x)", o.OS,
+				start.Value, start.Value+start.Size, textSection.Addr, textSection.Addr+uint64(len(text)))
+		}
+		startOffset := start.Value - textSection.Addr
+		type linkedCall struct {
+			offset uint64
+			word   uint32
+		}
+		var calls []linkedCall
+		for offset := startOffset; offset+4 <= startOffset+start.Size; offset += 4 {
+			word := binary.LittleEndian.Uint32(text[offset : offset+4])
+			if word&0xfc000000 != 0x94000000 {
+				continue
+			}
+			place := textSection.Addr + offset
+			if target, ok := decodeAArch64Branch26TargetForTest(word, place); ok && target == mainSymbol.Value {
+				calls = append(calls, linkedCall{offset: offset, word: word})
+			}
+		}
+		if len(calls) != 1 {
+			t.Fatalf("%s: _start has %d BL instructions reaching oak_main, want one", o.OS, len(calls))
+		}
+		call := calls[0]
+		place := textSection.Addr + call.offset
+		expected, err := patchAArch64Branch26("call26", 0x94000000, place, mainSymbol.Value)
+		if err != nil {
+			t.Fatalf("%s: recomputing final _start call: %v", o.OS, err)
+		}
+		if call.word != expected {
+			t.Fatalf("%s: linked BL at .text+%#x is %#08x, want %#08x for %#x -> %#x",
+				o.OS, call.offset, call.word, expected, place, mainSymbol.Value)
+		}
+		if o.OS == OSLinux && call.word != 0x94000003 {
+			t.Fatalf("linux: final _start BL is %#08x, want the proved +12 word 0x94000003", call.word)
+		}
+		var expectedBytes [4]byte
+		binary.LittleEndian.PutUint32(expectedBytes[:], expected)
+		if !bytes.Equal(text[call.offset:call.offset+4], expectedBytes[:]) {
+			t.Fatalf("%s: linked BL bytes at .text+%#x are %x, want %x",
+				o.OS, call.offset, text[call.offset:call.offset+4], expectedBytes)
 		}
 	}
 }

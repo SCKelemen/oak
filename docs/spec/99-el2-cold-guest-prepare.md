@@ -59,15 +59,22 @@ static object-code occurrence/order certificate, not a proof of dynamic
 execution or architectural context synchronization.
 
 `Oak.AArch64ColdEntry` now separates the shape-only `ProtocolStep` graph from
-an occurrence-indexed `Step`. Its synchronization witness carries all eight
-exact register-write occurrences before the same exact ISB word plus an
-explicit external Arm context-synchronization proposition. Decoder identity or
-Oak's capability bit cannot manufacture that evidence.
+an occurrence-indexed `Step`. `Step.maskIrq` takes one externally supplied
+exact DAIFSet/#2 occurrence, and every later evidence-bearing stage retains
+that same witness. The synchronization witness requires it before all eight
+exact register-word/Rt actions, requires their total HCR-through-SPSR order
+and that every one precede the same exact ISB word, and carries an explicit
+external Arm context-synchronization proposition. Lean derives DAIFSet before
+ISB and ERET and proves it distinct from every later occurrence. The generated
+decoders agree with the witnessed DAIFSet and every word/Rt/target. Decoder
+identity, object bytes, or Oak's capability bit cannot manufacture the trace,
+execution, runtime state transition, or architectural synchronization.
 
-The independent DAIFSet theorem computes the first static word, follows the
-pinned Sail decoder to the successful DAIFSet body, and proves that body sets
-I while preserving D/A/F. `ColdEntry.Step.maskIrq` is not yet connected to a
-dynamic occurrence of that instruction.
+The independent DAIFSet state-body theorem follows the pinned Sail decoder to
+the successful body and proves that body sets I while preserving D/A/F. It is
+deliberately separate from the exact occurrence/order theorem: neither proves
+access/trap admission, dynamic execution, the runtime before/after PSTATE
+relation, IRQ recognition/delivery, or interval-wide masking.
 
 The HCR seam pins static `MSR HCR_EL2, X0` and proves the generated pure
 component body directly writes the supplied value at EL2. Its EL1 redirect is
@@ -82,6 +89,62 @@ static `MSR VTTBR_EL2, X1` word, while generated Lean follows the general-MSR
 projection to the component assignment and proves it writes the supplied value
 at EL2. Access/trap admission, runtime X1 value provenance, valid VTTBR fields,
 table publication, and a dynamic `ColdEntry.Step` occurrence remain external.
+
+The VTCR seam pins static `MSR VTCR_EL2, X2` word `0xd51c2142` and the official
+32-bit register declaration. Generated Lean proves that its direct EL2 body
+stores only X2 bits 31:0; the nested EL1 alternative preserves the projected
+VTCR component while the source gate audits NVMem(64). It proves no runtime X2
+provenance, control-bit consistency with machine state, VTCR field validity,
+VTTBR compatibility, stage-2 behavior, ordering, or dynamic occurrence.
+
+The CNTHCTL seam computes `MSR CNTHCTL_EL2, X3` as `0xd51ce103` and proves the
+successful official body overwrites the 32-bit component with X3 bits 31:0.
+The exact op1=100 route has no redirect; a distinct op1=000 CNTKCTL/VHE route
+is explicitly rejected by the local decoder. Access/trap admission, runtime X3
+provenance, timer permissions and behavior, ordering, synchronization, and a
+dynamic `ColdEntry.Step` occurrence remain external.
+
+The CNTVOFF seam computes `MSR CNTVOFF_EL2, X4` as `0xd51ce064` and proves the
+official admitted EL2 body installs all 64 X4 bits. Lean preserves the distinct
+EL1 nested-virtualization branch as a redirect flag plus unchanged CNTVOFF;
+the source gate audits its NVMem(96) write. Predicate-state consistency,
+access/trap admission, runtime X4 provenance, NVMem(96) contents/effects,
+offset/counter behavior, ordering, synchronization, and a dynamic occurrence
+remain external.
+
+The SP_EL1 seam computes `MSR SP_EL1, X5` as `0xd51c4105` and proves the
+official admitted EL2 body installs the complete guest stack value. The EL1
+nested-virtualization alternative is a redirect flag plus unchanged SP_EL1;
+the source gate audits NVMem(576). Access/traps, predicate-state consistency,
+NVMem(576) contents/effects, runtime X5 provenance, stack
+validity/mapping/safety, eventual selection after ERET, ordering,
+synchronization, and dynamic occurrence remain external.
+
+The ELR_EL2 seam computes `MSR ELR_EL2, X6` as `0xd51c4026` and proves the
+official admitted S3_4 body installs the complete 64-bit guest-PC value. It
+rejects the distinct ELR_EL1/VHE encoding and does not project that route's
+NVMem(560) behavior. Access/traps, runtime guest-PC-to-X6 provenance, address
+alignment/canonicality/mapping/executability/PAC, SPSR consistency, ERET
+observation or success, ordering, synchronization, other state, and dynamic
+occurrence remain external.
+
+The SPSR_EL2 seam computes `MSR SPSR_EL2, X7` as `0xd51c4007` and proves the
+official admitted S3_4 body stores exactly guest-PSTATE bits 31:0 in the 32-bit
+component. It rejects the distinct SPSR_EL1/VHE/NV route and does not project
+NVMem(352). Access/traps, runtime guest-PSTATE-to-X7 provenance, upper-bit
+preservation, SPSR mode/DAIF/instruction-state/reserved/feature validity, legal
+exception return, relation to ELR_EL2, ERET observation or success, ordering,
+synchronization, other state, and dynamic occurrence remain external.
+
+The eight independent seams are also composed. Lean records their exact words,
+X0-through-X7 operands, and source order, then folds their component updates
+over a projected EL2 register state. Generated Lean from Sail is proved equal
+to that fold; its final state is exactly the supplied values, with the official
+32-bit truncation for VTCR_EL2, CNTHCTL_EL2, and SPSR_EL2, and its log retains
+the full order. A drift gate equates this Lean word list with the native object
+test's register prefix. This does not turn the static prefix into a dynamic Arm
+execution or prove access, traps, other-state preservation, ISB effects, or
+memory ordering.
 
 ## 6. Next protocol layers
 

@@ -177,6 +177,36 @@ Every theorem is placed on one rung, from the strongest evidence down:
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
 
+The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
+keeps the public compatibility and word-encoding surface.  At the clause
+boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
+AND, OR, XOR, and ITE gate records characterize those gates. It composes any
+supplied list with a supplied non-settled final clause and proves the same
+model characterization for its exact 1-based initial RUP database.
+`Oak.CNFBuilderTrace` checks a supplied production-shaped shared-allocation
+event list and proves that acceptance gives contiguous unique input/gate
+allocation, exact edge/op decoding, backward-only operands, and
+`WellFormedSequence`. `Oak.CNFFinalObligation` gives the four total outcomes
+for decoded roots and proves exact trap order, claim-negation polarity, and the
+pending clause's counterexample semantics. `Oak.CNFTermRoot` proves that a
+supplied normalized one-bit Boolean term/root `Encodes` relation preserves
+evaluation under those gate equations, and composes it through the pending
+counterexample database. At runtime,
+`validateCNFObligation` memo-replays the supplied trap terms in slice order and
+the claim before every successful return and independently checks the
+producer's outcome and filtered edge list. The pending `validateCNFTrace` pass
+also requires an exact gate-record/unique-table-memo bijection while streaming
+the builder's exact raw clauses and final edge-to-literal conversion before
+DIMACS export; settled outcomes run the gate/memo check separately. Structural
+violations or mismatches within the checked snapshots refuse. `lowerTheorem`
+funnels its final one-bit and aggregate-tag-hypothesis wrapping through
+`assembleTheoremRoots`; structural and semantic tests pin supplied
+lowering-encounter order, path polarity, inline-call placement, and counted-loop
+multiplicity. This is not yet a Go-to-Lean implementation refinement and does
+not prove actual Go terms satisfy `CNFTermRoot.Encodes`, correct fold or
+bit-blaster operation selection, term-memo semantics, trap/claim term-list
+provenance or source ordering, or DIMACS correspondence.
+
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
 `oak test` (`110-testing.md`) remain `tested`, a fifth and weaker status,
@@ -847,9 +877,22 @@ In order of payoff, each reusing a surface that exists:
   did, while native LRAT checks faster than it solves), and a small
   checker proved once in Lean validates it — solving and trust as separate
   artifacts, the `-cross` rule kept so a race never hides a disagreement.
-  The trusted base then narrows to the clause encoder, which today is
-  cross-checked against the Go blaster node for node and not proved: the
-  finding to close first. GPU solving is not this shape — ParaFROST's
+  The trusted base then narrows to the complete clause encoder. Its raw
+  gate lists, supplied-list concatenation with the non-settled final
+  clause, and exact 1-based initial RUP database are connected by
+  `Oak.TseitinCNF`; `Oak.CNFBuilderTrace` proves that an accepted supplied
+  allocation-event projection decodes to a `WellFormedSequence`. The concrete
+  `Oak.CNFFinalObligation` proves exact decoded-root outcome and pending-clause
+  semantics; `Oak.CNFTermRoot` composes a supplied normalized Boolean
+  term/root encoding through that database. The concrete exporter now
+  memo-replays the supplied trap/claim terms and independently checks every
+  outcome, the exact gate-record/unique-table-memo bijection, allocator
+  coverage, gate/clause order and multiplicity, backward operands, and final
+  edge-to-literal conversion. Actual Go term/root encoding, bit-blaster
+  operation and fold selection, term-memo semantics, trap/claim term-list
+  provenance and source ordering, DIMACS construction, and Go-to-Lean
+  implementation refinement remain open. GPU solving is
+  not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
   obligation here is kilobytes — but the many small independent
   evaluations (the witness pass, exhaustive enumeration, reachable-state

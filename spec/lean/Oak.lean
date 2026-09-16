@@ -6,6 +6,7 @@ import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
 import Oak.ObjectLayout
+import Oak.ObjectRelocation
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact
@@ -16,6 +17,7 @@ import Oak.SequentialConsistency
 import Oak.AArch64Memory
 import Oak.AArch64WeakMemory
 import Oak.AArch64Encoding
+import Oak.AArch64ReturnEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance
 import Oak.AArch64Mmio
@@ -201,6 +203,10 @@ import Oak.BddComplement
 import Oak.RupCheck
 import Oak.SolverLaws
 import Oak.Tseitin
+import Oak.TseitinCNF
+import Oak.CNFBuilderTrace
+import Oak.CNFFinalObligation
+import Oak.CNFTermRoot
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction

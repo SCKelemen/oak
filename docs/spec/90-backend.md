@@ -751,13 +751,24 @@ one whole-region, nonvolatile write. It rewrites operation sites and metadata,
 then rebuilds MemorySSA. A separately verified load-forwarding transform
 removes only canonical nonvolatile region loads whose exact MemorySSA input
 proves the same typed value is already available from a dominating load or
-whole-region store. For a closed non-loop join phi whose every incoming
-version is a direct whole-region nonvolatile store of the exact result type,
-it creates one fresh typed block parameter and appends the corresponding
-stored value to each predecessor edge. Entry and loop phis, partial stores,
-call definitions, missing edges, type mismatches, and exhausted value
-identities fail closed. It drops facts bound to removed SSA values, rewrites
-all uses and metadata sites, and rebuilds MemorySSA. The
+whole-region store. For a closed join or loop phi, it proceeds when every real
+predecessor has the exact typed value: either the operand of a direct
+whole-region nonvolatile store defining that incoming version or a canonical
+load of that version which dominates the predecessor terminator. It may instead
+materialize exactly one unavailable input when that input is the entry-memory
+version and its real predecessor branches unconditionally to the phi. The
+transform moves the removed canonical load's checked source/access identity to
+a fresh load immediately before that edge; it neither synthesizes authority nor
+speculates onto another path. It creates one fresh typed parameter in the phi
+block and appends the corresponding value to each edge. Loads in that block and
+blocks it dominates can share the parameter, allowing one preheader load and a
+latch store to carry a value through a loop body and its exit. Conceptual
+function-entry inputs, conditional/critical edges, multiple unavailable inputs,
+partial stores, call definitions, missing edges, type mismatches, and exhausted
+value identities fail closed. The report records both removals and insertions.
+The transform resolves later-removed predecessor loads before materializing
+edges, drops facts bound to removed SSA values, rewrites all uses and metadata
+sites, and rebuilds MemorySSA. The
 scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access
@@ -827,14 +838,21 @@ targets also admit
 exactly one call-free canonical natural loop with a unique preheader, conditional
 header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
 must contain the header phi joining entry memory with the exact body-store
-definition, and selection independently rechecks it. The resulting AArch64 and
-RV64 fixtures pass `asm.Check`; `asm.Verify` proves both their returned values
-and the package-global state they write against the corresponding Oak loop
-body. RV64 recognizes a scalar-global address only through exact `la`
-provenance. Direct positive and negative verifier tests prove the correct loop
-and refute a wrong store, closing the former trusted boundary for RV64
-package-global loop-carried state. Arbitrary, nested, multi-latch, and
-multi-exit memory loops refuse. Each selector independently reprojects the
+definition, and selection independently rechecks it. When no preheader load
+already supplies the entry value, load forwarding moves one authenticated body
+load to the unconditional preheader edge, promotes the phi to an SSA loop
+parameter, and removes the body and exit loads. The result has one preheader
+load and one body store. The resulting AArch64 and RV64 fixtures pass `asm.Check`;
+`asm.Verify` proves both their returned values and the package-global state
+they write against the corresponding Oak loop body. If promotion gives the
+same Oak value both a result-register carrier and a global-cell carrier, the
+verifier adds the global alias only after separately proving exact header
+equality and one-step preservation; a divergent store refuses. RV64 recognizes
+a scalar-global address only through exact `la` provenance. Direct positive
+and negative verifier tests prove the correct loop and refute a wrong store,
+closing the former trusted boundary for RV64 package-global loop-carried state.
+Arbitrary, nested, multi-latch, and multi-exit memory loops refuse. Each
+selector independently reprojects the
 immutable checked source-access authority over the exact final CFG, verifies
 rebuilt MemorySSA, and resolves opaque regions only through
 typechecker authority. The resulting descriptor must match a global
@@ -845,8 +863,9 @@ and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
 semantic-verifier verdict before selection. Broader memory loops, aggregate
-regions, load PRE from entry/read/call-produced versions or loop phis,
-definite-write summaries, and calls in memory loops remain open; exact
+regions, critical-edge splitting, multiple unavailable phi inputs,
+conceptual-entry loop phis, partial/call-written versions, definite-write
+summaries, and calls in memory loops remain open; exact
 recursive `NoModRef`, `Ref`, `Mod`,
 and `ModRef` may-effect summaries and their standalone graph checker are
 implemented. Every OptIR direct call now carries its nonzero SSA result ID as

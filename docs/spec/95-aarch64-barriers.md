@@ -289,6 +289,15 @@ also constructs the shape corresponding to `DSB-ob; [IFB]; po`. Official CAT
 event membership remains external. Neither result proves DSB completion or ISB
 architectural context synchronization.
 
+For the descriptor-BBM projection, the concrete wrapper separately ties the
+same indexed ordering chain to exact `DSB ISH; VMALLS12E1IS; DSB ISH` words
+and actions, and proves its five `po`-linked break-through-make occurrences
+pairwise distinct. Two byte-identical tests from Herdtools7's official
+AArch64-BBM catalogue gate the positive synchronized result and the negative
+`Warning-BBM-expected` diagnostic. Those tests use stage-1 `VAAE1IS`, not
+Oak's stage-2 instruction, and do not prove completion, target/scope
+suitability, trace extraction, or the local-to-official CAT refinement.
+
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
 

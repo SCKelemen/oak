@@ -540,14 +540,17 @@ func (s *Search) remark(function string, sel *Selection) {
 }
 
 // shape names a candidate's evaluation shape: its transforms without the
-// ones that ship only on a verdict, which move and rename but change no
-// shape the verifier reads.
+// gated ones that declare themselves neutral (Neutral) — they move and
+// rename but change no shape the verifier reads. A gated transform that
+// changes instructions or branches (a fusion) stays in the shape.
 func (s *Search) shape(c *Candidate) string {
 	var names []string
 	for _, name := range c.Applied {
 		if t, ok := s.Registry.Lookup(name); ok {
 			if g, ok := t.(Gated); ok && g.NeedsVerdict() {
-				continue
+				if n, isNeutral := t.(Neutral); isNeutral && n.ShapeNeutral() {
+					continue
+				}
 			}
 		}
 		names = append(names, name)

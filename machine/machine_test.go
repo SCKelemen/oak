@@ -1318,3 +1318,103 @@ func TestLiftRV64VectorLoop(t *testing.T) {
 		t.Fatalf("the vector registers must keep their assignment (%d renamed):\n%s", alloc.Renamed, text(re.Items))
 	}
 }
+
+// The binary search's inner loop: the shift folds into the add's shifted
+// operand and the increment into a csinc, two instructions fewer.
+func TestFuseShiftAndIncrement(t *testing.T) {
+	f := fn(
+		ins("sub", w(9), w(23), w(7)),
+		ins("lsr", w(9), w(9), imm(1)),
+		ins("add", w(25), w(7), w(9)),
+		ins("ldr", x(26), mem(x(0), 0)),
+		ins("add", w(10), w(25), imm(1)),
+		ins("cmp", x(26), x(6)),
+		ins("csel", w(7), w(10), w(7), asm.Condition{Code: "lo"}),
+		ins("csel", w(23), w(25), w(23), asm.Condition{Code: "hi"}),
+		ins("add", w(0), w(7), w(23)),
+		ins("ret"),
+	)
+	out, fused, err := Fuse(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	shifted, incremented := false, false
+	for _, item := range out.Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
+			if sh, isShifted := ins.Operands[2].(asm.Shifted); isShifted && sh.Kind == "lsr" && sh.Amount == 1 && sh.Reg.Num == 9 {
+				shifted = true
+			}
+		}
+		if ins.Mnemonic == "csinc" && len(ins.Operands) == 4 {
+			if c, isCond := ins.Operands[3].(asm.Condition); isCond && c.Code == "hs" && ins.Operands[2].(asm.Register).Num == 25 && ins.Operands[1].(asm.Register).Num == 7 {
+				incremented = true
+			}
+		}
+	}
+	if fused != 2 || !shifted || !incremented || strings.Contains(got, "lsr w9") || strings.Contains(got, "add w10") {
+		t.Fatalf("fused %d (shifted %v, incremented %v):\n%s", fused, shifted, incremented, got)
+	}
+	// Not fused: the shift's source rewritten before the add, a
+	// two-use intermediate.
+	g := fn(
+		ins("lsr", w(9), w(8), imm(2)),
+		ins("add", w(8), w(8), imm(4)),
+		ins("add", w(10), w(7), w(9)),
+		ins("add", w(11), w(10), w(9)),
+		ins("add", w(0), w(11), w(8)),
+		ins("ret"),
+	)
+	out, fused, err = Fuse(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fused != 0 {
+		t.Fatalf("fused %d:\n%s", fused, text(out.Items))
+	}
+}
+
+// A rotated loop's two exit tests fold into one conditional compare:
+// `b.hs done; cbz w5, loop` becomes `ccmp w5, #0, #0, lo; b.eq loop`.
+func TestFuseExitTests(t *testing.T) {
+	f := fn(
+		ins("mov", w(5), w(0)),
+		asm.Label{Name: "loop_4"},
+		ins("add", w(3), w(3), imm(1)),
+		ins("cmp", w(3), w(4)),
+		asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_5"}}},
+		ins("cbz", w(5), asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("mov", w(0), w(3)),
+		ins("ret"),
+	)
+	out, fused, err := FuseExits(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ccmp, back bool
+	for _, item := range out.Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "ccmp" && len(ins.Operands) == 4 {
+			if c, isCond := ins.Operands[3].(asm.Condition); isCond && c.Code == "lo" && ins.Operands[2].(asm.Immediate).Value == 0 {
+				ccmp = true
+			}
+		}
+		if ins.Mnemonic == "b" && ins.Cond == "eq" {
+			back = true
+		}
+		if ins.Mnemonic == "cbz" {
+			t.Fatalf("the cbz survived:\n%s", text(out.Items))
+		}
+	}
+	if fused != 1 || !ccmp || !back {
+		t.Fatalf("fused %d (ccmp %v, back %v):\n%s", fused, ccmp, back, text(out.Items))
+	}
+}

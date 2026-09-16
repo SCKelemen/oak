@@ -1,12 +1,12 @@
 import Std.Tactic.BVDecide
 
 /-!
-# AArch64 system encodings
+# AArch64 encodings
 
-The A64 barrier, TLBI, and PSTATE-immediate words emitted by Oak, with fields
-generated from Arm's ISA XML.  `spec/sail/lean/Bridge.lean` proves these words
-reach the corresponding clauses of Arm's Sail `decode64` and projects the
-successful decoder results into Oak's deliberately narrow local semantics.
+The A64 store, barrier, TLBI, and PSTATE-immediate words emitted by Oak, with
+fields generated from Arm's ISA XML. `spec/sail/lean/Bridge.lean` proves the
+projected system words reach the corresponding clauses of Arm's Sail `decode64`
+and projects successful decoder results into Oak's narrow local semantics.
 -/
 
 namespace Oak.AArch64Encoding
@@ -42,6 +42,14 @@ def msrPstate : Encoding := ⟨"MSR_SI_pstate", "msr", 0xd500401f#32, 0xfff8f01f
 -- OAK-A64-SYSREG-WRITE-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
 def msrSystem : Encoding := ⟨"MSR_SR_systemmove", "msr", 0xd5100000#32, 0xfff00000#32, [⟨"L", 21, 1⟩, ⟨"o0", 19, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
 -- OAK-A64-SYSREG-WRITE-ENC-END
+
+-- OAK-A64-ERET-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def eret : Encoding := ⟨"ERET_64E_branch_reg", "eret", 0xd69f03e0#32, 0xffffffff#32, [⟨"opc", 24, 4⟩, ⟨"op2", 20, 5⟩, ⟨"A", 11, 1⟩, ⟨"M", 10, 1⟩, ⟨"Rn", 9, 5⟩, ⟨"op4", 4, 5⟩]⟩
+-- OAK-A64-ERET-ENC-END
+
+-- OAK-A64-STR64-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def str64UnsignedOffset : Encoding := ⟨"STR_64_ldst_pos", "str", 0xf9000000#32, 0xffc00000#32, [⟨"size", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"opc", 23, 2⟩, ⟨"imm12", 21, 12⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-STR64-ENC-END
 
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
@@ -90,6 +98,13 @@ def encodeSystemMsr (o0 : BitVec 1) (op1 : BitVec 3)
     (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
     (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
 
+/-- Fill the generated unsigned-offset STR (64-bit) encoding fields. The
+    immediate is stored in scaled units, as in Arm's `imm12` field. -/
+def encodeStr64UnsignedOffset (imm12 : BitVec 12) (rn rt : BitVec 5) :
+    BitVec 32 :=
+  (str64UnsignedOffset.value &&& str64UnsignedOffset.mask) |||
+    (imm12.setWidth 32 <<< 10) ||| (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
+
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
 def dmbSy : BitVec 32 := encodeCRm dmb 0xf#4
@@ -129,6 +144,62 @@ def msrVttbrEl2X1 : BitVec 32 :=
   encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b000#3 0b00001#5
 theorem msr_vttbr_el2_x1_word : msrVttbrEl2X1 = 0xd51c2101#32 := by native_decide
 -- OAK-A64-VTTBR-EL2-WORD-END
+
+-- OAK-A64-VTCR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrVtcrEl2X2 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b010#3 0b00010#5
+theorem msr_vtcr_el2_x2_word : msrVtcrEl2X2 = 0xd51c2142#32 := by native_decide
+-- OAK-A64-VTCR-EL2-WORD-END
+
+-- OAK-A64-CNTHCTL-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrCnthctlEl2X3 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b1110#4 0b0001#4 0b000#3 0b00011#5
+theorem msr_cnthctl_el2_x3_word : msrCnthctlEl2X3 = 0xd51ce103#32 := by native_decide
+-- OAK-A64-CNTHCTL-EL2-WORD-END
+
+-- OAK-A64-CNTVOFF-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrCntvoffEl2X4 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b1110#4 0b0000#4 0b011#3 0b00100#5
+theorem msr_cntvoff_el2_x4_word : msrCntvoffEl2X4 = 0xd51ce064#32 := by native_decide
+-- OAK-A64-CNTVOFF-EL2-WORD-END
+
+-- OAK-A64-SP-EL1-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrSpEl1X5 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0001#4 0b000#3 0b00101#5
+theorem msr_sp_el1_x5_word : msrSpEl1X5 = 0xd51c4105#32 := by native_decide
+-- OAK-A64-SP-EL1-WORD-END
+
+-- OAK-A64-ELR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrElrEl2X6 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b001#3 0b00110#5
+theorem msr_elr_el2_x6_word : msrElrEl2X6 = 0xd51c4026#32 := by native_decide
+-- OAK-A64-ELR-EL2-WORD-END
+
+-- OAK-A64-SPSR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrSpsrEl2X7 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b000#3 0b00111#5
+theorem msr_spsr_el2_x7_word : msrSpsrEl2X7 = 0xd51c4007#32 := by native_decide
+-- OAK-A64-SPSR-EL2-WORD-END
+
+-- OAK-A64-ERET-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def eretWord : BitVec 32 := eret.value
+theorem eret_word : eretWord = 0xd69f03e0#32 := by native_decide
+-- OAK-A64-ERET-WORD-END
+
+-- OAK-A64-DESCRIPTOR-STORE-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def strXzrX0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 0b11111#5
+def strX2X0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 2#5
+theorem str_xzr_x0_word : strXzrX0 = 0xf900001f#32 := by native_decide
+theorem str_x2_x0_word : strX2X0 = 0xf9000002#32 := by native_decide
+-- OAK-A64-DESCRIPTOR-STORE-WORD-END
+
+/-- A make from X1 is a different exact word; this only detects Rt drift. -/
+theorem str_x1_x0_cannot_equal_make :
+    (0xf9000001#32 : BitVec 32) ≠ strX2X0 := by native_decide
+
+/-- A break through X1 is a different exact word; this only detects Rn drift. -/
+theorem str_xzr_x1_cannot_equal_break :
+    (0xf900003f#32 : BitVec 32) ≠ strXzrX0 := by native_decide
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

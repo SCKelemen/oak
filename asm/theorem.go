@@ -50,6 +50,27 @@ type loweredTheorem struct {
 	widths map[string]int
 }
 
+// assembleTheoremRoots projects a lowered body and its raw trap conditions
+// into the roots consumed by the deciders and exporters. The aggregate-tag
+// hypothesis guards both sides of the obligation. Raw traps retain their
+// supplied lowering-encounter order and multiplicity in a fresh slice.
+func assembleTheoremRoots(assume, body *term, rawTraps []*term) (*term, []*term) {
+	claim := truncate(body, 1)
+	hasAssumption := assume.kind != termConst || assume.value != 1
+	if hasAssumption {
+		claim = binaryTerm("or", binaryTerm("xor", assume, constTerm(1, 1)), claim)
+	}
+	traps := make([]*term, 0, len(rawTraps))
+	for _, trap := range rawTraps {
+		trap = truncate(trap, 1)
+		if hasAssumption {
+			trap = binaryTerm("and", assume, trap)
+		}
+		traps = append(traps, trap)
+	}
+	return claim, traps
+}
+
 // Guard is a refinement's construction as the decider sees it
 // (docs/spec/20-types.md section 12): the value at its base type, and a
 // trap obligation that the predicate — a Bool over `value` — holds.
@@ -138,19 +159,8 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 	if len(lowering.loops) > 0 {
 		return undecided("the body has a data-dependent loop")
 	}
-	t = truncate(t, 1)
-	if assume.kind != termConst || assume.value != 1 {
-		// Under the tag hypothesis: the claim holds, and no trap fires.
-		t = binaryTerm("or", binaryTerm("xor", assume, constTerm(1, 1)), t)
-	}
-	traps := make([]*term, 0, len(lowering.traps))
-	for _, trap := range lowering.traps {
-		trap = truncate(trap, 1)
-		if assume.kind != termConst || assume.value != 1 {
-			trap = binaryTerm("and", assume, trap)
-		}
-		traps = append(traps, trap)
-	}
+	// Under the tag hypothesis: the claim holds, and no trap fires.
+	t, traps := assembleTheoremRoots(assume, t, lowering.traps)
 
 	mentioned := map[string]bool{}
 	collectParams(t, mentioned)

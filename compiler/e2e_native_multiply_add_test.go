@@ -93,9 +93,25 @@ func TestE2ENativeMultiplyAdd(t *testing.T) {
 			t.Errorf("%s must be proven; diagnostics:\n%s", want.unit, joined)
 		}
 	}
-	// A product by a constant power of two keeps the shift.
-	if counts := mnemonics("shifted"); counts["madd"] != 0 || counts["lsl"] != 1 {
-		t.Errorf("shifted must keep the strength reduction's shift, got %v:\n%s", counts, nativegen.Describe(units["shifted"]))
+	// A product by a constant power of two keeps the shift — as an lsl,
+	// or folded into the add's shifted operand by machine.Fuse.
+	shifts := 0
+	for _, item := range units["shifted"].Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "lsl" {
+			shifts++
+		}
+		for _, op := range ins.Operands {
+			if sh, isShifted := op.(asm.Shifted); isShifted && sh.Kind == "lsl" {
+				shifts++
+			}
+		}
+	}
+	if counts := mnemonics("shifted"); counts["madd"] != 0 || shifts != 1 {
+		t.Errorf("shifted must keep the strength reduction's shift, got %d shift(s) in %v:\n%s", shifts, counts, nativegen.Describe(units["shifted"]))
 	}
 	// The dot-product loop fuses each element's product into its
 	// accumulator: at least one madd (four, unrolled) and no mul.

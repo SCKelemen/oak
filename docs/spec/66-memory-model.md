@@ -281,7 +281,7 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 | seq-cst global order and read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | Go-to-Lean refinement | not yet proved |
 | compiler/C refinement | instruction families checked; decoded DMB/DSB records index the restricted Lean ordering relations; C/LLVM, trace extraction, DSB completion, ISB context synchronization, and complete CAT semantics remain open |
-| AArch64 weak-memory litmus suite | eleven language/machine cases + inductive Lean `ob` projection for full/load DMB and full DSB + pinned official-CAT AST certificate and Herd execution gated |
+| AArch64 weak-memory litmus suite | eleven scalar language/machine cases + two byte-pinned official BBM/VMSA catalogue cases + inductive Lean `ob` projection for full/load DMB and full DSB + pinned official-CAT AST certificate and Herd execution gated |
 
 ## 12. Next closure steps
 

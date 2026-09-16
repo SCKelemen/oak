@@ -207,6 +207,21 @@ Pure `f32` calls compose too:
 arguments are evaluated in the caller scope, bound by the callee's ordered
 parameter list, and the straight-line callee body uses the same bit-level
 carriers. Borrowing, recursion, and effectful calls are outside this slice.
+Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
+`Oak.FloatLoweringRefinement.lowerWiden_eval` proves that extraction's
+`Float32.toFloat` and the verifier's width-changing `fcvt64` consume the same
+binary32 value. This is operation identity and width/operand composition, not
+an independent proof of IEEE conversion, NaN-payload mapping, the production
+evaluator, or either ISA instruction.
+Separately, `lowerF64_eval` closes ordered binary64 FMA over parameters,
+already-rounded `UInt64` literal bits, straight-line local substitution, and
+leaves from the widening family; both readings retain the same ordered
+add → widen → FMA composition: verifier `fadd32`/`fcvt64`, extraction
+`Float32` addition/`.toFloat`, then `Oak.FloatOps.fma64`.
+The widened leaf reads the function's initial binary32 parameter scope, not an
+arbitrary mixed-width local scope. Other binary64 arithmetic, control flow,
+calls, memory, the Go evaluator, IEEE implementation details, and ISA semantics
+remain outside this theorem.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

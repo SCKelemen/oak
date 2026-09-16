@@ -104,6 +104,15 @@ choose: (value: Bool): Bool {
   flag
 }
 
+choose_loaded: (value: Bool): Bool {
+  value ? {
+    flag = true
+  } | {
+    previous: Bool = flag
+  }
+  flag
+}
+
 read_item: (): u32 = items[u32(0)]
 
 identity: (value: Bool): Bool = value
@@ -144,6 +153,16 @@ main: (): i32 = 0
 	}
 	if stores, loads := countOptIRMemoryOperations(choose.ForwardedLoads); stores != 2 || loads != 0 {
 		t.Fatalf("post-memory-phi operations = stores %d, loads %d", stores, loads)
+	}
+	chooseLoaded, ok := optIRFunction(module, "choose_loaded")
+	if !ok {
+		t.Fatalf("choose_loaded was not projected: %+v", module.Refusals)
+	}
+	if chooseLoaded.RegionLoadForwarding.Changes() != 1 || chooseLoaded.RegionLoadForwarding.Replacements[0].Kind != optir.RegionLoadFromPhi {
+		t.Fatalf("available-load memory-phi forwarding = %+v", chooseLoaded.RegionLoadForwarding)
+	}
+	if stores, loads := countOptIRMemoryOperations(chooseLoaded.ForwardedLoads); stores != 1 || loads != 1 {
+		t.Fatalf("post-available-load memory-phi operations = stores %d, loads %d", stores, loads)
 	}
 	if _, ok := optIRFunction(module, "read_item"); ok {
 		t.Fatal("aggregate global unexpectedly entered the closed scalar memory vocabulary")

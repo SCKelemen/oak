@@ -41,6 +41,12 @@ jobs:
         with:
           go-version: '1.27.1'
 
+      # Production AArch64 B/BL relocation decisions are rendered as Lean
+      # examples and checked against Oak.ObjectRelocation in this Lean-equipped
+      # lane. Ordinary Go-only jobs skip this optional oracle.
+      - name: Check executable relocation correspondence
+        run: go test ./asm -run '^TestAArch64Branch26RelocationMatchesLean$' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 

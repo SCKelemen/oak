@@ -1,0 +1,15 @@
+package hypervisor
+
+// Deliberately incomplete stage-2 break-before-make ordering slice. The
+// `align 8` and the assertion establish only the base alignment and non-empty
+// extent needed by this source access. The caller must establish that slot
+// names a live descriptor, that the update requires BBM, that the invalidation
+// target is suitable, and that any later publication/use requirements are met.
+fn stage2_bbm_ordering_slice(slot: [* align 8]u64, new_descriptor: u64) -> () {
+  assert(len(slot) >= u32(1))
+  slot[0] = 0
+  arm64.dsb_ish()
+  arm64.tlbi_vmalls12e1is()
+  arm64.dsb_ish()
+  slot[0] = new_descriptor
+}

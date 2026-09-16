@@ -106,6 +106,41 @@ structure ExactBarrierOccurrence {Occurrence Target : Type}
   wordIsExact : code.wordAt event = some word
   actionIsBarrier : trace.action event = .barrier decode
 
+/-- One descriptor-store occurrence with independent instruction-word and
+    abstract descriptor-action projections. The exact STR word does not derive
+    the slot, descriptor class, execution, or architectural memory effect. -/
+structure ExactDescriptorStoreOccurrence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat) (ttdClass : TTDClass)
+    (word : BitVec 32) : Prop where
+  wordIsExact : code.wordAt event = some word
+  actionIsDescriptor : trace.action event =
+    .descriptor slot .explicitWrite ttdClass
+
+/-- A nearby Rt field cannot stand in for Oak's exact make store. -/
+theorem str_x1_x0_cannot_witness_make
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {slot : Nat}
+    (wrongWordAt : code.wordAt event = some 0xf9000001#32) :
+    ¬ ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+        strX2X0 := by
+  intro occurrence
+  have wordsEqual : 0xf9000001#32 = strX2X0 :=
+    Option.some.inj (wrongWordAt.symm.trans occurrence.wordIsExact)
+  exact str_x1_x0_cannot_equal_make wordsEqual
+
+/-- A nearby Rn field cannot stand in for Oak's exact break store. -/
+theorem str_xzr_x1_cannot_witness_break
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {slot : Nat}
+    (wrongWordAt : code.wordAt event = some 0xf900003f#32) :
+    ¬ ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+        strXzrX0 := by
+  intro occurrence
+  have wordsEqual : 0xf900003f#32 = strXzrX0 :=
+    Option.some.inj (wrongWordAt.symm.trans occurrence.wordIsExact)
+  exact str_xzr_x1_cannot_equal_break wordsEqual
+
 /-- The exact instruction occurrences and program-order directions in Oak's
     fixed DSB ISH; VMALLS12E1IS; DSB ISH; ISB source slice. `po` does not mean
     immediate adjacency, and this structure contains no completion or context
@@ -398,6 +433,70 @@ structure DsbIshBbmSequenceWitness {Occurrence Target : Type}
   postTlbiDsbBeforeMake : trace.po postTlbiDsb make
   tlbiInScopeForMake : trace.invScope tlbiEvent make
 
+/-- The four chained program-order links make the break, two barriers,
+    TLBI, and make occurrences pairwise distinct. The old descriptor event is
+    deliberately absent: `coherenceAfter` has no irreflexivity premise. -/
+theorem dsb_ish_bbm_sequence_occurrences_pairwise_distinct
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {old make breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence}
+    {slot : Nat} {oldAccess : DescriptorAccess} {target : Target}
+    (sequence : DsbIshBbmSequenceWitness trace old make slot oldAccess target
+      breakEvent preTlbiDsb tlbiEvent postTlbiDsb) :
+    breakEvent ≠ preTlbiDsb ∧
+      breakEvent ≠ tlbiEvent ∧
+      breakEvent ≠ postTlbiDsb ∧
+      breakEvent ≠ make ∧
+      preTlbiDsb ≠ tlbiEvent ∧
+      preTlbiDsb ≠ postTlbiDsb ∧
+      preTlbiDsb ≠ make ∧
+      tlbiEvent ≠ postTlbiDsb ∧
+      tlbiEvent ≠ make ∧
+      postTlbiDsb ≠ make := by
+  have neOfPo : ∀ {a b}, trace.po a b → a ≠ b := by
+    intro a b hPo hEq
+    subst b
+    exact trace.po_irrefl a hPo
+  have breakBeforeTlbi : trace.po breakEvent tlbiEvent :=
+    trace.po_trans sequence.breakBeforePreTlbiDsb
+      sequence.preTlbiDsbBeforeTlbi
+  have breakBeforePost : trace.po breakEvent postTlbiDsb :=
+    trace.po_trans breakBeforeTlbi sequence.tlbiBeforePostTlbiDsb
+  have breakBeforeMake : trace.po breakEvent make :=
+    trace.po_trans breakBeforePost sequence.postTlbiDsbBeforeMake
+  have preBeforePost : trace.po preTlbiDsb postTlbiDsb :=
+    trace.po_trans sequence.preTlbiDsbBeforeTlbi
+      sequence.tlbiBeforePostTlbiDsb
+  have preBeforeMake : trace.po preTlbiDsb make :=
+    trace.po_trans preBeforePost sequence.postTlbiDsbBeforeMake
+  have tlbiBeforeMake : trace.po tlbiEvent make :=
+    trace.po_trans sequence.tlbiBeforePostTlbiDsb
+      sequence.postTlbiDsbBeforeMake
+  exact ⟨neOfPo sequence.breakBeforePreTlbiDsb, neOfPo breakBeforeTlbi,
+    neOfPo breakBeforePost, neOfPo breakBeforeMake,
+    neOfPo sequence.preTlbiDsbBeforeTlbi, neOfPo preBeforePost,
+    neOfPo preBeforeMake, neOfPo sequence.tlbiBeforePostTlbiDsb,
+    neOfPo tlbiBeforeMake, neOfPo sequence.postTlbiDsbBeforeMake⟩
+
+/-- The ordering witness plus exact instruction-word/action witnesses at the
+    same two DSB indices and TLBI index. It still contains no completion,
+    visibility, or instruction-to-action derivation. -/
+structure ConcreteDsbIshBbmSequenceWitness {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (old make : Occurrence) (slot : Nat) (oldAccess : DescriptorAccess)
+    (target : Target)
+    (breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence) : Prop where
+  ordering : DsbIshBbmSequenceWitness trace old make slot oldAccess target
+    breakEvent preTlbiDsb tlbiEvent postTlbiDsb
+  breakStoreIsExact : ExactDescriptorStoreOccurrence code trace breakEvent
+    slot .tlbUncacheable strXzrX0
+  preTlbiDsbIsExact : ExactBarrierOccurrence code trace preTlbiDsb
+    dsbIsh dsbIshDecode
+  tlbiIsExact : Vmalls12e1isOccurrence code trace tlbiEvent target
+  postTlbiDsbIsExact : ExactBarrierOccurrence code trace postTlbiDsb
+    dsbIsh dsbIshDecode
+  makeStoreIsExact : ExactDescriptorStoreOccurrence code trace make slot
+    .tlbCacheable strX2X0
+
 def DsbIshBbmSequence {Occurrence Target : Type}
     (trace : Trace Occurrence Target) (old make : Occurrence) : Prop :=
   ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
@@ -405,16 +504,16 @@ def DsbIshBbmSequence {Occurrence Target : Type}
     DsbIshBbmSequenceWitness trace old make slot oldAccess target breakEvent
       preTlbiDsb tlbiEvent postTlbiDsb
 
-/-- The concrete sequence wrapper retains an external exact-word projection
-    for the same TLBI occurrence and target as the ordering witness. -/
+/-- The concrete sequence wrapper retains external exact-word projections for
+    both DSB occurrences and the same TLBI occurrence/target as the ordering
+    witness. -/
 def ConcreteDsbIshBbmSequence {Occurrence Target : Type}
     (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
     (old make : Occurrence) : Prop :=
   ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
     (breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence),
-    DsbIshBbmSequenceWitness trace old make slot oldAccess target breakEvent
-        preTlbiDsb tlbiEvent postTlbiDsb ∧
-      Vmalls12e1isOccurrence code trace tlbiEvent target
+    ConcreteDsbIshBbmSequenceWitness code trace old make slot oldAccess target
+      breakEvent preTlbiDsb tlbiEvent postTlbiDsb
 
 /-- The indexed sequence witness constructs the indexed projected witness
     without changing the selected TLBI occurrence or target. -/
@@ -478,10 +577,40 @@ theorem concrete_vmalls12e1is_sequence_projects_bbm
     ConcreteProjectedBBM code trace old make := by
   rcases sequence with
     ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
-      postTlbiDsb, sequence, occurrence⟩
+      postTlbiDsb, sequence⟩
   exact
     ⟨slot, oldAccess, target, breakEvent, tlbiEvent,
-      dsb_ish_sequence_witness_projects_bbm_witness sequence, occurrence⟩
+      dsb_ish_sequence_witness_projects_bbm_witness sequence.ordering,
+      sequence.tlbiIsExact⟩
+
+/-- Both exact STR words, the exact DSB ISH words, and the exact VMALLS12E1IS
+    word are tied to the same five occurrence indices and descriptor slot as
+    the retained BBM ordering witness. This exposes independent static word and
+    action projections, not memory effects, barrier completion, or TLBI effects. -/
+theorem concrete_dsb_ish_bbm_sequence_has_exact_words
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {old make : Occurrence}
+    (sequence : ConcreteDsbIshBbmSequence code trace old make) :
+    ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
+      (breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence),
+      DsbIshBbmSequenceWitness trace old make slot oldAccess target breakEvent
+          preTlbiDsb tlbiEvent postTlbiDsb ∧
+        code.wordAt breakEvent = some 0xf900001f#32 ∧
+        code.wordAt preTlbiDsb = some 0xd5033b9f#32 ∧
+        code.wordAt tlbiEvent = some 0xd50c83df#32 ∧
+        code.wordAt postTlbiDsb = some 0xd5033b9f#32 ∧
+        code.wordAt make = some 0xf9000002#32 := by
+  rcases sequence with
+    ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
+      postTlbiDsb, sequence⟩
+  exact
+    ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
+      postTlbiDsb, sequence.ordering,
+      by simpa [str_xzr_x0_word] using sequence.breakStoreIsExact.wordIsExact,
+      by simpa [dsb_ish_word] using sequence.preTlbiDsbIsExact.wordIsExact,
+      by simpa [tlbi_vmalls12e1is_word] using sequence.tlbiIsExact.wordIsExact,
+      by simpa [dsb_ish_word] using sequence.postTlbiDsbIsExact.wordIsExact,
+      by simpa [str_x2_x0_word] using sequence.makeStoreIsExact.wordIsExact⟩
 
 /-- Conditional maintenance obligation for one old event. `requiresBBM` is an
     external classification; it is not silently equated with the full CAT

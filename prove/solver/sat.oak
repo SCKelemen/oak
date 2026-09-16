@@ -14,8 +14,8 @@
 // propagation derives it: the level-zero antecedent chain, the resolved
 // reasons in trail order, the conflict clause last — so the certificate is
 // complete when the empty clause is written. The solver is untrusted: the
-// rung checks the certificate (prove/lrat.go, lrat.oak) and confirms a
-// model (asm.CNF.Evaluate) before a row changes.
+// rung checks the certificate (internal/lrat/lrat.go through prove, and
+// lrat.oak) and confirms a model (asm.CNF.Evaluate) before a row changes.
 //
 // Literals are 2 * variable + polarity (polarity 1 positive), variables
 // from zero; an assignment is 0 unassigned, 1 false, 2 true. Clause ids

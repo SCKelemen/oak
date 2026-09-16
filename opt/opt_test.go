@@ -452,10 +452,43 @@ func TestSearchWeighsLoopStride(t *testing.T) {
 	}
 }
 
-// gatedToggle ships only on a verdict.
+// gatedToggle ships only on a verdict and changes no evaluation shape.
 type gatedToggle struct{ toggle }
 
 func (g *gatedToggle) NeedsVerdict() bool { return true }
+func (g *gatedToggle) ShapeNeutral() bool { return true }
+
+// shapingToggle ships only on a verdict and changes the shape (a fusion).
+type shapingToggle struct{ toggle }
+
+func (g *shapingToggle) NeedsVerdict() bool { return true }
+func (g *shapingToggle) ShapeNeutral() bool { return false }
+
+func TestSearchValidatesShapingGatedTransformsSeparately(t *testing.T) {
+	// A gated transform that changes instructions or branches is its own
+	// shape: the hoisted form under it, the hoisted form alone, and the
+	// fused form alone are all validated in cost order — the neutral rule
+	// would have skipped the hoisted form alone as its shape judged.
+	report := &Report{}
+	s := &Search{Registry: NewRegistry(&toggle{name: "hoist", phase: PhaseLoop, fires: true}, &shapingToggle{toggle{name: "fuse", phase: PhaseMachine, fires: true}}), Costs: AArch64Costs, Validations: 4, Report: report}
+	d := &fakeDriver{
+		metrics:  map[string]Metrics{"hoist+fuse": {Instructions: 4}, "hoist": {Instructions: 5}, "fuse": {Instructions: 6}, "": {Instructions: 7}},
+		verdicts: map[string]Outcome{"hoist+fuse": Witnessed, "hoist": Witnessed, "fuse": Proven, "": Proven},
+	}
+	sel, err := s.Run("f", Identity(config{}), NewFacts(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Candidate.Name() != "fuse" || sel.Verdict.Outcome != Proven {
+		t.Fatalf("selected %s (%s); validated %v\n%s", sel.Candidate.Name(), sel.Verdict.Outcome, d.validated, report.String())
+	}
+	if len(d.validated) < 3 || d.validated[0] != "hoist+fuse" || d.validated[1] != "hoist" || d.validated[2] != "fuse" {
+		t.Fatalf("validated %v: want the fused shape, the hoisted shape alone, then the fusion alone", d.validated)
+	}
+	if strings.Contains(report.String(), "its shape under other gated transforms") {
+		t.Errorf("a shaping transform must not be lumped with its parent:\n%s", report.String())
+	}
+}
 
 func TestSearchTrustedVerdictNeedsUngatedForm(t *testing.T) {
 	// The verifier could judge neither form. A transform that ships only

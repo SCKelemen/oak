@@ -51,6 +51,153 @@ theorem write_vttbr_el2_el1_nv_redirect_preserves_component
       oldValue newValue = ⟨true, oldValue⟩ := by
   rfl
 
+/-- The pinned model uses the same nested-virtualization predicate for VTCR_EL2.
+    Its Boolean arguments are projections of old architectural control bits;
+    their consistency with the surrounding machine state is external. -/
+def vtcrEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 32-bit VTCR_EL2 component. The source
+    X register is 64-bit, but the pinned Arm model stores only its low 32 bits.
+    NVMem(64), other state, and access/trap effects are omitted. -/
+structure VTCRWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeVtcrEl2Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) : VTCRWriteComponent :=
+  if vtcrEl2RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue.setWidth 32⟩
+
+theorem write_vtcr_el2_at_el2_is_direct_low32
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    writeVtcrEl2Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue.setWidth 32⟩ := by
+  rfl
+
+theorem write_vtcr_el2_el1_nv_redirect_preserves_component
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    writeVtcrEl2Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
+/-- The successful official CNTHCTL_EL2 write body. The architectural
+    component is 32-bit even though the source X register is 64-bit. Access,
+    traps, and every other machine-state component are omitted. -/
+structure CNTHCTLWriteComponent where
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeCnthctlEl2Component (newValue : BitVec 64) : CNTHCTLWriteComponent :=
+  ⟨newValue.setWidth 32⟩
+
+theorem write_cnthctl_el2_is_direct_low32 (newValue : BitVec 64) :
+    writeCnthctlEl2Component newValue = ⟨newValue.setWidth 32⟩ := by
+  rfl
+
+/-- The pinned CNTVOFF_EL2 body redirects under the same old-HCR nested-
+    virtualization predicate used by VTTBR_EL2. These Boolean arguments are
+    separate architectural-state projections, not fields of either value. -/
+def cntvoffEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 64-bit CNTVOFF_EL2 component.
+    NVMem(96), every other state component, and access/trap effects are omitted. -/
+structure CNTVOFFWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeCntvoffEl2Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : CNTVOFFWriteComponent :=
+  if cntvoffEl2RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_cntvoff_el2_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeCntvoffEl2Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_cntvoff_el2_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeCntvoffEl2Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
+/-- The pinned SP_EL1 body redirects under the old-HCR nested-virtualization
+    predicate. The Boolean inputs are separate machine-state projections. -/
+def spEl1RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The successful official write body's 64-bit SP_EL1 component. NVMem(576),
+    other architectural state, and all access/trap effects are omitted. -/
+structure SPEl1WriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeSpEl1Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : SPEl1WriteComponent :=
+  if spEl1RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_sp_el1_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeSpEl1Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_sp_el1_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeSpEl1Component .el1 true true false true false oldValue newValue =
+      ⟨true, oldValue⟩ := by
+  rfl
+
+/-- The successful official ELR_EL2 write body's complete 64-bit component.
+    The exact S3_4 tuple has no redirect or value transformation after access
+    admission. Other architectural state and all access/trap effects are omitted. -/
+structure ELRWriteComponent where
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeElrEl2Component (newValue : BitVec 64) : ELRWriteComponent :=
+  ⟨newValue⟩
+
+theorem write_elr_el2_is_direct (newValue : BitVec 64) :
+    writeElrEl2Component newValue = ⟨newValue⟩ := by
+  rfl
+
+/-- The successful official SPSR_EL2 write body's complete 32-bit component.
+    The source X register is 64-bit, but the exact S3_4 tuple stores only its
+    low word. PSTATE validity, ERET behavior, and access/trap effects are omitted. -/
+structure SPSRWriteComponent where
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeSpsrEl2Component (newValue : BitVec 64) : SPSRWriteComponent :=
+  ⟨newValue.setWidth 32⟩
+
+theorem write_spsr_el2_is_direct_low32 (newValue : BitVec 64) :
+    writeSpsrEl2Component newValue = ⟨newValue.setWidth 32⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

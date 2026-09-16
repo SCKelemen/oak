@@ -155,6 +155,48 @@ alternative, Lean records a redirect flag and leaves that component unchanged;
 it does not model NVMem contents or effects. A source-drift gate separately
 audits the assignment to NVMem and pins the route to the official Sail model.
 
+The adjacent stage-2 control write is also exact. Lean computes
+`MSR VTCR_EL2, X2` as `0xd51c2142`, selects VTCR_EL2/X2, and proves the direct
+EL2 component transition. Unlike VTTBR_EL2, the pinned official model declares
+VTCR_EL2 as `bits(32)`: the direct result is exactly X2 bits 31:0, not the full
+64-bit argument. The EL1 redirect leaves the projected component unchanged;
+the source gate audits the corresponding low-32-bit NVMem(64) assignment.
+
+The timer-control write follows the same width boundary but a different body.
+Lean computes `MSR CNTHCTL_EL2, X3` as `0xd51ce103`, selects the exact tuple,
+and proves its admitted body unconditionally stores X3 bits 31:0 in the
+official 32-bit component. The source gate follows the complete op1=100 route.
+It separately counts the model's second CNTHCTL assignment and the generated
+decoder rejects `MSR CNTKCTL_EL1, X3`; that VHE-sensitive op1=000 path is not
+silently merged into Oak's CNTHCTL theorem.
+
+The counter-offset write is full-width and conditional. Lean computes
+`MSR CNTVOFF_EL2, X4` as `0xd51ce064`, selects CNTVOFF_EL2/X4, and proves the
+direct EL2 body installs the supplied 64-bit value. The projected EL1 nested-
+virtualization alternative preserves old CNTVOFF and raises a redirect flag;
+the source gate pins the same old HCR/SCR aliases and the official NVMem(96)
+assignment. The proof does not connect those Booleans to architectural state.
+
+The guest-stack write is likewise full-width and conditional. Lean computes
+`MSR SP_EL1, X5` as `0xd51c4105`, selects the exact SP bank, and proves direct
+EL2 installation of the supplied 64-bit value. The projected EL1 nested-
+virtualization alternative preserves SP_EL1 and raises a redirect flag; the
+source gate pins NVMem(576). Decoder negatives distinguish SP_EL0 and SP_EL2.
+
+The guest-PC write is full-width and unconditional after admission. Lean
+computes `MSR ELR_EL2, X6` as `0xd51c4026`, selects ELR_EL2/X6, proves Rt
+preservation for X7, and proves the generated body installs the supplied 64-bit
+value unchanged. The source gate pins the exact S3_4 route, the official 64-bit
+declaration, and the existence of a second textual ELR_EL2 assignment. A
+negative theorem keeps that separate S3_0 ELR_EL1/VHE/NV route outside this
+component theorem.
+
+The guest-PSTATE write is a direct low-word update after admission. Lean
+computes `MSR SPSR_EL2, X7` as `0xd51c4007`, selects SPSR_EL2/X7, and proves the
+official 32-bit component receives exactly X7 bits 31:0. The source gate pins
+the exact S3_4 route and declaration while the local decoder rejects the S3_0
+SPSR_EL1/VHE/NV route that can separately assign SPSR_EL2 or NVMem(352).
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -163,6 +205,15 @@ SCR_EL3 NS/EEL2; it is never derived from the incoming HCR value. Lean records
 the EL1 alternative as a redirect flag and unchanged HCR_EL2, while the source
 gate separately audits the official NVMem(120) assignment. The proof does not
 connect those separately supplied old-bit Booleans to the old 64-bit component.
+
+`Oak.AArch64ColdEntry.installColdEntryRegistersAtEL2` composes all eight exact
+writes as an ordered projected-state fold. The generated Sail function uses
+the same component bodies and a single general-MSR decoder; the bridge proves
+the generated result equals the Oak fold for every old projected state and
+input value. Its exact result retains all 64 bits for HCR, VTTBR, CNTVOFF, SP,
+and ELR and only bits 31:0 for VTCR, CNTHCTL, and SPSR, together with the exact
+ordered write log. The proof is intentionally limited to those components at
+EL2 and does not establish access/trap admission or full-state preservation.
 
 These are language/catalog properties. They are not a proof that an arbitrary
 sequence of register writes satisfies the Arm Architecture Reference Manual.
@@ -181,6 +232,48 @@ compatibility, desired VM/RW/interrupt-routing configuration, stage-2
 enablement, exception routing, or observation by later writes. It supplies no
 ordering, synchronization, publication, BBM, or TLBI fact.
 
+The VTCR theorem proves no access admission, trap absence, dynamic execution,
+runtime X2 provenance, or preservation of X2 bits 63:32. It validates no VTCR
+field, RES0/RES1, feature, granule, or address-size constraint and no VTTBR
+compatibility. It proves no stage-2 enablement or walk behavior, publication,
+ordering, BBM, TLBI effect/completion, context synchronization, NVMem effect,
+or preservation of other machine state.
+
+The CNTHCTL theorem proves no access admission, minimum exception level, trap
+absence, dynamic occurrence, or runtime X3 provenance. It validates no field,
+RES0/RES1, or feature-dependent constraint and proves no guest timer/counter
+permission, event-stream behavior, VHE alias semantics, ordering, completion,
+context synchronization, upper-32-bit preservation, or other architectural
+state.
+
+The CNTVOFF theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime X4 provenance, predicate-state consistency, or
+NVMem effect. It proves no offset validity, virtual-counter arithmetic,
+wraparound or monotonicity property, guest timer behavior, relation to
+CNTHCTL, ordering, completion, context synchronization, or other state.
+
+The SP_EL1 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime X5 provenance, predicate-state consistency, or
+NVMem effect. It establishes no stack alignment, canonicality, mapping,
+contents, memory safety, post-ERET bank selection/use, relation to SPSR,
+ordering, completion, context synchronization, or other state.
+
+The ELR_EL2 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, or runtime guest-PC-to-X6 provenance. It establishes no
+address alignment, canonicality, mapping, executability, instruction state, or
+pointer-authentication validity; no ELR_EL1 VHE/NV/NVMem(560) behavior; no
+relation to SPSR_EL2; and no ERET observation, success, or transfer. It proves
+no ordering, completion, context synchronization, or preservation of other
+architectural state.
+
+The SPSR_EL2 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime guest-PSTATE-to-X7 provenance, or preservation of
+X7 bits 63:32. It validates no mode, DAIF, instruction-state, reserved, or
+feature-dependent field; no legal exception-return state or current-EL
+transition; no relation to ELR_EL2; and no ERET observation, success, or
+target. It proves no SPSR_EL1 VHE/NV/NVMem(352) behavior, ordering, completion,
+context synchronization, or preservation of other architectural state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -194,6 +287,12 @@ ordering, synchronization, publication, BBM, or TLBI fact.
 | exact `MRS`/`MSR` register selection | AArch64 assembly-refinement tested |
 | exact HCR_EL2/X0 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | exact VTTBR_EL2/X1 word and conditional component update | Lean/Sail proved; official source drift-pinned |
+| exact VTCR_EL2/X2 word and low-32 conditional component update | Lean/Sail proved; official source drift-pinned |
+| exact CNTHCTL_EL2/X3 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
+| exact CNTVOFF_EL2/X4 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact SP_EL1/X5 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact ELR_EL2/X6 word and direct full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact SPSR_EL2/X7 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

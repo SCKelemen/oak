@@ -200,6 +200,8 @@ var setAside = map[string]string{
 	nativegen.TransformValueSelect: "branches around its conditional",
 	nativegen.TransformReallocate:  "keeps its register assignment",
 	nativegen.TransformSchedule:    "keeps its instruction order",
+	nativegen.TransformFuse:        "keeps its instructions apart",
+	nativegen.TransformFuseExits:   "keeps its exit tests apart",
 }
 
 // setAsideReasons reads, from the function's remarks, the transforms the

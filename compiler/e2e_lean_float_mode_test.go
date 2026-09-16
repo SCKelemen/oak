@@ -15,6 +15,8 @@ func TestE2ELeanFloatBitsMode(t *testing.T) {
 axpy: (a: f32, x: f32, y: f32): f32 = a * x + y
 diff: (a: f32, b: f32): f32 = a - b
 ratio: (a: f32, b: f32): f32 = a / b
+widen: (a: f32, b: f32): f64 = f64(a + b)
+mixed: (a: f32, b: f32, x: f64, y: f64): f64 = fma(f64(a + b), x, y)
 signed: (x: f32, y: f32): f32 = copysign(abs(-x), y)
 eq: (a: f32, b: f32): Bool = a == b
 ne: (a: f32, b: f32): Bool = a != b
@@ -49,7 +51,7 @@ assigned_pair: (a: f32, b: f32): f32 = {
 main: (): i32 = 0
 `
 	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
-	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
+	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "widen", "mixed", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +60,8 @@ main: (): i32 = 0
 		"(Oak.FloatOps.add32 (Oak.FloatOps.mul32 a x) y)",
 		"(Oak.FloatOps.sub32 a b)",
 		"(a / b)",
+		"((Oak.FloatOps.add32 a b).toFloat)",
+		"(Oak.FloatOps.fma64 ((Oak.FloatOps.add32 a b).toFloat) x y)",
 		"(Oak.FloatOps.copysign32 (Oak.FloatOps.abs32 (Oak.FloatOps.neg32 x)) y)",
 		"(Oak.FloatOps.eq32 a b)",
 		"(Oak.FloatOps.ne32 a b)",

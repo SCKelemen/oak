@@ -185,10 +185,36 @@ checking LRAT; the integration path also requires the checker written in Oak
 to accept the certificate against the same DIMACS formula. Source-body and
 machine-operation replay attacks are tests. `Oak.NativeEqualityCertificate`
 proves the abstract composition from accepted RUP plus exact CNF completeness
-to result equality. This removes the SAT solver from the audit, but it does
-not yet remove symbolic execution, Oak lowering, term-to-CNF generation, or
-the Go/Oak checker implementations from the TCB, and it does not promote a
-compiler verdict.
+to result equality. `Oak.TseitinCNF` proves that each raw AND/OR/XOR/ITE gate
+record's exact clause list characterizes its Boolean equation,
+composes any supplied gate sequence with its supplied non-settled final
+clause, and carries that characterization to the exact 1-based initial RUP
+database. `Oak.CNFBuilderTrace` checks a supplied production-shaped
+input/gate allocation stream and proves that acceptance gives contiguous
+unique shared allocations, exact complement-edge and operation-tag decoding,
+backward operands, and `WellFormedSequence`. `Oak.CNFFinalObligation` proves
+the exact four-way construction and that a pending decoded-root clause is
+satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
+proves evaluation preservation and pending counterexample semantics for a
+supplied normalized one-bit Boolean term/root encoding under those gate
+equations. Independently, the concrete exporter memo-replays the supplied trap
+terms in slice order and the claim term, and checks the producer's root
+filtering, order, polarity, and outcome before every successful return. A
+pending snapshot additionally passes through
+`validateCNFTrace` before serialization, checking the exact
+gate-record/unique-table-memo bijection, allocator coverage/disjointness, exact
+raw-clause order and multiplicity, and exact final-edge conversion; settled
+outcomes run the gate/memo audit separately. Any mismatch among those checked
+representations refuses export. It does not yet prove the Go checkers refine
+the Lean checkers, actual Go terms satisfy `CNFTermRoot.Encodes`, or the
+bit-blaster selects the right operations and folds. Term-memo semantics,
+trap/claim term-list provenance or source ordering, and DIMACS correspondence
+also remain open.
+The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
+package, below `prove`'s compatibility wrappers and word codec. This removes
+the SAT solver from the audit, but it does not yet remove symbolic execution,
+Oak lowering, the remaining term-to-CNF generation, or the Go/Oak checker
+implementations from the TCB, and it does not promote a compiler verdict.
 
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register
@@ -211,7 +237,11 @@ literal DAIFSet, their eight context-register MSR words, the exact ISB word, and
 order, and zero overhead but is not a Lean proof of the compiler or dynamic
 execution. `Oak.AArch64ColdEntry.Step`
 therefore still requires an
-explicit occurrence-indexed external Arm context-synchronization witness.
+explicit occurrence-indexed external Arm context-synchronization witness. That
+witness now pins every register-write action's register, word, and Rt and
+requires the total HCR-through-SPSR program order; Lean proves the eight write
+occurrences pairwise distinct. The unified generated decoder agrees with each
+witnessed word/Rt/target, but does not create the occurrence or order edge.
 The generated Sail bridge kernel-proves that the exact ISB word selects
 `InstructionSynchronizationBarrier` in Oak's local pure projection and
 conjoins that fact with the witness. A Go drift gate audits all six projection
@@ -221,13 +251,17 @@ separate unit-returning stubs, so this new dispatch proof deliberately does not
 discharge the external state-semantic obligation.
 
 The same narrow seam now covers the cold-entry IRQ-mask leaf. Lean computes
-`MSR DAIFSet, #2` as `0xd50342df`; generated Lean from the local Sail
-projection selects DAIFSet/operand #2 and proves the successful four-bit body
-sets PSTATE.I while preserving D/A/F. A Go drift gate pins the decoder,
-access/trap boundary, dispatch, and assignments to the pinned official Sail
-source. Access admission, traps, dynamic occurrence, other architectural
-state, interrupt delivery, and interval-wide masking remain outside this
-conditional state-body proof; it adds no ordering or synchronization edge.
+`MSR DAIFSet, #2` as `0xd50342df`; the occurrence-indexed cold-entry relation
+retains one exact DAIFSet/#2 action through every later stage and requires it
+before all eight register writes, ISB, and ERET. Generated Lean agrees on its
+DAIFSet/#2 target and, in a separate conditional theorem, proves the successful
+four-bit body sets PSTATE.I while preserving D/A/F. A Go drift gate pins the
+complete nine-word Lean/native prefix and the official decoder, access/trap
+boundary, dispatch, and assignments. The external occurrence is a premise,
+not a trace extracted from object bytes. Access/trap/PostDecode admission,
+dynamic execution, a runtime PSTATE transition, other architectural state,
+interrupt recognition/delivery, interval-wide masking, memory ordering, and
+context synchronization remain outside these facts.
 
 The next cold-entry word, `MSR HCR_EL2, X0`, is computed as `0xd51c1100`.
 Generated Lean proves its HCR_EL2/X0 target and component transition: EL2
@@ -251,6 +285,93 @@ assignment. Access/trap admission, dynamic occurrence, runtime X1-to-source
 argument provenance, register-field validity, table publication, BBM, TLBI
 effects, completion, synchronization, and other machine state remain open.
 
+The following `MSR VTCR_EL2, X2` is computed as `0xd51c2142`. Generated Lean
+proves its decoder target and component transition. The official register is
+32-bit, so the direct EL2 result is exactly X2 bits 31:0; bits 63:32 are not
+preserved. The source gate pins the distinct `op2 = 010` nested route, five
+HCR/SCR predicate aliases, low-32 direct assignment, NVMem(64) alternative,
+and 32-bit register declaration. Access/traps, occurrence, runtime X2
+provenance, predicate consistency with machine state, VTCR validity and VTTBR
+compatibility, stage-2 behavior, NVMem effects, other state, publication,
+ordering, BBM/TLBI completion, and context synchronization remain open.
+
+The next `MSR CNTHCTL_EL2, X3` word is `0xd51ce103`. Generated Lean proves the
+exact target and the admitted body's unconditional X3-bits-31:0 update of the
+official 32-bit register. The source gate pins the full op1=100 route and keeps
+the separate op1=000 `CNTKCTL_EL1` VHE path distinct. Access/minimum-EL/trap
+admission, occurrence, runtime X3 provenance, timer-control field validity,
+timer behavior, upper-bit preservation, other state, ordering, completion,
+and context synchronization remain open.
+
+The following `MSR CNTVOFF_EL2, X4` word is `0xd51ce064`. Generated Lean proves
+the exact target and full-width component transition: direct at EL2, with the
+EL1 nested-virtualization alternative represented as a redirect flag and
+unchanged CNTVOFF. The source gate pins the complete op2=011 route, five old
+HCR/SCR predicate aliases, NVMem(96) alternative, and 64-bit declaration.
+Access/traps, occurrence, runtime X4 provenance, predicate-state consistency,
+NVMem effects, counter arithmetic/monotonicity and guest-timer behavior, other
+state, ordering, completion, and context synchronization remain open.
+
+The following `MSR SP_EL1, X5` word is `0xd51c4105`. Generated Lean proves its
+exact bank/operand target and full-width transition: direct at EL2, with the
+official EL1 nested-virtualization alternative represented as a redirect flag
+and unchanged SP_EL1. The source gate pins the complete route, five HCR/SCR
+aliases, NVMem(576), and the 64-bit declaration. Access/traps, occurrence,
+runtime X5 provenance, predicate-state consistency, NVMem effects, stack
+alignment/canonicality/mapping/contents/safety, post-ERET selection/use,
+relation to SPSR, other state, ordering, and synchronization remain open.
+
+The following `MSR ELR_EL2, X6` word is `0xd51c4026`. Generated Lean proves the
+exact S3_4 target, Rt preservation, and the official admitted body's unchanged
+64-bit assignment. The source gate pins the full route and declaration while
+keeping the distinct S3_0 ELR_EL1/VHE/NV path outside the theorem. Access/traps,
+occurrence, runtime guest-PC-to-X6 provenance, target alignment/canonicality/
+mapping/executability/PAC, relation to SPSR, ERET observation or success, other
+state, ordering, and synchronization remain open.
+
+The following `MSR SPSR_EL2, X7` word is `0xd51c4007`. Generated Lean proves
+the exact S3_4 target, Rt preservation, and the official admitted body's
+low-32 assignment to the 32-bit register. The source gate keeps the distinct
+S3_0 SPSR_EL1/VHE/NV/NVMem(352) path outside the theorem. Access/traps,
+occurrence, runtime guest-PSTATE-to-X7 provenance, upper-bit preservation,
+SPSR field and legal exception-return validity, relation to ELR_EL2, ERET
+observation or success, other state, ordering, and synchronization remain open.
+
+These eight leaf proofs now compose through generated code. One Sail decoder
+classifies the complete ordered word list with its X0-through-X7 Rt fields, and
+a generated projected-state function calls the same eight component bodies.
+`Oak.SailBridge.cold_entry_register_sequence_end_to_end` proves that generated
+result equals Oak's EL2 fold, including the three low-32 destinations and the
+ordered log. A Go gate ties the theorem's numeric words to the native object
+oracle. This closes static projected composition only: full Arm state,
+access/traps, runtime value provenance, dynamic occurrence/order, memory
+ordering, ISB effects, and ERET semantics remain outside the theorem.
+
+The terminal plain `ERET` now has its own narrow generated seam. The generated
+instruction table and Lean both fix it as `0xd69f03e0`; generated Sail Lean
+proves the exact non-PAC decode fields under an explicit non-EL0 input to its
+pre-`__PostDecode` checks, excludes EL0/authenticated/corrupted inputs, and
+projects the composed EL2 state to the installed ELR_EL2/SPSR_EL2 inputs.
+Its dedicated nested-virtualization trap predicate is false at EL2 under the
+official predicate's required EL1 conjunct. A Go source gate pins the official
+decode clause and bodies, EL2 selectors, and `SynchronizeContext` before
+PSTATE restoration and branch. This closes exact static encoding, decode
+target, and selected inputs—not dynamic occurrence, `__PostDecode`, global
+trap freedom, SPSR validity, synchronization semantics, architectural state
+transition, branch success, or observation.
+
+The ordinary operandless `RET` emitted at every returning AArch64 epilogue has
+a separate static encoding seam. `Oak.AArch64ReturnEncoding` pins the generated
+`RET_64R_branch_reg` row, proves that `Rn[9:5]` round-trips while all fixed bits
+are preserved, and proves the default `X30` word is `0xd65f03c0`. Generated
+Sail Lean accepts that word as the ordinary non-PAC `RET` class with `Rn = 30`
+and `BranchType_RET`; a corrupted fixed bit is rejected. Go drift gates pin the
+generated encoding-table row/default, encoder bytes, official decoder clause
+and dispatch, and the local Sail projection. This proves static
+encode/decode/dispatch identity only—not X30 provenance, ABI/frame restoration,
+target validity or mapping,
+PAC behavior, `BranchTo` execution, object/link correctness, or observation.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
@@ -264,14 +385,25 @@ warning, not an execution-validity axiom. Lean proves its propositional warning
 shape empty only under explicit premises that all old events are maintained,
 official-needs membership projects to Oak's local requirement, and Oak's
 `ProjectedBBM` implies official `BBM`; none of those refinement premises is
-claimed here. A conditional wrapper preserves the same
-externally supplied exact VMALLS12E1IS word/action occurrence through the BBM
-projection, and the Sail bridge conjoins its named call-target theorem without
+claimed here. A conditional wrapper preserves externally supplied exact
+`STR XZR,[X0]`/DSB ISH/VMALLS12E1IS/DSB ISH/`STR X2,[X0]` word/action
+occurrences at the same five indices as the BBM ordering chain and proves the
+five `po`-linked break-through-make events distinct. Its word and action
+fields are independent. The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
 descriptor event classification, coherence-after, invalidation scope, concrete
 IPA/VMID target selection, completion, and context synchronization remain
 explicit obligations. Sail's coarse single-model-TLB reset implementation,
 which ignores architectural target granularity, is not used to discharge them.
+
+Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
+official AArch64-BBM catalogue before execution. The synchronized VMSA case is
+`Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly
+`Warning-BBM-expected`, and both stable Herd hashes/witness counts are pinned.
+They use stage-1 `VAAE1IS`, not Oak's stage-2 `VMALLS12E1IS`, and prove only
+generic CAT model/diagnostic behavior—not Oak event classification, `ca`,
+`inv-scope`, target suitability, completion, synchronization, Sail/ASL state,
+or the local-to-official BBM refinement premise.
 
 An adjacent exact-sequence layer records DSB ISH, VMALLS12E1IS, DSB ISH, and
 ISB occurrences and their program-order directions. Its completed form retains
@@ -309,6 +441,21 @@ dynamic execution occurrence. The downstream OS currently emits the plain
 VMALLS12E1 sequence, so this encoding theorem, conditional bridge, and object
 witness are not evidence for that consumer path.
 
+The deliberately incomplete stage-2 BBM ordering source slice is separately
+pinned in full. Its Oak type requires an 8-byte-aligned span and its assertion
+requires one element; `Oak.Forwarding.unsigned_lt_one_is_zero` licenses the
+direct zero test and `zero_index_store` the local store cleanup. The
+freestanding ELF/AAPCS64 native symbol is exactly `CBZ w1`, the two exact STR
+words around the three exact maintenance words, `RET`, and trap `BRK`. The C
+lane preserves the same fall-through store/system order. `Oak.Forwarding`
+proves only the local Boolean-branch and zero-index address/value equalities
+used by lowering/cleanup. Because DSB is outside the semantic verifier's
+decided subset, the whole-body verdict is trusted. Neither that verdict nor
+the exact STR encodings derives an official Sail/ASL memory write, PTE
+provenance/alignment beyond the source base fact, CAT `ca`/`inv-scope`
+membership, TLBI effects, DSB completion, publication, or ISB synchronization.
+There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
+
 The fixed Oak context-sync example has a bootstrap C system-instruction order
 gate and an independent native zero-overhead gate: the bootstrap C lane retains
 the four system instructions in order, and the native ELF symbol is exactly
@@ -337,12 +484,27 @@ examples. The writer now rejects missing symbols and incomplete pairs before
 format-specific emission. This does not prove ELF/Mach-O record encoding,
 relocation meaning, symbol resolution, section layout, or linking.
 
+One executable-relocation case now has a **proved model and bounded production
+correspondence**. `Oak.ObjectRelocation` specifies AArch64 `B`/`BL` patching:
+the original opcode, four-byte alignment, the exact signed 26-bit scaled reach,
+replacement of only the immediate bits, signed decoding, opcode preservation,
+and arrival at the target. The final-ELF resolver applies the corresponding
+fail-closed helper for `call26`, `jump26`, and the legacy `branch26` spelling;
+its Go boundary decisions are pinned to kernel-checked examples and the start
+stub's linked call word is checked in the written ELF. The pins are not a
+universal implementation-refinement theorem for Go. This closes only the
+model's word-level arithmetic. Symbol/layout authority, other relocations, ELF
+structure, and the complete output bytes remain trusted.
+
 ### 2.6 Object → binary
 
-Linking is the C compiler's driver (`compileC`), static for Linux cross
-builds, with the manifests' `link`/`framework` inputs and the realization
-shims. **Trusted**; **differential** through `oak run -target` under
-QEMU where present.
+The default link is the C compiler's driver (`compileC`), static for Linux
+cross builds, with the manifests' `link`/`framework` inputs and the
+realization shims. `-link oak` instead writes the closed native program's
+static ELF in process. Both remain **trusted** as complete layout/link steps;
+the AArch64 direct `B`/`BL` patch described above is the one proved word-level
+exception. Finished images are **differentially** exercised through
+`oak run -target` under QEMU where present.
 
 ## 3. Per target
 
@@ -476,7 +638,8 @@ iteration's values.
 The first float seam is `Oak.FloatLoweringRefinement` (2026-09-15). Its
 `lowerF_eval` proves, for every straight-line expression over `f32` parameters,
 post-rounding bit-pattern literals, and local declarations or rebindings using
-`+`, `-`, `*`, and `/`, plus unary negation, `abs`, and `copysign`, that the
+`+`, `-`, `*`, `/`, and ordered ternary `fma`, plus unary negation, `abs`, and
+`copysign`, that the
 extraction's operation reading equals the verifier term's matching
 arithmetic or sign-bit reading. The generalized `lowerWith_eval` maintains
 the agreement invariant while the verifier substitutes a local's lowered
@@ -503,11 +666,20 @@ executes every initializer and each arm's assignments sequentially, starts the
 two arms from the same scope, derives every written name, and proves the
 verifier's pointwise `iteTerm` merge agrees with the tuple returned by the
 extraction's selected do-block. `lowerConditionalAssignment_eval` is its
-one-local corollary. This is deliberately still a first slice: decimal parsing
-into the literal bits, conversions, spans, effectful conditions, nested or
-effectful statement arms, borrowing/recursive/effectful calls, `f64`, and
-vector operations remain related to the extraction by tests rather than this
-theorem. Division here proves operation identity and operand order through
+one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
+the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
+the production render retains `fcvt64` over the exact width-32 operand term.
+The separate `lowerF64_eval` family proves ordered `Oak.FloatOps.fma64` over
+binary64 parameters, already-rounded bit literals, straight-line local
+substitution, and leaves from the proved widening family. Thus
+`fma(f64(a + b), x, y)` retains and composes the exact `fadd32`, `fcvt64`, and
+ordered `fma64` nodes. The widened leaf starts in its own initial binary32
+parameter scope; this is not arbitrary mixed-width local sequencing.
+This is deliberately still a first slice: decimal parsing into the literal
+bits, all other conversions, spans, effectful conditions, nested or effectful
+statement arms, borrowing/recursive/effectful calls, other `f64` arithmetic,
+and vector operations remain related to the extraction by tests rather than
+this theorem. Division here proves operation identity and operand order through
 Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
 division or payload-observing NaN behavior.
 
@@ -576,7 +748,8 @@ for a workload):
    machine behavior" from a statement about expressions into one about
    functions on arm64. **First float slice (2026-09-15):**
    `Oak.FloatLoweringRefinement.lowerF_eval` connects exact `f32` `+`, `-`,
-   `*`, `/`, unary negation, `abs`, and `copysign` over parameters, post-rounding
+   `*`, `/`, ordered ternary `fma`, unary negation, `abs`, and `copysign` over
+   parameters, post-rounding
    literal bits, and straight-line local declaration/rebinding to the verifier's
    width-32 operation/sign-bit terms and local substitution; the production
    render pins cover those shapes and a multiply followed by an add.
@@ -590,9 +763,15 @@ for a workload):
    callee body. `lowerConditionalBlock_eval` proves any finite sequence of
    scalar initializers and sequential assignments in either statement arm,
    then the pointwise merge of the union write set; the one-local theorem is a
-   corollary. Decimal parsing, conversions, memory, effectful conditions,
-   nested or effectful statement arms, borrowing/recursive/effectful calls,
-   and the rest of the float/vector edge stay open.
+   corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
+   that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
+   `(Oak.FloatOps.add32 a b).toFloat`. The separate `lowerF64_eval` family
+   closes ordered binary64 FMA over parameters, bit literals, and pure locals,
+   pinned to `fma64` extraction and both native target verifiers. Decimal
+   parsing, all other conversions,
+   memory, effectful conditions, nested or effectful statement arms,
+   borrowing/recursive/effectful calls, and the rest of the float/vector edge
+   stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

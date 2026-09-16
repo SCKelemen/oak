@@ -253,18 +253,32 @@ This is the largest remaining formal-composition gap inside the
 source-to-native proof chain. Extending a verifier feature and extending the
 shared refinement are separate completion conditions.
 
-The first two burn-down increments landed with this assessment:
+The current burn-down increments landed with this assessment:
 `Oak.FloatLoweringRefinement.lowerF_eval` covers straight-line `f32` `+`, `-`,
-`*`, and `/` over parameters, post-rounding bit-pattern literals, and local
+`*`, `/`, and ordered ternary `fma` over parameters, post-rounding bit-pattern
+literals, and local
 declarations and rebindings. `lowerWith_eval` maintains an explicit agreement
 invariant between the extraction scope and the verifier's substituted terms.
-Production render tests pin the four operations, non-contraction of
-multiply-then-add, the literal bits, and both local forms. Decimal parsing into
-those bits, conversions, memory, effectful control flow and calls, `f64`, and
-SIMD remain outside the theorem, so the broader gap and the score above remain.
+Production render tests pin the five operations, FMA operand order,
+non-contraction of multiply-then-add, the literal bits, and both local forms.
+`lowerWiden_eval` also composes explicit `f32`-to-`f64` widening over that
+straight-line slice and pins the production `fcvt64` node and extraction's
+`Float32.toFloat`. Decimal parsing into those bits, all other conversions,
+memory, effectful control flow, borrowing/recursive/effectful calls, other
+`f64` arithmetic, and SIMD remain outside the theorem, so the broader gap and
+score above remain. Ordered pure `f32` calls are included by the existing
+call-environment refinement.
+The separate `lowerF64_eval` family covers ordered binary64 FMA over
+parameters, already-rounded literal bits, pure local substitution, and leaves
+from the widening family through the shared `Oak.FloatOps.fma64` carrier. The
+production pin `fma(f64(a + b), x, y)` retains the `fadd32`/`fcvt64`/`fma64`
+order. It does not prove arbitrary mixed-width sequencing, the Go evaluator,
+IEEE rounding/NaN behavior, or either ISA instruction.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
-rounding or NaN-payload behavior.
+rounding or NaN-payload behavior. The FMA case similarly relates both sides to
+the existing `Oak.FloatOps.fma32` carrier; it does not independently prove that
+carrier or hardware rounding.
 
 ### 3.3 The native verifier remains materially inside the TCB
 
@@ -332,9 +346,28 @@ This is deliberately audit-only: it neither authorizes nor upgrades
 not the symbolic executor, Oak lowering, clause generator, or checker
 implementations. `Oak.NativeEqualityCertificate.accepted_implies_equal`
 states the abstract composition and makes its missing implementation
-refinements explicit. The next step remains a concrete term/CNF and checker
-refinement, followed by moving a small checker below compiler selection so
-certificate acceptance can safely become verdict authority.
+refinements explicit. `Oak.TseitinCNF` now proves each raw Boolean gate's exact
+signed-literal clause shape, supplied-list/final-clause composition, and the
+exact 1-based initial RUP database model. The hardened Go checker kernel lives
+in the dependency-leaf `internal/lrat` package. For every supplied sequence
+satisfying `WellFormedFrom`, left-to-right evaluation constructs an assignment
+satisfying all gate clauses, with the final-clause model correctly conditional.
+`Oak.CNFBuilderTrace` derives that premise for an accepted supplied contiguous
+allocation-event projection. `Oak.CNFFinalObligation` proves the four total
+decoded-root outcomes, exact trap/claim clause order, and pending
+counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
+pending database semantics for a supplied normalized one-bit Boolean term/root
+encoding. The production exporter now memo-replays the
+supplied trap terms in slice order and the claim, and independently checks
+every outcome and the exact gate-record/unique-table-memo bijection before
+performing the streaming audit of its actual shared allocation, raw-gate
+clause sequence, and final edge conversion. Actual Go satisfaction of the
+term/root relation, bit-blaster operation and fold selection, term-memo
+semantics, trap/claim term-list provenance and source ordering, DIMACS, and
+formal Go-to-Lean implementation refinement remain open. The next step remains
+bit-blaster and checker implementation refinement,
+followed by requiring the leaf checker below compiler selection so certificate
+acceptance can safely become verdict authority.
 
 One narrow slice now follows this shape. Recursive OptIR scalar-call memory
 summaries first pass through one checked CFG-order authority projection whose
@@ -378,19 +411,26 @@ and consistency checks. The outputs are inspected by LLVM tools and executed
 under QEMU or on host hardware where available.
 
 The current verification-chain documents nevertheless classify the writers
-as trusted. One bounded seam is now closed: `Oak.ObjectLayout` proves that the
+as trusted. Two bounded seams are now closed. `Oak.ObjectLayout` proves that the
 object writer's relocation-footprint admission keeps the complete four-byte
 word, or both words of an eight-byte `adrl21`/RV64 PC-relative pair, inside
 the defining function. The production decision table is pinned exhaustively
-to the Lean model. This is not yet a section-layout or relocation-semantics
-theorem. Object-to-binary linking is also explicitly trusted and generally
-runs through the C compiler's driver.
+to the Lean model. `Oak.ObjectRelocation` proves the opcode, range, patch,
+decode, and target-reachability laws for the AArch64 executable resolver's
+direct `B`/`BL` word; production boundary pins and a final-ELF word check hold
+that helper to the model on the exercised correspondence table, not by a
+universal Go-refinement theorem. These are not section-layout,
+symbol-resolution, or whole-link theorems. Object-to-binary linking is
+otherwise explicitly trusted and generally runs through the C compiler's
+driver.
 
 Consequently, even for a proven native body, the strict present claim is:
 
 > The body is proved equal to its Oak specification down to modeled machine
-> instructions, with target-dependent assurance for encoding; object and
-> executable construction and final linking remain trusted.
+> instructions, with target-dependent assurance for encoding; the AArch64
+> direct-branch relocation word is proved at its arithmetic/bit seam, while
+> the remaining object and executable construction and final linking stay
+> trusted.
 
 It is not yet:
 
@@ -420,6 +460,12 @@ of proof:
 - tables are generated from Arm's machine-readable ISA material;
 - operand and decode coverage are audited; and
 - emitted encodings are checked against `llvm-mc`.
+
+The ordinary epilogue `RET X30` is now one exact closed class within that larger
+surface: its generated encoding-table row and default operand are pinned, its
+fixed bits and Rn round-trip are proved, and generated Sail Lean establishes
+the exact ordinary RET/`BranchType_RET` decode for `0xd65f03c0`. This is static instruction
+identity, not a proof of LR provenance, target validity, or dynamic return.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
@@ -560,7 +606,9 @@ should remain as drift and implementation checks after the theorem lands.
 
 Specify and prove the exact ELF and Mach-O subsets Oak writes, including
 relocations and startup layout. Connect instruction encoding theorems to the
-bytes placed at linked virtual addresses.
+bytes placed at linked virtual addresses. The AArch64 direct `B`/`BL`
+relocation arithmetic is the first proved word-level slice; function/symbol
+layout, the remaining relocation families, and file structure are next.
 
 ### 6. Close or explicitly terminate at linking
 

@@ -295,6 +295,61 @@ bodies lift, schedule (`vsetivli` regions), reallocate their scalar
 registers, and price by stride — what the RV64 map vectorization needed
 from this side (item 24 below).
 
+### Phase B, seventh increment: peephole fusion over the lifted IR
+
+`machine.Fuse` (the `fuse` candidate, gated like the reallocator and the
+scheduler) folds two instructions the lowering spells one after the
+other into the one AArch64 instruction that does both, where the lifted
+webs show the intermediate register has one definition and one use in
+the same block and nothing the pair reads changes in between: a shift
+into an add's shifted operand (`lsr w9, w9, #1; add w25, w7, w9` → `add
+w25, w7, w9, lsr #1`) and an increment into a csinc (`add w10, w25, #1;
+csel w7, w10, w7, lo` → `csinc w7, w7, w25, hs`). The binary search's
+inner loop — `search` and `page_probe` in `benchmarks/kernels`, the two
+largest gaps left in proven or witnessed code — was eleven instructions
+against clang's nine for the same source, and these two fusions are the
+difference but for clang's `ccmp`, which combines the loop's two exit
+tests into one branch. That fusion ships too (`machine.FuseExits`, the
+`fuse-exits` candidate, gated): a bottom-tested loop's tail `b.cond exit;
+cbz wR, back` becomes `ccmp wR, #0, #nzcv, !cond; b.eq back`, the
+constant flags failing the branch where the first test exited, and the
+loop's entry test — the same two tests, both to the exit, the mirror the
+verifier's tail shape needs — becomes `ccmp wR, #0, #nzcv, !cond; b.ne
+exit`, the constant flags taking it. Three readers had to learn the
+form. The seam checker carries the compare's fact through the conditional
+compare to the branch it feeds (`ccmpFact`), in both polarities: where
+the constant flags fail the branch, the taken path knows the first
+compare's fact under its condition (the back edge, so the loop body's
+elided guard stands); where they take it, the fall-through knows it (the
+entry test, so the loop is entered under `lo < hi` as before). The
+verifier's tail shape (`tailLoopShape`) accepts a `ccmp` in the tail run
+and before the back edge, so the fused loops are judged by the loop
+argument rather than a path budget spent unrolling them — without it every
+such form came back trusted, which is why the transform sat unregistered
+for a commit. And the search's shape rule: validations were spread over
+shapes with the gated transforms struck from the name, which lumped the
+exit-fused form with its parent and never validated it; gated transforms
+now declare whether they are shape-neutral (`opt.Neutral` — the
+reallocator and the scheduler are, the fusions are not), and only the
+neutral ones drop out of the shape. The exit-fused search loop is ten
+instructions and one branch (clang's nine and one), priced the same as
+the pair-fused form's ten and two — the model prices a branch as an
+arithmetic instruction, and `ccmp` is one — so it wins on the tie-break
+toward more transforms; a branch weight above one would separate them,
+left for a measurement that shows the branch's cost. Measured on the clock, the two pair fusions
+are neutral within noise (`search` 1.11× against 1.12× unfused,
+`page_probe` 1.20× against 1.22×, native over the C backend, three
+interleaved runs each): the loop is bound by its load-compare-select
+chain, not its instruction count, which is the argument for the exit
+fusion — one branch to resolve per trip instead of two. The seam checker had to learn
+the fused midpoint: its bound arithmetic followed `sub; lsr; add` to
+`mid < hi` (Oak.Assembler.midpoint_below) and read the shifted-operand
+add as nothing, so the fused form kept its element guard and priced
+above the unfused one until `asm/bounds_arith.go` took the halving off
+the operand — the same lemma, one instruction. With that the search
+selects the fused forms for both kernels (`search`'s loop 10 instructions
+from 12 with the guard, cost 3732 against 4116).
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until
@@ -454,9 +509,9 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: aggregate/partial memory-region projection, load PRE from
-entry/read/call-produced versions or loop phis, non-affine and symbolic
-trip-count proofs,
+Not yet: aggregate/partial memory-region projection, critical-edge splitting,
+multiple unavailable phi inputs, partial/call-written versions,
+conceptual-entry loop phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -941,11 +996,21 @@ live. A verified transform deletes only a dead, whole-region, nonvolatile
 `store.region`, rewrites its metadata, and rebuilds MemorySSA. A verified
 load-forwarding transform then removes canonical nonvolatile region loads only
 when their exact MemorySSA input identifies the same typed value from a
-dominating load or whole-region store. A closed non-loop memory phi composed
-entirely of exact direct whole-region nonvolatile stores is promoted to a
-fresh typed block parameter, with each predecessor edge supplying its stored
-value. Entry and loop phis, partial/call definitions, type mismatches, missing
-edges, and value-ID exhaustion fail closed. The transform drops facts bound to
+dominating load or whole-region store. A closed join or loop memory phi is
+promoted when each real predecessor already has the exact typed value, either
+from the direct whole-region nonvolatile store defining its incoming version or
+from a canonical load of that version dominating the predecessor terminator.
+Exactly one unavailable entry-memory input may instead be materialized on a
+real predecessor whose only successor is the phi. The transform moves the
+removed canonical load's checked source/access identity to a fresh load before
+that unconditional edge; it does not synthesize authority or speculate the
+load onto another path. A fresh typed parameter in the phi block receives the
+edge values, and loads in the phi block and dominated blocks can share it.
+Conceptual function-entry inputs, conditional/critical edges, multiple missing
+inputs, partial/call definitions, type mismatches, missing edges, and value-ID
+exhaustion fail closed. The evidence records insertions as well as removed-load
+replacements. Values from loads removed later in the same transform are
+resolved before edge materialization. The transform drops facts bound to
 removed SSA identities, remaps every use and operation site, and rebuilds
 MemorySSA. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
@@ -975,7 +1040,14 @@ against the corresponding Oak loop, including its package-global write.
 RV64's verifier requires exact `la`-derived scalar-global address provenance;
 direct positive and negative tests prove the correct loop and refute an
 incorrect store, removing the previous trusted boundary for package-global
-loop-carried state. Arbitrary and nested memory loops remain refused. Selection
+loop-carried state. The production loop fixture has no synthetic source-level
+preheader read: the transform moves one authenticated load to the unconditional
+preheader edge, promotes the MemorySSA phi, and removes the body and exit
+loads. When
+the promoted value has both a result-register carrier and a global-cell
+carrier, the verifier admits the extra global alias only after bounded proofs
+of header equality and one-step preservation; a divergent global store is not
+proven. Arbitrary and nested memory loops remain refused. Selection
 reprojects immutable checked source-access authority over the exact final CFG,
 independently verifies rebuilt MemorySSA, and matches every opaque region
 through typechecker authority to an exact global descriptor already authorized
@@ -985,8 +1057,10 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-load PRE from entry/read/call-produced versions or loop phis, definite-write
-summaries, and calls in memory loops remain open; exact recursive
+critical-edge splitting, multiple unavailable phi inputs, conceptual-entry
+loop phis, partial/call-written versions, definite-write summaries, and calls
+in memory loops remain open;
+exact recursive
 `NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
 checker, and composed Lean structural models of active-authority projection
 and the small postorder effect core have landed. Concrete CFG/validator
@@ -995,7 +1069,7 @@ work.
 
 As the projection broadens, region memory SSA should power:
 
-- load PRE from entry/read/call-produced versions or loop phis;
+- critical-edge splitting and broader load placement;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;
