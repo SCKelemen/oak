@@ -210,6 +210,14 @@ func TestBoundedLoopShapes(t *testing.T) {
 		{"decrementing advance", "i: i32 = 0\nwhile i < 10 {\ni = i - 1\n}", 1},
 		{"double assignment to counter", "i: i32 = 0\nwhile i < 10 {\ni = i + 1\ni = i + 1\n}", 1},
 		{"bound mutated in body", "n: i32 = 8\ni: i32 = 0\nwhile i < n {\ni = i + 1\nn = n + 1\n}", 1},
+		{"quotient bound", "n: u32 = 12\ni: u32 = 0\nwhile i < n / 4 {\ni = i + 1\n}", 0},
+		{"literal quotient bound", "i: u32 = 0\nwhile i < 12 / 4 {\ni = i + 1\n}", 0},
+		{"variable divisor", "n: u32 = 12\ng: u32 = 4\ni: u32 = 0\nwhile i < n / g {\ni = i + 1\n}", 1},
+		{"zero divisor", "i: u32 = 0\nwhile i < 12 / 0 {\ni = i + 1\n}", 1},
+		{"counter in quotient", "i: u32 = 0\nwhile i < i / 4 {\ni = i + 1\n}", 1},
+		{"quotient numerator mutated", "n: u32 = 12\ni: u32 = 0\nwhile i < n / 4 {\nn = n + 4\ni = i + 1\n}", 1},
+		{"quotient numerator conditionally mutated", "n: u32 = 12\ni: u32 = 0\nwhile i < n / 4 {\ni == 0 ? { n = n + 4 }\ni = i + 1\n}", 1},
+		{"counter conditionally assigned twice", "n: u32 = 12\ni: u32 = 0\nwhile i < n / 4 {\ni == 0 ? { i = i + 1 }\ni = i + 1\n}", 1},
 		// ml finding F6: `u32(1)` is the same constant as `1` (docs/spec/25-type-inference.md
 		// section 3a), so a constructor-typed step or bound certifies the loop.
 		{"constructor-typed step", "k: u32 = u32(0)\nwhile k < 10 {\nk = k + u32(1)\n}", 0},

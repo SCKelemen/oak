@@ -156,7 +156,7 @@ func analyzeKernels(program *ast.Program, tc *typechecker.TypeChecker) []*diagno
 		}
 		var independence *metal.IndependenceError
 		if errors.As(err, &independence) {
-			report(CodeKernelIndependence, node, "kernel: %v; a launch runs positions in any order, so every span access must be at the grid position or at gid * T + k under `while k < T` (docs/spec/56-kernels.md section 6)", err)
+			report(CodeKernelIndependence, node, "kernel: %v; a launch runs positions in any order, so every span access must be at the grid position or within its proven tile (docs/spec/56-kernels.md section 6)", err)
 		} else {
 			report(CodeKernelSubset, node, "%v", err)
 		}

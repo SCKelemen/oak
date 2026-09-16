@@ -350,10 +350,31 @@ independence:
 - **a tile per thread**: every span access is at `gid * T + k` — spelled
   directly, through a local `base: u32 = gid * T`, or through a local
   `i: u32 = base + k` — where `k` is the counter of an enclosing
-  `while k < T` whose body changes `k` only as its last statement, or
-  `lane(T)` in a group kernel of `T` lanes (section 2a), and `T`
-  is a scalar parameter or a literal; none of `gid`, `base`, `i`, or `T`
-  is reassigned.
+  `while k < T` whose body changes `k` only as its last statement,
+  `lane(T)` in a group kernel of `T` lanes (section 2a), or the strided
+  offset `s * G + lane(G)` under `while s < T / G`, whose body changes
+  `s` only as its last statement. Here `G` is the kernel's literal group
+  size and `T` is a scalar parameter or a literal; none of `gid`, `base`,
+  `i`, or `T` is reassigned.
+
+The strided form accepts either operand order, parentheses, and immutable
+locals holding the lane or bounded offset. For example:
+
+```oak
+kernel store_row: (gid: u32, out: [*]u32, cols: u32): () = {
+  s: u32 = 0
+  while s < cols / 32 {
+    out[gid * cols + s * 32 + lane(32)] = lane(32)
+    s = s + 1
+  }
+}
+```
+
+Every lane writes its own strided slots. The quotient loop covers only
+complete groups: if `cols` is not a multiple of 32, the row's final
+`cols % 32` elements are untouched. An arbitrary guard on the offset does
+not yet discharge independence. The rule proves disjointness, not that
+the output buffer is long enough; ordinary bounds checks still apply.
 
 Views are read-only and impose nothing; a span — or a record holding one
 — handed to a helper, windowed, or rebuilt in a literal takes its accesses
@@ -365,6 +386,9 @@ the two footprints pairwise disjoint for distinct positions, which is
 the natural numbers: the descriptor records the shape (`independence:
 tile T`) and the host's obligation is that `grid * T` fits the `u32`
 index, which any buffer the tiles cover already guarantees.
+`lane_strided_offset_lt` proves the strided offset below `T`,
+`lane_strided_disjoint` applies the tile proof to distinct positions, and
+`lane_strided_lanes_disjoint` proves different lanes own different slots.
 
 ## 7. What this increment does not do
 
