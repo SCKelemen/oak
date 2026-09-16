@@ -6822,10 +6822,15 @@ machine that skips the loop under a hoisted guard — `len(a) < 4` peeled
 around a vector main loop — carries the header value (`0`) into the next
 loop instead. The two are one only under the fact that a loop which
 never ran leaves its variables at their header values, which no premise
-stated. Each loop's exit premise, and the body premise of every loop
-that can read an earlier sibling's symbols, now carries it: the loop ran
-(its guard held at the header and the machine's path reached it), or
-each of its symbols equals its header value (`notRunPins`,
-`asm/loops.go`). The vectorized map's hoisted form — the form the search
-prices lowest — is proven with it where it was witnessed before ("loop
-2's continue conditions were not proven equal").
+stated. A loop's body premise now carries it for the earlier siblings
+whose symbols the loop's header values or continue condition mention,
+and the exit comparison for the top-level loops whose symbols the two
+results mention: the loop ran (its guard held at the header and the
+machine's path reached it), or each such symbol equals its header value
+(`notRunPins`, `asm/loops.go`). Only scalars whose header value is a
+constant or a symbol are pinned — a vector kernel's sixteen lane
+variables, each pinned to a lane of the loop before, took the UTF-8
+validator's exit comparison past the node budget for nothing. The
+vectorized map's hoisted form — the form the search prices lowest — is
+proven with it where it was witnessed before ("loop 2's continue
+conditions were not proven equal").
