@@ -13,10 +13,13 @@ import (
 //
 //	while i < len(a) { dst[i] = E(a[i]); i = i + u32(1) }
 //
-// — E built from the element, loop-invariant scalars, and constants with
-// the lane-wise integer operators (+, -, &, |, ^); dst and a span
-// parameters of one integer element width, u32 or u64; either one span in
-// place or two under an enclosing `len(dst) == len(a)` — is rewritten,
+// — E built from elements at i of span parameters of one element type
+// (a zip reads several), loop-invariant scalars, and constants with the
+// lane-wise operators (+, -, &, |, ^ over u32 or u64 lanes; +, -, *, /
+// over f32 or f64 lanes, each one rounding per lane as the scalar
+// operator is); dst a writable span parameter of that type; every span
+// read or written either the loop's own span a or one known to have its
+// length, from an enclosing `len(dst) == len(a) && …` — is rewritten,
 // before lowering, into a main loop over one vector a trip under the
 // slack guard the vector kernels spell, and the remainder loop as written:
 //
@@ -33,34 +36,72 @@ import (
 // docs/spec/20-types.md, `store` writes consecutive elements), so the
 // vector store writes E(a[i + k]) to dst[i + k] for each lane k, and the
 // blocked map equals the element-wise map (Oak.Map.blocked_eq). No law of
-// the element type is used — unlike the reduction, nothing reassociates —
-// which is why the rewrite needs no fact of the body. The lowering sees
+// the element type is used — unlike the reduction, nothing reassociates,
+// and a float lane rounds once as the scalar operator does — which is why
+// the rewrite needs no fact of the body and floats vectorize. The lowering sees
 // the rewritten body and the verifier proves the assembly against it, the
 // two loops coupled inductively with the span memory of dst (§9 "Span
 // memories through loops", the split that proves store loops). One
 // vector a trip, not four: a map carries nothing across trips, so there
 // is no chain to break.
 //
-// Not rewritten: a map whose value reads any other element (dst[i], a[j])
-// or a non-invariant scalar, one over spans bound in the body rather
-// than parameters, one over spans of different widths or without the
-// equal-length guard, a float or narrow lane, a multiplication or shift
-// (not in this increment), and the remainder loop of a map this rewrite
-// made.
+// Not rewritten: a map whose value reads an element at another index
+// (a[j], a[i + 1]) or a non-invariant scalar, one over spans bound in the
+// body rather than parameters, one over spans of different element types
+// or without the equal-length guard, a narrow or Bool lane, an integer
+// multiplication or a shift (not in this increment), and the remainder
+// loop of a map this rewrite made.
 
 // mapLoop is a recognized `while i < len(src) { dst[i] = E; i = i + u32(1) }`.
 type mapLoop struct {
 	loop          *ast.WhileStatement
-	idx, src, dst string
+	idx, src, dst string // src is the span the loop's condition measures
 	elem          scalar
-	suffix        string // the simd operations' suffix, `u32x4` or `u64x2`
+	suffix        string // the simd operations' suffix, `u32x4`, `f64x2`, …
+	vecType       string // the vector type, `simd.U32x4`, …
 	lanes         int64
 	value         ast.Expression
+	spans         map[string]span
+	sameLength    func(x, y string) bool
 	// scalars are the invariant scalars the value reads, first use first;
-	// constants the constants, likewise. Each gets one splat before the
-	// main loop.
+	// constants the constants, likewise, each with the expression its
+	// splat takes. Each gets one splat before the main loop.
 	scalars   []string
-	constants []int64
+	constants []mapConstant
+}
+
+// mapConstant is one constant the value reads: key names it for reuse
+// (`i:3`, `f:1.5`), arg is the splat's argument.
+type mapConstant struct {
+	key string
+	arg ast.Expression
+}
+
+// mapShapeFor names the vector shape whose lanes hold an element type:
+// the simd suffix, the type, and the lane count.
+func mapShapeFor(elem scalar) (suffix, vecType string, lanes int64, ok bool) {
+	switch elem.name {
+	case "u32":
+		return "u32x4", "simd.U32x4", 4, true
+	case "u64":
+		return "u64x2", "simd.U64x2", 2, true
+	case "f32":
+		return "f32x4", "simd.F32x4", 4, true
+	case "f64":
+		return "f64x2", "simd.F64x2", 2, true
+	}
+	return "", "", 0, false
+}
+
+// laneWiseOp names the simd operation of an operator over the lanes of
+// an element type; false where there is none this rewrite spells.
+func laneWiseOp(op string, elem scalar) (string, bool) {
+	if elem.isFloat {
+		name, ok := map[string]string{"+": "add", "-": "sub", "*": "mul", "/": "div"}[op]
+		return name, ok
+	}
+	name, ok := laneWiseOps[op]
+	return name, ok
 }
 
 // laneWiseOps maps the operators the rewrite vectorizes to their simd
@@ -96,8 +137,8 @@ func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression) (ast.Expressi
 		return body, false
 	}
 	changed := false
-	var rewrite func(stmts []ast.Statement, equal map[string]string) []ast.Statement
-	rewrite = func(stmts []ast.Statement, equal map[string]string) []ast.Statement {
+	var rewrite func(stmts []ast.Statement, equal lengthClasses) []ast.Statement
+	rewrite = func(stmts []ast.Statement, equal lengthClasses) []ast.Statement {
 		var out []ast.Statement
 		var prev ast.Statement
 		for _, stmt := range stmts {
@@ -140,11 +181,32 @@ func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression) (ast.Expressi
 	return clone, true
 }
 
-// armFacts extends the equal-length facts with the one a conditional's
-// true arm holds: `len(x) == len(y) ? { ... }` — the condition sugar's
-// first arm, its pattern the literal true (parser.go,
-// parseConditionSugarArms).
-func armFacts(match *ast.MatchExpression, arm *ast.MatchArm, equal map[string]string) map[string]string {
+// lengthClasses are the spans known to have one length where a loop
+// stands: a union-find over span names, immutable once built (an arm's
+// facts extend a copy).
+type lengthClasses map[string]string
+
+func (c lengthClasses) find(x string) string {
+	for c != nil {
+		parent, known := c[x]
+		if !known || parent == x {
+			break
+		}
+		x = parent
+	}
+	return x
+}
+
+// same reports two spans known to have one length (a span and itself
+// trivially).
+func (c lengthClasses) same(x, y string) bool { return x == y || c.find(x) == c.find(y) }
+
+// armFacts extends the equal-length facts with those a conditional's
+// true arm holds: `len(x) == len(y) && len(z) == len(y) ? { ... }` — the
+// condition sugar's first arm, its pattern the literal true (parser.go,
+// parseConditionSugarArms), the condition a conjunction of length
+// equalities (other conjuncts add nothing and take nothing away).
+func armFacts(match *ast.MatchExpression, arm *ast.MatchArm, equal lengthClasses) lengthClasses {
 	lit, isLit := arm.Pattern.(*ast.LiteralPattern)
 	if !isLit {
 		return equal
@@ -153,27 +215,43 @@ func armFacts(match *ast.MatchExpression, arm *ast.MatchArm, equal map[string]st
 	if !isBool || !b.Value {
 		return equal
 	}
-	cond, isInfix := match.Scrutinee.(*ast.InfixExpression)
-	if !isInfix || cond.Operator != "==" {
-		return equal
+	var conjuncts []ast.Expression
+	var flatten func(e ast.Expression)
+	flatten = func(e ast.Expression) {
+		if infix, ok := e.(*ast.InfixExpression); ok && infix.Operator == "&&" {
+			flatten(infix.Left)
+			flatten(infix.Right)
+			return
+		}
+		conjuncts = append(conjuncts, e)
 	}
-	x, okX := lenOf(cond.Left)
-	y, okY := lenOf(cond.Right)
-	if !okX || !okY || x == y {
-		return equal
-	}
-	out := map[string]string{}
+	flatten(match.Scrutinee)
+	out := lengthClasses{}
 	for k, v := range equal {
 		out[k] = v
 	}
-	out[x], out[y] = y, x
+	for _, c := range conjuncts {
+		cond, isInfix := c.(*ast.InfixExpression)
+		if !isInfix || cond.Operator != "==" {
+			continue
+		}
+		x, okX := lenOf(cond.Left)
+		y, okY := lenOf(cond.Right)
+		if !okX || !okY || x == y {
+			continue
+		}
+		rx, ry := out.find(x), out.find(y)
+		if rx != ry {
+			out[rx] = ry
+		}
+	}
 	return out
 }
 
 // recognizeMap reads a while statement as an element-wise map over span
 // parameters; prev is the statement before it, equal the spans known to
 // have the same length where it stands.
-func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string]ast.Expression, spans map[string]span, equal map[string]string, body ast.Expression) (mapLoop, bool) {
+func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string]ast.Expression, spans map[string]span, equal lengthClasses, body ast.Expression) (mapLoop, bool) {
 	cond, isInfix := loop.Condition.(*ast.InfixExpression)
 	if !isInfix || cond.Operator != "<" || loop.Body == nil || len(loop.Body.Statements) != 2 {
 		return mapLoop{}, false
@@ -210,21 +288,21 @@ func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string
 	if idxType, declared := types[idx.Value]; !declared || idxType.String() != "u32" {
 		return mapLoop{}, false
 	}
-	// The spans: parameters of one integer element width, dst writable,
-	// one span or two of equal length.
+	// The spans: parameters of one element type, dst writable, every one
+	// the loop's span or known to have its length.
 	d, hasDst := spans[dst]
 	s, hasSrc := spans[src]
 	if !hasDst || !hasSrc || !d.writable || d.elemLayout != nil || s.elemLayout != nil || d.elem.name != s.elem.name {
 		return mapLoop{}, false
 	}
-	if dst != src && equal[dst] != src {
+	if !equal.same(dst, src) {
 		return mapLoop{}, false
 	}
-	suffix, lanes, ok := vectorShapeFor(&ast.Identifier{Value: d.elem.name})
+	suffix, vecType, lanes, ok := mapShapeFor(d.elem)
 	if !ok {
 		return mapLoop{}, false
 	}
-	m := mapLoop{loop: loop, idx: idx.Value, src: src, dst: dst, elem: d.elem, suffix: suffix, lanes: lanes, value: store.Value}
+	m := mapLoop{loop: loop, idx: idx.Value, src: src, dst: dst, elem: d.elem, suffix: suffix, vecType: vecType, lanes: lanes, value: store.Value, spans: spans, sameLength: equal.same}
 	if !m.laneWise(store.Value, types) {
 		return mapLoop{}, false
 	}
@@ -256,9 +334,19 @@ func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string
 func (m *mapLoop) laneWise(e ast.Expression, types map[string]ast.Expression) bool {
 	switch x := e.(type) {
 	case *ast.IndexExpression:
-		return isElement(x, m.src, m.idx)
+		// An element at the index of a span parameter of the element
+		// type whose length is the loop's.
+		name, isIdent := x.Left.(*ast.Identifier)
+		if !isIdent || x.Dot || !isName(x.Index, m.idx) {
+			return false
+		}
+		sp, isSpan := m.spans[name.Value]
+		return isSpan && sp.elemLayout == nil && sp.elem.name == m.elem.name && m.sameLength(name.Value, m.src)
 	case *ast.Identifier:
-		if x.Value == m.idx || x.Value == m.src || x.Value == m.dst {
+		if x.Value == m.idx {
+			return false
+		}
+		if _, isSpan := m.spans[x.Value]; isSpan {
 			return false
 		}
 		if t, declared := types[x.Value]; !declared || t.String() != m.elem.name {
@@ -272,27 +360,52 @@ func (m *mapLoop) laneWise(e ast.Expression, types map[string]ast.Expression) bo
 		m.scalars = append(m.scalars, x.Value)
 		return true
 	case *ast.InfixExpression:
-		if _, ok := laneWiseOps[x.Operator]; !ok {
+		if _, ok := laneWiseOp(x.Operator, m.elem); !ok {
 			return false
 		}
 		return m.laneWise(x.Left, types) && m.laneWise(x.Right, types)
+	case *ast.FloatLiteral:
+		if !m.elem.isFloat {
+			return false
+		}
+		return m.constant("f:"+x.Text+"/"+strconv.FormatFloat(x.Value, 'g', -1, 64), cloneNode(x).(ast.Expression))
 	}
 	// A constant of the element type (the typechecker's), `u32(3)`: the
 	// value is what is splatted.
+	if m.elem.isFloat {
+		return false
+	}
 	v, isConst := constantValue(e)
 	if !isConst || v < 0 {
 		return false
 	}
+	tok := m.loop.Token
+	arg := &ast.InvocationExpression{Token: tok, Function: &ast.Identifier{Token: tok, Value: m.elem.name}, Arguments: []ast.Expression{&ast.IntegerLiteral{Token: tok, Value: v}}}
+	return m.constant("i:"+strconv.FormatInt(v, 10), arg)
+}
+
+// constant records a constant the value reads, once per key.
+func (m *mapLoop) constant(key string, arg ast.Expression) bool {
 	for _, c := range m.constants {
-		if c == v {
+		if c.key == key {
 			return true
 		}
 	}
-	m.constants = append(m.constants, v)
+	m.constants = append(m.constants, mapConstant{key: key, arg: arg})
 	return true
 }
 
 func (m mapLoop) constantName(k int) string { return m.dst + "_c" + strconv.Itoa(k) }
+
+// constantIndex finds a recorded constant by key.
+func (m mapLoop) constantIndex(key string) int {
+	for k, c := range m.constants {
+		if c.key == key {
+			return k
+		}
+	}
+	return 0
+}
 
 // vectorizedMap spells the rewrite for one recognized loop.
 func vectorizedMap(m mapLoop) []ast.Statement {
@@ -310,12 +423,7 @@ func vectorizedMap(m mapLoop) []ast.Statement {
 		callee := &ast.IndexExpression{Token: tok, Left: ident("simd"), Index: ident(member + "_" + m.suffix), Dot: true}
 		return &ast.InvocationExpression{Token: tok, Function: callee, Arguments: args}
 	}
-	vecType := func() ast.Expression {
-		if m.suffix == "u32x4" {
-			return ident("simd.U32x4")
-		}
-		return ident("simd.U64x2")
-	}
+	vecType := func() ast.Expression { return ident(m.vecType) }
 	length := func() ast.Expression {
 		return &ast.InvocationExpression{Token: tok, Function: ident("len"), Arguments: []ast.Expression{ident(m.src)}}
 	}
@@ -323,26 +431,24 @@ func vectorizedMap(m mapLoop) []ast.Statement {
 	vector = func(e ast.Expression) ast.Expression {
 		switch x := e.(type) {
 		case *ast.IndexExpression:
-			return simd("load", ident(m.src), ident(m.idx))
+			return simd("load", ident(x.Left.(*ast.Identifier).Value), ident(m.idx))
 		case *ast.Identifier:
 			return ident(x.Value + "_v")
 		case *ast.InfixExpression:
-			return simd(laneWiseOps[x.Operator], vector(x.Left), vector(x.Right))
+			op, _ := laneWiseOp(x.Operator, m.elem)
+			return simd(op, vector(x.Left), vector(x.Right))
+		case *ast.FloatLiteral:
+			return ident(m.constantName(m.constantIndex("f:" + x.Text + "/" + strconv.FormatFloat(x.Value, 'g', -1, 64))))
 		}
 		v, _ := constantValue(e)
-		for k, c := range m.constants {
-			if c == v {
-				return ident(m.constantName(k))
-			}
-		}
-		return e
+		return ident(m.constantName(m.constantIndex("i:" + strconv.FormatInt(v, 10))))
 	}
 	var out []ast.Statement
 	for _, s := range m.scalars {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(s + "_v"), Type: vecType(), Value: simd("splat", ident(s))})
 	}
 	for k, c := range m.constants {
-		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(m.constantName(k)), Type: vecType(), Value: simd("splat", typed(m.elem.name, c))})
+		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(m.constantName(k)), Type: vecType(), Value: simd("splat", c.arg)})
 	}
 	guard := infix(infix(length(), ">=", u32(m.lanes)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(m.lanes))))
 	main := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}

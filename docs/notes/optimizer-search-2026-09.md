@@ -1038,28 +1038,30 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization — **maps landed 2026-09-16** (`vectorize-maps`,
+24. map/zip vectorization — **landed 2026-09-16** (`vectorize-maps`,
     `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
-    map over span parameters — `dst[i] = E(a[i])` with `E` over the
-    element, invariant scalars, and constants under `+ - & | ^`, `u32` or
-    `u64` lanes, one span in place or two under `len(dst) == len(a)` —
-    runs one vector a trip (`ldr q`, the lane-wise operations, `str q`)
-    under the slack guard with the scalar remainder as written, licensed
-    by `Oak.Map.blocked_eq` (lane-wise semantics alone: no law of the
-    element type, so no fact of the body is required), and proven by the
-    verifier with the span memory it writes. Two verifier increments made
-    it provable: the store-loop split (§0, "loops that never ran keep the
-    entry memory") proved the hand-written shape that the 2026-09-16
-    survey found *witnessed*; and the hoisted form — a guard peeled around
-    the vector loop skips it when `len(a) < 4`, carrying the index's
-    header value into the remainder loop where the Oak side carries the
-    loop symbol — needed the scalar counterpart, "loops that never ran
-    keep their variables" (`notRunPins` in `asm/loops.go`: a loop ran, or
-    each of its symbols is its header value, in every premise that can
-    read an earlier sibling's symbols). Still to do: zips (two source
-    spans), floats (the law admits them; the lane shapes are `F32x4` and
-    `F64x2`), multiplication and shifts, narrow lanes, spans bound in the
-    body, and more than one vector a trip;
+    map or zip over span parameters — `dst[i] = E(a[i], b[i], …)` with `E`
+    over the elements at `i`, invariant scalars, and constants under
+    `+ - & | ^` for `u32`/`u64` lanes and `+ - * /` for `f32`/`f64` lanes,
+    in place or under an enclosing conjunction of `len(x) == len(y)`
+    guards (closed transitively) — runs one vector a trip (the `ldr q`s,
+    the lane-wise operations, `str q`) under the slack guard with the
+    scalar remainder as written, licensed by `Oak.Map.blocked_eq`
+    (lane-wise semantics alone: no law of the element type, so no fact of
+    the body is required and floats vectorize where a reduction's cannot),
+    and proven by the verifier with the span memory it writes. Two
+    verifier increments made it provable: the store-loop split (§0,
+    "loops that never ran keep the entry memory") proved the hand-written
+    shape that the 2026-09-16 survey found *witnessed*; and the hoisted
+    form — a guard peeled around the vector loop skips it when `len(a) <
+    4`, carrying the index's header value into the remainder loop where
+    the Oak side carries the loop symbol — needed the scalar counterpart,
+    "loops that never ran keep their variables" (`notRunPins` in
+    `asm/loops.go`: a loop ran, or each of its symbols is its header
+    value, in every premise that can read an earlier sibling's symbols).
+    Still to do: integer multiplication (no integer `mul` lane in v1) and
+    shifts, narrow lanes, spans bound in the body, elements at `i ± k`
+    (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

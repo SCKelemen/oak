@@ -15,8 +15,9 @@ import (
 // one in place — runs its main loop one vector a trip: a `ldr q`, the
 // lane-wise operations, a `str q`, no scalar element access; the
 // remainder loop stays as written; the body is proven against the
-// rewritten source with the span memory it writes. A float map is not
-// rewritten in this increment.
+// rewritten source with the span memory it writes. A float map's lanes
+// round as its scalar does, so it vectorizes too; a zip reads several
+// spans of one length.
 const nativeVectorMapProgram = `
 add_k: (dst: [*]u32, a: []u32, k: u32) -> () {
   len(dst) == len(a) ? {
@@ -50,7 +51,17 @@ fadd_k: (dst: [*]f32, a: []f32, k: f32) -> () {
   len(dst) == len(a) ? {
     i: u32 = u32(0)
     while i < len(a) {
-      dst[i] = a[i] + k
+      dst[i] = a[i] * k + 0.5
+      i = i + u32(1)
+    }
+  } | { }
+}
+
+sum_ab: (dst: [*]u32, a: []u32, b: []u32) -> () {
+  len(dst) == len(a) && len(b) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] + b[i]
       i = i + u32(1)
     }
   } | { }
@@ -66,9 +77,11 @@ main: (): i32 {
   add_k(span(&ys), view(&xs), u32(3))
   bump(span(&ys), u32(1))
   mask64(span(&ws), view(&zs), u64(255))
-  fadd_k(span(&gs), view(&fs), 1.0)
-  // ys = ((x + 3) ^ 1) + 1 over 1..11 sums to 111; ws sums to 1035; gs[2] is 3.0.
-  drop: u32 = gs[2] == 3.0 ? u32(7) | u32(0)
+  fadd_k(span(&gs), view(&fs), 2.0)
+  sum_ab(span(&ys), view(&xs), view(&ys))
+  // ys = ((x + 3) ^ 1) + 1 over 1..11 sums to 111, plus xs again: 177;
+  // ws sums to 1035; gs[2] is 2.0 * 2.0 + 0.5.
+  drop: u32 = gs[2] == 4.5 ? u32(7) | u32(0)
   acc: u32 = u32(0)
   i: u32 = u32(0)
   while i < len(ys) {
@@ -102,7 +115,7 @@ func TestE2ENativeVectorMap(t *testing.T) {
 		units[fn.Name] = fn
 	}
 	joined := strings.Join(infos, "\n")
-	for _, name := range []string{"add_k", "bump", "mask64", "fadd_k"} {
+	for _, name := range []string{"add_k", "bump", "mask64", "fadd_k", "sum_ab"} {
 		if units[name] == nil {
 			t.Fatalf("%s was not lowered natively:\n%s", name, joined)
 		}
@@ -114,7 +127,7 @@ func TestE2ENativeVectorMap(t *testing.T) {
 	// scalar element access; the map is reported as vectorized.
 	for _, shape := range []struct {
 		unit, arrangement string
-	}{{"add_k", "4s"}, {"bump", "4s"}, {"mask64", "2d"}} {
+	}{{"add_k", "4s"}, {"bump", "4s"}, {"mask64", "2d"}, {"fadd_k", "4s"}, {"sum_ab", "4s"}} {
 		if n := nativegen.VectorizedMaps(units[shape.unit]); n != 1 {
 			t.Errorf("%s must be vectorized once, got %d:\n%s", shape.unit, n, joined)
 		}
@@ -133,18 +146,19 @@ func TestE2ENativeVectorMap(t *testing.T) {
 				scalarAccesses++
 			}
 		}
-		if vecLoads != 1 || vecStores != 1 || scalarAccesses != 0 {
-			t.Errorf("%s's main loop must be one vector load and one vector store, got %d, %d, and %d scalar accesses:\n%s", shape.unit, vecLoads, vecStores, scalarAccesses, nativegen.Describe(units[shape.unit]))
+		wantLoads := 1
+		if shape.unit == "sum_ab" {
+			wantLoads = 2 // the zip reads two spans
+		}
+		if vecLoads != wantLoads || vecStores != 1 || scalarAccesses != 0 {
+			t.Errorf("%s's main loop must be %d vector load(s) and one vector store, got %d, %d, and %d scalar accesses:\n%s", shape.unit, wantLoads, vecLoads, vecStores, scalarAccesses, nativegen.Describe(units[shape.unit]))
 		}
 	}
-	if n := nativegen.VectorizedMaps(units["fadd_k"]); n != 0 {
-		t.Errorf("fadd_k must not be vectorized in this increment, got %d:\n%s", n, nativegen.Describe(units["fadd_k"]))
-	}
 	_, code, abnormal := buildAndRunFrom(t, "native_vector_map", comp)
-	if abnormal || code != (111+1035-7)%256 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, (111+1035-7)%256, joined)
+	if abnormal || code != (177+1035-7)%256 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, (177+1035-7)%256, joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_vector_map_c", New().WithSource("vecmap.oak", nativeVectorMapProgram)); abnormal || code != (111+1035-7)%256 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, (111+1035-7)%256)
+	if _, code, abnormal := buildAndRunFrom(t, "native_vector_map_c", New().WithSource("vecmap.oak", nativeVectorMapProgram)); abnormal || code != (177+1035-7)%256 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, (177+1035-7)%256)
 	}
 }
