@@ -176,7 +176,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		verdict := driver.verdicts[asmFn]
 		if changed := nativegen.OptIRLowered(asmFn); changed > 0 && verdict.Kind == asm.VerdictProven {
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: optimized OptIR selected (%d generic SSA operation(s) eliminated or hoisted, proven)", fn.Name.Value, changed)))
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: optimized OptIR selected (%d generic SSA change(s), proven)", fn.Name.Value, changed)))
 		}
 		if kept := nativegen.VectorHomes(asmFn); kept > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
@@ -256,8 +256,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // nativeOptIRCandidate projects and runs the exact artifact-DAG middle end
 // used by Compilation.OptIR. Unsupported functions and any failed analysis
 // simply have no candidate: the direct native lowering remains the identity.
-// Only a CFG changed by GVN/DCE or LICM is proposed, so the search never pays
-// to validate an alternate spelling with no generic optimization in it.
+// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, or LICM is proposed, so the
+// search never pays to validate an alternate spelling with no generic
+// optimization in it.
 func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
 	structured, err := lowerCheckedOptIRFunction(function, tc)
 	if err != nil {
@@ -271,7 +272,7 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeC
 	if err != nil {
 		return nil, 0, ""
 	}
-	changes := analyses.simplification.GVN.EliminatedOperations + analyses.simplification.DCE.EliminatedOperations + analyses.loopMotion.HoistedOperations
+	changes := analyses.sccpSimplification.Changes() + analyses.simplification.GVN.EliminatedOperations + analyses.simplification.DCE.EliminatedOperations + analyses.loopMotion.HoistedOperations
 	if changes == 0 {
 		return nil, 0, ""
 	}

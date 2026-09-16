@@ -20,6 +20,8 @@ type OptIRFunction struct {
 	Structured     optir.Function
 	CFG            optir.CFG
 	Constants      optir.SCCPResult
+	SCCPSimplified optir.CFG
+	SCCPRewrite    optir.SCCPRewriteReport
 	Loops          optir.LoopAnalysis
 	Simplified     optir.CFG
 	Simplification optir.GVNDCEReport
@@ -88,6 +90,8 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			Structured:     structured,
 			CFG:            cfg,
 			Constants:      analyses.constants,
+			SCCPSimplified: analyses.sccpSimplified,
+			SCCPRewrite:    analyses.sccpSimplification,
 			Loops:          analyses.loops,
 			Simplified:     analyses.simplified,
 			Simplification: analyses.simplification,

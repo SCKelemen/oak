@@ -83,14 +83,18 @@ The independent verifier rejects undefined or non-dominating values, invalid
 same-block order, unreachable blocks, malformed edges and terminators, non-Bool
 conditions, and wrong returns.
 
-The first analysis-only SCCP validates operation arity, types, attributes, and
-cast legality, then computes exact constants and executable CFG edges with Oak's
+The first SCCP analysis validates operation arity, types, attributes, and cast
+legality, then computes exact constants and executable CFG edges with Oak's
 8/16/32/64/128-bit wrapping semantics, signed division edge behavior, and
-checked shift/division traps. Results are deterministic evidence and do not
-rewrite the CFG. SCCP itself remains analysis-only; GVN/DCE and LICM can affect
-emitted AArch64 code only through the verifier-gated OptIR candidate below.
+checked shift/division traps. `SimplifyWithSCCP` consumes only exact,
+independently recomputed evidence: it replaces known results of closed total
+pure operations, selects known branch edges, removes unreachable blocks, and
+performs bounded SSA-aware block and empty-trampoline cleanup. Effectful or
+trapping operations remain even when their result is known. Input and output
+verify independently; the result feeds later transforms and can affect emitted
+AArch64 code only through the verifier-gated OptIR candidate below.
 
-The first target-independent cleanup candidate now runs beside that evidence.
+The next target-independent cleanup candidate runs on the SCCP-rewritten CFG.
 Dominance-scoped GVN assigns deterministic numbers to SSA values and shares
 congruent operations only from a closed vocabulary of total pure scalar
 operations. Plain copies carry their operand's number; wrapping integer
@@ -118,7 +122,8 @@ exit comparison is normalized to `induction relation bound`, independent of
 operand order and which branch continues. Constant bounds produce an exact
 trip count only when mathematical monotonicity and the final update prove that
 no Oak fixed-width wrap occurs; otherwise the recurrence remains useful but the
-count is absent. `Compilation.OptIR()` exposes these facts on the original CFG.
+count is absent. `Compilation.OptIR()` exposes these facts on the current
+SCCP-rewritten CFG.
 They authorize no emission; each consumer must still establish its own legality.
 
 The first loop consumer is a loop-invariant code-motion candidate.
@@ -133,9 +138,11 @@ invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
 post-GVN/DCE LICM candidate and a deterministic movement report. Target-neutral
 SSA liveness/interference coloring and the closed AArch64 selector consume that
-final CFG. The selector supports Bool and 32/64-bit total integer operations
-plus structured CFG edges; it refuses effects, traps, calls, memory, narrow
-values, stack arguments, unknown operations, and excess pressure. Its candidate
+final CFG. The selector supports Bool and 8/16/32/64-bit total integer
+operations plus structured CFG edges. Narrow inputs and intermediate results
+are normalized to their signed or unsigned W-register canonical form. It
+refuses effects, traps, calls, memory, stack arguments, unknown operations, and
+excess pressure. Its candidate
 always passes the semantic-verifier gate: proven and witnessed verdicts remain
 distinct evidence grades, while refusal or a trusted verdict keeps an ungated
 lowering.
@@ -146,17 +153,17 @@ independently verifiable, proof-gating, or expensive results receive exact
 artifact identities. The generic OptIR chain does. Typed artifact references
 and root/unary/binary/ternary builders derive its keys and extract payloads, so
 pass code no longer owns dependency indexes and type assertions. Exact-version
-immutable nodes represent CFG v0,
-SCCP, loop structure and recurrences, GVN/DCE, CFG v1, preservation evidence,
-and LICM. Analyses declare the topology, SSA, operation, effect, type, fact,
-and layout aspects they read. GVN/DCE's checked certificate proves
-`CFGTopology` unchanged, so v1 reuses v0 dominance/natural-loop structure but
-recomputes induction facts from the changed SSA. Certificates carry exact
+immutable nodes represent CFG v0, SCCP analysis, SCCP rewrite and CFG v1, loop
+structure and recurrences, GVN/DCE and CFG v2, preservation evidence,
+recomputed loop facts, and LICM. Analyses declare the topology, SSA, operation,
+effect, type, fact, and layout aspects they read. GVN/DCE's checked certificate
+proves `CFGTopology` unchanged, so v2 reuses v1 dominance/natural-loop
+structure but recomputes induction facts from the changed SSA. Certificates carry exact
 artifact/content identities and per-aspect digests; they prove reuse
 eligibility only, never semantic equivalence or emission permission. The
-executor now supports deterministic ready waves with a fixed worker bound;
-OptIR uses three workers for SCCP, loop-structure analysis, and GVN/DCE
-fan-out. A failed wave publishes nothing, and traces/errors are independent of
+executor now supports deterministic ready waves with a fixed worker bound.
+OptIR uses bounded ready-wave workers for independent analyses. A failed wave
+publishes nothing, and traces/errors are independent of
 worker completion order. Each native proposal has a canonical checked-input
 recipe and materializes into typed candidate, admission, metrics, cost,
 verdict, and selection nodes. Validation targets stay sequential to preserve
@@ -254,7 +261,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analyses; GVN/DCE and analysis-only SCCP are the first executable pieces; dead stores wait for projected memory identities and Mod/Ref/alias facts |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64 candidates for the supported scalar subset; dead stores wait for projected memory identities and Mod/Ref/alias facts |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

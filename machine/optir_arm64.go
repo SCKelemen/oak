@@ -18,11 +18,13 @@ const optIRCopyScratch = 17
 
 // LowerOptIRArm64 selects an admitted AArch64 body from a verified optimized
 // OptIR CFG. It deliberately supports a small closed vocabulary: Bool and
-// 32/64-bit integer constants, copies, widening casts, total arithmetic,
+// fixed-width integer constants, copies, widening casts, total arithmetic,
 // comparisons, branches, and SSA edge arguments. Effects, trapping operations,
-// calls, narrow-integer normalization, stack arguments, and excess register
-// pressure refuse the candidate. The native search independently seam-checks
-// and translation-validates every returned body before it may ship.
+// calls, stack arguments, and excess register pressure refuse the candidate.
+// Narrow integers stay normalized in W registers: unsigned values are
+// zero-extended and signed values are sign-extended within the word. The native
+// search independently seam-checks and translation-validates every returned
+// body before it may ship.
 func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, error) {
 	if template == nil || template.Signature == nil || template.Signature.Name == nil {
 		return nil, fmt.Errorf("machine: OptIR lowering needs an assembler function template")
@@ -119,6 +121,14 @@ func (selector *optIRArm64Selector) lower() error {
 	for _, block := range selector.cfg.Blocks {
 		line := optIRBlockLine(block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
+		if block.ID == selector.cfg.Entry {
+			// AAPCS64 leaves the register bits above narrow scalar arguments
+			// unspecified. Establish the representation invariant before any
+			// selected operation can observe them.
+			for _, parameter := range block.Parameters {
+				selector.normalize(selector.register(parameter.ID), parameter.Type, line)
+			}
+		}
 		for _, operation := range block.Operations {
 			if err := selector.operation(operation); err != nil {
 				return fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
@@ -165,7 +175,7 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 		selector.constant(destination, bits, 32, line)
 		return nil
 	case optir.OpConstInt:
-		bits, _, ok := optIRArm64Type(result.Type)
+		_, _, ok := optIRArm64Type(result.Type)
 		if !ok || len(operation.Operands) != 0 {
 			return fmt.Errorf("malformed integer constant of type %s", result.Type)
 		}
@@ -173,11 +183,11 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 		if !ok {
 			return fmt.Errorf("integer constant has no value")
 		}
-		value, err := strconv.ParseUint(spelling, 10, bits)
+		value, err := optIRIntegerConstant(spelling, result.Type)
 		if err != nil {
 			return fmt.Errorf("invalid %s constant %q", result.Type, spelling)
 		}
-		selector.constant(destination, value, bits, line)
+		selector.constant(destination, value, optIRBits(result.Type), line)
 		return nil
 	case optir.OpCopy:
 		if len(operation.Operands) != 1 || selector.types[operation.Operands[0]] != result.Type || len(operation.Attributes) != 0 {
@@ -201,6 +211,7 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 			return err
 		}
 		selector.emit("neg", line, selector.valueRegister(result.ID), selector.valueRegister(operation.Operands[0]))
+		selector.normalize(destination, result.Type, line)
 		return nil
 	case optir.OpIntAdd, optir.OpIntSub, optir.OpIntMul, optir.OpIntAnd, optir.OpIntOr, optir.OpIntXor:
 		if err := selector.sameIntegerOperation(operation, 2); err != nil {
@@ -211,6 +222,7 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 			optir.OpIntAnd: "and", optir.OpIntOr: "orr", optir.OpIntXor: "eor",
 		}[operation.Code]
 		selector.emit(mnemonic, line, selector.valueRegister(result.ID), selector.valueRegister(operation.Operands[0]), selector.valueRegister(operation.Operands[1]))
+		selector.normalize(destination, result.Type, line)
 		return nil
 	case optir.OpEqual, optir.OpNotEqual, optir.OpLess, optir.OpLessEqual, optir.OpGreater, optir.OpGreaterEqual:
 		return selector.compare(operation, line)
@@ -245,7 +257,17 @@ func (selector *optIRArm64Selector) cast(destination int, resultType optir.Type,
 	source := selector.register(operand)
 	switch {
 	case fromBits == toBits:
-		selector.move(destination, source, toBits, line)
+		selector.move(destination, source, optIRBits(resultType), line)
+	case fromBits == 8 && fromSigned:
+		selector.emit("sxtb", line, optIRRegister(destination, optIRBits(resultType)), optIRW(source))
+	case fromBits == 16 && fromSigned:
+		selector.emit("sxth", line, optIRRegister(destination, optIRBits(resultType)), optIRW(source))
+	case fromBits == 8:
+		// UXTB writes W even when the destination value is 64-bit; a W
+		// write also clears the upper half of the corresponding X register.
+		selector.emit("uxtb", line, optIRW(destination), optIRW(source))
+	case fromBits == 16:
+		selector.emit("uxth", line, optIRW(destination), optIRW(source))
 	case fromBits == 32 && toBits == 64 && fromSigned:
 		selector.emit("sxtw", line, arm64X(destination), optIRW(source))
 	case fromBits == 32 && toBits == 64:
@@ -330,7 +352,11 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, line int) erro
 	}
 }
 
-type optIRRegisterMove struct{ destination, source int }
+type optIRRegisterMove struct {
+	destination int
+	source      int
+	bits        int
+}
 
 func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error {
 	target := optIRBlock(selector.cfg, edge.Target)
@@ -343,9 +369,12 @@ func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error 
 		if parameter.Type == optir.Type("()") {
 			continue
 		}
+		if selector.types[argument] != parameter.Type {
+			return fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
+		}
 		destination, source := selector.register(parameter.ID), selector.register(argument)
 		if destination != source {
-			moves = append(moves, optIRRegisterMove{destination: destination, source: source})
+			moves = append(moves, optIRRegisterMove{destination: destination, source: source, bits: optIRBits(parameter.Type)})
 		}
 	}
 	for len(moves) > 0 {
@@ -358,7 +387,7 @@ func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error 
 			if usedAsSource {
 				continue
 			}
-			selector.move(move.destination, move.source, 64, line)
+			selector.move(move.destination, move.source, move.bits, line)
 			moves = append(moves[:index], moves[index+1:]...)
 			progress = true
 			break
@@ -409,6 +438,25 @@ func (selector *optIRArm64Selector) move(destination, source, bits, line int) {
 	selector.emit("mov", line, optIRRegister(destination, bits), optIRRegister(source, bits))
 }
 
+func (selector *optIRArm64Selector) normalize(register int, typ optir.Type, line int) {
+	if typ == optir.TypeBool {
+		// AAPCS64 leaves the bits above a narrow argument unspecified. Oak
+		// Bool is exactly 0 or 1, so retain only its represented bit before a
+		// W-register branch or comparison can observe the rest of the word.
+		selector.emit("and", line, optIRW(register), optIRW(register), asm.Immediate{Value: 1})
+		return
+	}
+	bits, signed, ok := optIRArm64Type(typ)
+	if !ok || bits >= 32 {
+		return
+	}
+	mnemonic := map[int]string{8: "uxtb", 16: "uxth"}[bits]
+	if signed {
+		mnemonic = map[int]string{8: "sxtb", 16: "sxth"}[bits]
+	}
+	selector.emit(mnemonic, line, optIRW(register), optIRW(register))
+}
+
 func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...asm.Operand) {
 	selector.items = append(selector.items, asm.Instruction{Mnemonic: mnemonic, Operands: operands, Line: line})
 	if len(operands) == 0 {
@@ -416,7 +464,7 @@ func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...
 	}
 	if destination, ok := operands[0].(asm.Register); ok {
 		switch mnemonic {
-		case "mov", "movz", "movk", "sxtw", "eor", "neg", "add", "sub", "mul", "and", "orr", "cset":
+		case "mov", "movz", "movk", "sxtb", "sxth", "sxtw", "uxtb", "uxth", "eor", "neg", "add", "sub", "mul", "and", "orr", "cset":
 			if !destination.ZeroRegister() {
 				selector.written[destination.Num] = true
 			}
@@ -485,6 +533,14 @@ func optIRAttribute(operation optir.Operation, name string) (string, bool) {
 
 func optIRArm64Type(typ optir.Type) (bits int, signed, ok bool) {
 	switch typ {
+	case "u8":
+		return 8, false, true
+	case "i8":
+		return 8, true, true
+	case "u16":
+		return 16, false, true
+	case "i16":
+		return 16, true, true
 	case "u32":
 		return 32, false, true
 	case "i32":
@@ -502,7 +558,22 @@ func optIRBits(typ optir.Type) int {
 		return 32
 	}
 	bits, _, _ := optIRArm64Type(typ)
+	if bits < 32 {
+		return 32
+	}
 	return bits
+}
+
+func optIRIntegerConstant(spelling string, typ optir.Type) (uint64, error) {
+	bits, signed, ok := optIRArm64Type(typ)
+	if !ok {
+		return 0, fmt.Errorf("non-integer type %s", typ)
+	}
+	if signed {
+		value, err := strconv.ParseInt(spelling, 10, bits)
+		return uint64(value), err
+	}
+	return strconv.ParseUint(spelling, 10, bits)
 }
 
 func optIRRegister(register, bits int) asm.Register {

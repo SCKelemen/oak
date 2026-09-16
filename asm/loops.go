@@ -737,29 +737,34 @@ type loopEvent struct {
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
 
 // entryCondition is the loop's continue condition at the header's entry
-// values: the test that decides whether the loop runs at all. A loop that
+// values: the test that decides whether the loop runs at all. Fresh loop
+// variables become their saved header values and reads from the iteration's
+// unknown memories become reads from the exact entry memories. A loop that
 // does not run leaves its memories alone, so the memory marker holds only
-// under this condition, and both sides guard theirs with it — without it,
-// a side whose code tests entry before the loop and one whose model does
-// not disagree exactly where the trip count is zero. nil means the loop
-// is always entered (a constant true condition), and needs no guard.
-func (ev *loopEvent) entryCondition() *term {
+// under this condition. nil means the condition is constant true. The second
+// result fails closed when an entry value or memory cannot be reconstructed.
+func (ev *loopEvent) entryCondition() (*term, bool) {
 	if ev.cond == nil {
-		return nil
+		return nil, true
 	}
 	sigma := map[string]*term{}
 	for name, fresh := range ev.fresh {
 		header, known := ev.header[name]
 		if !known || fresh == nil || header == nil {
-			continue
+			return nil, false
 		}
 		sigma[fresh.name] = header
 	}
 	entry := truncate(substitute(ev.cond, sigma), 1)
-	if entry.kind == termConst && entry.value&1 == 1 {
-		return nil
+	valid := true
+	entry = restoreLoopEntryMemories(entry, ev, map[*term]*term{}, &valid)
+	if !valid {
+		return nil, false
 	}
-	return entry
+	if entry.kind == termConst && entry.value&1 == 1 {
+		return nil, true
+	}
+	return entry, true
 }
 
 // guardMarker conjoins cond onto the loop memory marker at the end of a
@@ -1234,10 +1239,15 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		storedSpans[span] = true
 	}
 	ev.entry = map[string][]*spanWrite{}
-	entryCond := ev.entryCondition()
 	for _, span := range writtenSpans {
 		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
+	}
+	entryCond, entryKnown := ev.entryCondition()
+	if !entryKnown {
+		return nil, "the loop's entry condition could not be reconstructed", false
+	}
+	for _, span := range writtenSpans {
 		guardMarker(freshState.writes[span], entryCond)
 	}
 	// One iteration of the body on the fresh state: its paths (a branch
@@ -1299,6 +1309,21 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			if len(log) > before {
 				stores = append(stores, guardWrites(log[before:], end.cond)...)
 			}
+		}
+		if len(stores) == 0 {
+			// The complete symbolic iteration wrote no element of this
+			// exact memory on any path.  A record span is split into leaf
+			// memories, so a store through s.words does not make s.count
+			// loop-carried.  Restore the entry log: retaining the marker
+			// would invent a change to an untouched sibling field, and a
+			// peeled loop would guard that invented change differently.
+			if len(ev.entry[span]) == 0 {
+				delete(freshState.writes, span)
+			} else {
+				freshState.writes[span] = ev.entry[span]
+			}
+			delete(ev.entry, span)
+			continue
 		}
 		if ev.writes == nil {
 			ev.writes = map[string][]*spanWrite{}
@@ -2773,6 +2798,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		return reason, false
 	}
 	ev.cond = truncate(cond, 1)
+	entryCond, entryKnown := ev.entryCondition()
+	if !entryKnown {
+		return "the loop's entry condition could not be reconstructed", false
+	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "verify oak loop %d: cond %s\n", ev.index, ev.cond)
 		for _, name := range ev.vars {
@@ -2782,7 +2811,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// A `while` whose condition is already false touches no memory, so the
 	// marker holds only where the loop is entered (entryCondition), on top
 	// of the enclosing arm's condition when the loop is inside one.
-	if entryCond := ev.entryCondition(); entryCond != nil {
+	if entryCond != nil {
 		for _, span := range storedSpans {
 			guardMarker(lo.writes[span][:before[span]], entryCond)
 		}
@@ -2798,10 +2827,25 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// span's contents are the marker's unknown memory.
 	for _, span := range storedSpans {
 		log := lo.writes[span]
+		stores := append([]*spanWrite{}, log[before[span]:]...)
+		if len(stores) == 0 {
+			// Successful lowering of the whole iteration found no write
+			// to this exact memory.  Frame an untouched record leaf across
+			// the loop instead of replacing it with an unconstrained loop
+			// memory.  Unknown stores never reach here: lowering them fails
+			// closed before an event is accepted.
+			if len(ev.entry[span]) == 0 {
+				delete(lo.writes, span)
+			} else {
+				lo.writes[span] = ev.entry[span]
+			}
+			delete(ev.entry, span)
+			continue
+		}
 		if ev.writes == nil {
 			ev.writes = map[string][]*spanWrite{}
 		}
-		ev.writes[span] = append([]*spanWrite{}, log[before[span]:]...)
+		ev.writes[span] = stores
 		lo.writes[span] = log[:before[span]:before[span]]
 	}
 	// The marker of a memory the iteration never stores to is dropped for
@@ -4309,6 +4353,75 @@ func concreteCellsDiffer(exec *pathExecutor, lowering *oakLowering, env map[stri
 // expression in the Oak variables' symbols).
 func substitute(t *term, sigma map[string]*term) *term {
 	return substituteMemo(t, sigma, map[*term]*term{})
+}
+
+func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, valid *bool) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	if t.kind == termSelect {
+		at := restoreLoopEntryMemories(t.left, ev, memo, valid)
+		prefix := fmt.Sprintf("loop%d.", ev.index)
+		if strings.HasPrefix(t.name, prefix) {
+			span := strings.TrimPrefix(t.name, prefix)
+			if entry, marked := ev.entry[span]; marked {
+				restored := memoryAt(entry, at, selectTerm(span, at, t.width))
+				memo[t] = restored
+				return restored
+			}
+			*valid = false
+		}
+	}
+	if t.kind == termParam {
+		// A select at a constant index is represented as a parameter:
+		// loop1[3].tables.count.  Match it against the event's exact
+		// memory names and rebuild the corresponding entry-memory read.
+		var restored *term
+		for span, entry := range ev.entry {
+			memory := loopMemoryName(ev.index, span)
+			dot := strings.IndexByte(memory, '.')
+			if dot < 0 {
+				continue
+			}
+			prefix, suffix := memory[:dot]+"[", memory[dot:]
+			if !strings.HasPrefix(t.name, prefix) {
+				continue
+			}
+			close := strings.IndexByte(t.name[len(prefix):], ']')
+			if close < 0 {
+				continue
+			}
+			close += len(prefix)
+			if t.name[close+1:] != suffix {
+				continue
+			}
+			index, err := strconv.ParseUint(t.name[len(prefix):close], 10, 32)
+			if err != nil || restored != nil {
+				*valid = false
+				return t
+			}
+			at := constTerm(index, 32)
+			restored = memoryAt(entry, at, selectTerm(span, at, t.width))
+		}
+		if restored != nil {
+			memo[t] = restored
+			return restored
+		}
+		if strings.HasPrefix(t.name, fmt.Sprintf("loop%d.", ev.index)) || strings.HasPrefix(t.name, fmt.Sprintf("loop%d[", ev.index)) {
+			*valid = false
+		}
+		return t
+	}
+	out := *t
+	out.kbDone = false
+	out.cond = restoreLoopEntryMemories(t.cond, ev, memo, valid)
+	out.left = restoreLoopEntryMemories(t.left, ev, memo, valid)
+	out.right = restoreLoopEntryMemories(t.right, ev, memo, valid)
+	memo[t] = &out
+	return &out
 }
 
 func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term {

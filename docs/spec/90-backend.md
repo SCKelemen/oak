@@ -700,11 +700,15 @@ explicit carried locals, value-preserving integer widening, and effect-marked
 calls. Unsupported memory, methods, kernels, protocol lowerings, and richer
 algebraic forms are per-function refusals, never partial projections.
 
-The first analysis-only SCCP pass validates its operation vocabulary before
-computing exact constants and executable CFG edges. Its folds use Oak's exact
-fixed-width signed/unsigned arithmetic and trap boundaries rather than host or
-target arithmetic. Dominance-scoped GVN and fixed-point DCE produce a second,
-verified CFG from a closed vocabulary of total pure scalar operations. Plain
+The SCCP analysis validates its operation vocabulary before computing exact
+constants and executable CFG edges. Its folds use Oak's exact fixed-width
+signed/unsigned arithmetic and trap boundaries rather than host or target
+arithmetic. A separate, bounded transform consumes only exact independently
+recomputed evidence to replace known closed total-pure results, select known
+branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
+preserves effectful and trapping operations and independently verifies its
+output. Dominance-scoped GVN and fixed-point DCE then produce another verified
+CFG from a closed vocabulary of total pure scalar operations. Plain
 copies share a value number; exact commutative integer/equality operations and
 inverse order comparisons receive one canonical key. Result types and ordered
 attributes remain exact, and any unknown attribute disables operand
@@ -713,7 +717,8 @@ definition. Calls, traps, memory, synchronization, unknown operations, and
 every explicitly effectful operation remain roots. Dead-store elimination is
 not attempted until OptIR projects memory identities and has region-aware
 memory SSA or equivalent Mod/Ref and alias facts. `Compilation.OptIR()` returns
-the original CFG, SCCP evidence, the simplified candidate, and its report. Its
+the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
+deterministic report. Its
 loop analysis reports dominators,
 back edges, natural-loop structure and nesting, canonical preheaders, and typed
 affine loop-carried recurrences. A unique continuation comparison is normalized
@@ -730,9 +735,10 @@ deterministic movement report. A changed post-LICM CFG is now an AArch64 native
 candidate. Target-neutral SSA liveness/interference analysis assigns abstract
 colors; the selector maps them to caller-saved registers, destroys block
 arguments with edge-local parallel copies, and selects the closed Bool and
-32/64-bit total-integer vocabulary. Effects, traps, calls, memory, narrow
-integer normalization, stack parameters, register pressure, or an unfamiliar
-operation refuse only this candidate. The direct lowering remains the identity,
+8/16/32/64-bit total-integer vocabulary. Narrow parameters and results are
+normalized in W registers according to signedness. Effects, traps, calls,
+memory, stack parameters, register pressure, or an unfamiliar operation refuse
+only this candidate. The direct lowering remains the identity,
 and `optir-emit` is verifier-gated: it ships only after seam admission and a
 proven or witnessed semantic verdict against the Oak body; the evidence grade
 is retained and reported rather than conflated with proof.

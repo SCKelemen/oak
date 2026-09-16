@@ -263,12 +263,16 @@ loops, value-preserving integer widening, and effect-marked calls. Unsupported
 memory and richer language forms are deterministic per-function refusals; a
 projection or verification inconsistency fails the complete analysis request.
 
-Analysis-only SCCP independently validates its operation vocabulary and computes
-exact constants plus executable blocks and edges. Integer folding follows Oak's
-fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
-it does not rewrite the CFG or authorize emission.
+SCCP independently validates its operation vocabulary and computes exact
+constants plus executable blocks and edges. Integer folding follows Oak's
+fixed-width wrapping, signedness, division-overflow, and logical-shift
+semantics. A separate transform consumes exact, independently recomputed SCCP
+evidence to replace known closed total-pure results, select known branches,
+remove unreachable blocks, and perform bounded SSA-aware block/trampoline
+cleanup. The transformed CFG verifies independently and still authorizes no
+emission without the ordinary candidate gates.
 
-The first generic transformation candidate is also connected. GVN numbers
+GVN then runs on the SCCP-rewritten CFG. It numbers
 plain copies alike, canonicalizes exact commutative integer/equality operations
 and inverse order comparisons, then shares a congruent expression only from a
 dominating definition. DCE removes the exposed unused pure chains and copies to
@@ -276,8 +280,8 @@ a fixed point. Both are restricted to a closed vocabulary of total scalar
 operations: missing effect metadata never makes calls, traps, memory, or
 unknown operations removable, and an unknown attribute disables algebraic
 normalization. Proof facts are remapped only where they remain valid. Input and
-output pass the independent verifier, and `Compilation.OptIR()` retains the
-original CFG beside the simplified candidate and its deterministic report.
+output pass the independent verifier, and `Compilation.OptIR()` retains each
+CFG version beside deterministic SCCP-rewrite and GVN/DCE reports.
 
 OptIR also has its semantic loop analysis: reverse postorder and immediate
 dominators; natural loops with back edges, latches, exits, canonical preheaders,
@@ -303,20 +307,22 @@ admission and semantic translation validation.
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
 internally. The generic OptIR chain is migrated. Immutable, exact-version nodes
-hold CFG v0, SCCP, loop structure/facts, GVN/DCE, CFG v1, checked preservation,
-recomputed induction facts, and LICM. CFGs have canonical content fingerprints.
+hold CFG v0, SCCP, SCCP rewrite and CFG v1, loop structure/facts, GVN/DCE and
+CFG v2, checked preservation, recomputed induction facts, and LICM. CFGs have
+canonical content fingerprints.
 Analyses declare a closed set of topology, SSA, operation, effect, type, fact,
 and layout aspects. GVN/DCE's admission node independently compares per-aspect
-digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
-and natural loops while recomputing recurrence facts from v1. No certificate is
+digests for v1/v2; because `CFGTopology` is preserved, v2 reuses v1 dominance
+and natural loops while recomputing recurrence facts from v2. SCCP's topology
+changes force the first loop structure to be analyzed on v1. No certificate is
 an equivalence verdict or emission license. Every native proposal has a
 canonical checked-input recipe and materializes through candidate → admission
 → metrics → cost artifacts; every attempted semantic check is a verdict
 artifact, and selection depends on candidate, clean admission, cost, and
 verdict for every possible result. Validation stays sequential to retain the
 budget and proof early-stop. The executor runs bounded deterministic ready
-waves, and OptIR uses three workers for its independent analysis fan-out. The
-complete design is `optimizer-artifact-dag-2026-09.md`.
+waves for independent analysis work. The complete design is
+`optimizer-artifact-dag-2026-09.md`.
 
 Not yet: join/loop-parameter value congruence, region-aware memory SSA and the
 dead stores it would license,
@@ -950,7 +956,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
 18. region-aware memory SSA / Mod-Ref summaries;
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
-21. LICM (**analysis-only OptIR candidate landed**), loop rotation, address
+21. LICM (**verifier-gated AArch64 OptIR candidate landed**), loop rotation, address
     induction, loop strength reduction.
 
 ### Phase D: vector planning

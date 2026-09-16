@@ -4102,6 +4102,17 @@ so the two meet in one unknown. The SIMD pilot's span-of-record kernels
 are proven through the callees they hand a stage's coefficients to
 (`compiler/e2e_native_field_view_proof_test.go`).
 
+The loop marker is field-sensitive. A discovery run records which scalar leaf
+memories any body path can write; an untouched leaf is restored to its entry
+log and is not invented as loop-carried state. Thus a loop that changes only
+`tables.words` frames `tables.count` and `tables.tag` exactly. The final memory
+marker is also guarded by the loop's reconstructed first-entry condition. A
+zero-trip execution therefore retains every entry memory rather than acquiring
+an unconditional unknown loop memory. Reconstruction substitutes saved header
+values and saved entry memories and fails closed when either is unavailable.
+`compiler/e2e_native_licm_test.go` pins both the positive-trip LICM case and its
+zero-trip frame, with the selected optimized body proven.
+
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
 body names its cell as `adrp xA, G` then `add xA, xA, :lo12:G` and
