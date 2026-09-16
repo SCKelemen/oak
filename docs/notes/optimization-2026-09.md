@@ -142,10 +142,31 @@ final CFG. The selector supports Bool and 8/16/32/64-bit total integer
 operations plus structured CFG edges. Narrow inputs and intermediate results
 are normalized to their signed or unsigned W-register canonical form. It
 refuses effects, traps, calls, memory, stack arguments, unknown operations, and
-excess pressure. Its candidate
+excess pressure. Before selection, a target-independent layout analysis gives
+loop continuation/backedges an 8:1 static preference and leaves other branches
+neutral. Its fingerprint-bound order is an exact block permutation. AArch64
+uses it to make the preferred copy-free edge fall through and omit redundant
+branches without changing any semantic edge. Its candidate
 always passes the semantic-verifier gate: proven and witnessed verdicts remain
 distinct evidence grades, while refusal or a trusted verdict keeps an ungated
 lowering.
+
+The same target-neutral liveness/interference graph now supports an abstract
+spill plan when finite coloring fails. ABI precolors cannot spill; other values
+are chosen deterministically from actual pressure neighborhoods, assigned
+typed/aligned slots, and may reuse storage only when their live ranges do not
+interfere. An independent verifier recomputes liveness and interference and
+checks full assignment coverage, precolors, colors, and every slot. No machine
+spill traffic is emitted yet, so this closes the planning seam rather than the
+selector's excess-pressure refusal.
+
+Region-aware MemorySSA has its first explicit analysis substrate as well.
+Checked metadata names regions and exact read/write/read-write behavior beside
+the operation's effect set; opaque calls conservatively clobber every declared
+region. The deterministic graph has entry, definition, join, and loop versions
+and is independently recomputed against exact CFG/metadata fingerprints.
+Nothing consumes it for DSE or load GVN until checked Oak memory operations and
+their region identities project into OptIR.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,
@@ -261,7 +282,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64 candidates for the supported scalar subset; dead stores wait for projected memory identities and Mod/Ref/alias facts |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef analysis has landed, while dead stores wait for checked memory-region projection and a legality transform |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

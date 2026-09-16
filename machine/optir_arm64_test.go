@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,13 +54,17 @@ func TestLowerOptIRArm64DestroysSSAEdgesAndPassesSeam(t *testing.T) {
 		t.Fatalf("selected body fails seam check: %v\n%s", findings, text(lowered.Items))
 	}
 	branches, labels := 0, 0
+	var labelOrder []string
 	boolNormalized := false
 	for _, item := range lowered.Items {
 		switch item := item.(type) {
 		case asm.Label:
 			labels++
+			if strings.HasPrefix(item.Name, "optir_b") {
+				labelOrder = append(labelOrder, item.Name)
+			}
 		case asm.Instruction:
-			if item.Mnemonic == "b" || item.Mnemonic == "cbnz" {
+			if item.Mnemonic == "b" || item.Mnemonic == "cbz" || item.Mnemonic == "cbnz" {
 				branches++
 			}
 			if item.Mnemonic == "and" && len(item.Operands) == 3 {
@@ -70,8 +75,11 @@ func TestLowerOptIRArm64DestroysSSAEdgesAndPassesSeam(t *testing.T) {
 			}
 		}
 	}
-	if branches < 4 || labels < 4 {
-		t.Fatalf("SSA control flow was not selected: %d branches, %d labels\n%s", branches, labels, text(lowered.Items))
+	if branches != 2 || labels != 4 {
+		t.Fatalf("SSA layout should need two branches and four labels, got %d branches, %d labels\n%s", branches, labels, text(lowered.Items))
+	}
+	if want := []string{"optir_b0", "optir_b1", "optir_b2", "optir_b3"}; !reflect.DeepEqual(labelOrder, want) {
+		t.Fatalf("SSA diamond layout = %v, want %v\n%s", labelOrder, want, text(lowered.Items))
 	}
 	if !boolNormalized {
 		t.Fatalf("Bool ABI input was not normalized before its branch:\n%s", text(lowered.Items))

@@ -15,6 +15,14 @@ type RegisterColoring struct {
 	LiveOut      map[BlockID][]ValueID
 }
 
+type registerProblem struct {
+	types       map[ValueID]Type
+	graph       map[ValueID]map[ValueID]bool
+	liveIn      map[BlockID][]ValueID
+	liveOut     map[BlockID][]ValueID
+	spillWeight map[ValueID]uint64
+}
+
 const (
 	maxColoringBlocks = 1 << 14
 	maxColoringValues = 1 << 16
@@ -25,37 +33,38 @@ const (
 // as entry parameters. Unit values consume no color. Failure is ordinary
 // target-pressure refusal; the caller keeps another implementation candidate.
 func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColoring, error) {
-	if err := Verify(cfg); err != nil {
+	problem, err := analyzeRegisterProblem(cfg)
+	if err != nil {
 		return RegisterColoring{}, err
-	}
-	if len(cfg.Blocks) > maxColoringBlocks {
-		return RegisterColoring{}, fmt.Errorf("optir: register coloring refuses %d blocks (limit %d)", len(cfg.Blocks), maxColoringBlocks)
-	}
-	types := cfgValueTypes(cfg)
-	if len(types) > maxColoringValues {
-		return RegisterColoring{}, fmt.Errorf("optir: register coloring refuses %d values (limit %d)", len(types), maxColoringValues)
 	}
 	colors := normalizedColors(pool)
 	if len(colors) == 0 {
 		return RegisterColoring{}, fmt.Errorf("optir: register coloring has no colors")
 	}
-	allowed := map[int]bool{}
-	for _, color := range colors {
-		allowed[color] = true
+	if err := validateFixedColors(problem.types, colors, fixed); err != nil {
+		return RegisterColoring{}, err
 	}
-	for value, color := range fixed {
-		typ, exists := types[value]
-		if !exists {
-			return RegisterColoring{}, fmt.Errorf("optir: fixed color names undefined value %d", value)
-		}
-		if typ == Type("()") {
-			return RegisterColoring{}, fmt.Errorf("optir: unit value %d cannot be precolored", value)
-		}
-		if !allowed[color] {
-			return RegisterColoring{}, fmt.Errorf("optir: fixed color %d of value %d is outside the pool", color, value)
-		}
+	if err := validateFixedInterference(problem.graph, fixed); err != nil {
+		return RegisterColoring{}, err
 	}
+	assignment, failed := colorRegisterGraph(problem, colors, fixed, nil, false)
+	if failed != 0 {
+		return RegisterColoring{}, fmt.Errorf("optir: no register color for value %d (%d live neighbors, %d colors)", failed, len(problem.graph[failed]), len(colors))
+	}
+	return registerColoring(problem, assignment), nil
+}
 
+func analyzeRegisterProblem(cfg CFG) (registerProblem, error) {
+	if err := Verify(cfg); err != nil {
+		return registerProblem{}, err
+	}
+	if len(cfg.Blocks) > maxColoringBlocks {
+		return registerProblem{}, fmt.Errorf("optir: register coloring refuses %d blocks (limit %d)", len(cfg.Blocks), maxColoringBlocks)
+	}
+	types := cfgValueTypes(cfg)
+	if len(types) > maxColoringValues {
+		return registerProblem{}, fmt.Errorf("optir: register coloring refuses %d values (limit %d)", len(types), maxColoringValues)
+	}
 	blockIndex := make(map[BlockID]int, len(cfg.Blocks))
 	for index, block := range cfg.Blocks {
 		blockIndex[block.ID] = index
@@ -64,6 +73,12 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 	defs := make([]map[ValueID]bool, len(cfg.Blocks))
 	liveIn := make([]map[ValueID]bool, len(cfg.Blocks))
 	liveOut := make([]map[ValueID]bool, len(cfg.Blocks))
+	spillWeight := map[ValueID]uint64{}
+	reference := func(value ValueID) {
+		if types[value] != Type("()") && spillWeight[value] != ^uint64(0) {
+			spillWeight[value]++
+		}
+	}
 	for index, block := range cfg.Blocks {
 		uses[index], defs[index] = map[ValueID]bool{}, map[ValueID]bool{}
 		liveIn[index], liveOut[index] = map[ValueID]bool{}, map[ValueID]bool{}
@@ -79,17 +94,21 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 		}
 		for _, parameter := range block.Parameters {
 			define(parameter.ID)
+			reference(parameter.ID)
 		}
 		for _, operation := range block.Operations {
 			for _, operand := range operation.Operands {
 				use(operand)
+				reference(operand)
 			}
 			for _, result := range operation.Results {
 				define(result.ID)
+				reference(result.ID)
 			}
 		}
 		for _, value := range terminatorUses(block.Terminator) {
 			use(value)
+			reference(value)
 		}
 	}
 
@@ -99,7 +118,7 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 	limit := max(1, len(cfg.Blocks)*max(1, len(types))+1)
 	for iteration := 0; ; iteration++ {
 		if iteration > limit {
-			return RegisterColoring{}, fmt.Errorf("optir: register liveness did not converge")
+			return registerProblem{}, fmt.Errorf("optir: register liveness did not converge")
 		}
 		changed := false
 		for index := len(cfg.Blocks) - 1; index >= 0; index-- {
@@ -130,6 +149,14 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 		}
 		if !changed {
 			break
+		}
+	}
+	for index := range cfg.Blocks {
+		for value := range liveIn[index] {
+			reference(value)
+		}
+		for value := range liveOut[index] {
+			reference(value)
 		}
 	}
 
@@ -190,34 +217,54 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 		defineAgainst(parameters, live)
 	}
 
+	problem := registerProblem{
+		types:       types,
+		graph:       graph,
+		liveIn:      map[BlockID][]ValueID{},
+		liveOut:     map[BlockID][]ValueID{},
+		spillWeight: spillWeight,
+	}
+	for index, block := range cfg.Blocks {
+		problem.liveIn[block.ID] = sortedValueSet(liveIn[index])
+		problem.liveOut[block.ID] = sortedValueSet(liveOut[index])
+	}
+	return problem, nil
+}
+
+func colorRegisterGraph(problem registerProblem, colors []int, fixed map[ValueID]int, active map[ValueID]bool, costAware bool) (map[ValueID]int, ValueID) {
+	included := func(value ValueID) bool { return active == nil || active[value] }
 	assignment := map[ValueID]int{}
 	for value, color := range fixed {
-		assignment[value] = color
-	}
-	for value, neighbors := range graph {
-		for neighbor := range neighbors {
-			left, leftFixed := assignment[value]
-			right, rightFixed := assignment[neighbor]
-			if value < neighbor && leftFixed && rightFixed && left == right {
-				return RegisterColoring{}, fmt.Errorf("optir: fixed values %d and %d interfere in color %d", value, neighbor, left)
-			}
+		if included(value) {
+			assignment[value] = color
 		}
 	}
 	var open []ValueID
-	for value := range graph {
-		if _, fixed := assignment[value]; !fixed {
+	for value := range problem.graph {
+		if included(value) {
+			if _, fixed := assignment[value]; fixed {
+				continue
+			}
 			open = append(open, value)
 		}
 	}
 	sort.Slice(open, func(i, j int) bool {
-		if len(graph[open[i]]) != len(graph[open[j]]) {
-			return len(graph[open[i]]) > len(graph[open[j]])
+		leftDegree := activeDegree(problem.graph, open[i], active)
+		rightDegree := activeDegree(problem.graph, open[j], active)
+		if leftDegree != rightDegree {
+			return leftDegree > rightDegree
+		}
+		if costAware && problem.spillWeight[open[i]] != problem.spillWeight[open[j]] {
+			return problem.spillWeight[open[i]] > problem.spillWeight[open[j]]
 		}
 		return open[i] < open[j]
 	})
 	for _, value := range open {
 		used := map[int]bool{}
-		for neighbor := range graph[value] {
+		for neighbor := range problem.graph[value] {
+			if !included(neighbor) {
+				continue
+			}
 			if color, colored := assignment[neighbor]; colored {
 				used[color] = true
 			}
@@ -230,23 +277,74 @@ func ColorRegisters(cfg CFG, pool []int, fixed map[ValueID]int) (RegisterColorin
 			}
 		}
 		if !found {
-			return RegisterColoring{}, fmt.Errorf("optir: no register color for value %d (%d live neighbors, %d colors)", value, len(graph[value]), len(colors))
+			return assignment, value
 		}
 		assignment[value] = chosen
 	}
+	return assignment, 0
+}
 
+func registerColoring(problem registerProblem, assignment map[ValueID]int) RegisterColoring {
 	result := RegisterColoring{Colors: assignment, Interference: map[ValueID][]ValueID{}, LiveIn: map[BlockID][]ValueID{}, LiveOut: map[BlockID][]ValueID{}}
-	for value, neighbors := range graph {
+	for value, neighbors := range problem.graph {
 		for neighbor := range neighbors {
 			result.Interference[value] = append(result.Interference[value], neighbor)
 		}
 		sort.Slice(result.Interference[value], func(i, j int) bool { return result.Interference[value][i] < result.Interference[value][j] })
 	}
-	for index, block := range cfg.Blocks {
-		result.LiveIn[block.ID] = sortedValueSet(liveIn[index])
-		result.LiveOut[block.ID] = sortedValueSet(liveOut[index])
+	for block, values := range problem.liveIn {
+		result.LiveIn[block] = append([]ValueID(nil), values...)
 	}
-	return result, nil
+	for block, values := range problem.liveOut {
+		result.LiveOut[block] = append([]ValueID(nil), values...)
+	}
+	return result
+}
+
+func validateFixedColors(types map[ValueID]Type, colors []int, fixed map[ValueID]int) error {
+	allowed := map[int]bool{}
+	for _, color := range colors {
+		allowed[color] = true
+	}
+	for value, color := range fixed {
+		typ, exists := types[value]
+		if !exists {
+			return fmt.Errorf("optir: fixed color names undefined value %d", value)
+		}
+		if typ == Type("()") {
+			return fmt.Errorf("optir: unit value %d cannot be precolored", value)
+		}
+		if !allowed[color] {
+			return fmt.Errorf("optir: fixed color %d of value %d is outside the pool", color, value)
+		}
+	}
+	return nil
+}
+
+func validateFixedInterference(graph map[ValueID]map[ValueID]bool, fixed map[ValueID]int) error {
+	for value, neighbors := range graph {
+		for neighbor := range neighbors {
+			left, leftFixed := fixed[value]
+			right, rightFixed := fixed[neighbor]
+			if value < neighbor && leftFixed && rightFixed && left == right {
+				return fmt.Errorf("optir: fixed values %d and %d interfere in color %d", value, neighbor, left)
+			}
+		}
+	}
+	return nil
+}
+
+func activeDegree(graph map[ValueID]map[ValueID]bool, value ValueID, active map[ValueID]bool) int {
+	if active == nil {
+		return len(graph[value])
+	}
+	degree := 0
+	for neighbor := range graph[value] {
+		if active[neighbor] {
+			degree++
+		}
+	}
+	return degree
 }
 
 func cfgValueTypes(cfg CFG) map[ValueID]Type {

@@ -340,8 +340,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: join/loop-parameter value congruence, region-aware memory SSA and the
-dead stores it would license,
+Not yet: join/loop-parameter value congruence, checked memory-region projection
+and the dead-store/load transforms that consume the landed region MemorySSA,
 non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
@@ -775,7 +775,14 @@ B0 --store--> B1
 
 rather than treating the store to `B` as a possible clobber of `A` and asking a later alias analysis to recover independence.
 
-A region-aware memory SSA or equivalent def-use representation should power:
+The first explicit-metadata region MemorySSA has landed. It represents each
+declared region independently with deterministic entry, definition, join, and
+loop versions; exact Mod/Ref must agree with the operation effects, while an
+opaque call clobbers every declared region. Exact CFG/metadata fingerprints and
+independent recomputation reject stale or mutated evidence. Checked Oak memory
+operations do not project into it yet, and it licenses no transform or emission.
+
+Once that projection exists, region memory SSA should power:
 
 - load CSE;
 - store-to-load forwarding;
@@ -956,9 +963,11 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
-10. register allocation with splitting/spilling;
+10. register allocation with splitting/spilling (**deterministic abstract spill
+    plan landed; machine insertion remains**);
 11. call-aware vector allocation;
-12. late copy and branch cleanup;
+12. late copy and branch cleanup (**target-independent loop-biased block layout
+    and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);
 13. simple pre/post-allocation scheduling.
 
 This phase targets the measured UTF-8 call/spill gap directly.
@@ -969,7 +978,8 @@ This phase targets the measured UTF-8 call/spill gap directly.
 15. dominators and canonical loops;
 16. explicit loop outputs;
 17. recurrence/trip-count analysis;
-18. region-aware memory SSA / Mod-Ref summaries;
+18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate
+    landed; checked memory projection remains**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
 21. LICM (**verifier-gated AArch64 OptIR candidate landed**), loop rotation, address

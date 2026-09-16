@@ -714,9 +714,14 @@ inverse order comparisons receive one canonical key. Result types and ordered
 attributes remain exact, and any unknown attribute disables operand
 normalization. Proof facts move only when valid at the retained dominating
 definition. Calls, traps, memory, synchronization, unknown operations, and
-every explicitly effectful operation remain roots. Dead-store elimination is
-not attempted until OptIR projects memory identities and has region-aware
-memory SSA or equivalent Mod/Ref and alias facts. `Compilation.OptIR()` returns
+every explicitly effectful operation remain roots. The first region-memory SSA
+substrate consumes explicit checked region metadata beside operation effects.
+It gives each region deterministic entry/definition/join versions, expands an
+opaque call to a clobber of every declared region, handles loop phis, and binds
+its independently recomputed evidence to exact CFG and metadata fingerprints.
+Missing or inconsistent Mod/Ref information fails closed. It is analysis-only:
+dead-store elimination and load forwarding still wait for memory projection
+from checked Oak plus their own legality transforms. `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
 loop analysis reports dominators,
@@ -736,9 +741,21 @@ candidate. Target-neutral SSA liveness/interference analysis assigns abstract
 colors; the selector maps them to caller-saved registers, destroys block
 arguments with edge-local parallel copies, and selects the closed Bool and
 8/16/32/64-bit total-integer vocabulary. Narrow parameters and results are
-normalized in W registers according to signedness. Effects, traps, calls,
-memory, stack parameters, register pressure, or an unfamiliar operation refuse
-only this candidate. The direct lowering remains the identity,
+normalized in W registers according to signedness. A deterministic
+target-neutral spill planner now partitions high-pressure SSA values between
+colors and typed/aligned abstract stack slots, never spills ABI precolors, and
+independently verifies interference and safe slot reuse. It does not yet insert
+loads/stores, so the selector still refuses excess pressure. Effects, traps,
+calls, memory, stack parameters, or an unfamiliar operation likewise refuse
+only this candidate.
+
+A target-independent block-layout analysis assigns neutral branch weights
+except for loop continuation/backedges, which receive a qualitative 8:1
+preference. Its exact-fingerprint proposal is a verified permutation and never
+changes CFG edges. The AArch64 selector consumes only the order: unconditional
+branches to the next block disappear, and a copy-free conditional uses
+`cbz`/`cbnz` with the preferred successor as fallthrough. SSA edge copies remain
+explicit. The direct lowering remains the identity,
 and `optir-emit` is verifier-gated: it ships only after seam admission and a
 proven or witnessed semantic verdict against the Oak body; the evidence grade
 is retained and reported rather than conflated with proof.

@@ -66,10 +66,17 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}
+	layout, err := optir.AnalyzeBlockLayout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("machine: OptIR AArch64 block layout: %w", err)
+	}
+	if err := optir.VerifyBlockLayout(cfg, layout); err != nil {
+		return nil, fmt.Errorf("machine: OptIR AArch64 block layout evidence: %w", err)
+	}
 
 	selector := &optIRArm64Selector{
 		cfg: cfg, types: types, colors: coloring.Colors,
-		labels: map[optir.BlockID]string{}, written: map[int]bool{},
+		labels: map[optir.BlockID]string{}, written: map[int]bool{}, order: layout.Order,
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -115,11 +122,16 @@ type optIRArm64Selector struct {
 	items   []asm.Item
 	written map[int]bool
 	edges   int
+	order   []optir.BlockID
 }
 
 func (selector *optIRArm64Selector) lower() error {
-	for _, block := range selector.cfg.Blocks {
-		line := optIRBlockLine(block)
+	for index, id := range selector.order {
+		block := optIRBlock(selector.cfg, id)
+		if block == nil {
+			return fmt.Errorf("machine: OptIR layout names missing block %d", id)
+		}
+		line := optIRBlockLine(*block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
 			// AAPCS64 leaves the register bits above narrow scalar arguments
@@ -134,7 +146,11 @@ func (selector *optIRArm64Selector) lower() error {
 				return fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
 			}
 		}
-		if err := selector.terminator(block, line); err != nil {
+		next, hasNext := optir.BlockID(0), index+1 < len(selector.order)
+		if hasNext {
+			next = selector.order[index+1]
+		}
+		if err := selector.terminator(*block, next, hasNext, line); err != nil {
 			return fmt.Errorf("machine: OptIR block %d terminator: %w", block.ID, err)
 		}
 	}
@@ -310,7 +326,7 @@ func (selector *optIRArm64Selector) compare(operation optir.Operation, line int)
 	return nil
 }
 
-func (selector *optIRArm64Selector) terminator(block optir.Block, line int) error {
+func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.BlockID, hasNext bool, line int) error {
 	switch terminator := block.Terminator; terminator.Kind {
 	case optir.TerminatorReturn:
 		if len(terminator.Values) != 1 {
@@ -326,25 +342,48 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, line int) erro
 		if err := selector.edgeCopies(terminator.True, line); err != nil {
 			return err
 		}
-		selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		if !hasNext || terminator.True.Target != next {
+			selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		}
 		return nil
 	case optir.TerminatorCondBranch:
 		if selector.types[terminator.Condition] != optir.TypeBool {
 			return fmt.Errorf("condition %d is not Bool", terminator.Condition)
+		}
+		trueMoves, err := selector.edgeMoves(terminator.True)
+		if err != nil {
+			return err
+		}
+		falseMoves, err := selector.edgeMoves(terminator.False)
+		if err != nil {
+			return err
+		}
+		if len(trueMoves) == 0 && len(falseMoves) == 0 {
+			trueTarget, falseTarget := terminator.True.Target, terminator.False.Target
+			switch {
+			case trueTarget == falseTarget:
+				if !hasNext || trueTarget != next {
+					selector.emit("b", line, asm.Symbol{Name: selector.labels[trueTarget]})
+				}
+			case hasNext && trueTarget == next:
+				selector.emit("cbz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[falseTarget]})
+			case hasNext && falseTarget == next:
+				selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[trueTarget]})
+			default:
+				selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: selector.labels[trueTarget]})
+				selector.emit("b", line, asm.Symbol{Name: selector.labels[falseTarget]})
+			}
+			return nil
 		}
 		trueLabel := selector.edgeLabel(block.ID, "true")
 		falseLabel := selector.edgeLabel(block.ID, "false")
 		selector.emit("cbnz", line, optIRW(selector.register(terminator.Condition)), asm.Symbol{Name: trueLabel})
 		selector.emit("b", line, asm.Symbol{Name: falseLabel})
 		selector.items = append(selector.items, asm.Label{Name: trueLabel, Line: line})
-		if err := selector.edgeCopies(terminator.True, line); err != nil {
-			return err
-		}
+		selector.emitEdgeCopies(trueMoves, line)
 		selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
 		selector.items = append(selector.items, asm.Label{Name: falseLabel, Line: line})
-		if err := selector.edgeCopies(terminator.False, line); err != nil {
-			return err
-		}
+		selector.emitEdgeCopies(falseMoves, line)
 		selector.emit("b", line, asm.Symbol{Name: selector.labels[terminator.False.Target]})
 		return nil
 	default:
@@ -359,9 +398,18 @@ type optIRRegisterMove struct {
 }
 
 func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error {
+	moves, err := selector.edgeMoves(edge)
+	if err != nil {
+		return err
+	}
+	selector.emitEdgeCopies(moves, line)
+	return nil
+}
+
+func (selector *optIRArm64Selector) edgeMoves(edge optir.Edge) ([]optIRRegisterMove, error) {
 	target := optIRBlock(selector.cfg, edge.Target)
 	if target == nil || len(target.Parameters) != len(edge.Arguments) {
-		return fmt.Errorf("invalid edge to block %d", edge.Target)
+		return nil, fmt.Errorf("invalid edge to block %d", edge.Target)
 	}
 	var moves []optIRRegisterMove
 	for index, parameter := range target.Parameters {
@@ -370,13 +418,17 @@ func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error 
 			continue
 		}
 		if selector.types[argument] != parameter.Type {
-			return fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
+			return nil, fmt.Errorf("edge to block %d passes %s to %s parameter %s", edge.Target, selector.types[argument], parameter.Type, parameter.Name)
 		}
 		destination, source := selector.register(parameter.ID), selector.register(argument)
 		if destination != source {
 			moves = append(moves, optIRRegisterMove{destination: destination, source: source, bits: optIRBits(parameter.Type)})
 		}
 	}
+	return moves, nil
+}
+
+func (selector *optIRArm64Selector) emitEdgeCopies(moves []optIRRegisterMove, line int) {
 	for len(moves) > 0 {
 		progress := false
 		for index, move := range moves {
@@ -405,7 +457,6 @@ func (selector *optIRArm64Selector) edgeCopies(edge optir.Edge, line int) error 
 			}
 		}
 	}
-	return nil
 }
 
 func (selector *optIRArm64Selector) constant(destination int, value uint64, bits int, line int) {
