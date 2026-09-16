@@ -355,10 +355,15 @@ function reserves sixteen bytes to save/restore AArch64 `x30` or RV64 `ra`,
 places the ABI register arguments as a simultaneous parallel copy whose cycles
 use the selector's reserved scratch, and normalizes the result at the boundary.
 A ninth or stack argument, all broader call forms, and other effects still
-refuse. The independently verified abstract spill plan emits no traffic and is
-not yet composed with this frame. The direct lowering remains the identity, and
-every selected OptIR body must pass seam admission and semantic translation
-validation; refusal or a trusted verdict falls back.
+refuse. AArch64 materializes the independently verified spill plan across its
+supported CFG and composes it with the call frame. RV64 now materializes a
+closed first subset: one return-terminated block without calls or effects,
+canonical scalar slots in a bounded 16-byte-aligned frame, and at most two
+spilled operands through reserved `t5`/`t6` scratches. Width-correct stores,
+signed/narrow reloads, and spilled returns are machine-proven; RV64 edges,
+loops, calls, and call-frame composition still refuse. The direct lowering
+remains the identity, and every selected OptIR body must pass seam admission
+and semantic translation validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
