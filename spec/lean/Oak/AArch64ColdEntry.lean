@@ -74,6 +74,21 @@ def RequiredWrite.rt : RequiredWrite -> BitVec 5
   | .elrEl2 => 6#5
   | .spsrEl2 => 7#5
 
+/-- Zero-based position in the cold-entry register prefix. -/
+def RequiredWrite.index : RequiredWrite -> Nat
+  | .hcrEl2 => 0
+  | .vttbrEl2 => 1
+  | .vtcrEl2 => 2
+  | .cnthctlEl2 => 3
+  | .cntvoffEl2 => 4
+  | .spEl1 => 5
+  | .elrEl2 => 6
+  | .spsrEl2 => 7
+
+theorem RequiredWrite.index_injective : Function.Injective RequiredWrite.index := by
+  intro a b h
+  cases a <;> cases b <;> simp_all [RequiredWrite.index]
+
 /- OAK_COLD_ENTRY_REGISTER_SEQUENCE_BEGIN -/
 def registerWriteOrder : List RequiredWrite := [
   .hcrEl2, .vttbrEl2, .vtcrEl2, .cnthctlEl2,
@@ -91,6 +106,9 @@ theorem register_write_words_exact : registerWriteWords = [
 theorem register_write_rts_exact : registerWriteOrder.map RequiredWrite.rt = [
     0#5, 1#5, 2#5, 3#5, 4#5, 5#5, 6#5, 7#5
   ] := by native_decide
+
+theorem register_write_indices_exact : registerWriteOrder.map RequiredWrite.index =
+    [0, 1, 2, 3, 4, 5, 6, 7] := by decide
 /- OAK_COLD_ENTRY_REGISTER_SEQUENCE_END -/
 
 /-- The eight X-register values consumed by the projected sequence. -/
@@ -211,6 +229,7 @@ theorem install_cold_entry_registers_at_el2_exact
     identified by its exact word, not by Oak's capability Boolean. -/
 inductive Action where
   | sysReg (op : AArch64SysReg.Operation) (reg : AArch64SysReg.Reg)
+      (word : BitVec 32) (rt : BitVec 5)
   | barrier (word : BitVec 32)
   | controlTransfer (op : AArch64ControlTransfer.Operation)
   deriving DecidableEq, Repr
@@ -227,15 +246,19 @@ structure Trace (Occurrence : Type) where
     as context synchronizing. The pure decoder and CAT ordering do not prove it. -/
 def ArmContextSync (Occurrence : Type) := Trace Occurrence -> Occurrence -> Prop
 
-/-- Exact cold-entry evidence: every required register write occurs before the
-    same exact ISB word, and an external Arm model certifies that occurrence as
-    context synchronizing. -/
+/-- Exact cold-entry evidence: the eight word/Rt/register actions are totally
+    ordered by their source positions, every write precedes the same exact ISB
+    word, and an external Arm model certifies that ISB occurrence as context
+    synchronizing. -/
 structure ContextSyncWitness {Occurrence : Type} (trace : Trace Occurrence)
     (armContextSync : ArmContextSync Occurrence) where
   writeOccurrence : RequiredWrite -> Occurrence
   isbOccurrence : Occurrence
   writesAreExact : ∀ write,
-    trace.action (writeOccurrence write) = .sysReg .write write.reg
+    trace.action (writeOccurrence write) =
+      .sysReg .write write.reg write.word write.rt
+  writesFollowRegisterOrder : ∀ a b, a.index < b.index ->
+    trace.po (writeOccurrence a) (writeOccurrence b)
   writesBeforeIsb : ∀ write, trace.po (writeOccurrence write) isbOccurrence
   isbIsExact : trace.action isbOccurrence = .barrier AArch64Encoding.isbSy
   architecturalSync : armContextSync trace isbOccurrence
@@ -347,6 +370,45 @@ theorem write_occurrence_ne_isb
     sync.writeOccurrence write ≠ sync.isbOccurrence := by
   intro h
   exact trace.po_irrefl sync.isbOccurrence (h ▸ sync.writesBeforeIsb write)
+
+/-- The total order obligation exposes the seven adjacent source-order edges. -/
+theorem register_writes_follow_exact_adjacent_order
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {armContextSync : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace armContextSync) :
+    trace.po (sync.writeOccurrence .hcrEl2)
+        (sync.writeOccurrence .vttbrEl2) ∧
+      trace.po (sync.writeOccurrence .vttbrEl2)
+        (sync.writeOccurrence .vtcrEl2) ∧
+      trace.po (sync.writeOccurrence .vtcrEl2)
+        (sync.writeOccurrence .cnthctlEl2) ∧
+      trace.po (sync.writeOccurrence .cnthctlEl2)
+        (sync.writeOccurrence .cntvoffEl2) ∧
+      trace.po (sync.writeOccurrence .cntvoffEl2)
+        (sync.writeOccurrence .spEl1) ∧
+      trace.po (sync.writeOccurrence .spEl1)
+        (sync.writeOccurrence .elrEl2) ∧
+      trace.po (sync.writeOccurrence .elrEl2)
+        (sync.writeOccurrence .spsrEl2) := by
+  exact ⟨sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide),
+    sync.writesFollowRegisterOrder _ _ (by decide)⟩
+
+/-- Distinct exact register actions make the eight required write occurrences
+    pairwise distinct. -/
+theorem register_write_occurrence_injective
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {armContextSync : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace armContextSync) :
+    Function.Injective sync.writeOccurrence := by
+  intro a b hOccurrence
+  have hAction := congrArg trace.action hOccurrence
+  rw [sync.writesAreExact a, sync.writesAreExact b] at hAction
+  cases a <;> cases b <;> simp_all [RequiredWrite.reg]
 
 /-- A refuted external Arm synchronization predicate cannot be bypassed by
     decoder identity or Oak's instruction-sync capability flag. -/

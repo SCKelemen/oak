@@ -144,6 +144,7 @@ def refineContextSyncWitnessWithSailDispatch
   writeOccurrence := sync.writeOccurrence
   isbOccurrence := sync.isbOccurrence
   writesAreExact := sync.writesAreExact
+  writesFollowRegisterOrder := sync.writesFollowRegisterOrder
   writesBeforeIsb := sync.writesBeforeIsb
   isbIsExact := sync.isbIsExact
   architecturalSync :=
@@ -1042,6 +1043,21 @@ theorem cold_entry_register_words_decode_exact :
       some (.SystemRegisterWriteTarget_ELR_EL2, 6#5),
       some (.SystemRegisterWriteTarget_SPSR_EL2, 7#5)
     ] := by rfl
+
+/-- Every externally witnessed write action now exposes the same exact word,
+    Rt, and target that the generated unified decoder computes. The occurrence
+    itself and its execution remain premises of `ContextSyncWitness`. -/
+theorem context_write_occurrence_has_generated_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace external) (write : RequiredWrite) :
+    trace.action (sync.writeOccurrence write) =
+        .sysReg .write write.reg write.word write.rt ∧
+      decodedColdEntrySystemRegisterWriteTarget write.word =
+        some (requiredWriteTarget write, write.rt) := by
+  constructor
+  · exact sync.writesAreExact write
+  · cases write <;> rfl
 
 def projectedRegisterStateToSail (state : ProjectedRegisterState) :
     _root_.ColdEntryRegisterState := {

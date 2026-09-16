@@ -93,7 +93,9 @@ start
 The evidence-bearing `Oak.AArch64ColdEntry.Step` is occurrence-indexed. Its
 `ContextSyncWitness` carries:
 
-- one exact occurrence for each of the eight required system-register writes;
+- one occurrence for each of the eight required system-register writes, whose
+  action includes the exact register, word, and X0-through-X7 Rt field;
+- the total HCR-through-SPSR program order between those occurrences;
 - one exact `AArch64Encoding.isbSy` occurrence after every write;
 - an explicit external `ArmContextSync` proof for that ISB occurrence.
 
@@ -112,6 +114,8 @@ The Lean model proves:
 - shape-only transfer can occur only from `synchronized`;
 - evidence-bearing transfer exposes the retained synchronization witness,
   exact ERET occurrence, and ISB-before-ERET edge;
+- the required write occurrences are pairwise distinct and expose all seven
+  adjacent source-order edges;
 - every required context write precedes ERET by transitivity;
 - `transferred` is terminal in the cold-entry protocol.
 
@@ -120,7 +124,8 @@ model with non-erased context effects discharges it. It is not derived from the
 barrier capability Boolean, pure decoding/dispatch, or CAT ordering. Caller
 register values also remain outside these protocol-order proofs. Only the eight
 writes, ISB, and ERET are occurrence-classified here; DAIFSet and the remaining
-phase transitions are still shape-only.
+phase transitions are still shape-only. The witness is an external premise;
+the static object gate does not extract or construct it.
 
 Independently, `Oak.AArch64Encoding` computes the static DAIFSet word as
 `0xd50342df`, and the generated Sail bridge proves that successful dispatch

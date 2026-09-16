@@ -774,6 +774,13 @@ confirms that `InstructionSynchronizationBarrier` and
 identity therefore does not masquerade as a context-synchronization state
 proof.
 
+The separate occurrence-indexed cold-entry obligation now identifies each of
+the eight write actions by exact register, word, and Rt and requires their
+total HCR/X0-through-SPSR/X7 program order before that ISB. The generated
+unified decoder agrees with every such witnessed word/Rt/target. These stronger
+fields constrain an externally supplied Arm trace; neither the object witness
+nor decoder theorem constructs a dynamic occurrence, order edge, or execution.
+
 The same encoding/dispatch seam now covers the exact nullary Inner Shareable
 variant, `TLBI VMALLS12E1IS`, word `0xd50c83df`. Lean computes it from the
 generated SYS field layout and proves that Sail's pure projection selects the

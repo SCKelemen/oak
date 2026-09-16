@@ -60,9 +60,12 @@ execution or architectural context synchronization.
 
 `Oak.AArch64ColdEntry` now separates the shape-only `ProtocolStep` graph from
 an occurrence-indexed `Step`. Its synchronization witness carries all eight
-exact register-write occurrences before the same exact ISB word plus an
-explicit external Arm context-synchronization proposition. Decoder identity or
-Oak's capability bit cannot manufacture that evidence.
+register-write occurrences as exact register/word/Rt actions, requires their
+total HCR-through-SPSR program order and that every one precede the same exact
+ISB word, and carries an explicit external Arm context-synchronization
+proposition. The generated decoder agrees with every witnessed word/Rt/target.
+Decoder identity, object bytes, or Oak's capability bit cannot manufacture the
+occurrences, order, execution, or architectural synchronization evidence.
 
 The independent DAIFSet theorem computes the first static word, follows the
 pinned Sail decoder to the successful DAIFSet body, and proves that body sets

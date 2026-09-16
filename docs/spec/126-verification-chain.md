@@ -222,7 +222,11 @@ literal DAIFSet, their eight context-register MSR words, the exact ISB word, and
 order, and zero overhead but is not a Lean proof of the compiler or dynamic
 execution. `Oak.AArch64ColdEntry.Step`
 therefore still requires an
-explicit occurrence-indexed external Arm context-synchronization witness.
+explicit occurrence-indexed external Arm context-synchronization witness. That
+witness now pins every register-write action's register, word, and Rt and
+requires the total HCR-through-SPSR program order; Lean proves the eight write
+occurrences pairwise distinct. The unified generated decoder agrees with each
+witnessed word/Rt/target, but does not create the occurrence or order edge.
 The generated Sail bridge kernel-proves that the exact ISB word selects
 `InstructionSynchronizationBarrier` in Oak's local pure projection and
 conjoins that fact with the witness. A Go drift gate audits all six projection
