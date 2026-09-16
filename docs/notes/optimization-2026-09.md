@@ -163,12 +163,12 @@ The operation must have exactly the `EffectCall` effect and exactly one
 nonempty `callee` attribute, and no other non-unit value may be live across it
 because the color pools are caller-saved. Calling bodies save/restore `x30` on
 AArch64 or `ra` on RV64, place all register arguments simultaneously with a
-cycle-safe parallel copy, and normalize the ABI result after return. AArch64
-may source that copy from verified spill slots and composes spill storage with
-the link-register save in one bounded frame; RV64 uses a sixteen-byte call
-frame and still refuses pressure in a calling CFG. A ninth or stack argument
-and every broader call form refuse the OptIR candidate and retain the ordinary
-lowering.
+cycle-safe parallel copy, and normalize the ABI result after return. Both
+selectors may source that copy from verified spill slots and compose spill
+storage with the link-register save in one bounded frame. RV64 keeps `ra` in a
+dedicated sixteen-byte save area above the spill slots and caps the combined
+frame at 2032 bytes. A ninth or stack argument and every broader call form
+refuse the OptIR candidate and retain the ordinary lowering.
 Before selection, a target-independent layout analysis gives loop
 continuation/backedges an 8:1 static preference and leaves other branches
 neutral. Its fingerprint-bound order is an exact block permutation. AArch64
@@ -189,14 +189,15 @@ materializes it with three reserved scratch registers and an overflow-checked,
 stores use the represented width, and edge-copy cycles work across registers
 and slots. The resulting high-pressure candidate still passes the seam checker
 and semantic verifier before selection. RV64 consumes the same verified plan
-for an acyclic CFG with no call or effect. Canonical slots become an
-overflow-checked, 16-byte-aligned frame of at most 2032 bytes; at most two
-spilled operands reload through reserved `t5`/`t6`, signed and narrow
-representations are restored, and each spilled result stores immediately.
-Location-aware simultaneous copies cover register/slot SSA edges and spilled
-conditions reload explicitly. Machine tests prove production-pressure `u32`
-diamonds, wrapping `i8` edge traffic, spilled conditions, and spilled returns.
-Loops, calls, and call-frame composition remain RV64 refusals.
+for an acyclic CFG with no effect except an admitted direct call. Canonical
+slots become an overflow-checked, 16-byte-aligned frame of at most 2032 bytes;
+at most two ordinary spilled operands reload through reserved `t5`/`t6`, signed
+and narrow representations are restored, and each spilled result stores
+immediately. Location-aware simultaneous copies cover register/slot SSA edges
+and call arguments, while spilled conditions reload explicitly. Machine tests
+prove production-pressure `u32` diamonds, wrapping `i8` edge traffic, spilled
+conditions/returns, and composed spill/call frames with spilled arguments and
+results. Loops and broader calls remain RV64 refusals.
 
 Spilled constants and bounded copy chains rooted in constants now have a
 fingerprint-bound target-independent rematerialization analysis. It refuses

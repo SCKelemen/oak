@@ -766,14 +766,15 @@ For AArch64, a fingerprint-bound target-independent analysis may replace a
 spilled constant or a bounded copy chain rooted in one with reconstruction at
 each use. A target cost check keeps expensive literals in their slots; accepted
 recipes remove the corresponding frame storage and traffic and are checked
-again during selection. RV64's consumer is narrower: only an acyclic, call-
-and effect-free CFG may materialize. It verifies the same plan again, checks
-canonical slot widths and alignments, lays out a 16-byte-aligned frame bounded
-to 2032 bytes, and uses reserved `t5`/`t6` scratches for at most two spilled
-operands. Loads preserve the target's canonical signed/narrow representation,
-each spilled result is stored immediately, spilled conditions reload
-explicitly, and simultaneous register/slot copies materialize SSA edges. RV64
-loop/call spill traffic and rematerialization still refuse.
+again during selection. RV64's consumer is narrower: only an acyclic CFG with
+no effect except the closed direct-call form may materialize. It verifies the
+same plan again, checks canonical slot widths and alignments, lays out a
+16-byte-aligned frame bounded to 2032 bytes, and uses reserved `t5`/`t6`
+scratches for at most two ordinary spilled operands. Loads preserve the
+target's canonical signed/narrow representation, each spilled result is stored
+immediately, spilled conditions reload explicitly, and simultaneous
+register/slot copies materialize SSA edges and call arguments. RV64 loop spill
+traffic and rematerialization still refuse.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and
@@ -789,13 +790,13 @@ Because every allocatable color is caller-saved, every other non-unit value
 must be dead across the call. An admitted calling body saves and restores
 AArch64 `x30` or RV64 `ra`, places zero through eight arguments simultaneously
 in the integer ABI registers with a cycle-safe parallel copy, and reapplies the
-target's Bool/narrow normalization to the result. AArch64 may source arguments
-from verified spill slots and composes spill storage with the link-register
-save in one checked frame; RV64 uses a sixteen-byte call frame and still
-requires strict coloring for calling CFGs. A ninth or stack argument refuses,
-as do unknown, indirect, method, generic, external, or multi-result calls,
-other effects, traps, source memory, stack parameters, unfamiliar operations,
-an oversized AArch64 frame, or remaining RV64 pressure.
+target's Bool/narrow normalization to the result. Both selectors may source
+arguments from verified spill slots and compose spill storage with the link-
+register save in one checked frame. RV64 keeps its slots below a dedicated
+sixteen-byte save area and caps the combined frame at 2032 bytes. A ninth or
+stack argument refuses, as do unknown, indirect, method, generic, external, or
+multi-result calls, other effects, traps, source memory, stack parameters,
+unfamiliar operations, an oversized frame, or unsupported RV64 pressure.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1

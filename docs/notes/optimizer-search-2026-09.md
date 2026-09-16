@@ -355,7 +355,7 @@ Bool/8/16/32/64-bit scalar arguments and exactly one
 matching scalar result, represented by exactly `EffectCall` plus one nonempty
 `callee` attribute. Since the available colors are caller-saved, any other
 non-unit value live across the call refuses the candidate. An admitted calling
-function reserves sixteen bytes to save/restore AArch64 `x30` or RV64 `ra`,
+function reserves a sixteen-byte save area for AArch64 `x30` or RV64 `ra`,
 places the ABI register arguments as a simultaneous parallel copy whose cycles
 use the selector's reserved scratch, and normalizes the result at the boundary.
 A ninth or stack argument, all broader call forms, and other effects still
@@ -363,12 +363,14 @@ refuse. The independently verified abstract spill plan is materialized on
 AArch64 and composed with this call frame. Spilled constants and bounded copy
 chains may instead be rematerialized after independent recipe verification and
 a target cost check; accepted recipes remove their physical slots, while
-expensive literals stay spilled. RV64 materializes acyclic CFGs without calls
-or effects: canonical scalar slots in a bounded 16-byte-aligned frame, at most
-two spilled operands through reserved `t5`/`t6` scratches, explicit spilled-
-condition reloads, and simultaneous register/slot copies on SSA edges. Width-
-correct stores, signed/narrow reloads, production-pressure diamonds, and
-spilled returns are machine-proven; RV64 loops, calls, call-frame composition,
+expensive literals stay spilled. RV64 materializes acyclic CFGs with no effect
+except an admitted direct call: canonical scalar slots in a
+bounded 16-byte-aligned frame, at most two ordinary spilled operands through
+reserved `t5`/`t6` scratches, explicit spilled-condition reloads, and
+simultaneous register/slot copies on SSA edges and call arguments. Its `ra`
+save area sits above the spill slots in the same frame. Width-correct stores,
+signed/narrow reloads, production-pressure diamonds, spilled returns, and a
+composed spill/call frame are machine-proven; RV64 loops and broader calls
 and rematerialization still refuse. The direct lowering remains the identity,
 and every selected OptIR body must pass seam admission and semantic translation
 validation; refusal or a trusted verdict falls back.
@@ -1024,7 +1026,7 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
     plan and verifier-gated AArch64 scalar insertion landed; splitting, broader
-    MachineIR, RV64 loops/call-frame composition, and RV64 splitting remain**);
+    MachineIR, RV64 loops, and RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
     and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);
