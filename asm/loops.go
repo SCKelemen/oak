@@ -4706,8 +4706,18 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.calls > implicationCallLimit {
 		return false, false
 	}
-	if dagNodesExceed(implicationNodeLimit, premise, a, b) {
+	nodes, exceeded := dagNodes(implicationNodeLimit, premise, a, b)
+	if exceeded {
 		budget.remaining -= blastNodeBudget
+		return false, false
+	}
+	// The terms are walked whatever the diagrams come to — blasted,
+	// canonicalized, pruned — so an implication costs the proof its
+	// terms' nodes even when it decides in a small diagram: two
+	// thousand such over a long write log took seven minutes
+	// (`protocol_line_done`) under a budget that saw only diagrams.
+	budget.remaining -= nodes
+	if budget.remaining <= 0 {
 		return false, false
 	}
 	holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
@@ -5171,9 +5181,9 @@ const (
 	implicationCallLimit = 2048
 )
 
-// dagNodesExceed reports whether the terms hold more than limit distinct
-// nodes between them, stopping the count there.
-func dagNodesExceed(limit int, terms ...*term) bool {
+// dagNodes counts the distinct nodes the terms hold between them, up to
+// limit, and reports whether they hold more.
+func dagNodes(limit int, terms ...*term) (int, bool) {
 	seen := map[*term]bool{}
 	var walk func(t *term) bool
 	walk = func(t *term) bool {
@@ -5188,10 +5198,10 @@ func dagNodesExceed(limit int, terms ...*term) bool {
 	}
 	for _, t := range terms {
 		if walk(t) {
-			return true
+			return len(seen), true
 		}
 	}
-	return false
+	return len(seen), false
 }
 
 // abbreviate cuts a rendering for a trace line.
