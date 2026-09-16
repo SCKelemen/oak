@@ -52,6 +52,9 @@ func Vectorized(fn *asm.Function) int { return countSites(fn, "reduction vectori
 // vectorized under Lane.VectorMaps (nativegen/vector_map.go).
 func VectorizedMaps(fn *asm.Function) int { return countSites(fn, "map vectorization", false) }
 
+// UnrolledMaps counts maps processed as two consecutive vectors per trip.
+func UnrolledMaps(fn *asm.Function) int { return countSites(fn, "map unrolling", false) }
+
 // VectorizedFolds reports how many bodies' lane-wise float reductions a
 // lowering vectorized under Lane.VectorFolds (nativegen/vector_fold.go).
 func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectorization", false) }
@@ -75,9 +78,9 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                               *ast.FunctionStatement
-	tc                                               *typechecker.TypeChecker
-	expand, unroll, vectorize, maps, folds, strength bool
+	fn                                                           *ast.FunctionStatement
+	tc                                                           *typechecker.TypeChecker
+	expand, unroll, vectorize, maps, unrollMaps, folds, strength bool
 }
 
 var (
@@ -98,22 +101,22 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
-	key := stageKey{fn: fn, tc: tc, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, folds: folds, strength: strength}
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, strength bool) []rewriteStage {
+	key := stageKey{fn: fn, tc: tc, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, tc, expand, unroll, vectorize, maps, folds, strength)
+	stages := computeStages(fn, functions, tc, expand, unroll, vectorize, maps, unrollMaps, folds, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
 	return stages
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
@@ -144,11 +147,19 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	// The element-wise maps over spans as one vector a trip
 	// (nativegen/vector_map.go): lane-wise semantics alone license it.
 	if maps {
-		if vectorized, changed := vectorizeMaps(fn, body, tc); changed {
+		mapSource := body
+		if vectorized, changed := vectorizeMaps(fn, mapSource, tc, false); changed {
 			sites = append(sites, RewriteSite{Rewrite: "map vectorization", Law: "Oak.Map.blocked_eq", Detail: "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map", Line: fn.Token.Line})
 			body = vectorized
 			judged = true
 			push()
+			if unrollMaps {
+				if grouped, changed := vectorizeMaps(fn, mapSource, tc, true); changed {
+					sites = append(sites, RewriteSite{Rewrite: "map unrolling", Law: "Oak.Map.grouped_eq", Detail: "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder", Line: fn.Token.Line})
+					body = grouped
+					push()
+				}
+			}
 		}
 	}
 	// The lane-wise float reductions as one vector of element values a

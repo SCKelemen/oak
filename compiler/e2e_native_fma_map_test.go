@@ -7,6 +7,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/nativegen"
 )
 
@@ -39,6 +40,26 @@ nested: (dst: [*]f32, a: []f32, b: []f32, k: f32): () {
   } | { }
 }
 `
+
+func TestNativeUnrolledFMAMapsSelected(t *testing.T) {
+	var remarks []string
+	model, err := New().WithSource("grouped_maps.oak", nativeFMAMaps[:strings.Index(nativeFMAMaps, "nested:")]).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			remarks = append(remarks, d.Message)
+		}
+	}).Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.AsmFunctions) != 2 {
+		t.Fatalf("got %d native maps, want 2", len(model.AsmFunctions))
+	}
+	for _, unit := range model.AsmFunctions {
+		if nativegen.UnrolledMaps(unit) != 1 || model.NativeVerdicts[unit.Name].Kind != asm.VerdictProven {
+			t.Errorf("%s: grouped map not proven/selected\n%s", unit.Name, strings.Join(remarks, "\n"))
+		}
+	}
+}
 
 func TestE2ENativeFMAMaps(t *testing.T) {
 	requireArm64Host(t)
@@ -136,7 +157,7 @@ func TestNativeFMAMapRefusesShadowedAndEffectfulCalls(t *testing.T) {
 					functions[function.Name.Value] = function
 				}
 			}
-			unit, err := nativegen.CompileFor(nativegen.Lane{VectorMaps: true}, functions["map32"], functions, nil, nil, nil, model.TypeChecker)
+			unit, err := nativegen.CompileFor(nativegen.Lane{VectorMaps: true, UnrollVectorMaps: true}, functions["map32"], functions, nil, nil, nil, model.TypeChecker)
 			// An ordinary unsupported effectful call may refuse native lowering;
 			// it must never obtain a vector map by reinterpreting the call.
 			if err == nil && nativegen.VectorizedMaps(unit) != 0 {

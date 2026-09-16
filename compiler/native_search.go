@@ -195,6 +195,7 @@ var setAside = map[string]string{
 	nativegen.TransformCleanup:     "keeps its copies",
 	nativegen.TransformVectorize:   "keeps its scalar reduction",
 	nativegen.TransformVectorMaps:  "keeps its scalar map",
+	nativegen.TransformUnrollMaps:  "keeps one vector per map trip",
 	nativegen.TransformVectorFolds: "keeps its scalar fold",
 	nativegen.TransformVecBlocks:   "addresses each vector load",
 	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",

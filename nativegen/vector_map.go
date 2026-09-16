@@ -17,8 +17,9 @@ import (
 // — E built from elements at i of span parameters of one element type
 // (a zip reads several), loop-invariant scalars, and constants with the
 // lane-wise operators (+, -, &, |, ^ over u8, u16, u32, or u64 lanes; +,
-// -, *, / and checked explicit fma over f32 or f64 lanes, each one rounding per lane as the scalar
-// operator is); dst a writable span parameter of that type; every span
+// -, *, / and checked explicit fma over f32 or f64 lanes, each one rounding
+// per lane as the scalar operator is); dst a writable span parameter of
+// that type; every span
 // read or written either the loop's own span a or one known to have its
 // length, from an enclosing `len(dst) == len(a) && …` — is rewritten,
 // before lowering, into a main loop over one vector a trip under the
@@ -43,8 +44,10 @@ import (
 // the rewritten body and the verifier proves the assembly against it, the
 // two loops coupled inductively with the span memory of dst (§9 "Span
 // memories through loops", the split that proves store loops). One
-// vector a trip, not four: a map carries nothing across trips, so there
-// is no chain to break.
+// vector per trip in the base form. UnrollVectorMaps adds a two-vector
+// main loop before the one-vector cleanup and unchanged scalar tail,
+// under Oak.Map.grouped_eq. This amortizes loop overhead without changing
+// lane arithmetic or cross-element ordering.
 //
 // Not rewritten: a map whose value reads an element at another index
 // (a[j], a[i + 1]) or a non-invariant scalar, one over spans bound in the
@@ -116,7 +119,7 @@ var laneWiseOps = map[string]string{"+": "add", "-": "sub", "&": "and", "|": "or
 
 // vectorizeMaps returns the body with its element-wise span maps
 // vectorized, and whether any was.
-func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker) (ast.Expression, bool) {
+func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker, unroll bool) (ast.Expression, bool) {
 	block, isBlock := body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil {
 		return body, false
@@ -151,7 +154,7 @@ func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression, tc *typecheck
 			switch s := stmt.(type) {
 			case *ast.WhileStatement:
 				if m, ok := recognizeMap(s, prev, types, spans, equal, body, tc); ok {
-					out = append(out, vectorizedMap(m)...)
+					out = append(out, vectorizedMap(m, unroll)...)
 					changed = true
 					prev = stmt
 					continue
@@ -445,7 +448,7 @@ func (m mapLoop) constantIndex(key string) int {
 }
 
 // vectorizedMap spells the rewrite for one recognized loop.
-func vectorizedMap(m mapLoop) []ast.Statement {
+func vectorizedMap(m mapLoop, unroll bool) []ast.Statement {
 	tok := m.loop.Token
 	ident := func(name string) *ast.Identifier { return &ast.Identifier{Token: tok, Value: name} }
 	literal := func(v int64) ast.Expression { return &ast.IntegerLiteral{Token: tok, Value: v} }
@@ -471,19 +474,40 @@ func vectorizedMap(m mapLoop) []ast.Statement {
 	for k, c := range m.constants {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(m.constantName(k)), Type: vecType(), Value: simd("splat", c.arg)})
 	}
-	guard := infix(infix(length(), ">=", u32(m.lanes)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(m.lanes))))
-	main := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}
-	main.Body.Statements = append(main.Body.Statements,
-		&ast.ExpressionStatement{Token: tok, Expression: simd("store", ident(m.dst), ident(m.idx), m.vectorExpr(m.value, tok))},
-		&ast.AssignmentStatement{Token: tok, Name: ident(m.idx), Value: infix(ident(m.idx), "+", u32(m.lanes))},
-	)
-	return append(out, main, m.loop)
+	vectorLoop := func(groups int64) *ast.WhileStatement {
+		stride := groups * m.lanes
+		guard := infix(infix(length(), ">=", u32(stride)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(stride))))
+		loop := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}
+		for group := int64(0); group < groups; group++ {
+			var index ast.Expression = ident(m.idx)
+			if group != 0 {
+				index = infix(index, "+", u32(group*m.lanes))
+			}
+			loop.Body.Statements = append(loop.Body.Statements,
+				&ast.ExpressionStatement{Token: tok, Expression: simd("store", ident(m.dst), cloneNode(index).(ast.Expression), m.vectorExprAt(m.value, tok, index))})
+		}
+		loop.Body.Statements = append(loop.Body.Statements,
+			&ast.AssignmentStatement{Token: tok, Name: ident(m.idx), Value: infix(ident(m.idx), "+", u32(stride))})
+		return loop
+	}
+	if unroll {
+		out = append(out, vectorLoop(2))
+		// Retain a single-vector cleanup before the scalar tail. Otherwise
+		// inputs between one and two vectors would regress to all-scalar.
+	}
+	return append(out, vectorLoop(1), m.loop)
 }
 
 // vectorExpr spells a lane-wise expression over the vectors: each element
 // read a vector load at the loop's index, each invariant scalar and
 // constant its splat, each operator its lane-wise simd operation.
 func (m mapLoop) vectorExpr(e ast.Expression, tok token.Token) ast.Expression {
+	return m.vectorExprAt(e, tok, &ast.Identifier{Token: tok, Value: m.idx})
+}
+
+// vectorExprAt uses one block's index for every same-index span read.
+// The caller's slack guard covers the entire group, including this offset.
+func (m mapLoop) vectorExprAt(e ast.Expression, tok token.Token, index ast.Expression) ast.Expression {
 	ident := func(name string) *ast.Identifier { return &ast.Identifier{Token: tok, Value: name} }
 	simd := func(member string, args ...ast.Expression) ast.Expression {
 		callee := &ast.IndexExpression{Token: tok, Left: ident("simd"), Index: ident(member + "_" + m.suffix), Dot: true}
@@ -491,15 +515,15 @@ func (m mapLoop) vectorExpr(e ast.Expression, tok token.Token) ast.Expression {
 	}
 	switch x := e.(type) {
 	case *ast.IndexExpression:
-		return simd("load", ident(x.Left.(*ast.Identifier).Value), ident(m.idx))
+		return simd("load", ident(x.Left.(*ast.Identifier).Value), cloneNode(index).(ast.Expression))
 	case *ast.Identifier:
 		return ident(x.Value + "_v")
 	case *ast.InfixExpression:
 		op, _ := laneWiseOp(x.Operator, m.elem)
-		return simd(op, m.vectorExpr(x.Left, tok), m.vectorExpr(x.Right, tok))
+		return simd(op, m.vectorExprAt(x.Left, tok, index), m.vectorExprAt(x.Right, tok, index))
 	case *ast.InvocationExpression:
 		if m.checkedFMA(x) {
-			return simd("fma", m.vectorExpr(x.Arguments[0], tok), m.vectorExpr(x.Arguments[1], tok), m.vectorExpr(x.Arguments[2], tok))
+			return simd("fma", m.vectorExprAt(x.Arguments[0], tok, index), m.vectorExprAt(x.Arguments[1], tok, index), m.vectorExprAt(x.Arguments[2], tok, index))
 		}
 	case *ast.FloatLiteral:
 		return ident(m.constantName(m.constantIndex("f:" + x.Text + "/" + strconv.FormatFloat(x.Value, 'g', -1, 64))))

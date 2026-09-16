@@ -5323,6 +5323,27 @@ identity). Measured map and reduction results are kept separately in
 `benchmarks/native/exact_fma/README.md`: fewer instructions did not make
 the scalar dot-product contraction profitable on the measured host.
 
+**Two-vector maps (2026-09-17; `unroll-vector-maps`).** An additional
+candidate groups two consecutive vectors under `len(a) >= 2*L &&
+i <= len(a) - 2*L`, stores the blocks at `i` and `i+L`, and advances
+by `2*L`. It then runs the original one-vector cleanup and scalar tail.
+The same checked lane-wise vocabulary and equal-length/borrow conditions
+apply. `Oak.Map.two_blocks_eq` and `grouped_eq` compose the map blocks;
+`grouped_bounds` bounds both accesses and the updated index without u32
+wraparound. No floating arithmetic is contracted or reassociated. The
+three loops and their destination memory must prove under the existing
+verifier; unproved or unprofitable candidates do not displace the prior
+forms. The transform is enabled in AArch64 search, not RV64 search.
+
+The grouping flag is part of both the rewrite cache key and materialization
+recipe v8. Cost-only recurrence hints recognize smaller-vector cleanup as
+bounded: a stride-8 loop followed by stride-4 and scalar loops suggests at
+most one vector-cleanup trip and three scalar trips. Bounded `MaxTrips`
+values count trips, so the cost model must not divide them by stride a
+second time. Metric/cost artifact revisions are v2. These estimates confer
+no semantic authority. `benchmarks/native/exact_fma/README.md` records the
+one-vector control, timings, code-size tradeoffs, and rejected experiments.
+
 **Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
 `spec/lean/Oak/Fold.lean`, the `vectorize-folds` candidate).** A float
 reduction whose element expression is lane-wise over span parameters of

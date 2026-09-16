@@ -179,8 +179,13 @@ func TestE2ENativeVectorMap(t *testing.T) {
 		case "fill16":
 			wantLoads = 0 // a fill reads nothing
 		}
-		if vecLoads != wantLoads || vecStores != 1 || scalarAccesses != 0 {
-			t.Errorf("%s's main loop must be %d vector load(s) and one vector store, got %d, %d, and %d scalar accesses:\n%s", shape.unit, wantLoads, vecLoads, vecStores, scalarAccesses, nativegen.Describe(units[shape.unit]))
+		wantStores := 1
+		if nativegen.UnrolledMaps(units[shape.unit]) == 1 {
+			wantStores = 2
+			wantLoads *= 2
+		}
+		if vecLoads != wantLoads || vecStores != wantStores || scalarAccesses != 0 {
+			t.Errorf("%s's main loop must be %d vector load(s) and %d vector store(s), got %d, %d, and %d scalar accesses:\n%s", shape.unit, wantLoads, wantStores, vecLoads, vecStores, scalarAccesses, nativegen.Describe(units[shape.unit]))
 		}
 	}
 	_, code, abnormal := buildAndRunFrom(t, "native_vector_map", comp)

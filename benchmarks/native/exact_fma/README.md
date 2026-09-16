@@ -12,12 +12,13 @@ The output path must not already exist. Defaults are 4,096 elements,
 `-samples`, and `-cc` override these settings within checked bounds.
 
 Every run compares C (`-O3 -ffp-contract=off -fno-fast-math`), native identity,
-native optimized without `vectorize-maps`, and fully optimized native code.
+native optimized without `vectorize-maps`, native with only one vector per map
+trip (`unroll-vector-maps` disabled), and fully optimized native code.
 Each backend has f32/f64 and strict/explicit-FMA variants. Samples interleave
-all sixteen combinations and rotate their starting position. The report keeps
+all twenty combinations and rotate their starting position. The report keeps
 observation order, raw elapsed times, result checksums, compiler revision,
 dirty-worktree status, host/load information, native verdicts, assembly, frame
-sizes, encoded sizes, and structural instruction/loop metrics. Native identity
+sizes, encoded sizes, rewrite licenses, and structural instruction/loop metrics. Native identity
 disables the registry's actual transform names rather than a hard-coded list.
 Temporary builds are removed; the report is retained. Volatile indirect calls
 prevent C from hoisting identical pure calls out of the timed loop.
@@ -63,6 +64,36 @@ and retained proven native verdicts. Both experiments remain reproducible here.
 Core placement and machine contention are uncontrolled; use the raw samples
 and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
+
+## Two-vector map candidate
+
+`unroll-vector-maps` adds a two-vector main loop before the existing
+one-vector cleanup and scalar tail. It instantiates `Oak.Map.grouped_eq`:
+two consecutive blocks map the same elements with the same lane operations.
+`grouped_bounds` proves the extent/next-index inequalities, including the
+no-wrap case with a u32 limit. These are schema proofs; the matcher and
+lowering remain implementation code, and emitted candidates must still pass
+the ordinary seam checker and semantic verifier.
+
+The single-vector cleanup matters: inputs between one and two vectors must
+not become all-scalar. A conditional cleanup was also tried; its joins made
+several maps harder to prove. The retained loop form proves f32/f64 FMA,
+nested/zip expressions, strict arithmetic, and unsigned integer maps without
+changing verifier rules. Sharing the second vector's index in a generated
+local was refused by the existing seam checker and was not retained.
+
+The cost model now recognizes a smaller-stride cleanup, not just a scalar
+remainder. An 8-element main loop followed by 4-element cleanup and a scalar
+tail has cost hints of at most one cleanup trip and three scalar trips.
+`MaxTrips` counts trips, so a bounded loop is no longer divided by its stride
+twice. These are cost hints, not proof evidence. Materialization revision v8
+includes the grouping flag; metric/cost artifacts advance to v2.
+
+Use `native-one-vector` as the control for this increment. Original reports
+below predate this extra control and retain their original four-backend
+protocol. Compare small/tail-heavy inputs separately: wider loop setup and
+code size can cost time even when long maps improve. No automatic float
+contraction or reduction regrouping is introduced.
 
 ## Recorded results: M4 Max, 2026-09-17
 
