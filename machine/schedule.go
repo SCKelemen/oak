@@ -214,35 +214,36 @@ func memoryOf(a asm.Instruction) (mem bool, store bool) {
 }
 
 // Stalls estimates, in the current order, the cycles an in-order machine
-// waits for producers within each barrier-free region: the sum over
-// read-after-write pairs, at most eight instructions apart, of the
-// latency the distance does not cover. It reports the total and the
-// share per block.
+// waits for producers: the sum over read-after-write pairs, at most eight
+// instructions apart in the function's linear order, of the latency the
+// distance does not cover. It reports the total and the share per block
+// (the consumer's). The measure runs across barriers and block
+// boundaries alike — a guard branch between a divide and its consumer
+// hides none of the divide's latency on the path that falls through —
+// so a form with fewer guards is not charged the stalls its branches
+// merely interrupted.
 func (f *Function) Stalls() (total int, byBlock map[*Block]int) {
 	byBlock = map[*Block]int{}
+	var instrs []*Instr
+	blockOf := map[*Instr]*Block{}
 	for _, b := range f.Blocks {
-		start := 0
-		n := len(b.Instrs)
-		for i := 0; i <= n; i++ {
-			if i < n && !f.t.barrier(b.Instrs[i]) && !f.t.writesFlags(b.Instrs[i].Asm) {
-				continue
-			}
-			region := b.Instrs[start:i]
-			for j := 1; j < len(region); j++ {
-				_, bUses := f.regsOf(region[j])
-				for k := j - 1; k >= 0 && j-k <= 8; k-- {
-					aDefs, _ := f.regsOf(region[k])
-					for r := range aDefs {
-						if bUses[r] {
-							if stall := f.t.latency(region[k].Asm) - (j - k); stall > 0 {
-								total += stall
-								byBlock[b] += stall
-							}
-						}
+		for _, ins := range b.Instrs {
+			instrs = append(instrs, ins)
+			blockOf[ins] = b
+		}
+	}
+	for j := 1; j < len(instrs); j++ {
+		_, bUses := f.regsOf(instrs[j])
+		for k := j - 1; k >= 0 && j-k <= 8; k-- {
+			aDefs, _ := f.regsOf(instrs[k])
+			for r := range aDefs {
+				if bUses[r] {
+					if stall := f.t.latency(instrs[k].Asm) - (j - k); stall > 0 {
+						total += stall
+						byBlock[blockOf[instrs[j]]] += stall
 					}
 				}
 			}
-			start = i + 1
 		}
 	}
 	return total, byBlock
