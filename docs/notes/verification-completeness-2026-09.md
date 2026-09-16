@@ -261,10 +261,13 @@ declarations and rebindings. `lowerWith_eval` maintains an explicit agreement
 invariant between the extraction scope and the verifier's substituted terms.
 Production render tests pin the five operations, FMA operand order,
 non-contraction of multiply-then-add, the literal bits, and both local forms.
-Decimal parsing into those bits, conversions, memory, effectful control flow,
-borrowing/recursive/effectful calls, `f64`, and SIMD remain outside the
-theorem, so the broader gap and the score above remain. Ordered pure `f32`
-calls are included by the existing call-environment refinement.
+`lowerWiden_eval` also composes explicit `f32`-to-`f64` widening over that
+straight-line slice and pins the production `fcvt64` node and extraction's
+`Float32.toFloat`. Decimal parsing into those bits, all other conversions,
+memory, effectful control flow, borrowing/recursive/effectful calls, `f64`
+arithmetic, and SIMD remain outside the theorem, so the broader gap and score
+above remain. Ordered pure `f32` calls are included by the existing
+call-environment refinement.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
 rounding or NaN-payload behavior. The FMA case similarly relates both sides to
@@ -337,12 +340,13 @@ This is deliberately audit-only: it neither authorizes nor upgrades
 not the symbolic executor, Oak lowering, clause generator, or checker
 implementations. `Oak.NativeEqualityCertificate.accepted_implies_equal`
 states the abstract composition and makes its missing implementation
-refinements explicit. `Oak.TseitinCNF` now proves the exact signed-literal
-clause shapes for each raw Boolean gate, and the hardened Go checker kernel now
-lives in the dependency-leaf `internal/lrat` package. The next step remains the
-whole-builder/bit-blaster and checker implementation refinement, followed by
-requiring the leaf checker below compiler selection so certificate acceptance
-can safely become verdict authority.
+refinements explicit. `Oak.TseitinCNF` now proves each raw Boolean gate's exact
+signed-literal clause shape, supplied-list/final-clause composition, and the
+exact 1-based initial RUP database model. The hardened Go checker kernel lives
+in the dependency-leaf `internal/lrat` package. The next step remains
+production-builder/bit-blaster and checker implementation refinement,
+followed by requiring the leaf checker below compiler selection so certificate
+acceptance can safely become verdict authority.
 
 One narrow slice now follows this shape. Recursive OptIR scalar-call memory
 summaries first pass through one checked CFG-order authority projection whose

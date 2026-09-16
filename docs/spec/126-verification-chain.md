@@ -185,9 +185,11 @@ checking LRAT; the integration path also requires the checker written in Oak
 to accept the certificate against the same DIMACS formula. Source-body and
 machine-operation replay attacks are tests. `Oak.NativeEqualityCertificate`
 proves the abstract composition from accepted RUP plus exact CNF completeness
-to result equality. `Oak.TseitinCNF` proves that the concrete signed-literal
-lists for each raw AND/OR/XOR/ITE gate have the corresponding Boolean meaning;
-the remaining builder and bit-blaster composition is still open. The hardened
+to result equality. `Oak.TseitinCNF` proves each raw AND/OR/XOR/ITE list,
+composes any supplied gate sequence with its supplied non-settled final
+clause, and carries that characterization to the exact 1-based initial RUP
+database. It does not yet prove production provenance, sequential extension,
+or bit-blaster correspondence. The hardened
 Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
@@ -552,9 +554,12 @@ executes every initializer and each arm's assignments sequentially, starts the
 two arms from the same scope, derives every written name, and proves the
 verifier's pointwise `iteTerm` merge agrees with the tuple returned by the
 extraction's selected do-block. `lowerConditionalAssignment_eval` is its
-one-local corollary. This is deliberately still a first slice: decimal parsing
-into the literal bits, conversions, spans, effectful conditions, nested or
-effectful statement arms, borrowing/recursive/effectful calls, `f64`, and
+one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
+the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
+the production render retains `fcvt64` over the exact width-32 operand term.
+This is deliberately still a first slice: decimal parsing into the literal
+bits, all other conversions, spans, effectful conditions, nested or effectful
+statement arms, borrowing/recursive/effectful calls, `f64` arithmetic, and
 vector operations remain related to the extraction by tests rather than this
 theorem. Division here proves operation identity and operand order through
 Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
@@ -640,9 +645,12 @@ for a workload):
    callee body. `lowerConditionalBlock_eval` proves any finite sequence of
    scalar initializers and sequential assignments in either statement arm,
    then the pointwise merge of the union write set; the one-local theorem is a
-   corollary. Decimal parsing, conversions, memory, effectful conditions,
-   nested or effectful statement arms, borrowing/recursive/effectful calls,
-   and the rest of the float/vector edge stay open.
+   corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
+   that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
+   `(Oak.FloatOps.add32 a b).toFloat`. Decimal parsing, all other conversions,
+   memory, effectful conditions, nested or effectful statement arms,
+   borrowing/recursive/effectful calls, and the rest of the float/vector edge
+   stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

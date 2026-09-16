@@ -156,9 +156,10 @@ written in Oak landed the same day as the rung's default,
 `prove/solver/sat.oak`, then clause-database reduction with deletion lines,
 two watched literals, learned-clause minimization, Luby restarts,
 activity-based reduction, and bounded variable elimination at load; the
-encoder's laws are stated in `Oak.Tseitin`; `Oak.TseitinCNF` connects the
-exact raw fresh-gate signed-literal lists to RUP clause semantics, while
-the complete builder remains open; the clause engine written in Oak
+encoder's laws are stated in `Oak.Tseitin`; `Oak.TseitinCNF` connects exact
+raw fresh-gate lists, supplied-list/final-clause composition, and their exact
+1-based initial database to RUP semantics, while production provenance and
+the complete builder remain open; the clause engine written in Oak
 (`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
@@ -216,11 +217,12 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
 
 1. Add a SAT rung with LRAT rather than a bigger BDD budget; keep the BDD
    for canonical equivalence and counterexamples.
-2. The trusted base then narrows to the complete clause encoder.  The raw
-   fresh-gate lists are proved by `Oak.TseitinCNF`; folds, allocation,
-   memoization, sequencing, the final obligation, bit blasting, DIMACS, and
-   implementation refinement remain open (`performance.md` §13 "Trusted base
-   of the checker stated").
+2. The trusted base then narrows to the complete clause encoder. Raw gate
+   lists, supplied-list/final-clause composition, and exact 1-based initial
+   database models are proved by `Oak.TseitinCNF`; production provenance,
+   folds, allocation/memoization, fresh sequential extension, bit blasting,
+   DIMACS, and implementation refinement remain open (`performance.md` §13
+   "Trusted base of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the
    witness pass, exhaustive enumeration, reachable-state exploration — a

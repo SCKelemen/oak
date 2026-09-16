@@ -418,14 +418,18 @@ requires both the Go and Oak LRAT checkers to accept it for nontrivial
 distributivity on AArch64 and RV64. Replaying the same certificate after a
 source or machine-operation change is refused.
 
-`Oak.TseitinCNF` connects the first concrete encoder representation to RUP:
-the exact signed-literal clause lists emitted by the raw fresh-gate branches
-for AND, OR, XOR, and ITE (three, three, four, and six clauses) characterize
-their Boolean outputs, including complemented edges. Go regression tables pin
-those clause shapes and polarities. This is a representation bridge, not yet a
-proof of the whole builder: folds, allocation and memoization, dependent gate
-sequences, bit blasting, the final obligation, DIMACS parsing, and Go/Lean
-correspondence remain separate obligations.
+`Oak.TseitinCNF` connects the first concrete encoder representation to RUP.
+The exact signed-literal lists for raw fresh AND, OR, XOR, and ITE gates
+(three, three, four, and six clauses) characterize their Boolean outputs.
+For any supplied gate list and non-settled final clause, their concatenation
+is modeled exactly when every gate equation and that final clause hold;
+`databaseOfClauses` proves the same characterization after assigning initial
+RUP IDs 1 through N, with ID 0 absent. Go regression tables pin complemented
+edges, one dependent AND-to-XOR list, and the production final-clause order of
+trap roots followed by the negated claim. This is still not a proof that the
+builder produced the supplied list or clause: folds, allocation/memoization,
+freshness and acyclicity, sequential extension, budget behavior, bit blasting,
+DIMACS parsing, and Go/Lean correspondence remain separate obligations.
 
 This is an **additional audit**, not a compiler admission path: it cannot
 create or promote `VerdictProven`, and the verifier cache cannot stand in for

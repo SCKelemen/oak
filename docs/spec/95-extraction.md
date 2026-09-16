@@ -207,6 +207,12 @@ Pure `f32` calls compose too:
 arguments are evaluated in the caller scope, bound by the callee's ordered
 parameter list, and the straight-line callee body uses the same bit-level
 carriers. Borrowing, recursion, and effectful calls are outside this slice.
+Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
+`Oak.FloatLoweringRefinement.lowerWiden_eval` proves that extraction's
+`Float32.toFloat` and the verifier's width-changing `fcvt64` consume the same
+binary32 value. This is operation identity and width/operand composition, not
+an independent proof of IEEE conversion, NaN-payload mapping, the production
+evaluator, or either ISA instruction.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

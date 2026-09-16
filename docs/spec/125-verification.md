@@ -179,11 +179,14 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
 keeps the public compatibility and word-encoding surface.  At the clause
-boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists emitted
-for raw fresh AND, OR, XOR, and ITE gates characterize those gates.  This does
-not yet refine the complete Go or Oak clause builders: folding, allocation and
-memoization, dependent gate sequences, the final obligation, bit blasting,
-and DIMACS construction remain open links.
+boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
+fresh AND, OR, XOR, and ITE gates characterize those gates. It composes any
+supplied list with a supplied non-settled final clause and proves the same
+model characterization for its exact 1-based initial RUP database. This does
+not yet prove that the Go or Oak builders produced that list or obligation:
+folding, allocation/memoization, freshness and acyclicity, sequential
+extension, bit blasting, DIMACS construction, and implementation
+correspondence remain open links.
 
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
@@ -855,10 +858,11 @@ In order of payoff, each reusing a surface that exists:
   did, while native LRAT checks faster than it solves), and a small
   checker proved once in Lean validates it — solving and trust as separate
   artifacts, the `-cross` rule kept so a race never hides a disagreement.
-  The trusted base then narrows to the complete clause encoder.  Its raw
-  fresh AND/OR/XOR/ITE signed-literal lists are connected to the RUP clause
-  semantics by `Oak.TseitinCNF`; folding, allocation and memoization,
-  dependent gate sequences, the final obligation, bit blasting, DIMACS
+  The trusted base then narrows to the complete clause encoder. Its raw
+  fresh-gate lists, supplied-list concatenation with the non-settled final
+  clause, and exact 1-based initial RUP database are connected by
+  `Oak.TseitinCNF`; production provenance, folding, allocation/memoization,
+  freshness and acyclicity, sequential extension, bit blasting, DIMACS
   construction, and implementation refinement remain open. GPU solving is
   not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
