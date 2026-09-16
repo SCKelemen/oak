@@ -239,11 +239,18 @@ access IDs against separate immutable authority for their exact source, region,
 kind, type, whole-region contract, and volatility. The projections must agree.
 Missing, duplicated, forged, stale, or mismatched authority fails closed;
 globals are conservatively live on normal return. Projection, MemorySSA,
-liveness, combined evidence, and
-DSE now follow LICM in the typed artifact DAG. DSE remains analysis-only until
-the native OptIR selector lowers these memory operations. Aggregate/partial
-regions, load GVN, and interprocedural call Mod/Ref summaries remain open; a
-function mixing a call with projected global state refuses for now.
+liveness, combined evidence, and DSE now follow LICM in the typed artifact
+DAG. A changed post-DSE CFG can enter native search on AArch64 and RV64 for one
+straight-line, call-free, spill-free block of exact scalar package-global reads
+and whole nonvolatile writes. The selectors independently verify rebuilt
+MemorySSA, require each opaque region to resolve through typechecker authority
+to an exact global descriptor already authorized by the assembler template,
+and use width- and signedness-correct loads/stores for Bool and
+8/16/32/64-bit integers. Seam admission and semantic translation validation
+remain the emission gate; direct lowering remains the fallback.
+Aggregate/partial regions, memory control flow and spilling, load GVN, and
+interprocedural call Mod/Ref summaries remain open; a function mixing a call
+with projected global state refuses for now.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,
@@ -360,7 +367,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed, while DSE remains analysis-only pending native memory selection/emission |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed; changed post-DSE scalar-global load/store CFGs are verifier-gated native candidates on both targets |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

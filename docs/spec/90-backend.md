@@ -742,11 +742,18 @@ sites. It then independently resolves each projected operation's opaque access
 ID against a separate immutable typechecker-backed authority: source, region,
 access kind, scalar type, whole-region contract, and volatility must all match,
 the two projections must agree, and missing, duplicated, forged, or stale IDs
-fail closed. Every package-global region is observable at
-normal return. Projection, MemorySSA, liveness, evidence, and DSE are exact
-typed artifact-DAG nodes after LICM. DSE remains analysis-only because the
-native OptIR selector does not yet lower memory operations; load forwarding,
-aggregate regions, and interprocedural call Mod/Ref summaries are also open.
+fail closed. Every package-global region is observable at normal return.
+Projection, MemorySSA, liveness, evidence, and DSE are exact typed artifact-DAG
+nodes after LICM. Changed post-DSE CFGs now enter AArch64 or RV64 native search
+for the closed case of one straight-line, call-free, spill-free block containing
+exact scalar package-global reads and whole nonvolatile writes. Each selector
+independently verifies rebuilt MemorySSA, resolves opaque regions only through
+typechecker authority, and requires the resulting descriptor to match a global
+already authorized by the assembler template. Bool and signed/unsigned
+8/16/32/64-bit cells use their exact ABI widths and canonical load extensions.
+The resulting body still requires seam admission and a semantic-verifier
+verdict before selection. Load forwarding, memory control flow/spilling,
+aggregate regions, and interprocedural call Mod/Ref summaries remain open.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
