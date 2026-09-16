@@ -2830,16 +2830,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		stores := append([]*spanWrite{}, log[before[span]:]...)
 		if len(stores) == 0 {
 			// Successful lowering of the whole iteration found no write
-			// to this exact memory.  Frame an untouched record leaf across
-			// the loop instead of replacing it with an unconstrained loop
-			// memory.  Unknown stores never reach here: lowering them fails
-			// closed before an event is accepted.
-			if len(ev.entry[span]) == 0 {
-				delete(lo.writes, span)
-			} else {
-				lo.writes[span] = ev.entry[span]
-			}
-			delete(ev.entry, span)
+			// to this exact memory.  The pass below frames an untouched
+			// record leaf across the loop — the entry memory restored,
+			// the marker dropped — instead of replacing it with an
+			// unconstrained loop memory; it needs the entry, which stays
+			// recorded until then (an inner loop that dropped its entry
+			// here left the pass deleting the whole log, the enclosing
+			// loop's marker with it). Unknown stores never reach here:
+			// lowering them fails closed before an event is accepted.
 			continue
 		}
 		if ev.writes == nil {
