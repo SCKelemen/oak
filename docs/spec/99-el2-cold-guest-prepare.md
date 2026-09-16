@@ -59,18 +59,22 @@ static object-code occurrence/order certificate, not a proof of dynamic
 execution or architectural context synchronization.
 
 `Oak.AArch64ColdEntry` now separates the shape-only `ProtocolStep` graph from
-an occurrence-indexed `Step`. Its synchronization witness carries all eight
-register-write occurrences as exact register/word/Rt actions, requires their
-total HCR-through-SPSR program order and that every one precede the same exact
-ISB word, and carries an explicit external Arm context-synchronization
-proposition. The generated decoder agrees with every witnessed word/Rt/target.
-Decoder identity, object bytes, or Oak's capability bit cannot manufacture the
-occurrences, order, execution, or architectural synchronization evidence.
+an occurrence-indexed `Step`. `Step.maskIrq` takes one externally supplied
+exact DAIFSet/#2 occurrence, and every later evidence-bearing stage retains
+that same witness. The synchronization witness requires it before all eight
+exact register-word/Rt actions, requires their total HCR-through-SPSR order
+and that every one precede the same exact ISB word, and carries an explicit
+external Arm context-synchronization proposition. Lean derives DAIFSet before
+ISB and ERET and proves it distinct from every later occurrence. The generated
+decoders agree with the witnessed DAIFSet and every word/Rt/target. Decoder
+identity, object bytes, or Oak's capability bit cannot manufacture the trace,
+execution, runtime state transition, or architectural synchronization.
 
-The independent DAIFSet theorem computes the first static word, follows the
-pinned Sail decoder to the successful DAIFSet body, and proves that body sets
-I while preserving D/A/F. `ColdEntry.Step.maskIrq` is not yet connected to a
-dynamic occurrence of that instruction.
+The independent DAIFSet state-body theorem follows the pinned Sail decoder to
+the successful body and proves that body sets I while preserving D/A/F. It is
+deliberately separate from the exact occurrence/order theorem: neither proves
+access/trap admission, dynamic execution, the runtime before/after PSTATE
+relation, IRQ recognition/delivery, or interval-wide masking.
 
 The HCR seam pins static `MSR HCR_EL2, X0` and proves the generated pure
 component body directly writes the supplied value at EL2. Its EL1 redirect is

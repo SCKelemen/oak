@@ -246,13 +246,17 @@ separate unit-returning stubs, so this new dispatch proof deliberately does not
 discharge the external state-semantic obligation.
 
 The same narrow seam now covers the cold-entry IRQ-mask leaf. Lean computes
-`MSR DAIFSet, #2` as `0xd50342df`; generated Lean from the local Sail
-projection selects DAIFSet/operand #2 and proves the successful four-bit body
-sets PSTATE.I while preserving D/A/F. A Go drift gate pins the decoder,
-access/trap boundary, dispatch, and assignments to the pinned official Sail
-source. Access admission, traps, dynamic occurrence, other architectural
-state, interrupt delivery, and interval-wide masking remain outside this
-conditional state-body proof; it adds no ordering or synchronization edge.
+`MSR DAIFSet, #2` as `0xd50342df`; the occurrence-indexed cold-entry relation
+retains one exact DAIFSet/#2 action through every later stage and requires it
+before all eight register writes, ISB, and ERET. Generated Lean agrees on its
+DAIFSet/#2 target and, in a separate conditional theorem, proves the successful
+four-bit body sets PSTATE.I while preserving D/A/F. A Go drift gate pins the
+complete nine-word Lean/native prefix and the official decoder, access/trap
+boundary, dispatch, and assignments. The external occurrence is a premise,
+not a trace extracted from object bytes. Access/trap/PostDecode admission,
+dynamic execution, a runtime PSTATE transition, other architectural state,
+interrupt recognition/delivery, interval-wide masking, memory ordering, and
+context synchronization remain outside these facts.
 
 The next cold-entry word, `MSR HCR_EL2, X0`, is computed as `0xd51c1100`.
 Generated Lean proves its HCR_EL2/X0 target and component transition: EL2

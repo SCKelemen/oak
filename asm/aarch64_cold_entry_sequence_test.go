@@ -38,9 +38,10 @@ func uniqueDelimitedBlock(text, begin, end string) (string, error) {
 	return text[start : start+finish], nil
 }
 
-// The exact words stated and kernel-checked by Lean must remain the same eight
-// words the native object test requires immediately after DAIFSet. This gate
-// makes the proof list and executable-code oracle fail closed on mutual drift.
+// The exact words stated and kernel-checked by Lean must remain the complete
+// nine-word native prefix: DAIFSet followed by eight register writes. This gate
+// makes the proof list and executable-code oracle fail closed on mutual drift,
+// including the previously skipped first word.
 func TestColdEntryRegisterSequenceMatchesNativePrefix(t *testing.T) {
 	leanBytes, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64ColdEntry.lean"))
 	if err != nil {
@@ -72,13 +73,13 @@ func TestColdEntryRegisterSequenceMatchesNativePrefix(t *testing.T) {
 	if len(nativeWords) != 9 {
 		t.Fatalf("native cold-entry prefix has %d words, want DAIFSet plus 8 writes", len(nativeWords))
 	}
-	if len(leanWords) != 8 {
-		t.Fatalf("Lean cold-entry sequence has %d numeric words, want 8", len(leanWords))
+	if len(leanWords) != 9 {
+		t.Fatalf("Lean cold-entry sequence has %d numeric words, want DAIFSet plus 8 writes", len(leanWords))
 	}
 	for i := range leanWords {
-		if leanWords[i] != nativeWords[i+1] {
-			t.Fatalf("cold-entry register word %d = %#08x in Lean, %#08x in native prefix",
-				i, leanWords[i], nativeWords[i+1])
+		if leanWords[i] != nativeWords[i] {
+			t.Fatalf("cold-entry prefix word %d = %#08x in Lean, %#08x in native prefix",
+				i, leanWords[i], nativeWords[i])
 		}
 	}
 }

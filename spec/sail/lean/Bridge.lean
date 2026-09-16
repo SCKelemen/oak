@@ -141,8 +141,10 @@ def refineContextSyncWitnessWithSailDispatch
     {external : ArmContextSync Occurrence}
     (sync : ContextSyncWitness trace external) :
     ContextSyncWitness trace (sailRefinedContextSync external) := {
+  irqMask := sync.irqMask
   writeOccurrence := sync.writeOccurrence
   isbOccurrence := sync.isbOccurrence
+  irqMaskBeforeWrites := sync.irqMaskBeforeWrites
   writesAreExact := sync.writesAreExact
   writesFollowRegisterOrder := sync.writesFollowRegisterOrder
   writesBeforeIsb := sync.writesBeforeIsb
@@ -439,6 +441,18 @@ theorem daifset_irq_decoder_execution_target :
     decodedPSTATEWriteTarget msrDaifSetIrq =
       some (.PSTATEWriteTarget_DAIFSet, 0b0010#4) := by
   rfl
+
+/-- An externally retained cold-entry occurrence has the exact DAIFSet word
+    and operand selected by the mechanically generated decoder. Occurrence and
+    execution remain premises; this theorem does not apply the state body. -/
+theorem irq_mask_occurrence_has_generated_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    (irqMask : IrqMaskWitness trace) :
+    trace.action irqMask.occurrence =
+        .pstateImmediate .daifSetIrq msrDaifSetIrq 0b0010#4 ∧
+      decodedPSTATEWriteTarget msrDaifSetIrq =
+        some (.PSTATEWriteTarget_DAIFSet, 0b0010#4) := by
+  exact ⟨irqMask.actionIsExact, daifset_irq_decoder_execution_target⟩
 
 theorem invalid_pstate_write_has_no_execution_target :
     decodedPSTATEWriteTarget 0#32 = none := by

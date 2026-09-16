@@ -844,10 +844,14 @@ The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
 `#2` and proves its pure D/A/I/F body sets I while preserving D/A/F. A Go
 drift gate pins the decoder, access-check boundary, dispatch, and four
-assignments to the pinned official Sail source. This is conditional state-body
-correspondence, not proof that access succeeds, the instruction dynamically
-executes, or maskable IRQ delivery remains excluded over an interval. It
-supplies no memory ordering or synchronization fact.
+assignments to the pinned official Sail source. The occurrence-indexed
+cold-entry theorem now retains one exact DAIFSet/#2 action and requires it
+before all eight register writes, the exact ISB, and the exact ERET; the
+generated decoder agrees with that externally supplied occurrence. The
+state-body theorem remains separate and conditional. Neither theorem extracts
+a dynamic trace from object bytes or proves access/trap admission, execution,
+a runtime PSTATE transition, maskable-IRQ delivery exclusion over an interval,
+memory ordering, or synchronization.
 
 The general system-register seam computes cold-entry `MSR HCR_EL2, X0` as
 `0xd51c1100`. Generated Lean selects HCR_EL2/X0 and proves the component-only

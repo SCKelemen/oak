@@ -1,5 +1,6 @@
 import Oak.AArch64ControlTransfer
 import Oak.AArch64Encoding
+import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 
 namespace Oak.AArch64ColdEntry
@@ -89,7 +90,6 @@ theorem RequiredWrite.index_injective : Function.Injective RequiredWrite.index :
   intro a b h
   cases a <;> cases b <;> simp_all [RequiredWrite.index]
 
-/- OAK_COLD_ENTRY_REGISTER_SEQUENCE_BEGIN -/
 def registerWriteOrder : List RequiredWrite := [
   .hcrEl2, .vttbrEl2, .vtcrEl2, .cnthctlEl2,
   .cntvoffEl2, .spEl1, .elrEl2, .spsrEl2
@@ -109,6 +109,18 @@ theorem register_write_rts_exact : registerWriteOrder.map RequiredWrite.rt = [
 
 theorem register_write_indices_exact : registerWriteOrder.map RequiredWrite.index =
     [0, 1, 2, 3, 4, 5, 6, 7] := by decide
+
+/- OAK_COLD_ENTRY_REGISTER_SEQUENCE_BEGIN -/
+/-- The complete register-only native prefix starts with the IRQ-mask word and
+    continues with the eight exact context-register writes. -/
+def coldEntryRegisterPrefixWords : List (BitVec 32) :=
+  AArch64Encoding.msrDaifSetIrq :: registerWriteWords
+
+theorem cold_entry_register_prefix_words_exact : coldEntryRegisterPrefixWords = [
+    0xd50342df#32,
+    0xd51c1100#32, 0xd51c2101#32, 0xd51c2142#32, 0xd51ce103#32,
+    0xd51ce064#32, 0xd51c4105#32, 0xd51c4026#32, 0xd51c4007#32
+  ] := by native_decide
 /- OAK_COLD_ENTRY_REGISTER_SEQUENCE_END -/
 
 /-- The eight X-register values consumed by the projected sequence. -/
@@ -228,6 +240,8 @@ theorem install_cold_entry_registers_at_el2_exact
 /-- The occurrence classes used by the verified cold-entry slice. A barrier is
     identified by its exact word, not by Oak's capability Boolean. -/
 inductive Action where
+  | pstateImmediate (op : AArch64EventControl.Operation)
+      (word : BitVec 32) (operand : BitVec 4)
   | sysReg (op : AArch64SysReg.Operation) (reg : AArch64SysReg.Reg)
       (word : BitVec 32) (rt : BitVec 5)
   | barrier (word : BitVec 32)
@@ -246,14 +260,25 @@ structure Trace (Occurrence : Type) where
     as context synchronizing. The pure decoder and CAT ordering do not prove it. -/
 def ArmContextSync (Occurrence : Type) := Trace Occurrence -> Occurrence -> Prop
 
-/-- Exact cold-entry evidence: the eight word/Rt/register actions are totally
-    ordered by their source positions, every write precedes the same exact ISB
-    word, and an external Arm model certifies that ISB occurrence as context
-    synchronizing. -/
+/-- The exact first instruction in the evidence-bearing cold-entry path. This
+    occurrence/action fact alone does not prove access admission or a runtime
+    PSTATE transition. -/
+structure IrqMaskWitness {Occurrence : Type} (trace : Trace Occurrence) where
+  occurrence : Occurrence
+  actionIsExact : trace.action occurrence =
+    .pstateImmediate .daifSetIrq AArch64Encoding.msrDaifSetIrq 0b0010#4
+
+/-- Exact cold-entry evidence: the retained IRQ-mask occurrence precedes all
+    eight word/Rt/register actions, the writes are totally ordered by source
+    position, every write precedes the same exact ISB word, and an external Arm
+    model certifies that ISB occurrence as context synchronizing. -/
 structure ContextSyncWitness {Occurrence : Type} (trace : Trace Occurrence)
     (armContextSync : ArmContextSync Occurrence) where
+  irqMask : IrqMaskWitness trace
   writeOccurrence : RequiredWrite -> Occurrence
   isbOccurrence : Occurrence
+  irqMaskBeforeWrites : ∀ write,
+    trace.po irqMask.occurrence (writeOccurrence write)
   writesAreExact : ∀ write,
     trace.action (writeOccurrence write) =
       .sysReg .write write.reg write.word write.rt
@@ -268,11 +293,11 @@ structure ContextSyncWitness {Occurrence : Type} (trace : Trace Occurrence)
 inductive VerifiedStage {Occurrence : Type} (trace : Trace Occurrence)
     (armContextSync : ArmContextSync Occurrence) where
   | start
-  | irqMasked
-  | executionConfigured
-  | stageTwoConfigured
-  | timerConfigured
-  | guestContextInstalled
+  | irqMasked (irqMask : IrqMaskWitness trace)
+  | executionConfigured (irqMask : IrqMaskWitness trace)
+  | stageTwoConfigured (irqMask : IrqMaskWitness trace)
+  | timerConfigured (irqMask : IrqMaskWitness trace)
+  | guestContextInstalled (irqMask : IrqMaskWitness trace)
   | synchronized (sync : ContextSyncWitness trace armContextSync)
   | transferred
 
@@ -282,13 +307,19 @@ inductive VerifiedStage {Occurrence : Type} (trace : Trace Occurrence)
 inductive Step {Occurrence : Type} (trace : Trace Occurrence)
     (armContextSync : ArmContextSync Occurrence) :
     VerifiedStage trace armContextSync -> VerifiedStage trace armContextSync -> Prop where
-  | maskIrq : Step trace armContextSync .start .irqMasked
-  | configureExecution : Step trace armContextSync .irqMasked .executionConfigured
-  | configureStageTwo : Step trace armContextSync .executionConfigured .stageTwoConfigured
-  | configureTimer : Step trace armContextSync .stageTwoConfigured .timerConfigured
-  | installGuestContext : Step trace armContextSync .timerConfigured .guestContextInstalled
+  | maskIrq (irqMask : IrqMaskWitness trace) :
+      Step trace armContextSync .start (.irqMasked irqMask)
+  | configureExecution (irqMask : IrqMaskWitness trace) :
+      Step trace armContextSync (.irqMasked irqMask) (.executionConfigured irqMask)
+  | configureStageTwo (irqMask : IrqMaskWitness trace) :
+      Step trace armContextSync (.executionConfigured irqMask) (.stageTwoConfigured irqMask)
+  | configureTimer (irqMask : IrqMaskWitness trace) :
+      Step trace armContextSync (.stageTwoConfigured irqMask) (.timerConfigured irqMask)
+  | installGuestContext (irqMask : IrqMaskWitness trace) :
+      Step trace armContextSync (.timerConfigured irqMask) (.guestContextInstalled irqMask)
   | isb (sync : ContextSyncWitness trace armContextSync) :
-      Step trace armContextSync .guestContextInstalled (.synchronized sync)
+      Step trace armContextSync (.guestContextInstalled sync.irqMask)
+        (.synchronized sync)
   | eret (sync : ContextSyncWitness trace armContextSync) (eretOccurrence : Occurrence)
       (hAction : trace.action eretOccurrence =
         .controlTransfer AArch64ControlTransfer.Operation.eret
@@ -363,6 +394,53 @@ theorem verified_eret_orders_context_writes
   | eret sync eretOccurrence hAction hPo =>
       exact ⟨sync, eretOccurrence, hAction,
         fun write => trace.po_trans (sync.writesBeforeIsb write) hPo⟩
+
+/-- The one retained exact DAIFSet occurrence precedes every context write and
+    the context-synchronizing ISB occurrence. -/
+theorem irq_mask_precedes_context_and_isb
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {armContextSync : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace armContextSync) :
+    (∀ write, trace.po sync.irqMask.occurrence
+      (sync.writeOccurrence write)) ∧
+      trace.po sync.irqMask.occurrence sync.isbOccurrence := by
+  constructor
+  · exact sync.irqMaskBeforeWrites
+  · exact trace.po_trans (sync.irqMaskBeforeWrites .hcrEl2)
+      (sync.writesBeforeIsb .hcrEl2)
+
+/-- Transitivity exposes the full first-to-last edge: the exact DAIFSet
+    occurrence precedes the exact ERET occurrence. -/
+theorem verified_eret_orders_irq_mask
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {armContextSync : ArmContextSync Occurrence}
+    {src : VerifiedStage trace armContextSync}
+    (h : Step trace armContextSync src .transferred) :
+    ∃ (sync : ContextSyncWitness trace armContextSync)
+      (eretOccurrence : Occurrence),
+      trace.action sync.irqMask.occurrence =
+          .pstateImmediate .daifSetIrq AArch64Encoding.msrDaifSetIrq 0b0010#4 ∧
+        trace.po sync.irqMask.occurrence eretOccurrence := by
+  cases h with
+  | eret sync eretOccurrence _ hPo =>
+      exact ⟨sync, eretOccurrence, sync.irqMask.actionIsExact,
+        trace.po_trans (irq_mask_precedes_context_and_isb sync).2 hPo⟩
+
+/-- Strict program order separates the retained DAIFSet occurrence from each
+    later register-write occurrence and from the ISB occurrence. -/
+theorem irq_mask_occurrence_distinct_from_context
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {armContextSync : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace armContextSync) :
+    (∀ write, sync.irqMask.occurrence ≠ sync.writeOccurrence write) ∧
+      sync.irqMask.occurrence ≠ sync.isbOccurrence := by
+  constructor
+  · intro write h
+    exact trace.po_irrefl (sync.writeOccurrence write)
+      (h ▸ sync.irqMaskBeforeWrites write)
+  · intro h
+    exact trace.po_irrefl sync.isbOccurrence
+      (h ▸ (irq_mask_precedes_context_and_isb sync).2)
 
 /-- Strict program order makes every required write occurrence distinct from
     the context-synchronizing ISB occurrence. -/

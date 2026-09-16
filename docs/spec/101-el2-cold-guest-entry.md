@@ -93,6 +93,8 @@ start
 The evidence-bearing `Oak.AArch64ColdEntry.Step` is occurrence-indexed. Its
 `ContextSyncWitness` carries:
 
+- the same exact DAIFSet/#2 occurrence retained from `Step.maskIrq`, before
+  every required register-write occurrence;
 - one occurrence for each of the eight required system-register writes, whose
   action includes the exact register, word, and X0-through-X7 Rt field;
 - the total HCR-through-SPSR program order between those occurrences;
@@ -114,6 +116,8 @@ The Lean model proves:
 - shape-only transfer can occur only from `synchronized`;
 - evidence-bearing transfer exposes the retained synchronization witness,
   exact ERET occurrence, and ISB-before-ERET edge;
+- the retained exact DAIFSet occurrence precedes all eight writes, ISB, and
+  ERET and is distinct from every one of those later occurrences;
 - the required write occurrences are pairwise distinct and expose all seven
   adjacent source-order edges;
 - every required context write precedes ERET by transitivity;
@@ -122,16 +126,19 @@ The Lean model proves:
 `ArmContextSync` remains an explicit parameter until an Arm execution/state
 model with non-erased context effects discharges it. It is not derived from the
 barrier capability Boolean, pure decoding/dispatch, or CAT ordering. Caller
-register values also remain outside these protocol-order proofs. Only the eight
-writes, ISB, and ERET are occurrence-classified here; DAIFSet and the remaining
-phase transitions are still shape-only. The witness is an external premise;
-the static object gate does not extract or construct it.
+register values also remain outside these protocol-order proofs. DAIFSet, the
+eight writes, ISB, and ERET are occurrence-classified here; the remaining
+phase transitions preserve the DAIF witness but remain shape-only. The trace
+and witnesses are external premises; the static object gate does not extract
+or construct them.
 
-Independently, `Oak.AArch64Encoding` computes the static DAIFSet word as
-`0xd50342df`, and the generated Sail bridge proves that successful dispatch
-with operand `#2` runs a D/A/I/F body that sets I and preserves D/A/F. This
-does not supply the missing `Step.maskIrq` occurrence, discharge access/trap
-checks, or prove maskable IRQ delivery remains disabled over the interval.
+`Oak.AArch64Encoding` computes the DAIFSet word as `0xd50342df`; the generated
+Sail bridge agrees that the externally witnessed action dispatches to
+DAIFSet/#2. Separately, successful dispatch runs a projected D/A/I/F body that
+sets I and preserves D/A/F. These facts do not discharge access/trap/PostDecode
+checks, establish that the occurrence executes, connect the pure body to a
+runtime before/after PSTATE relation, or prove maskable IRQ delivery remains
+disabled over the interval.
 
 The next theorem computes static `MSR HCR_EL2, X0` word `0xd51c1100` and
 proves the generated pure component body takes Arm's direct HCR_EL2 assignment
