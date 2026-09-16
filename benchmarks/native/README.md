@@ -328,6 +328,54 @@ implementations, retains samples in observation order, and checks every
 sample's checksum (`benchmarks/kernels/README.md`). The earlier 1fcaba66
 record above retains its original samples and sampling order.
 
+**Scalar-array homes released at last use (2026-09-17, baseline
+`7060402898b0e17d5191165871d384743ed59a0e`).** Short-lived scalar-replaced
+arrays had retained their hidden element registers/slots until scope exit:
+the source last-use map names the array, not those hidden locals. Releasing
+the actual element homes at the parent's last use lets the next inlined
+quarter round reuse them. The synthetic parent still owns no storage and
+must never release a frame slot. Loop/branch uses retain their enclosing
+statement's lifetime; trailing results remain live.
+
+On Apple M4 Max, the retained change alone gives the following interleaved
+comparison (1 MiB, 30 rounds per sample, 15 samples per implementation,
+rotating which runs first). Every sample's full checksum agrees:
+
+| BLAKE3 | Before | After | C backend |
+| --- | ---: | ---: | ---: |
+| Median ms per 1 MiB | 10.707 | 6.639 | 3.020 |
+| Repeat run, median ms per 1 MiB | 10.274 | 7.302 | 3.079 |
+| Compression instructions | 527 | 406 | — |
+| Compression instructions accessing `sp` memory | 305 | 152 | — |
+| Compression frame bytes | 448 | 272 | — |
+
+That is 29–38% less elapsed time in these comparisons, not parity with C:
+native remains about 2.20–2.37× its time. The native-unit symbol lists are
+identical before and after; no added C fallback accounts for the gain.
+Two preliminary comparisons measured 38–46% less time with the same
+compression body. Those also included a separate integer multiply-add
+experiment outside compression, which was removed before the final build.
+Core placement, frequency and competing host work were not controlled;
+timings of unchanged kernels drift too. Raw rotating samples, binary
+hashes, static counts and the rejected experiment are recorded in
+[`scalar-array-lifetime-2026-09-17.json`](results/scalar-array-lifetime-2026-09-17.json).
+
+Correctness evidence is deliberately scoped. Direct and selected native
+bodies for sequential, loop and branch lifetime fixtures must receive
+`proven` verdicts; native/C execution and allocation-pool regressions also
+pass. This is not a universal implementation-refinement proof of the
+liveness walk. Full BLAKE3 compression still reports its existing
+unguarded indexed-record-load verifier refusal, and its gated scheduling
+and reallocation candidates remain unavailable. No proof gate or source
+arithmetic semantics changed.
+
+The rejected experiment admitted non-power-of-two integer constants to
+`madd`/`msub`/`mneg`. Its overflow fixtures and dispatch body were proven,
+and dispatch lost one instruction, but the two timed comparisons were
+8.340 → 8.513 ms and 7.837 → 7.819 ms: no repeatable speedup. The matcher
+change was removed rather than counting the shorter assembly as a runtime
+improvement.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

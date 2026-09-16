@@ -7099,6 +7099,22 @@ rewrites the verifier still checks against the original body:
   calls keeps vector locals in the caller-saved vector registers too,
   leaving four to expression temporaries.
 
+Scalar-replaced arrays share that lifetime with their hidden element homes
+(`nativegen/scalar_arrays.go`). At the parent's last source mention,
+`releaseDead` returns each actual element home in the declaring scope to
+its pool and marks it freed, so scope exit cannot return it twice. The
+synthetic array binding owns no storage: its offset/register must never
+enter either pool. Enclosing-loop/branch and trailing-result mentions
+retain every element just as they retain an ordinary scalar. This releases
+short-lived inlined quarter-round results before the next group is declared,
+instead of keeping every group's homes until the enclosing block ends.
+Tests require both the direct lowering and selected bodies of sequential,
+loop and branch fixtures to be `proven`, check native/C execution agreement,
+and pin repeated release, scope ownership and spill-slot reuse. These are
+translation-validation results for the fixtures, not a universal refinement
+theorem for the Go liveness implementation or a proof of the whole BLAKE3
+body; its existing verifier refusal remains explicit.
+
 Measured (`benchmarks/native/`): the flattened validator has no call and
 runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 0.17, in one run on a loaded machine; twenty vector spills remain of a
