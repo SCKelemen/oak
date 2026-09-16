@@ -364,14 +364,24 @@ warning, not an execution-validity axiom. Lean proves its propositional warning
 shape empty only under explicit premises that all old events are maintained,
 official-needs membership projects to Oak's local requirement, and Oak's
 `ProjectedBBM` implies official `BBM`; none of those refinement premises is
-claimed here. A conditional wrapper preserves the same
-externally supplied exact VMALLS12E1IS word/action occurrence through the BBM
-projection, and the Sail bridge conjoins its named call-target theorem without
+claimed here. A conditional wrapper preserves externally supplied exact
+DSB ISH/VMALLS12E1IS/DSB ISH word/action occurrences at the same indices as
+the BBM ordering chain and proves the five `po`-linked break-through-make
+events distinct. The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
 descriptor event classification, coherence-after, invalidation scope, concrete
 IPA/VMID target selection, completion, and context synchronization remain
 explicit obligations. Sail's coarse single-model-TLB reset implementation,
 which ignores architectural target granularity, is not used to discharge them.
+
+Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
+official AArch64-BBM catalogue before execution. The synchronized VMSA case is
+`Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly
+`Warning-BBM-expected`, and both stable Herd hashes/witness counts are pinned.
+They use stage-1 `VAAE1IS`, not Oak's stage-2 `VMALLS12E1IS`, and prove only
+generic CAT model/diagnostic behavior—not Oak event classification, `ca`,
+`inv-scope`, target suitability, completion, synchronization, Sail/ASL state,
+or the local-to-official BBM refinement premise.
 
 An adjacent exact-sequence layer records DSB ISH, VMALLS12E1IS, DSB ISH, and
 ISB occurrences and their program-order directions. Its completed form retains

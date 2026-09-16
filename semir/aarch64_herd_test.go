@@ -1,6 +1,7 @@
 package semir
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,13 +12,22 @@ import (
 )
 
 type aarch64HerdCase struct {
-	file        string
-	observation string
+	file            string
+	observation     string
+	positive        string
+	negative        string
+	herdHash        string
+	upstreamPath    string
+	upstreamBlob    string
+	checkBBMWarning bool
+	bbmWarning      bool
 }
 
 var (
 	herdRevisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	herdObservation     = regexp.MustCompile(`(?m)^Observation[ \t]+[^ \t\r\n]+[ \t]+(Never|Sometimes)[ \t]+[0-9]+[ \t]+[0-9]+[ \t]*$`)
+	herdObservation     = regexp.MustCompile(`(?m)^Observation[ \t]+[^ \t\r\n]+[ \t]+(Never|Sometimes)[ \t]+([0-9]+)[ \t]+([0-9]+)[ \t]*$`)
+	herdHash            = regexp.MustCompile(`(?m)^Hash=([0-9a-f]{32})[ \t]*$`)
+	herdBBMWarning      = regexp.MustCompile(`(?m)^Flag[ \t]+Warning-BBM-expected[ \t]*$`)
 )
 
 func requireAArch64Herd(t *testing.T, message string) {
@@ -26,6 +36,37 @@ func requireAArch64Herd(t *testing.T, message string) {
 		t.Fatalf("pinned AArch64 Herd oracle required by OAK_REQUIRE_HERD7: %s", message)
 	}
 	t.Skip(message)
+}
+
+// requirePinnedHerdCatalogueSource compares a checked-in litmus test with the
+// exact blob at the already validated Herdtools7 revision. Reading through
+// `git show REV:path` prevents a dirty model checkout from becoming authority.
+func requirePinnedHerdCatalogueSource(t *testing.T, modelCheckout, revision,
+	upstreamPath, upstreamBlob, localPath string) {
+	t.Helper()
+	wantTreeEntry := "100644 blob " + upstreamBlob + "\t" + upstreamPath
+	tree := exec.Command("git", "-C", modelCheckout, "ls-tree", revision, "--", upstreamPath)
+	treeBytes, err := tree.CombinedOutput()
+	if err != nil {
+		t.Fatalf("identify official Herd catalogue source: %v\n%s", err, treeBytes)
+	}
+	if got := strings.TrimSpace(string(treeBytes)); got != wantTreeEntry {
+		t.Fatalf("official Herd catalogue tree entry = %q, want %q", got, wantTreeEntry)
+	}
+
+	official := exec.Command("git", "-C", modelCheckout, "show", revision+":"+upstreamPath)
+	officialBytes, err := official.Output()
+	if err != nil {
+		t.Fatalf("read official Herd catalogue source: %v", err)
+	}
+	localBytes, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("read checked-in Herd catalogue source: %v", err)
+	}
+	if !bytes.Equal(localBytes, officialBytes) {
+		t.Fatalf("%s differs from pinned official source %s:%s",
+			localPath, revision, upstreamPath)
+	}
 }
 
 func TestLitmusAArch64OfficialModel(t *testing.T) {
@@ -95,10 +136,35 @@ func TestLitmusAArch64OfficialModel(t *testing.T) {
 		{file: "SB-isb.litmus", observation: "Sometimes"},
 		{file: "IRIW-seq-cst.litmus", observation: "Never"},
 		{file: "LB-seq-cst.litmus", observation: "Sometimes"},
+		{
+			file:            "MP+tlbi-sync.ishsptev0pteoa.v1+pos.litmus",
+			observation:     "Never",
+			positive:        "0",
+			negative:        "9",
+			herdHash:        "3334f24571de5375d4587a1f8961673f",
+			upstreamPath:    "catalogue/aarch64-BBM/tests/MP+tlbi-sync.ishsptev0pteoa.v1+pos.litmus",
+			upstreamBlob:    "41a19bf1d8225d1f112da890d06484a42afa6ac4",
+			checkBBMWarning: true,
+		},
+		{
+			file:            "CoRR+PteOA.DB0.litmus",
+			observation:     "Sometimes",
+			positive:        "1",
+			negative:        "3",
+			herdHash:        "6be305e913d02515c5f0e3e4bc81ef26",
+			upstreamPath:    "catalogue/aarch64-BBM/tests/CoRR+PteOA.DB0.litmus",
+			upstreamBlob:    "931e24b91f7916f7296a037c546792da2fb721d0",
+			checkBBMWarning: true,
+			bbmWarning:      true,
+		},
 	}
 	for _, test := range cases {
 		t.Run(test.file, func(t *testing.T) {
 			path := filepath.Join(litmusDir, test.file)
+			if test.upstreamPath != "" {
+				requirePinnedHerdCatalogueSource(t, modelCheckout, revision,
+					test.upstreamPath, test.upstreamBlob, path)
+			}
 			cmd := exec.Command(herd, "-model", model, path)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -110,6 +176,30 @@ func TestLitmusAArch64OfficialModel(t *testing.T) {
 			}
 			if got := matches[0][1]; got != test.observation {
 				t.Fatalf("official AArch64 model says %s, want %s\n%s", got, test.observation, output)
+			}
+			if test.positive != "" &&
+				(matches[0][2] != test.positive || matches[0][3] != test.negative) {
+				t.Fatalf("official AArch64 model witnesses are %s/%s, want %s/%s\n%s",
+					matches[0][2], matches[0][3], test.positive, test.negative, output)
+			}
+			if test.herdHash != "" {
+				hashes := herdHash.FindAllStringSubmatch(string(output), -1)
+				if len(hashes) != 1 || hashes[0][1] != test.herdHash {
+					t.Fatalf("official AArch64 model hash changed, want %s\n%s",
+						test.herdHash, output)
+				}
+			}
+			if test.checkBBMWarning {
+				warnings := herdBBMWarning.FindAllString(string(output), -1)
+				wantWarnings := 0
+				if test.bbmWarning {
+					wantWarnings = 1
+				}
+				if len(warnings) != wantWarnings ||
+					strings.Count(string(output), "Warning-BBM-expected") != wantWarnings {
+					t.Fatalf("official AArch64 model has %d BBM warnings, want %d\n%s",
+						len(warnings), wantWarnings, output)
+				}
 			}
 		})
 	}

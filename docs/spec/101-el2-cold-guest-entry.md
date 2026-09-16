@@ -245,9 +245,11 @@ trace or an architectural synchronization proof.
 The next correctness increment is live stage-2 maintenance.
 `Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event
 BBM-shaped local ordering skeleton corresponding to CAT around an abstract
-TLBI occurrence. Its concrete wrapper preserves an externally supplied exact
-VMALLS12E1IS word/action witness for the same event through that projection;
-the word does not create the trace action. Before a previously active guest
+TLBI occurrence. Its concrete wrapper preserves externally supplied exact
+DSB ISH, VMALLS12E1IS, and DSB ISH word/action witnesses at the same indices
+as the ordering chain; the words do not create the trace actions. The five
+`po`-linked break-through-make events are pairwise distinct. Before a
+previously active guest
 context can change translation state, Oak still needs a kernel-checked dynamic
 compiler/execution trace supplying that premise and proofs of architectural
 target/scope, descriptor publication, invalidation completion, and final
@@ -260,3 +262,10 @@ revoke omits ISB, so this theorem and leaf do not refine them. After those
 obligations and the consumer-specific instruction choice are resolved, this
 entry path can become the final transfer step of a reusable vCPU re-entry path
 and can be exercised in the OS QEMU EL2 smoke test.
+
+The paired official Herd catalogue cases now confirm generic VMSA BBM behavior
+at the pinned CAT model: the synchronized case forbids the stale result without
+a warning, and the unmaintained case permits its result with exactly
+`Warning-BBM-expected`. They use stage-1 `VAAE1IS`, not this stage-2 path, and
+therefore add no target/scope, completion, context-sync, or source-to-event
+refinement fact to the entry protocol.

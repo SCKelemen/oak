@@ -207,7 +207,15 @@ observations. It requires `Sometimes` for LDAR/STLR LB both-zero,
 store→DMB ISHLD→load SB both-zero, and store→ISB→load SB both-zero. Thus an
 oracle that rejects every weak-looking execution, treats ISHLD as a full
 barrier, or treats a bare ISB as a data fence cannot pass. There are eleven
-official-model cases.
+scalar official-model cases. Two additional byte-pinned tests from the
+official Herdtools7 AArch64-BBM catalogue exercise VMSA descriptor updates,
+for thirteen total: `MP+tlbi-sync.ishsptev0pteoa.v1+pos` forbids its stale
+result (`Never 0 9`, hash `3334f24571de5375d4587a1f8961673f`) without a BBM
+warning, while `CoRR+PteOA.DB0` permits the unsynchronized result (`Sometimes
+1 3`, hash `6be305e913d02515c5f0e3e4bc81ef26`) and emits exactly
+`Flag Warning-BBM-expected`. The gate reads each source through `git show` at
+the validated pin, requires its exact blob identity, and byte-compares the
+checked-in copy before invoking Herd.
 
 ### 7.1 Message passing (MP)
 
@@ -336,12 +344,28 @@ unproved refinement obligations; the theorem does not identify Oak events or
 relations with the CAT execution.
 
 The concrete wrapper keeps an external instruction-word projection beside
-that sequence. `Vmalls12e1isOccurrence` requires the same event to carry the
-exact `tlbiVmalls12e1is` word and to be classified as the sequence's
-`Action.tlbi target`; neither field is derived from the other. The concrete
-projection theorem preserves that same event and target through the BBM
-projection. Dynamic PC/object trace extraction and the instruction-to-action
-classification remain compiler/execution-refinement premises.
+that sequence. It now requires both DSB ISH indices to carry exact word
+`0xd5033b9f`/barrier-action witnesses and the same TLBI index to carry exact
+VMALLS12E1IS word `0xd50c83df` and `Action.tlbi target`; no word is used to
+derive its action. The projection theorem preserves that same TLBI event and
+target through the BBM projection, and a separate theorem exposes the three
+exact words at the same indices as the ordering witness. The four `po` links
+make break, pre-DSB, TLBI, post-DSB, and make pairwise distinct; the old event
+is excluded because the abstract `coherenceAfter` relation has no
+irreflexivity premise. Dynamic PC/object trace extraction and every
+instruction-to-action classification remain compiler/execution-refinement
+premises.
+
+The two official catalogue tests validate generic pinned CAT BBM ordering and
+diagnostic behavior only. Their maintenance instruction is stage-1
+`TLBI VAAE1IS`, not Oak's stage-2 `VMALLS12E1IS`. They establish no Oak
+store-to-TTD classification, dynamic occurrence trace, `ca`, `inv-scope`,
+IPA/VMID/regime/shareability suitability, invalidation effect, DSB completion,
+ISB synchronization, Sail/ASL state change, or local-`ProjectedBBM` to
+official-`BBM` refinement. The warning remains a diagnostic flag rather than
+a validity axiom. Apple userland cannot execute this EL2 path; Apple relevance
+here is still static zero-overhead word/order evidence pending a privileged
+harness.
 
 The separate `Vmalls12e1isDsbIsbInstructionSequence` records exact
 DSB-ISH, VMALLS12E1IS, DSB-ISH, and ISB word/action occurrences plus their
