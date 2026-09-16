@@ -291,6 +291,14 @@ runtime X5 provenance, predicate-state consistency, NVMem effects, stack
 alignment/canonicality/mapping/contents/safety, post-ERET selection/use,
 relation to SPSR, other state, ordering, and synchronization remain open.
 
+The following `MSR ELR_EL2, X6` word is `0xd51c4026`. Generated Lean proves the
+exact S3_4 target, Rt preservation, and the official admitted body's unchanged
+64-bit assignment. The source gate pins the full route and declaration while
+keeping the distinct S3_0 ELR_EL1/VHE/NV path outside the theorem. Access/traps,
+occurrence, runtime guest-PC-to-X6 provenance, target alignment/canonicality/
+mapping/executability/PAC, relation to SPSR, ERET observation or success, other
+state, ordering, and synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

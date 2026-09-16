@@ -113,6 +113,14 @@ NVMem(576) contents/effects, runtime X5 provenance, stack
 validity/mapping/safety, eventual selection after ERET, ordering,
 synchronization, and dynamic occurrence remain external.
 
+The ELR_EL2 seam computes `MSR ELR_EL2, X6` as `0xd51c4026` and proves the
+official admitted S3_4 body installs the complete 64-bit guest-PC value. It
+rejects the distinct ELR_EL1/VHE encoding and does not project that route's
+NVMem(560) behavior. Access/traps, runtime guest-PC-to-X6 provenance, address
+alignment/canonicality/mapping/executability/PAC, SPSR consistency, ERET
+observation or success, ordering, synchronization, other state, and dynamic
+occurrence remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

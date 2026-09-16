@@ -818,6 +818,61 @@ theorem sp_el1_generated_body_el1_nv_redirect_preserves_component
       true true false true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! ELR_EL2/X6 follows the exact S3_4_C4_C0_1 route and writes all 64 bits.
+The distinct S3_0 ELR_EL1 route, including its VHE/NV alternatives, is rejected
+by this projection. Access admission, address validity, SPSR consistency, and
+eventual ERET use remain outside these facts. -/
+
+def decodedElrEl2SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_elr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem elr_el2_x6_decoder_execution_target :
+    decodedElrEl2SystemRegisterWriteTarget msrElrEl2X6 =
+      some (.SystemRegisterWriteTarget_ELR_EL2, 0b00110#5) := by
+  rfl
+
+theorem elr_el2_x7_decoder_rt_is_preserved :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51c4027#32 =
+      some (.SystemRegisterWriteTarget_ELR_EL2, 0b00111#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_elr_el2_target :
+    decodedElrEl2SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_elr_el2_x6_not_projected_to_write :
+    decodedElrEl2SystemRegisterWriteTarget 0xd53c4026#32 = none := by
+  rfl
+
+theorem msr_elr_el1_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd5184026#32 = none := by
+  rfl
+
+theorem msr_elr_el12_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51d4026#32 = none := by
+  rfl
+
+theorem msr_elr_el3_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51e4026#32 = none := by
+  rfl
+
+theorem msr_spsr_el2_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51c4006#32 = none := by
+  rfl
+
+theorem elr_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_elr_el2_pure newValue =
+      (writeElrEl2Component newValue).value := by
+  rfl
+
+theorem elr_el2_generated_body_is_direct (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_elr_el2_pure newValue = newValue := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

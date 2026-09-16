@@ -183,6 +183,14 @@ EL2 installation of the supplied 64-bit value. The projected EL1 nested-
 virtualization alternative preserves SP_EL1 and raises a redirect flag; the
 source gate pins NVMem(576). Decoder negatives distinguish SP_EL0 and SP_EL2.
 
+The guest-PC write is full-width and unconditional after admission. Lean
+computes `MSR ELR_EL2, X6` as `0xd51c4026`, selects ELR_EL2/X6, proves Rt
+preservation for X7, and proves the generated body installs the supplied 64-bit
+value unchanged. The source gate pins the exact S3_4 route, the official 64-bit
+declaration, and the existence of a second textual ELR_EL2 assignment. A
+negative theorem keeps that separate S3_0 ELR_EL1/VHE/NV route outside this
+component theorem.
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -235,6 +243,14 @@ NVMem effect. It establishes no stack alignment, canonicality, mapping,
 contents, memory safety, post-ERET bank selection/use, relation to SPSR,
 ordering, completion, context synchronization, or other state.
 
+The ELR_EL2 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, or runtime guest-PC-to-X6 provenance. It establishes no
+address alignment, canonicality, mapping, executability, instruction state, or
+pointer-authentication validity; no ELR_EL1 VHE/NV/NVMem(560) behavior; no
+relation to SPSR_EL2; and no ERET observation, success, or transfer. It proves
+no ordering, completion, context synchronization, or preservation of other
+architectural state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -252,6 +268,7 @@ ordering, completion, context synchronization, or other state.
 | exact CNTHCTL_EL2/X3 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
 | exact CNTVOFF_EL2/X4 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
 | exact SP_EL1/X5 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact ELR_EL2/X6 word and direct full-width component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

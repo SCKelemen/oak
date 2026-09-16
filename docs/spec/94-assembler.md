@@ -844,11 +844,19 @@ target and full-width direct/redirect component body. The official-source gate
 pins its nested route, five old HCR/SCR aliases, NVMem(576) alternative, and
 64-bit declaration; negative theorems distinguish SP_EL0 and SP_EL2.
 
-These seams prove neither access admission nor runtime X0/X1/X2/X3/X4/X5 value
-provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP field validity, desired
+`MSR ELR_EL2, X6` is `0xd51c4026`. Generated Lean proves the exact target,
+preserves the five-bit Rt field, and equates the official admitted body with a
+full-width direct component update. The source gate follows the complete
+op2=001/op1=100 route and counts the model's second ELR_EL2 assignment without
+merging the distinct ELR_EL1/VHE path into this theorem.
+
+These seams prove neither access admission nor runtime X0/X1/X2/X3/X4/X5/X6
+value provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR field validity, desired
 virtualization or exception-routing configuration, publication, BBM, TLBI
 effects, predicate-state consistency, NVMem contents/effects, stack validity or
-use, timer behavior, completion, context synchronization, or a CAT edge.
+use, target-address alignment/canonicality/mapping/executability/PAC, relation
+to SPSR or ERET, timer behavior, completion, context synchronization, or a CAT
+edge.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

@@ -170,6 +170,20 @@ theorem write_sp_el1_el1_nv_redirect_preserves_component
       ⟨true, oldValue⟩ := by
   rfl
 
+/-- The successful official ELR_EL2 write body's complete 64-bit component.
+    The exact S3_4 tuple has no redirect or value transformation after access
+    admission. Other architectural state and all access/trap effects are omitted. -/
+structure ELRWriteComponent where
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeElrEl2Component (newValue : BitVec 64) : ELRWriteComponent :=
+  ⟨newValue⟩
+
+theorem write_elr_el2_is_direct (newValue : BitVec 64) :
+    writeElrEl2Component newValue = ⟨newValue⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/

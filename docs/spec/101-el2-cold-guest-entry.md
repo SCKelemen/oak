@@ -170,6 +170,13 @@ trap admission, predicate-state consistency, NVMem(576) contents/effects, X5
 provenance, stack alignment, canonicality, mapping, contents, memory safety,
 post-ERET selection/use, ordering, synchronization, or occurrence.
 
+The guest-PC theorem computes static `MSR ELR_EL2, X6` word `0xd51c4026`.
+Generated Lean proves the exact S3_4 target and full-width identity update; it
+also rejects the adjacent ELR_EL1/VHE route. It proves no access/trap admission,
+runtime guest-PC-to-X6 provenance, target alignment/canonicality/mapping/
+executability/PAC, SPSR consistency, ERET observation or success, ordering,
+synchronization, other-state preservation, or occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

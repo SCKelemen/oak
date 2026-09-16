@@ -154,6 +154,12 @@ def msrSpEl1X5 : BitVec 32 :=
 theorem msr_sp_el1_x5_word : msrSpEl1X5 = 0xd51c4105#32 := by native_decide
 -- OAK-A64-SP-EL1-WORD-END
 
+-- OAK-A64-ELR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrElrEl2X6 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b001#3 0b00110#5
+theorem msr_elr_el2_x6_word : msrElrEl2X6 = 0xd51c4026#32 := by native_decide
+-- OAK-A64-ELR-EL2-WORD-END
+
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩
 def dmbSyDecode : BarrierDecode := ⟨true, .dmb, .fullSystem, .all⟩
