@@ -175,7 +175,7 @@ func TestLowerOptIRRegionStoreEvidenceAndBindingsFailClosed(t *testing.T) {
 		cfg.Blocks[0].Operations[0].Effects = []optir.Effect{optir.EffectReadMemory}
 		metadata.Operations[0].Accesses[0] = optir.MemoryAccessSpec{Region: "global:state", Kind: optir.MemoryRead}
 	})
-	assertRefused("unknown clobber", "not one whole nonvolatile write", func(cfg *optir.CFG, metadata *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA, _ map[optir.RegionID]OptIRRegionGlobal) {
+	assertRefused("unknown clobber", "unsupported access kind", func(cfg *optir.CFG, metadata *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA, _ map[optir.RegionID]OptIRRegionGlobal) {
 		cfg.Blocks[0].Operations[0] = optir.Operation{
 			Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "()"}}, Effects: []optir.Effect{optir.EffectCall},
 			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "opaque"}},
@@ -200,6 +200,39 @@ func TestLowerOptIRRegionStoreEvidenceAndBindingsFailClosed(t *testing.T) {
 	if _, err := LowerOptIRArm64WithRegionMemory(cfg, template, metadata, optir.RegionMemorySSA{}, bindings); err == nil || !strings.Contains(err.Error(), "different CFG") {
 		t.Fatalf("selector admitted absent MemorySSA evidence: %v", err)
 	}
+}
+
+func TestLowerOptIRRegionLoadEvidenceAndShapeFailClosed(t *testing.T) {
+	lower := func(cfg optir.CFG, metadata optir.RegionMemoryMetadata, memorySSA optir.RegionMemorySSA, bindings map[optir.RegionID]OptIRRegionGlobal) error {
+		declaration := optIRRV64Declaration(t, `read_region: (): u32 = state`)
+		template := &asm.Function{
+			Name: "read_region", Arch: asm.ArchArm64, Signature: declaration,
+			Globals: map[string]asm.Global{"state": {Type: "u32", Bits: 32}},
+		}
+		_, err := LowerOptIRArm64WithRegionMemory(cfg, template, metadata, memorySSA, bindings)
+		return err
+	}
+	assertRefused := func(name, want string, mutate func(*optir.CFG, *optir.RegionMemoryMetadata, *optir.RegionMemorySSA)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			cfg, metadata, memorySSA, bindings := optIRArm64RegionLoadFixture(t, "read_region", "u32")
+			mutate(&cfg, &metadata, &memorySSA)
+			if err := lower(cfg, metadata, memorySSA, bindings); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want refusal containing %q", err, want)
+			}
+		})
+	}
+
+	assertRefused("mutated SSA", "was mutated", func(_ *optir.CFG, _ *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA) {
+		memorySSA.Accesses[0].WholeRegion = true
+	})
+	assertRefused("stale metadata", "different metadata", func(_ *optir.CFG, metadata *optir.RegionMemoryMetadata, _ *optir.RegionMemorySSA) {
+		metadata.Operations[0].Accesses[0].Volatile = true
+	})
+	assertRefused("load attributes", "not a canonical nonvolatile region load", func(cfg *optir.CFG, metadata *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA) {
+		cfg.Blocks[0].Operations[0].Attributes = []optir.Attribute{{Name: "ordering", Value: "relaxed"}}
+		*memorySSA = optIRAnalyzeRegionMemory(t, *cfg, *metadata)
+	})
 }
 
 func TestLowerOptIRRegionStoreRequiresTemplateGlobalAuthority(t *testing.T) {
@@ -241,7 +274,7 @@ func TestLowerOptIRRegionStoresRefuseRegisterSpills(t *testing.T) {
 	}
 	memorySSA := optIRAnalyzeRegionMemory(t, cfg, metadata)
 	authorized := map[string]asm.Global{"state": {Type: "u32", Bits: 32}}
-	memory, err := validateOptIRRegionStores(cfg, &asm.Function{Globals: authorized}, metadata, memorySSA, map[optir.RegionID]OptIRRegionGlobal{
+	memory, err := validateOptIRRegionMemory(cfg, &asm.Function{Globals: authorized}, metadata, memorySSA, map[optir.RegionID]OptIRRegionGlobal{
 		"global:state": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
 	})
 	if err != nil {
@@ -249,11 +282,11 @@ func TestLowerOptIRRegionStoresRefuseRegisterSpills(t *testing.T) {
 	}
 	declaration := optIRRV64Declaration(t, `pressure_store: (x: u32): u32 = { state = x; u32(1) }`)
 	armTemplate := &asm.Function{Name: "pressure_store", Arch: asm.ArchArm64, Signature: declaration, Bindings: []asm.Binding{{Register: w(0), Param: "x"}}, Globals: authorized}
-	if _, err := lowerOptIRArm64Selection(cfg, armTemplate, []int{0}, []int{0}, memory); err == nil || !strings.Contains(err.Error(), "refuse register spills") {
+	if _, err := lowerOptIRArm64Selection(cfg, armTemplate, []int{0}, []int{0}, memory); err == nil || !strings.Contains(err.Error(), "register spills") {
 		t.Fatalf("AArch64 memory selector admitted spills: %v", err)
 	}
 	rvTemplate := &asm.Function{Name: "pressure_store", Arch: asm.ArchRV64, Signature: declaration, Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "x"}}, Globals: authorized}
-	if _, err := lowerOptIRRV64Selection(cfg, rvTemplate, []int{10}, []int{5}, memory); err == nil || !strings.Contains(err.Error(), "refuse register spills") {
+	if _, err := lowerOptIRRV64Selection(cfg, rvTemplate, []int{10}, []int{5}, memory); err == nil || !strings.Contains(err.Error(), "register spills") {
 		t.Fatalf("RV64 memory selector admitted spills: %v", err)
 	}
 }

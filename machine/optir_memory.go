@@ -15,36 +15,37 @@ type OptIRRegionGlobal struct {
 	Global asm.Global
 }
 
-type optIRRegionStoreSelection struct {
+type optIRRegionMemorySelection struct {
 	stores map[optir.OperationSite]OptIRRegionGlobal
+	loads  map[optir.OperationSite]OptIRRegionGlobal
 }
 
-// validateOptIRRegionStores closes the first memory-emission subset before a
+// validateOptIRRegionMemory closes the first memory-emission subset before a
 // target sees it. It deliberately admits only one straight-line block of
-// whole, nonvolatile scalar package-cell replacements. The independent
-// MemorySSA verifier binds the operation sites to the exact CFG revision and
-// exact checked region metadata supplied by the frontend.
-func validateOptIRRegionStores(
+// exact scalar package-cell reads and whole, nonvolatile replacements. The
+// independent MemorySSA verifier binds the operation sites to the exact CFG
+// revision and exact checked region metadata supplied by the frontend.
+func validateOptIRRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
 	metadata optir.RegionMemoryMetadata,
 	memorySSA optir.RegionMemorySSA,
 	bindings map[optir.RegionID]OptIRRegionGlobal,
-) (*optIRRegionStoreSelection, error) {
+) (*optIRRegionMemorySelection, error) {
 	if template == nil {
-		return nil, fmt.Errorf("machine: OptIR region stores need an assembler function template")
+		return nil, fmt.Errorf("machine: OptIR region memory needs an assembler function template")
 	}
 	if err := optir.VerifyRegionMemorySSA(cfg, metadata, memorySSA); err != nil {
 		return nil, fmt.Errorf("machine: OptIR region memory evidence: %w", err)
 	}
 	if len(cfg.Blocks) != 1 || cfg.Blocks[0].ID != cfg.Entry {
-		return nil, fmt.Errorf("machine: OptIR region stores require one straight-line entry block")
+		return nil, fmt.Errorf("machine: OptIR region memory requires one straight-line entry block")
 	}
 	if len(metadata.Regions) == 0 {
-		return nil, fmt.Errorf("machine: OptIR region stores require at least one declared region")
+		return nil, fmt.Errorf("machine: OptIR region memory requires at least one declared region")
 	}
 	if len(bindings) != len(metadata.Regions) {
-		return nil, fmt.Errorf("machine: OptIR region stores have %d bindings for %d regions", len(bindings), len(metadata.Regions))
+		return nil, fmt.Errorf("machine: OptIR region memory has %d bindings for %d regions", len(bindings), len(metadata.Regions))
 	}
 
 	declared := make(map[optir.RegionID]bool, len(metadata.Regions))
@@ -71,34 +72,48 @@ func validateOptIRRegionStores(
 
 	types := optIRTypes(cfg)
 	stores := make(map[optir.OperationSite]OptIRRegionGlobal, len(metadata.Operations))
-	written := make(map[optir.RegionID]bool, len(metadata.Regions))
+	loads := make(map[optir.OperationSite]OptIRRegionGlobal, len(metadata.Operations))
+	accessed := make(map[optir.RegionID]bool, len(metadata.Regions))
 	for _, operationMetadata := range metadata.Operations {
 		site := operationMetadata.Site
 		if len(operationMetadata.Accesses) != 1 {
-			return nil, fmt.Errorf("machine: OptIR region store %d:%d has %d accesses, want one", site.Block, site.Index, len(operationMetadata.Accesses))
+			return nil, fmt.Errorf("machine: OptIR region memory operation %d:%d has %d accesses, want one", site.Block, site.Index, len(operationMetadata.Accesses))
 		}
 		access := operationMetadata.Accesses[0]
-		if access.Kind != optir.MemoryWrite || !access.WholeRegion || access.Volatile {
-			return nil, fmt.Errorf("machine: OptIR region store %d:%d is not one whole nonvolatile write", site.Block, site.Index)
+		if access.Kind != optir.MemoryRead && access.Kind != optir.MemoryWrite {
+			return nil, fmt.Errorf("machine: OptIR region memory operation %d:%d has unsupported access kind %s", site.Block, site.Index, access.Kind)
 		}
 		binding, exists := bindings[access.Region]
 		if !exists {
-			return nil, fmt.Errorf("machine: OptIR region store %d:%d names unbound region %q", site.Block, site.Index, access.Region)
+			return nil, fmt.Errorf("machine: OptIR region memory operation %d:%d names unbound region %q", site.Block, site.Index, access.Region)
 		}
 		block := optIRBlock(cfg, site.Block)
 		if block == nil || site.Index < 0 || site.Index >= len(block.Operations) {
-			return nil, fmt.Errorf("machine: OptIR region store metadata names missing operation %d:%d", site.Block, site.Index)
+			return nil, fmt.Errorf("machine: OptIR region memory metadata names missing operation %d:%d", site.Block, site.Index)
 		}
 		operation := block.Operations[site.Index]
-		if operation.Code != optir.OpStoreRegion || len(operation.Results) != 0 || len(operation.Operands) != 1 || len(operation.Attributes) != 0 ||
-			len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectWriteMemory {
-			return nil, fmt.Errorf("machine: OptIR operation %d:%d is not a canonical region store", site.Block, site.Index)
+		var valueType optir.Type
+		switch access.Kind {
+		case optir.MemoryRead:
+			if access.WholeRegion || access.Volatile || operation.Code != optir.OpLoadRegion || len(operation.Results) != 1 || len(operation.Operands) != 0 || len(operation.Attributes) != 0 ||
+				len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectReadMemory {
+				return nil, fmt.Errorf("machine: OptIR operation %d:%d is not a canonical nonvolatile region load", site.Block, site.Index)
+			}
+			valueType = operation.Results[0].Type
+			loads[site] = binding
+		case optir.MemoryWrite:
+			if !access.WholeRegion || access.Volatile || operation.Code != optir.OpStoreRegion || len(operation.Results) != 0 || len(operation.Operands) != 1 || len(operation.Attributes) != 0 ||
+				len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectWriteMemory {
+				return nil, fmt.Errorf("machine: OptIR operation %d:%d is not a canonical region store (not one whole nonvolatile write)", site.Block, site.Index)
+			}
+			var typed bool
+			valueType, typed = types[operation.Operands[0]]
+			if !typed {
+				return nil, fmt.Errorf("machine: OptIR region store %d:%d operand %d has no type", site.Block, site.Index, operation.Operands[0])
+			}
+			stores[site] = binding
 		}
-		operandType, exists := types[operation.Operands[0]]
-		if !exists {
-			return nil, fmt.Errorf("machine: OptIR region store %d:%d operand %d has no type", site.Block, site.Index, operation.Operands[0])
-		}
-		if err := validateOptIRScalarGlobal(operandType, binding.Global); err != nil {
+		if err := validateOptIRScalarGlobal(valueType, binding.Global); err != nil {
 			return nil, fmt.Errorf("machine: OptIR region %q global %q: %w", access.Region, binding.Symbol, err)
 		}
 		authorized, exists := template.Globals[binding.Symbol]
@@ -108,18 +123,17 @@ func validateOptIRRegionStores(
 		if authorized != binding.Global {
 			return nil, fmt.Errorf("machine: OptIR memory region %q global %q does not match the assembler template", access.Region, binding.Symbol)
 		}
-		stores[site] = binding
-		written[access.Region] = true
+		accessed[access.Region] = true
 	}
-	if len(stores) == 0 {
-		return nil, fmt.Errorf("machine: OptIR region memory has no stores")
+	if len(stores)+len(loads) == 0 {
+		return nil, fmt.Errorf("machine: OptIR region memory has no accesses")
 	}
 	for _, region := range metadata.Regions {
-		if !written[region] {
-			return nil, fmt.Errorf("machine: OptIR memory region %q is declared but not stored", region)
+		if !accessed[region] {
+			return nil, fmt.Errorf("machine: OptIR memory region %q is declared but not accessed", region)
 		}
 	}
-	return &optIRRegionStoreSelection{stores: stores}, nil
+	return &optIRRegionMemorySelection{stores: stores, loads: loads}, nil
 }
 
 func validateOptIRScalarGlobal(typ optir.Type, global asm.Global) error {
@@ -128,7 +142,7 @@ func validateOptIRScalarGlobal(typ optir.Type, global asm.Global) error {
 		return fmt.Errorf("type %s is not an admitted scalar", typ)
 	}
 	if global.Aggregate || global.Size != 0 {
-		return fmt.Errorf("aggregate or sized storage is outside the scalar region-store subset")
+		return fmt.Errorf("aggregate or sized storage is outside the scalar region-memory subset")
 	}
 	if global.Type != string(typ) || global.Bits != bits {
 		return fmt.Errorf("storage is %s/%d bits, want %s/%d bits", global.Type, global.Bits, typ, bits)

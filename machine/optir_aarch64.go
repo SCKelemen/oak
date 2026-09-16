@@ -48,7 +48,7 @@ func LowerOptIRArm64WithRegionMemory(
 	memorySSA optir.RegionMemorySSA,
 	bindings map[optir.RegionID]OptIRRegionGlobal,
 ) (*asm.Function, error) {
-	memory, err := validateOptIRRegionStores(cfg, template, metadata, memorySSA, bindings)
+	memory, err := validateOptIRRegionMemory(cfg, template, metadata, memorySSA, bindings)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func lowerOptIRArm64(cfg optir.CFG, template *asm.Function, strictRegisters, spi
 	return lowerOptIRArm64Selection(cfg, template, strictRegisters, spillRegisters, nil)
 }
 
-func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int, memory *optIRRegionStoreSelection) (*asm.Function, error) {
+func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int, memory *optIRRegionMemorySelection) (*asm.Function, error) {
 	if template == nil || template.Signature == nil || template.Signature.Name == nil {
 		return nil, fmt.Errorf("machine: OptIR lowering needs an assembler function template")
 	}
@@ -101,14 +101,14 @@ func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegis
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}
 	if memory != nil && len(allocation.spills) != 0 {
-		return nil, fmt.Errorf("machine: OptIR AArch64 region stores refuse register spills")
+		return nil, fmt.Errorf("machine: OptIR AArch64 region memory refuses register spills")
 	}
 	hasCalls, err := validateOptIRArm64Calls(cfg, allocation.liveOut, template.Callees)
 	if err != nil {
 		return nil, err
 	}
 	if memory != nil && hasCalls {
-		return nil, fmt.Errorf("machine: OptIR AArch64 region stores refuse calls")
+		return nil, fmt.Errorf("machine: OptIR AArch64 region memory refuses calls")
 	}
 	spillFrame, frame := allocation.frame, allocation.frame
 	if hasCalls {
@@ -184,7 +184,7 @@ type optIRArm64Selector struct {
 	edges              int
 	order              []optir.BlockID
 	hasCalls           bool
-	memory             *optIRRegionStoreSelection
+	memory             *optIRRegionMemorySelection
 	globals            map[string]asm.Global
 }
 
@@ -241,6 +241,9 @@ func (selector *optIRArm64Selector) lower() error {
 }
 
 func (selector *optIRArm64Selector) operation(operation optir.Operation, site optir.OperationSite) error {
+	if operation.Code == optir.OpLoadRegion {
+		return selector.regionLoad(operation, site)
+	}
 	if operation.Code == optir.OpStoreRegion {
 		return selector.regionStore(operation, site)
 	}
@@ -397,6 +400,37 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation, site op
 	}
 }
 
+func (selector *optIRArm64Selector) regionLoad(operation optir.Operation, site optir.OperationSite) error {
+	if selector.memory == nil {
+		return fmt.Errorf("effectful operation %s", operation.Code)
+	}
+	binding, admitted := selector.memory.loads[site]
+	if !admitted {
+		return fmt.Errorf("region load at %d:%d has no admitted global binding", site.Block, site.Index)
+	}
+	if len(operation.Results) != 1 {
+		return fmt.Errorf("region load has %d results, want one", len(operation.Results))
+	}
+	result := operation.Results[0]
+	line := operation.Source.Line
+	if line <= 0 {
+		line = result.Source.Line
+	}
+	destination, err := selector.writeValue(result.ID, optIRCopyScratch)
+	if err != nil {
+		return err
+	}
+	selector.emit("adrp", line, arm64X(optIRCopyScratch), asm.Symbol{Name: binding.Symbol})
+	selector.emit("add", line, arm64X(optIRCopyScratch), arm64X(optIRCopyScratch), asm.Symbol{Name: binding.Symbol, Lo12: true})
+	mnemonic, register, ok := optIRArm64RegionLoad(result.Type, destination)
+	if !ok {
+		return fmt.Errorf("region load result has unsupported type %s", result.Type)
+	}
+	selector.emit(mnemonic, line, register, asm.Memory{Base: arm64X(optIRCopyScratch)})
+	selector.globals[binding.Symbol] = binding.Global
+	return selector.commitValue(result.ID, destination, line)
+}
+
 func (selector *optIRArm64Selector) regionStore(operation optir.Operation, site optir.OperationSite) error {
 	if selector.memory == nil {
 		return fmt.Errorf("effectful operation %s", operation.Code)
@@ -416,6 +450,25 @@ func (selector *optIRArm64Selector) regionStore(operation optir.Operation, site 
 	selector.emit(mnemonic, line, optIRRegister(source, binding.Global.Bits), asm.Memory{Base: arm64X(optIRCopyScratch)})
 	selector.globals[binding.Symbol] = binding.Global
 	return nil
+}
+
+func optIRArm64RegionLoad(typ optir.Type, register int) (string, asm.Register, bool) {
+	switch typ {
+	case optir.TypeBool, "u32", "i32":
+		return "ldr", optIRW(register), true
+	case "u8":
+		return "ldrb", optIRW(register), true
+	case "i8":
+		return "ldrsb", optIRW(register), true
+	case "u16":
+		return "ldrh", optIRW(register), true
+	case "i16":
+		return "ldrsh", optIRW(register), true
+	case "u64", "i64":
+		return "ldr", arm64X(register), true
+	default:
+		return "", asm.Register{}, false
+	}
 }
 
 func (selector *optIRArm64Selector) call(operation optir.Operation) error {
