@@ -50,9 +50,10 @@ func (report RegionLoadForwardingReport) Changes() int { return len(report.Repla
 // ForwardRegionLoads removes only canonical, nonvolatile region loads whose
 // exact MemorySSA input proves their value is already available from a
 // dominating load, a dominating whole-region store, or a non-loop memory phi
-// whose every incoming version is such a store. The phi case creates an SSA
-// block parameter and supplies each stored value on its exact predecessor
-// edge. No alias or address fact is inferred.
+// whose every predecessor already has the exact typed value from either such
+// a store or a canonical load of its incoming version. The phi case creates an
+// SSA block parameter and supplies each available value on its exact edge. No
+// load is inserted or speculated, and no alias or address fact is inferred.
 func ForwardRegionLoads(
 	cfg CFG,
 	metadata RegionMemoryMetadata,
@@ -183,6 +184,7 @@ func forwardRegionLoads(
 		accessesBySite[access.Site] = append(accessesBySite[access.Site], access)
 		accessesByID[access.ID] = access
 	}
+	edgeLoads := indexRegionLoads(cfg, accessesBySite)
 	versions := make(map[MemoryVersionID]MemoryVersion, len(memorySSA.Versions))
 	for _, version := range memorySSA.Versions {
 		versions[version.ID] = version
@@ -237,7 +239,7 @@ func forwardRegionLoads(
 				if plan == nil {
 					planned, planErr := planRegionLoadPhi(
 						access.Input, access.Region, result, current, blocks, metadata, versions,
-						accessesByID, definitions, dominators, replacements, &nextValue,
+						accessesByID, definitions, dominators, edgeLoads, replacements, &nextValue,
 					)
 					if planErr != nil {
 						return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, planErr
@@ -280,7 +282,8 @@ func forwardRegionLoads(
 		block.Parameters = append(block.Parameters, plan.parameter)
 		for _, incoming := range plan.incoming {
 			predecessor := resultBlocks[incoming.predecessor]
-			if predecessor == nil || appendRegionLoadEdgeArgument(&predecessor.Terminator, plan.block, incoming.value) == 0 {
+			value := resolveReplacement(incoming.value, replacements)
+			if predecessor == nil || value == 0 || appendRegionLoadEdgeArgument(&predecessor.Terminator, plan.block, value) == 0 {
 				return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, fmt.Errorf("optir: region load forwarding phi has no edge from block %d to %d", incoming.predecessor, plan.block)
 			}
 		}
@@ -332,6 +335,27 @@ func canonicalForwardableRegionLoad(operation Operation, accesses []MemoryAccess
 	return len(accesses) == 1 && accesses[0].Kind == MemoryRead && !accesses[0].WholeRegion && !accesses[0].Volatile &&
 		operation.Code == OpLoadRegion && len(operation.Results) == 1 && len(operation.Operands) == 0 && len(operation.Attributes) == 0 &&
 		len(operation.Effects) == 1 && operation.Effects[0] == EffectReadMemory
+}
+
+func indexRegionLoads(cfg CFG, accessesBySite map[OperationSite][]MemoryAccess) map[regionLoadKey][]availableRegionLoad {
+	loads := map[regionLoadKey][]availableRegionLoad{}
+	for _, block := range cfg.Blocks {
+		for index, operation := range block.Operations {
+			site := OperationSite{Block: block.ID, Index: index}
+			accesses := accessesBySite[site]
+			if !canonicalForwardableRegionLoad(operation, accesses) {
+				continue
+			}
+			access := accesses[0]
+			result := operation.Results[0]
+			key := regionLoadKey{region: access.Region, memory: access.Input, typ: result.Type}
+			loads[key] = append(loads[key], availableRegionLoad{
+				location: operationLocation{block: block.ID, index: index},
+				result:   result.ID,
+			})
+		}
+	}
+	return loads
 }
 
 func storedRegionValue(
@@ -409,6 +433,7 @@ func planRegionLoadPhi(
 	accesses map[MemoryAccessID]MemoryAccess,
 	definitions map[ValueID]definition,
 	dominators map[BlockID]map[BlockID]bool,
+	edgeLoads map[regionLoadKey][]availableRegionLoad,
 	replacements map[ValueID]ValueID,
 	nextValue *ValueID,
 ) (*regionLoadPhiPlan, error) {
@@ -426,14 +451,18 @@ func planRegionLoadPhi(
 		if predecessor == nil || countRegionLoadEdges(predecessor.Terminator, use.block) == 0 {
 			return nil, nil
 		}
-		value, storeLocation, stored := canonicalStoredRegionValue(
-			incoming.Version, region, result.Type, blocks, metadata, versions, accesses, definitions, replacements,
+		predecessorExit := operationLocation{block: incoming.Predecessor, index: len(predecessor.Operations)}
+		value, _ := storedRegionValue(
+			incoming.Version, region, result.Type, predecessorExit, blocks, metadata, versions,
+			accesses, definitions, dominators, replacements,
 		)
-		if !stored || !locationDominates(storeLocation.block, storeLocation.index, incoming.Predecessor, len(predecessor.Operations), dominators) {
-			return nil, nil
+		if value == 0 {
+			value = availableRegionValueAt(
+				regionLoadKey{region: region, memory: incoming.Version, typ: result.Type},
+				predecessorExit, edgeLoads, definitions, dominators, replacements,
+			)
 		}
-		definition := definitions[value]
-		if !locationDominates(definition.block, definition.index, incoming.Predecessor, len(predecessor.Operations), dominators) {
+		if value == 0 {
 			return nil, nil
 		}
 		seen[incoming.Predecessor] = true
@@ -447,6 +476,29 @@ func planRegionLoadPhi(
 	plan.parameter.Name = result.Name + ".memory-phi"
 	*nextValue++
 	return plan, nil
+}
+
+func availableRegionValueAt(
+	key regionLoadKey,
+	use operationLocation,
+	available map[regionLoadKey][]availableRegionLoad,
+	definitions map[ValueID]definition,
+	dominators map[BlockID]map[BlockID]bool,
+	replacements map[ValueID]ValueID,
+) ValueID {
+	candidates := available[key]
+	for index := len(candidates) - 1; index >= 0; index-- {
+		candidate := candidates[index]
+		if !locationDominates(candidate.location.block, candidate.location.index, use.block, use.index, dominators) {
+			continue
+		}
+		value := resolveReplacement(candidate.result, replacements)
+		definition, exists := definitions[value]
+		if exists && definition.typeOf == key.typ && locationDominates(definition.block, definition.index, use.block, use.index, dominators) {
+			return value
+		}
+	}
+	return 0
 }
 
 func nextRegionLoadValueID(cfg CFG) ValueID {
@@ -516,7 +568,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v5")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v6")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

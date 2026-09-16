@@ -751,13 +751,16 @@ one whole-region, nonvolatile write. It rewrites operation sites and metadata,
 then rebuilds MemorySSA. A separately verified load-forwarding transform
 removes only canonical nonvolatile region loads whose exact MemorySSA input
 proves the same typed value is already available from a dominating load or
-whole-region store. For a closed non-loop join phi whose every incoming
-version is a direct whole-region nonvolatile store of the exact result type,
-it creates one fresh typed block parameter and appends the corresponding
-stored value to each predecessor edge. Entry and loop phis, partial stores,
-call definitions, missing edges, type mismatches, and exhausted value
-identities fail closed. It drops facts bound to removed SSA values, rewrites
-all uses and metadata sites, and rebuilds MemorySSA. The
+whole-region store. For a closed non-loop join phi, it proceeds only when each
+predecessor already has the exact typed value: either the operand of a direct
+whole-region nonvolatile store defining that incoming version or a canonical
+load of that version which dominates the predecessor terminator. It creates
+one fresh typed block parameter and appends the corresponding value to each
+edge; it never inserts or speculates a load. Entry and loop phis, uncovered
+edges, partial stores, call definitions, missing edges, type mismatches, and
+exhausted value identities fail closed. It resolves later-removed predecessor
+loads before materializing edges, drops facts bound to removed SSA values,
+rewrites all uses and metadata sites, and rebuilds MemorySSA. The
 scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access
@@ -845,8 +848,9 @@ and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
 semantic-verifier verdict before selection. Broader memory loops, aggregate
-regions, load PRE from entry/read/call-produced versions or loop phis,
-definite-write summaries, and calls in memory loops remain open; exact
+regions, load insertion for uncovered join edges, partial/call-written
+versions, loop-phi PRE, definite-write summaries, and calls in memory loops
+remain open; exact
 recursive `NoModRef`, `Ref`, `Mod`,
 and `ModRef` may-effect summaries and their standalone graph checker are
 implemented. Every OptIR direct call now carries its nonzero SSA result ID as

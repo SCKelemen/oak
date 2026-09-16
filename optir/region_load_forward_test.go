@@ -245,6 +245,95 @@ func TestRegionLoadForwardingReplacesJoinLoadWithEdgeSuppliedParameter(t *testin
 	}
 }
 
+func TestRegionLoadForwardingReplacesJoinLoadWithAvailablePredecessorLoad(t *testing.T) {
+	cfg := CFG{
+		Name: "join_store_load", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2}}},
+			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+			{ID: 2, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 4}}},
+			{ID: 3, Operations: []Operation{regionLoadOperation(4, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}}},
+			{ID: 4, Operations: []Operation{regionLoadOperation(3, "u32")}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(3, 0, "state", false),
+		regionLoadMetadata(4, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	wantReplacement := RegionLoadReplacement{
+		Access: 2, Site: OperationSite{Block: 3, Index: 0}, Region: "state", Memory: 2,
+		Result: 4, Replacement: 5, Kind: RegionLoadFromPhi,
+	}
+	if !reflect.DeepEqual(report.Replacements, []RegionLoadReplacement{wantReplacement}) {
+		t.Fatalf("available-load memory-phi report = %+v, want %+v", report.Replacements, wantReplacement)
+	}
+	join := result.Blocks[3]
+	if len(join.Parameters) != 1 || join.Parameters[0].ID != 5 || join.Parameters[0].Type != "u32" || len(join.Operations) != 0 ||
+		!reflect.DeepEqual(join.Terminator.Values, []ValueID{5}) {
+		t.Fatalf("available-load memory-phi join = %+v", join)
+	}
+	if !reflect.DeepEqual(result.Blocks[1].Terminator.True.Arguments, []ValueID{2}) ||
+		!reflect.DeepEqual(result.Blocks[4].Terminator.True.Arguments, []ValueID{3}) {
+		t.Fatalf("available-load memory-phi edge arguments = store %v load %v", result.Blocks[1].Terminator.True.Arguments, result.Blocks[4].Terminator.True.Arguments)
+	}
+	if len(result.Blocks[4].Operations) != 1 || len(resultMetadata.Operations) != 2 {
+		t.Fatalf("predecessor load was not preserved: CFG %+v, metadata %+v", result, resultMetadata)
+	}
+}
+
+func TestRegionLoadForwardingResolvesRemovedPredecessorLoad(t *testing.T) {
+	cfg := CFG{
+		Name: "join_removed_load", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{
+				ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}},
+				Operations: []Operation{regionLoadOperation(3, "u32")},
+				Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2}},
+			},
+			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+			{ID: 2, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 4}}},
+			{ID: 3, Operations: []Operation{regionLoadOperation(5, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{5}}},
+			{ID: 4, Operations: []Operation{regionLoadOperation(4, "u32")}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		regionLoadMetadata(0, 0, "state", false),
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(3, 0, "state", false),
+		regionLoadMetadata(4, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	result, resultMetadata, report, err := ForwardRegionLoads(cfg, metadata, memorySSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 2 || report.Replacements[0].Kind != RegionLoadFromPhi || report.Replacements[0].Result != 5 || report.Replacements[0].Replacement != 6 ||
+		report.Replacements[1].Kind != RegionLoadFromLoad || report.Replacements[1].Result != 4 || report.Replacements[1].Replacement != 3 {
+		t.Fatalf("removed predecessor-load report = %+v", report.Replacements)
+	}
+	if !reflect.DeepEqual(result.Blocks[4].Terminator.True.Arguments, []ValueID{3}) || len(result.Blocks[4].Operations) != 0 {
+		t.Fatalf("removed predecessor-load edge = %+v", result.Blocks[4])
+	}
+	if len(result.Blocks[3].Parameters) != 1 || result.Blocks[3].Parameters[0].ID != 6 || !reflect.DeepEqual(result.Blocks[3].Terminator.Values, []ValueID{6}) {
+		t.Fatalf("removed predecessor-load join = %+v", result.Blocks[3])
+	}
+	if len(resultMetadata.Operations) != 2 {
+		t.Fatalf("removed predecessor-load metadata = %+v", resultMetadata)
+	}
+}
+
 func TestRegionLoadForwardingMemoryPhiRefusesValueIDOverflow(t *testing.T) {
 	cfg := CFG{
 		Name: "join_overflow", Entry: 0, Results: []Type{"u32"},
