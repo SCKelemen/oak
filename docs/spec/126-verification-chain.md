@@ -591,8 +591,15 @@ pair stores remain refused. The checker transports compiler-derived nominal
 record identity through exact record elements and their nonnegative byte-tail
 aliases; control-flow meets reject same-sized but differently named records,
 and widened multi-record regions carry no single-record identity. This is
-non-authoritative metadata only. A lowering still requires exact array-field
-selection and trap preservation, verifier support, scalar-tail lowering,
+non-authoritative metadata only. Exact direct-`u64` field selection now narrows
+indexed accesses to the field declaration, so following record fields cannot
+extend the array bound. Unsupported layouts retain the original generic
+checker behavior and yield no exact field fact. `Oak.RecordArrayRegion`
+formalizes the selected geometry and four-cell loop decision, proves field and
+record containment and nonwrapping 32-bit indices, and composes them with the
+staged four-write final-state law. Declaration lookup/uniqueness itself remains
+outside that theorem, and no instruction uses the quad predicate as permission.
+A lowering still requires trap preservation, verifier support, scalar-tail lowering,
 alias/observer exclusion, and private/unpublished ordinary-memory authority.
 `Oak.PairStoreEffects` closes one later final-state edge in isolation: its log
 uses the verifier's exact 32-bit modular indices, and under explicit no-wrap
@@ -603,6 +610,23 @@ reference it; an AST gate permits only its declaration, and direct verifier
 tests pin both existing pair-store refusals. It therefore proves neither
 architectural occurrence nor component or observer order, and grants no
 verifier or code-generation authority.
+
+The next custody prerequisite is sealed constructor provenance. Current
+typestate rules allow initial-state literals, including for compiler-generated
+static-protocol handles; a state or fact marker cannot by itself certify
+private memory. A proposed first increment would restrict those generated
+handles to their designated initial constructor, carrying the designation
+through resolved resources, SemIR validation, and resource-flow checks. It
+must also reject uninitialized roots and alternate fresh/trusted constructors.
+Explicit-resource protocols keep their existing literal rules. This would
+prove constructor origin only, not distinct backing allocation, ordinary RAM,
+fault-free mapping, or CPU/DMA/external-observer exclusion. Native lowering
+currently precedes borrow/resource/effect gates and cannot consume such an
+authority result; check-before-lowering and exact-region certificate transport
+remain separate prerequisites. The explicit `ResourceSemIR` stage also checks
+its injected declarations after `check(nil)` and needs its own ordering fix.
+An eventual private-to-published transition must consume storage custody;
+reclaiming published storage needs a separate completion/quiescence proof.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

@@ -632,8 +632,16 @@ exact record-span element and exact record-relative offsets for its
 nonnegative tail aliases. Same-sized different record types do not meet,
 widened multi-record regions lose the identity, and overflow clears it. This
 metadata never broadens an access decision; it can only discard an ambiguous
-fact at a meet and supplies no authority. Exact array-field selection and
-private/unpublished custody remain explicit later gates.
+fact at a meet and supplies no authority. Exact direct-`u64` array selection
+now checks the nominal layout and exact field start, narrowing indexed access
+to the field's own size. Unsupported layouts keep the original generic bounds
+and supply no exact field fact. `Oak.RecordArrayRegion.valid_quad_sound`
+proves that valid selected geometry and the staged quad bound contain four
+adjacent cells in the field/record without 32-bit index wrap; its composition
+theorem relates their pair log to four scalar final-state writes. The lookup's
+uniqueness/direct-`u64` classification is still a compiler-supplied premise,
+and the quad predicate has no instruction-admission consumer. This does not
+close private/unpublished custody or any ordering/publication obligation.
 
 The next final-state bridge is staged but intentionally unreachable:
 `Oak.PairStoreEffects.apply_pair64_writes_eq_storePair` proves that applying

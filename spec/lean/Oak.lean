@@ -242,6 +242,7 @@ import Oak.BoundaryCopies
 import Oak.PairCopies
 import Oak.BlockedFill
 import Oak.PairStoreEffects
+import Oak.RecordArrayRegion
 import Oak.FieldPromotion
 import Oak.Forwarding
 import Oak.ArrayValues

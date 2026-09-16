@@ -333,9 +333,17 @@ applied to the protocol's own machine, and it reuses §5a's checker.
 | --- | --- |
 | `Name[S]` | `type = struct { data: NameData }` with `data`, else `struct { at_: u8 }`: the handle, one phantom parameter, one representation for every state (`20-types.md` §9) |
 | `NameS0`, `NameS1`, … | one marker type per state, prefixed with the protocol's name so no declaration of the program is shadowed (`DoorClosed: type = struct { closed_: u8 }`) |
-| `name_handle` | `(): Name[NameInitial]`: the only construction, at the initial state, holding `init`'s data |
+| `name_handle` | `(): Name[NameInitial]`: the generated initial-state constructor, holding `init`'s data |
 | `name_t` | one per **source state** of step `t(p: P)`: the step's lines from that state, tried in declaration order as `name_next` tries them. When the group is one unguarded line `From -> To`: `(handle: Name[NameFrom], p: P): Name[NameTo]`, the line's effects applied to the data. A step with several source states projects `name_t_from_s` per state |
 | `NameTOutcome`, `name_t` | when the group has a guard: `NameTOutcome: type = ToS1(Name[NameS1]) \| ToS2(…) \| Refused(Name[NameFrom])` — one variant per target state reached by a line up to and including the first unguarded one, spelled `To` plus the state so it never collides with `NameState`'s variants, and `Refused` only when no line is unguarded (`NameTFromSOutcome` per source state when there are several) — and `name_t: (handle: Name[NameFrom], p: P): NameTOutcome`: the guards are decided on the handle's data at run time, the first line that holds moves the handle into its target's variant, and `Refused` hands the same handle back |
+
+The generated constructor is not yet sealed: the reused §5a construction
+rule also permits an initial-state record literal. A handle therefore proves
+protocol-state discipline, not origin at `name_handle`, exclusive backing
+storage, or private/unpublished ordinary-memory custody. Sealing constructor
+provenance requires a separately checked resource fact; even that fact would
+not establish allocation, memory type, observer exclusion, or publication
+ordering.
 
 The handle parameter is spelled `handle` and the outcome variants
 `To<State>` and `Refused`; a payload may not be named `handle` (§1), and

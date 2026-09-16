@@ -2866,6 +2866,7 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 	}
 	var extent *region
 	if r, isRegion := c.regions[base.Num]; isRegion {
+		r = narrowRecordArrayRegion(c.fn.Composites, r)
 		extent = &r
 	}
 	if derived, ok := elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size); ok {
@@ -3203,6 +3204,9 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 	if mem.Index != nil {
 		// An array inside the region, walked by a guarded element index:
 		// `[xR, wJ, uxtw #t]` with wJ < K' and K'·2^t inside the region.
+		// A selected direct-u64 field is bounded by its own declaration;
+		// later fields in the containing record add no array elements.
+		extent = narrowRecordArrayRegion(c.fn.Composites, extent)
 		index := *mem.Index
 		c.read(instr, index)
 		if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {

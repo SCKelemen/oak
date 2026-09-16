@@ -1135,8 +1135,18 @@ offsets retain the exact record-relative byte position. Same-sized nominal
 types do not meet, widened multi-record regions lose the identity, and signed
 offset overflow clears it. This metadata grants no access and is not accepted
 from assembly alone: the checked Oak signature and compiler-supplied composite
-layout must agree. A future lowering still needs exact array-field selection,
-trap preservation, verifier support, scalar-tail lowering, and explicit
+layout must agree. Exact direct-`u64` array selection now uses that nominal
+identity and record-relative offset to narrow indexed accesses to the declared
+field, excluding later sibling bytes. Selection checks the declaration's
+shape, unique name/start, alignment, lengths, and nonoverlap; unsupported
+layouts retain the original generic checker behavior and supply no field
+proof. `Oak.RecordArrayRegion.valid_quad_sound` proves the selected geometry
+and a four-cell loop bound keep all four words in the field and below the
+32-bit index modulus. Its `quad_writes_eq_fillWords_four` composes that bound
+with the staged pair-write final-state law. The declaration lookup itself is
+not formalized, and neither predicate grants instruction admission or custody.
+A future lowering still needs trap preservation, verifier support,
+scalar-tail lowering, and explicit
 ordinary private-memory authority proving the storage has not yet been
 published—never a live descriptor-update protocol.
 
