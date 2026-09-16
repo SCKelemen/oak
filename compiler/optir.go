@@ -14,7 +14,8 @@ import (
 
 // OptIRFunction is one checked structured projection, its independently
 // verified CFG/SSA view, and optimization results. The native candidate search
-// may select LoopInvariant through its fail-closed AArch64 selector.
+// may select the pure LoopInvariant result or the region-memory DeadStores
+// result through its fail-closed AArch64 and RV64 selectors.
 type OptIRFunction struct {
 	Name                 string
 	Structured           optir.Function
@@ -366,6 +367,10 @@ func (lowerer *optIRLowerer) lowerStatement(statement ast.Statement, region *opt
 			if !isGlobal {
 				return optir.Value{}, false, refuseOptIR(current.Token, "assignment to nonlocal %s is outside the first OptIR subset", current.Name.Value)
 			}
+			proof, checked := lowerer.tc.ScalarGlobalWriteProof(current.Token)
+			if !checked || proof.Global != current.Name.Value || proof.Type != string(globalType) {
+				return optir.Value{}, false, refuseOptIR(current.Token, "assignment to global %s has no exact checked scalar-memory authority", current.Name.Value)
+			}
 			value, err := lowerer.lowerExpression(current.Value, region)
 			if err != nil {
 				return optir.Value{}, false, err
@@ -373,7 +378,7 @@ func (lowerer *optIRLowerer) lowerStatement(statement ast.Statement, region *opt
 			if value.Type != globalType {
 				return optir.Value{}, false, fmt.Errorf("compiler: OptIR global assignment %s changed checked type %s to %s", current.Name.Value, globalType, value.Type)
 			}
-			lowerer.emitGlobalStore(region, current.Name.Value, value, current.Token)
+			lowerer.emitGlobalStore(region, current.Name.Value, optir.RegionID(proof.RegionID), value, current.Token)
 			return optir.Value{}, false, nil
 		}
 		value, err := lowerer.lowerExpression(current.Value, region)
@@ -419,7 +424,11 @@ func (lowerer *optIRLowerer) lowerExpression(expression ast.Expression, region *
 			if globalType != resultType {
 				return optir.Value{}, fmt.Errorf("compiler: OptIR global %s has declared type %s, checked expression type %s", current.Value, globalType, resultType)
 			}
-			return lowerer.emitGlobalLoad(region, current.Value, resultType, current.Token), nil
+			global, checked := lowerer.tc.ScalarGlobalRegion(current.Value)
+			if !checked || global.Name != current.Value || global.Type != string(resultType) {
+				return optir.Value{}, refuseOptIR(current.Token, "global %s has no exact checked scalar-memory authority", current.Value)
+			}
+			return lowerer.emitGlobalLoad(region, current.Value, optir.RegionID(global.ID), resultType, current.Token), nil
 		}
 		if value.Type != resultType {
 			return optir.Value{}, fmt.Errorf("compiler: OptIR identifier %s has environment type %s, checked type %s", current.Value, value.Type, resultType)
@@ -862,9 +871,9 @@ func (lowerer *optIRLowerer) emit(region *optir.Region, code string, typ optir.T
 	return result
 }
 
-func (lowerer *optIRLowerer) emitGlobalLoad(region *optir.Region, name string, typ optir.Type, tok token.Token) optir.Value {
+func (lowerer *optIRLowerer) emitGlobalLoad(region *optir.Region, name string, regionID optir.RegionID, typ optir.Type, tok token.Token) optir.Value {
 	result := lowerer.ids.value(typ, name+".load", optIRSource(tok))
-	record := lowerer.checkedMemoryAccess(name, typ, optir.MemoryRead, false, tok)
+	record := lowerer.checkedMemoryAccess(name, regionID, typ, optir.MemoryRead, false, tok)
 	operation := &optir.Operation{
 		Code: optir.OpLoadRegion, Results: []optir.Value{result},
 		Effects: []optir.Effect{optir.EffectReadMemory}, Facts: lowerer.checkedTypeFact(tok, result),
@@ -874,8 +883,8 @@ func (lowerer *optIRLowerer) emitGlobalLoad(region *optir.Region, name string, t
 	return result
 }
 
-func (lowerer *optIRLowerer) emitGlobalStore(region *optir.Region, name string, value optir.Value, tok token.Token) {
-	record := lowerer.checkedMemoryAccess(name, value.Type, optir.MemoryWrite, true, tok)
+func (lowerer *optIRLowerer) emitGlobalStore(region *optir.Region, name string, regionID optir.RegionID, value optir.Value, tok token.Token) {
+	record := lowerer.checkedMemoryAccess(name, regionID, value.Type, optir.MemoryWrite, true, tok)
 	operation := &optir.Operation{
 		Code: optir.OpStoreRegion, Operands: []optir.ValueID{value.ID},
 		Effects: []optir.Effect{optir.EffectWriteMemory}, Source: optIRSource(tok), MemoryAccessID: record.ID,
@@ -883,7 +892,7 @@ func (lowerer *optIRLowerer) emitGlobalStore(region *optir.Region, name string, 
 	region.Nodes = append(region.Nodes, optir.Node{Operation: operation})
 }
 
-func (lowerer *optIRLowerer) checkedMemoryAccess(name string, typ optir.Type, kind optir.MemoryAccessKind, whole bool, tok token.Token) optir.CheckedMemoryAccessRecord {
+func (lowerer *optIRLowerer) checkedMemoryAccess(name string, regionID optir.RegionID, typ optir.Type, kind optir.MemoryAccessKind, whole bool, tok token.Token) optir.CheckedMemoryAccessRecord {
 	if lowerer.memory == nil || lowerer.memory.err != nil {
 		return optir.CheckedMemoryAccessRecord{}
 	}
@@ -892,7 +901,11 @@ func (lowerer *optIRLowerer) checkedMemoryAccess(name string, typ optir.Type, ki
 		lowerer.memory.err = fmt.Errorf("compiler: checked memory access to global %s has type %s, want %s", name, typ, declared)
 		return optir.CheckedMemoryAccessRecord{}
 	}
-	record, err := optir.NewCheckedMemoryAccessRecord(optIRSource(tok), optir.RegionID("global:"+name), kind, typ, whole, false)
+	if regionID == "" {
+		lowerer.memory.err = fmt.Errorf("compiler: checked memory access to global %s has no region identity", name)
+		return optir.CheckedMemoryAccessRecord{}
+	}
+	record, err := optir.NewCheckedMemoryAccessRecord(optIRSource(tok), regionID, kind, typ, whole, false)
 	if err != nil {
 		lowerer.memory.err = fmt.Errorf("compiler: checked memory access to global %s: %w", name, err)
 		return optir.CheckedMemoryAccessRecord{}

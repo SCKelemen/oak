@@ -8,6 +8,7 @@ import (
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -100,6 +101,12 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedOptIRFingerprint.OptIRFingerprint = "cfg-b"
 	changedOptIRCount := changedOptIR
 	changedOptIRCount.OptIRChanges = 4
+	changedOptIRMemory := changedOptIR
+	changedOptIRMemory.OptIRMemory = &optir.RegionMemoryMetadata{}
+	changedOptIRBinding := changedOptIR
+	changedOptIRBinding.OptIRRegionGlobals = map[optir.RegionID]nativegen.OptIRRegionGlobal{
+		"region": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
+	}
 	changes := []struct {
 		name      string
 		driver    *nativeDriver
@@ -116,6 +123,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"optir", driver(false), opt.Identity(changedOptIR)},
 		{"optir-fingerprint", driver(false), opt.Identity(changedOptIRFingerprint)},
 		{"optir-changes", driver(false), opt.Identity(changedOptIRCount)},
+		{"optir-memory", driver(false), opt.Identity(changedOptIRMemory)},
+		{"optir-region-binding", driver(false), opt.Identity(changedOptIRBinding)},
 	}
 	for _, change := range changes {
 		t.Run(change.name, func(t *testing.T) {

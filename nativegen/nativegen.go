@@ -1522,6 +1522,13 @@ type Lane struct {
 	OptIRFingerprint string
 	OptIRChanges     int
 	UseOptIR         bool
+	// OptIRMemory, its independently verified SSA evidence, observability,
+	// and region bindings form one exact memory-aware emission plan. A nil
+	// OptIRMemory selects the ordinary pure OptIR path.
+	OptIRMemory              *optir.RegionMemoryMetadata
+	OptIRMemorySSA           *optir.RegionMemorySSA
+	OptIRMemoryObservability optir.RegionMemoryObservability
+	OptIRRegionGlobals       map[optir.RegionID]OptIRRegionGlobal
 	// VectorReductions rewrites the plain u64 and u32 reductions into
 	// vector-accumulator loops (nativegen/vector_reduction.go) instead of
 	// the scalar unrolling; the verifier judges the lowering against the
@@ -1632,6 +1639,13 @@ type Lane struct {
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
 	PackedStackArgs bool
+}
+
+// OptIRRegionGlobal carries checked region identity to an already-authorized
+// assembler-template global. Machine selection rechecks the exact descriptor.
+type OptIRRegionGlobal struct {
+	Symbol string
+	Global asm.Global
 }
 
 // GlobalStorage is the addressed storage of a top-level scalar of the
@@ -1747,7 +1761,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
 				return nil, unsupported("an incomplete OptIR emission plan")
 			}
-			fingerprint, fingerprintErr := optir.FingerprintCFG(*lane.OptIR)
+			fingerprint, fingerprintErr := lane.optIRFingerprint()
 			if fingerprintErr != nil {
 				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
 			}
@@ -1760,7 +1774,13 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
-				out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
+				if lane.OptIRMemory == nil {
+					out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
+				} else if lane.OptIRMemorySSA == nil {
+					err = unsupported("an OptIR region-memory plan without MemorySSA evidence")
+				} else {
+					out, err = machine.LowerOptIRArm64WithRegionMemory(*lane.OptIR, template, *lane.OptIRMemory, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+				}
 			}
 			if err == nil {
 				optIRLowered[out] = lane.OptIRChanges
@@ -1796,7 +1816,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
 				return nil, unsupported("an incomplete OptIR emission plan")
 			}
-			fingerprint, fingerprintErr := optir.FingerprintCFG(*lane.OptIR)
+			fingerprint, fingerprintErr := lane.optIRFingerprint()
 			if fingerprintErr != nil {
 				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
 			}
@@ -1809,7 +1829,13 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, false, nil, false)
 			if err == nil {
 				template.Callees = functions
-				out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
+				if lane.OptIRMemory == nil {
+					out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
+				} else if lane.OptIRMemorySSA == nil {
+					err = unsupported("an OptIR region-memory plan without MemorySSA evidence")
+				} else {
+					out, err = machine.LowerOptIRRV64WithRegionMemory(*lane.OptIR, template, *lane.OptIRMemory, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+				}
 			}
 			if err == nil {
 				optIRLowered[out] = lane.OptIRChanges
@@ -1833,6 +1859,30 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		return scheduleLane(lane, out)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
+}
+
+func (lane Lane) optIRFingerprint() (string, error) {
+	if lane.OptIR == nil {
+		return "", fmt.Errorf("missing OptIR CFG")
+	}
+	if lane.OptIRMemory == nil {
+		if lane.OptIRMemorySSA != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
+			return "", fmt.Errorf("memory evidence or bindings without region metadata")
+		}
+		return optir.FingerprintCFG(*lane.OptIR)
+	}
+	if lane.OptIRMemorySSA == nil {
+		return "", fmt.Errorf("region metadata without MemorySSA evidence")
+	}
+	return optir.FingerprintRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability)
+}
+
+func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRRegionGlobal {
+	out := make(map[optir.RegionID]machine.OptIRRegionGlobal, len(lane.OptIRRegionGlobals))
+	for region, binding := range lane.OptIRRegionGlobals {
+		out[region] = machine.OptIRRegionGlobal{Symbol: binding.Symbol, Global: binding.Global}
+	}
+	return out
 }
 
 // Compile lowers one Oak function on the AArch64 lane. functions maps every

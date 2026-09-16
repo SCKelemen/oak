@@ -124,7 +124,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
-			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, root, tc)
+			applyNativeOptIRCandidate(&lane, nativeOptIRCandidate(source, root, tc, globals))
 		}
 		// The candidate search (compiler/native_search.go, package opt;
 		// docs/notes/optimizer-search-2026-09.md): the plain lowering is the
@@ -256,38 +256,108 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // nativeOptIRCandidate projects and runs the exact artifact-DAG middle end
 // used by Compilation.OptIR. Unsupported functions and any failed analysis
 // simply have no candidate: the direct native lowering remains the identity.
-// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, or LICM is proposed, so the
-// search never pays to validate an alternate spelling with no generic
-// optimization in it.
-func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
+// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, LICM, or checked region DSE
+// is proposed, so the search never pays to validate an alternate spelling with
+// no generic optimization in it.
+type nativeOptIRPlan struct {
+	cfg           *optir.CFG
+	changes       int
+	fingerprint   string
+	metadata      *optir.RegionMemoryMetadata
+	memorySSA     *optir.RegionMemorySSA
+	observability optir.RegionMemoryObservability
+	bindings      map[optir.RegionID]nativegen.OptIRRegionGlobal
+}
+
+func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
+	if lane == nil || plan.cfg == nil {
+		return
+	}
+	lane.OptIR = plan.cfg
+	lane.OptIRChanges = plan.changes
+	lane.OptIRFingerprint = plan.fingerprint
+	lane.OptIRMemory = plan.metadata
+	lane.OptIRMemorySSA = plan.memorySSA
+	lane.OptIRMemoryObservability = plan.observability
+	lane.OptIRRegionGlobals = plan.bindings
+}
+
+func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
 	structured, authority, memoryAuthority, err := lowerCheckedOptIRFunction(function, tc, checkedOptIRGlobals(root, tc))
 	if err != nil {
-		return nil, 0, ""
+		return nativeOptIRPlan{}
 	}
 	cfg, err := projectCheckedOptIRFunction(structured, memoryAuthority)
 	if err != nil {
-		return nil, 0, ""
+		return nativeOptIRPlan{}
 	}
 	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
-		return nil, 0, ""
+		return nativeOptIRPlan{}
 	}
 	analyses, err := runOptIRAnalysisGraphWithMemory(cfg, memoryAuthority)
 	if err != nil {
-		return nil, 0, ""
+		return nativeOptIRPlan{}
 	}
 	if err := verifyOptIRAnalysisFacts(authority, analyses); err != nil {
-		return nil, 0, ""
+		return nativeOptIRPlan{}
 	}
 	changes := analyses.sccpSimplification.Changes() + analyses.simplification.Changes() + analyses.loopMotion.HoistedOperations
-	if changes == 0 {
-		return nil, 0, ""
-	}
-	fingerprint, err := optir.FingerprintCFG(analyses.loopInvariant)
-	if err != nil {
-		return nil, 0, ""
-	}
 	optimized := analyses.loopInvariant
-	return &optimized, changes, fingerprint
+	if analyses.hasMemory {
+		changes += len(analyses.deadStoreElimination.Removed)
+		optimized = analyses.deadStores
+	}
+	if changes == 0 {
+		return nativeOptIRPlan{}
+	}
+	if !analyses.hasMemory {
+		fingerprint, err := optir.FingerprintCFG(optimized)
+		if err != nil {
+			return nativeOptIRPlan{}
+		}
+		return nativeOptIRPlan{cfg: &optimized, changes: changes, fingerprint: fingerprint}
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(optimized, analyses.deadStoreMetadata)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyRegionMemorySSA(optimized, analyses.deadStoreMetadata, memorySSA); err != nil {
+		return nativeOptIRPlan{}
+	}
+	fingerprint, err := optir.FingerprintRegionMemoryInput(optimized, analyses.deadStoreMetadata, analyses.memoryProjection.Observability)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	bindings, ok := nativeOptIRRegionBindings(analyses.deadStoreMetadata, tc, globals)
+	if !ok {
+		return nativeOptIRPlan{}
+	}
+	metadata := analyses.deadStoreMetadata
+	return nativeOptIRPlan{
+		cfg: &optimized, changes: changes, fingerprint: fingerprint,
+		metadata: &metadata, memorySSA: &memorySSA,
+		observability: analyses.memoryProjection.Observability, bindings: bindings,
+	}
+}
+
+func nativeOptIRRegionBindings(metadata optir.RegionMemoryMetadata, tc *typechecker.TypeChecker, globals map[string]asm.Global) (map[optir.RegionID]nativegen.OptIRRegionGlobal, bool) {
+	if tc == nil {
+		return nil, false
+	}
+	regions := tc.ScalarGlobalRegions()
+	bindings := make(map[optir.RegionID]nativegen.OptIRRegionGlobal, len(metadata.Regions))
+	for _, regionID := range metadata.Regions {
+		region, exists := regions[string(regionID)]
+		if !exists {
+			return nil, false
+		}
+		global, exists := globals[region.Name]
+		if !exists || global.Type != region.Type {
+			return nil, false
+		}
+		bindings[regionID] = nativegen.OptIRRegionGlobal{Symbol: region.Name, Global: global}
+	}
+	return bindings, true
 }
 
 // nativeLowering is what the native backend made of a program: the

@@ -188,8 +188,9 @@ func Transforms() []opt.Transform {
 		&gatedTransform{laneTransform{
 			// The generic SSA middle end's optimized CFG becomes a native
 			// implementation candidate. The closed AArch64 and RV64 selectors
-			// refuse effects and unsupported types, and this emission path
-			// remains verifier-gated until it has earned broader standing.
+			// also admit exact whole-region scalar-global stores after verified
+			// MemorySSA/DSE. Unsupported effects and types refuse, and every
+			// emitted body remains translation-validator gated.
 			name: TransformOptIR, phase: opt.PhaseCanonical, proof: opt.Mechanical,
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.UseOptIR || l.OptIR == nil || l.OptIRChanges <= 0 },
