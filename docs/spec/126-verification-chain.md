@@ -215,7 +215,20 @@ not a universal Go refinement or a test of the 50-million-clause limit.
 `cnf_complete` field at this checked trace boundary. Accepted RUP then implies
 word equality under an explicit result-to-root equality premise. Source/root
 provenance, DIMACS bytes, LRAT implementation refinement, and verdict authority
-are still open. `Oak.CNFFinalObligation` proves
+are still open. The next model layer now derives that root meaning for supplied
+Boolean bit expressions: `Oak.CNFMemoWitness` supplies the converse exact
+memo-to-gate witness, `Oak.CNFReplayApply` proves binary folds and memo replay,
+and `Oak.CNFReplayMemo` discharges memo soundness from checked allocation.
+`Oak.CNFReplayTerm` proves designated input slots survive gate evaluation and
+connects recursive replay to the original-input semantics.
+`Oak.CNFReplayCertificate.replayed_words_equal` then proves equality of the
+words packed from supplied bit-expression pairs using accepted RUP and the
+exact singleton obligation, without assumed root equality or CNF completeness.
+Production apply decisions and a bounded one-bit term/difference corpus are
+kernel-pinned. The arbitrary Go name/bit/word projection, width adaptation,
+term-pointer memo/reachability machinery, full admission policy, and remaining
+source/serialization/verdict seams are not covered by that model theorem.
+`Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
 proves evaluation preservation and pending counterexample semantics for a

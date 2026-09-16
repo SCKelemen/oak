@@ -478,6 +478,34 @@ result-to-root equality premise**. Universal Go/projection refinement, that
 source/root connection, DIMACS bytes, LRAT implementation refinement, and
 compiler verdict authority remain separate obligations.
 
+`Oak.CNFMemoWitness` proves the converse of the accepted gate-to-memo walk:
+every memo hit names an actual decoded gate with that exact key and output.
+`Oak.CNFReplayApply` models the native AND/OR/XOR replay's sorting, fold
+precedence, complement edges, memo lookup, and integer guards.
+`Oak.CNFReplayMemo` derives its Boolean memo-soundness condition from checked
+allocation and gate consistency. Standalone folds deliberately retain the
+production behavior of not rechecking edge allocation; their theorem proves
+Boolean meaning, not input provenance.
+
+`Oak.CNFReplayTerm` separately requires designated inputs to be actual input
+slots and proves gate evaluation preserves them even under interleaved
+allocation. Recursive replay therefore connects constants and pointwise
+AND/OR/XOR expressions to their original-input semantics, including folds and
+memo hits. `Oak.CNFReplayCertificate.replayed_words_equal` composes this with
+the exact singleton final clause and accepted RUP: the words packed from the
+supplied paired Boolean expressions are equal, without an assumed
+result-to-root equality or CNF-completeness premise.
+
+The production apply decisions and a small one-bit term/difference corpus are
+kernel-pinned by `TestNativeCNFReplayApplyMatchesLean` and
+`TestNativeCNFReplayTermMatchesLean`. This does not universally refine Go
+source names/bit bindings, word widths/adaptation, term-pointer memoization,
+reachable coverage, or the complete native admission policy. In particular,
+the model permits the empty mathematical difference, whereas the native
+audit rejects empty result widths. Source lowering, symbolic execution,
+DIMACS bytes, LRAT implementation refinement, and verdict authority remain
+separate seams.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and

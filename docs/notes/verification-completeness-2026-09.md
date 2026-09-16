@@ -386,6 +386,18 @@ direct-word contract's abstract CNF-completeness assumption. Accepted RUP gives
 word equality only with an explicit result-to-root equality premise; arbitrary
 Go/projection refinement, source/root provenance, DIMACS bytes, LRAT
 implementation refinement, and compiler verdict authority remain open.
+The bounded Boolean replay model now goes further: `Oak.CNFMemoWitness`
+proves every accepted memo hit names its decoded gate, and
+`Oak.CNFReplayApply`/`Oak.CNFReplayMemo` prove the exact binary folds and memo
+semantics. `Oak.CNFReplayTerm` establishes input-slot stability and recursive
+original-input semantics. `Oak.CNFReplayCertificate.replayed_words_equal`
+therefore obtains equality of words packed from supplied paired bit
+expressions using accepted RUP, without a separate root-equality or
+CNF-completeness assumption. Apply decisions and a small one-bit production
+term/difference corpus are kernel-pinned. This does not prove arbitrary Go
+source-name/bit/word projection, width adaptation, term-pointer memoization,
+reachable coverage, or the full native admission policy; the model theorem
+must not be promoted to a whole-source/compiler verification claim.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
