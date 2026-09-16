@@ -167,10 +167,14 @@ the claim term, and checks the four-way outcome and exact filtered root order
 before streaming its actual builder snapshot through the
 allocator/gate/clause/final-edge audit.
 `Oak.CNFFinalObligation` proves the corresponding decoded-root construction
-and counterexample semantics. Go-to-Lean refinement,
-recorded-gate/bit-blaster and term-to-root semantics, trap/claim term-list
-provenance and source ordering, folds/memo completeness, and the complete
-builder remain open; the clause engine written in Oak
+and counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation
+and transports counterexample semantics for a supplied normalized Boolean
+term/root encoding. The concrete audit now also requires an exact bijection between gate
+records and their unique-table memo entries, rejecting record shapes the
+builder should have folded. Go-to-Lean refinement, actual Go term/root
+encoding, bit-blaster operation and fold selection, term-memo semantics,
+trap/claim term-list provenance and source ordering, and the complete builder
+remain open; the clause engine written in Oak
 (`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
@@ -235,13 +239,15 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
    operands) also get a constructed gate-clause model. `Oak.CNFBuilderTrace`
    checks that premise for a supplied shared-allocation projection, while the
    `Oak.CNFFinalObligation` proves the corresponding four-way decoded-root
-   construction. The concrete exporter independently memo-replays its supplied
-   trap terms in slice order and claim term, checks every outcome, and audits
-   its actual allocation, gate-clause, and final-edge snapshot before DIMACS.
-   Recorded-gate/bit-blaster
-   and term-to-root semantics, trap/claim term-list provenance and source
-   ordering, folds/memoization, DIMACS, and Go-to-Lean implementation refinement
-   remain open (`performance.md` §13 "Trusted base
+   construction, and `Oak.CNFTermRoot` composes a supplied normalized Boolean
+   term/root encoding through it. The concrete exporter independently
+   memo-replays its supplied trap terms in slice order and claim term, checks
+   every outcome and the exact gate-record/unique-table-memo bijection, and
+   audits its actual allocation, gate-clause, and final-edge snapshot before
+   DIMACS. Actual Go term/root encoding, bit-blaster operation and fold
+   selection, term-memo semantics, trap/claim term-list provenance and source
+   ordering, DIMACS, and Go-to-Lean implementation refinement remain open
+   (`performance.md` §13 "Trusted base
    of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the

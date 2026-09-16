@@ -194,17 +194,22 @@ input/gate allocation stream and proves that acceptance gives contiguous
 unique shared allocations, exact complement-edge and operation-tag decoding,
 backward operands, and `WellFormedSequence`. `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
-satisfied exactly when a trap fires or the claim is false. Independently, the
-concrete exporter memo-replays the supplied trap terms in slice order and the
-claim term, and checks the producer's root filtering, order, polarity, and outcome before every
-successful return. A pending snapshot additionally passes through
-`validateCNFTrace` before serialization, checking allocator
-coverage/disjointness, exact raw-clause order and multiplicity, and exact
-final-edge conversion. Any mismatch among those checked representations
-refuses export. It does not yet prove the Go checkers refine the Lean checkers,
-recorded-gate/bit-blaster or term-to-root semantics, trap/claim term-list
-provenance or source ordering, fold/memo completeness, or DIMACS
-correspondence.
+satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
+proves evaluation preservation and pending counterexample semantics for a
+supplied normalized one-bit Boolean term/root encoding under those gate
+equations. Independently, the concrete exporter memo-replays the supplied trap
+terms in slice order and the claim term, and checks the producer's root
+filtering, order, polarity, and outcome before every successful return. A
+pending snapshot additionally passes through
+`validateCNFTrace` before serialization, checking the exact
+gate-record/unique-table-memo bijection, allocator coverage/disjointness, exact
+raw-clause order and multiplicity, and exact final-edge conversion; settled
+outcomes run the gate/memo audit separately. Any mismatch among those checked
+representations refuses export. It does not yet prove the Go checkers refine
+the Lean checkers, actual Go terms satisfy `CNFTermRoot.Encodes`, or the
+bit-blaster selects the right operations and folds. Term-memo semantics,
+trap/claim term-list provenance or source ordering, and DIMACS correspondence
+also remain open.
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,

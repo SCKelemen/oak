@@ -188,15 +188,24 @@ event list and proves that acceptance gives contiguous unique input/gate
 allocation, exact edge/op decoding, backward-only operands, and
 `WellFormedSequence`. `Oak.CNFFinalObligation` gives the four total outcomes
 for decoded roots and proves exact trap order, claim-negation polarity, and the
-pending clause's counterexample semantics. At runtime,
+pending clause's counterexample semantics. `Oak.CNFTermRoot` proves that a
+supplied normalized one-bit Boolean term/root `Encodes` relation preserves
+evaluation under those gate equations, and composes it through the pending
+counterexample database. At runtime,
 `validateCNFObligation` memo-replays the supplied trap terms in slice order and
 the claim before every successful return and independently checks the
-producer's outcome and filtered edge list. `validateCNFTrace` then streams a pending
-builder's exact raw clauses and final edge-to-literal conversion before DIMACS
-export; structural violations or mismatches within the checked snapshots
-refuse. This is not yet a Go-to-Lean implementation refinement and does not
-prove recorded-gate provenance, folding/memoization, term-to-root blasting,
-trap/claim term-list provenance or source ordering, or DIMACS correspondence.
+producer's outcome and filtered edge list. The pending `validateCNFTrace` pass
+also requires an exact gate-record/unique-table-memo bijection while streaming
+the builder's exact raw clauses and final edge-to-literal conversion before
+DIMACS export; settled outcomes run the gate/memo check separately. Structural
+violations or mismatches within the checked snapshots refuse. `lowerTheorem`
+funnels its final one-bit and aggregate-tag-hypothesis wrapping through
+`assembleTheoremRoots`; structural and semantic tests pin supplied
+lowering-encounter order, path polarity, inline-call placement, and counted-loop
+multiplicity. This is not yet a Go-to-Lean implementation refinement and does
+not prove actual Go terms satisfy `CNFTermRoot.Encodes`, correct fold or
+bit-blaster operation selection, term-memo semantics, trap/claim term-list
+provenance or source ordering, or DIMACS correspondence.
 
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
@@ -874,13 +883,15 @@ In order of payoff, each reusing a surface that exists:
   `Oak.TseitinCNF`; `Oak.CNFBuilderTrace` proves that an accepted supplied
   allocation-event projection decodes to a `WellFormedSequence`. The concrete
   `Oak.CNFFinalObligation` proves exact decoded-root outcome and pending-clause
-  semantics. The concrete exporter now memo-replays the supplied trap/claim
-  terms and independently checks every outcome, allocator coverage,
-  gate/clause order and multiplicity, backward operands, and final
-  edge-to-literal conversion. Production gate/bit-blaster and term-to-root
-  semantics, trap/claim term-list provenance and source ordering,
-  folding/memoization, DIMACS construction, and Go-to-Lean implementation
-  refinement remain open. GPU solving is
+  semantics; `Oak.CNFTermRoot` composes a supplied normalized Boolean
+  term/root encoding through that database. The concrete exporter now
+  memo-replays the supplied trap/claim terms and independently checks every
+  outcome, the exact gate-record/unique-table-memo bijection, allocator
+  coverage, gate/clause order and multiplicity, backward operands, and final
+  edge-to-literal conversion. Actual Go term/root encoding, bit-blaster
+  operation and fold selection, term-memo semantics, trap/claim term-list
+  provenance and source ordering, DIMACS construction, and Go-to-Lean
+  implementation refinement remain open. GPU solving is
   not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
   obligation here is kilobytes — but the many small independent

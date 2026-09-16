@@ -442,29 +442,47 @@ by the negated symbolic claim. For a pending outcome, satisfying that clause is
 equivalent to some trap firing or the claim being false; the theorem composes
 with the gate/database characterization above.
 
+`Oak.CNFTermRoot` closes a bounded semantic bridge for a supplied normalized
+one-bit Boolean shell: constants, designated inputs, complement, and
+gate-emitting AND, OR, XOR, and ITE. If its `Encodes` relation connects those
+terms to decoded roots in a gate-consistent raw-gate list, root evaluation is
+the term evaluation. The theorem carries that equality through the ordered
+trap/claim counterexample condition and the pending builder database, and an
+accepted `CNFBuilderTrace` supplies the needed gate-consistent assignment.
+This is conditional term/root evidence, not a proof that the Go blaster
+constructs `Encodes`.
+
 At the concrete export boundary, `validateCNFObligation` independently replays
 the supplied trap terms in slice order and the claim term through the
 completed blaster's memo. It requires exactly one bit per root and no change to
-the builder or blaster snapshot, then streams those roots against the
+the builder/blaster count snapshot, then streams those roots against the
 producer's filtered edge sequence and four-way outcome. This check runs before
 every successful return, including settled paths. On a pending path,
 `validateCNFTrace` additionally audits the actual `cnfBuilder` snapshot before
 counts or DIMACS text become authoritative. It checks shared-allocation
-coverage and disjointness, ordered outputs and backward operands, reconstructs
-and streams the exact 3/3/4/6 raw clauses against both the builder and emitted
-lists without sorting or deduplication, and independently converts the checked
-obligation edges into the one final clause. Violations or mismatches within
-those representations refuse export. The trace checker's success-path
+coverage and disjointness, ordered outputs and backward operands, and an exact
+bijection from every recorded gate to its production-shaped unique-table memo
+key and output. It rejects binary/ITE shapes the production builder should
+have folded, reconstructs and streams the exact 3/3/4/6 raw clauses against
+both the builder and emitted lists without sorting or deduplication, and
+independently converts the checked obligation edges into the one final clause.
+Settled outcomes run the same gate/memo audit without requiring an emitted
+clause. Violations or mismatches within those representations refuse export.
+The pending check adds no gate pass for the memo audit; its success-path
 workspace is one byte per allocated variable plus fixed-size gate-clause
-storage; root replay is memo-only and linear in the number of roots.
+storage. The standalone gate/memo scan allocates no auxiliary storage; root
+replay is memo-only and linear in the number of roots.
 
 This still is not a Go-to-Lean refinement. It does not prove that recorded
-gates correspond to the bit-blaster operations or that folds and memo hits are
-complete. The obligation audit establishes assembly from memo-replayed roots,
-not the correctness of term-to-root blasting. Settled paths run the root audit
-but have no emitted formula for the clause-trace audit. Bit-blaster semantics,
-trap/claim term-list provenance and source ordering, DIMACS serialization and
-parsing, and implementation correspondence remain separate obligations.
+gates correspond to the operations the bit blaster should have selected.
+The concrete gate/unique-table snapshot is now checked bijectively, but fold
+selection, term-memo correctness, and actual Go satisfaction of
+`CNFTermRoot.Encodes` remain open. The obligation audit establishes assembly
+from memo-replayed roots, not the correctness of term-to-root blasting.
+Settled paths run the root and gate/memo audits but have no emitted formula
+for the clause-trace audit. Bit-blaster semantics, trap/claim term-list
+provenance and source ordering, DIMACS serialization and parsing, and formal
+implementation correspondence remain separate obligations.
 
 This is an **additional audit**, not a compiler admission path: it cannot
 create or promote `VerdictProven`, and the verifier cache cannot stand in for

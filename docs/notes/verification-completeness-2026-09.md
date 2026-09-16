@@ -353,14 +353,17 @@ satisfying all gate clauses, with the final-clause model correctly conditional.
 `Oak.CNFBuilderTrace` derives that premise for an accepted supplied contiguous
 allocation-event projection. `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
-counterexample semantics. The production exporter now memo-replays the
+counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
+pending database semantics for a supplied normalized one-bit Boolean term/root
+encoding. The production exporter now memo-replays the
 supplied trap terms in slice order and the claim, and independently checks
-every outcome before performing the streaming audit of its actual shared allocation,
-raw-gate clause sequence, and final edge conversion. Recorded-gate provenance
-and term-to-root semantics from the bit blaster, trap/claim term-list provenance
-and source ordering, DIMACS, and formal Go-to-Lean implementation refinement
-remain open. The next step remains bit-blaster and
-checker implementation refinement,
+every outcome and the exact gate-record/unique-table-memo bijection before
+performing the streaming audit of its actual shared allocation, raw-gate
+clause sequence, and final edge conversion. Actual Go satisfaction of the
+term/root relation, bit-blaster operation and fold selection, term-memo
+semantics, trap/claim term-list provenance and source ordering, DIMACS, and
+formal Go-to-Lean implementation refinement remain open. The next step remains
+bit-blaster and checker implementation refinement,
 followed by requiring the leaf checker below compiler selection so certificate
 acceptance can safely become verdict authority.
 
