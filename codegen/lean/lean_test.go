@@ -425,6 +425,7 @@ func TestExtractionFloatOps(t *testing.T) {
 kernel: (a: f64, b: f64, c: f64): f64 = fma(a, b, -c)
 fused64: (a: f64, b: f64, c: f64): f64 = fma(a, b, c)
 fused32: (a: f32, b: f32, c: f32): f32 = fma(a, b, c)
+mixed: (a: f32, b: f32, x: f64, y: f64): f64 = fma(f64(a + b), x, y)
 signed: (x: f32, y: f32): f32 = copysign(abs(x), y)
 nearest: (x: f64): f64 = round_even(x)
 `
@@ -437,6 +438,7 @@ nearest: (x: f64): f64 = round_even(x)
 		"(Oak.FloatOps.fma64 a b (-c))",
 		"(Oak.FloatOps.fma64 a b c)",
 		"(Oak.FloatOps.fma32 a b c)",
+		"(Oak.FloatOps.fma64 ((a + b).toFloat) x y)",
 		"(Oak.FloatOps.copysign32 (Float32.abs x) y)",
 		"(Oak.FloatOps.roundEven64 x)",
 	} {
