@@ -4664,6 +4664,51 @@ func (v *oakValue) copy() *oakValue {
 	return out
 }
 
+// overwriteValue copies src into dst without replacing aggregate nodes.
+// Assignments resolve their destination before lowering the right-hand side;
+// a conditional on that side snapshots and restores locals. Keeping the
+// nodes stable ensures the resolved destination still belongs to its local
+// after the restore rather than naming a detached pre-branch copy.
+func overwriteValue(dst, src *oakValue) {
+	dst.typ = src.typ
+	dst.scalar = src.scalar
+	if src.fields == nil {
+		dst.fields = nil
+	} else {
+		if dst.fields == nil {
+			dst.fields = make(map[string]*oakValue, len(src.fields))
+		}
+		for name := range dst.fields {
+			if _, present := src.fields[name]; !present {
+				delete(dst.fields, name)
+			}
+		}
+		for name, field := range src.fields {
+			if current := dst.fields[name]; current != nil {
+				overwriteValue(current, field)
+			} else {
+				dst.fields[name] = field.copy()
+			}
+		}
+	}
+	if src.elems == nil {
+		dst.elems = nil
+	} else {
+		if len(dst.elems) != len(src.elems) {
+			current := dst.elems
+			dst.elems = make([]*oakValue, len(src.elems))
+			copy(dst.elems, current)
+		}
+		for i, elem := range src.elems {
+			if dst.elems[i] != nil {
+				overwriteValue(dst.elems[i], elem)
+			} else {
+				dst.elems[i] = elem.copy()
+			}
+		}
+	}
+}
+
 // leaves visits every scalar leaf of two values of one type in step.
 func leaves(a, b *oakValue, visit func(a, b *oakValue)) {
 	if a.scalar != nil || b.scalar != nil {
@@ -5836,7 +5881,7 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 			for i := len(cases) - 1; i >= 0; i-- {
 				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
 			}
-			local.agg = merged
+			overwriteValue(local.agg, merged)
 			continue
 		}
 		merged := outcomes[fallback][name].value
@@ -6076,7 +6121,7 @@ func (lo *oakLowering) assignPlace(target *oakValue, value ast.Expression) (stri
 	if !ok {
 		return reason, false
 	}
-	target.fields, target.elems = fresh.fields, fresh.elems
+	overwriteValue(target, fresh)
 	return "", true
 }
 
@@ -6520,7 +6565,7 @@ func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, 
 			for i := len(cases) - 1; i >= 0; i-- {
 				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
 			}
-			local.agg = merged
+			overwriteValue(local.agg, merged)
 			continue
 		}
 		merged := outcomes[fallback][name].value
@@ -6605,7 +6650,7 @@ func (lo *oakLowering) restoreLocals(values map[string]localSnapshot) {
 		local := lo.locals[name]
 		local.value = snap.value
 		if snap.agg != nil {
-			local.agg = snap.agg.copy()
+			overwriteValue(local.agg, snap.agg)
 		}
 	}
 }

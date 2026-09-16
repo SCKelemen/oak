@@ -1031,7 +1031,7 @@ parse_pattern: (p: Par, w: [*]u32, src: []u32): u32 {
   while depth > u32(0) && !px_failed(p, w) {
     depth = depth - u32(1)
     node: u32 = px_node(p, w, RAW_PAT_VARIANT, levels[depth * u32(2)], levels[depth * u32(2) + u32(1)], out, u32(0), u32(0))
-    out != NONE ? { expect_peek(p, w, T_RPAREN, u32(273)) } | { }
+    out != NONE ? { _ = expect_peek(p, w, T_RPAREN, u32(273)) } | { }
     out = node
   }
   px_failed(p, w) ? { NONE } | { out }
@@ -1562,7 +1562,7 @@ func_group: (p: Par, w: [*]u32, src: []u32, at: u32): () {
   while more && !px_failed(p, w) {
     expect_peek(p, w, T_IDENT, u32(350)) ? {
       px_acc_push(p, w, px_intern_token(p, w, src, cur(p, w)))
-      peek_kind(p, w) == T_COLON ? { more = false } | { expect_peek(p, w, T_COMMA, u32(351)) }
+      peek_kind(p, w) == T_COLON ? { more = false } | { _ = expect_peek(p, w, T_COMMA, u32(351)) }
     } | { }
   }
   px_failed(p, w) ? { } | {
