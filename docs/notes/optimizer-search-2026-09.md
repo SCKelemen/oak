@@ -1131,7 +1131,15 @@ This phase targets the measured UTF-8 call/spill gap directly.
     rewrite is easy, but the seam checker admits no vector access at a
     variable index through a span bound over a frame array — "memory
     operands go through the declared sp frame or a bound span base" — so
-    the checker's frame idiom has to learn the element address first), elements at `i ± k`
+    the checker's frame idiom has to learn the element address first),
+    and the RV64 lane (tried 2026-09-16 with V: the rewritten shape lowers
+    to RVV and proves, but is priced 23717 against the scalar loop's 7451
+    — the machine lift reads no RVV instruction (`vmv.v.x` and the rest
+    are unknown to it), so `LoopShapes` finds no stride and the main
+    loop is charged all 256 trips, and the lane's RVV lowering stores
+    vectors through the frame, 46 instructions and 5 stores a trip; the
+    plumbing through `compileRV64` stays, the transform stays AArch64
+    only until the lift knows RVV), elements at `i ± k`
     (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:

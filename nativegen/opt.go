@@ -266,6 +266,14 @@ func Transforms() []opt.Transform {
 			// guard, the remainder as written, licensed by Oak.Map.blocked_eq
 			// — lane-wise semantics alone, no law of the element type, so no
 			// fact of the body is required.
+			// AArch64 only for now: the RV64 lane lowers the rewritten shape
+			// (RVV under the lane's fixed configurations) and proves it, but
+			// the form is priced three times the scalar loop — the machine
+			// lift reads no RVV instruction, so the recurrence analysis finds
+			// no stride and the main loop is charged every trip, and the RVV
+			// lowering itself stores vectors through the frame — so the
+			// search would materialize it for nothing (2026-09-16; the
+			// plumbing through compileRV64 is in place).
 			name: TransformVectorMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.VectorMaps },

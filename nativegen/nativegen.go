@@ -1806,7 +1806,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, nil, false)
+			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, false, nil, false)
 			if err == nil {
 				template.Callees = functions
 				out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
@@ -1815,7 +1815,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.VectorMaps, lane.ElideProven, lane.GuardLines, lane.Strength)
 		}
 		if err != nil {
 			return nil, err
