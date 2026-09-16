@@ -144,7 +144,18 @@ conditional-edge arguments still interfere. Both selectors support Bool and
 normalizes narrow values in W registers. RV64 preserves canonical sign-extended
 32-bit values, explicitly zero-extends `u32` when widening to `u64`, and
 canonicalizes Bool/narrow ABI inputs before use. They refuse effects, traps,
-calls, memory, stack arguments, unknown operations, and remaining pressure.
+memory, stack arguments, unknown operations, and remaining pressure. The first
+direct-call slice is deliberately smaller than the projected call vocabulary:
+it admits only a known direct Oak callee with zero or one matching
+Bool/8/16/32/64-bit scalar argument and exactly one matching scalar result. The
+operation must have exactly the `EffectCall` effect and exactly one nonempty
+`callee` attribute, and no other non-unit value may be live across it because
+the color pools are caller-saved. Calling bodies reserve sixteen bytes to
+save/restore `x30` on AArch64 or `ra` on RV64, pass the optional argument and
+result through the ABI register, and normalize Bool/narrow results after
+return. Other calls refuse the OptIR candidate and retain the ordinary
+lowering. The abstract spill plan does not yet emit traffic or compose its
+future frame with this call frame.
 Before selection, a target-independent layout analysis gives loop
 continuation/backedges an 8:1 static preference and leaves other branches
 neutral. Its fingerprint-bound order is an exact block permutation. AArch64

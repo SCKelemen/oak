@@ -199,6 +199,193 @@ narrow_branch: (x: i8): i32 = {
 	}
 }
 
+func TestLowerOptIRArm64VerifiesDirectScalarCall(t *testing.T) {
+	functions := parseOptIRArm64CallFunctions(t, `
+inc8: (x: u8): u8 = x + u8(1)
+call_inc8: (x: u8): u8 = inc8(x)
+`)
+	callee, caller := functions["inc8"], functions["call_inc8"]
+	template := &asm.Function{
+		Name: "call_inc8", Arch: asm.ArchArm64, Signature: caller, Fallback: true,
+		Bindings: []asm.Binding{{Register: w(0), Param: "x"}},
+		Callees:  map[string]*ast.FunctionStatement{"inc8": callee},
+	}
+	cfg := optir.CFG{
+		Name: "call_inc8", Entry: 0, Results: []optir.Type{"u8"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u8", Name: "x"}},
+			Operations: []optir.Operation{{
+				Code: optir.OpCall, Results: []optir.Value{{ID: 2, Type: "u8"}}, Operands: []optir.ValueID{1},
+				Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "inc8"}},
+			}},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
+		}},
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, caller, map[string]bool{"inc8": true}); len(findings) != 0 {
+		t.Fatalf("selected call body fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, caller, caller.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected call body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	if lowered.Frame != 16 {
+		t.Fatalf("call body frame = %d, want 16", lowered.Frame)
+	}
+	clobbersLink := false
+	for _, register := range lowered.Clobbers {
+		clobbersLink = clobbersLink || register.Num == 30
+	}
+	savesLink, restoresLink := false, false
+	for _, item := range lowered.Items {
+		instruction, ok := item.(asm.Instruction)
+		if !ok || len(instruction.Operands) != 2 {
+			continue
+		}
+		register, registerOK := instruction.Operands[0].(asm.Register)
+		memory, memoryOK := instruction.Operands[1].(asm.Memory)
+		if !registerOK || !memoryOK || register.Num != 30 || memory.Base.Class != asm.ClassSP {
+			continue
+		}
+		savesLink = savesLink || instruction.Mnemonic == "str" && memory.Mode == asm.MemPreIndex && memory.Offset == -16
+		restoresLink = restoresLink || instruction.Mnemonic == "ldr" && memory.Mode == asm.MemPostIndex && memory.Offset == 16
+	}
+	body := text(lowered.Items)
+	if !clobbersLink || !savesLink || !restoresLink || !strings.Contains(body, "bl inc8") || !strings.Contains(body, "uxtb w0, w0") {
+		t.Fatalf("direct call lacks its frame, ABI normalization, or link-register contract:\nclobbers=%v\n%s", lowered.Clobbers, body)
+	}
+}
+
+func TestLowerOptIRArm64VerifiesZeroArgumentBoolCall(t *testing.T) {
+	functions := parseOptIRArm64CallFunctions(t, `
+truth: (): Bool = true
+call_truth: (): Bool = truth()
+`)
+	callee, caller := functions["truth"], functions["call_truth"]
+	template := &asm.Function{
+		Name: "call_truth", Arch: asm.ArchArm64, Signature: caller, Fallback: true,
+		Callees: map[string]*ast.FunctionStatement{"truth": callee},
+	}
+	cfg := optir.CFG{
+		Name: "call_truth", Entry: 0, Results: []optir.Type{optir.TypeBool},
+		Blocks: []optir.Block{{
+			ID: 0,
+			Operations: []optir.Operation{{
+				Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: optir.TypeBool}},
+				Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "truth"}},
+			}},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+		}},
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, caller, map[string]bool{"truth": true}); len(findings) != 0 {
+		t.Fatalf("selected zero-argument call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, caller, caller.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected zero-argument call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	body := text(lowered.Items)
+	if !strings.Contains(body, "bl truth") || !strings.Contains(body, "and w0, w0, #1") {
+		t.Fatalf("zero-argument Bool call lacks result normalization:\n%s", body)
+	}
+}
+
+func TestLowerOptIRArm64RefusesCallsOutsideClosedSlice(t *testing.T) {
+	functions := parseOptIRArm64CallFunctions(t, `
+inc8: (x: u8): u8 = x + u8(1)
+inc32: (x: u32): u32 = x + u32(1)
+add8: (x: u8, y: u8): u8 = x + y
+call_inc8: (x: u8): u8 = inc8(x)
+call_add8: (x: u8, y: u8): u8 = add8(x, y)
+`)
+	baseCall := func() optir.Operation {
+		return optir.Operation{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 2, Type: "u8"}}, Operands: []optir.ValueID{1},
+			Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "inc8"}},
+		}
+	}
+	lower := func(name string, declaration *ast.FunctionStatement, parameters []optir.Value, bindings []asm.Binding, operations []optir.Operation, result optir.ValueID, callees map[string]*ast.FunctionStatement) error {
+		template := &asm.Function{Name: name, Arch: asm.ArchArm64, Signature: declaration, Bindings: bindings, Callees: callees}
+		_, err := LowerOptIRArm64(optir.CFG{
+			Name: name, Entry: 0, Results: []optir.Type{"u8"},
+			Blocks: []optir.Block{{ID: 0, Parameters: parameters, Operations: operations, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{result}}}},
+		}, template)
+		return err
+	}
+	parameter := []optir.Value{{ID: 1, Type: "u8", Name: "x"}}
+	binding := []asm.Binding{{Register: w(0), Param: "x"}}
+	known := map[string]*ast.FunctionStatement{"inc8": functions["inc8"]}
+
+	t.Run("unknown callee", func(t *testing.T) {
+		if err := lower("call_inc8", functions["call_inc8"], parameter, binding, []optir.Operation{baseCall()}, 2, nil); err == nil || !strings.Contains(err.Error(), "known direct Oak callee") {
+			t.Fatalf("unknown callee error = %v", err)
+		}
+	})
+	t.Run("mismatched signature", func(t *testing.T) {
+		call := baseCall()
+		call.Attributes[0].Value = "inc32"
+		if err := lower("call_inc8", functions["call_inc8"], parameter, binding, []optir.Operation{call}, 2, map[string]*ast.FunctionStatement{"inc32": functions["inc32"]}); err == nil || !strings.Contains(err.Error(), "Oak type") {
+			t.Fatalf("mismatched callee error = %v", err)
+		}
+	})
+	t.Run("two arguments", func(t *testing.T) {
+		call := baseCall()
+		call.Operands = []optir.ValueID{1, 2}
+		call.Results[0].ID = 3
+		call.Attributes[0].Value = "add8"
+		parameters := []optir.Value{{ID: 1, Type: "u8", Name: "x"}, {ID: 2, Type: "u8", Name: "y"}}
+		bindings := []asm.Binding{{Register: w(0), Param: "x"}, {Register: w(1), Param: "y"}}
+		if err := lower("call_add8", functions["call_add8"], parameters, bindings, []optir.Operation{call}, 3, map[string]*ast.FunctionStatement{"add8": functions["add8"]}); err == nil || !strings.Contains(err.Error(), "at most one") {
+			t.Fatalf("multi-argument call error = %v", err)
+		}
+	})
+	t.Run("malformed effect", func(t *testing.T) {
+		call := baseCall()
+		call.Effects = nil
+		if err := lower("call_inc8", functions["call_inc8"], parameter, binding, []optir.Operation{call}, 2, known); err == nil || !strings.Contains(err.Error(), "exactly the Control.Call effect") {
+			t.Fatalf("malformed call effect error = %v", err)
+		}
+	})
+	t.Run("extra attribute", func(t *testing.T) {
+		call := baseCall()
+		call.Attributes = append(call.Attributes, optir.Attribute{Name: optir.AttributeValue, Value: "not-call-metadata"})
+		if err := lower("call_inc8", functions["call_inc8"], parameter, binding, []optir.Operation{call}, 2, known); err == nil || !strings.Contains(err.Error(), "exactly one callee") {
+			t.Fatalf("extra call attribute error = %v", err)
+		}
+	})
+	t.Run("live value", func(t *testing.T) {
+		constant := optir.Operation{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u8"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "7"}}}
+		call := baseCall()
+		call.Results[0].ID = 3
+		add := optir.Operation{Code: optir.OpIntAdd, Results: []optir.Value{{ID: 4, Type: "u8"}}, Operands: []optir.ValueID{2, 3}}
+		if err := lower("call_inc8", functions["call_inc8"], parameter, binding, []optir.Operation{constant, call, add}, 4, known); err == nil || !strings.Contains(err.Error(), "live across a call") {
+			t.Fatalf("live-across call error = %v", err)
+		}
+	})
+}
+
+func parseOptIRArm64CallFunctions(t *testing.T, source string) map[string]*ast.FunctionStatement {
+	t.Helper()
+	parsed := parser.New(layout.New(scanner.New(source)))
+	program := parsed.ParseProgram()
+	if errs := parsed.Errors(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	functions := map[string]*ast.FunctionStatement{}
+	for _, statement := range program.Statements {
+		function, ok := statement.(*ast.FunctionStatement)
+		if ok && function.Name != nil {
+			functions[function.Name.Value] = function
+		}
+	}
+	return functions
+}
+
 func TestLowerOptIRArm64RefusesEffects(t *testing.T) {
 	decl := &ast.FunctionStatement{Name: &ast.Identifier{Value: "f"}, ReturnType: &ast.Identifier{Value: "u32"}}
 	template := &asm.Function{Name: "f", Signature: decl}

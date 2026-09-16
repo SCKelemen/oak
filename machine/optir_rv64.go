@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/optir"
 )
 
@@ -19,8 +20,9 @@ const optIRRV64CopyScratch = 31
 // LowerOptIRRV64 selects an admitted RV64 body from a verified optimized
 // OptIR CFG. Its vocabulary is deliberately closed: Bool and fixed-width
 // integer constants, copies, widening casts, total arithmetic, comparisons,
-// branches, and SSA edge arguments. Effects, trapping operations, calls,
-// memory, stack arguments, and excess register pressure refuse the candidate.
+// branches, SSA edge arguments, and a deliberately narrow class of direct
+// scalar calls. Other effects, trapping operations, memory, stack arguments,
+// values live across calls, and excess register pressure refuse the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -68,10 +70,14 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR RV64 allocation: %w", err)
 	}
+	calls, err := optIRRV64Calls(cfg, template, types, coloring.LiveOut)
+	if err != nil {
+		return nil, err
+	}
 
 	selector := &optIRRV64Selector{
 		cfg: cfg, types: types, colors: coloring.Colors,
-		labels: map[optir.BlockID]string{}, written: map[int]bool{},
+		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls,
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -86,6 +92,9 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 	out.Bindings = append([]asm.Binding(nil), template.Bindings...)
 	out.Clobbers = nil
 	out.Frame = 0
+	if len(calls) != 0 {
+		out.Frame = 16
+	}
 	out.System = false
 	out.Globals = nil
 	out.StackArgs = 0
@@ -117,6 +126,7 @@ type optIRRV64Selector struct {
 	labels  map[optir.BlockID]string
 	items   []asm.Item
 	written map[int]bool
+	calls   map[optir.ValueID]string
 	edges   int
 }
 
@@ -125,6 +135,11 @@ func (selector *optIRRV64Selector) lower() error {
 		line := optIRBlockLine(block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
+			if len(selector.calls) != 0 {
+				sp := optIRRV64SP()
+				selector.emit("addi", line, sp, sp, asm.Immediate{Value: -16})
+				selector.emit("sd", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+			}
 			// Do not let unspecified ABI padding become part of an Oak value.
 			// Bool retains one bit; narrow integers are restored to their
 			// signed or unsigned canonical representation before first use.
@@ -145,7 +160,7 @@ func (selector *optIRRV64Selector) lower() error {
 }
 
 func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
-	if len(operation.Effects) != 0 {
+	if operation.Code != optir.OpCall && len(operation.Effects) != 0 {
 		return fmt.Errorf("effectful operation %s", operation.Code)
 	}
 	if len(operation.Results) != 1 {
@@ -239,6 +254,18 @@ func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 		return nil
 	case optir.OpEqual, optir.OpNotEqual, optir.OpLess, optir.OpLessEqual, optir.OpGreater, optir.OpGreaterEqual:
 		return selector.compare(operation, line)
+	case optir.OpCall:
+		callee, admitted := selector.calls[result.ID]
+		if !admitted {
+			return fmt.Errorf("call is outside the admitted direct-call set")
+		}
+		if len(operation.Operands) == 1 {
+			selector.move(10, selector.register(operation.Operands[0]), line)
+		}
+		selector.emit("call", line, asm.Symbol{Name: callee})
+		selector.move(destination, 10, line)
+		selector.normalize(destination, result.Type, line)
+		return nil
 	default:
 		return fmt.Errorf("operation %s is outside the closed selector vocabulary", operation.Code)
 	}
@@ -340,6 +367,11 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		value := terminator.Values[0]
 		if selector.types[value] != optir.Type("()") {
 			selector.move(10, selector.register(value), line)
+		}
+		if len(selector.calls) != 0 {
+			sp := optIRRV64SP()
+			selector.emit("ld", line, optIRRV64Register(1), asm.Memory{Base: sp, Offset: 8, Mode: asm.MemOffset})
+			selector.emit("addi", line, sp, sp, asm.Immediate{Value: 16})
 		}
 		selector.emit("ret", line)
 		return nil
@@ -500,6 +532,103 @@ func (selector *optIRRV64Selector) edgeLabel(block optir.BlockID, side string) s
 	return "optir_e" + strconv.FormatUint(uint64(block), 10) + "_" + side + "_" + strconv.Itoa(selector.edges)
 }
 
+// optIRRV64Calls closes the first call subset before selection. Every
+// allocatable register is caller-saved, so no non-unit value may be live
+// immediately after a call other than that call's result. The backward scan
+// combines block LiveOut evidence with local uses and does not infer
+// preservation from a fortuitous physical color.
+func optIRRV64Calls(cfg optir.CFG, template *asm.Function, types map[optir.ValueID]optir.Type, liveOut map[optir.BlockID][]optir.ValueID) (map[optir.ValueID]string, error) {
+	calls := map[optir.ValueID]string{}
+	for _, block := range cfg.Blocks {
+		live := map[optir.ValueID]bool{}
+		for _, value := range liveOut[block.ID] {
+			live[value] = true
+		}
+		for _, value := range optIRTerminatorUses(block.Terminator) {
+			live[value] = true
+		}
+		for index := len(block.Operations) - 1; index >= 0; index-- {
+			operation := block.Operations[index]
+			if operation.Code != optir.OpCall {
+				for _, result := range operation.Results {
+					delete(live, result.ID)
+				}
+				for _, operand := range operation.Operands {
+					if types[operand] != optir.Type("()") {
+						live[operand] = true
+					}
+				}
+				continue
+			}
+			calleeName, result, err := optIRRV64Call(operation, template, types)
+			if err != nil {
+				return nil, fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
+			}
+			delete(live, result.ID)
+			for value := range live {
+				if types[value] != optir.Type("()") {
+					return nil, fmt.Errorf("machine: OptIR block %d operation %s: value %d is live across a call", block.ID, operation.Code, value)
+				}
+			}
+			calls[result.ID] = calleeName
+			for _, operand := range operation.Operands {
+				if types[operand] != optir.Type("()") {
+					live[operand] = true
+				}
+			}
+		}
+	}
+	return calls, nil
+}
+
+func optIRRV64Call(operation optir.Operation, template *asm.Function, types map[optir.ValueID]optir.Type) (string, optir.Value, error) {
+	if len(operation.Results) != 1 || len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectCall {
+		return "", optir.Value{}, fmt.Errorf("call has malformed result or effect evidence")
+	}
+	calleeName, ok := optIRAttribute(operation, optir.AttributeCallee)
+	if !ok || calleeName == "" {
+		return "", optir.Value{}, fmt.Errorf("call has no unique direct callee")
+	}
+	callee := template.Callees[calleeName]
+	if callee == nil || callee.Name == nil || callee.Name.Value != calleeName || callee.Body == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
+		return "", optir.Value{}, fmt.Errorf("call to %s is not a known direct Oak function", calleeName)
+	}
+	if len(operation.Operands) > 1 || len(callee.Parameters) > 1 {
+		return "", optir.Value{}, fmt.Errorf("call to %s has more than one scalar argument", calleeName)
+	}
+	if len(operation.Operands) != len(callee.Parameters) {
+		return "", optir.Value{}, fmt.Errorf("call to %s has %d arguments, want %d", calleeName, len(operation.Operands), len(callee.Parameters))
+	}
+	for index, parameter := range callee.Parameters {
+		if parameter == nil {
+			return "", optir.Value{}, fmt.Errorf("call to %s has a missing parameter %d", calleeName, index+1)
+		}
+		parameterType, scalar := optIRRV64ScalarType(parameter.Type)
+		if parameter.Variadic || !scalar || types[operation.Operands[index]] != parameterType {
+			return "", optir.Value{}, fmt.Errorf("call to %s parameter %d is not a matching scalar", calleeName, index+1)
+		}
+	}
+	result := operation.Results[0]
+	returnType, scalar := optIRRV64ScalarType(callee.ReturnType)
+	if !scalar || result.Type != returnType {
+		return "", optir.Value{}, fmt.Errorf("call to %s result %s does not match scalar return %s", calleeName, result.Type, returnType)
+	}
+	return calleeName, result, nil
+}
+
+func optIRRV64ScalarType(expression ast.Expression) (optir.Type, bool) {
+	identifier, ok := expression.(*ast.Identifier)
+	if !ok || identifier == nil {
+		return "", false
+	}
+	typ := optir.Type(identifier.Value)
+	if typ == optir.TypeBool {
+		return typ, true
+	}
+	_, _, ok = optIRRV64Type(typ)
+	return typ, ok
+}
+
 func optIRRV64ParameterColors(parameters []optir.Value, bindings []asm.Binding) (map[optir.ValueID]int, error) {
 	byName := map[string]asm.Binding{}
 	for _, binding := range bindings {
@@ -589,4 +718,8 @@ func optIRRV64Canonical(value uint64, typ optir.Type) int64 {
 
 func optIRRV64Register(register int) asm.Register {
 	return asm.Register{Text: rv64Names[register], Class: asm.ClassRV64X, Num: register, Lane: -1}
+}
+
+func optIRRV64SP() asm.Register {
+	return asm.Register{Text: "sp", Class: asm.ClassSP, Num: -1, Lane: -1}
 }

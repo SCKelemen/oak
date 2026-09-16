@@ -318,9 +318,18 @@ is retained with deterministic movement evidence. A changed final CFG enters
 native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
 liveness/interference coloring precedes closed AArch64 and RV64 selectors. The
 RV64 selector preserves canonical sign-extended 32-bit values and explicitly
-zero-extends unsigned widening. The direct lowering remains the identity, and
-every selected OptIR body must pass seam admission and semantic translation
-validation.
+zero-extends unsigned widening. Both selectors now admit a deliberately closed
+direct-call form: a known Oak body with zero or one matching
+Bool/8/16/32/64-bit scalar argument and exactly one matching scalar result,
+represented by exactly `EffectCall` plus one nonempty `callee` attribute. Since
+the available colors are caller-saved, any other non-unit value live across the
+call refuses the candidate. An admitted calling function reserves sixteen
+bytes to save/restore AArch64 `x30` or RV64 `ra`, uses the ABI argument/result
+register, and normalizes narrow values at the boundary. All broader call forms
+and effects still refuse. The independently verified abstract spill plan emits
+no traffic and is not yet composed with this frame. The direct lowering remains
+the identity, and every selected OptIR body must pass seam admission and
+semantic translation validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches

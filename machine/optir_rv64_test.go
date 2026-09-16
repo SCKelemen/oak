@@ -183,6 +183,183 @@ wide: (): u64 = u64(4294967296)
 	}
 }
 
+func TestLowerOptIRRV64CallsKnownScalarCalleeAndVerifies(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+inc: (x: i8): i8 = x + i8(1)
+call_inc: (ignored: i8, x: i8): i8 = inc(x)
+`)
+	declaration, callee := declarations["call_inc"], declarations["inc"]
+	template := &asm.Function{
+		Name: "call_inc", Arch: asm.ArchRV64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "ignored"}, {Register: optIRRV64Register(11), Param: "x"}},
+		Callees:  map[string]*ast.FunctionStatement{"inc": callee},
+	}
+	cfg := optir.CFG{Name: "call_inc", Entry: 0, Results: []optir.Type{"i8"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: []optir.Value{{ID: 1, Type: "i8", Name: "ignored"}, {ID: 2, Type: "i8", Name: "x"}},
+		Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "i8"}}, Operands: []optir.ValueID{2}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "inc"}},
+		}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+	}}}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered.Frame != 16 {
+		t.Fatalf("call frame = %d, want 16", lowered.Frame)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"inc": true}); len(findings) != 0 {
+		t.Fatalf("selected call body fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected call body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	body := text(lowered.Items)
+	for _, instruction := range []string{"addi sp, sp, #-16", "sd ra, [sp,#8]", "mv a0, a1", "call inc", "ld ra, [sp,#8]", "addi sp, sp, #16", "ret"} {
+		if !strings.Contains(body, instruction) {
+			t.Errorf("selected call body lacks %q:\n%s", instruction, body)
+		}
+	}
+	if strings.Count(body, "slli ") < 2 || strings.Count(body, "srai ") < 2 {
+		t.Errorf("i8 argument/result were not normalized at ABI boundaries:\n%s", body)
+	}
+	for _, register := range lowered.Clobbers {
+		if register.Num == 1 {
+			t.Errorf("restored ra was declared clobbered: %v", lowered.Clobbers)
+		}
+	}
+}
+
+func TestLowerOptIRRV64CallsKnownZeroArgumentCalleeAndVerifies(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+answer: (): u32 = u32(42)
+call_answer: (): u32 = answer()
+`)
+	declaration := declarations["call_answer"]
+	template := &asm.Function{
+		Name: "call_answer", Arch: asm.ArchRV64, Signature: declaration, Fallback: true,
+		Callees: map[string]*ast.FunctionStatement{"answer": declarations["answer"]},
+	}
+	cfg := optir.CFG{Name: "call_answer", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "answer"}},
+		}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"answer": true}); len(findings) != 0 {
+		t.Fatalf("selected zero-argument call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected zero-argument call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+}
+
+func TestLowerOptIRRV64AllowsCallResultConsumedByNextCall(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+inc: (x: u32): u32 = x + u32(1)
+twice: (x: u32): u32 = inc(inc(x))
+`)
+	declaration := declarations["twice"]
+	template := &asm.Function{
+		Name: "twice", Arch: asm.ArchRV64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "x"}},
+		Callees:  map[string]*ast.FunctionStatement{"inc": declarations["inc"]},
+	}
+	call := func(result, operand optir.ValueID) optir.Operation {
+		return optir.Operation{
+			Code: optir.OpCall, Results: []optir.Value{{ID: result, Type: "u32"}}, Operands: []optir.ValueID{operand}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "inc"}},
+		}
+	}
+	cfg := optir.CFG{Name: "twice", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}}, Operations: []optir.Operation{call(2, 1), call(3, 2)},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+	}}}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"inc": true}); len(findings) != 0 {
+		t.Fatalf("selected call chain fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected call chain verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	if count := strings.Count(text(lowered.Items), "call inc"); count != 2 {
+		t.Fatalf("selected call chain has %d calls, want 2:\n%s", count, text(lowered.Items))
+	}
+}
+
+func TestLowerOptIRRV64RefusesCallsOutsideClosedScalarSubset(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+inc: (x: u32): u32 = x + u32(1)
+add: (x: u32, y: u32): u32 = x + y
+caller: (x: u32, y: u32): u32 = inc(x) + y
+`)
+	call := func(callee string, operands []optir.ValueID) optir.Operation {
+		return optir.Operation{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: operands, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: callee}},
+		}
+	}
+	template := func() *asm.Function {
+		return &asm.Function{
+			Name: "caller", Arch: asm.ArchRV64, Signature: declarations["caller"],
+			Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "x"}, {Register: optIRRV64Register(11), Param: "y"}},
+			Callees:  map[string]*ast.FunctionStatement{"inc": declarations["inc"], "add": declarations["add"]},
+		}
+	}
+	base := func(operation optir.Operation) optir.CFG {
+		return optir.CFG{Name: "caller", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}, {ID: 2, Type: "u32", Name: "y"}},
+			Operations: []optir.Operation{operation}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+		}}}
+	}
+	for name, test := range map[string]struct {
+		cfg  optir.CFG
+		edit func(*asm.Function)
+		want string
+	}{
+		"unknown callee": {cfg: base(call("missing", []optir.ValueID{1})), edit: func(*asm.Function) {}, want: "not a known direct Oak function"},
+		"two arguments":  {cfg: base(call("add", []optir.ValueID{1, 2})), edit: func(*asm.Function) {}, want: "more than one scalar argument"},
+		"opaque callee": {
+			cfg: base(call("inc", []optir.ValueID{1})), edit: func(template *asm.Function) {
+				opaque := *template.Callees["inc"]
+				opaque.Body = nil
+				template.Callees["inc"] = &opaque
+			}, want: "not a known direct Oak function",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			selectedTemplate := template()
+			test.edit(selectedTemplate)
+			if _, err := LowerOptIRRV64(test.cfg, selectedTemplate); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("call refusal = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+
+	liveAcross := base(call("inc", []optir.ValueID{1}))
+	liveAcross.Blocks[0].Operations = append(liveAcross.Blocks[0].Operations, optir.Operation{
+		Code: optir.OpIntAdd, Results: []optir.Value{{ID: 4, Type: "u32"}}, Operands: []optir.ValueID{3, 2},
+	})
+	liveAcross.Blocks[0].Terminator.Values = []optir.ValueID{4}
+	if _, err := LowerOptIRRV64(liveAcross, template()); err == nil || !strings.Contains(err.Error(), "live across") {
+		t.Fatalf("live-across call refusal = %v", err)
+	}
+
+	malformedEffect := base(call("inc", []optir.ValueID{1}))
+	malformedEffect.Blocks[0].Operations[0].Effects = nil
+	if _, err := LowerOptIRRV64(malformedEffect, template()); err == nil || !strings.Contains(err.Error(), "effect evidence") {
+		t.Fatalf("malformed call-effect refusal = %v", err)
+	}
+}
+
 func TestLowerOptIRRV64RefusesEffectsAndWrongArchitecture(t *testing.T) {
 	declaration := &ast.FunctionStatement{Name: &ast.Identifier{Value: "f"}, ReturnType: &ast.Identifier{Value: "u32"}}
 	template := &asm.Function{Name: "f", Arch: asm.ArchRV64, Signature: declaration}
@@ -233,14 +410,27 @@ func TestLowerOptIRRV64RefusesMixedSignCast(t *testing.T) {
 
 func optIRRV64Declaration(t *testing.T, source string) *ast.FunctionStatement {
 	t.Helper()
+	for _, declaration := range optIRRV64Declarations(t, source) {
+		return declaration
+	}
+	t.Fatal("source contains no function declaration")
+	return nil
+}
+
+func optIRRV64Declarations(t *testing.T, source string) map[string]*ast.FunctionStatement {
+	t.Helper()
 	parsed := parser.New(layout.New(scanner.New(source)))
 	program := parsed.ParseProgram()
 	if errs := parsed.Errors(); len(errs) != 0 {
 		t.Fatal(errs)
 	}
-	declaration, ok := program.Statements[0].(*ast.FunctionStatement)
-	if !ok {
-		t.Fatalf("parsed declaration is %T", program.Statements[0])
+	declarations := map[string]*ast.FunctionStatement{}
+	for _, statement := range program.Statements {
+		declaration, ok := statement.(*ast.FunctionStatement)
+		if !ok || declaration.Name == nil {
+			t.Fatalf("parsed declaration is %T", statement)
+		}
+		declarations[declaration.Name.Value] = declaration
 	}
-	return declaration
+	return declarations
 }

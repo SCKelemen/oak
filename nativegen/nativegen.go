@@ -1755,6 +1755,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			var template *asm.Function
 			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false)
 			if err == nil {
+				template.Callees = functions
 				out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
 			}
 			if err == nil {
@@ -1803,6 +1804,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			var template *asm.Function
 			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, nil, false)
 			if err == nil {
+				template.Callees = functions
 				out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
 			}
 			if err == nil {

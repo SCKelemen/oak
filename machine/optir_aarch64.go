@@ -6,12 +6,14 @@ import (
 	"strconv"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/optir"
 )
 
 // The OptIR selector uses only caller-saved general registers. x8 is the
 // indirect-result register, x17 is reserved for parallel-copy cycles, and x18
-// is platform-reserved. Calls and memory effects are outside this first seam.
+// is platform-reserved. A deliberately narrow direct-call seam admits calls
+// only when no other allocated value must survive them.
 var optIRArm64Registers = []int{0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16}
 
 const optIRCopyScratch = 17
@@ -19,8 +21,9 @@ const optIRCopyScratch = 17
 // LowerOptIRArm64 selects an admitted AArch64 body from a verified optimized
 // OptIR CFG. It deliberately supports a small closed vocabulary: Bool and
 // fixed-width integer constants, copies, widening casts, total arithmetic,
-// comparisons, branches, and SSA edge arguments. Effects, trapping operations,
-// calls, stack arguments, and excess register pressure refuse the candidate.
+// comparisons, branches, SSA edge arguments, and scalar direct calls with no
+// live-across value. Other effects, trapping operations, stack arguments, and
+// excess register pressure refuse the candidate.
 // Narrow integers stay normalized in W registers: unsigned values are
 // zero-extended and signed values are sign-extended within the word. The native
 // search independently seam-checks and translation-validates every returned
@@ -66,6 +69,10 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}
+	hasCalls, err := validateOptIRArm64Calls(cfg, coloring.LiveOut, template.Callees)
+	if err != nil {
+		return nil, err
+	}
 	layout, err := optir.AnalyzeBlockLayout(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 block layout: %w", err)
@@ -77,6 +84,7 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	selector := &optIRArm64Selector{
 		cfg: cfg, types: types, colors: coloring.Colors,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, order: layout.Order,
+		hasCalls: hasCalls,
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -91,6 +99,9 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 	out.Bindings = append([]asm.Binding(nil), template.Bindings...)
 	out.Clobbers = nil
 	out.Frame = 0
+	if hasCalls {
+		out.Frame = 16
+	}
 	out.System = false
 	out.Globals = nil
 	out.StackArgs = 0
@@ -115,14 +126,15 @@ func LowerOptIRArm64(cfg optir.CFG, template *asm.Function) (*asm.Function, erro
 }
 
 type optIRArm64Selector struct {
-	cfg     optir.CFG
-	types   map[optir.ValueID]optir.Type
-	colors  map[optir.ValueID]int
-	labels  map[optir.BlockID]string
-	items   []asm.Item
-	written map[int]bool
-	edges   int
-	order   []optir.BlockID
+	cfg      optir.CFG
+	types    map[optir.ValueID]optir.Type
+	colors   map[optir.ValueID]int
+	labels   map[optir.BlockID]string
+	items    []asm.Item
+	written  map[int]bool
+	edges    int
+	order    []optir.BlockID
+	hasCalls bool
 }
 
 func (selector *optIRArm64Selector) lower() error {
@@ -134,6 +146,11 @@ func (selector *optIRArm64Selector) lower() error {
 		line := optIRBlockLine(*block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
+			if selector.hasCalls {
+				frame := spMem(-16)
+				frame.Mode = asm.MemPreIndex
+				selector.emit("str", line, arm64X(30), frame)
+			}
 			// AAPCS64 leaves the register bits above narrow scalar arguments
 			// unspecified. Establish the representation invariant before any
 			// selected operation can observe them.
@@ -158,6 +175,9 @@ func (selector *optIRArm64Selector) lower() error {
 }
 
 func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
+	if operation.Code == optir.OpCall {
+		return selector.call(operation)
+	}
 	if len(operation.Effects) != 0 {
 		return fmt.Errorf("effectful operation %s", operation.Code)
 	}
@@ -245,6 +265,30 @@ func (selector *optIRArm64Selector) operation(operation optir.Operation) error {
 	default:
 		return fmt.Errorf("operation %s is outside the closed selector vocabulary", operation.Code)
 	}
+}
+
+func (selector *optIRArm64Selector) call(operation optir.Operation) error {
+	if len(operation.Results) != 1 {
+		return fmt.Errorf("call has %d results, want one", len(operation.Results))
+	}
+	callee, ok := optIRAttribute(operation, optir.AttributeCallee)
+	if !ok {
+		return fmt.Errorf("call does not name exactly one callee")
+	}
+	line := operation.Source.Line
+	if line <= 0 {
+		line = operation.Results[0].Source.Line
+	}
+	if len(operation.Operands) == 1 {
+		operand := operation.Operands[0]
+		selector.move(0, selector.register(operand), optIRBits(selector.types[operand]), line)
+	}
+	selector.emit("bl", line, asm.Symbol{Name: callee})
+	result := operation.Results[0]
+	destination := selector.register(result.ID)
+	selector.move(destination, 0, optIRBits(result.Type), line)
+	selector.normalize(destination, result.Type, line)
+	return nil
 }
 
 func (selector *optIRArm64Selector) sameIntegerOperation(operation optir.Operation, arity int) error {
@@ -335,6 +379,11 @@ func (selector *optIRArm64Selector) terminator(block optir.Block, next optir.Blo
 		value := terminator.Values[0]
 		if selector.types[value] != optir.Type("()") {
 			selector.move(0, selector.register(value), optIRBits(selector.types[value]), line)
+		}
+		if selector.hasCalls {
+			frame := spMem(16)
+			frame.Mode = asm.MemPostIndex
+			selector.emit("ldr", line, arm64X(30), frame)
 		}
 		selector.emit("ret", line)
 		return nil
@@ -510,6 +559,9 @@ func (selector *optIRArm64Selector) normalize(register int, typ optir.Type, line
 
 func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...asm.Operand) {
 	selector.items = append(selector.items, asm.Instruction{Mnemonic: mnemonic, Operands: operands, Line: line})
+	if mnemonic == "bl" {
+		selector.written[30] = true
+	}
 	if len(operands) == 0 {
 		return
 	}
@@ -521,6 +573,101 @@ func (selector *optIRArm64Selector) emit(mnemonic string, line int, operands ...
 			}
 		}
 	}
+}
+
+// validateOptIRArm64Calls closes the first call subset before selection. Every
+// allocatable register is caller-saved, so a call is admissible only when its
+// own result is the sole non-unit value live immediately after it. The
+// backward scan combines block LiveOut evidence with local operation uses; it
+// does not infer preservation from a fortuitous physical color.
+func validateOptIRArm64Calls(cfg optir.CFG, liveOut map[optir.BlockID][]optir.ValueID, callees map[string]*ast.FunctionStatement) (bool, error) {
+	types := optIRTypes(cfg)
+	hasCalls := false
+	for _, block := range cfg.Blocks {
+		live := map[optir.ValueID]bool{}
+		for _, value := range liveOut[block.ID] {
+			live[value] = true
+		}
+		for _, value := range optIRTerminatorUses(block.Terminator) {
+			live[value] = true
+		}
+		for index := len(block.Operations) - 1; index >= 0; index-- {
+			operation := block.Operations[index]
+			if operation.Code == optir.OpCall {
+				hasCalls = true
+				if err := validateOptIRArm64Call(operation, types, callees); err != nil {
+					return false, fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
+				}
+				for _, result := range operation.Results {
+					delete(live, result.ID)
+				}
+				for value := range live {
+					if types[value] != optir.Type("()") {
+						return false, fmt.Errorf("machine: OptIR block %d operation %s: value %d is live across a call", block.ID, operation.Code, value)
+					}
+				}
+			}
+			for _, result := range operation.Results {
+				delete(live, result.ID)
+			}
+			for _, operand := range operation.Operands {
+				if types[operand] != optir.Type("()") {
+					live[operand] = true
+				}
+			}
+		}
+	}
+	return hasCalls, nil
+}
+
+func validateOptIRArm64Call(operation optir.Operation, types map[optir.ValueID]optir.Type, callees map[string]*ast.FunctionStatement) error {
+	if len(operation.Results) != 1 {
+		return fmt.Errorf("call has %d results, want one scalar result", len(operation.Results))
+	}
+	if len(operation.Operands) > 1 {
+		return fmt.Errorf("call has %d arguments, want at most one scalar argument", len(operation.Operands))
+	}
+	if len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectCall {
+		return fmt.Errorf("call must carry exactly the %s effect", optir.EffectCall)
+	}
+	name, ok := optIRAttribute(operation, optir.AttributeCallee)
+	if !ok || name == "" {
+		return fmt.Errorf("call does not name exactly one callee")
+	}
+	callee := callees[name]
+	if callee == nil || callee.Name == nil || callee.Name.Value != name || callee.Body == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
+		return fmt.Errorf("call target %s is not a known direct Oak callee", name)
+	}
+	if len(callee.Parameters) != len(operation.Operands) {
+		return fmt.Errorf("call to %s has %d arguments but its Oak signature has %d", name, len(operation.Operands), len(callee.Parameters))
+	}
+	for index, operand := range operation.Operands {
+		if callee.Parameters[index] == nil || callee.Parameters[index].Variadic {
+			return fmt.Errorf("call to %s has an unsupported parameter %d", name, index+1)
+		}
+		parameterType, scalar := optIRArm64ASTScalarType(callee.Parameters[index].Type)
+		if !scalar || types[operand] != parameterType {
+			return fmt.Errorf("call to %s argument %d has OptIR type %s but Oak type %s", name, index+1, types[operand], parameterType)
+		}
+	}
+	resultType, scalar := optIRArm64ASTScalarType(callee.ReturnType)
+	if !scalar || operation.Results[0].Type != resultType {
+		return fmt.Errorf("call to %s result has OptIR type %s but Oak type %s", name, operation.Results[0].Type, resultType)
+	}
+	return nil
+}
+
+func optIRArm64ASTScalarType(expression ast.Expression) (optir.Type, bool) {
+	identifier, ok := expression.(*ast.Identifier)
+	if !ok || identifier == nil {
+		return "", false
+	}
+	typ := optir.Type(identifier.Value)
+	if typ == optir.TypeBool {
+		return typ, true
+	}
+	_, _, ok = optIRArm64Type(typ)
+	return typ, ok
 }
 
 func (selector *optIRArm64Selector) register(value optir.ValueID) int { return selector.colors[value] }
@@ -659,6 +806,21 @@ func optIRTerminatorEdges(terminator optir.Terminator) []optir.Edge {
 		return []optir.Edge{terminator.True, terminator.False}
 	}
 	return nil
+}
+
+func optIRTerminatorUses(terminator optir.Terminator) []optir.ValueID {
+	var out []optir.ValueID
+	switch terminator.Kind {
+	case optir.TerminatorReturn:
+		out = append(out, terminator.Values...)
+	case optir.TerminatorBranch:
+		out = append(out, terminator.True.Arguments...)
+	case optir.TerminatorCondBranch:
+		out = append(out, terminator.Condition)
+		out = append(out, terminator.True.Arguments...)
+		out = append(out, terminator.False.Arguments...)
+	}
+	return out
 }
 
 func optIRBlockLine(block optir.Block) int {
