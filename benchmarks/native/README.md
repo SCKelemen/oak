@@ -44,10 +44,46 @@ The validator's body went from 611 lines to 330: fifty `orr` register
 copies (every vector read into a scratch and every result back to its
 home) to none, fifty frame-slot loads and stores to thirty-six, twenty-six
 constant splats from `movz; and; dup` to one `movi` each; every unit stays
-proven at the bit level. What remains is the slot traffic of the five
-vector locals the register file did not hold (the flattened kernel's live
-set peaks past the twenty homes; the liveness allocator of program item 2)
-and the loop's scalar bookkeeping.
+proven at the bit level. What remained then was the slot traffic of the
+five vector locals the register file did not hold. That is gone; see the
+next section for what is left, which is not it.
+
+## Where the validator's last 1.27x is, 2026-09-17
+
+Re-measured on the same 64 MB input after the increments since:
+
+| Backend | ns/byte | GB/s |
+| --- | ---: | ---: |
+| C backend, clang `-O2` over the emitted C | 0.11 | 8.76 |
+| Native backend | 0.14 | 7.33 |
+
+The recorded cause no longer holds. The validator's main loop reads four
+`ldr q` and advances sixty-four bytes, and its only memory operands are
+those four loads: no frame slot is touched between the loop label and the
+back edge. The twenty-nine `sp` accesses in the unit are all prologue,
+epilogue, and blocks outside the loop. Vector operands read in place
+closed that.
+
+What is left is dependency height, and the compiler already measures it.
+The search's own report for `valid_with`:
+
+```
+selected schedule+reallocate (proven, cost 125.5; identity 142.0)
+  schedule+reallocate   instructions 101, loads 4, stores 4, stalls 17
+  schedule              instructions 103, loads 4, stores 4, stalls 18
+```
+
+Seventeen stalls, and scheduling sixty-six sites removes one of them.
+The loop is 108 instructions for 64 bytes, and at 0.14 ns a byte that is
+roughly 39 cycles on a 4.4 GHz core for those 108 instructions — about
+2.8 issued a cycle, on a core that will do two or three times that. It is
+not short of work to issue; it is waiting.
+
+So the next thing this kernel wants is a scheduler that shortens the
+critical path rather than one that fills slots, and the `stalls` metric
+is the right thing to drive it. It is the same lesson as the chain
+assignment cap below, from the other side: instruction count has stopped
+predicting this backend's speed in either direction.
 
 Apple arm64, 2026-09-13.
 

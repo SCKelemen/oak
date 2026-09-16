@@ -566,9 +566,17 @@ distributivity case can still need a certificate, so refusal is not inequality.
 `TestNativeCNFReplaySettledMatchesLean` pins sixteen production outcomes to the
 kernel, including identity, commuted gates, width adaptation, high-bit
 constants, true/pending roots, malformed widths/constants, and allocator/memo
-corruption behind false roots. The native audit's complete header and
+corruption behind false roots. `Oak.CNFMetadataSettled.check` additionally gates
+this path with the complete header check, including unused metadata for
+constant-only words. `check_sound` derives valid parameters, exact ordered
+names, and equal word widths/values using the same checked parameters.
+Twenty-four production fixtures kernel-pin the combined decisions, including
+malformed tables, unsupported modes, changed used widths, and refusal despite
+valid metadata when allocation or settled equality fails. The native audit's
 pointer/intermediate-root coverage policy, arbitrary Go-to-model refinement,
 source/ISA closure, and compiler verdict authority remain separate obligations.
+In particular, the checked recording trace is not yet bound to the same
+semantic allocation and word roots by this composition.
 
 `Oak.CNFReplayHeader` now models the constructor's metadata check separately
 from gate/memo validation. It checks disabled abstraction modes, unique

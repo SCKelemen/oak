@@ -229,6 +229,7 @@ import Oak.CNFReplayCoverage
 import Oak.CNFReplayRecording
 import Oak.CNFReplayRecordedCoverage
 import Oak.CNFMetadataCertificate
+import Oak.CNFMetadataSettled
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction
