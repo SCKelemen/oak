@@ -74,7 +74,8 @@ func TestProtocolArrayTLAModule(t *testing.T) {
 		"last' = who",
 		"Halt ==\n    state = \"Running\" /\\ (parked[0] /\\ parked[1]) /\\ state' = \"Halted\" /\\ UNCHANGED <<parked, woken, last>>",
 		"/\\ parked \\in [0..1 -> BOOLEAN]",
-		"/\\ woken \\in [0..1 -> 0..4294967295]",
+		"/\\ woken \\in [0..1 -> 0..(2147483647 + 2147483647 + 1)]",
+		"TLCTypeOK ==\n    state \\in States\n    /\\ parked \\in [0..1 -> BOOLEAN]\n    /\\ woken \\in [0..1 -> Nat]\n    /\\ last \\in Nat",
 	} {
 		if !strings.Contains(module, want) {
 			t.Errorf("module lacks %q:\n%s", want, module)
@@ -90,7 +91,7 @@ func TestProtocolArrayTLAModule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Slots.tla"), []byte(module), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := "SPECIFICATION Spec\nINVARIANTS TypeOK\nCONSTANTS\n    Who = {0, 1}\n"
+	cfg := "SPECIFICATION Spec\nINVARIANTS TLCTypeOK\nCONSTANTS\n    Who = {0, 1}\n"
 	if err := os.WriteFile(filepath.Join(dir, "Slots.cfg"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
