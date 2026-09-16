@@ -859,9 +859,11 @@ for a workload):
    (armv8.1-a, a second arm64 lane) — once the verifier's memory model
    reached the atomics under the sequential model (`65-machine-memory.md`
    §7a, `asm/atomics.go`: the exclusive store succeeds, so the retry is
-   decided). GCC's rv64 `lr.w`/`sc.w` loop is outside the rv64 unit
-   language and is reported so. **Item complete** for the helpers the
-   prelude has.
+   decided). GCC's rv64 `lr.w`/`sc.w` loop is likewise parsed, checked, and
+   proved. GCC 13 prints that RTL template as semicolon-separated statements
+   between two numeric labels on one physical line; the translation validator
+   splits those statements and resolves both local-label directions before it
+   builds the proof unit. **Item complete** for the helpers the prelude has.
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): **landed
    2026-09-14** for the integer instructions. With Sail built from git
    (every package of the rems-project/sail checkout pinned in one opam
