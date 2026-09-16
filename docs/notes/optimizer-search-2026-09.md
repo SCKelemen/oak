@@ -364,13 +364,16 @@ AArch64 and composed with this call frame. Spilled constants and bounded copy
 chains may instead be rematerialized after independent recipe verification and
 a target cost check; accepted recipes remove their physical slots, while
 expensive literals stay spilled. RV64 materializes acyclic CFGs with no effect
-except an admitted direct call: canonical scalar slots in a
-bounded 16-byte-aligned frame, at most two ordinary spilled operands through
-reserved `t5`/`t6` scratches, explicit spilled-condition reloads, and
-simultaneous register/slot copies on SSA edges and call arguments. Its `ra`
-save area sits above the spill slots in the same frame. Width-correct stores,
-signed/narrow reloads, production-pressure diamonds, spilled returns, and a
-composed spill/call frame are machine-proven; RV64 loops and broader calls
+except an admitted direct call, plus one exact call-free natural loop with a
+unique preheader, conditional header, straight-line latch, and return exit.
+The loop predicate remains in a register, only aligned four- or eight-byte
+spill slots cross its backedge, and broader cycles refuse. Canonical scalar
+slots live in a bounded 16-byte-aligned frame, at most two ordinary spilled
+operands use reserved `t5`/`t6` scratches, and simultaneous register/slot copies
+cover SSA edges and call arguments. Its `ra` save area sits above the spill
+slots in the same frame. Width-correct stores, signed/narrow reloads,
+production-pressure diamonds, spilled returns, a composed spill/call frame,
+and a loop-carried `u32` spill are machine-proven; broader RV64 loops and calls
 and rematerialization still refuse. The direct lowering remains the identity,
 and every selected OptIR body must pass seam admission and semantic translation
 validation; refusal or a trusted verdict falls back.
@@ -1025,11 +1028,12 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
-    plan and verifier-gated AArch64 scalar insertion landed; splitting, broader
-    MachineIR, RV64 loops, and RV64 splitting remain**);
+    plan, verifier-gated AArch64 scalar insertion, and the first closed RV64
+    loop-carried insertion landed; splitting, broader MachineIR/RV64 loops, and
+    RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
-    and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);
+    and AArch64/RV64 fallthrough cleanup landed; edge-copy cleanup remains**);
 13. simple pre/post-allocation scheduling.
 
 This phase targets the measured UTF-8 call/spill gap directly.

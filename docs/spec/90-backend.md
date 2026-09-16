@@ -766,15 +766,19 @@ For AArch64, a fingerprint-bound target-independent analysis may replace a
 spilled constant or a bounded copy chain rooted in one with reconstruction at
 each use. A target cost check keeps expensive literals in their slots; accepted
 recipes remove the corresponding frame storage and traffic and are checked
-again during selection. RV64's consumer is narrower: only an acyclic CFG with
-no effect except the closed direct-call form may materialize. It verifies the
-same plan again, checks canonical slot widths and alignments, lays out a
-16-byte-aligned frame bounded to 2032 bytes, and uses reserved `t5`/`t6`
-scratches for at most two ordinary spilled operands. Loads preserve the
-target's canonical signed/narrow representation, each spilled result is stored
-immediately, spilled conditions reload explicitly, and simultaneous
-register/slot copies materialize SSA edges and call arguments. RV64 loop spill
-traffic and rematerialization still refuse.
+again during selection. RV64's consumer is narrower: an acyclic CFG with no
+effect except the closed direct-call form may materialize, as may one exact
+call-free natural-loop shape with a unique preheader, conditional header,
+straight-line latch, and return exit. The loop predicate is kept in a register;
+only aligned four- and eight-byte spill slots may cross its backedge. Nested,
+irreducible, multi-latch, multi-exit, narrow-slot, and unfamiliar cycles refuse.
+RV64 verifies the same plan again, checks canonical slot widths and alignments,
+lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses reserved
+`t5`/`t6` scratches for at most two ordinary spilled operands. Loads preserve
+the target's canonical signed/narrow representation, each spilled result is
+stored immediately, spilled conditions reload explicitly outside the loop
+slice, and simultaneous register/slot copies materialize SSA edges and call
+arguments. Broader RV64 loop spill traffic and rematerialization still refuse.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and

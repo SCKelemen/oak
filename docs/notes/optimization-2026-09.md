@@ -171,9 +171,9 @@ frame at 2032 bytes. A ninth or stack argument and every broader call form
 refuse the OptIR candidate and retain the ordinary lowering.
 Before selection, a target-independent layout analysis gives loop
 continuation/backedges an 8:1 static preference and leaves other branches
-neutral. Its fingerprint-bound order is an exact block permutation. AArch64
-uses it to make the preferred copy-free edge fall through and omit redundant
-branches without changing any semantic edge. Every candidate passes the
+neutral. Its fingerprint-bound order is an exact block permutation. Both
+selectors use it to make the preferred copy-free edge fall through and omit
+redundant branches without changing any semantic edge. Every candidate passes the
 semantic-verifier gate: proven and witnessed verdicts remain
 distinct evidence grades, while refusal or a trusted verdict keeps an ungated
 lowering.
@@ -189,15 +189,20 @@ materializes it with three reserved scratch registers and an overflow-checked,
 stores use the represented width, and edge-copy cycles work across registers
 and slots. The resulting high-pressure candidate still passes the seam checker
 and semantic verifier before selection. RV64 consumes the same verified plan
-for an acyclic CFG with no effect except an admitted direct call. Canonical
-slots become an overflow-checked, 16-byte-aligned frame of at most 2032 bytes;
+for an acyclic CFG with no effect except an admitted direct call and for one
+exact call-free natural loop: a unique preheader, conditional header,
+straight-line latch, and return exit. The predicate stays register-resident and
+only aligned four- or eight-byte spill slots may cross the backedge; every
+broader cyclic form refuses. Canonical slots become an overflow-checked,
+16-byte-aligned frame of at most 2032 bytes;
 at most two ordinary spilled operands reload through reserved `t5`/`t6`, signed
 and narrow representations are restored, and each spilled result stores
 immediately. Location-aware simultaneous copies cover register/slot SSA edges
 and call arguments, while spilled conditions reload explicitly. Machine tests
 prove production-pressure `u32` diamonds, wrapping `i8` edge traffic, spilled
-conditions/returns, and composed spill/call frames with spilled arguments and
-results. Loops and broader calls remain RV64 refusals.
+conditions/returns, composed spill/call frames with spilled arguments and
+results, and a loop-carried `u32` frame value through a canonical pre-test loop.
+Broader loops and calls remain RV64 refusals.
 
 Spilled constants and bounded copy chains rooted in constants now have a
 fingerprint-bound target-independent rematerialization analysis. It refuses
