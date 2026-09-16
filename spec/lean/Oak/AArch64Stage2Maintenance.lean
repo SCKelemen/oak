@@ -48,6 +48,54 @@ structure Trace (Occurrence Target : Type) where
   coherenceAfter : Occurrence → Occurrence → Prop
   invScope : Occurrence → Occurrence → Prop
 
+/-- External projection from an execution occurrence to the instruction word
+    at that occurrence. The static object regression test does not construct
+    this projection; a compiler/execution refinement must supply it. -/
+structure InstructionTrace (Occurrence : Type) where
+  wordAt : Occurrence → Option (BitVec 32)
+
+/-- The same occurrence is both the exact VMALLS12E1IS word and the TLBI event
+    used by the abstract maintenance trace. The action equality remains an
+    explicit refinement input: an encoding alone does not determine an
+    architectural target, VMID, regime, scope, or execution effect. -/
+structure Vmalls12e1isOccurrence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (target : Target) : Prop where
+  wordIsExact : code.wordAt event = some tlbiVmalls12e1is
+  actionIsTlbi : trace.action event = .tlbi target
+
+/-- The external occurrence projection exposes the independently proved exact
+    numeric word; it does not add any execution semantics. -/
+theorem vmalls12e1is_occurrence_has_exact_word
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : Vmalls12e1isOccurrence code trace event target) :
+    code.wordAt event = some 0xd50c83df#32 := by
+  simpa [tlbi_vmalls12e1is_word] using occurrence.wordIsExact
+
+/-- The action classification is exposed unchanged from the external
+    refinement field; it is not inferred from the exact word. -/
+theorem vmalls12e1is_occurrence_has_tlbi_action
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : Vmalls12e1isOccurrence code trace event target) :
+    trace.action event = .tlbi target :=
+  occurrence.actionIsTlbi
+
+/-- The local-PE VMALLS12E1 word cannot satisfy the exact Inner Shareable
+    occurrence witness. This distinguishes the words only; it does not call
+    the local instruction invalid. -/
+theorem plain_vmalls12e1_word_cannot_witness_vmalls12e1is
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (plainWordAt : code.wordAt event = some 0xd50c87df#32) :
+    ¬ Vmalls12e1isOccurrence code trace event target := by
+  intro occurrence
+  have wordsEqual : 0xd50c87df#32 = tlbiVmalls12e1is :=
+    Option.some.inj (plainWordAt.symm.trans occurrence.wordIsExact)
+  have wordsDiffer : 0xd50c87df#32 ≠ tlbiVmalls12e1is := by native_decide
+  exact wordsDiffer wordsEqual
+
 /-- A decoded full DSB occurrence between two events in program order. The
     name says ordering only: this structure does not assert architectural
     completion. -/
@@ -115,6 +163,16 @@ def ProjectedBBM {Occurrence Target : Type}
     (breakEvent tlbiEvent : Occurrence),
     ProjectedBBMWitness trace old make slot oldAccess target breakEvent tlbiEvent
 
+/-- A projected BBM witness retaining the exact instruction projection for the
+    same TLBI occurrence and target selected by the abstract witness. -/
+def ConcreteProjectedBBM {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (old make : Occurrence) : Prop :=
+  ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
+    (breakEvent tlbiEvent : Occurrence),
+    ProjectedBBMWitness trace old make slot oldAccess target breakEvent tlbiEvent ∧
+      Vmalls12e1isOccurrence code trace tlbiEvent target
+
 /-- Concrete occurrence witnesses for Oak's restricted DSB-ISH/TLBI/DSB-ISH
     sequence. No field is a completion or visibility assertion. -/
 structure DsbIshBbmSequenceWitness {Occurrence Target : Type}
@@ -144,17 +202,27 @@ def DsbIshBbmSequence {Occurrence Target : Type}
     DsbIshBbmSequenceWitness trace old make slot oldAccess target breakEvent
       preTlbiDsb tlbiEvent postTlbiDsb
 
-/-- DSB ISH-classified occurrences on both sides of TLBI construct the two
-    local edges corresponding to the `ob` operands in CAT's per-old-event
-    `BBM` skeleton. -/
-theorem dsb_ish_sequence_projects_bbm
+/-- The concrete sequence wrapper retains an external exact-word projection
+    for the same TLBI occurrence and target as the ordering witness. -/
+def ConcreteDsbIshBbmSequence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (old make : Occurrence) : Prop :=
+  ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
+    (breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence),
+    DsbIshBbmSequenceWitness trace old make slot oldAccess target breakEvent
+        preTlbiDsb tlbiEvent postTlbiDsb ∧
+      Vmalls12e1isOccurrence code trace tlbiEvent target
+
+/-- The indexed sequence witness constructs the indexed projected witness
+    without changing the selected TLBI occurrence or target. -/
+theorem dsb_ish_sequence_witness_projects_bbm_witness
     {Occurrence Target : Type} {trace : Trace Occurrence Target}
-    {old make : Occurrence}
-    (sequence : DsbIshBbmSequence trace old make) :
-    ProjectedBBM trace old make := by
-  rcases sequence with
-    ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
-      postTlbiDsb, sequence⟩
+    {old make breakEvent preTlbiDsb tlbiEvent postTlbiDsb : Occurrence}
+    {slot : Nat} {oldAccess : DescriptorAccess} {target : Target}
+    (sequence : DsbIshBbmSequenceWitness trace old make slot oldAccess target
+      breakEvent preTlbiDsb tlbiEvent postTlbiDsb) :
+    ProjectedBBMWitness trace old make slot oldAccess target breakEvent
+      tlbiEvent := by
   have breakBeforeTlbi :
       ProjectedOrderedBefore trace breakEvent tlbiEvent :=
     .descriptorWriteBeforeTlbi
@@ -172,7 +240,6 @@ theorem dsb_ish_sequence_projects_bbm
         beforeDsb := sequence.tlbiBeforePostTlbiDsb
         dsbAfter := sequence.postTlbiDsbBeforeMake }
   exact
-    ⟨slot, oldAccess, target, breakEvent, tlbiEvent,
     { oldIsCacheableTTD := sequence.oldIsCacheableTTD
       oldCoherenceBeforeBreak := sequence.oldCoherenceBeforeBreak
       breakIsUncacheableTTD := sequence.breakIsUncacheableTTD
@@ -180,7 +247,38 @@ theorem dsb_ish_sequence_projects_bbm
       tlbiHasTarget := sequence.tlbiHasTarget
       tlbiBeforeMake := tlbiBeforeMake
       tlbiInScopeForMake := sequence.tlbiInScopeForMake
-      makeIsCacheableTTD := sequence.makeIsCacheableTTD }⟩
+      makeIsCacheableTTD := sequence.makeIsCacheableTTD }
+
+/-- DSB ISH-classified occurrences on both sides of TLBI construct the two
+    local edges corresponding to the `ob` operands in CAT's per-old-event
+    `BBM` skeleton. -/
+theorem dsb_ish_sequence_projects_bbm
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {old make : Occurrence}
+    (sequence : DsbIshBbmSequence trace old make) :
+    ProjectedBBM trace old make := by
+  rcases sequence with
+    ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
+      postTlbiDsb, sequence⟩
+  exact
+    ⟨slot, oldAccess, target, breakEvent, tlbiEvent,
+      dsb_ish_sequence_witness_projects_bbm_witness sequence⟩
+
+/-- The exact VMALLS12E1IS occurrence is retained at the same event and target
+    while the DSB-ISH sequence is projected to the local BBM skeleton. This
+    theorem derives no target suitability, invalidation scope, completion, or
+    context synchronization fact. -/
+theorem concrete_vmalls12e1is_sequence_projects_bbm
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {old make : Occurrence}
+    (sequence : ConcreteDsbIshBbmSequence code trace old make) :
+    ConcreteProjectedBBM code trace old make := by
+  rcases sequence with
+    ⟨slot, oldAccess, target, breakEvent, preTlbiDsb, tlbiEvent,
+      postTlbiDsb, sequence, occurrence⟩
+  exact
+    ⟨slot, oldAccess, target, breakEvent, tlbiEvent,
+      dsb_ish_sequence_witness_projects_bbm_witness sequence, occurrence⟩
 
 /-- Conditional maintenance obligation for one old event. `requiresBBM` is an
     external classification; it is not silently equated with the full CAT

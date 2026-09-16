@@ -12,7 +12,7 @@ The reference implementation is `examples/hypervisor/el2_cold_prepare.oak`.
 
 The protocol is valid only for cold initialization of a vCPU whose stage-2 translation context has not previously been active.
 
-In particular, it does **not** authorize changing VTTBR_EL2 or VTCR_EL2 underneath a live or previously active translation context without the required invalidation/completion protocol. `Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event BBM-shaped local ordering skeleton corresponding to CAT, but concrete TLBI selection, invalidation/completion, and source-to-object occurrence evidence remain outside this cold protocol.
+In particular, it does **not** authorize changing VTTBR_EL2 or VTCR_EL2 underneath a live or previously active translation context without the required invalidation/completion protocol. `Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event BBM-shaped local ordering skeleton corresponding to CAT and can retain an externally supplied exact VMALLS12E1IS word/action witness for its TLBI occurrence. Dynamic trace extraction, architectural target/scope, invalidation/completion, and final context synchronization remain outside this cold protocol.
 
 ## 3. Ordered machine sequence
 

@@ -177,12 +177,14 @@ old descriptor event and proves that DSB ISH-classified occurrences around an
 abstract TLBI construct two local projected edges corresponding to its
 ordered-before operands. The CAT AST gate pins the exact seven-operand `BBM`
 definition and separately pins `DSB-ob`/`ob`; an execution-refinement theorem
-between them remains open. Descriptor event classification, coherence-after,
-invalidation scope, concrete IPA/VMID target selection, completion, and the
-refinement of a concrete source/object TLBI occurrence into that trace are
-explicit remaining obligations. Sail's coarse single-model-TLB reset
-implementation, which ignores architectural target granularity, is not used to
-discharge them.
+between them remains open. A conditional wrapper now preserves the same
+externally supplied exact VMALLS12E1IS word/action occurrence through the BBM
+projection, and the Sail bridge conjoins its named call-target theorem without
+replacing that external premise. Dynamic instruction-trace extraction,
+descriptor event classification, coherence-after, invalidation scope, concrete
+IPA/VMID target selection, completion, and context synchronization remain
+explicit obligations. Sail's coarse single-model-TLB reset implementation,
+which ignores architectural target granularity, is not used to discharge them.
 
 The adjacent encoding seam now proves one concrete Inner Shareable instruction
 encoding and named Sail call-target identity without conflating either with
@@ -191,12 +193,14 @@ those obligations or with plain, local-PE `TLBI VMALLS12E1`:
 `TLBI VMALLS12E1IS` as `0xd50c83df`, and generated Sail Lean proves that word
 selects `TLBI_VMALLS12E1IS` in Oak's pure projection. The drift gate ties the
 projection to the generated Arm XML row, pinned generic SYS field decode, and
-official nested dispatch. The closed `arm64.tlbi_vmalls12e1is()` source
-operation and an independent direct-native gate now pin the complete object
-body to that word followed by `RET`; this is executable occurrence evidence,
-not the still-open refinement from the instruction into the stage-2 trace. The
-downstream OS currently emits the plain VMALLS12E1 sequence, so this encoding
-theorem and object witness are not evidence for that consumer path.
+official nested dispatch; it also proves that the distinct plain-VMALLS12E1
+word does not select the IS-only target. The closed
+`arm64.tlbi_vmalls12e1is()` source operation and an independent direct-native
+gate now pin the complete object body to the IS word followed by `RET`; this is
+executable occurrence evidence, not the still-open formal extraction of a
+dynamic execution occurrence. The downstream OS currently emits the plain
+VMALLS12E1 sequence, so this encoding theorem, conditional bridge, and object
+witness are not evidence for that consumer path.
 
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s

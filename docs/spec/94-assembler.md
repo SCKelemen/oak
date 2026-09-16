@@ -727,14 +727,20 @@ XML-generated table row, encoder word, generic SYS decode path, official nested
 dispatch, and the target's syntactic delegation to `_TLB_Invalidate`. This
 proves word and call-target identity only; access checks, VMID/scope suitability,
 broadcast effects, invalidation, and completion remain outside the projection.
+The plain `VMALLS12E1` word is independently pinned as `0xd50c87df`; Lean proves
+that it does not select this IS-only projection target.
 The closed `arm64.tlbi_vmalls12e1is()` operation lowers through fixed catalog
 text. Its direct-native object witness is exactly this word followed by `RET`,
 with no prologue, dispatch, or hidden barrier. That is source-to-object
-occurrence evidence, not an execution-effects proof. This remains distinct
-from plain `TLBI VMALLS12E1`, whose architectural spelling is local to the
-executing PE; no proof in this section applies to that word or to the downstream
-OS sequence that currently uses it. The general instruction table remains
-audited rather than proved.
+occurrence evidence, not an execution-effects proof. A conditional stage-2
+wrapper retains an externally supplied exact-word/action witness for the same
+event through BBM projection, and the Sail bridge decorates it with this named
+dispatch fact. It cannot create the external occurrence/action witness. This
+remains distinct from plain `TLBI VMALLS12E1`, whose architectural spelling is
+local to the executing PE; no positive execution-effects or stage-2 refinement
+proof in this section applies to that word or to the downstream OS sequence
+that currently uses it. The general instruction table remains audited rather
+than proved.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

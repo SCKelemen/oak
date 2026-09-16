@@ -14,6 +14,8 @@ const (
 	vmalls12e1isEncodingName = "TLBI_SYS_CR_systeminstrs"
 	vmalls12e1isText         = "tlbi vmalls12e1is"
 	vmalls12e1isWord         = uint32(0xd50c83df)
+	vmalls12e1Text           = "tlbi vmalls12e1"
+	vmalls12e1Word           = uint32(0xd50c87df)
 )
 
 var aarch64TLBILeanEncodingBlock = regexp.MustCompile(
@@ -122,5 +124,18 @@ func TestAArch64VMALLS12E1ISExactWord(t *testing.T) {
 	}
 	if got != vmalls12e1isWord {
 		t.Fatalf("encode %q = %08x, want %08x", vmalls12e1isText, got, vmalls12e1isWord)
+	}
+}
+
+func TestAArch64PlainVMALLS12E1DoesNotAliasInnerShareableWord(t *testing.T) {
+	got, err := encodeText(t, vmalls12e1Text)
+	if err != nil {
+		t.Fatalf("encode %q: %v", vmalls12e1Text, err)
+	}
+	if got != vmalls12e1Word {
+		t.Fatalf("encode %q = %08x, want %08x", vmalls12e1Text, got, vmalls12e1Word)
+	}
+	if got == vmalls12e1isWord {
+		t.Fatalf("plain and Inner Shareable VMALLS12E1 words alias at %08x", got)
 	}
 }

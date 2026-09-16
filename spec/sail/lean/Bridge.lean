@@ -3,6 +3,7 @@ import Oak.ArmASL
 import Oak.AArch64Encoding
 import Oak.AArch64Barrier
 import Oak.AArch64ColdEntry
+import Oak.AArch64Stage2Maintenance
 import Oak.AArch64WeakMemory
 import Oak.NeonSemantics
 
@@ -308,6 +309,40 @@ theorem tlbi_vmalls12e1is_decoder_execution_target :
 theorem invalid_tlbi_has_no_execution_target :
     decodedTLBITarget 0#32 = none := by
   rfl
+
+theorem plain_vmalls12e1_not_projected_to_vmalls12e1is :
+    decodedTLBITarget 0xd50c87df#32 = none := by
+  rfl
+
+open Oak.AArch64Stage2Maintenance
+
+/-- Decorate an externally supplied occurrence/action refinement with the
+    generated Sail call-target fact. The conjunction cannot manufacture the
+    architectural action, target, scope, or effects from the word. -/
+def SailVmalls12e1isOccurrence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (target : Target) : Prop :=
+  Vmalls12e1isOccurrence code trace event target ∧
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS
+
+/-- Add generated Sail dispatch identity without replacing the external
+    instruction-to-execution occurrence witness. -/
+theorem refineVmalls12e1isOccurrenceWithSailDispatch
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : Vmalls12e1isOccurrence code trace event target) :
+    SailVmalls12e1isOccurrence code trace event target :=
+  ⟨occurrence, tlbi_vmalls12e1is_decoder_execution_target⟩
+
+/-- Generated dispatch identity cannot bypass the external occurrence/action
+    refinement premise. -/
+theorem sail_vmalls12e1is_occurrence_requires_external
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : SailVmalls12e1isOccurrence code trace event target) :
+    Vmalls12e1isOccurrence code trace event target :=
+  occurrence.1
 
 end A64Encoding
 

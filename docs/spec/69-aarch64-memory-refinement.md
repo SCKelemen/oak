@@ -319,6 +319,14 @@ make event selected by an external `requiresBBM` predicate. It does not prove
 that those local edges belong to an actual CAT execution or equate that
 predicate with CAT's complete `TTD-update-needsBBM` classification.
 
+The concrete wrapper keeps an external instruction-word projection beside
+that sequence. `Vmalls12e1isOccurrence` requires the same event to carry the
+exact `tlbiVmalls12e1is` word and to be classified as the sequence's
+`Action.tlbi target`; neither field is derived from the other. The concrete
+projection theorem preserves that same event and target through the BBM
+projection. Dynamic PC/object trace extraction and the instruction-to-action
+classification remain compiler/execution-refinement premises.
+
 This is mechanical structural provenance for the restricted projection, not a
 complete formal semantics of CAT. The local mapping, projection theorems, CAT
 certificate, and `Oak.SequentialConsistency` remain separate proof layers so
@@ -343,10 +351,12 @@ encoding.
 `Oak.AArch64Encoding.tlbiVmalls12e1is` constructs the exact Inner Shareable
 word (`0xd50c83df`) from the generated SYS field layout.
 Generated Lean proves that exact word selects `TLBI_VMALLS12E1IS` in Oak's pure
-Sail projection, while the zero word selects none. Go gates tie the fields
-and nullary `Rt = 31` form to Oak's generated Arm XML table, require the exact
-encoder word, and tie the projection's field decode and named call target to
-the generic SYS clause and nested dispatch in the pinned official Sail source.
+Sail projection, while the zero word and plain `VMALLS12E1` word do not select
+that target. Go gates tie the fields and nullary `Rt = 31` form to Oak's
+generated Arm XML table, require the exact encoder word, independently require
+plain `VMALLS12E1` to encode to the distinct `0xd50c87df`, and tie the
+projection's field decode and named call target to the generic SYS clause and
+nested dispatch in the pinned official Sail source.
 
 This is syntactic call-target classification only. It does not prove EL2 access
 admission, current-VMID selection, inner-shareable broadcast, invalidation of a
@@ -356,8 +366,11 @@ effect is not used as architectural evidence. The closed source operation
 `arm64.tlbi_vmalls12e1is()` now lowers through catalog-owned text, and an
 independent direct-native object gate requires its complete body to be exactly
 `0xd50c83df; RET`. This provides executable source-to-word occurrence evidence
-for this leaf, not the refinement into `AArch64Stage2Maintenance.Action`, which
-remains open.
+for this leaf. The Sail-decorated stage-2 theorem now conditionally connects an
+externally supplied exact-word/action occurrence to the BBM projection without
+manufacturing that premise. A kernel-checked extraction of the dynamic
+instruction occurrence and its `AArch64Stage2Maintenance.Action` classification
+from the compiler/execution trace remains open.
 In particular, this result does not verify or refine the downstream OS
 boot/revoke sequence, which currently emits plain `TLBI VMALLS12E1` between DSB
 ISH operations.

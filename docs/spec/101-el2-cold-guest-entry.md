@@ -153,10 +153,14 @@ synchronization proof.
 The next correctness increment is live stage-2 maintenance.
 `Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event
 BBM-shaped local ordering skeleton corresponding to CAT around an abstract
-TLBI occurrence. Before
-a previously active guest context can change translation state, Oak still
-needs to refine the concrete source-to-object TLBI occurrence into that abstract
-stage-2 trace and verify its architectural target/scope, descriptor publication,
-invalidation completion, and final context synchronization. After that, this
-entry path can become the final transfer step of a reusable vCPU re-entry path
-and can be exercised in the OS QEMU EL2 smoke test.
+TLBI occurrence. Its concrete wrapper preserves an externally supplied exact
+VMALLS12E1IS word/action witness for the same event through that projection;
+the word does not create the trace action. Before a previously active guest
+context can change translation state, Oak still needs a kernel-checked dynamic
+compiler/execution trace supplying that premise and proofs of architectural
+target/scope, descriptor publication, invalidation completion, and final
+context synchronization. The current OS guest-entry and revoke paths use plain
+`VMALLS12E1`, not the IS operation, so this theorem does not refine them. After
+those obligations and the consumer-specific instruction choice are resolved,
+this entry path can become the final transfer step of a reusable vCPU re-entry
+path and can be exercised in the OS QEMU EL2 smoke test.
