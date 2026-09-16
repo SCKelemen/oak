@@ -235,6 +235,20 @@ depth/text expansion. These are bounded correspondence checks; arbitrary Go
 name/bit/word projection, width adaptation, term-pointer memo/reachability
 machinery, full admission policy, and remaining source/serialization/verdict
 seams are not universally refined by that model theorem.
+`Oak.CNFWordInput` now derives named input-bit binding through the exact
+`parameter-count + 8` source stride and inverse checked allocation.
+`Oak.CNFWordProjection` checks a supplied 1..64-bit parameter/constant/AND/OR/XOR
+word grammar and proves its projection preserves independent bit semantics,
+including declared-width masking, truncation, and zero extension.
+`Oak.CNFWordCertificate.projected_words_equal` rejects incomplete/unequal result
+pairing and derives equal widths and values using checked projection, replay,
+singleton clauses, and RUP, without assumed model input-binding or word/root
+equality. `TestNativeCNFReplayWordMatchesLean` kernel-pins raw Go word syntax,
+complete replay roots, and typed-normalized sampled values over a bounded
+1/8/16/32/64-bit corpus. This is the nonconstant certificate path. Arbitrary Go graph/table
+projection, pointer memoization, full intermediate-root/reachability checks,
+complete admission and settled-outcome policy, and the remaining
+source/serialization/verdict seams are still outside the theorem.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
@@ -457,8 +471,13 @@ Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
 abstract TLBI construct two local projected edges corresponding to its
-ordered-before operands. The CAT AST gate pins the exact seven-operand `BBM`
-definition and separately pins `DSB-ob`/`ob`. It now also pins the cacheable
+ordered-before operands. Those edges now enter CAT `ob` recursively through an
+exact Lean projection of the unconditional full-DSB arm, including the ordered
+source union, both `po` edges, `dsb.full`, and the complete destination
+complement. Local-to-CAT `po`, endpoint/DSB membership, arm inclusion, and
+`ob` transitivity remain explicit one-way premises. The CAT AST gate pins and
+mutation-tests that exact arm, the seven-operand `BBM` definition, and the
+`DSB-ob`/`ob` inclusion chain. It also pins the cacheable
 and uncacheable TTD sets, all six `TTD-update-BBM-cand` arms, the exact
 `TTD-update-needsBBM` sequence, and the exact flagged
 `Warning-BBM-expected` difference test. That CAT construct is a diagnostic
@@ -472,17 +491,26 @@ occurrences at the same five indices as the BBM ordering chain and proves the
 five `po`-linked break-through-make events distinct. Its word and action
 fields are independent.
 
+This DSB projection covers neither the ETS2/ETS3 conditional destination arm
+nor `dsb.ld`/`dsb.st`. It proves ordering, not DSB completion, TLBI effect,
+invalidation scope, visibility, publication, or a complete CAT execution.
+
 The two pinned descriptor classifiers are now represented directly in Lean as
 the membership formulas `TTDINV | TTDAF0` and
 `(TTD & M) \ TLBUncacheableTTD`. An explicit one-way action-to-tag soundness
 premise lets the exact store wrappers and `ProjectedBBMWitness` expose exactly
-the old/break/make descriptor-filter facts. The source/AST gates reject formula
-and operand-order drift. Lean also states the complete seven-operand
+the old/break/make descriptor-filter facts. The CAT AST and lexically aware
+Lean source-drift guards reject formula and operand-order drift; the latter
+checks the projected definitions' spelling/lexical visibility, not command
+elaboration. Three `Iff.rfl`
+lemmas kernel-check the expanded DSB source, destination, and shared-event arm
+formulas. Lean also states the complete seven-operand
 `ProjectedCATBBM` predicate over supplied occurrence relations. A factored
-one-way bridge separately maps descriptor tags, `coherenceAfter` to `ca`, local
-ordering to `ob`, abstract TLBI action to TLBI membership, and local
-`invScope` to `inv-scope`; under it the existing witness inhabits the exact
-projected relation. The specialized warning theorem no longer needs a
+one-way bridge separately maps descriptor tags, `coherenceAfter` to `ca`,
+local `po`, decoded full-DSB and endpoint membership, destination exclusion,
+full-arm inclusion in `ob`, `ob` transitivity, and local `invScope` to
+`inv-scope`; under it the existing witness inhabits the exact projected
+relation. The specialized warning theorem no longer needs a
 monolithic `ProjectedBBM -> catBBM` premise. Primitive CAT predicates,
 soundness of every bridge field, CAT event identity, reverse classification,
 STR/value-to-tag derivation, and adequacy against an official execution remain

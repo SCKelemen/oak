@@ -60,7 +60,7 @@ main: (): i32 = 0
 		}
 	}
 	cfg := ProtocolTLCConfigFull(decl, records, theorems)
-	if !strings.Contains(cfg, "INVARIANT TypeOK\nINVARIANT Invariant_agree\nINVARIANT Invariant_sealed_state\n") || strings.Contains(cfg, "opaque") {
+	if !strings.Contains(cfg, "INVARIANT TLCTypeOK\nINVARIANT Invariant_agree\nINVARIANT Invariant_sealed_state\n") || strings.Contains(cfg, "opaque") {
 		t.Fatalf("config:\n%s", cfg)
 	}
 	// The projection agrees with itself, invariants included; a module

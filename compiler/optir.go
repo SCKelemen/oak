@@ -15,7 +15,7 @@ import (
 // OptIRFunction is one checked structured projection, its independently
 // verified CFG/SSA view, and optimization results. The native candidate search
 // may select the pure LoopInvariant result or the final region-memory
-// ForwardedLoads result through its fail-closed AArch64 and RV64 selectors.
+// MemoryCleanup.CFG result through its fail-closed AArch64 and RV64 selectors.
 type OptIRFunction struct {
 	Name                  string
 	Structured            optir.Function
@@ -41,6 +41,7 @@ type OptIRFunction struct {
 	ForwardedLoads        optir.CFG
 	ForwardedLoadMetadata optir.RegionMemoryMetadata
 	RegionLoadForwarding  optir.RegionLoadForwardingReport
+	MemoryCleanup         OptIRMemoryCleanup
 	FinalMemoryProjection optir.CheckedMemoryProjection
 	FinalMemorySSA        optir.RegionMemorySSA
 }
@@ -322,8 +323,9 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			ForwardedLoads:        analyses.regionLoads,
 			ForwardedLoadMetadata: analyses.regionLoadMetadata,
 			RegionLoadForwarding:  analyses.regionLoadForwarding,
-			FinalMemoryProjection: analyses.regionLoadProjection,
-			FinalMemorySSA:        analyses.regionLoadMemorySSA,
+			MemoryCleanup:         analyses.memoryCleanup,
+			FinalMemoryProjection: analyses.memoryCleanup.Projection,
+			FinalMemorySSA:        analyses.memoryCleanup.MemorySSA,
 		})
 	}
 	return module, nil
@@ -1198,7 +1200,9 @@ func (lowerer *optIRLowerer) checkedTypeFact(tok token.Token, result optir.Value
 func verifyOptIRAnalysisFacts(authority optir.CheckedFactAuthority, analyses optIRAnalysisArtifacts) error {
 	candidates := []optir.CFG{analyses.sccpSimplified, analyses.simplified, analyses.loopInvariant}
 	if analyses.hasMemory {
-		candidates = append(candidates, analyses.deadStores, analyses.regionLoads)
+		candidates = append(candidates, analyses.deadStores, analyses.regionLoads,
+			analyses.memoryCleanup.SCCPSimplified, analyses.memoryCleanup.ScalarCFG,
+			analyses.memoryCleanup.DeadStores, analyses.memoryCleanup.CFG)
 	}
 	for _, cfg := range candidates {
 		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {

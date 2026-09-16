@@ -392,7 +392,7 @@ payload or a refined field of a record payload, over a **defined set**
 rather than a constant: `Op == {value \in 0..255 : (value < 2)}`, the
 predicate translated like a guard with `value` as its variable, so the
 configuration assigns nothing for it (`oak protocol -cfg` omits it) and
-the domain cannot drift from the declaration — `TypeOK` (`0..255`, `0..65535`, `0..4294967295` and the signed ranges by field width, `BOOLEAN`; `Nat` and `Int` for 64-bit fields), and
+the domain cannot drift from the declaration — `TypeOK` (`0..255`, `0..65535`, `0..4294967295` and the signed ranges by field width, `BOOLEAN`; `Nat` and `Int` for 64-bit fields), a conservative executable `TLCTypeOK` that widens `u32`/`u64` to `Nat` and `i32`/`i64` to `Int` because TLC cannot represent the complete 32-bit intervals, and
 `Spec`. Guards and effects translate from the subset a line may use: field,
 element and element-field reads (`peers[i].acked`), the payload, literals,
 width conversions, `+ - * / %`, comparisons, `&& || !`, the quantifier
@@ -413,7 +413,7 @@ and declared liveness is the property `Liveness`, one conjunct per entry:
 `<>(state = "Yielded")`, `((state = "Running") ~> (state = "Yielded"))`, a
 data side through the same translation as a guard. `oak protocol -tla Name
 -cfg out.cfg` also writes the TLC configuration: `SPECIFICATION Spec`,
-`INVARIANT TypeOK`, `PROPERTY Liveness` when the declaration states one,
+`INVARIANT TLCTypeOK`, `PROPERTY Liveness` when the declaration states one,
 and a small domain per payload constant (`{TRUE, FALSE}`; for a scalar
 the integers from 0 through one past the largest literal the
 declaration's guards and effects mention, at least `{0, 1, 2, 3}`, clipped

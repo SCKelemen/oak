@@ -78,7 +78,8 @@ func TestProtocolQuorumTLAModule(t *testing.T) {
 		"(\\A k \\in 0..2 : ~acks[k])",
 		"(\\A k \\in 0..2 : peers[k].acked)",
 		"peers' = [peers EXCEPT ![who].acked = TRUE]",
-		"/\\ peers \\in [0..2 -> [acked: BOOLEAN, term: 0..4294967295]]",
+		"/\\ peers \\in [0..2 -> [acked: BOOLEAN, term: 0..(2147483647 + 2147483647 + 1)]]",
+		"/\\ peers \\in [0..2 -> [acked: BOOLEAN, term: Nat]]",
 		"/\\ peers = [k \\in 0..2 |-> [acked |-> FALSE, term |-> 0]]",
 	} {
 		if !strings.Contains(module, want) {

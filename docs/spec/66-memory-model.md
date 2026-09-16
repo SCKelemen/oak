@@ -30,8 +30,16 @@ chains from Herd's include-expanded parser AST. Lean now mirrors the pinned
 projects already classified descriptor actions through an explicit one-way
 soundness premise. It also spells the complete seven-operand `BBM` relation
 over supplied occurrence predicates and proves the local maintenance witness
-inhabits it under separate one-way `ca`, `ob`, TLBI-membership, and `inv-scope`
-obligations. Construction of those primitive predicates, a complete formal
+inhabits it under separate one-way `ca`, TLBI-membership, and `inv-scope`
+obligations. Its two local DSB edges now reach `ob` through an exact projection
+of the unconditional full-DSB arm, including `M | DC.CVAU | IC | TLBI` source
+membership and the complete implicit-event destination exclusion. CAT `po`,
+set membership, arm inclusion, and `ob` transitivity remain supplied facts.
+Lean's kernel checks fully expanded `Iff.rfl` formulas for that source,
+destination, and shared-event arm; the adjacent lexical source-drift guard
+pins the projected definitions' spelling but does not decide command
+elaboration.
+Construction of those primitive predicates, a complete formal
 semantics of CAT, and the occurrence-indexed instruction-to-event bridge remain
 open. The adjacent Sail proof conditionally projects aligned ordinary STR64
 data through the pre-`__WriteMemory` pair to the no-device model's selected

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -481,6 +482,55 @@ func catSetFilter(node *catLispNode, name string) bool {
 	return ok && catVariable(set, name)
 }
 
+func catOperatorVariables(node *catLispNode, operator string, names ...string) bool {
+	operands, ok := catOperator(node, operator)
+	if !ok || len(operands) != len(names) {
+		return false
+	}
+	for index, name := range names {
+		if !catVariable(operands[index], name) {
+			return false
+		}
+	}
+	return true
+}
+
+func catRightAssociatedIntersection(node *catLispNode, first, second, third string) bool {
+	operands, ok := catOperator(node, ":inter")
+	return ok && len(operands) == 2 && catVariable(operands[0], first) &&
+		catOperatorVariables(operands[1], ":inter", second, third)
+}
+
+// The unconditional full-DSB arm used by Oak's stage-2 projection is exactly
+// `[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;
+//
+//	[~(Imp & TTD & M | Imp & Instr & R)]`.
+func isAArch64DSBFullArm(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	if !ok || len(operands) != 5 ||
+		!catVariable(operands[1], "po") ||
+		!catSetFilter(operands[2], "dsb.full") ||
+		!catVariable(operands[3], "po") {
+		return false
+	}
+	source, ok := catUnaryOperator(operands[0], ":toid")
+	if !ok || !catOperatorVariables(source, ":union", "M", "DC.CVAU", "IC", "TLBI") {
+		return false
+	}
+	destination, ok := catUnaryOperator(operands[4], ":toid")
+	if !ok {
+		return false
+	}
+	excluded, ok := catUnaryOperator(destination, ":comp")
+	if !ok {
+		return false
+	}
+	exclusions, ok := catOperator(excluded, ":union")
+	return ok && len(exclusions) == 2 &&
+		catRightAssociatedIntersection(exclusions[0], "Imp", "TTD", "M") &&
+		catRightAssociatedIntersection(exclusions[1], "Imp", "Instr", "R")
+}
+
 func isAArch64BBMSequence(node *catLispNode) bool {
 	operands, ok := catOperator(node, ":seq")
 	if !ok || len(operands) != 7 {
@@ -716,16 +766,14 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	if !ok {
 		return errors.New("DSB-ob is not a union")
 	}
-	var fullDSB bool
+	fullDSBArms := 0
 	for _, arm := range dsbArms {
-		has := func(name string) bool { return containsCATVariable(arm, name) }
-		if has("dsb.full") && has("po") && has("M") && has("TLBI") && has("Imp") &&
-			has("TTD") && has("Instr") && has("R") {
-			fullDSB = true
+		if isAArch64DSBFullArm(arm) {
+			fullDSBArms++
 		}
 	}
-	if !fullDSB {
-		return errors.New("DSB-ob lacks the full scalar-memory arm")
+	if fullDSBArms != 1 {
+		return fmt.Errorf("DSB-ob has %d exact unconditional full-DSB arms, want 1", fullDSBArms)
 	}
 	ifbArms, ok := catOperator(definition["IFB-ob"], ":union")
 	if !ok {
@@ -823,9 +871,7 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	dsbArms, _ := catOperator(projection.definitions["DSB-ob"], ":union")
 	var dsbFullArmHash string
 	for _, arm := range dsbArms {
-		has := func(name string) bool { return containsCATVariable(arm, name) }
-		if has("dsb.full") && has("po") && has("M") && has("TLBI") && has("Imp") &&
-			has("TTD") && has("Instr") && has("R") {
+		if isAArch64DSBFullArm(arm) {
 			dsbFullArmHash = expressionHash(arm)
 		}
 	}
@@ -1138,6 +1184,64 @@ func TestAArch64IFBDsbArmShapeAndHash(t *testing.T) {
 	}
 }
 
+func TestAArch64DSBFullArmShapeHashAndMutations(t *testing.T) {
+	root, err := parseCATLisp([]byte(
+		`(:e_op nil :seq (` +
+			`(:e_op1 nil :toid (:e_op nil :union (` +
+			`(:e_var nil "M") (:e_var nil "DC.CVAU") ` +
+			`(:e_var nil "IC") (:e_var nil "TLBI")))) ` +
+			`(:e_var nil "po") ` +
+			`(:e_op1 nil :toid (:e_var nil "dsb.full")) ` +
+			`(:e_var nil "po") ` +
+			`(:e_op1 nil :toid (:e_op1 nil :comp ` +
+			`(:e_op nil :union (` +
+			`(:e_op nil :inter ((:e_var nil "Imp") ` +
+			`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))))) ` +
+			`(:e_op nil :inter ((:e_var nil "Imp") ` +
+			`(:e_op nil :inter ((:e_var nil "Instr") (:e_var nil "R")))))))))))`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAArch64DSBFullArm(root) {
+		t.Fatalf("exact unconditional full-DSB arm was not recognized: %s", root.canonical())
+	}
+	if got := expressionHash(root); got != pinnedAArch64DSBFullArmHash {
+		t.Fatalf("full-DSB arm hash %s, want %s", got, pinnedAArch64DSBFullArmHash)
+	}
+	mutations := []struct {
+		atom       string
+		occurrence int
+	}{
+		{":seq", 1},
+		{":toid", 1}, {":toid", 2}, {":toid", 3},
+		{":union", 1}, {":union", 2},
+		{"M", 1}, {"M", 2},
+		{"DC.CVAU", 1}, {"IC", 1}, {"TLBI", 1},
+		{"po", 1}, {"po", 2}, {"dsb.full", 1},
+		{":comp", 1},
+		{":inter", 1}, {":inter", 2}, {":inter", 3}, {":inter", 4},
+		{"Imp", 1}, {"Imp", 2},
+		{"TTD", 1}, {"Instr", 1}, {"R", 1},
+	}
+	for _, mutation := range mutations {
+		mutated := root.clone()
+		if !replaceNthCATAtom(mutated, mutation.atom, mutation.atom+".removed",
+			mutation.occurrence) {
+			t.Fatalf("full-DSB mutation fixture lacks %s occurrence %d",
+				mutation.atom, mutation.occurrence)
+		}
+		if isAArch64DSBFullArm(mutated) {
+			t.Fatalf("full-DSB arm without %s occurrence %d was accepted",
+				mutation.atom, mutation.occurrence)
+		}
+		if got := expressionHash(mutated); got == pinnedAArch64DSBFullArmHash {
+			t.Fatalf("full-DSB mutation of %s occurrence %d retained pinned hash",
+				mutation.atom, mutation.occurrence)
+		}
+	}
+}
+
 func TestAArch64BBMNeedsAndWarningShapesAndHashes(t *testing.T) {
 	definitions := []struct {
 		name  string
@@ -1326,6 +1430,253 @@ func TestAArch64DescriptorClassifierShapesHashesAndMutations(t *testing.T) {
 	}
 }
 
+func isLeanHexDigit(value byte) bool {
+	return value >= '0' && value <= '9' ||
+		value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
+}
+
+// leanCharLiteralEnd recognizes the complete character-literal token shape
+// parsed by Lean's charLitFnAux. Non-literal apostrophes, including identifier
+// suffixes such as foo', deliberately do not create scanner state.
+func leanCharLiteralEnd(source []byte, offset int) (int, bool) {
+	if offset < 0 || offset+1 >= len(source) || source[offset] != '\'' ||
+		source[offset+1] == '\'' {
+		return 0, false
+	}
+	cursor := offset + 1
+	if source[cursor] == '\\' {
+		cursor++
+		if cursor >= len(source) {
+			return 0, false
+		}
+		switch source[cursor] {
+		case '\\', '"', '\'', 'r', 'n', 't':
+			cursor++
+		case 'x':
+			if cursor+2 >= len(source) || !isLeanHexDigit(source[cursor+1]) ||
+				!isLeanHexDigit(source[cursor+2]) {
+				return 0, false
+			}
+			cursor += 3
+		case 'u':
+			if cursor+4 >= len(source) {
+				return 0, false
+			}
+			for digit := cursor + 1; digit <= cursor+4; digit++ {
+				if !isLeanHexDigit(source[digit]) {
+					return 0, false
+				}
+			}
+			cursor += 5
+		default:
+			return 0, false
+		}
+	} else {
+		_, size := utf8.DecodeRune(source[cursor:])
+		if size == 0 || size == 1 && source[cursor] >= utf8.RuneSelf {
+			return 0, false
+		}
+		cursor += size
+	}
+	if cursor >= len(source) || source[cursor] != '\'' {
+		return 0, false
+	}
+	return cursor + 1, true
+}
+
+// lexicallyVisibleLeanMarkerOffsets finds markers whose opening `/-` starts in
+// normal Lean lexical state. This is a source-spelling drift guard, not a Lean
+// command elaborator: quotations, macros, and conditional commands are outside
+// its contract. Kernel-checked formula lemmas establish the semantic shape.
+func lexicallyVisibleLeanMarkerOffsets(source, marker []byte) ([]int, error) {
+	var offsets []int
+	blockDepth := 0
+	lineComment := false
+	inString := false
+	escaped := false
+	rawString := false
+	rawHashes := 0
+	quotedIdentifier := false
+	quotedIdentifierOpen := []byte("«")
+	quotedIdentifierClose := []byte("»")
+	for offset := 0; offset < len(source); {
+		if lineComment {
+			if source[offset] == '\n' {
+				lineComment = false
+			}
+			offset++
+			continue
+		}
+		if blockDepth > 0 {
+			if offset+1 < len(source) && source[offset] == '/' && source[offset+1] == '-' {
+				blockDepth++
+				offset += 2
+				continue
+			}
+			if offset+1 < len(source) && source[offset] == '-' && source[offset+1] == '/' {
+				blockDepth--
+				offset += 2
+				continue
+			}
+			offset++
+			continue
+		}
+		if rawString {
+			if source[offset] == '"' && offset+rawHashes < len(source) {
+				closes := true
+				for hash := 0; hash < rawHashes; hash++ {
+					if source[offset+1+hash] != '#' {
+						closes = false
+						break
+					}
+				}
+				if closes {
+					rawString = false
+					offset += rawHashes + 1
+					continue
+				}
+			}
+			offset++
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				offset++
+				continue
+			}
+			switch source[offset] {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			offset++
+			continue
+		}
+		if quotedIdentifier {
+			if bytes.HasPrefix(source[offset:], quotedIdentifierClose) {
+				quotedIdentifier = false
+				offset += len(quotedIdentifierClose)
+				continue
+			}
+			offset++
+			continue
+		}
+		if bytes.HasPrefix(source[offset:], marker) {
+			offsets = append(offsets, offset)
+		}
+		if source[offset] == 'r' {
+			quote := offset + 1
+			for quote < len(source) && source[quote] == '#' {
+				quote++
+			}
+			if quote < len(source) && source[quote] == '"' {
+				rawString = true
+				rawHashes = quote - offset - 1
+				offset = quote + 1
+				continue
+			}
+		}
+		if bytes.HasPrefix(source[offset:], quotedIdentifierOpen) {
+			quotedIdentifier = true
+			offset += len(quotedIdentifierOpen)
+			continue
+		}
+		if end, ok := leanCharLiteralEnd(source, offset); ok {
+			offset = end
+			continue
+		}
+		if offset+1 < len(source) && source[offset] == '-' && source[offset+1] == '-' {
+			lineComment = true
+			offset += 2
+			continue
+		}
+		if offset+1 < len(source) && source[offset] == '/' && source[offset+1] == '-' {
+			blockDepth = 1
+			offset += 2
+			continue
+		}
+		if source[offset] == '"' {
+			inString = true
+		}
+		offset++
+	}
+	if blockDepth != 0 {
+		return nil, errors.New("unterminated Lean block comment")
+	}
+	if inString {
+		return nil, errors.New("unterminated Lean string")
+	}
+	if rawString {
+		return nil, errors.New("unterminated Lean raw string")
+	}
+	if quotedIdentifier {
+		return nil, errors.New("unterminated Lean escaped identifier")
+	}
+	return offsets, nil
+}
+
+func exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker []byte) ([]byte, error) {
+	if count := bytes.Count(source, beginMarker); count != 1 {
+		return nil, fmt.Errorf("source has %d begin markers, want 1", count)
+	}
+	if count := bytes.Count(source, endMarker); count != 1 {
+		return nil, fmt.Errorf("source has %d end markers, want 1", count)
+	}
+	beginOffsets, err := lexicallyVisibleLeanMarkerOffsets(source, beginMarker)
+	if err != nil {
+		return nil, err
+	}
+	endOffsets, err := lexicallyVisibleLeanMarkerOffsets(source, endMarker)
+	if err != nil {
+		return nil, err
+	}
+	if len(beginOffsets) != 1 || len(endOffsets) != 1 {
+		return nil, errors.New("source markers are not both in normal Lean lexical state")
+	}
+	begin := beginOffsets[0] + len(beginMarker)
+	end := endOffsets[0]
+	if begin > end {
+		return nil, errors.New("source markers are reversed")
+	}
+	return source[begin:end], nil
+}
+
+func TestExactLexicallyVisibleLeanSourceBlockRejectsHiddenMarkers(t *testing.T) {
+	beginMarker := []byte("/- TEST-BEGIN -/")
+	endMarker := []byte("/- TEST-END -/")
+	active := append(append(append([]byte{}, beginMarker...), []byte(" body ")...), endMarker...)
+	doubleQuoteChar := []byte(`'"'`)
+	markersInStringBetweenChars := append(append(append(append(append([]byte{},
+		doubleQuoteChar...), ' ', '"'), active...), '"', ' '), doubleQuoteChar...)
+	identifierApostrophe := append(append([]byte(`foo' "prefix ' `), active...),
+		[]byte(` " '"' z'`)...)
+	block, err := exactLexicallyVisibleLeanSourceBlock(active, beginMarker, endMarker)
+	if err != nil || string(block) != " body " {
+		t.Fatalf("lexically visible Lean source block was rejected: block=%q err=%v", block, err)
+	}
+	for name, source := range map[string][]byte{
+		"outer block comment":   append(append([]byte("/- outer "), active...), []byte(" -/")...),
+		"line comment":          append(append([]byte("-- "), active...), '\n'),
+		"string":                append(append([]byte("\""), active...), '"'),
+		"raw string":            append(append([]byte(`r#"prefix " `), active...), []byte(` "#`)...),
+		"escaped identifier":    append(append([]byte("«prefix "), active...), []byte("»")...),
+		"chars around string":   markersInStringBetweenChars,
+		"identifier apostrophe": identifierApostrophe,
+		"unterminated comment":  append(append(append([]byte{}, active...), ' '), []byte("/-")...),
+		"unterminated string":   append(append(append([]byte{}, active...), ' '), '"'),
+		"unterminated raw":      append(append([]byte(`r#"`), active...), ' '),
+		"unterminated ident":    append(append([]byte("«"), active...), ' '),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker); err == nil {
+				t.Fatal("inactive or lexically malformed Lean markers were accepted")
+			}
+		})
+	}
+}
+
 func TestAArch64DescriptorClassifierLeanProjectionSource(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
 	if err != nil {
@@ -1333,18 +1684,11 @@ func TestAArch64DescriptorClassifierLeanProjectionSource(t *testing.T) {
 	}
 	beginMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-BEGIN -/")
 	endMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-END -/")
-	if count := bytes.Count(source, beginMarker); count != 1 {
-		t.Fatalf("Lean classifier source has %d begin markers, want 1", count)
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean classifier source: %v", err)
 	}
-	if count := bytes.Count(source, endMarker); count != 1 {
-		t.Fatalf("Lean classifier source has %d end markers, want 1", count)
-	}
-	begin := bytes.Index(source, beginMarker) + len(beginMarker)
-	end := bytes.Index(source, endMarker)
-	if begin > end {
-		t.Fatal("Lean classifier source markers are reversed")
-	}
-	got := strings.Join(strings.Fields(string(source[begin:end])), " ")
+	got := strings.Join(strings.Fields(string(block)), " ")
 	wantSource :=
 		"/-- Primitive occurrence tags corresponding to the four operands used by the\n" +
 			"    pinned Arm CAT descriptor classifiers. These tags remain external inputs;\n" +
@@ -1378,18 +1722,11 @@ func TestAArch64ExactBBMLeanProjectionSource(t *testing.T) {
 	}
 	beginMarker := []byte("/- OAK-A64-CAT-BBM-BEGIN -/")
 	endMarker := []byte("/- OAK-A64-CAT-BBM-END -/")
-	if count := bytes.Count(source, beginMarker); count != 1 {
-		t.Fatalf("Lean BBM source has %d begin markers, want 1", count)
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean BBM source: %v", err)
 	}
-	if count := bytes.Count(source, endMarker); count != 1 {
-		t.Fatalf("Lean BBM source has %d end markers, want 1", count)
-	}
-	begin := bytes.Index(source, beginMarker) + len(beginMarker)
-	end := bytes.Index(source, endMarker)
-	if begin > end {
-		t.Fatal("Lean BBM source markers are reversed")
-	}
-	got := strings.Join(strings.Fields(string(source[begin:end])), " ")
+	got := strings.Join(strings.Fields(string(block)), " ")
 	wantSource :=
 		"/-- The projected occurrence sets and relations consumed by the pinned CAT\n" +
 			"    `BBM` expression. Every field is supplied by an execution refinement;\n" +
@@ -1421,6 +1758,69 @@ func TestAArch64ExactBBMLeanProjectionSource(t *testing.T) {
 	want := strings.Join(strings.Fields(wantSource), " ")
 	if got != want {
 		t.Fatalf("Lean exact projected CAT BBM drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAArch64DSBFullLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-DSB-FULL-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-DSB-FULL-END -/")
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean DSB-full source: %v", err)
+	}
+	got := strings.Join(strings.Fields(string(block)), " ")
+	wantSource :=
+		"/-- Additional supplied occurrence predicates used by the unconditional full\n" +
+			"    `DSB-ob` arm. The memory, TTD, TLBI, and final `ob` predicates are shared\n" +
+			"    with `ProjectedCATBBMRelations`; these inputs add only the remaining\n" +
+			"    operands. Nothing here constructs an official CAT execution. -/\n" +
+			"structure ProjectedCATDSBFullInputs (Occurrence : Type) where\n" +
+			"  isDCCVAU : Occurrence → Prop\n" +
+			"  isIC : Occurrence → Prop\n" +
+			"  isImplicit : Occurrence → Prop\n" +
+			"  isInstruction : Occurrence → Prop\n" +
+			"  isRead : Occurrence → Prop\n" +
+			"  isDSBFull : Occurrence → Prop\n" +
+			"  po : Occurrence → Occurrence → Prop\n\n" +
+			"/-- Exact source filter `M | DC.CVAU | IC | TLBI` of the pinned unconditional\n" +
+			"    full-DSB arm. -/\n" +
+			"def ProjectedCATDSBFullSource {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (event : Occurrence) : Prop :=\n" +
+			"  cat.descriptorTags.isMemory event ∨ inputs.isDCCVAU event ∨\n" +
+			"    inputs.isIC event ∨ cat.isTLBI event\n\n" +
+			"/-- Exact destination filter\n" +
+			"    `~(Imp & TTD & M | Imp & Instr & R)` of that arm. -/\n" +
+			"def ProjectedCATDSBFullDestination {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (event : Occurrence) : Prop :=\n" +
+			"  ¬((inputs.isImplicit event ∧ cat.descriptorTags.isTTD event ∧\n" +
+			"        cat.descriptorTags.isMemory event) ∨\n" +
+			"      (inputs.isImplicit event ∧ inputs.isInstruction event ∧\n" +
+			"        inputs.isRead event))\n\n" +
+			"/-- Exact occurrence-level reading of the pinned unconditional arm\n\n" +
+			"`[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;\n" +
+			" [~(Imp & TTD & M | Imp & Instr & R)]`.\n\n" +
+			"Its inclusion in `DSB-ob` and ultimately `ob` remains a supplied one-way\n" +
+			"refinement fact. -/\n" +
+			"def ProjectedCATDSBFullArm {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (before after : Occurrence) : Prop :=\n" +
+			"  ∃ dsbEvent,\n" +
+			"    ProjectedCATDSBFullSource cat inputs before ∧\n" +
+			"      inputs.po before dsbEvent ∧ inputs.isDSBFull dsbEvent ∧\n" +
+			"      inputs.po dsbEvent after ∧\n" +
+			"      ProjectedCATDSBFullDestination cat inputs after\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean exact projected CAT DSB-full arm drifted\n got: %s\nwant: %s", got, want)
 	}
 }
 

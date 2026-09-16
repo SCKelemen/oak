@@ -27,6 +27,7 @@ const (
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
 	optIRDSERevision              = "oak.optir.dead-store-elimination.v4"
 	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v10"
+	optIRMemoryCleanupRevision    = "oak.optir.memory-cleanup.v2/" + optIRSCCPRevision + "/" + optIRSCCPRewriteRevision + "/" + optIRGVNDCERevision + "/" + optIRMemoryProjectionRevision + "/" + optIRMemorySSARevision + "/" + optIRMemoryLivenessRevision + "/" + optIRDSERevision
 )
 
 type optIRSCCPRewriteArtifact struct {
@@ -85,6 +86,7 @@ type optIRArtifactKeys struct {
 	memoryEvidence   opt.ArtifactKey
 	dse              opt.ArtifactKey
 	regionLoads      opt.ArtifactKey
+	memoryCleanup    opt.ArtifactKey
 }
 
 type optIRArtifactRefs struct {
@@ -108,6 +110,7 @@ type optIRArtifactRefs struct {
 	memoryEvidence   opt.ArtifactRef[optIRMemoryEvidenceArtifact]
 	dse              opt.ArtifactRef[optIRDSEArtifact]
 	regionLoads      opt.ArtifactRef[optIRRegionLoadArtifact]
+	memoryCleanup    opt.ArtifactRef[OptIRMemoryCleanup]
 }
 
 func (references optIRArtifactRefs) keys() optIRArtifactKeys {
@@ -131,6 +134,7 @@ func (references optIRArtifactRefs) keys() optIRArtifactKeys {
 		memoryEvidence:   references.memoryEvidence.Key(),
 		dse:              references.dse.Key(),
 		regionLoads:      references.regionLoads.Key(),
+		memoryCleanup:    references.memoryCleanup.Key(),
 	}
 }
 
@@ -157,6 +161,7 @@ type optIRAnalysisArtifacts struct {
 	regionLoadProjection optir.CheckedMemoryProjection
 	regionLoadMemorySSA  optir.RegionMemorySSA
 	regionLoadForwarding optir.RegionLoadForwardingReport
+	memoryCleanup        OptIRMemoryCleanup
 	run                  opt.ArtifactRun
 	keys                 optIRArtifactKeys
 }
@@ -168,7 +173,7 @@ func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.Checke
 	}
 	targets := []opt.ArtifactKey{references.sccp.Key(), references.sccpRewrite.Key(), references.loopsV1.Key(), references.cleanup.Key(), references.licm.Key()}
 	if references.hasMemory {
-		targets = append(targets, references.regionLoads.Key())
+		targets = append(targets, references.memoryCleanup.Key())
 	}
 	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, targets...)
 	if err != nil {
@@ -243,6 +248,10 @@ func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.Checke
 	artifacts.regionLoadProjection = regionLoads.Projection
 	artifacts.regionLoadMemorySSA = regionLoads.SSA
 	artifacts.regionLoadForwarding = regionLoads.Report
+	artifacts.memoryCleanup, err = references.memoryCleanup.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
 	return artifacts, nil
 }
 
@@ -395,6 +404,10 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 					CFG: result, Metadata: metadata, Projection: projection, SSA: memorySSA, Report: report,
 				}, nil
 			})
+		memoryCleanup, memoryCleanupTask := opt.DerivedArtifact2(opt.ArtifactCandidate, "optir.memory-cleanup", optIRMemoryCleanupRevision, regionLoads, memoryAuthorityRef,
+			func(_ context.Context, input optIRRegionLoadArtifact, authority optir.CheckedMemoryAuthority) (OptIRMemoryCleanup, error) {
+				return cleanupOptIRMemory(input.CFG, authority)
+			})
 		references.hasMemory = true
 		references.memoryAuthority = memoryAuthorityRef
 		references.memoryProjection = memoryProjection
@@ -403,7 +416,8 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 		references.memoryEvidence = memoryEvidence
 		references.dse = dse
 		references.regionLoads = regionLoads
-		tasks = append(tasks, memoryAuthorityTask, memoryProjectionTask, memorySSATask, memoryLivenessTask, memoryEvidenceTask, dseTask, regionLoadsTask)
+		references.memoryCleanup = memoryCleanup
+		tasks = append(tasks, memoryAuthorityTask, memoryProjectionTask, memorySSATask, memoryLivenessTask, memoryEvidenceTask, dseTask, regionLoadsTask, memoryCleanupTask)
 	}
 	graph, err := opt.NewArtifactGraph(tasks...)
 	if err != nil {

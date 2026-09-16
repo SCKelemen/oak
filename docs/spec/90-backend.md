@@ -784,7 +784,43 @@ moved values in either planning order, dominating stores and loads, both
 conditional arms, existing SSA arguments, distinct targets, last-block-ID
 reuse, and rejection of duplicated checked authority. The shared two-region
 CFGs also pass both selectors and receive proven semantic verdicts; the store
-arm reaches a join with no remaining region loads. The
+arm reaches a join with no remaining region loads.
+
+After memory forwarding, one `optir.memory-cleanup` artifact runs SCCP rewrite
+followed by phi cleanup, GVN, and DCE. This bounded composition folds arithmetic
+and branches newly exposed by forwarding and removes redundant promoted
+parameters. It then rebuilds checked projection, MemorySSA, and definition
+liveness for `MemoryCleanup.ScalarCFG`, removes newly dead whole-region stores,
+and runs pure DCE on `MemoryCleanup.DeadStores` to remove unused store-value
+producers. Reachable readers, live-out writes, and effectful calls whose results
+are now unused remain observable. The existing DSE verifier checks the exact
+rewrite; no pre-forwarding liveness is reused. The composition authenticates
+the input before deleting any access or call,
+then reprojects checked authority and rebuilds MemorySSA over the final CFG.
+The compiler exposes the original forwarding result as `ForwardedLoads` and
+the cleaned candidate as `MemoryCleanup.CFG`; `FinalMemoryProjection` and
+`FinalMemorySSA` describe the latter. Native selection independently replays
+cleanup, checks facts on every intermediate snapshot, and derives bindings,
+active call certificates, and fingerprints from that final CFG. A removed unreachable
+path may remove a region from final metadata; if no regions survive, selection
+uses the ordinary scalar path. The original source and its callees still
+supply global declarations for semantic verification, including cells whose
+accesses disappeared. These declare arbitrary entry state, not initializer
+facts, and do not reintroduce machine accesses.
+Direct RV64 lowering also retains the reachable callee-global declaration
+closure, matching AArch64, so its ABI template can authenticate call-only
+regions before OptIR selection and its identity body can be verified.
+Regressions require proven AArch64/RV64 selection, host/QEMU execution,
+wrapping `u8` arithmetic, absence
+of relocations for the removed call/global, and a mismatch when the source
+write is made reachable. Additional regressions require newly exposed store
+removal, deletion of dead multiplication, retention of reachable readers and
+effectful producers, and rejection when only the final global state changes.
+This is one cleanup round, not a memory/scalar fixed point; final seam
+admission and semantic translation validation still gate
+emission.
+
+The
 scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access

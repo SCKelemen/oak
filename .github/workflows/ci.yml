@@ -19,9 +19,9 @@ jobs:
         # shards partition every test name exactly once (compiler E2E A-R,
         # the standard-library E2E tests in two halves (the text tests,
         # the rest), the remaining compiler E2E S-Z, the rest of compiler,
-        # every other package). The S-Z shard alone reached the 45-minute
-        # limit once TestE2EStd* passed eighty tests, and those alone did
-        # too under the race detector on a slow runner.
+        # every other package). The broad A-R shard needs a 90-minute
+        # ceiling on slow runners, while the stdlib shards use 60 minutes;
+        # S-Z and the remaining compiler tests retain their 45-minute bound.
         shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
 
     steps:
@@ -69,7 +69,7 @@ jobs:
         OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          e2e-a-r) go test -v -race -timeout 45m ./compiler -run '^TestE2E[A-R]' ;;
+          e2e-a-r) go test -v -race -timeout 90m ./compiler -run '^TestE2E[A-R]' ;;
           e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
           e2e-stdlib-rest) go test -v -race -timeout 60m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
           e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;

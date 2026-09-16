@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/target"
 )
 
 // The hash package's AArch64 kernels are dispatch realizations
@@ -22,7 +24,9 @@ func TestE2EHashKernelsAreDispatchRealizations(t *testing.T) {
 		"oak.mod":  "module example.com/hash_dispatch\noak 0.1.0\n",
 		"main.oak": crcShaProgram,
 	})
-	emitted, err := New().WithPackageDir(root).EmitC().Get()
+	emitted, err := New().WithPackageDir(root).
+		WithTarget(target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}).
+		EmitC().Get()
 	if err != nil {
 		t.Fatal(err)
 	}
