@@ -545,9 +545,11 @@ an observer-order relation between them. It proves no execution effect,
 translation, fault freedom, atomicity or non-tearing, ordering, CAT event,
 visibility, completion, or publication. Ordinary `STP` supplies no release or
 barrier semantics; live PTE publication therefore remains scalar. Any future
-blocked zero fill additionally requires its source law, bounds/provenance and
-pair-store verifier support, a scalar tail, and private/unpublished ordinary
-memory authority.
+blocked zero fill can reuse `Oak.BlockedFill.blocked_fill_eq` for final-state
+algebraic grouping and its less-than-four tail bound. It still requires bounds
+and trap preservation, provenance and pair-store verifier support, scalar-tail
+lowering, alias/observer exclusion, and private/unpublished ordinary-memory
+authority.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

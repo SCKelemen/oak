@@ -1051,11 +1051,17 @@ proves no atomicity, single-copy atomicity, non-tearing, memory ordering,
 translation, fault-free access, architectural or external memory effect, CAT
 event or edge, visibility, completion, or page-table publication. Ordinary
 `STP` is neither a store-release operation nor a barrier. In particular, live
-PTE break/make publication remains on the existing scalar `STR` path. A future
-four-word zero-fill optimization first needs a source-level blocked-fill
-equivalence law, complete bounds/provenance and verifier support, and a scalar
-tail; its authority must be restricted to ordinary private memory that has not
-yet been published, never a live descriptor-update protocol.
+PTE break/make publication remains on the existing scalar `STR` path.
+`Oak.BlockedFill.blocked_fill_eq` discharges one source-level algebraic
+prerequisite: in the total word-memory model, `k` four-word blocks expressed as
+two `storePair` operations each, followed by the `n % 4` scalar tail, have the
+same final memory as `n` scalar stores; `blocked_fill_tail_lt_four` proves that
+tail has at most three words. This is final-state equality only, not bounds,
+trap/partial-write preservation, alias or observer exclusion, or authority to
+use STP. A future lowering still needs complete bounds/provenance and verifier
+support, scalar-tail lowering, and ordinary private-memory authority proving
+the storage has not yet been published—never a live descriptor-update
+protocol.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand

@@ -234,6 +234,7 @@ import Oak.SpanForward
 import Oak.ConstantConditions
 import Oak.BoundaryCopies
 import Oak.PairCopies
+import Oak.BlockedFill
 import Oak.FieldPromotion
 import Oak.Forwarding
 import Oak.ArrayValues

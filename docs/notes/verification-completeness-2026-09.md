@@ -576,9 +576,14 @@ address and zero at that address plus eight. This does not enable codegen or
 verifier support. The tuple proves neither request occurrence nor ordering,
 atomicity/non-tearing, translation or effects, CAT events, visibility,
 completion, or PTE publication; ordinary `STP` is not a release or a barrier.
-Live descriptors stay on scalar stores. A future blocked-fill lowering remains
-conditional on its source law, full bounds/provenance and verifier support, a
-scalar tail, and private/unpublished ordinary-memory authority.
+Live descriptors stay on scalar stores. `Oak.BlockedFill.blocked_fill_eq` now
+proves the algebraic source law: two abstract pair stores per four-word block
+plus the less-than-four scalar tail have the same final total word memory as
+the original scalar fill. That result does not prove bounds, trap or partial-
+write preservation, alias/observer exclusion, or machine effects. A future
+blocked-fill lowering therefore remains conditional on full bounds/provenance
+and verifier support, scalar-tail lowering, and private/unpublished ordinary-
+memory authority.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
