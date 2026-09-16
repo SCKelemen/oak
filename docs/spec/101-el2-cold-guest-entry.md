@@ -128,6 +128,12 @@ with operand `#2` runs a D/A/I/F body that sets I and preserves D/A/F. This
 does not supply the missing `Step.maskIrq` occurrence, discharge access/trap
 checks, or prove maskable IRQ delivery remains disabled over the interval.
 
+The adjacent VTTBR theorem computes static `MSR VTTBR_EL2, X1` word
+`0xd51c2101` and proves the generated pure component body takes Arm's direct
+VTTBR_EL2 assignment at EL2. It retains the distinct EL1 nested-virtualization
+redirect. This does not prove access/trap admission, runtime X1 value
+provenance, valid VTTBR fields, table publication, or dynamic occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

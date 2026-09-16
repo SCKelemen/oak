@@ -39,6 +39,10 @@ def tlbi : Encoding := ⟨"TLBI_SYS_CR_systeminstrs", "tlbi", 0xd5088000#32, 0xf
 def msrPstate : Encoding := ⟨"MSR_SI_pstate", "msr", 0xd500401f#32, 0xfff8f01f#32, [⟨"op1", 18, 3⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
 -- OAK-A64-PSTATE-ENC-END
 
+-- OAK-A64-SYSREG-WRITE-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def msrSystem : Encoding := ⟨"MSR_SR_systemmove", "msr", 0xd5100000#32, 0xfff00000#32, [⟨"L", 21, 1⟩, ⟨"o0", 19, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-SYSREG-WRITE-ENC-END
+
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
   deriving DecidableEq, Repr
@@ -78,6 +82,14 @@ def encodePstateImmediate (op1 : BitVec 3) (crm : BitVec 4)
     (op1.setWidth 32 <<< 16) ||| (crm.setWidth 32 <<< 8) |||
     (op2.setWidth 32 <<< 5)
 
+/-- Fill the generated general system-register MSR encoding's fields. The
+    caller must supply a writable tuple from the generated SysReg XML table. -/
+def encodeSystemMsr (o0 : BitVec 1) (op1 : BitVec 3)
+    (crn crm : BitVec 4) (op2 : BitVec 3) (rt : BitVec 5) : BitVec 32 :=
+  (msrSystem.value &&& msrSystem.mask) ||| (o0.setWidth 32 <<< 19) |||
+    (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
+    (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
+
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
 def dmbSy : BitVec 32 := encodeCRm dmb 0xf#4
@@ -105,6 +117,12 @@ def msrDaifSetIrq : BitVec 32 :=
   encodePstateImmediate 0b011#3 0b0010#4 0b110#3
 theorem msr_daifset_irq_word : msrDaifSetIrq = 0xd50342df#32 := by native_decide
 -- OAK-A64-DAIFSET-WORD-END
+
+-- OAK-A64-VTTBR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrVttbrEl2X1 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b000#3 0b00001#5
+theorem msr_vttbr_el2_x1_word : msrVttbrEl2X1 = 0xd51c2101#32 := by native_decide
+-- OAK-A64-VTTBR-EL2-WORD-END
 
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩

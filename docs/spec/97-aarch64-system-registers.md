@@ -145,9 +145,26 @@ or `ISB` instructions in that operation's function body.
 - system-register operations themselves provide no memory-ordering,
   completion, or instruction-synchronization capability.
 
+The stage-2 root write has an additional exact, conditional seam.
+`Oak.AArch64Encoding` computes `MSR VTTBR_EL2, X1` as `0xd51c2101` from
+the generated general-MSR and SysReg tables. Generated Lean from the local
+Sail projection selects VTTBR_EL2/X1 and proves the successful component body
+matches Oak's model. At EL2 it directly replaces the VTTBR_EL2 component with
+the supplied 64-bit value. For the official EL1 nested-virtualization
+alternative, Lean records a redirect flag and leaves that component unchanged;
+it does not model NVMem contents or effects. A source-drift gate separately
+audits the assignment to NVMem and pins the route to the official Sail model.
+
 These are language/catalog properties. They are not a proof that an arbitrary
 sequence of register writes satisfies the Arm Architecture Reference Manual.
 Protocol-specific ordering obligations remain separate specifications and tests.
+
+The VTTBR theorem does not prove system-access admission, absence of traps,
+dynamic execution, or that runtime X1 contains the Oak argument beyond the
+existing static ABI/object regression witness. It validates no VMID, BADDR,
+CnP, reserved bit, alignment, VTCR compatibility, table initialization,
+publication, coherence, BBM, TLBI effect, completion, or context
+synchronization property.
 
 ## 7. Verification status
 
@@ -160,6 +177,7 @@ Protocol-specific ordering obligations remain separate specifications and tests.
 | host evaluator | fail-closed + tested |
 | C bootstrap lowering | implemented |
 | exact `MRS`/`MSR` register selection | AArch64 assembly-refinement tested |
+| exact VTTBR_EL2/X1 word and conditional component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

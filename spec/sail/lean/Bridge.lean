@@ -2,6 +2,7 @@ import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
 import Oak.AArch64EventControl
+import Oak.AArch64SysReg
 import Oak.AArch64Barrier
 import Oak.AArch64ColdEntry
 import Oak.AArch64Stage2Maintenance
@@ -484,6 +485,76 @@ theorem daifset_irq_generated_body_masks_and_preserves (state : DAIFState) :
       (state.maskIrq).a = state.a ∧
       (state.maskIrq).f = state.f :=
   ⟨daifset_irq_body_bridge state, daifset_irq_masks_and_preserves state⟩
+
+/-! The general system-register MSR projection for the VTTBR_EL2/X1 word.
+Access admission, traps, X1 value provenance, dynamic occurrence, and every
+state component except VTTBR_EL2 remain outside these pure facts. -/
+
+def decodedSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_vttbr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem vttbr_el2_x1_decoder_execution_target :
+    decodedSystemRegisterWriteTarget msrVttbrEl2X1 =
+      some (.SystemRegisterWriteTarget_VTTBR_EL2, 0b00001#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_execution_target :
+    decodedSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_vttbr_el2_x1_not_projected_to_write :
+    decodedSystemRegisterWriteTarget 0xd53c2101#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_vttbr :
+    decodedSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_vttbr :
+    decodedSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+open Oak.AArch64SysReg
+
+def vttbrWriteComponentToPair (result : VTTBRWriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+/-- The generated component body is Oak's local component transition for all
+    projected redirect inputs and 64-bit values. -/
+theorem vttbr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      vttbrWriteComponentToPair
+        (writeVttbrEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+/-- At EL2 the generated projection takes the direct VTTBR_EL2 assignment for
+    every value of the EL1 nested-virtualization control inputs. -/
+theorem vttbr_el2_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+/-- The official EL1 nested-virtualization alternative remains observable in
+    the projection and leaves the VTTBR_EL2 component unchanged. -/
+theorem vttbr_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure ExceptionLevel.el1.isEL1 true true false
+      true false oldValue newValue = (true, oldValue) := by
+  rfl
 
 end A64Encoding
 

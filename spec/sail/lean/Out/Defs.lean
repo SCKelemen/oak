@@ -56,6 +56,10 @@ inductive PSTATEWriteTarget where | PSTATEWriteTarget_DAIFSet
   deriving BEq, Inhabited, Repr
   open PSTATEWriteTarget
 
+inductive SystemRegisterWriteTarget where | SystemRegisterWriteTarget_VTTBR_EL2
+  deriving BEq, Inhabited, Repr
+  open SystemRegisterWriteTarget
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

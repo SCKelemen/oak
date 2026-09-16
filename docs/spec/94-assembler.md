@@ -758,6 +758,18 @@ correspondence, not proof that access succeeds, the instruction dynamically
 executes, or maskable IRQ delivery remains excluded over an interval. It
 supplies no memory ordering or synchronization fact.
 
+The general system-register seam now also computes the cold-entry
+`MSR VTTBR_EL2, X1` as `0xd51c2101`. Generated Lean proves the local pure
+decoder selects VTTBR_EL2/X1 and that its component-only state projection
+matches the pinned official direct assignment at EL2. The official-source
+audit keeps the EL1 nested-virtualization assignment to NVMem explicit. Lean's
+component projection records only the redirect flag and unchanged VTTBR_EL2;
+it erases NVMem contents and effects. The source gate pins the generic
+MSR access-check/decode route, X-register handoff, architectural register
+declaration, and direct/redirect branch. This proves neither access admission
+nor runtime X1 value provenance, field validity, publication, BBM, TLBI
+effects, completion, context synchronization, or a CAT edge.
+
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode

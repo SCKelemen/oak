@@ -8,6 +8,49 @@ inductive Reg where
   | mairEl1 | spEl0 | elrEl1 | spsrEl1
   deriving DecidableEq, Repr
 
+inductive ExceptionLevel where
+  | el0 | el1 | el2 | el3
+  deriving DecidableEq, Repr
+
+def ExceptionLevel.isEL1 : ExceptionLevel → Bool
+  | .el1 => true
+  | _ => false
+
+/-- The pinned model redirects an EL1 VTTBR_EL2 write into NVMem only under
+    this nested-virtualization condition. The Boolean arguments are projections
+    of the named architectural register bits, not a model of those registers. -/
+def vttbrEl2RedirectsToNVMem (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool) : Bool :=
+  currentEL.isEL1 && hcrNv && hcrNv2 && !hcrTge && (scrNs || scrEel2)
+
+/-- The VTTBR_EL2 component of the successful official write body. Every
+    other system-register component and every access/trap effect is omitted. -/
+structure VTTBRWriteComponent where
+  redirectedToNVMem : Bool
+  value : BitVec 64
+  deriving DecidableEq, Repr
+
+def writeVttbrEl2Component (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) : VTTBRWriteComponent :=
+  if vttbrEl2RedirectsToNVMem currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2 then
+    ⟨true, oldValue⟩
+  else
+    ⟨false, newValue⟩
+
+theorem write_vttbr_el2_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    writeVttbrEl2Component .el2 hcrNv hcrNv2 hcrTge scrNs scrEel2
+      oldValue newValue = ⟨false, newValue⟩ := by
+  rfl
+
+theorem write_vttbr_el2_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    writeVttbrEl2Component .el1 true true false true false
+      oldValue newValue = ⟨true, oldValue⟩ := by
+  rfl
+
 def writable : Reg -> Bool
   | .currentel | .esrEl2 | .farEl2 | .hpfarEl2 | .cntvctEl0 => false
   | _ => true

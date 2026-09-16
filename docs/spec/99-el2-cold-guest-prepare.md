@@ -69,6 +69,12 @@ pinned Sail decoder to the successful DAIFSet body, and proves that body sets
 I while preserving D/A/F. `ColdEntry.Step.maskIrq` is not yet connected to a
 dynamic occurrence of that instruction.
 
+The following VTTBR seam is likewise independent: the native gate pins the
+static `MSR VTTBR_EL2, X1` word, while generated Lean follows the general-MSR
+projection to the component assignment and proves it writes the supplied value
+at EL2. Access/trap admission, runtime X1 value provenance, valid VTTBR fields,
+table publication, and a dynamic `ColdEntry.Step` occurrence remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the
