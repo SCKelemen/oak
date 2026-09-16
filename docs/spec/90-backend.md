@@ -491,7 +491,7 @@ The first source and native rules are:
 | `source.canonical.bool.v1` | a built-in Bool identity after type checking and monomorphization; every non-literal operand remains exactly once, and no literal token is mutated | a fresh checker accepts the changed monomorphic program; the original specializing checker retains fact authority | double negation, `&&`/`\|\|` identities, and identity Bool comparisons are absent for every backend; literal negation waits for typed OptIR |
 | `source.canonical.integer.v1` | a zero/one identity whose checked result and retained operand have the same exact fixed-width integer type; floats, widening expressions, and user-defined operators are excluded, and the non-literal operand remains exactly once | the same cloned post-specialization recheck | redundant `+ 0`, `- 0`, `* 1`, `/ 1`, `\| 0`, `^ 0`, and shifts by zero are absent for every backend |
 | `elide-guards` | the exact accesses carry checked extent facts | the guardless assembly passes the lane seam checker and the selected body passes the native validation policy | per-access bounds guards are absent only where independently admitted |
-| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral coloring succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 code |
+| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral strict coloring or an independently verified and materialized spill plan succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 and RV64 code |
 
 The native lane proposes its strength reduction, guard elimination, flag reuse,
 invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
@@ -707,8 +707,15 @@ arithmetic. A separate, bounded transform consumes only exact independently
 recomputed evidence to replace known closed total-pure results, select known
 branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
 preserves effectful and trapping operations and independently verifies its
-output. Dominance-scoped GVN and fixed-point DCE then produce another verified
-CFG from a closed vocabulary of total pure scalar operations. Plain
+output. Before GVN, bounded fixed-point cleanup first removes unused non-entry
+block parameters and their exact incoming edge positions, then removes a
+phi-like block parameter only when every explicit incoming edge supplies the
+same dominating SSA value (or the parameter itself on a loop backedge). Entry
+parameters are excluded because their ABI inputs are implicit CFG predecessors.
+Operations, terminators, edge arguments, and proof facts are all uses. Each
+cleanup independently verifies the rewritten CFG. Dominance-scoped
+GVN and fixed-point DCE produce another verified CFG from a closed vocabulary
+of total pure scalar operations. Plain
 copies share a value number; exact commutative integer/equality operations and
 inverse order comparisons receive one canonical key. Result types and ordered
 attributes remain exact, and any unknown attribute disables operand
@@ -719,9 +726,16 @@ substrate consumes explicit checked region metadata beside operation effects.
 It gives each region deterministic entry/definition/join versions, expands an
 opaque call to a clobber of every declared region, handles loop phis, and binds
 its independently recomputed evidence to exact CFG and metadata fingerprints.
-Missing or inconsistent Mod/Ref information fails closed. It is analysis-only:
-dead-store elimination and load forwarding still wait for memory projection
-from checked Oak plus their own legality transforms. `Compilation.OptIR()` returns
+Missing or inconsistent Mod/Ref information fails closed. A second analysis,
+under an explicit list of regions observable at normal return, propagates live
+definitions through reads and join/loop phis and reports overwritten exact
+writes as dead candidates. Partial writes keep their predecessor live; volatile
+accesses are roots. A separately verified DSE transform can now remove a dead
+operation only when it is the closed `store.region` form and metadata certifies
+one whole-region, nonvolatile write. It rewrites operation sites and metadata,
+then rebuilds MemorySSA. Checked Oak memory projection has not landed, so this
+candidate cannot yet enter production emission; load forwarding is also open.
+`Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
 loop analysis reports dominators,
@@ -735,19 +749,58 @@ GVN/DCE and moves only closed total-pure operations whose operands are
 available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to
-the SSA result type. The cloned output is independently verified and carries a
-deterministic movement report. A changed post-LICM CFG is now an AArch64 native
-candidate. Target-neutral SSA liveness/interference analysis assigns abstract
-colors; the selector maps them to caller-saved registers, destroys block
-arguments with edge-local parallel copies, and selects the closed Bool and
-8/16/32/64-bit total-integer vocabulary. Narrow parameters and results are
-normalized in W registers according to signedness. A deterministic
-target-neutral spill planner now partitions high-pressure SSA values between
-colors and typed/aligned abstract stack slots, never spills ABI precolors, and
-independently verifies interference and safe slot reuse. It does not yet insert
-loads/stores, so the selector still refuses excess pressure. Effects, traps,
-calls, memory, stack parameters, or an unfamiliar operation likewise refuse
-only this candidate.
+the SSA result type. That fact is no longer self-authorizing metadata: its
+opaque ID, scope, witness, dependencies, and type must match immutable
+authority exported by the specializing typechecker after projection and after
+every SSA rewrite. The cloned output is independently verified and carries a
+deterministic movement report. A changed post-LICM CFG is now an AArch64 or
+RV64 native candidate. Target-neutral SSA liveness/interference analysis assigns
+abstract colors; dead block parameters may share a color only with one another,
+while live and conditional-edge values remain distinct. A deterministic
+target-neutral spill planner partitions high-pressure SSA values between colors
+and typed/aligned abstract stack slots, never spills ABI precolors, and
+independently verifies interference and safe slot reuse. AArch64 materializes
+the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
+using width- and signedness-correct traffic plus register/slot parallel copies.
+For AArch64, a fingerprint-bound target-independent analysis may replace a
+spilled constant or a bounded copy chain rooted in one with reconstruction at
+each use. A target cost check keeps expensive literals in their slots; accepted
+recipes remove the corresponding frame storage and traffic and are checked
+again during selection. RV64's consumer is narrower: an acyclic CFG with no
+effect except the closed direct-call form may materialize, as may one exact
+call-free natural-loop shape with a unique preheader, conditional header,
+straight-line latch, and return exit. The loop predicate is kept in a register;
+only aligned four- and eight-byte spill slots may cross its backedge. Nested,
+irreducible, multi-latch, multi-exit, narrow-slot, and unfamiliar cycles refuse.
+RV64 verifies the same plan again, checks canonical slot widths and alignments,
+lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses reserved
+`t5`/`t6` scratches for at most two ordinary spilled operands. Loads preserve
+the target's canonical signed/narrow representation, each spilled result is
+stored immediately, spilled conditions reload explicitly outside the loop
+slice, and simultaneous register/slot copies materialize SSA edges and call
+arguments. Broader RV64 loop spill traffic and rematerialization still refuse.
+
+Each selector maps colors to caller-saved registers, destroys block arguments
+with edge-local parallel copies, and selects the closed Bool and
+8/16/32/64-bit total-integer vocabulary. AArch64 narrow values are normalized in
+W registers. RV64 maintains the psABI's canonical sign-extended 32-bit
+representation and explicitly zero-extends `u32` when widening to `u64`; Bool
+and narrow ABI inputs are canonicalized before use. Both selectors also admit a
+first closed call slice: the target must be a known direct Oak function, with
+zero through eight matching Bool or 8/16/32/64-bit scalar arguments and exactly
+one matching scalar result. Its OptIR operation must carry exactly `EffectCall`
+and one nonempty `callee` attribute, with no other effect or attribute metadata.
+Because every allocatable color is caller-saved, every other non-unit value
+must be dead across the call. An admitted calling body saves and restores
+AArch64 `x30` or RV64 `ra`, places zero through eight arguments simultaneously
+in the integer ABI registers with a cycle-safe parallel copy, and reapplies the
+target's Bool/narrow normalization to the result. Both selectors may source
+arguments from verified spill slots and compose spill storage with the link-
+register save in one checked frame. RV64 keeps its slots below a dedicated
+sixteen-byte save area and caps the combined frame at 2032 bytes. A ninth or
+stack argument refuses, as do unknown, indirect, method, generic, external, or
+multi-result calls, other effects, traps, source memory, stack parameters,
+unfamiliar operations, an oversized frame, or unsupported RV64 pressure.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1

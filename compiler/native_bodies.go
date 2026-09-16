@@ -123,7 +123,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
-		if comp.options.Target.AsmArch() == asm.ArchArm64 {
+		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
 			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, tc)
 		}
 		// The candidate search (compiler/native_search.go, package opt;
@@ -260,7 +260,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // search never pays to validate an alternate spelling with no generic
 // optimization in it.
 func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
-	structured, err := lowerCheckedOptIRFunction(function, tc)
+	structured, authority, err := lowerCheckedOptIRFunction(function, tc)
 	if err != nil {
 		return nil, 0, ""
 	}
@@ -268,11 +268,17 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeC
 	if err != nil {
 		return nil, 0, ""
 	}
+	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
+		return nil, 0, ""
+	}
 	analyses, err := runOptIRAnalysisGraph(cfg)
 	if err != nil {
 		return nil, 0, ""
 	}
-	changes := analyses.sccpSimplification.Changes() + analyses.simplification.GVN.EliminatedOperations + analyses.simplification.DCE.EliminatedOperations + analyses.loopMotion.HoistedOperations
+	if err := verifyOptIRAnalysisFacts(authority, analyses); err != nil {
+		return nil, 0, ""
+	}
+	changes := analyses.sccpSimplification.Changes() + analyses.simplification.Changes() + analyses.loopMotion.HoistedOperations
 	if changes == 0 {
 		return nil, 0, ""
 	}

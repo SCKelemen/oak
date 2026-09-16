@@ -139,7 +139,26 @@ func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 // default for experiments; -opt keeps its one meaning, the C compiler's
 // level, docs/spec/90-backend.md §16 item 5).
 func nativeSearch(arch string, report *opt.Report) *opt.Search {
-	search := &opt.Search{Registry: nativegen.Registry(), Costs: opt.CostsFor(arch), Report: report}
+	registry := nativegen.Registry()
+	if skip := os.Getenv("OAK_OPT_SKIP"); skip != "" {
+		// For experiments and benchmarks: the named transforms (by their
+		// report names, comma-separated) propose nothing; unknown names are
+		// ignored. The identity candidate and the verdicts are as always.
+		skipped := map[string]bool{}
+		for _, name := range strings.Split(skip, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				skipped[name] = true
+			}
+		}
+		var kept []opt.Transform
+		for _, tr := range registry.Transforms() {
+			if !skipped[tr.Name()] {
+				kept = append(kept, tr)
+			}
+		}
+		registry = opt.NewRegistry(kept...)
+	}
+	search := &opt.Search{Registry: registry, Costs: opt.CostsFor(arch), Report: report}
 	if beam, err := strconv.Atoi(os.Getenv("OAK_OPT_BEAM")); err == nil && beam > 0 {
 		search.Beam = beam
 	}
@@ -166,6 +185,7 @@ var setAside = map[string]string{
 	nativegen.TransformVectorHomes: "keeps its vector slots",
 	nativegen.TransformCleanup:     "keeps its copies",
 	nativegen.TransformVectorize:   "keeps its scalar reduction",
+	nativegen.TransformVectorMaps:  "keeps its scalar map",
 	nativegen.TransformVecBlocks:   "addresses each vector load",
 	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",
 	nativegen.TransformReallocate:  "keeps its register assignment",

@@ -402,7 +402,46 @@ point. The cost model counts instructions, so on this host it ranks
 candidates by something the clock does not measure, and a port-pressure
 or dependency-chain term is what would tell them apart.
 
-## Found on the way## Found on the way
+## Map vectorization, 2026-09-16
+
+The element-wise span maps `vectorize-maps` rewrites
+(`docs/spec/94-assembler.md` §9 "Map vectorization"; `map_add.oak`,
+`bench_map.c`, `run_map.sh`), measured over 2^20 elements (the byte map
+over 2^22 bytes, the same 4 MB), best of seven rounds of two hundred
+calls, the vectorized form as the search selects it against the scalar
+loop the search keeps when the transform is withheld
+(`OAK_OPT_SKIP=vectorize-maps`). Three runs on a host at load average
+47–71; every row's checksum agrees, and every row is proven at the bit
+level with the span memory it writes.
+
+| Kernel | scalar loop | one vector a trip (**selected**) | speedup |
+| --- | ---: | ---: | ---: |
+| `add_k` — `dst[i] = a[i] + k`, `u32`, ns/element | 0.394–0.426 | 0.142–0.157 | 2.7–3.0× |
+| `bump` — `v[i] = (v[i] ^ k) + 1` in place, `u32` | 0.407–0.466 | 0.123–0.127 | 3.2–3.7× |
+| `fmadd_k` — `dst[i] = a[i] * k + 0.5`, `f32` | 0.365–0.432 | 0.139–0.168 | 2.5–2.8× |
+| `sum_ab` — `dst[i] = a[i] + b[i]`, a zip, `u32` | 0.483–0.802 | 0.210–0.365 | 2.2–2.5× |
+| `xor_mask` — `dst[i] = a[i] ^ m`, `u8`, ns/byte | 0.453 | 0.028 | 16× |
+
+What the rows say:
+
+- **One vector a trip is enough for a map.** The reduction needed four
+  accumulators because its lanes form a loop-carried chain; a map carries
+  nothing across trips, so the four-element trip already runs near the
+  store bandwidth the host gives one core under this load, and the gain
+  is the 2–3× the lane count and the guard elision predict together.
+- **The byte map is where the lanes pay most.** Sixteen bytes a trip
+  against one, and the scalar loop's per-element guard and branch are the
+  same cost whatever the width: 0.45 ns a byte becomes 0.028, sixteen
+  times, the whole lane count.
+- **The zip is the slowest of the four word kernels either way** — three
+  streams against two — and the one with the widest spread between runs,
+  which is the memory system, not the code.
+- **The float map vectorizes because nothing reassociates.** `fmul` and
+  `fadd` round once per lane as the scalar operators do, so the license
+  (`Oak.Map.blocked_eq`) needs no law of `f32` where the reduction's
+  `fsum` stays scalar.
+
+## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a
   package-level array is refused, so `utf8.valid` as written stays on the

@@ -221,7 +221,10 @@ func memoryOf(a asm.Instruction) (mem bool, store bool) {
 // boundaries alike — a guard branch between a divide and its consumer
 // hides none of the divide's latency on the path that falls through —
 // so a form with fewer guards is not charged the stalls its branches
-// merely interrupted.
+// merely interrupted. A pair whose two instructions lie in different
+// loops (a preheader's load consumed by the body's first instruction)
+// counts once, in the total, and in no block: the block share is what a
+// loop pays every trip, so it holds only pairs that run together.
 func (f *Function) Stalls() (total int, byBlock map[*Block]int) {
 	byBlock = map[*Block]int{}
 	var instrs []*Instr
@@ -232,6 +235,15 @@ func (f *Function) Stalls() (total int, byBlock map[*Block]int) {
 			blockOf[ins] = b
 		}
 	}
+	// The innermost loop of each block, for the pairs that run together.
+	loopOf := map[*Block]*Loop{}
+	for _, l := range f.Dominators().Loops() {
+		for _, b := range l.Blocks {
+			if cur, ok := loopOf[b]; !ok || len(l.Blocks) < len(cur.Blocks) {
+				loopOf[b] = l
+			}
+		}
+	}
 	for j := 1; j < len(instrs); j++ {
 		_, bUses := f.regsOf(instrs[j])
 		for k := j - 1; k >= 0 && j-k <= 8; k-- {
@@ -240,7 +252,9 @@ func (f *Function) Stalls() (total int, byBlock map[*Block]int) {
 				if bUses[r] {
 					if stall := f.t.latency(instrs[k].Asm) - (j - k); stall > 0 {
 						total += stall
-						byBlock[blockOf[instrs[j]]] += stall
+						if producer, consumer := blockOf[instrs[k]], blockOf[instrs[j]]; producer == consumer || loopOf[producer] == loopOf[consumer] {
+							byBlock[consumer] += stall
+						}
 					}
 				}
 			}
@@ -263,7 +277,10 @@ func Schedule(fn *asm.Function) (*asm.Function, int, error) {
 }
 
 // StallEstimate lifts a body and estimates its stalls, in total and per
-// block label; a body the lift refuses estimates zero.
+// label: a block without a label (the fall-through after a branch) is
+// counted under the last label before it, the region the label opens, so
+// a loop's share is what lies between its labels. A body the lift
+// refuses estimates zero.
 func StallEstimate(fn *asm.Function) (total int, byLabel map[string]int) {
 	lifted, err := Lift(cloneFunction(fn))
 	if err != nil {
@@ -271,8 +288,14 @@ func StallEstimate(fn *asm.Function) (total int, byLabel map[string]int) {
 	}
 	total, byBlock := lifted.Stalls()
 	byLabel = map[string]int{}
-	for b, n := range byBlock {
-		byLabel[b.Label] += n
+	current := ""
+	for _, b := range lifted.Blocks {
+		if b.Label != "" {
+			current = b.Label
+		}
+		if n := byBlock[b]; n > 0 {
+			byLabel[current] += n
+		}
 	}
 	return total, byLabel
 }

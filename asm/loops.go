@@ -3463,6 +3463,51 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for k, ev := range oakLoops {
 		children[ev.parent-1] = append(children[ev.parent-1], k)
 	}
+	// notRunPins of event k: a loop that never ran leaves its variables at
+	// their header values — the scalar counterpart of "loops that never
+	// ran keep the entry memory" (spanEqualSplitting). The loop runs where
+	// its guard holds at the header and the machine's path reached it;
+	// otherwise each loop symbol is its header value. Without the fact, a
+	// machine that skips a loop under a hoisted guard (`len(a) < 4` around
+	// a vector main loop) carries the header value into the next loop
+	// where the Oak side carries the loop symbol, and the two are not
+	// provably one. Only the symbols the terms at hand mention are pinned,
+	// and only scalars whose header value is a constant or a symbol (a
+	// vector kernel's sixteen lane variables, each pinned to a lane of the
+	// loop before, blast past the node budget for nothing); nil when none
+	// is.
+	notRunPins := func(k int, sigma map[string]*term, mentioned map[string]bool) *term {
+		ev := oakLoops[k]
+		pins := constTerm(1, 1)
+		pinned := false
+		for _, v := range ev.vars {
+			fresh, header := ev.fresh[v], ev.header[v]
+			if fresh == nil || header == nil || fresh.width != header.width || fresh.width > 64 || !mentioned[fresh.name] {
+				continue
+			}
+			if strings.Contains(v, "[") || (header.kind != termConst && header.kind != termParam) {
+				continue
+			}
+			pins = binaryTerm("and", pins, truncate(cmpTerm("eq", fresh, header), 1))
+			pinned = true
+		}
+		if !pinned {
+			return nil
+		}
+		headerSigma := map[string]*term{}
+		for v, fresh := range ev.fresh {
+			if header, ok := ev.header[v]; ok {
+				headerSigma[fresh.name] = header
+			}
+		}
+		runs := truncate(substitute(ev.cond, headerSigma), 1)
+		if k < len(asmLoops) && asmLoops[k] != nil {
+			if reached := asmLoops[k].reached; reached != nil {
+				runs = binaryTerm("and", runs, truncate(substitute(reached, sigma), 1))
+			}
+		}
+		return binaryTerm("or", runs, pins)
+	}
 	// exitPremise of event k: its invariant and negated guard, and its
 	// children's exit premises.
 	var exitPremise func(k int, sigma map[string]*term) *term
@@ -3487,6 +3532,27 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if reached := asmLoops[k].reached; reached != nil {
 			// The machine's summary holds where the path reached the loop.
 			premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+		}
+		// The loops before this one at the same level ran or left their
+		// symbols at their header values: this loop's header values and
+		// continue condition may read them (under the coupling, an asm
+		// register's header value spells the earlier loop's symbol).
+		if earlier := earlierSiblings(k, oakLoops); len(earlier) > 0 {
+			mentioned := map[string]bool{}
+			for _, v := range oakLoops[k].vars {
+				collectParams(oakLoops[k].header[v], mentioned)
+			}
+			if asmEv := asmLoops[k]; asmEv != nil {
+				for _, v := range asmEv.vars {
+					collectParams(substitute(asmEv.header[v], sigma), mentioned)
+				}
+				collectParams(substitute(asmEv.cond, sigma), mentioned)
+			}
+			for _, j := range earlier {
+				if pins := notRunPins(j, sigma, mentioned); pins != nil {
+					premise = binaryTerm("and", premise, pins)
+				}
+			}
 		}
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
@@ -3993,6 +4059,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if ev.parent == 0 {
 			premise = binaryTerm("and", premise, exitPremise(k, sigma))
 			topLevel = append(topLevel, k)
+		}
+	}
+	// A result reading a loop's symbols after a path that skipped the loop
+	// reads their header values on the machine side: the symbols the two
+	// results mention are pinned where their loop never ran.
+	if asmTerm != nil {
+		resultMentions := map[string]bool{}
+		collectParams(oakTerm, resultMentions)
+		collectParams(substitute(truncate(asmTerm, width), sigma), resultMentions)
+		for _, k := range topLevel {
+			if pins := notRunPins(k, sigma, resultMentions); pins != nil {
+				premise = binaryTerm("and", premise, pins)
+			}
 		}
 	}
 	// The loops whose markers the memories after the loops may carry

@@ -214,7 +214,25 @@ func analyzeRegisterProblem(cfg CFG) (registerProblem, error) {
 				parameters = append(parameters, parameter.ID)
 			}
 		}
-		defineAgainst(parameters, live)
+		parameterLive := make(map[ValueID]bool, len(parameters))
+		for _, parameter := range parameters {
+			parameterLive[parameter] = live[parameter]
+			delete(live, parameter)
+		}
+		for left, parameter := range parameters {
+			for other := range live {
+				interfere(parameter, other)
+			}
+			for _, other := range parameters[left+1:] {
+				// Incoming edge copies still write dead parameters, so a
+				// dead parameter must remain distinct from every live one.
+				// Two dead parameters may share a color: either copy can
+				// overwrite the other because neither result is observed.
+				if parameterLive[parameter] || parameterLive[other] {
+					interfere(parameter, other)
+				}
+			}
+		}
 	}
 
 	problem := registerProblem{

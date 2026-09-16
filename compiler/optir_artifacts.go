@@ -14,8 +14,8 @@ const (
 	optIRSCCPCFGRevision       = "oak.optir.sccp-cfg.v1"
 	optIRLoopStructureRevision = "oak.optir.loop-structure.v1"
 	optIRLoopsRevision         = "oak.optir.loops.v2"
-	optIRGVNDCERevision        = "oak.optir.gvn-dce.v1"
-	optIRCleanupCFGRevision    = "oak.optir.cleanup-cfg.v2"
+	optIRGVNDCERevision        = "oak.optir.gvn-dce.v3"
+	optIRCleanupCFGRevision    = "oak.optir.cleanup-cfg.v4"
 	optIRPreservationRevision  = "oak.optir.preservation.v1"
 	optIRLICMRevision          = "oak.optir.licm.v1"
 )

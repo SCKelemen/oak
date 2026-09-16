@@ -255,11 +255,33 @@ loads past loads). The cost model gains a stall term
 producer does not cover, at most eight apart), straight and per loop, so
 a better-scheduled body is priced lower; the first version without the
 compare barrier scheduled bodies past the verifier's path budget, which
-the vector-homes test caught.
+the vector-homes test caught. Three corrections to the measure followed
+from the suite: it counts across barriers and block boundaries (a guard
+branch between a divide and its consumer hides none of the latency on
+the fall-through path, so the branch-free strength-reduced form was
+being charged stalls the guarded form skipped), a pair whose two
+instructions lie in different loops counts once and in no loop's share,
+and a fall-through block without a label counts under the label before
+it (the top-tested loop's body block has none, and its load's stall was
+being lost while the rotated form's was charged).
 
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
+
+### Phase D, first rewrite after the reductions: map vectorization
+
+`vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
+first layer-A rewrite whose license is lane-wise semantics alone
+(`Oak.Map.blocked_eq`, `spec/lean/Oak/Map.lean`: the blocked map over a
+list is the element-wise map, for any function of one element), so it
+carries no fact requirement and its remainder loop is the source loop
+itself. It reads span parameters only, and it knows two spans have one
+length only from an enclosing `len(dst) == len(a) ? { … }`, the shape
+the seam checker admits for a store through one span under the other's
+guard. The increment's cost was in the verifier, not the rewrite: the
+hoisted form's remainder loop proved only once a premise could say that
+a skipped loop leaves its variables at their header values.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
@@ -288,7 +310,13 @@ remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
 
-GVN then runs on the SCCP-rewritten CFG. It numbers
+Before GVN, unused non-entry block parameters and their exact incoming edge
+positions are removed to a bounded fixed point; proof facts count as uses. Then
+trivial phi-like block parameters are removed only when every explicit incoming
+edge resolves to the same dominating SSA definition (with a self loop edge
+allowed for an invariant). Entry parameters are never inferred from backedges
+because their ABI inputs are implicit. Edge argument positions, uses, and facts
+are remapped and the CFG verifies again. GVN then runs on that CFG. It numbers
 plain copies alike, canonicalizes exact commutative integer/equality operations
 and inverse order comparisons, then shares a congruent expression only from a
 dominating definition. DCE removes the exposed unused pure chains and copies to
@@ -313,12 +341,42 @@ Its first loop transform is LICM. After GVN/DCE it moves a closed
 total-pure operation to a canonical preheader only when all operands are
 available there. Potential traps, effects, calls, memory, unknown operations,
 noncanonical entries, and facts other than the definition-local checked type
-fact pin the operation. The cloned result passes the independent verifier and
-is retained with deterministic movement evidence. A changed final CFG enters
+fact pin the operation. The checked type fact carries an opaque source/type
+proof ID and is matched against immutable typechecker authority after every CFG
+rewrite; transformed metadata cannot authorize itself. The cloned result passes
+the independent verifier and is retained with deterministic movement evidence.
+A changed final CFG enters
 native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
-liveness/interference coloring precedes a closed AArch64 selector; the direct
-lowering remains the identity, and every selected OptIR body must pass seam
-admission and semantic translation validation.
+liveness/interference coloring precedes closed AArch64 and RV64 selectors. The
+RV64 selector preserves canonical sign-extended 32-bit values and explicitly
+zero-extends unsigned widening. Both selectors now admit a deliberately closed
+direct-call form: a known Oak body with zero through eight matching
+Bool/8/16/32/64-bit scalar arguments and exactly one
+matching scalar result, represented by exactly `EffectCall` plus one nonempty
+`callee` attribute. Since the available colors are caller-saved, any other
+non-unit value live across the call refuses the candidate. An admitted calling
+function reserves a sixteen-byte save area for AArch64 `x30` or RV64 `ra`,
+places the ABI register arguments as a simultaneous parallel copy whose cycles
+use the selector's reserved scratch, and normalizes the result at the boundary.
+A ninth or stack argument, all broader call forms, and other effects still
+refuse. The independently verified abstract spill plan is materialized on
+AArch64 and composed with this call frame. Spilled constants and bounded copy
+chains may instead be rematerialized after independent recipe verification and
+a target cost check; accepted recipes remove their physical slots, while
+expensive literals stay spilled. RV64 materializes acyclic CFGs with no effect
+except an admitted direct call, plus one exact call-free natural loop with a
+unique preheader, conditional header, straight-line latch, and return exit.
+The loop predicate remains in a register, only aligned four- or eight-byte
+spill slots cross its backedge, and broader cycles refuse. Canonical scalar
+slots live in a bounded 16-byte-aligned frame, at most two ordinary spilled
+operands use reserved `t5`/`t6` scratches, and simultaneous register/slot copies
+cover SSA edges and call arguments. Its `ra` save area sits above the spill
+slots in the same frame. Width-correct stores, signed/narrow reloads,
+production-pressure diamonds, spilled returns, a composed spill/call frame,
+and a loop-carried `u32` spill are machine-proven; broader RV64 loops and calls
+and rematerialization still refuse. The direct lowering remains the identity,
+and every selected OptIR body must pass seam admission and semantic translation
+validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -340,8 +398,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: join/loop-parameter value congruence, checked memory-region projection
-and the dead-store/load transforms that consume the landed region MemorySSA,
+Not yet: checked memory-region projection that can make the landed closed
+whole-region DSE transform a production candidate, load GVN,
 non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
@@ -779,8 +837,14 @@ The first explicit-metadata region MemorySSA has landed. It represents each
 declared region independently with deterministic entry, definition, join, and
 loop versions; exact Mod/Ref must agree with the operation effects, while an
 opaque call clobbers every declared region. Exact CFG/metadata fingerprints and
-independent recomputation reject stale or mutated evidence. Checked Oak memory
-operations do not project into it yet, and it licenses no transform or emission.
+independent recomputation reject stale or mutated evidence. Memory-definition
+liveness now takes an explicit set of regions observable on normal return,
+roots reads, volatile accesses, opaque clobbers, and those terminal versions,
+and propagates through join/loop phis. Partial writes keep their predecessors
+live. A verified transform deletes only a dead, whole-region, nonvolatile
+`store.region`, rewrites its metadata, and rebuilds MemorySSA. Checked Oak
+memory operations do not project into it yet, so the transform cannot currently
+affect emitted programs.
 
 Once that projection exists, region memory SSA should power:
 
@@ -964,10 +1028,12 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
-    plan landed; machine insertion remains**);
+    plan, verifier-gated AArch64 scalar insertion, and the first closed RV64
+    loop-carried insertion landed; splitting, broader MachineIR/RV64 loops, and
+    RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
-    and AArch64 fallthrough cleanup landed; edge-copy cleanup remains**);
+    and AArch64/RV64 fallthrough cleanup landed; edge-copy cleanup remains**);
 13. simple pre/post-allocation scheduling.
 
 This phase targets the measured UTF-8 call/spill gap directly.
@@ -982,7 +1048,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
     landed; checked memory projection remains**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
-21. LICM (**verifier-gated AArch64 OptIR candidate landed**), loop rotation, address
+21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address
     induction, loop strength reduction.
 
 ### Phase D: vector planning
@@ -1001,19 +1067,34 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization — **surveyed 2026-09-16, blocked on the
-    verifier**: a hand-written vector map (`simd.store_u32x4(dst, i,
-    simd.add_u32x4(simd.load_u32x4(a, i), kv))` under
-    `len(dst) == len(a)` and the slack guard) is admitted by the seam
-    checker and modeled by the verifier lane by lane, but comes out
-    *witnessed*: "the memory of the span dst after the loops was not
-    proven equal". The scalar map is proven with its span memory, so
-    what is missing is coupling a span's memory across two loops — the
-    vector main loop and the scalar remainder. Two notes for whoever
-    takes it: an index guarded against two spans keeps only the last
-    bound, so the equal-length shape (`len(dst) == len(a)`) is the one
-    the checker admits; and a map needs no reassociation at all, so the
-    law is far weaker than the reduction's and floats vectorize too;
+24. map/zip vectorization — **landed 2026-09-16** (`vectorize-maps`,
+    `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
+    map or zip over span parameters — `dst[i] = E(a[i], b[i], …)` with `E`
+    over the elements at `i`, invariant scalars, and constants under
+    `+ - & | ^` for `u8`/`u16`/`u32`/`u64` lanes and `+ - * /` for
+    `f32`/`f64` lanes,
+    in place or under an enclosing conjunction of `len(x) == len(y)`
+    guards (closed transitively) — runs one vector a trip (the `ldr q`s,
+    the lane-wise operations, `str q`) under the slack guard with the
+    scalar remainder as written, licensed by `Oak.Map.blocked_eq`
+    (lane-wise semantics alone: no law of the element type, so no fact of
+    the body is required and floats vectorize where a reduction's cannot),
+    and proven by the verifier with the span memory it writes. Measured
+    over 2^20 elements (`benchmarks/native/README.md`, "Map
+    vectorization"): 2.8–3.0× on a `u32` map, 3.2–3.6× in place, 2.6–2.8×
+    on an `f32` multiply-add map, 2.2–2.3× on a zip. Two
+    verifier increments made it provable: the store-loop split (§0,
+    "loops that never ran keep the entry memory") proved the hand-written
+    shape that the 2026-09-16 survey found *witnessed*; and the hoisted
+    form — a guard peeled around the vector loop skips it when `len(a) <
+    4`, carrying the index's header value into the remainder loop where
+    the Oak side carries the loop symbol — needed the scalar counterpart,
+    "loops that never ran keep their variables" (`notRunPins` in
+    `asm/loops.go`: a loop ran, or each of its symbols is its header
+    value, in every premise that can read an earlier sibling's symbols).
+    Still to do: integer multiplication (no integer `mul` lane in v1) and
+    shifts, signed lanes, spans bound in the body, elements at `i ± k`
+    (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

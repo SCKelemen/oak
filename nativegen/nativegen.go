@@ -1514,8 +1514,8 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
-	// OptIR is the verified optimized SSA candidate available to the
-	// AArch64 selector. UseOptIR is the candidate-search toggle;
+	// OptIR is the verified optimized SSA candidate available to the native
+	// selectors. UseOptIR is the candidate-search toggle;
 	// OptIRFingerprint and OptIRChanges make the materialization recipe and
 	// optimization report exact without treating the pointer as identity.
 	OptIR            *optir.CFG
@@ -1528,6 +1528,10 @@ type Lane struct {
 	// rewritten body, the search keeps the scalar forms where it does not
 	// prove.
 	VectorReductions bool
+	// VectorMaps rewrites the element-wise maps over span parameters into a
+	// vector main loop and the scalar remainder (nativegen/vector_map.go);
+	// the verifier judges the lowering against the rewritten body.
+	VectorMaps bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1753,15 +1757,16 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false)
 			if err == nil {
+				template.Callees = functions
 				out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
 			}
 			if err == nil {
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.VectorReductions)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.VectorReductions, lane.VectorMaps)
 		}
 		if err != nil {
 			return out, err
@@ -1785,7 +1790,33 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		promotedSlots[out] = alloc.Promoted
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		var out *asm.Function
+		var err error
+		if lane.UseOptIR {
+			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
+				return nil, unsupported("an incomplete OptIR emission plan")
+			}
+			fingerprint, fingerprintErr := optir.FingerprintCFG(*lane.OptIR)
+			if fingerprintErr != nil {
+				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
+			}
+			if fingerprint != lane.OptIRFingerprint {
+				return nil, unsupported("an OptIR emission plan whose CFG does not match its fingerprint")
+			}
+			// The ordinary lowering supplies only checked signature/ABI metadata.
+			// Its executable items are discarded by the selector.
+			var template *asm.Function
+			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, nil, false)
+			if err == nil {
+				template.Callees = functions
+				out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
+			}
+			if err == nil {
+				optIRLowered[out] = lane.OptIRChanges
+			}
+		} else {
+			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1810,7 +1841,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -1926,14 +1957,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, vectorize bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, vectorize bool, vmaps bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, strength) {
+	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, strength) {
 		if stage.body == fn.Body {
 			break
 		}

@@ -92,10 +92,18 @@ pure operations, selects known branch edges, removes unreachable blocks, and
 performs bounded SSA-aware block and empty-trampoline cleanup. Effectful or
 trapping operations remain even when their result is known. Input and output
 verify independently; the result feeds later transforms and can affect emitted
-AArch64 code only through the verifier-gated OptIR candidate below.
+AArch64 or RV64 code only through the verifier-gated OptIR candidate below.
 
 The next target-independent cleanup candidate runs on the SCCP-rewritten CFG.
-Dominance-scoped GVN assigns deterministic numbers to SSA values and shares
+It first removes unused non-entry block parameters and their exact incoming
+edge positions to a bounded fixed point; operation operands, terminators, edge
+arguments, and proof facts all keep a parameter live. It then removes a
+phi-like block parameter only when every explicit incoming
+edge supplies one identical dominating SSA value, allowing a self-reference on
+a loop backedge but never inferring an entry parameter from backedges alone.
+The matching edge positions and all uses/facts are remapped, one parameter per
+bounded fixed-point step, and the CFG verifies again. Dominance-scoped GVN then
+assigns deterministic numbers to SSA values and shares
 congruent operations only from a closed vocabulary of total pure scalar
 operations. Plain copies carry their operand's number; wrapping integer
 add/multiply/bitwise operations and equality use commutative operand order;
@@ -133,40 +141,91 @@ vocabulary as GVN/DCE. Division, remainder, shifts, calls, memory, effects,
 unknown operations, and loops without a canonical preheader remain unchanged.
 Relational or path-derived facts pin an operation; the one exception is the
 result-local `checked.type` fact, which merely restates the typed SSA
-definition. Nested loops are considered outermost first, allowing a value
+definition. Its opaque ID, scope, witness, dependencies, and value type must
+match immutable authority exported by the specializing typechecker after
+projection and every SSA rewrite; transformed metadata cannot authorize itself.
+Nested loops are considered outermost first, allowing a value
 invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
 post-GVN/DCE LICM candidate and a deterministic movement report. Target-neutral
-SSA liveness/interference coloring and the closed AArch64 selector consume that
-final CFG. The selector supports Bool and 8/16/32/64-bit total integer
-operations plus structured CFG edges. Narrow inputs and intermediate results
-are normalized to their signed or unsigned W-register canonical form. It
-refuses effects, traps, calls, memory, stack arguments, unknown operations, and
-excess pressure. Before selection, a target-independent layout analysis gives
-loop continuation/backedges an 8:1 static preference and leaves other branches
-neutral. Its fingerprint-bound order is an exact block permutation. AArch64
-uses it to make the preferred copy-free edge fall through and omit redundant
-branches without changing any semantic edge. Its candidate
-always passes the semantic-verifier gate: proven and witnessed verdicts remain
+SSA liveness/interference coloring and the closed AArch64/RV64 selectors consume
+that final CFG. Two dead block parameters may share a color; live/dead and
+conditional-edge arguments still interfere. Both selectors support Bool and
+8/16/32/64-bit total integer operations plus structured CFG edges. AArch64
+normalizes narrow values in W registers. RV64 preserves canonical sign-extended
+32-bit values, explicitly zero-extends `u32` when widening to `u64`, and
+canonicalizes Bool/narrow ABI inputs before use. They refuse effects, traps,
+memory, stack arguments, unknown operations, and unsupported pressure. The first
+direct-call slice is deliberately smaller than the projected call vocabulary:
+it admits only a known direct Oak callee with zero through eight matching
+Bool/8/16/32/64-bit scalar arguments and exactly one matching scalar result.
+The operation must have exactly the `EffectCall` effect and exactly one
+nonempty `callee` attribute, and no other non-unit value may be live across it
+because the color pools are caller-saved. Calling bodies save/restore `x30` on
+AArch64 or `ra` on RV64, place all register arguments simultaneously with a
+cycle-safe parallel copy, and normalize the ABI result after return. Both
+selectors may source that copy from verified spill slots and compose spill
+storage with the link-register save in one bounded frame. RV64 keeps `ra` in a
+dedicated sixteen-byte save area above the spill slots and caps the combined
+frame at 2032 bytes. A ninth or stack argument and every broader call form
+refuse the OptIR candidate and retain the ordinary lowering.
+Before selection, a target-independent layout analysis gives loop
+continuation/backedges an 8:1 static preference and leaves other branches
+neutral. Its fingerprint-bound order is an exact block permutation. Both
+selectors use it to make the preferred copy-free edge fall through and omit
+redundant branches without changing any semantic edge. Every candidate passes the
+semantic-verifier gate: proven and witnessed verdicts remain
 distinct evidence grades, while refusal or a trusted verdict keeps an ungated
 lowering.
 
-The same target-neutral liveness/interference graph now supports an abstract
+The same target-neutral liveness/interference graph supports an abstract
 spill plan when finite coloring fails. ABI precolors cannot spill; other values
 are chosen deterministically from actual pressure neighborhoods, assigned
 typed/aligned slots, and may reuse storage only when their live ranges do not
 interfere. An independent verifier recomputes liveness and interference and
-checks full assignment coverage, precolors, colors, and every slot. No machine
-spill traffic is emitted yet, so this closes the planning seam rather than the
-selector's excess-pressure refusal.
+checks full assignment coverage, precolors, colors, and every slot. AArch64 now
+materializes it with three reserved scratch registers and an overflow-checked,
+16-byte-aligned frame of at most 4080 bytes. Loads preserve narrow signedness,
+stores use the represented width, and edge-copy cycles work across registers
+and slots. The resulting high-pressure candidate still passes the seam checker
+and semantic verifier before selection. RV64 consumes the same verified plan
+for an acyclic CFG with no effect except an admitted direct call and for one
+exact call-free natural loop: a unique preheader, conditional header,
+straight-line latch, and return exit. The predicate stays register-resident and
+only aligned four- or eight-byte spill slots may cross the backedge; every
+broader cyclic form refuses. Canonical slots become an overflow-checked,
+16-byte-aligned frame of at most 2032 bytes;
+at most two ordinary spilled operands reload through reserved `t5`/`t6`, signed
+and narrow representations are restored, and each spilled result stores
+immediately. Location-aware simultaneous copies cover register/slot SSA edges
+and call arguments, while spilled conditions reload explicitly. Machine tests
+prove production-pressure `u32` diamonds, wrapping `i8` edge traffic, spilled
+conditions/returns, composed spill/call frames with spilled arguments and
+results, and a loop-carried `u32` frame value through a canonical pre-test loop.
+Broader loops and calls remain RV64 refusals.
+
+Spilled constants and bounded copy chains rooted in constants now have a
+fingerprint-bound target-independent rematerialization analysis. It refuses
+parameters, arithmetic, calls, memory, traps, cycles, and values used by proof
+facts. AArch64 independently verifies the recipe and register plan, applies a
+target instruction-cost filter, removes accepted values from the physical
+spill frame, and reconstructs them at uses and edge copies. Expensive literals
+remain spilled. Rematerialization changes no emission gate.
 
 Region-aware MemorySSA has its first explicit analysis substrate as well.
 Checked metadata names regions and exact read/write/read-write behavior beside
 the operation's effect set; opaque calls conservatively clobber every declared
 region. The deterministic graph has entry, definition, join, and loop versions
-and is independently recomputed against exact CFG/metadata fingerprints.
-Nothing consumes it for DSE or load GVN until checked Oak memory operations and
-their region identities project into OptIR.
+and is independently recomputed against exact CFG/metadata fingerprints. A
+separate liveness analysis takes an explicit normal-return observability set,
+makes reads and live-out terminal versions roots, propagates through loop/join
+phis, and reports only unused exact writes as dead candidates. Partial writes
+keep the reaching definition live and volatile accesses are observable roots.
+A separately verified transform now deletes only the closed `store.region`
+operation when it is one nonvolatile whole-region write and its exact output is
+dead. It renumbers metadata and rebuilds MemorySSA. This is still an
+analysis-only candidate until checked Oak memory operations and region
+identities project into OptIR; load GVN remains open.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,
@@ -282,12 +341,12 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef analysis has landed, while dead stores wait for checked memory-region projection and a legality transform |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed, while production DSE waits for checked memory-region projection |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |
 | Static analysis | alias, array-access, control-flow, data-flow, dependence, escape, pointer, shape, and value-range analysis | reusable proof domains feeding legality, representation choice, and costs |
-| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; AArch64 first, the same contracts reused by RV64 |
+| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; verified constant/copy rematerialization is consumed by AArch64 spill lowering, with the same analysis contract available to later targets |
 
 ## The program, in measured order
 

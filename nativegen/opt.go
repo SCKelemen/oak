@@ -44,6 +44,7 @@ const (
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
+	TransformVectorMaps  = "vectorize-maps"
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
 	TransformReallocate  = "reallocate"
@@ -186,11 +187,11 @@ func Transforms() []opt.Transform {
 		},
 		&gatedTransform{laneTransform{
 			// The generic SSA middle end's optimized CFG becomes a native
-			// implementation candidate. The closed AArch64 selector refuses
-			// effects and unsupported types, and this new emission path remains
-			// verifier-gated until it has earned broader standing.
+			// implementation candidate. The closed AArch64 and RV64 selectors
+			// refuse effects and unsupported types, and this emission path
+			// remains verifier-gated until it has earned broader standing.
 			name: TransformOptIR, phase: opt.PhaseCanonical, proof: opt.Mechanical,
-			arches:  arm64Only,
+			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.UseOptIR || l.OptIR == nil || l.OptIRChanges <= 0 },
 			apply:   func(l Lane) Lane { l.UseOptIR = true; return l },
 			fired:   OptIRLowered,
@@ -258,6 +259,18 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.VectorReductions },
 			apply:   func(l Lane) Lane { l.VectorReductions = true; return l },
 			fired:   Vectorized,
+		},
+		&laneTransform{
+			// Map vectorization (nativegen/vector_map.go): an element-wise
+			// map over span parameters as one vector a trip under the slack
+			// guard, the remainder as written, licensed by Oak.Map.blocked_eq
+			// — lane-wise semantics alone, no law of the element type, so no
+			// fact of the body is required.
+			name: TransformVectorMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorMaps },
+			apply:   func(l Lane) Lane { l.VectorMaps = true; return l },
+			fired:   VectorizedMaps,
 		},
 		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
@@ -376,6 +389,7 @@ func PlainLane(lane Lane) Lane {
 	lane.Reallocate = false
 	lane.Schedule = false
 	lane.VectorReductions = false
+	lane.VectorMaps = false
 	lane.NoReductions = true
 	return lane
 }

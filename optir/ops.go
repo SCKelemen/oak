@@ -33,6 +33,12 @@ const (
 	OpGreater      = "compare.greater"
 	OpGreaterEqual = "compare.greater-equal"
 
+	// OpStoreRegion replaces one complete checked semantic memory region with
+	// its sole operand. Region identity and exactness live in
+	// RegionMemoryMetadata; partial stores remain extension operations until
+	// their address semantics join the closed OptIR vocabulary.
+	OpStoreRegion = "memory.region-store"
+
 	OpCall = "call"
 )
 

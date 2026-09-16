@@ -48,11 +48,16 @@ type OperationSite struct {
 }
 
 // MemoryAccessSpec is checked-projection metadata for one operation. Region
-// must be declared for exact accesses. UnknownClobber instead has an empty
-// Region and is expanded conservatively to every declared region.
+// must be declared for exact accesses. WholeRegion certifies that a write
+// replaces the entire named semantic region rather than one location in a
+// coarser region. Volatile makes the access intrinsically observable.
+// UnknownClobber instead has an empty Region and is expanded conservatively to
+// every declared region.
 type MemoryAccessSpec struct {
-	Region RegionID
-	Kind   MemoryAccessKind
+	Region      RegionID
+	Kind        MemoryAccessKind
+	WholeRegion bool
+	Volatile    bool
 }
 
 // MemoryOperationMetadata gives the complete memory behavior of one operation.
@@ -93,15 +98,18 @@ type MemoryVersion struct {
 }
 
 // MemoryAccess is one normalized access. Input is the reaching memory
-// definition. Output is nonzero exactly for write, read-write, and unknown
-// clobber accesses.
+// definition. WholeRegion and Volatile preserve the checked projection
+// contract used by later analyses. Output is nonzero exactly for write,
+// read-write, and unknown-clobber accesses.
 type MemoryAccess struct {
-	ID     MemoryAccessID
-	Site   OperationSite
-	Region RegionID
-	Kind   MemoryAccessKind
-	Input  MemoryVersionID
-	Output MemoryVersionID
+	ID          MemoryAccessID
+	Site        OperationSite
+	Region      RegionID
+	Kind        MemoryAccessKind
+	WholeRegion bool
+	Volatile    bool
+	Input       MemoryVersionID
+	Output      MemoryVersionID
 }
 
 // RegionMemorySSA is analysis evidence, not permission to transform or emit.
@@ -245,11 +253,17 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 					return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d repeats region %q", operation.Site.Block, operation.Site.Index, access.Region)
 				}
 				seenRegions[access.Region] = true
+				if access.WholeRegion && access.Kind == MemoryRead {
+					return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d marks a read as a whole-region replacement", operation.Site.Block, operation.Site.Index)
+				}
 			case MemoryUnknownClobber:
 				if access.Region != "" {
 					return normalizedMemoryMetadata{}, fmt.Errorf("optir: unknown clobber for operation %d:%d cannot name region %q", operation.Site.Block, operation.Site.Index, access.Region)
 				}
 				unknown = true
+				if access.WholeRegion {
+					return normalizedMemoryMetadata{}, fmt.Errorf("optir: unknown clobber for operation %d:%d cannot be a whole-region replacement", operation.Site.Block, operation.Site.Index)
+				}
 			default:
 				return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d has unknown access kind %q", operation.Site.Block, operation.Site.Index, access.Kind)
 			}
@@ -348,7 +362,8 @@ func isKnownMemoryOperation(code string) bool {
 	case OpConstBool, OpConstInt, OpConstUnit, OpCopy, OpCastInt,
 		OpBoolNot, OpIntNeg, OpIntAdd, OpIntSub, OpIntMul, OpIntDiv, OpIntRem,
 		OpIntAnd, OpIntOr, OpIntXor, OpIntShl, OpIntShr,
-		OpEqual, OpNotEqual, OpLess, OpLessEqual, OpGreater, OpGreaterEqual:
+		OpEqual, OpNotEqual, OpLess, OpLessEqual, OpGreater, OpGreaterEqual,
+		OpStoreRegion:
 		return true
 	default:
 		return false
@@ -416,7 +431,9 @@ func buildRegionMemorySSA(cfg CFG, metadata normalizedMemoryMetadata) (RegionMem
 	for site, accesses := range metadata.bySite {
 		if len(accesses) == 1 && accesses[0].Kind == MemoryUnknownClobber {
 			for _, region := range metadata.regions {
-				expanded[site] = append(expanded[site], MemoryAccessSpec{Region: region, Kind: MemoryUnknownClobber})
+				expanded[site] = append(expanded[site], MemoryAccessSpec{
+					Region: region, Kind: MemoryUnknownClobber, Volatile: accesses[0].Volatile,
+				})
 			}
 			continue
 		}
@@ -476,7 +493,8 @@ func buildRegionMemorySSA(cfg CFG, metadata normalizedMemoryMetadata) (RegionMem
 			for _, spec := range expanded[site] {
 				key := memoryAccessKey{site: site, region: spec.Region}
 				access := MemoryAccess{
-					ID: accessIDs[key], Site: site, Region: spec.Region, Kind: spec.Kind, Input: current[spec.Region],
+					ID: accessIDs[key], Site: site, Region: spec.Region, Kind: spec.Kind,
+					WholeRegion: spec.WholeRegion, Volatile: spec.Volatile, Input: current[spec.Region],
 				}
 				if access.Input == 0 {
 					return RegionMemorySSA{}, fmt.Errorf("optir: memory access %d has no reaching definition", access.ID)
@@ -551,7 +569,7 @@ func allocateMemoryAccess(next *MemoryAccessID) (MemoryAccessID, error) {
 
 func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-metadata.v1")
+	fingerprintString(digest, "oak.optir.region-memory-metadata.v2")
 	fingerprintUint64(digest, uint64(len(metadata.regions)))
 	for _, region := range metadata.regions {
 		fingerprintString(digest, string(region))
@@ -564,6 +582,8 @@ func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) stri
 		for _, access := range operation.Accesses {
 			fingerprintString(digest, string(access.Region))
 			fingerprintString(digest, string(access.Kind))
+			fingerprintBool(digest, access.WholeRegion)
+			fingerprintBool(digest, access.Volatile)
 		}
 	}
 	return fmt.Sprintf("%x", digest.Sum(nil))
@@ -571,7 +591,7 @@ func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) stri
 
 func fingerprintRegionMemorySSA(analysis RegionMemorySSA) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-ssa.v1")
+	fingerprintString(digest, "oak.optir.region-memory-ssa.v2")
 	fingerprintString(digest, analysis.inputFingerprint)
 	fingerprintString(digest, analysis.metadataFingerprint)
 	fingerprintUint64(digest, uint64(len(analysis.Regions)))
@@ -585,6 +605,8 @@ func fingerprintRegionMemorySSA(analysis RegionMemorySSA) string {
 		fingerprintUint64(digest, uint64(access.Site.Index))
 		fingerprintString(digest, string(access.Region))
 		fingerprintString(digest, string(access.Kind))
+		fingerprintBool(digest, access.WholeRegion)
+		fingerprintBool(digest, access.Volatile)
 		fingerprintUint64(digest, uint64(access.Input))
 		fingerprintUint64(digest, uint64(access.Output))
 	}

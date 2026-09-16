@@ -3,3 +3,9 @@ bench_native
 utf8_valid_c.c
 utf8_valid_native.c
 utf8_valid_native.o
+bench_map_vector
+bench_map_scalar
+map_add_vector.c
+map_add_vector.o
+map_add_scalar.c
+map_add_scalar.o

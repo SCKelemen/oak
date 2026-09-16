@@ -312,7 +312,7 @@ func TestDCERemovesTransitivePureChainButKeepsObservableAndUnknownOperations(t *
 				{Code: OpIntMul, Results: []Value{cseTestValue(5, "u32")}, Operands: []ValueID{4, 3}},
 				{Code: OpIntDiv, Results: []Value{cseTestValue(6, "u32")}, Operands: []ValueID{1, 2}},
 				{Code: OpIntAdd, Results: []Value{cseTestValue(7, "u32")}, Operands: []ValueID{1, 2}, Effects: []Effect{EffectReadMemory}},
-				{Code: OpCall, Results: []Value{cseTestValue(8, "u32")}, Operands: []ValueID{1}, Attributes: []Attribute{{Name: AttributeCallee, Value: "opaque"}}},
+				{Code: OpCall, Results: []Value{cseTestValue(8, "u32")}, Operands: []ValueID{1}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "opaque"}}},
 				{Code: "extension.unknown", Results: []Value{cseTestValue(9, "u32")}, Operands: []ValueID{1}},
 			},
 			Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},

@@ -17,6 +17,7 @@ func TestNativeLoweringFingerprintIsOrderIndependentAndComplete(t *testing.T) {
 			arithmeticTypes:    map[tokenKey]string{},
 			shiftWidths:        map[tokenKey]int{},
 			variantResolutions: map[tokenKey]string{},
+			expressionTypes:    map[tokenKey]Type{},
 		}
 		keys := []tokenKey{first, second}
 		if reverse {
@@ -34,6 +35,7 @@ func TestNativeLoweringFingerprintIsOrderIndependentAndComplete(t *testing.T) {
 			tc.arithmeticTypes[key] = map[tokenKey]string{first: "u32", second: "i64"}[key]
 			tc.shiftWidths[key] = map[tokenKey]int{first: 32, second: 64}[key]
 			tc.variantResolutions[key] = map[tokenKey]string{first: "Option_u32", second: "Result_i64"}[key]
+			tc.expressionTypes[key] = map[tokenKey]Type{first: &PrimitiveType{Name: "u32"}, second: &PrimitiveType{Name: "i64"}}[key]
 		}
 		return tc
 	}
@@ -57,6 +59,7 @@ func TestNativeLoweringFingerprintIsOrderIndependentAndComplete(t *testing.T) {
 		{"arithmetic type", func(tc *TypeChecker) { tc.arithmeticTypes[first] = "u64" }},
 		{"shift width", func(tc *TypeChecker) { tc.shiftWidths[first] = 16 }},
 		{"variant resolution", func(tc *TypeChecker) { tc.variantResolutions[first] = "Option_u64" }},
+		{"expression type", func(tc *TypeChecker) { tc.expressionTypes[first] = &PrimitiveType{Name: "u64"} }},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
