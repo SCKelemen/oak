@@ -5219,7 +5219,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		return t
 	}
 	out := *t
-	out.kbDone = false
+	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
 	memo[t] = &out
 	return &out
@@ -5269,7 +5269,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		return t
 	}
 	out := *t
-	out.kbDone = false
+	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
@@ -5574,9 +5574,10 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		return false, false
 	}
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
-	collectParams(a, mentioned)
-	collectParams(b, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
+	collectParamsVisited(a, mentioned, visited)
+	collectParamsVisited(b, mentioned, visited)
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
 	for name := range mentioned {
@@ -5960,6 +5961,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		cond, left, right := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 		if cond != t.cond || left != t.left || right != t.right {
 			copy := *t
+			copy.kbDone, copy.sigBits = false, 0
 			copy.cond, copy.left, copy.right = cond, left, right
 			out = &copy
 		}
@@ -5984,10 +5986,14 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term {
 	premise = canonical(truncate(premise, 1))
 	terms = pruneUnderFacts(premise, terms)
+	// One visited set for the premise and every term: a log's guards
+	// share their subgraph, and a walk per term was a walk of it per
+	// guard (ap_certificate_after_proven spent half its coupling here).
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
 	for _, t := range terms {
-		collectParams(t, mentioned)
+		collectParamsVisited(t, mentioned, visited)
 	}
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
@@ -6034,6 +6040,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
+					copy.kbDone, copy.sigBits = false, 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -6065,6 +6072,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
+					copy.kbDone, copy.sigBits = false, 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -6073,6 +6081,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 			l, r := rewrite(t.left), rewrite(t.right)
 			if l != t.left || r != t.right {
 				copy := *t
+				copy.kbDone, copy.sigBits = false, 0
 				copy.left, copy.right = l, r
 				out = &copy
 			}
@@ -6274,9 +6283,10 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int, work *int)
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
-	collectParams(a, mentioned)
-	collectParams(b, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
+	collectParamsVisited(a, mentioned, visited)
+	collectParamsVisited(b, mentioned, visited)
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
 	for name := range mentioned {

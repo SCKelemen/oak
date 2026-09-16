@@ -645,6 +645,11 @@ type term struct {
 	kbDone  bool
 	kbValue uint64
 	kbKnown uint64
+	// sigBits is the significant-bits memo (significantBits): the count
+	// plus one, zero before it is computed. Canonicalization asks for it
+	// at every comparison, and the operands of a body's comparisons share
+	// their subgraph; a walk per comparison was quadratic.
+	sigBits int32
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags
@@ -787,6 +792,9 @@ func significantBits(t *term) int {
 }
 
 func significantBitsMemo(t *term, memo map[*term]int) int {
+	if t.sigBits > 0 {
+		return int(t.sigBits) - 1
+	}
 	if n, seen := memo[t]; seen {
 		return n
 	}
@@ -813,6 +821,7 @@ func significantBitsMemo(t *term, memo map[*term]int) int {
 		}
 	}
 	memo[t] = n
+	t.sigBits = int32(n) + 1
 	return n
 }
 

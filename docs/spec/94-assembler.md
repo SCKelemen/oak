@@ -6599,9 +6599,11 @@ candidates of `reset` still exceed the guard budget and are declined,
 which keeps the plain form. Alongside, `pruneWritesUnder` prunes a
 log's guards in one pass with one canonical memo (a pass per guard
 canonicalized the guards' shared subgraph once per write):
-`ap_certificate_after_proven` fits in 2.4 GB and 45 s a candidate
-where it exceeded ten gigabytes, though its coupling is still eight
-times the 5.6 s of the morning's binary.
+`ap_certificate_after_proven` fits in 2.4 GB where it exceeded ten
+gigabytes; with the significant-bits count memoized on the term (a
+walk per comparison over shared operands was quadratic) and one visited
+set across the parameter walks of a pruning pass and an implication,
+it takes 4.6 s a candidate, under the 5.6 s of the morning's binary.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
