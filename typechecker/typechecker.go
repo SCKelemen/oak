@@ -1673,7 +1673,10 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		// Interface type definitions
 		tc.checkInterfaceType(s)
 	case *ast.ExpressionStatement:
-		resultType := tc.checkExpression(s.Expression)
+		// A root conditional in statement position executes one arm for
+		// effects and discards its value. Nested conditionals remain value
+		// expressions and must still have a runtime-representable join.
+		resultType := tc.checkExpressionContext(s.Expression, true)
 		if ContainsAtomicStorage(resultType) {
 			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
 		}
@@ -1721,6 +1724,13 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 // checkExpression type checks an expression and returns its type
 // expectedType is optional - if provided, it's used for context-based type inference (e.g., for literals)
 func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type) (result Type) {
+	return tc.checkExpressionContext(expr, false, expectedType...)
+}
+
+// checkExpressionContext keeps statement position local to the root
+// expression. Recursive operands call checkExpression and are value-position
+// expressions even when the enclosing invocation is itself a statement.
+func (tc *TypeChecker) checkExpressionContext(expr ast.Expression, statementPosition bool, expectedType ...Type) (result Type) {
 	defer func() {
 		if info := tc.env.borrowMetadata(); info != nil && expr != nil && result != nil {
 			info.expressions[expr] = result
@@ -1789,7 +1799,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
-		return tc.checkMatchExpression(e, expected)
+		return tc.checkMatchExpressionContext(e, statementPosition, expected)
 	case *ast.QuantifierExpression:
 		return tc.checkQuantifierExpression(e)
 	case *ast.VariantExpression:
@@ -1801,7 +1811,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.SliceExpression:
 		return tc.checkSliceExpression(e)
 	case *ast.BlockExpression:
-		return tc.checkBlockExpression(e.Block, expected)
+		return tc.checkBlockExpressionContext(e.Block, statementPosition, expected)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e, expected)
 	case nil:
@@ -3897,6 +3907,10 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 }
 
 func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedType ...Type) Type {
+	return tc.checkMatchExpressionContext(expr, false, expectedType...)
+}
+
+func (tc *TypeChecker) checkMatchExpressionContext(expr *ast.MatchExpression, statementPosition bool, expectedType ...Type) Type {
 	var expected Type
 	if len(expectedType) > 0 {
 		expected = expectedType[0]
@@ -3970,7 +3984,9 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		// match, and the union of their kills applies afterwards.
 		tc.restoreDead(armsBefore)
 		armMark := tc.enterArmFacts(expr, arm)
-		if expected != nil {
+		if statementPosition {
+			armType = tc.checkExpressionContext(arm.Body, true)
+		} else if expected != nil {
 			armType = tc.checkExpression(arm.Body, expected)
 		} else {
 			armType = tc.checkExpression(arm.Body)
@@ -4002,6 +4018,13 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 			return returnType
 		}
 		return expected
+	}
+	// A statement conditional does not materialize the alternatives' values,
+	// so its semantic join needs no runtime representation. Retain that join
+	// as compiler metadata: established lowering paths use the selected arm's
+	// type even though no enclosing value consumes it.
+	if statementPosition {
+		return returnType
 	}
 
 	// Without an expected representation, a heterogeneous join is useful to
@@ -5577,9 +5600,15 @@ func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
 	}
 }
 
-// checkBlockExpression type checks a block expression and returns the type of
-// the last expression, inferring it against the expected type when given.
 func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedType ...Type) Type {
+	return tc.checkBlockExpressionContext(block, false, expectedType...)
+}
+
+// checkBlockExpressionContext type checks a block expression and returns the
+// type of its last expression. Statement position propagates only through the
+// block's tail, so a nested conditional used by a call argument remains a
+// value expression and still requires a runtime representation.
+func (tc *TypeChecker) checkBlockExpressionContext(block *ast.BlockStatement, statementPosition bool, expectedType ...Type) Type {
 	defer tc.enterOrder(block)()
 	var expected Type
 	if len(expectedType) > 0 {
@@ -5613,6 +5642,9 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 	// statement, never the block's value: the block is unit.
 	lastStmt := block.Statements[len(block.Statements)-1]
 	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok && !exprStmt.Discard {
+		if statementPosition {
+			return tc.checkExpressionContext(exprStmt.Expression, true)
+		}
 		if expected != nil {
 			return tc.checkExpression(exprStmt.Expression, expected)
 		}

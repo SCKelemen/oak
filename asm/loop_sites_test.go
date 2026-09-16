@@ -53,6 +53,42 @@ func TestVerifyLoopSitesAcrossPaths(t *testing.T) {
 	}
 }
 
+func TestMergeLoopEventsKeepsOneStructurallyEqualWriteLog(t *testing.T) {
+	event := func(value uint64) *loopEvent {
+		return &loopEvent{
+			index:   1,
+			header:  map[string]*term{},
+			fresh:   map[string]*term{},
+			width:   map[string]int{},
+			next:    map[string]*term{},
+			cond:    paramTerm("loop1.cond", 1),
+			reached: paramTerm("reached", 1),
+			writes: map[string][]*spanWrite{
+				"s.pages": {{index: paramTerm("loop1.j", 32), value: constTerm(value, 64), guard: paramTerm("ok", 1)}},
+			},
+		}
+	}
+	path := paramTerm("path", 1)
+	merged, reason, ok := mergeLoopEvents(path, event(0), event(0))
+	if !ok {
+		t.Fatalf("equal events did not merge: %s", reason)
+	}
+	if got := len(merged.writes["s.pages"]); got != 1 {
+		t.Fatalf("structurally equal stores must stay one operation, got %d", got)
+	}
+	if !equalTerms(merged.writes["s.pages"][0].guard, paramTerm("ok", 1)) {
+		t.Fatalf("the callee-internal guard must be retained without a caller-path wrapper, got %s", merged.writes["s.pages"][0].guard)
+	}
+
+	different, reason, ok := mergeLoopEvents(path, event(0), event(1))
+	if !ok {
+		t.Fatalf("different events did not merge conservatively: %s", reason)
+	}
+	if got := len(different.writes["s.pages"]); got != 2 {
+		t.Fatalf("different stores must retain both guarded path operations, got %d", got)
+	}
+}
+
 // A counted loop past the trip limit is summarized and inducted rather
 // than unrolled, loop inside or not (countedTripLimit): the copy of a
 // table's two thousand words unrolls into a write log no decision

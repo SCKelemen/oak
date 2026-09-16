@@ -316,6 +316,15 @@ alloc_table: (s: [*]Regime, dom: u32): u16 {
   idx
 }
 
+// Keep both the caller's path to alloc_table and alloc_table's internal
+// ok path when its inducted loop becomes walk's call-summary event.
+walk: (s: [*]Regime, dom: u32, create: u8): u64 {
+  create == u8(1) ? {
+    index: u16 = alloc_table(s, dom)
+    st == u8(0) ? { s[dom].pages[cell(index, u32(0))] } | { u64(0) }
+  } | { u64(0) }
+}
+
 main: (): i32 {
   r: [1]Regime
   reset(span(&r), u32(0), u64(65536))
@@ -335,6 +344,9 @@ func TestE2ENativeStage2AllocTableProven(t *testing.T) {
 	// s.free_count as a memory the body writes.
 	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "the package state it writes (st)") || !strings.Contains(joined, "the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)") {
 		t.Errorf("alloc_table must be proven with its cell and written leaf memories:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit walk: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") {
+		t.Errorf("walk must prove the callee's guarded loop through its call summary:\n%s", joined)
 	}
 	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
 		t.Errorf("reset's inducted loops must be proven:\n%s", joined)

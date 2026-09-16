@@ -197,8 +197,115 @@ func elementParam(name string) (span string, k uint64, ok bool) {
 // record's scalar leaves, offsets relative to the element, names starting
 // with the dot (`.f`, `.a.b`, `.buf[2]`).
 type recordSpanArg struct {
+	size              int64
+	leaves            []compositeLeaf
+	leavesByPlace     map[recordSpanLeafPlace]int
+	leavesByName      map[string]int
+	arraysByOffset    map[int64]recordSpanArrayField
+	arraysByName      map[string]recordSpanArrayField
+	memoryFields      []recordSpanMemoryField
+	memoryFieldByName map[string]int
+}
+
+type recordSpanLeafPlace struct {
+	offset int64
 	size   int64
-	leaves []compositeLeaf
+}
+
+type recordSpanArrayField struct {
+	prefix string
+	length int64
+	stride int64
+	first  compositeLeaf
+}
+
+type recordSpanMemoryField struct {
+	name  string
+	width int
+}
+
+// newRecordSpanArg indexes a record span's enumerated leaves once. Large
+// array fields (the OS pilot's 49,152-entry page arena) otherwise made every
+// machine load/store and every Oak field access scan all leaves again while
+// the optimizer validated its candidates. The maps are immutable after this
+// constructor and are shared read-only by copied verifier states.
+func newRecordSpanArg(size int64, leaves []compositeLeaf) recordSpanArg {
+	arg := recordSpanArg{
+		size:              size,
+		leaves:            leaves,
+		leavesByPlace:     make(map[recordSpanLeafPlace]int, len(leaves)),
+		leavesByName:      make(map[string]int, len(leaves)),
+		arraysByOffset:    map[int64]recordSpanArrayField{},
+		arraysByName:      map[string]recordSpanArrayField{},
+		memoryFieldByName: map[string]int{},
+	}
+	var arrayOrder []string
+	for i, leaf := range leaves {
+		cellSize := int64(leaf.width+7) / 8
+		if leaf.width == 1 {
+			cellSize = 4 // Bool occupies the C enum's four-byte cell.
+		}
+		place := recordSpanLeafPlace{offset: leaf.offset, size: cellSize}
+		if _, exists := arg.leavesByPlace[place]; !exists {
+			// Overlapping union payloads keep compositeLeaves' first match,
+			// as the former linear lookup did.
+			arg.leavesByPlace[place] = i
+		}
+		if _, exists := arg.leavesByName[leaf.name]; !exists {
+			arg.leavesByName[leaf.name] = i
+		}
+
+		memory := leaf.name
+		if open := strings.IndexByte(memory, '['); open > 0 {
+			memory = memory[:open]
+		}
+		if at, exists := arg.memoryFieldByName[memory]; exists {
+			// Preserve memoryWidths' last-leaf behavior for a composite shape
+			// with several leaves under one memory name.
+			arg.memoryFields[at].width = leaf.width
+		} else {
+			arg.memoryFieldByName[memory] = len(arg.memoryFields)
+			arg.memoryFields = append(arg.memoryFields, recordSpanMemoryField{name: memory, width: leaf.width})
+		}
+
+		prefix, k, isArray := recordSpanArrayElement(leaf.name)
+		if !isArray {
+			continue
+		}
+		field, exists := arg.arraysByName[prefix]
+		if !exists {
+			field = recordSpanArrayField{prefix: prefix}
+			arrayOrder = append(arrayOrder, prefix)
+		}
+		field.length++
+		if k == 0 {
+			field.first = leaf
+			field.stride = cellSize
+		}
+		arg.arraysByName[prefix] = field
+	}
+	for _, prefix := range arrayOrder {
+		field := arg.arraysByName[prefix]
+		if field.stride == 0 {
+			continue
+		}
+		if _, exists := arg.arraysByOffset[field.first.offset]; !exists {
+			arg.arraysByOffset[field.first.offset] = field
+		}
+	}
+	return arg
+}
+
+func recordSpanArrayElement(name string) (prefix string, k int64, ok bool) {
+	open := strings.LastIndexByte(name, '[')
+	if open <= 0 || !strings.HasSuffix(name, "]") {
+		return "", 0, false
+	}
+	index, err := strconv.ParseInt(name[open+1:len(name)-1], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return name[:open], index, true
 }
 
 // recordSpanOf recognizes `[*]T` / `[]T` with T a composite of the
@@ -222,61 +329,37 @@ func recordSpanOf(comps map[string]Composite, typ ast.Expression) (arg recordSpa
 	if !ok {
 		return recordSpanArg{}, reason, true, false
 	}
-	return recordSpanArg{size: comp.Size, leaves: leaves}, "", true, true
+	return newRecordSpanArg(comp.Size, leaves), "", true, true
 }
 
 // leafAt is the leaf at an offset with a width in bytes (a Bool leaf is
 // one bit in its 4-byte cell).
 func (arg recordSpanArg) leafAt(offset, size int64) (compositeLeaf, bool) {
-	for _, leaf := range arg.leaves {
-		if leaf.offset != offset {
-			continue
-		}
-		if int64(leaf.width) == size*8 || (leaf.width == 1 && size == 4) {
-			return leaf, true
-		}
+	at, ok := arg.leavesByPlace[recordSpanLeafPlace{offset: offset, size: size}]
+	if !ok {
+		return compositeLeaf{}, false
 	}
-	return compositeLeaf{}, false
+	return arg.leaves[at], true
 }
 
 // arrayFieldAt is the array field starting at an offset — its leaf-name
 // prefix (`.entries`), its length, and its element stride — read off the
 // enumerated leaves `.entries[0]`, `.entries[1]`, ….
 func (arg recordSpanArg) arrayFieldAt(offset int64) (prefix string, length, stride int64, ok bool) {
-	for _, leaf := range arg.leaves {
-		if leaf.offset != offset || !strings.HasSuffix(leaf.name, "[0]") {
-			continue
-		}
-		prefix = strings.TrimSuffix(leaf.name, "[0]")
-		stride = int64(leaf.width+7) / 8
-		if leaf.width == 1 {
-			stride = 4
-		}
-		for _, other := range arg.leaves {
-			if strings.HasPrefix(other.name, prefix+"[") {
-				length++
-			}
-		}
-		return prefix, length, stride, true
+	field, ok := arg.arraysByOffset[offset]
+	if !ok {
+		return "", 0, 0, false
 	}
-	return "", 0, 0, false
+	return field.prefix, field.length, field.stride, true
 }
 
 // memories lists the span's per-leaf memories: `v.f` for each scalar
 // leaf outside an array field, `v.a` for each array field — the names the
 // write logs and the loop memory markers use.
 func (arg recordSpanArg) memories(span string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, leaf := range arg.leaves {
-		name := leaf.name
-		if open := strings.IndexByte(name, '['); open > 0 {
-			name = name[:open]
-		}
-		if !seen[name] {
-			seen[name] = true
-			out = append(out, span+name)
-		}
+	out := make([]string, len(arg.memoryFields))
+	for i, field := range arg.memoryFields {
+		out[i] = span + field.name
 	}
 	return out
 }
@@ -286,21 +369,15 @@ func (arg recordSpanArg) memories(span string) []string {
 // such a leaf lives in the array's memory at the linear index i·N + k, as
 // an element read by a register does.
 func (arg recordSpanArg) arrayElementLeaf(leaf compositeLeaf) (prefix string, k, length int64, ok bool) {
-	open := strings.LastIndexByte(leaf.name, '[')
-	if open <= 0 || !strings.HasSuffix(leaf.name, "]") {
+	prefix, k, ok = recordSpanArrayElement(leaf.name)
+	if !ok {
 		return "", 0, 0, false
 	}
-	index, err := strconv.ParseInt(leaf.name[open+1:len(leaf.name)-1], 10, 64)
-	if err != nil {
+	field, found := arg.arraysByName[prefix]
+	if !found {
 		return "", 0, 0, false
 	}
-	prefix = leaf.name[:open]
-	for _, other := range arg.leaves {
-		if strings.HasPrefix(other.name, prefix+"[") {
-			length++
-		}
-	}
-	return prefix, index, length, true
+	return prefix, k, field.length, true
 }
 
 // leafMemory is the memory and index a leaf of element `index` lives at:
@@ -317,15 +394,32 @@ func (arg recordSpanArg) leafMemory(span string, index *term, leaf compositeLeaf
 // memoryWidths maps each per-leaf memory of the span (memories) to its
 // element width.
 func (arg recordSpanArg) memoryWidths(span string) map[string]int {
-	out := map[string]int{}
-	for _, leaf := range arg.leaves {
-		name := leaf.name
-		if open := strings.IndexByte(name, '['); open > 0 {
-			name = name[:open]
-		}
-		out[span+name] = leaf.width
+	out := make(map[string]int, len(arg.memoryFields))
+	for _, field := range arg.memoryFields {
+		out[span+field.name] = field.width
 	}
 	return out
+}
+
+func (arg recordSpanArg) leafNamed(name string) (compositeLeaf, bool) {
+	at, ok := arg.leavesByName[name]
+	if !ok {
+		return compositeLeaf{}, false
+	}
+	return arg.leaves[at], true
+}
+
+func (arg recordSpanArg) arrayNamed(name string) (recordSpanArrayField, bool) {
+	field, ok := arg.arraysByName[name]
+	return field, ok
+}
+
+func (arg recordSpanArg) memoryWidth(name string) (int, bool) {
+	at, ok := arg.memoryFieldByName[name]
+	if !ok {
+		return 0, false
+	}
+	return arg.memoryFields[at].width, true
 }
 
 // recordFieldTerm is a record span's leaf at an element index: the
@@ -3744,7 +3838,7 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			// the address starts, selected from the field's leaves by the
 			// index — the fold the Oak side builds for `a.at[i]`
 			// (elementUnderIndexTerm), last leaf first.
-			arg := recordSpanArg{leaves: record.leaves}
+			arg := newRecordSpanArg(record.size, record.leaves)
 			prefix, length, stride, isArray := arg.arrayFieldAt(baseOffset + mem.Offset)
 			if !isArray {
 				return "an indexed load through a record argument at an offset that starts no array field", false
@@ -6989,17 +7083,11 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 						// field's leaf memory (`s.f`) at the offset i·N with
 						// the field's length (docs/spec/50-borrowing.md §2),
 						// as the asm side binds it (summarizeCall).
-						var count int64
-						width := 0
-						for _, leaf := range recordArg.leaves {
-							if strings.HasPrefix(leaf.name, path+"[") {
-								count++
-								width = leaf.width
-							}
-						}
-						if count == 0 {
+						field, isArray := recordArg.arrayNamed(path)
+						if !isArray {
 							return nil, fmt.Sprintf("a call to %s: %s is not an array field of %s's element", name, path, root), false
 						}
+						count, width := field.length, field.first.width
 						elem, _, _ := spanShape(param.Type)
 						if int(elem)*8 != width {
 							return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, arg.String(), width, elem*8), false
@@ -8950,7 +9038,10 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// after the caller's (loopBase), nested under the loop being executed,
 	// their fresh symbols declared for the verdict; the Oak side inlines
 	// the same body and creates the same events, which the coupling pairs
-	// by identity (asm/loops.go).
+	// by identity (asm/loops.go). Their reaching condition is the caller's
+	// path to this call together with the callee's path to the loop. Keeping
+	// both is essential for the induction base: stores before a loop inside
+	// a conditional are equal only on the paths that actually enter it.
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
 		ev.at = x.callAt
@@ -9337,30 +9428,19 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 		if !okJ {
 			return recordSpanPlace{}, true, reason, false
 		}
-		var length int64
-		var elemLeaf compositeLeaf
-		found := false
-		for _, leaf := range arg.leaves {
-			if strings.HasPrefix(leaf.name, path+"[") {
-				if !found {
-					elemLeaf, found = leaf, true
-				}
-				length++
-			}
-		}
+		field, found := arg.arrayNamed(path)
 		if !found {
 			return recordSpanPlace{}, true, fmt.Sprintf("%s is not an array field of %s's element", path, root.Value), false
 		}
+		length, elemLeaf := field.length, field.first
 		if j.kind == termConst && int64(j.value) >= length {
 			return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s", length, path), false
 		}
 		linear := binaryTerm("add", binaryTerm("mul", idx, constTerm(uint64(length), 32)), j)
 		return recordSpanPlace{span: span, memory: span + path, leafName: path, index: linear, width: elemLeaf.width}, true, "", true
 	}
-	for _, leaf := range arg.leaves {
-		if leaf.name == path {
-			return recordSpanPlace{span: span, memory: span + path, leafName: path, index: idx, width: leaf.width}, true, "", true
-		}
+	if leaf, found := arg.leafNamed(path); found {
+		return recordSpanPlace{span: span, memory: span + path, leafName: path, index: idx, width: leaf.width}, true, "", true
 	}
 	return recordSpanPlace{}, true, fmt.Sprintf("%s is not a scalar leaf of %s's element", path, root.Value), false
 }
@@ -9430,13 +9510,11 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 	}
 	// A scalar leaf's own memory (`v.f`), or an array field's (`v.a`); the
 	// parameter `v[k].a[j]` folds to the memory `v.a[j]`, an element leaf.
-	if width, isMemory := arg.memoryWidths(span)[span+memory[dot:]]; isMemory {
+	if width, isMemory := arg.memoryWidth(memory[dot:]); isMemory {
 		return width, true
 	}
-	for _, leaf := range arg.leaves {
-		if leaf.name == memory[dot:] {
-			return leaf.width, true
-		}
+	if leaf, isLeaf := arg.leafNamed(memory[dot:]); isLeaf {
+		return leaf.width, true
 	}
 	return 0, false
 }
@@ -9815,6 +9893,79 @@ func canonical(t *term) *term {
 	return canonicalMemo(t, map[*term]*term{}, map[*term]bool{})
 }
 
+// compareSmallConditional distributes an equality test over a narrow
+// conditional value. Package status cells and u16 counters are commonly
+// updated as a chain of `condition ? update : prior`; testing the final value
+// against zero otherwise leaves the whole decision tree inside one comparison.
+// The machine CFG has already split those decisions into branches, so spelling
+// the source test arm by arm lets the two decision trees meet without one large
+// bit diagram.
+//
+// The rewrite is deliberately limited to at-most-u16 eq/ne tests against a
+// constant. It is pointwise: (c ? x : y) == k is c ? (x == k) : (y == k),
+// and likewise for !=. Memoizing by arm preserves sharing in the input DAG.
+func compareSmallConditional(code string, value, constant *term) (*term, bool) {
+	if (code != "eq" && code != "ne") || value == nil || constant == nil || value.kind != termIte || constant.kind != termConst || value.width > 16 || constant.width != value.width {
+		return nil, false
+	}
+	memo := map[*term]*term{}
+	var compare func(*term) *term
+	compare = func(arm *term) *term {
+		if done, seen := memo[arm]; seen {
+			return done
+		}
+		if arm.kind != termIte {
+			out := cmpTerm(code, arm, constant)
+			memo[arm] = out
+			return out
+		}
+		left, right := compare(arm.left), compare(arm.right)
+		var out *term
+		cond := truncate(arm.cond, 1)
+		asWidth := func(bit *term) *term { return zeroExtend(bit, value.width) }
+		switch {
+		case equalTerms(left, right):
+			out = left
+		case left.kind == termConst && right.kind == termConst && left.value == 1 && right.value == 0:
+			out = asWidth(cond)
+		case left.kind == termConst && right.kind == termConst && left.value == 0 && right.value == 1:
+			out = asWidth(notTerm(cond))
+		case left.kind == termConst && left.value == 0:
+			prior := truncate(right, 1)
+			// A fail-closed update is `c = prior && fail; c ? error :
+			// prior`. Testing it for the non-error value yields
+			// `not (prior && fail) && prior`, i.e. `prior && not fail`.
+			// Keep that linear conjunction instead of nesting the whole
+			// prior predicate under its own negation again.
+			var fail *term
+			if cond.kind == termBinary && cond.op == "and" && cond.width == 1 {
+				switch {
+				case equalTerms(cond.left, prior):
+					fail = cond.right
+				case equalTerms(cond.right, prior):
+					fail = cond.left
+				}
+			}
+			if fail != nil {
+				out = asWidth(binaryTerm("and", prior, notTerm(fail)))
+			} else {
+				out = asWidth(binaryTerm("and", notTerm(cond), prior))
+			}
+		case left.kind == termConst && left.value == 1:
+			out = asWidth(binaryTerm("or", cond, truncate(right, 1)))
+		case right.kind == termConst && right.value == 0:
+			out = asWidth(binaryTerm("and", cond, truncate(left, 1)))
+		case right.kind == termConst && right.value == 1:
+			out = asWidth(binaryTerm("or", notTerm(cond), truncate(left, 1)))
+		default:
+			out = iteTerm(arm.cond, left, right)
+		}
+		memo[arm] = out
+		return out
+	}
+	return compare(value), true
+}
+
 func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term {
 	if t == nil {
 		return nil
@@ -9964,7 +10115,54 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				// two u32 parameters, against the Oak body's `start > n`).
 				left, right = narrow.left, narrow.right
 			}
+			if distributed, ok := compareSmallConditional(t.op, left, right); ok {
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			} else if distributed, ok := compareSmallConditional(t.op, right, left); ok {
+				// Equality and inequality are symmetric; keep the conditional
+				// in the position the helper expects.
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			}
+			if out != nil {
+				break
+			}
 			switch {
+			case right.kind == termConst && right.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case left.kind == termConst && left.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case right.kind == termConst && right.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				// A value already known to be 0/1 compares with one as
+				// itself, or its negation. This commonly follows a cset-like
+				// status test through another comparison at register width.
+				out = left
+				if t.op == "ne" {
+					out = notTerm(left)
+				}
+				out = adaptWidth(out, t.width)
+			case left.kind == termConst && left.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				out = right
+				if t.op == "ne" {
+					out = notTerm(right)
+				}
+				out = adaptWidth(out, t.width)
+			case right.kind == termConst && right.value == 0 && (t.op == "eq" || t.op == "ne") && left.kind == termBinary && left.op == "and" && left.right.kind == termConst && left.right.value == mask(left.width) && left.left.width > left.width && significantBits(left.left) <= 1:
+				// A known 0/1 value tests as its low bit even when a narrow
+				// register view wrapped it in a wider full mask. Read only
+				// that bit; re-entering on this small Boolean expression
+				// avoids rebuilding the value's surrounding decision DAG.
+				bit := canonicalMemo(truncate(left.left, 1), memo, boolean)
+				if t.op == "eq" {
+					bit = notTerm(bit)
+				}
+				out = canonicalMemo(adaptWidth(bit, t.width), memo, boolean)
 			case right.kind == termConst && right.value == 0 && t.op == "ne" && booleanValued(left, boolean):
 				// A zero test of a 1/0 value is the value (the machine's
 				// `cset` then `cmp #0`); of its negation, the negation.

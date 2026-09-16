@@ -553,6 +553,28 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 				continue
 			}
 		}
+		// The loop verifier's pointwise theorem also applies to straight-line
+		// effects. It can prove equal masked indices and modular narrow values
+		// that are not one linear form, without constructing the nested
+		// fresh-index memory expression. Failure proves nothing and retains the
+		// whole-memory decision below as the fallback.
+		pointwise := func(premise *term) bool {
+			budget := &nodeBudget{remaining: loopProofNodeBudget}
+			implies := func(premise, a, b *term) (bool, bool) {
+				return impliesEqualWithin(premise, a, b, lowering.declaredWidth, budget)
+			}
+			return writeLogsEqualUnder(lowering.writes[name], exec.writes[name], premise, implies)
+		}
+		// A proof without the function domain is stronger and often much
+		// cheaper: trap/path formulas unrelated to the write cannot dominate
+		// the guard decision. Failure consumes only this attempt's budget.
+		if pointwise(constTerm(1, 1)) {
+			continue
+		}
+		premise := lowering.domainCondition()
+		if premise != nil && pointwise(premise) {
+			continue
+		}
 		asmMemory := memoryAt(exec.writes[name], at, entry)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
 		verdict := decideEqual(fn, lowering, asmMemory, oakMemory, width, "")

@@ -174,6 +174,16 @@ var loweringProgramRenders = []struct {
 	// local gives the same terms.
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 2 {\n    d: u32 = n * 2\n    s = s + d\n    i = i + 1\n  }\n  s\n}\n", "((n mul 2) add (n mul 2))"},
 	{"f: (a, b: u32) -> u32 = {\n  r: u32 = a\n  a < b ? {\n    t: u32 = b - a\n    r = t\n  } | { }\n  r\n}\n", "((a lo b) ? (b sub a) : a)"},
+	// Restoring the two arms of an aggregate-valued conditional preserves
+	// the aggregate place's identity: assignPlace may already hold that
+	// pointer while it lowers the conditional on the assignment's RHS.
+	{"R: type = struct {\n  x: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: a }\n  r = a < b ? { R { x: b } } | { r }\n  r.x\n}\n", "((a lo b) ? b : a)"},
+	// Statements in an aggregate conditional's arms still update locals on
+	// that arm alone; forkLocals merges the side effect on the condition.
+	{"R: type = struct {\n  x: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: a }\n  v: R = a < b ? {\n    r.x = b\n    R { x: b }\n  } | { R { x: a } }\n  r.x + v.x\n}\n", "(((a lo b) ? b : a) add ((a lo b) ? b : a))"},
+	// Nested places are stable too: restoring r while lowering the RHS must
+	// not detach the r.x[0] leaf that the assignment already resolved.
+	{"R: type = struct {\n  x: [1]u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: [a] }\n  r.x[0] = a < b ? { b } | { a }\n  r.x[0]\n}\n", "((a lo b) ? b : a)"},
 	// Data-dependent loops (`whileEvent`): the carried locals stand as the
 	// fresh symbols `loop<index>.<var>` after the loop (`loopEvent`).
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < n {\n    s = s + i\n    i = i + 1\n  }\n  s + i\n}\n", "(loop1.s add loop1.i)"},
