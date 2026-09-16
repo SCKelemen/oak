@@ -10,10 +10,15 @@ representations for the raw fresh-gate branches of `asm/cnf.go`: the exact
 three, four, or six clauses emitted for AND, OR, XOR, and ITE.
 
 This is deliberately not a refinement of the complete clause builder.  It
-does not model constant folding, gate memoization or allocation, a sequence of
-dependent gates, the final obligation clause, DIMACS parsing, or term
-bit-blasting.  Those remain separate obligations before the native equality
-certificate's concrete `cnf_complete` premise can be discharged.
+composes a supplied sequence of raw gates with a supplied final obligation
+clause on the non-settled path and connects that clause list to the RUP
+database representation.  It
+does not prove that the Go builder produced that sequence or obligation, nor
+does it model constant folding, gate memoization, fresh allocation, dependency
+acyclicity, sequential assignment extension, the clause budget, DIMACS
+serialization/parsing, or term bit-blasting.  Those remain separate
+obligations before the native equality certificate's concrete `cnf_complete`
+premise can be discharged.
 -/
 
 set_option autoImplicit false
@@ -157,5 +162,212 @@ theorem satisfies_iteGate_iff (assignment : Assignment) (gate : Nat)
          else evalLiteral assignment elseValue) := by
   rw [← clausesValue_eq_true_iff, iteGate_value]
   exact Oak.Tseitin.ite_clauses _ _ _ _
+
+/-! ## A supplied sequence of raw gates
+
+`RawGate` is the decoded immutable logical counterpart of one raw-edge entry
+in `cnfBuilder.gates`.  It intentionally starts after all folds, memo hits and
+allocation decisions: proving that those mutable Go operations produce this
+record is a later implementation-refinement obligation. -/
+
+inductive RawGate where
+  | andGate (gate : Nat) (left right : Literal)
+  | orGate (gate : Nat) (left right : Literal)
+  | xorGate (gate : Nat) (left right : Literal)
+  | iteGate (gate : Nat) (condition thenValue elseValue : Literal)
+  deriving Repr
+
+def RawGate.clauses : RawGate → List Clause
+  | .andGate gate left right => andGateClauses gate left right
+  | .orGate gate left right => orGateClauses gate left right
+  | .xorGate gate left right => xorGateClauses gate left right
+  | .iteGate gate condition thenValue elseValue =>
+      iteGateClauses gate condition thenValue elseValue
+
+/-- The Boolean equation characterized by one raw gate's concrete clauses. -/
+def RawGate.Holds (assignment : Assignment) : RawGate → Prop
+  | .andGate gate left right =>
+      assignment gate = (evalLiteral assignment left && evalLiteral assignment right)
+  | .orGate gate left right =>
+      assignment gate = (evalLiteral assignment left || evalLiteral assignment right)
+  | .xorGate gate left right =>
+      assignment gate = xor (evalLiteral assignment left) (evalLiteral assignment right)
+  | .iteGate gate condition thenValue elseValue =>
+      assignment gate =
+        (if evalLiteral assignment condition then evalLiteral assignment thenValue
+         else evalLiteral assignment elseValue)
+
+def gateClauses (gates : List RawGate) : List Clause :=
+  gates.flatMap RawGate.clauses
+
+def builderClauses (gates : List RawGate) (obligation : Clause) : List Clause :=
+  gateClauses gates ++ [obligation]
+
+def GateConsistent (assignment : Assignment) (gates : List RawGate) : Prop :=
+  ∀ gate ∈ gates, gate.Holds assignment
+
+theorem satisfiesClauses_append (assignment : Assignment) (left right : List Clause) :
+    SatisfiesClauses assignment (left ++ right) ↔
+      SatisfiesClauses assignment left ∧ SatisfiesClauses assignment right := by
+  constructor
+  · intro satisfies
+    constructor
+    · intro clause member
+      exact satisfies clause (by simp [member])
+    · intro clause member
+      exact satisfies clause (by simp [member])
+  · rintro ⟨leftSatisfies, rightSatisfies⟩ clause member
+    rcases List.mem_append.mp member with member | member
+    · exact leftSatisfies clause member
+    · exact rightSatisfies clause member
+
+/-- Each raw-gate variant delegates to its exact concrete clause theorem. -/
+theorem satisfies_rawGate_iff (assignment : Assignment) (gate : RawGate) :
+    SatisfiesClauses assignment gate.clauses ↔ gate.Holds assignment := by
+  cases gate with
+  | andGate gate left right => exact satisfies_andGate_iff assignment gate left right
+  | orGate gate left right => exact satisfies_orGate_iff assignment gate left right
+  | xorGate gate left right => exact satisfies_xorGate_iff assignment gate left right
+  | iteGate gate condition thenValue elseValue =>
+      exact satisfies_iteGate_iff assignment gate condition thenValue elseValue
+
+/-- Concatenating raw-gate clause blocks means satisfying every gate equation.
+No freshness or dependency order is needed for this propositional statement. -/
+theorem satisfies_gateClauses_iff (assignment : Assignment) (gates : List RawGate) :
+    SatisfiesClauses assignment (gateClauses gates) ↔ GateConsistent assignment gates := by
+  induction gates with
+  | nil => simp [gateClauses, GateConsistent, SatisfiesClauses]
+  | cons gate rest ih =>
+      rw [show gateClauses (gate :: rest) = gate.clauses ++ gateClauses rest by rfl]
+      rw [satisfiesClauses_append, satisfies_rawGate_iff, ih]
+      simp [GateConsistent]
+
+/-- The supplied builder formula is exactly all gate equations conjoined with
+the supplied final obligation clause. -/
+theorem satisfies_builderClauses_iff (assignment : Assignment) (gates : List RawGate)
+    (obligation : Clause) :
+    SatisfiesClauses assignment (builderClauses gates obligation) ↔
+      GateConsistent assignment gates ∧ SatisfiesClause assignment obligation := by
+  rw [builderClauses, satisfiesClauses_append, satisfies_gateClauses_iff]
+  simp [SatisfiesClauses]
+
+/-! ## The one-based RUP database
+
+DIMACS clause 1 is the list head and database id 0 is absent.  This closes the
+representation gap between the concrete clause lists above and
+`Oak.RupCheck.Models`; it is not a parser or serializer refinement. -/
+
+def databaseOfClauses : List Clause → Database
+  | [] => fun _ => none
+  | clause :: rest => fun
+      | 0 => none
+      | 1 => some clause
+      | Nat.succ (Nat.succ id) => databaseOfClauses rest (Nat.succ id)
+
+@[simp] theorem databaseOfClauses_zero (clauses : List Clause) :
+    databaseOfClauses clauses 0 = none := by
+  cases clauses <;> rfl
+
+@[simp] theorem databaseOfClauses_cons_one (clause : Clause) (rest : List Clause) :
+    databaseOfClauses (clause :: rest) 1 = some clause := by
+  rfl
+
+@[simp] theorem databaseOfClauses_cons_succ_succ (clause : Clause)
+    (rest : List Clause) (id : Nat) :
+    databaseOfClauses (clause :: rest) (Nat.succ (Nat.succ id)) =
+      databaseOfClauses rest (Nat.succ id) := by
+  rfl
+
+example (clause : Clause) : databaseOfClauses [clause] 2 = none := rfl
+
+example (clause : Clause) :
+    databaseOfClauses [clause, clause] 1 = some clause ∧
+      databaseOfClauses [clause, clause] 2 = some clause := by
+  constructor <;> rfl
+
+example : databaseOfClauses ([[]] : List Clause) 1 = some [] := rfl
+
+theorem models_databaseOfClauses_iff (assignment : Assignment) (clauses : List Clause) :
+    Models assignment (databaseOfClauses clauses) ↔
+      SatisfiesClauses assignment clauses := by
+  induction clauses with
+  | nil =>
+      constructor
+      · intro _ clause member
+        simp at member
+      · intro _ id clause lookup
+        simp [databaseOfClauses] at lookup
+  | cons head tail ih =>
+      constructor
+      · intro models
+        have headModel : SatisfiesClause assignment head :=
+          models 1 head (by simp [databaseOfClauses])
+        have tailModels : Models assignment (databaseOfClauses tail) := by
+          intro id clause lookup
+          cases id with
+          | zero => simp at lookup
+          | succ id =>
+              exact models (Nat.succ (Nat.succ id)) clause
+                (by simpa [databaseOfClauses] using lookup)
+        intro clause member
+        rcases List.mem_cons.mp member with rfl | member
+        · exact headModel
+        · exact ih.mp tailModels clause member
+      · intro satisfies
+        have headModel : SatisfiesClause assignment head :=
+          satisfies head (by simp)
+        have tailModels : Models assignment (databaseOfClauses tail) :=
+          ih.mpr (by
+            intro clause member
+            exact satisfies clause (by simp [member]))
+        intro id clause lookup
+        cases id with
+        | zero => simp [databaseOfClauses] at lookup
+        | succ id =>
+            cases id with
+            | zero =>
+                have eq : head = clause := by
+                  simpa [databaseOfClauses] using lookup
+                simpa [eq] using headModel
+            | succ id =>
+                exact tailModels (Nat.succ id) clause
+                  (by simpa [databaseOfClauses] using lookup)
+
+/-- The exact model characterization at the abstract RUP database boundary. -/
+theorem models_builderDatabase_iff (assignment : Assignment) (gates : List RawGate)
+    (obligation : Clause) :
+    Models assignment (databaseOfClauses (builderClauses gates obligation)) ↔
+      GateConsistent assignment gates ∧ SatisfiesClause assignment obligation := by
+  rw [models_databaseOfClauses_iff, satisfies_builderClauses_iff]
+
+/-! A two-gate example pins concatenation and dependency representation.  Its
+second gate reads the first gate's output.  This does not prove that arbitrary
+sequences are fresh or acyclic. -/
+
+namespace SequenceExample
+
+def gates : List RawGate :=
+  [.andGate 3 (output 1) (output 2),
+   .xorGate 4 (negate (output 1)) (output 3)]
+
+def obligation : Clause := [output 4]
+
+example : builderClauses gates obligation =
+    [[⟨3, false⟩, ⟨1, true⟩],
+     [⟨3, false⟩, ⟨2, true⟩],
+     [⟨3, true⟩, ⟨1, false⟩, ⟨2, false⟩],
+     [⟨4, false⟩, ⟨1, false⟩, ⟨3, true⟩],
+     [⟨4, false⟩, ⟨1, true⟩, ⟨3, false⟩],
+     [⟨4, true⟩, ⟨1, true⟩, ⟨3, true⟩],
+     [⟨4, true⟩, ⟨1, false⟩, ⟨3, false⟩],
+     [⟨4, true⟩]] := by
+  rfl
+
+example (assignment : Assignment) :
+    Models assignment (databaseOfClauses (builderClauses gates obligation)) ↔
+      GateConsistent assignment gates ∧ SatisfiesClause assignment obligation :=
+  models_builderDatabase_iff assignment gates obligation
+
+end SequenceExample
 
 end Oak.TseitinCNF
