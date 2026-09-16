@@ -624,11 +624,16 @@ writable-pair theorem: `span_element_then_pair64_store` turns an admitted
 16-byte access over eight-byte span elements into bounds for exactly two
 adjacent cells, and the synchronized Go/Lean examples pin the intended
 non-overlapping offsets 0 and 16 of a four-cell region plus overflow and
-read-only refusals. No checker behavior changed. In particular, writability is
-not ordinary-RAM, private, or
-unpublished custody; pair stores through generic and record spans remain
-outside the semantic verifier until that authority and exact record-field
-provenance are explicit.
+read-only refusals. That arithmetic theorem admitted no wider access. In
+particular, writability is not ordinary-RAM, private, or unpublished custody;
+pair stores through generic and record spans remain outside the semantic
+verifier. The checker now retains compiler-derived nominal identity for one
+exact record-span element and exact record-relative offsets for its
+nonnegative tail aliases. Same-sized different record types do not meet,
+widened multi-record regions lose the identity, and overflow clears it. This
+metadata never broadens an access decision; it can only discard an ambiguous
+fact at a meet and supplies no authority. Exact array-field selection and
+private/unpublished custody remain explicit later gates.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable

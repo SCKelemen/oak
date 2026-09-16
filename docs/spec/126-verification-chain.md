@@ -587,8 +587,12 @@ access covers two adjacent in-span u64 cells; synchronized examples admit
 offsets 0 and 16 of a four-cell region and refuse offset 24 and a read-only
 region. That is only byte bounds and writability metadata. It proves no
 ordinary-memory, privacy, or unpublished custody, so generic and record-span
-pair stores remain refused. A lowering still requires exact record-field
-provenance and trap preservation, verifier support, scalar-tail lowering,
+pair stores remain refused. The checker transports compiler-derived nominal
+record identity through exact record elements and their nonnegative byte-tail
+aliases; control-flow meets reject same-sized but differently named records,
+and widened multi-record regions carry no single-record identity. This is
+non-authoritative metadata only. A lowering still requires exact array-field
+selection and trap preservation, verifier support, scalar-tail lowering,
 alias/observer exclusion, and private/unpublished ordinary-memory authority.
 
 The next conditional Sail projection stops at the selected arguments of the

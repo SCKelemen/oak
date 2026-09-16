@@ -1128,10 +1128,17 @@ the intended non-overlapping offsets 0 and 16 of a four-cell region and refuses
 the overflowing and read-only cases. This still supplies no memory-type or
 custody fact: a writable span may name published page tables, device memory,
 or externally observed storage. The verifier therefore continues to refuse
-pair stores through spans and record spans. A future lowering still needs exact
-record-field provenance, trap preservation, verifier support, scalar-tail
-lowering, and explicit ordinary private-memory authority proving the storage
-has not yet been published—never a live descriptor-update protocol.
+pair stores through spans and record spans. The checker now preserves one
+narrow part of the future provenance obligation: an exact record-span element
+retains its compiler-derived nominal record identity, and nonnegative field
+offsets retain the exact record-relative byte position. Same-sized nominal
+types do not meet, widened multi-record regions lose the identity, and signed
+offset overflow clears it. This metadata grants no access and is not accepted
+from assembly alone: the checked Oak signature and compiler-supplied composite
+layout must agree. A future lowering still needs exact array-field selection,
+trap preservation, verifier support, scalar-tail lowering, and explicit
+ordinary private-memory authority proving the storage has not yet been
+published—never a live descriptor-update protocol.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
