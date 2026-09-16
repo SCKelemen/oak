@@ -249,6 +249,67 @@ structure FullDsbOrderingBetween {Occurrence Target : Type}
   beforeDsb : trace.po before dsb
   dsbAfter : trace.po dsb after
 
+/-- The exact TLBI, post-DSB, and ISB occurrences in Oak's restricted local
+    projection corresponding to the first pinned `DSB-ob` arm. Official CAT
+    set membership and the arm's destination filter remain execution-refinement
+    premises, and this is ordering rather than architectural completion. -/
+structure ProjectedTlbiDsbOb {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (target : Target) (tlbiEvent postTlbiDsb isbEvent : Occurrence) : Prop where
+  tlbiIsExact : Vmalls12e1isOccurrence code trace tlbiEvent target
+  postTlbiDsbIsExact : ExactBarrierOccurrence code trace postTlbiDsb
+    dsbIsh dsbIshDecode
+  isbIsExact : ExactBarrierOccurrence code trace isbEvent isbSy isbDecode
+  ordering : FullDsbOrderingBetween trace dsbIshDecode tlbiEvent postTlbiDsb
+    isbEvent
+
+/-- Oak's restricted local projection corresponding to the exact
+    `DSB-ob; [IFB]; po` arm of the pinned `IFB-ob` definition. A following
+    occurrence and its program-order edge are explicit inputs; official CAT
+    membership remains external and the witness does not assert that ISB has
+    synchronized architectural context. -/
+structure ProjectedTlbiIfbOb {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (target : Target)
+    (tlbiEvent postTlbiDsb isbEvent afterEvent : Occurrence) : Prop where
+  dsbOb : ProjectedTlbiDsbOb code trace target tlbiEvent postTlbiDsb isbEvent
+  isbBeforeAfter : trace.po isbEvent afterEvent
+
+/-- Oak's exact fixed instruction slice supplies the local TLBI-to-ISB
+    ordering projection corresponding to `DSB-ob`, without manufacturing CAT
+    event membership or completion. -/
+theorem vmalls12e1is_dsb_isb_sequence_projects_dsb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : Vmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    ProjectedTlbiDsbOb code trace target tlbiEvent postTlbiDsb isbEvent :=
+  { tlbiIsExact := sequence.tlbiIsExact
+    postTlbiDsbIsExact := sequence.postTlbiDsbIsExact
+    isbIsExact := sequence.isbIsExact
+    ordering :=
+      { ordersBefore := dsb_ish_decode_orders_before
+        barrierIsExact := sequence.postTlbiDsbIsExact.actionIsBarrier
+        beforeDsb := sequence.tlbiBeforePostTlbiDsb
+        dsbAfter := sequence.postTlbiDsbBeforeIsb } }
+
+/-- With an explicit event after the ISB, the same sequence constructs Oak's
+    local projection corresponding to CAT's `DSB-ob; [IFB]; po` ordering arm. -/
+theorem vmalls12e1is_dsb_isb_sequence_projects_ifb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent afterEvent : Occurrence}
+    (sequence : Vmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent)
+    (isbBeforeAfter : trace.po isbEvent afterEvent) :
+    ProjectedTlbiIfbOb code trace target tlbiEvent postTlbiDsb isbEvent
+      afterEvent :=
+  { dsbOb := vmalls12e1is_dsb_isb_sequence_projects_dsb_ob sequence
+    isbBeforeAfter := isbBeforeAfter }
+
 /-- The least local ordered-before fragment needed for the projected stage-2
     BBM skeleton. The direct constructors correspond to the relevant
     descriptor/TLBI instances of CAT's full `DSB-ob` arm; transitivity

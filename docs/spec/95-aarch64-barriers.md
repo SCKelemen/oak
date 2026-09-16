@@ -246,9 +246,10 @@ following scalar memory, while ISH and SY provide full scalar data ordering.
 Decoded DSB ISH/SY tuples index a separate full scalar `DSB-ob` rule. The pinned
 CAT certificate covers `dmb.full`, `dmb.ld`, the selected `bob` arms,
 `dsb.full`, the full scalar `DSB-ob` arm, ISB membership in `IFB`, a
-dependency-sensitive `IFB-ob` arm, and their routes through `lob`. DSB and ISB
-are not smuggled through DMB ordering. Eleven official-model Herd cases include
-forbidden DSB ISH/SY store buffering and allowed bare-ISB store buffering.
+dependency-sensitive `IFB-ob` arm, the exact `DSB-ob; [IFB]; po` arm, and their
+routes through `lob`. DSB and ISB are not smuggled through DMB ordering. Eleven
+official-model Herd cases include forbidden DSB ISH/SY store buffering and
+allowed bare-ISB store buffering.
 
 Oak's pure Sail fragment projects barrier decoding to the
 operation/domain/access tuple and now separately projects the official
@@ -259,7 +260,9 @@ The projection does not execute architectural state changes: the pinned model
 implements `InstructionSynchronizationBarrier` and `SynchronizeContext` as
 separate unit-returning stubs. The drift gate pins that boundary. DSB completion
 and ISB context synchronization therefore remain external obligations;
-positive `IFB-ob` also requires its specified dependency.
+the stage-2 `IFB-ob` projection requires both its exact preceding `DSB-ob`
+witness and an explicit program-order edge to an occurrence after the ISB.
+Other positive `IFB-ob` arms retain their specified dependency premises.
 
 `compiler/e2e_native_barrier_words_test.go` independently checks occurrence at
 the direct-native object seam. Each of six Oak source functions must be exactly
@@ -278,8 +281,13 @@ proves neither access admission nor the target's execution effects.
 The fixed context-sync leaf is separately required to be exactly
 `DSB ISH; VMALLS12E1IS; DSB ISH; ISB; RET` in the direct-native object. The C
 bootstrap assembly gate requires the same four system instructions in order.
-These gates establish emitted occurrence/order and zero hidden work, not DSB
-completion or ISB architectural context synchronization.
+The C gate establishes system-instruction occurrence/order, while the exact
+native body additionally establishes zero hidden work. Lean constructs Oak's
+restricted local ordering shape for the exact TLBI/post-DSB/ISB occurrences,
+corresponding to CAT's `DSB-ob` arm; with an explicit following occurrence it
+also constructs the shape corresponding to `DSB-ob; [IFB]; po`. Official CAT
+event membership remains external. Neither result proves DSB completion or ISB
+architectural context synchronization.
 
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.

@@ -296,8 +296,9 @@ relation to the pinned model. It byte-compares all 156 tracked
 `cat2lisp` beside `herd7`, and checks the include-expanded AST for DMB ISH and
 DMB SY in `dmb.full`, DMB ISHLD in `dmb.ld`, the five required scalar `bob`
 arms, DSB ISH/SY membership and the full scalar `DSB-ob` arm, ISB membership
-and a dependency-sensitive `IFB-ob` arm, the `bob/DSB-ob/IFB-ob -> lob ->
-local-hw-reqs -> hw-reqs -> ob` and
+and both a dependency-sensitive `IFB-ob` arm and the exact
+`DSB-ob; [IFB]; po` arm, the `bob/DSB-ob/IFB-ob -> lob -> local-hw-reqs ->
+hw-reqs -> ob` and
 `rf/ca -> Exp-obs -> obs -> ob` paths, `ob; ob`, and external
 `irreflexive ob`. Exact AST hashes make any pin/model drift a reviewed change;
 mutation checks show each required edge is fail-closed.
@@ -338,6 +339,19 @@ theorem prevents construction of the completed wrapper. Adequacy and provenance
 of both predicates remain external. This four-instruction slice contains no
 descriptor break/make or `inv-scope` evidence and is not by itself a BBM
 protocol.
+
+The same exact events now construct a narrower local ordering projection
+corresponding to the pinned CAT syntax. The post-TLBI DSB ISH places the exact
+TLBI before the exact ISB in Oak's restricted shape for the first `DSB-ob` arm,
+whose official source set explicitly includes `TLBI`. Given a separately
+supplied occurrence after that ISB and its program-order edge, Oak also
+constructs the local shape corresponding to `DSB-ob; [IFB]; po`. The CAT gate
+pins and mutation-tests that complete official arm. `ProjectedTlbiDsbOb` and
+`ProjectedTlbiIfbOb` retain the same instruction indices and exact word/action
+witnesses, but prove local ordering only: `DSB-ob` is not DSB completion and
+`IFB-ob` is not architectural context synchronization. Official CAT set
+membership, including the DSB arm's destination filter and ISB membership in
+`IFB`, remains an execution-refinement premise.
 
 This is mechanical structural provenance for the restricted projection, not a
 complete formal semantics of CAT. The local mapping, projection theorems, CAT

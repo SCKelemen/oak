@@ -209,6 +209,17 @@ negative theorem prevents construction of the completed wrapper. Predicate
 adequacy and provenance remain external. This is an instruction
 maintenance/context-sync slice, not a descriptor BBM witness.
 
+The exact sequence additionally constructs Oak's restricted local ordering
+shape corresponding to the pinned first `DSB-ob` arm, from its TLBI occurrence
+through the post-DSB ISH to its ISB occurrence. If a caller supplies a later
+occurrence and `po` edge from that same ISB, Lean constructs the shape
+corresponding to CAT's `DSB-ob; [IFB]; po` arm. The CAT gate pins the normalized
+official arm hash and rejects removal of `DSB-ob`, `IFB`, or `po`; extracting
+the external sequence from the Sail-decorated conjunction preserves all
+occurrence indices. These are restricted local projections only. They do not
+prove DSB completion, ISB context synchronization, official CAT event tagging
+or destination filtering, dynamic trace extraction, or TLBI scope/effects.
+
 The adjacent encoding seam now proves one concrete Inner Shareable instruction
 encoding and named Sail call-target identity without conflating either with
 those obligations or with plain, local-PE `TLBI VMALLS12E1`:

@@ -58,6 +58,7 @@ const pinnedAArch64ExternalIrreflexiveHash = "0d3935d123120064a5f8c4cb229df1eb5e
 
 const pinnedAArch64DSBFullArmHash = "5591f902cc9e242fb058023293d939a414688205aab118ca61d6994814c13e98"
 const pinnedAArch64IFBControlArmHash = "66f0c45e72f09b9c2d28952a625953ef422f4e40d470b5a1377a8874e5f41527"
+const pinnedAArch64IFBDsbArmHash = "dc9583eacb2c1ff264fb746e8b85e0910fecc2b67e29374c5b180d65c4103b1e"
 
 type catLispNode struct {
 	atom   string
@@ -492,6 +493,17 @@ func isAArch64BBMSequence(node *catLispNode) bool {
 		catSetFilter(operands[6], "TLBCacheableTTD")
 }
 
+// The IFB-ob arm used by Oak's stage-2 sequence is exactly
+// `DSB-ob; [IFB]; po`. Keeping this selector structural prevents another IFB
+// dependency arm from satisfying the stage-2 projection by name alone.
+func isAArch64IFBDsbArm(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	return ok && len(operands) == 3 &&
+		catVariable(operands[0], "DSB-ob") &&
+		catSetFilter(operands[1], "IFB") &&
+		catVariable(operands[2], "po")
+}
+
 type aarch64CATProjection struct {
 	definitions map[string]*catLispNode
 	external    *catLispNode
@@ -579,7 +591,7 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	var fullDSB bool
 	for _, arm := range dsbArms {
 		has := func(name string) bool { return containsCATVariable(arm, name) }
-		if has("dsb.full") && has("po") && has("M") && has("Imp") &&
+		if has("dsb.full") && has("po") && has("M") && has("TLBI") && has("Imp") &&
 			has("TTD") && has("Instr") && has("R") {
 			fullDSB = true
 		}
@@ -592,15 +604,22 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 		return errors.New("IFB-ob is not a union")
 	}
 	var controlIFB bool
+	dsbIFBArms := 0
 	for _, arm := range ifbArms {
 		has := func(name string) bool { return containsCATVariable(arm, name) }
 		if has("Exp") && has("R") && has("ctrl") && has("IFB") && has("po") &&
 			!has("pick-ctrl-dep") {
 			controlIFB = true
 		}
+		if isAArch64IFBDsbArm(arm) {
+			dsbIFBArms++
+		}
 	}
 	if !controlIFB {
 		return errors.New("IFB-ob lacks the explicit-read control arm")
+	}
+	if dsbIFBArms != 1 {
+		return fmt.Errorf("IFB-ob has %d exact DSB-ob; [IFB]; po arms, want 1", dsbIFBArms)
 	}
 	if !directUnionContainsVariable(definition["lob"], "DSB-ob") ||
 		!directUnionContainsVariable(definition["lob"], "IFB-ob") {
@@ -677,7 +696,7 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	var dsbFullArmHash string
 	for _, arm := range dsbArms {
 		has := func(name string) bool { return containsCATVariable(arm, name) }
-		if has("dsb.full") && has("po") && has("M") && has("Imp") &&
+		if has("dsb.full") && has("po") && has("M") && has("TLBI") && has("Imp") &&
 			has("TTD") && has("Instr") && has("R") {
 			dsbFullArmHash = expressionHash(arm)
 		}
@@ -696,6 +715,15 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	}
 	if ifbControlArmHash != pinnedAArch64IFBControlArmHash {
 		return fmt.Errorf("IFB-ob control arm AST hash %s, want %s", ifbControlArmHash, pinnedAArch64IFBControlArmHash)
+	}
+	var ifbDsbArmHash string
+	for _, arm := range ifbArms {
+		if isAArch64IFBDsbArm(arm) {
+			ifbDsbArmHash = expressionHash(arm)
+		}
+	}
+	if ifbDsbArmHash != pinnedAArch64IFBDsbArmHash {
+		return fmt.Errorf("IFB-ob DSB arm AST hash %s, want %s", ifbDsbArmHash, pinnedAArch64IFBDsbArmHash)
 	}
 	externalHash := expressionHash(projection.external)
 	if pinnedAArch64ExternalIrreflexiveHash == "" {
@@ -769,6 +797,7 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"dsb.ld", "DSB.ISHLD"},
 		{"dsb.ld", "DSB.LD"},
 		{"DSB-ob", "dsb.full"},
+		{"DSB-ob", "TLBI"},
 		{"IFB", "ISB"},
 		{"IFB-ob", "ctrl"},
 		{"BBM", "TLBCacheableTTD"},
@@ -802,6 +831,29 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		}
 		if verifyAArch64ProjectionStructure(copyProjection) == nil {
 			return fmt.Errorf("projection checker accepted %s without %s", mutation.definition, mutation.from)
+		}
+	}
+	for _, atom := range []string{"DSB-ob", "IFB", "po"} {
+		copyProjection := &aarch64CATProjection{definitions: make(map[string]*catLispNode), external: projection.external.clone()}
+		for name, definition := range projection.definitions {
+			copyProjection.definitions[name] = definition.clone()
+		}
+		arms, ok := catOperator(copyProjection.definitions["IFB-ob"], ":union")
+		if !ok {
+			return errors.New("mutation fixture cannot find IFB-ob union")
+		}
+		mutated := false
+		for _, arm := range arms {
+			if isAArch64IFBDsbArm(arm) {
+				mutated = replaceFirstCATAtom(arm, atom, atom+".removed")
+				break
+			}
+		}
+		if !mutated {
+			return fmt.Errorf("mutation fixture cannot find %s in the exact IFB-ob DSB arm", atom)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted the IFB-ob DSB arm without %s", atom)
 		}
 	}
 	for _, mutation := range []struct {
@@ -871,6 +923,32 @@ func TestCATLispConflictingDefinitionRejected(t *testing.T) {
 	collectBindings(root, bindings)
 	if _, err := uniqueCATDefinition(bindings, "bob"); err == nil {
 		t.Fatal("conflicting CAT definitions were accepted")
+	}
+}
+
+func TestAArch64IFBDsbArmShapeAndHash(t *testing.T) {
+	root, err := parseCATLisp([]byte(
+		`(:e_op nil :seq ((:e_var nil "DSB-ob") ` +
+			`(:e_op1 nil :toid (:e_var nil "IFB")) ` +
+			`(:e_var nil "po")))`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAArch64IFBDsbArm(root) {
+		t.Fatalf("exact IFB-ob DSB arm was not recognized: %s", root.canonical())
+	}
+	if got := expressionHash(root); got != pinnedAArch64IFBDsbArmHash {
+		t.Fatalf("IFB-ob DSB arm hash %s, want %s", got, pinnedAArch64IFBDsbArmHash)
+	}
+	for _, atom := range []string{"DSB-ob", "IFB", "po"} {
+		mutated := root.clone()
+		if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+			t.Fatalf("mutation fixture lacks %s", atom)
+		}
+		if isAArch64IFBDsbArm(mutated) {
+			t.Fatalf("IFB-ob DSB arm without %s was accepted", atom)
+		}
 	}
 }
 

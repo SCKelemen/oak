@@ -392,6 +392,34 @@ theorem sail_vmalls12e1is_dsb_isb_sequence_requires_external
       tlbiEvent postTlbiDsb isbEvent :=
   sequence.1
 
+/-- Extracting the external sequence preserves its exact occurrence indices
+    in Oak's local DSB-ob projection. The generated decoder/dispatch constants
+    add no occurrence or execution-effect semantics. -/
+theorem sail_vmalls12e1is_dsb_isb_sequence_projects_dsb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    ProjectedTlbiDsbOb code trace target tlbiEvent postTlbiDsb isbEvent :=
+  vmalls12e1is_dsb_isb_sequence_projects_dsb_ob sequence.1
+
+/-- The following-event edge remains explicit when the external sequence is
+    extracted into Oak's local projection corresponding to the pinned
+    `DSB-ob; [IFB]; po` arm. -/
+theorem sail_vmalls12e1is_dsb_isb_sequence_projects_ifb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent afterEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent)
+    (isbBeforeAfter : trace.po isbEvent afterEvent) :
+    ProjectedTlbiIfbOb code trace target tlbiEvent postTlbiDsb isbEvent
+      afterEvent :=
+  vmalls12e1is_dsb_isb_sequence_projects_ifb_ob sequence.1 isbBeforeAfter
+
 end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/
