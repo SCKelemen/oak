@@ -26,7 +26,7 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v5")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v6")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -65,6 +65,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 		{"schedule", lane.Schedule},
 		{"packed-stack-args", lane.PackedStackArgs},
 	}
