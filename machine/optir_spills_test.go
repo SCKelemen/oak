@@ -45,7 +45,7 @@ func TestOptIRRV64SpillAdmissionAllowsAcyclicCFGAndRejectsCyclesEffectsAndScratc
 		{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}}},
 		{ID: 1, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 0}}},
 	}}
-	if err := validateOptIRRV64SpillCFG(cyclic, plan); err == nil || !strings.Contains(err.Error(), "cyclic control flow") {
+	if err := validateOptIRRV64SpillCFG(cyclic, plan); err == nil || !strings.Contains(err.Error(), "unsupported cyclic control flow") {
 		t.Fatalf("cyclic spill admission error = %v", err)
 	}
 

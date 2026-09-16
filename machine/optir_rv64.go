@@ -29,8 +29,8 @@ const (
 // integer constants, copies, widening casts, total arithmetic, comparisons,
 // branches, SSA edge arguments, and a deliberately narrow class of direct
 // scalar calls. Other effects, trapping operations, memory, stack arguments,
-// values live across calls, spill loops, and unsupported spill pressure refuse
-// the candidate.
+// values live across calls, broad spill-loop shapes, and unsupported spill
+// pressure refuse the candidate.
 //
 // RV64's 32-bit instructions sign-extend their result to XLEN. Oak therefore
 // keeps both i32 and u32 in that canonical W-value representation; only a
@@ -93,11 +93,11 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
 			return nil, err
 		}
-		plan, planErr := optir.PlanRegisters(cfg, spillRegisters, fixed)
+		plan, planFixed, planErr := planOptIRRV64Spills(cfg, spillRegisters, fixed)
 		if planErr != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 allocation: %v; spill plan: %w", coloringErr, planErr)
 		}
-		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, fixed, plan); err != nil {
+		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, planFixed, plan); err != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 spill-plan evidence: %w", err)
 		}
 		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
@@ -118,11 +118,18 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	if err != nil {
 		return nil, err
 	}
+	layout, err := optir.AnalyzeBlockLayout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 block layout: %w", err)
+	}
+	if err := optir.VerifyBlockLayout(cfg, layout); err != nil {
+		return nil, fmt.Errorf("machine: OptIR RV64 block layout evidence: %w", err)
+	}
 
 	selector := &optIRRV64Selector{
 		cfg: cfg, types: types, colors: colors, spills: spills, spillOffsets: spillLayout.Offsets,
 		frame: frame, raOffset: raOffset,
-		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls,
+		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls, order: layout.Order,
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -174,11 +181,16 @@ type optIRRV64Selector struct {
 	written      map[int]bool
 	calls        map[optir.ValueID]string
 	edges        int
+	order        []optir.BlockID
 }
 
 func (selector *optIRRV64Selector) lower() error {
-	for _, block := range selector.cfg.Blocks {
-		line := optIRBlockLine(block)
+	for index, id := range selector.order {
+		block := optIRBlock(selector.cfg, id)
+		if block == nil {
+			return fmt.Errorf("machine: OptIR layout names missing block %d", id)
+		}
+		line := optIRBlockLine(*block)
 		selector.items = append(selector.items, asm.Label{Name: selector.labels[block.ID], Line: line})
 		if block.ID == selector.cfg.Entry {
 			if selector.frame != 0 {
@@ -201,7 +213,11 @@ func (selector *optIRRV64Selector) lower() error {
 				return fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
 			}
 		}
-		if err := selector.terminator(block, line); err != nil {
+		next, hasNext := optir.BlockID(0), index+1 < len(selector.order)
+		if hasNext {
+			next = selector.order[index+1]
+		}
+		if err := selector.terminator(*block, next, hasNext, line); err != nil {
 			return fmt.Errorf("machine: OptIR block %d terminator: %w", block.ID, err)
 		}
 	}
@@ -490,7 +506,7 @@ func (selector *optIRRV64Selector) compare(operation optir.Operation, line int) 
 	return nil
 }
 
-func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error {
+func (selector *optIRRV64Selector) terminator(block optir.Block, next optir.BlockID, hasNext bool, line int) error {
 	switch terminator := block.Terminator; terminator.Kind {
 	case optir.TerminatorReturn:
 		if len(terminator.Values) != 1 {
@@ -520,7 +536,9 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		if err := selector.edgeCopies(terminator.True, line); err != nil {
 			return err
 		}
-		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		if !hasNext || terminator.True.Target != next {
+			selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
+		}
 		return nil
 	case optir.TerminatorCondBranch:
 		if selector.types[terminator.Condition] != optir.TypeBool {
@@ -530,17 +548,42 @@ func (selector *optIRRV64Selector) terminator(block optir.Block, line int) error
 		if err != nil {
 			return err
 		}
+		trueMoves, err := selector.edgeMoves(terminator.True)
+		if err != nil {
+			return err
+		}
+		falseMoves, err := selector.edgeMoves(terminator.False)
+		if err != nil {
+			return err
+		}
+		if len(trueMoves) == 0 && len(falseMoves) == 0 {
+			trueTarget, falseTarget := terminator.True.Target, terminator.False.Target
+			switch {
+			case trueTarget == falseTarget:
+				if !hasNext || trueTarget != next {
+					selector.emit("j", line, asm.Symbol{Name: selector.labels[trueTarget]})
+				}
+			case hasNext && trueTarget == next:
+				selector.emit("beqz", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[falseTarget]})
+			case hasNext && falseTarget == next:
+				selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[trueTarget]})
+			default:
+				selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: selector.labels[trueTarget]})
+				selector.emit("j", line, asm.Symbol{Name: selector.labels[falseTarget]})
+			}
+			return nil
+		}
 		trueLabel := selector.edgeLabel(block.ID, "true")
 		falseLabel := selector.edgeLabel(block.ID, "false")
 		selector.emit("bnez", line, optIRRV64Register(condition), asm.Symbol{Name: trueLabel})
 		selector.emit("j", line, asm.Symbol{Name: falseLabel})
 		selector.items = append(selector.items, asm.Label{Name: trueLabel, Line: line})
-		if err := selector.edgeCopies(terminator.True, line); err != nil {
+		if err := selector.emitLocationCopies(trueMoves, line); err != nil {
 			return err
 		}
 		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.True.Target]})
 		selector.items = append(selector.items, asm.Label{Name: falseLabel, Line: line})
-		if err := selector.edgeCopies(terminator.False, line); err != nil {
+		if err := selector.emitLocationCopies(falseMoves, line); err != nil {
 			return err
 		}
 		selector.emit("j", line, asm.Symbol{Name: selector.labels[terminator.False.Target]})
