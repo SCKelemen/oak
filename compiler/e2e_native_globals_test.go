@@ -130,8 +130,17 @@ func TestE2ENativeGlobals(t *testing.T) {
 	if !strings.Contains(joined, "asm unit around_loop: proven") || !strings.Contains(joined, "package state it writes (st)") {
 		t.Errorf("around_loop must prove its result and pre/post-loop cell writes; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit write_in_loop: not verified") || !strings.Contains(joined, "store in a loop body") {
-		t.Errorf("write_in_loop must remain trusted because loop events do not model cell writes; diagnostics:\n%s", joined)
+	// A cell written inside a loop body is loop-carried, so the body is
+	// proven in the cell rather than trusted for the write: the coupling
+	// pairs the Oak local with the machine's cell (st↔global:st).
+	if !strings.Contains(joined, "asm unit write_in_loop: proven") || !strings.Contains(joined, "write_in_loop: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") {
+		t.Errorf("write_in_loop writes a cell in its loop body and must be proven; diagnostics:\n%s", joined)
+	}
+	// The note names each kind of memory once.
+	for _, line := range strings.Split(joined, "\n") {
+		if strings.Count(line, "the package state it writes") > 1 {
+			t.Errorf("the verdict names the package state twice: %s", line)
+		}
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1136%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1136%256)

@@ -339,8 +339,9 @@ var arm64IntrinsicWidths = map[string]bool{
 }
 
 // collectUsedIntrinsics scans the program for scalar arm64 instruction
-// functions and machine barriers. Presence in arm64HelperSources is the backend
-// capability witness; the typechecker independently rejects unknown members.
+// functions and closed machine operations. Presence in arm64HelperSources is
+// the backend capability witness; the typechecker independently rejects
+// unknown members.
 func collectUsedIntrinsics(program *ast.Program) []string {
 	used := map[string]bool{}
 	scanCalls(program, func(library, member string) {
@@ -507,8 +508,8 @@ func (cg *CodeGenerator) emitArgvHelper(program *ast.Program) {
 
 // emitIntrinsicHelpers emits only helpers referenced by the program. Scalar
 // instruction functions keep their portable semantics. Architectural barriers
-// deliberately have no portable branch: compiling one for a non-AArch64 target
-// is a hard error rather than a semantic lie.
+// and translation maintenance deliberately have no portable branch: compiling
+// either for a non-AArch64 target is a hard error rather than a semantic lie.
 func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
 	used := collectUsedIntrinsics(program)
 	if len(used) == 0 {
@@ -516,8 +517,10 @@ func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
 	}
 	header := "/* arm64 instruction functions */\n"
 	for _, name := range used {
-		if _, barrier := semir.LookupArm64Barrier(name); barrier {
-			header = "/* arm64 instruction functions and barriers */\n"
+		_, barrier := semir.LookupArm64Barrier(name)
+		_, tlbi := semir.LookupArm64TLBI(name)
+		if barrier || tlbi {
+			header = "/* arm64 instruction functions and machine operations */\n"
 			break
 		}
 	}
@@ -528,10 +531,10 @@ func (cg *CodeGenerator) emitIntrinsicHelpers(program *ast.Program) {
 	}
 }
 
-// arm64HelperSources holds one helper per scalar instruction function and
-// barrier. The portable scalar branches supply total semantics where possible;
-// barriers fail closed off AArch64 because DMB/DSB/ISB have architectural
-// semantics the host evaluator/C backend cannot faithfully emulate.
+// arm64HelperSources holds one helper per scalar instruction function or closed
+// machine operation. Portable scalar branches supply total semantics where
+// possible; barriers and translation maintenance fail closed off AArch64
+// because the host evaluator/C backend cannot faithfully emulate them.
 var arm64HelperSources = map[string]string{
 	"rev32": `static inline u32 oak_arm64_rev32( u32 x ) {
 #if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)

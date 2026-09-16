@@ -3,9 +3,10 @@ package prove
 // The certificate rung (docs/spec/125-verification.md §3, §4; the
 // direction recorded in docs/notes/provers-2026-09.md): a bit-level
 // obligation as clauses (asm.ExportCNF), an untrusted SAT solver run on
-// them, and its LRAT certificate checked here (prove/lrat.go) and by the
-// checker written in Oak (prove/solver/lrat.oak). The checkers settle the
-// row; the solver's own verdict never does.
+// them, and its LRAT certificate checked by internal/lrat/lrat.go (through
+// prove's compatibility surface) and by the checker written in Oak
+// (prove/solver/lrat.oak). The checkers settle the row; the solver's own
+// verdict never does.
 
 import (
 	"bufio"

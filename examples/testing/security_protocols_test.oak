@@ -1,0 +1,197 @@
+import(std)
+import(testing)
+
+// Security-protocol proof-of-concepts.
+//
+// These models intentionally treat cryptographic primitives as idealized
+// boundaries. They verify state-machine and key-lifecycle properties; they do
+// NOT claim IND-CCA, authentication, forward secrecy, or other computational
+// cryptographic security. Those require an adversary model / crypto verifier.
+
+// --------------------------------------------------------------------------
+// 1. Authenticated handshake plumbing.
+// --------------------------------------------------------------------------
+
+Handshake: protocol = {
+  data {
+    peer_authenticated: Bool,
+    transcript_bound: Bool,
+    shared_secret_ready: Bool
+  }
+  init {
+    peer_authenticated: false,
+    transcript_bound: false,
+    shared_secret_ready: false
+  }
+  initial New
+
+  start: New -> AwaitingPeer
+  accept(auth_ok: Bool): AwaitingPeer -> AwaitingConfirm when auth_ok then {
+    data.peer_authenticated = true
+    data.transcript_bound = true
+    data.shared_secret_ready = true
+  }
+  reject(auth_ok: Bool): AwaitingPeer -> Failed when !auth_ok
+  confirm: AwaitingConfirm -> Established when data.peer_authenticated && data.transcript_bound && data.shared_secret_ready
+  close: Established -> Closed
+  abort: AwaitingPeer -> Failed
+  abort: AwaitingConfirm -> Failed
+}
+
+handshake_established_is_authenticated: theorem (s: HandshakeState, d: HandshakeData) {
+  !(s == .Established) || (d.peer_authenticated && d.transcript_bound && d.shared_secret_ready)
+}
+
+handshake_closed_was_not_direct: theorem (s: HandshakeState, d: HandshakeData) {
+  !(s == .Closed) || (d.peer_authenticated && d.transcript_bound && d.shared_secret_ready)
+}
+
+TestSecurityHandshake: (): () {
+  store: [1]HandshakeData
+  data: [*]HandshakeData = span(&store)
+  data[0] = handshake_initial_data()
+  s: HandshakeState = handshake_initial()
+
+  s = handshake_next(s, data, .Start)
+  test_check(handshake_legal(s, data[0], .Accept(true)), u32(7200))
+  test_check(!handshake_legal(s, data[0], .Accept(false)), u32(7201))
+
+  s = handshake_next(s, data, .Accept(true))
+  test_check(data[0].peer_authenticated, u32(7202))
+  test_check(data[0].transcript_bound, u32(7203))
+  test_check(data[0].shared_secret_ready, u32(7204))
+
+  s = handshake_next(s, data, .Confirm)
+  test_check(s == .Established, u32(7205))
+}
+
+// --------------------------------------------------------------------------
+// 2. One-use message-key lifecycle / symmetric-ratchet skeleton.
+// --------------------------------------------------------------------------
+
+Ratchet: protocol = {
+  data {
+    generation: u16,
+    chain_key_live: Bool,
+    message_key_live: Bool
+  }
+  init {
+    generation: u16(0),
+    chain_key_live: true,
+    message_key_live: false
+  }
+  initial Ready
+
+  derive: Ready -> MessageReady when data.chain_key_live && !data.message_key_live && data.generation < u16(65535) then {
+    data.generation = data.generation + u16(1)
+    data.message_key_live = true
+  }
+  consume: MessageReady -> Ready when data.message_key_live then {
+    data.message_key_live = false
+  }
+  close: Ready -> Closed then {
+    data.chain_key_live = false
+    data.message_key_live = false
+  }
+}
+
+ratchet_message_key_matches_state: theorem (s: RatchetState, d: RatchetData) {
+  (s == .MessageReady) == d.message_key_live
+}
+
+ratchet_closed_has_no_live_keys: theorem (s: RatchetState, d: RatchetData) {
+  !(s == .Closed) || (!d.chain_key_live && !d.message_key_live)
+}
+
+TestSecurityRatchet: (): () {
+  store: [1]RatchetData
+  data: [*]RatchetData = span(&store)
+  data[0] = ratchet_initial_data()
+  s: RatchetState = ratchet_initial()
+
+  s = ratchet_next(s, data, .Derive)
+  test_check(s == .MessageReady, u32(7210))
+  test_check(data[0].generation == u16(1), u32(7211))
+  test_check(data[0].message_key_live, u32(7212))
+  test_check(!ratchet_legal(s, data[0], .Derive), u32(7213))
+
+  s = ratchet_next(s, data, .Consume)
+  test_check(s == .Ready && !data[0].message_key_live, u32(7214))
+
+  s = ratchet_next(s, data, .Close)
+  test_check(s == .Closed, u32(7215))
+  test_check(!data[0].chain_key_live && !data[0].message_key_live, u32(7216))
+}
+
+// --------------------------------------------------------------------------
+// 3. User-presence + challenge-bound sealed-key authorization.
+// --------------------------------------------------------------------------
+
+SealedKey: protocol = {
+  data {
+    user_present: Bool,
+    challenge_bound: Bool,
+    operation_authorized: Bool
+  }
+  init {
+    user_present: false,
+    challenge_bound: false,
+    operation_authorized: false
+  }
+  initial Locked
+
+  authenticate(ok: Bool): Locked -> Authenticated when ok then {
+    data.user_present = true
+  }
+  reject(ok: Bool): Locked -> Locked when !ok
+  bind(challenge_ok: Bool): Authenticated -> Bound when challenge_ok && data.user_present then {
+    data.challenge_bound = true
+  }
+  authorize: Bound -> Authorized when data.user_present && data.challenge_bound then {
+    data.operation_authorized = true
+  }
+  consume: Authorized -> Locked when data.operation_authorized then {
+    data.user_present = false
+    data.challenge_bound = false
+    data.operation_authorized = false
+  }
+  expire: Authenticated -> Locked then {
+    data.user_present = false
+    data.challenge_bound = false
+    data.operation_authorized = false
+  }
+  expire: Bound -> Locked then {
+    data.user_present = false
+    data.challenge_bound = false
+    data.operation_authorized = false
+  }
+}
+
+sealed_key_authorized_requires_evidence: theorem (s: SealedKeyState, d: SealedKeyData) {
+  !(s == .Authorized) || (d.user_present && d.challenge_bound && d.operation_authorized)
+}
+
+sealed_key_locked_has_no_authorization: theorem (s: SealedKeyState, d: SealedKeyData) {
+  !(s == .Locked) || !d.operation_authorized
+}
+
+TestSecuritySealedKey: (): () {
+  store: [1]SealedKeyData
+  data: [*]SealedKeyData = span(&store)
+  data[0] = sealed_key_initial_data()
+  s: SealedKeyState = sealed_key_initial()
+
+  test_check(!sealed_key_legal(s, data[0], .Authenticate(false)), u32(7220))
+  s = sealed_key_next(s, data, .Authenticate(true))
+  test_check(s == .Authenticated && data[0].user_present, u32(7221))
+
+  s = sealed_key_next(s, data, .Bind(true))
+  test_check(s == .Bound && data[0].challenge_bound, u32(7222))
+
+  s = sealed_key_next(s, data, .Authorize)
+  test_check(s == .Authorized && data[0].operation_authorized, u32(7223))
+
+  s = sealed_key_next(s, data, .Consume)
+  test_check(s == .Locked, u32(7224))
+  test_check(!data[0].user_present && !data[0].challenge_bound && !data[0].operation_authorized, u32(7225))
+}

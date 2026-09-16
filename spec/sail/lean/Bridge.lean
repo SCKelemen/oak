@@ -1,5 +1,14 @@
 import Out
 import Oak.ArmASL
+import Oak.AArch64Encoding
+import Oak.AArch64ReturnEncoding
+import Oak.AArch64DirectBranchEncoding
+import Oak.AArch64EventControl
+import Oak.AArch64SysReg
+import Oak.AArch64Barrier
+import Oak.AArch64ColdEntry
+import Oak.AArch64Stage2Maintenance
+import Oak.AArch64WeakMemory
 import Oak.NeonSemantics
 
 /-!
@@ -18,6 +27,1506 @@ namespace Oak.SailBridge
 
 open Oak.AssemblerSemantics
 open Oak.ArmASL
+
+namespace A64Encoding
+
+open Oak.AArch64Encoding
+
+/-! The pinned STR64 unsigned-offset decoder and the selected store arm's
+address/data arguments immediately before `Mem`.  The generated projection stops before alignment,
+endianness, translation, faults, tags, exclusives, MMIO, physical memory, and
+CAT events.  It also supplies no dynamic occurrence or descriptor meaning. -/
+
+theorem decode64_str64_unsigned_bridge (word : BitVec 32) :
+    Out.Functions.decode64_str64_unsigned_pure word =
+      Oak.ArmASL.decode64Str64Unsigned word := by
+  simp only [Out.Functions.decode64_str64_unsigned_pure,
+    Oak.ArmASL.decode64Str64Unsigned, Sail.BitVec.slice,
+    BitVec.extractLsb']
+  by_cases h : word &&& 0xffc00000#32 = 0xf9000000#32 <;> simp [h]
+
+theorem str64_unsigned_store_request_bridge
+    (rt rn : BitVec 5) (imm12 : BitVec 12)
+    (rnValue rtValue spValue : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure rt rn imm12
+        rnValue rtValue spValue =
+      Oak.ArmASL.str64UnsignedStoreRequest rt rn imm12
+        rnValue rtValue spValue := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Oak.ArmASL.str64UnsignedStoreRequest, Sail.BitVec.zeroExtend,
+    Out.Functions.Zeros]
+
+theorem str_xzr_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_x2_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_xzr_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        0b11111#5 0#5 0#12 x0 x2 sp = (x0, 0#64) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend, Out.Functions.Zeros]
+
+theorem str_x2_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        2#5 0#5 0#12 x0 x2 sp = (x0, x2) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend]
+
+/-- Adjacent load and 32-bit store classes are deliberately rejected. -/
+theorem ldr_x2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xf9400002#32).1 = false := by
+  native_decide
+
+theorem str_w2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xb9000002#32).1 = false := by
+  native_decide
+
+/-- Nearby Rt, Rn, and scaled-immediate changes remain valid STR64 words but
+decode to different fields instead of being conflated with Oak's two words. -/
+theorem nearby_str64_fields_remain_distinct :
+    Out.Functions.decode64_str64_unsigned_pure 0xf9000001#32 =
+        (true, 1#5, 0#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf900003f#32 =
+        (true, 0b11111#5, 1#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf9000402#32 =
+        (true, 2#5, 0#5, 1#12) := by
+  native_decide
+
+open Oak.AArch64Stage2Maintenance
+
+/-- Preserve the externally supplied exact-word/action occurrence while
+decorating it with the generated decoder and pre-`Mem` request facts.  `x0`
+and `discardedRtValue` are explicit inputs, not facts about a machine state. -/
+def SailBreakDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat)
+    (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      0b11111#5 0#5 0#12 x0 discardedRtValue sp = (x0, 0#64)
+
+def SailMakeDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat) (x0 x2 sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable strX2X0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      2#5 0#5 0#12 x0 x2 sp = (x0, x2)
+
+theorem refineBreakDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 discardedRtValue sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorStoreRequestOccurrence code trace event slot
+      x0 discardedRtValue sp :=
+  ⟨occurrence, str_xzr_x0_decoder,
+    str_xzr_x0_store_request x0 discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 x2 sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorStoreRequestOccurrence code trace event slot x0 x2 sp :=
+  ⟨occurrence, str_x2_x0_decoder, str_x2_x0_store_request x0 x2 sp⟩
+
+/-- Generated decoding cannot manufacture the descriptor occurrence/action
+premise; both decorated forms recover it unchanged. -/
+theorem sail_break_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 discardedRtValue sp : BitVec 64}
+    (occurrence : SailBreakDescriptorStoreRequestOccurrence code trace event
+      slot x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 :=
+  occurrence.1
+
+theorem sail_make_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 x2 sp : BitVec 64}
+    (occurrence : SailMakeDescriptorStoreRequestOccurrence code trace event
+      slot x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+      strX2X0 :=
+  occurrence.1
+
+/-- Translate the enums generated by Sail to the names used by Oak's encoding
+specification.  These functions change only the constructors' namespaces. -/
+def barrierOp : _root_.MemBarrierOp -> Oak.AArch64Encoding.MemBarrierOp
+  | .MemBarrierOp_DSB => .dsb
+  | .MemBarrierOp_DMB => .dmb
+  | .MemBarrierOp_ISB => .isb
+  | .MemBarrierOp_SSBB => .ssbb
+  | .MemBarrierOp_PSSBB => .pssbb
+  | .MemBarrierOp_SB => .sb
+
+def barrierDomain : _root_.MBReqDomain -> Oak.AArch64Encoding.MBReqDomain
+  | .MBReqDomain_Nonshareable => .nonshareable
+  | .MBReqDomain_InnerShareable => .innerShareable
+  | .MBReqDomain_OuterShareable => .outerShareable
+  | .MBReqDomain_FullSystem => .fullSystem
+
+def barrierTypes : _root_.MBReqTypes -> Oak.AArch64Encoding.MBReqTypes
+  | .MBReqTypes_Reads => .reads
+  | .MBReqTypes_Writes => .writes
+  | .MBReqTypes_All => .all
+
+def barrierDecode
+    (result : Bool × _root_.MemBarrierOp × _root_.MBReqDomain × _root_.MBReqTypes) :
+    BarrierDecode :=
+  ⟨result.1, barrierOp result.2.1, barrierDomain result.2.2.1,
+    barrierTypes result.2.2.2⟩
+
+/-! Each theorem below evaluates the word through Lean generated mechanically
+by Sail from Arm's three exact `decode64` clauses and
+`system_barriers_decode`.  They therefore prove both instruction-class
+selection and the decoded option's operation, domain, and access types. -/
+
+theorem dmb_ishld_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure dmbIshld) =
+      dmbIshldDecode := by
+  native_decide
+
+theorem dmb_ish_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure dmbIsh) =
+      dmbIshDecode := by
+  native_decide
+
+theorem dmb_sy_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure dmbSy) =
+      dmbSyDecode := by
+  native_decide
+
+theorem dsb_ish_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh) =
+      dsbIshDecode := by
+  native_decide
+
+theorem dsb_sy_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure dsbSy) =
+      dsbSyDecode := by
+  native_decide
+
+theorem isb_decoder :
+    barrierDecode (Out.Functions.decode64_barrier_pure isbSy) =
+      isbDecode := by
+  native_decide
+
+/-! Arm's pinned `system_barriers` dispatch routes the decoded operation to a
+named execution primitive.  This is stronger than decoder identity, but the
+pinned primitive itself is a unit-returning stub, so the external context-sync
+predicate remains an independent obligation. -/
+
+def decodedBarrierTarget (word : BitVec 32) : Option _root_.BarrierExecutionTarget :=
+  let result := Out.Functions.decode64_barrier_pure word
+  match result.1 with
+  | false => none
+  | true => some (Out.Functions.system_barriers_target_pure
+      result.2.2.1 result.2.1 result.2.2.2)
+
+theorem isb_decoder_execution_target :
+    decodedBarrierTarget isbSy = some
+      .BarrierExecutionTarget_InstructionSynchronizationBarrier := by
+  rfl
+
+theorem dsb_ish_decoder_execution_target :
+    decodedBarrierTarget dsbIsh = some
+      .BarrierExecutionTarget_DataSynchronizationBarrier := by
+  rfl
+
+theorem invalid_barrier_has_no_execution_target :
+    decodedBarrierTarget 0#32 = none := by
+  rfl
+
+open Oak.AArch64ColdEntry
+
+/-- The exact occurrence is an ISB and Arm's generated dispatch selects its
+    named instruction-synchronization primitive. -/
+def SailISBDispatch {Occurrence : Type} (trace : Trace Occurrence)
+    (event : Occurrence) : Prop :=
+  trace.action event = .barrier isbSy ∧
+    decodedBarrierTarget isbSy = some
+      .BarrierExecutionTarget_InstructionSynchronizationBarrier
+
+/-- Refine, rather than replace, the external architectural proposition with
+    the generated Sail dispatch fact. -/
+def sailRefinedContextSync {Occurrence : Type}
+    (external : ArmContextSync Occurrence) : ArmContextSync Occurrence :=
+  fun trace event => SailISBDispatch trace event ∧ external trace event
+
+/-- Existing architectural evidence can be decorated with the generated Sail
+    call-target proof without changing any occurrence or ordering witness. -/
+def refineContextSyncWitnessWithSailDispatch
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace external) :
+    ContextSyncWitness trace (sailRefinedContextSync external) := {
+  irqMask := sync.irqMask
+  writeOccurrence := sync.writeOccurrence
+  isbOccurrence := sync.isbOccurrence
+  irqMaskBeforeWrites := sync.irqMaskBeforeWrites
+  writesAreExact := sync.writesAreExact
+  writesFollowRegisterOrder := sync.writesFollowRegisterOrder
+  writesBeforeIsb := sync.writesBeforeIsb
+  isbIsExact := sync.isbIsExact
+  architecturalSync :=
+    ⟨⟨sync.isbIsExact, isb_decoder_execution_target⟩, sync.architecturalSync⟩
+}
+
+/-- The refined proposition cannot manufacture architectural context sync. -/
+theorem sail_refined_context_sync_requires_external
+    {Occurrence : Type} {trace : Trace Occurrence} {event : Occurrence}
+    {external : ArmContextSync Occurrence}
+    (h : sailRefinedContextSync external trace event) :
+    external trace event := h.2
+
+/-! Refinement from the generated decoder tuples into Oak's deliberately
+narrow barrier capability model.  `ofDecode` is fail-closed, so these facts
+also certify that all four decoded fields match one of Oak's six admitted
+source operations. -/
+
+open Oak.AArch64Barrier
+
+theorem dmb_ishld_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbIshld)) =
+      some .dmbIshld := by
+  rw [dmb_ishld_decoder]
+  rfl
+
+theorem dmb_ish_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbIsh)) =
+      some .dmbIsh := by
+  rw [dmb_ish_decoder]
+  rfl
+
+theorem dmb_sy_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbSy)) =
+      some .dmbSy := by
+  rw [dmb_sy_decoder]
+  rfl
+
+theorem dsb_ish_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) =
+      some .dsbIsh := by
+  rw [dsb_ish_decoder]
+  rfl
+
+theorem dsb_sy_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) =
+      some .dsbSy := by
+  rw [dsb_sy_decoder]
+  rfl
+
+theorem isb_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) =
+      some .isb := by
+  rw [isb_decoder]
+  rfl
+
+theorem dsb_ish_decoder_oak_completion_capability :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) =
+        some barrier ∧
+      (capability barrier).completion = true := by
+  exact ⟨.dsbIsh, dsb_ish_barrier, rfl⟩
+
+theorem dsb_sy_decoder_oak_completion_capability :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) =
+        some barrier ∧
+      (capability barrier).completion = true := by
+  exact ⟨.dsbSy, dsb_sy_barrier, rfl⟩
+
+theorem isb_decoder_oak_instruction_sync_capability :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) =
+        some barrier ∧
+      (capability barrier).instructionSync = true := by
+  exact ⟨.isb, isb_barrier, rfl⟩
+
+/-! The decoded DMB tuple is now the index of the assumed barrier occurrence,
+not an untyped "full fence" fact.  These theorems turn that occurrence into
+the exact scalar `bob` edge admitted by the pinned Arm CAT projection. -/
+
+open Oak.AArch64WeakMemory
+
+theorem dmb_ishld_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hLoad : (x.op before).IsReturningLoad)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbIshld)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_ishld_decoder]
+  exact dmb_ishld_decode_orders_before _ |>.2 hLoad
+
+theorem dmb_ish_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbIsh)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_ish_decoder]
+  simp
+
+theorem dmb_sy_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbSy)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_sy_decoder]
+  simp
+
+theorem dsb_ish_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.dsbFull _ _ _ ?_ hBetween
+  rw [dsb_ish_decoder]
+  simp
+
+theorem dsb_sy_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.dsbFull _ _ _ ?_ hBetween
+  rw [dsb_sy_decoder]
+  simp
+
+theorem dsb_ish_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) beforeIsLoad := by
+  rw [dsb_ish_decoder]
+  simp
+
+theorem dsb_sy_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) beforeIsLoad := by
+  rw [dsb_sy_decoder]
+  simp
+
+theorem isb_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) beforeIsLoad := by
+  rw [isb_decoder]
+  simp
+
+theorem isb_decoder_not_dsb_ordering :
+    ¬ decodeDsbOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) := by
+  rw [isb_decoder]
+  simp
+
+/-! The pinned generic SYS-write dispatch for Oak's first stage-2 TLBI target.
+This proves only exact word-to-call-target classification. Access admission,
+trap behavior, invalidation effects, broadcast scope, and completion remain
+outside the pure Sail projection. -/
+
+def decodedTLBITarget (word : BitVec 32) : Option _root_.TLBIOperationTarget :=
+  let result := Out.Functions.decode64_tlbi_target_pure word
+  match result.1 with
+  | false => none
+  | true => some result.2
+
+theorem tlbi_vmalls12e1is_decoder_execution_target :
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS := by
+  rfl
+
+theorem invalid_tlbi_has_no_execution_target :
+    decodedTLBITarget 0#32 = none := by
+  rfl
+
+theorem plain_vmalls12e1_not_projected_to_vmalls12e1is :
+    decodedTLBITarget 0xd50c87df#32 = none := by
+  rfl
+
+open Oak.AArch64Stage2Maintenance
+
+/-- Decorate an externally supplied occurrence/action refinement with the
+    generated Sail call-target fact. The conjunction cannot manufacture the
+    architectural action, target, scope, or effects from the word. -/
+def SailVmalls12e1isOccurrence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (target : Target) : Prop :=
+  Vmalls12e1isOccurrence code trace event target ∧
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS
+
+/-- Add generated Sail dispatch identity without replacing the external
+    instruction-to-execution occurrence witness. -/
+theorem refineVmalls12e1isOccurrenceWithSailDispatch
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : Vmalls12e1isOccurrence code trace event target) :
+    SailVmalls12e1isOccurrence code trace event target :=
+  ⟨occurrence, tlbi_vmalls12e1is_decoder_execution_target⟩
+
+/-- Generated dispatch identity cannot bypass the external occurrence/action
+    refinement premise. -/
+theorem sail_vmalls12e1is_occurrence_requires_external
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target} {event : Occurrence} {target : Target}
+    (occurrence : SailVmalls12e1isOccurrence code trace event target) :
+    Vmalls12e1isOccurrence code trace event target :=
+  occurrence.1
+
+/-- Generated decoder and named call-target facts decorating the externally
+    supplied exact four-instruction occurrence sequence. No execution effects
+    are projected from these constant facts. -/
+def SailVmalls12e1isDsbIsbInstructionSequence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (target : Target)
+    (preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence) : Prop :=
+  Vmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent ∧
+    barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh) = dsbIshDecode ∧
+    decodedBarrierTarget dsbIsh =
+      some .BarrierExecutionTarget_DataSynchronizationBarrier ∧
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS ∧
+    barrierDecode (Out.Functions.decode64_barrier_pure isbSy) = isbDecode ∧
+    decodedBarrierTarget isbSy =
+      some .BarrierExecutionTarget_InstructionSynchronizationBarrier
+
+theorem refineVmalls12e1isDsbIsbSequenceWithSailDispatch
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : Vmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    SailVmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent :=
+  ⟨sequence, dsb_ish_decoder, dsb_ish_decoder_execution_target,
+    tlbi_vmalls12e1is_decoder_execution_target, isb_decoder,
+    isb_decoder_execution_target⟩
+
+theorem sail_vmalls12e1is_dsb_isb_sequence_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    Vmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent :=
+  sequence.1
+
+/-- Extracting the external sequence preserves its exact occurrence indices
+    in Oak's local DSB-ob projection. The generated decoder/dispatch constants
+    add no occurrence or execution-effect semantics. -/
+theorem sail_vmalls12e1is_dsb_isb_sequence_projects_dsb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    ProjectedTlbiDsbOb code trace target tlbiEvent postTlbiDsb isbEvent :=
+  vmalls12e1is_dsb_isb_sequence_projects_dsb_ob sequence.1
+
+/-- The following-event edge remains explicit when the external sequence is
+    extracted into Oak's local projection corresponding to the pinned
+    `DSB-ob; [IFB]; po` arm. -/
+theorem sail_vmalls12e1is_dsb_isb_sequence_projects_ifb_ob
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent afterEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent)
+    (isbBeforeAfter : trace.po isbEvent afterEvent) :
+    ProjectedTlbiIfbOb code trace target tlbiEvent postTlbiDsb isbEvent
+      afterEvent :=
+  vmalls12e1is_dsb_isb_sequence_projects_ifb_ob sequence.1 isbBeforeAfter
+
+/-! The pinned PSTATE-immediate decoder and DAIFSet body. The generated pure
+projection erases access/trap admission; interpreting its body as an executed
+transition requires those obligations separately. These facts do not establish
+dynamic occurrence or interrupt recognition/delivery. -/
+
+def decodedPSTATEWriteTarget (word : BitVec 32) :
+    Option (_root_.PSTATEWriteTarget × BitVec 4) :=
+  let result := Out.Functions.decode64_pstate_write_target_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem daifset_irq_decoder_execution_target :
+    decodedPSTATEWriteTarget msrDaifSetIrq =
+      some (.PSTATEWriteTarget_DAIFSet, 0b0010#4) := by
+  rfl
+
+/-- An externally retained cold-entry occurrence has the exact DAIFSet word
+    and operand selected by the mechanically generated decoder. Occurrence and
+    execution remain premises; this theorem does not apply the state body. -/
+theorem irq_mask_occurrence_has_generated_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    (irqMask : IrqMaskWitness trace) :
+    trace.action irqMask.occurrence =
+        .pstateImmediate .daifSetIrq msrDaifSetIrq 0b0010#4 ∧
+      decodedPSTATEWriteTarget msrDaifSetIrq =
+        some (.PSTATEWriteTarget_DAIFSet, 0b0010#4) := by
+  exact ⟨irqMask.actionIsExact, daifset_irq_decoder_execution_target⟩
+
+theorem invalid_pstate_write_has_no_execution_target :
+    decodedPSTATEWriteTarget 0#32 = none := by
+  rfl
+
+/-- The nearby DAIFClr encoding cannot be accepted by the deliberately
+    DAIFSet-only projection. -/
+theorem daifclr_irq_not_projected_to_daifset :
+    decodedPSTATEWriteTarget 0xd50342ff#32 = none := by
+  rfl
+
+open Oak.AArch64EventControl
+
+def daifStateToSailFields (state : DAIFState) :
+    BitVec 1 × BitVec 1 × BitVec 1 × BitVec 1 :=
+  (BitVec.ofBool state.d, BitVec.ofBool state.a,
+    BitVec.ofBool state.i, BitVec.ofBool state.f)
+
+/-- The generated pure body is Oak's local four-bit transition for every
+    DAIFSet operand. This is state-body correspondence after successful
+    dispatch, not evidence that architectural access checks succeed. -/
+theorem daifset_body_bridge (state : DAIFState) (operand : BitVec 4) :
+    Out.Functions.system_register_cpsr_daifset_pure
+      (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+      (BitVec.ofBool state.i) (BitVec.ofBool state.f) operand =
+      daifStateToSailFields (state.applySet operand) := by
+  obtain ⟨d, a, i, f⟩ := state
+  cases d <;> cases a <;> cases i <;> cases f <;>
+    revert operand <;> decide
+
+theorem daifset_irq_body_bridge (state : DAIFState) :
+    Out.Functions.system_register_cpsr_daifset_pure
+      (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+      (BitVec.ofBool state.i) (BitVec.ofBool state.f) 0b0010#4 =
+      daifStateToSailFields state.maskIrq := by
+  exact daifset_body_bridge state 0b0010#4
+
+theorem daifset_irq_generated_body_masks_and_preserves (state : DAIFState) :
+    Out.Functions.system_register_cpsr_daifset_pure
+        (BitVec.ofBool state.d) (BitVec.ofBool state.a)
+        (BitVec.ofBool state.i) (BitVec.ofBool state.f) 0b0010#4 =
+        daifStateToSailFields state.maskIrq ∧
+      (state.maskIrq).i = true ∧
+      (state.maskIrq).d = state.d ∧
+      (state.maskIrq).a = state.a ∧
+      (state.maskIrq).f = state.f :=
+  ⟨daifset_irq_body_bridge state, daifset_irq_masks_and_preserves state⟩
+
+/-! The general system-register MSR projection for the VTTBR_EL2/X1 word.
+Access admission, traps, X1 value provenance, dynamic occurrence, and every
+state component except VTTBR_EL2 remain outside these pure facts. -/
+
+def decodedSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_vttbr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem vttbr_el2_x1_decoder_execution_target :
+    decodedSystemRegisterWriteTarget msrVttbrEl2X1 =
+      some (.SystemRegisterWriteTarget_VTTBR_EL2, 0b00001#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_execution_target :
+    decodedSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_vttbr_el2_x1_not_projected_to_write :
+    decodedSystemRegisterWriteTarget 0xd53c2101#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_vttbr :
+    decodedSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_vttbr :
+    decodedSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+open Oak.AArch64SysReg
+
+def vttbrWriteComponentToPair (result : VTTBRWriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+/-- The generated component body is Oak's local component transition for all
+    projected redirect inputs and 64-bit values. -/
+theorem vttbr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      vttbrWriteComponentToPair
+        (writeVttbrEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+/-- At EL2 the generated projection takes the direct VTTBR_EL2 assignment for
+    every value of the EL1 nested-virtualization control inputs. -/
+theorem vttbr_el2_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+/-- The official EL1 nested-virtualization alternative remains observable in
+    the projection and leaves the VTTBR_EL2 component unchanged. -/
+theorem vttbr_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vttbr_el2_pure ExceptionLevel.el1.isEL1 true true false
+      true false oldValue newValue = (true, oldValue) := by
+  rfl
+
+/-! The adjacent VTCR_EL2/X2 projection follows the distinct `op2 = 010`
+general-MSR route. The official register is 32-bit, so a direct write retains
+only X2 bits 31:0. Access admission, traps, runtime value provenance, NVMem(64),
+and every other state component remain outside these pure facts. -/
+
+def decodedVtcrSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_vtcr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem vtcr_el2_x2_decoder_execution_target :
+    decodedVtcrSystemRegisterWriteTarget msrVtcrEl2X2 =
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 0b00010#5) := by
+  rfl
+
+theorem vtcr_el2_x3_decoder_rt_is_preserved :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c2143#32 =
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 0b00011#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_vtcr_target :
+    decodedVtcrSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_vtcr_el2_x2_not_projected_to_write :
+    decodedVtcrSystemRegisterWriteTarget 0xd53c2142#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_vtcr :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vttbr_el2_x1_not_projected_to_vtcr :
+    decodedVtcrSystemRegisterWriteTarget 0xd51c2101#32 = none := by
+  rfl
+
+def vtcrWriteComponentToPair (result : VTCRWriteComponent) : Bool × BitVec 32 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem vtcr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      vtcrWriteComponentToPair
+        (writeVtcrEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem vtcr_el2_generated_body_at_el2_is_direct_low32
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue.setWidth 32) := by
+  rfl
+
+theorem vtcr_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue : BitVec 32) (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_vtcr_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
+/-! The CNTHCTL_EL2/X3 projection follows the `op2 = 000`, CRn=E branch.
+The successful official body unconditionally stores X3 bits 31:0 in the
+32-bit register. Access admission, traps, dynamic occurrence, timer-policy
+validity, and every other machine-state component remain outside these facts. -/
+
+def decodedCnthctlSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_cnthctl_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem cnthctl_el2_x3_decoder_execution_target :
+    decodedCnthctlSystemRegisterWriteTarget msrCnthctlEl2X3 =
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 0b00011#5) := by
+  rfl
+
+theorem cnthctl_el2_x4_decoder_rt_is_preserved :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51ce104#32 =
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 0b00100#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_cnthctl_target :
+    decodedCnthctlSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_cnthctl_el2_x3_not_projected_to_write :
+    decodedCnthctlSystemRegisterWriteTarget 0xd53ce103#32 = none := by
+  rfl
+
+theorem msr_hcr_el2_x0_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51c1100#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+theorem msr_cntvoff_el2_x4_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd51ce064#32 = none := by
+  rfl
+
+theorem msr_cntkctl_el1_x3_not_projected_to_cnthctl :
+    decodedCnthctlSystemRegisterWriteTarget 0xd518e103#32 = none := by
+  rfl
+
+theorem cnthctl_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cnthctl_el2_pure newValue =
+      (writeCnthctlEl2Component newValue).value := by
+  rfl
+
+theorem cnthctl_el2_generated_body_is_direct_low32 (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cnthctl_el2_pure newValue =
+      newValue.setWidth 32 := by
+  rfl
+
+/-! CNTVOFF_EL2/X4 is a full-width conditional component update. The exact
+official body redirects an EL1 nested-virtualization write to NVMem(96); this
+projection retains only that choice and the CNTVOFF component. Predicate-state
+consistency, NVMem, access admission, and timer behavior remain external. -/
+
+def decodedCntvoffSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_cntvoff_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem cntvoff_el2_x4_decoder_execution_target :
+    decodedCntvoffSystemRegisterWriteTarget msrCntvoffEl2X4 =
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 0b00100#5) := by
+  rfl
+
+theorem cntvoff_el2_x5_decoder_rt_is_preserved :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce065#32 =
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 0b00101#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_cntvoff_target :
+    decodedCntvoffSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_cntvoff_el2_x4_not_projected_to_write :
+    decodedCntvoffSystemRegisterWriteTarget 0xd53ce064#32 = none := by
+  rfl
+
+theorem msr_cnthctl_el2_x3_not_projected_to_cntvoff :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce103#32 = none := by
+  rfl
+
+theorem msr_cntpoff_el2_x4_not_projected_to_cntvoff :
+    decodedCntvoffSystemRegisterWriteTarget 0xd51ce0c4#32 = none := by
+  rfl
+
+def cntvoffWriteComponentToPair (result : CNTVOFFWriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem cntvoff_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      cntvoffWriteComponentToPair
+        (writeCntvoffEl2Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem cntvoff_el2_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem cntvoff_el2_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_cntvoff_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
+/-! SP_EL1/X5 is a full-width conditional component update. The projection
+retains the official EL1 nested-virtualization redirect as a flag plus unchanged
+SP_EL1, while NVMem(576), access admission, and stack validity remain external. -/
+
+def decodedSpEl1SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_sp_el1_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem sp_el1_x5_decoder_execution_target :
+    decodedSpEl1SystemRegisterWriteTarget msrSpEl1X5 =
+      some (.SystemRegisterWriteTarget_SP_EL1, 0b00101#5) := by
+  rfl
+
+theorem sp_el1_x6_decoder_rt_is_preserved :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51c4106#32 =
+      some (.SystemRegisterWriteTarget_SP_EL1, 0b00110#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_sp_el1_target :
+    decodedSpEl1SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_sp_el1_x5_not_projected_to_write :
+    decodedSpEl1SystemRegisterWriteTarget 0xd53c4105#32 = none := by
+  rfl
+
+theorem msr_sp_el0_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd5184105#32 = none := by
+  rfl
+
+theorem msr_sp_el2_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51e4105#32 = none := by
+  rfl
+
+theorem msr_spsr_el2_x5_not_projected_to_sp_el1 :
+    decodedSpEl1SystemRegisterWriteTarget 0xd51c4005#32 = none := by
+  rfl
+
+def spEl1WriteComponentToPair (result : SPEl1WriteComponent) :
+    Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem sp_el1_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure currentEL.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      spEl1WriteComponentToPair
+        (writeSpEl1Component currentEL hcrNv hcrNv2 hcrTge scrNs scrEel2
+          oldValue newValue) := by
+  cases currentEL <;> cases hcrNv <;> cases hcrNv2 <;> cases hcrTge <;>
+    cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem sp_el1_generated_body_at_el2_is_direct
+    (hcrNv hcrNv2 hcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure ExceptionLevel.el2.isEL1
+      hcrNv hcrNv2 hcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem sp_el1_generated_body_el1_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_sp_el1_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
+/-! ELR_EL2/X6 follows the exact S3_4_C4_C0_1 route and writes all 64 bits.
+The distinct S3_0 ELR_EL1 route, including its VHE/NV alternatives, is rejected
+by this projection. Access admission, address validity, SPSR consistency, and
+eventual ERET use remain outside these facts. -/
+
+def decodedElrEl2SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_elr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem elr_el2_x6_decoder_execution_target :
+    decodedElrEl2SystemRegisterWriteTarget msrElrEl2X6 =
+      some (.SystemRegisterWriteTarget_ELR_EL2, 0b00110#5) := by
+  rfl
+
+theorem elr_el2_x7_decoder_rt_is_preserved :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51c4027#32 =
+      some (.SystemRegisterWriteTarget_ELR_EL2, 0b00111#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_elr_el2_target :
+    decodedElrEl2SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_elr_el2_x6_not_projected_to_write :
+    decodedElrEl2SystemRegisterWriteTarget 0xd53c4026#32 = none := by
+  rfl
+
+theorem msr_elr_el1_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd5184026#32 = none := by
+  rfl
+
+theorem msr_elr_el12_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51d4026#32 = none := by
+  rfl
+
+theorem msr_elr_el3_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51e4026#32 = none := by
+  rfl
+
+theorem msr_spsr_el2_x6_not_projected_to_elr_el2 :
+    decodedElrEl2SystemRegisterWriteTarget 0xd51c4006#32 = none := by
+  rfl
+
+theorem elr_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_elr_el2_pure newValue =
+      (writeElrEl2Component newValue).value := by
+  rfl
+
+theorem elr_el2_generated_body_is_direct (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_elr_el2_pure newValue = newValue := by
+  rfl
+
+/-! SPSR_EL2/X7 follows the exact S3_4_C4_C0_0 route and stores bits 31:0.
+The distinct S3_0 SPSR_EL1 route and its VHE/NV alternatives are rejected by
+this projection. PSTATE validity, ELR consistency, and ERET behavior remain
+outside these facts. -/
+
+def decodedSpsrEl2SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_spsr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem spsr_el2_x7_decoder_execution_target :
+    decodedSpsrEl2SystemRegisterWriteTarget msrSpsrEl2X7 =
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 0b00111#5) := by
+  rfl
+
+theorem spsr_el2_x8_decoder_rt_is_preserved :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51c4008#32 =
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 0b01000#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_spsr_el2_target :
+    decodedSpsrEl2SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_spsr_el2_x7_not_projected_to_write :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd53c4007#32 = none := by
+  rfl
+
+theorem msr_spsr_el1_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd5184007#32 = none := by
+  rfl
+
+theorem msr_spsr_el12_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51d4007#32 = none := by
+  rfl
+
+theorem msr_spsr_el3_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51e4007#32 = none := by
+  rfl
+
+theorem msr_elr_el2_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51c4027#32 = none := by
+  rfl
+
+theorem spsr_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_spsr_el2_pure newValue =
+      (writeSpsrEl2Component newValue).value := by
+  rfl
+
+theorem spsr_el2_generated_body_is_direct_low32 (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_spsr_el2_pure newValue =
+      newValue.setWidth 32 := by
+  rfl
+
+/-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
+The redirect predicate reads separately supplied projections of old HCR_EL2;
+no theorem below relates them to `oldValue`, derives them from the incoming
+value, or models the NVMem(120) target. -/
+
+def decodedHcrSystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_hcr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem hcr_el2_x0_decoder_execution_target :
+    decodedHcrSystemRegisterWriteTarget msrHcrEl2X0 =
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0b00000#5) := by
+  rfl
+
+theorem hcr_el2_x1_decoder_rt_is_preserved :
+    decodedHcrSystemRegisterWriteTarget 0xd51c1101#32 =
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0b00001#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_hcr_target :
+    decodedHcrSystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_hcr_el2_x0_not_projected_to_write :
+    decodedHcrSystemRegisterWriteTarget 0xd53c1100#32 = none := by
+  rfl
+
+theorem msr_vttbr_el2_x1_not_projected_to_hcr :
+    decodedHcrSystemRegisterWriteTarget 0xd51c2101#32 = none := by
+  rfl
+
+theorem msr_vtcr_el2_x2_not_projected_to_hcr :
+    decodedHcrSystemRegisterWriteTarget 0xd51c2142#32 = none := by
+  rfl
+
+def hcrWriteComponentToPair (result : HCRWriteComponent) : Bool × BitVec 64 :=
+  (result.redirectedToNVMem, result.value)
+
+theorem hcr_el2_component_body_bridge
+    (currentEL : ExceptionLevel)
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure currentEL.isEL1
+      oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 oldValue newValue =
+      hcrWriteComponentToPair
+        (writeHcrEl2Component currentEL oldHcrNv oldHcrNv2 oldHcrTge
+          scrNs scrEel2 oldValue newValue) := by
+  cases currentEL <;> cases oldHcrNv <;> cases oldHcrNv2 <;>
+    cases oldHcrTge <;> cases scrNs <;> cases scrEel2 <;> rfl
+
+theorem hcr_el2_generated_body_at_el2_is_direct
+    (oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 : Bool)
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure ExceptionLevel.el2.isEL1
+      oldHcrNv oldHcrNv2 oldHcrTge scrNs scrEel2 oldValue newValue =
+      (false, newValue) := by
+  rfl
+
+theorem hcr_el2_generated_body_el1_old_nv_redirect_preserves_component
+    (oldValue newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_hcr_el2_pure ExceptionLevel.el1.isEL1
+      true true false true false oldValue newValue = (true, oldValue) := by
+  rfl
+
+/-! ## The composed EL2 cold-entry register prefix
+
+The facts above prove each official component body separately. The definitions
+below retain the common word decoder, ordered target log, and width-sensitive
+projected state so their composition cannot silently reorder or widen a write.
+This remains a pure projected-state theorem: access checks, traps, X-register
+reads, dynamic occurrences, and the rest of Arm's machine state are external. -/
+
+def decodedColdEntrySystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_cold_entry_system_write_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+def requiredWriteTarget : RequiredWrite -> _root_.SystemRegisterWriteTarget
+  | .hcrEl2 => .SystemRegisterWriteTarget_HCR_EL2
+  | .vttbrEl2 => .SystemRegisterWriteTarget_VTTBR_EL2
+  | .vtcrEl2 => .SystemRegisterWriteTarget_VTCR_EL2
+  | .cnthctlEl2 => .SystemRegisterWriteTarget_CNTHCTL_EL2
+  | .cntvoffEl2 => .SystemRegisterWriteTarget_CNTVOFF_EL2
+  | .spEl1 => .SystemRegisterWriteTarget_SP_EL1
+  | .elrEl2 => .SystemRegisterWriteTarget_ELR_EL2
+  | .spsrEl2 => .SystemRegisterWriteTarget_SPSR_EL2
+
+def targetRequiredWrite : _root_.SystemRegisterWriteTarget -> RequiredWrite
+  | .SystemRegisterWriteTarget_HCR_EL2 => .hcrEl2
+  | .SystemRegisterWriteTarget_VTTBR_EL2 => .vttbrEl2
+  | .SystemRegisterWriteTarget_VTCR_EL2 => .vtcrEl2
+  | .SystemRegisterWriteTarget_CNTHCTL_EL2 => .cnthctlEl2
+  | .SystemRegisterWriteTarget_CNTVOFF_EL2 => .cntvoffEl2
+  | .SystemRegisterWriteTarget_SP_EL1 => .spEl1
+  | .SystemRegisterWriteTarget_ELR_EL2 => .elrEl2
+  | .SystemRegisterWriteTarget_SPSR_EL2 => .spsrEl2
+
+theorem cold_entry_register_words_decode_exact :
+    registerWriteWords.map decodedColdEntrySystemRegisterWriteTarget = [
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0#5),
+      some (.SystemRegisterWriteTarget_VTTBR_EL2, 1#5),
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 2#5),
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 3#5),
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 4#5),
+      some (.SystemRegisterWriteTarget_SP_EL1, 5#5),
+      some (.SystemRegisterWriteTarget_ELR_EL2, 6#5),
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 7#5)
+    ] := by rfl
+
+/-- Every externally witnessed write action now exposes the same exact word,
+    Rt, and target that the generated unified decoder computes. The occurrence
+    itself and its execution remain premises of `ContextSyncWitness`. -/
+theorem context_write_occurrence_has_generated_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace external) (write : RequiredWrite) :
+    trace.action (sync.writeOccurrence write) =
+        .sysReg .write write.reg write.word write.rt ∧
+      decodedColdEntrySystemRegisterWriteTarget write.word =
+        some (requiredWriteTarget write, write.rt) := by
+  constructor
+  · exact sync.writesAreExact write
+  · cases write <;> rfl
+
+def projectedRegisterStateToSail (state : ProjectedRegisterState) :
+    _root_.ColdEntryRegisterState := {
+  hcr_el2 := state.hcrEl2
+  vttbr_el2 := state.vttbrEl2
+  vtcr_el2 := state.vtcrEl2
+  cnthctl_el2 := state.cnthctlEl2
+  cntvoff_el2 := state.cntvoffEl2
+  sp_el1 := state.spEl1
+  elr_el2 := state.elrEl2
+  spsr_el2 := state.spsrEl2
+}
+
+def registerInputsToSail (inputs : RegisterInputs) :
+    _root_.ColdEntryRegisterInputs := {
+  hcr_el2 := inputs.hcrEl2
+  vttbr_el2 := inputs.vttbrEl2
+  vtcr_el2 := inputs.vtcrEl2
+  cnthctl_el2 := inputs.cnthctlEl2
+  cntvoff_el2 := inputs.cntvoffEl2
+  sp_el1 := inputs.spEl1
+  elr_el2 := inputs.elrEl2
+  spsr_el2 := inputs.spsrEl2
+}
+
+def sailRegisterStateToProjected (state : _root_.ColdEntryRegisterState) :
+    ProjectedRegisterState := {
+  hcrEl2 := state.hcr_el2
+  vttbrEl2 := state.vttbr_el2
+  vtcrEl2 := state.vtcr_el2
+  cnthctlEl2 := state.cnthctl_el2
+  cntvoffEl2 := state.cntvoff_el2
+  spEl1 := state.sp_el1
+  elrEl2 := state.elr_el2
+  spsrEl2 := state.spsr_el2
+}
+
+def sailSequenceResultToProjected
+    (result : _root_.ColdEntryRegisterSequenceResult) : ProjectedSequenceResult := {
+  state := sailRegisterStateToProjected result.state
+  log := [
+    targetRequiredWrite result.write0, targetRequiredWrite result.write1,
+    targetRequiredWrite result.write2, targetRequiredWrite result.write3,
+    targetRequiredWrite result.write4, targetRequiredWrite result.write5,
+    targetRequiredWrite result.write6, targetRequiredWrite result.write7
+  ]
+}
+
+/-- The mechanically generated Sail composition is Oak's ordered EL2 fold for
+    every old projected state, eight input values, and both SCR projections. -/
+theorem cold_entry_register_sequence_generated_bridge
+    (redirect : RedirectInputs) (inputs : RegisterInputs)
+    (initial : ProjectedRegisterState) :
+    sailSequenceResultToProjected
+      (Out.Functions.aarch64_cold_entry_register_sequence_at_el2_pure
+        (projectedRegisterStateToSail initial) (registerInputsToSail inputs)
+        redirect.scrNs redirect.scrEel2) =
+      installColdEntryRegistersAtEL2 redirect inputs initial := by
+  rfl
+
+/-- One theorem exposing the exact object words, generated decoder targets and
+    source registers, generated-to-Oak composition, ordered log, and final
+    width-sensitive projected state. -/
+theorem cold_entry_register_sequence_end_to_end
+    (redirect : RedirectInputs) (inputs : RegisterInputs)
+    (initial : ProjectedRegisterState) :
+    registerWriteWords = [
+        0xd51c1100#32, 0xd51c2101#32, 0xd51c2142#32, 0xd51ce103#32,
+        0xd51ce064#32, 0xd51c4105#32, 0xd51c4026#32, 0xd51c4007#32
+      ] ∧
+    registerWriteWords.map decodedColdEntrySystemRegisterWriteTarget = [
+        some (.SystemRegisterWriteTarget_HCR_EL2, 0#5),
+        some (.SystemRegisterWriteTarget_VTTBR_EL2, 1#5),
+        some (.SystemRegisterWriteTarget_VTCR_EL2, 2#5),
+        some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 3#5),
+        some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 4#5),
+        some (.SystemRegisterWriteTarget_SP_EL1, 5#5),
+        some (.SystemRegisterWriteTarget_ELR_EL2, 6#5),
+        some (.SystemRegisterWriteTarget_SPSR_EL2, 7#5)
+      ] ∧
+    sailSequenceResultToProjected
+      (Out.Functions.aarch64_cold_entry_register_sequence_at_el2_pure
+        (projectedRegisterStateToSail initial) (registerInputsToSail inputs)
+        redirect.scrNs redirect.scrEel2) =
+      installColdEntryRegistersAtEL2 redirect inputs initial ∧
+    installColdEntryRegistersAtEL2 redirect inputs initial = {
+      state := {
+        hcrEl2 := inputs.hcrEl2
+        vttbrEl2 := inputs.vttbrEl2
+        vtcrEl2 := inputs.vtcrEl2.setWidth 32
+        cnthctlEl2 := inputs.cnthctlEl2.setWidth 32
+        cntvoffEl2 := inputs.cntvoffEl2
+        spEl1 := inputs.spEl1
+        elrEl2 := inputs.elrEl2
+        spsrEl2 := inputs.spsrEl2.setWidth 32 }
+      log := registerWriteOrder } := by
+  exact ⟨register_write_words_exact, cold_entry_register_words_decode_exact,
+    cold_entry_register_sequence_generated_bridge redirect inputs initial,
+    install_cold_entry_registers_at_el2_exact redirect inputs initial⟩
+
+/-! ## Ordinary RET decoder dispatch
+
+This projection covers the static decode of the generated operandless `RET`
+word through the official `branch_unconditional_register_decode` route to
+`BranchType_RET`.  It does not execute `BranchTo`, read X30, establish X30's
+provenance or value, validate the target, establish an ABI/frame return, or
+model authenticated-return dynamics.
+-/
+
+/-- Oak's generated operandless `RET` word is the ordinary non-PAC RET class,
+    selects X30, and reaches the projection of Arm's `BranchType_RET` route. -/
+theorem ordinary_ret_x30_generated_decode_exact :
+    Out.Functions.decode64_ordinary_ret_pure
+      Oak.AArch64ReturnEncoding.retX30 = {
+        encoding_valid := true
+        pre_postdecode_checks_pass := true
+        target := .BranchRegisterExecutionTarget_RET
+        Rm := 0b00000#5
+        Rn := 0b11110#5
+        M := 0b0#1
+        A := 0b0#1
+        op2 := 0b11111#5
+        op := 0b10#2
+        Z := 0b0#1
+        pac := false
+        source_is_sp := false
+        use_key_a := true
+      } := by
+  rw [Oak.AArch64ReturnEncoding.ret_x30_word]
+  rfl
+
+/-- A fixed low opcode bit is part of the decoder class, not an immediate or
+    register field; corrupting it therefore fails both class and route checks. -/
+theorem corrupted_ordinary_ret_fixed_bit_rejected :
+    (Out.Functions.decode64_ordinary_ret_pure
+      0xd65f03c1#32).encoding_valid = false ∧
+    (Out.Functions.decode64_ordinary_ret_pure
+      0xd65f03c1#32).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
+
+/-! ## Ordinary direct B-immediate decoder dispatch
+
+This projection covers the static decode of Oak's exact ordinary `B` words
+through the official `branch_unconditional_immediate_decode` route to
+`BranchType_DIR`. It does not read architectural `PC`, execute `PostDecode` or
+`BranchTo`, validate/map the target, justify source-CFG label choice, or cover
+`BL`, X30, and conditional branch behavior.
+-/
+
+/-- The generated offset helper is exactly sign extension of the encoded
+    26-bit word displacement after appending its two fixed zero bits. -/
+theorem ordinary_b_offset_generated_eq_signExtend (imm26 : BitVec 26) :
+    Out.Functions.branch26_offset_pure imm26 =
+      (imm26 ++ 0#2).signExtend 64 := by
+  simp only [Out.Functions.branch26_offset_pure, Sail.BitVec.access,
+    getElem!_pos imm26 25 (by omega)]
+  bv_decide
+
+/-- Therefore the generated offset's signed value is the signed word
+    displacement scaled to bytes. -/
+theorem ordinary_b_offset_generated_toInt (imm26 : BitVec 26) :
+    (Out.Functions.branch26_offset_pure imm26).toInt = imm26.toInt * 4 := by
+  rw [ordinary_b_offset_generated_eq_signExtend,
+    BitVec.toInt_signExtend_of_le (by omega)]
+  rw [BitVec.toInt_append]
+  simp
+  omega
+
+/-- Every word packed by Oak's exact ordinary-`B` row selects the direct,
+    non-call class and carries precisely its signed, scaled immediate. -/
+theorem ordinary_b_generated_decode_exact (imm26 : BitVec 26) :
+    Out.Functions.decode64_ordinary_b_immediate_pure
+      (Oak.AArch64DirectBranchEncoding.encodeBImm26 imm26) = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIR
+        imm26 := imm26
+        op := 0#1
+        offset := (imm26 ++ 0#2).signExtend 64
+      } := by
+  simp only [Out.Functions.decode64_ordinary_b_immediate_pure,
+    Sail.BitVec.slice]
+  rw [Oak.AArch64DirectBranchEncoding.encodeBImm26_extract]
+  rw [ordinary_b_offset_generated_eq_signExtend]
+  congr 1 <;>
+    simp [Oak.AArch64DirectBranchEncoding.encodeBImm26,
+      Oak.AArch64DirectBranchEncoding.b] <;>
+    bv_decide
+
+/-- Oak's exact `B +12` word selects the direct, non-call class and carries the
+    signed/scaled byte offset twelve. -/
+theorem ordinary_b_plus12_generated_decode_exact :
+    Out.Functions.decode64_ordinary_b_immediate_pure
+      Oak.AArch64DirectBranchEncoding.bPlus12 = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIR
+        imm26 := 3#26
+        op := 0#1
+        offset := 12#64
+      } := by
+  rw [Oak.AArch64DirectBranchEncoding.b_plus_12_word]
+  rfl
+
+/-- The lower signed endpoint is decoded as exactly `-2^27` in its 64-bit
+    two's-complement carrier. -/
+theorem ordinary_b_negative_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x16000000#32).offset = 0xfffffffff8000000#64 := by
+  rfl
+
+/-- The upper aligned endpoint is decoded as exactly `2^27 - 4`. -/
+theorem ordinary_b_positive_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x15ffffff#32).offset = 0x0000000007fffffc#64 := by
+  rfl
+
+/-- `BL` shares the immediate shape but is a distinct generated class.  The
+    ordinary-`B` projection therefore rejects its opcode rather than silently
+    treating it as a non-call branch. -/
+theorem bl_word_rejected_by_ordinary_b_projection :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x94000003#32).encoding_valid = false := by
+  rfl
+
+/-! ## Plain ERET at EL2
+
+This final cold-entry instruction is projected only through exact decode,
+the non-PAC call route, and the ELR_EL2/SPSR_EL2 inputs selected for
+`AArch64_ExceptionReturn`. Its stateful body remains in the external Arm
+execution obligation. -/
+
+theorem plain_eret_assumed_non_el0_predecode_exact :
+    Out.Functions.decode64_plain_eret_pure eretWord false = {
+      encoding_valid := true
+      pre_postdecode_checks_pass := true
+      target := .ExceptionReturnExecutionTarget_ERET
+      op4 := 0b00000#5
+      Rn := 0b11111#5
+      M := 0b0#1
+      A := 0b0#1
+      op2 := 0b11111#5
+      pac := false
+      use_key_a := true
+    } := by
+  rfl
+
+theorem plain_eret_el0_pre_postdecode_checks_fail :
+    (Out.Functions.decode64_plain_eret_pure eretWord true).encoding_valid = true ∧
+      (Out.Functions.decode64_plain_eret_pure eretWord true).pre_postdecode_checks_pass =
+        false := by
+  exact ⟨rfl, rfl⟩
+
+theorem eretaa_not_plain_eret :
+    (Out.Functions.decode64_plain_eret_pure 0xd69f0bff#32 false).encoding_valid =
+        false ∧
+      (Out.Functions.decode64_plain_eret_pure
+        0xd69f0bff#32 false).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
+
+theorem eretab_not_plain_eret :
+    (Out.Functions.decode64_plain_eret_pure 0xd69f0fff#32 false).encoding_valid =
+        false ∧
+      (Out.Functions.decode64_plain_eret_pure
+        0xd69f0fff#32 false).pre_postdecode_checks_pass = false := by
+  exact ⟨rfl, rfl⟩
+
+theorem corrupted_plain_eret_pre_postdecode_checks_fail :
+    (Out.Functions.decode64_plain_eret_pure
+      0xd69f03e1#32 false).pre_postdecode_checks_pass = false := by
+  rfl
+
+/-- The dedicated nested-virtualization ERET-trap predicate requires EL1, so
+    it is false at EL2 for every feature/control-bit projection. This is not a
+    theorem that the complete ERET path is trap-free. -/
+theorem eret_dedicated_nv_trap_route_at_el2_is_false
+    (haveNvExt el2Enabled hcrNv : Bool) :
+    Out.Functions.eret_nv_trap_route_pure
+      haveNvExt el2Enabled false hcrNv = false := by
+  cases haveNvExt <;> cases el2Enabled <;> cases hcrNv <;> rfl
+
+/-- After the generated register prefix, the generated EL2 selector presents
+    the installed ELR_EL2 and low SPSR_EL2 word as `AArch64_ExceptionReturn`
+    inputs, while the dedicated NV trap route remains false. -/
+theorem cold_entry_installed_plain_eret_inputs_exact
+    (haveNvExt el2Enabled : Bool) (redirect : RedirectInputs)
+    (inputs : RegisterInputs) (initial : ProjectedRegisterState) :
+    Out.Functions.aarch64_plain_eret_at_el2_inputs_pure haveNvExt el2Enabled
+      (projectedRegisterStateToSail
+        (installColdEntryRegistersAtEL2 redirect inputs initial).state) = {
+      dedicated_nv_trap := false
+      target := inputs.elrEl2
+      spsr := inputs.spsrEl2.setWidth 32
+    } := by
+  cases haveNvExt <;> cases el2Enabled <;> rfl
+
+/-- An evidence-bearing cold-entry transfer exposes the exact plain ERET word
+    and generated non-PAC target in addition to ISB-before-ERET program order.
+    The pre-PostDecode Boolean is evaluated under an explicit assumed-non-EL0
+    input; it is not a current-EL fact derived from the trace. The occurrence,
+    current EL, PostDecode, and execution remain external premises. -/
+theorem cold_entry_eret_occurrence_has_generated_plain_target
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    {src : VerifiedStage trace external}
+    (h : Step trace external src .transferred) :
+    ∃ (sync : ContextSyncWitness trace external)
+      (eretOccurrence : Occurrence),
+      trace.action eretOccurrence =
+          .controlTransfer AArch64ControlTransfer.Operation.eret eretWord ∧
+        (Out.Functions.decode64_plain_eret_pure
+          eretWord false).pre_postdecode_checks_pass = true ∧
+        (Out.Functions.decode64_plain_eret_pure eretWord false).target =
+          .ExceptionReturnExecutionTarget_ERET ∧
+        trace.po sync.isbOccurrence eretOccurrence := by
+  cases h with
+  | eret sync eretOccurrence hAction hPo =>
+      exact ⟨sync, eretOccurrence, hAction, rfl, rfl, hPo⟩
+
+end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/
 def Flags.toBits (f : Flags) : BitVec 4 :=

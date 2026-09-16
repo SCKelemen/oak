@@ -1,6 +1,10 @@
 package asm
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 // The clause engine's gates against the truth tables (Oak.Tseitin): for
 // each gate kind, the emitted clauses hold under an assignment exactly when
@@ -107,5 +111,173 @@ func TestCNFFoldsAreTheLaws(t *testing.T) {
 	}
 	if len(c.clauses) != before+3 {
 		t.Errorf("one or-gate emits three clauses, got %d", len(c.clauses)-before)
+	}
+}
+
+// Pin the signed-literal convention and the raw fresh-gate clause order used
+// by Oak.TseitinCNF. Semantic truth-table tests alone would not detect a drift
+// in this concrete representation at the RUP boundary.
+func TestCNFGateClausesMatchLeanBridge(t *testing.T) {
+	for edge, want := range map[int]int{
+		2: 1,
+		3: -1,
+		4: 2,
+		5: -2,
+	} {
+		if got := cnfLit(edge); got != want {
+			t.Errorf("cnfLit(%d) = %d, want %d", edge, got, want)
+		}
+	}
+
+	type gateCase struct {
+		name  string
+		build func(*cnfBuilder) int
+		want  [][]int
+	}
+	cases := []gateCase{
+		{
+			name: "and with complemented left operand",
+			build: func(c *cnfBuilder) int {
+				left, right := c.variable(0)^1, c.variable(1)
+				return c.apply(opAnd, left, right)
+			},
+			want: [][]int{{-3, -1}, {-3, 2}, {3, 1, -2}},
+		},
+		{
+			name: "or with complemented left operand",
+			build: func(c *cnfBuilder) int {
+				left, right := c.variable(0)^1, c.variable(1)
+				return c.apply(opOr, left, right)
+			},
+			want: [][]int{{3, 1}, {3, -2}, {-3, -1, 2}},
+		},
+		{
+			name: "xor with complemented left operand",
+			build: func(c *cnfBuilder) int {
+				left, right := c.variable(0)^1, c.variable(1)
+				return c.apply(opXor, left, right)
+			},
+			want: [][]int{{-3, -1, 2}, {-3, 1, -2}, {3, 1, 2}, {3, -1, -2}},
+		},
+		{
+			name: "ite with complemented condition and else operand",
+			build: func(c *cnfBuilder) int {
+				condition := c.variable(0) ^ 1
+				thenValue := c.variable(1)
+				elseValue := c.variable(2) ^ 1
+				return c.ite(condition, thenValue, elseValue)
+			},
+			want: [][]int{
+				{-4, 1, 2},
+				{-4, -1, -3},
+				{4, 1, -2},
+				{4, -1, 3},
+				{-4, 2, -3},
+				{4, -2, 3},
+			},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			builder := newCNFBuilder()
+			gate := test.build(builder)
+			wantGate := 2 * (len(builder.inputs) + 1)
+			if gate != wantGate {
+				t.Fatalf("gate edge = %d, want fresh positive edge %d", gate, wantGate)
+			}
+			if !reflect.DeepEqual(builder.clauses, test.want) {
+				t.Fatalf("clauses = %v, want %v", builder.clauses, test.want)
+			}
+		})
+	}
+}
+
+func TestExportTermCNFSettlesFalseClaimWithSymbolicTrap(t *testing.T) {
+	trap := paramTerm("trap", 1)
+	cnf, reason, ok := exportTermCNF(
+		"false claim with symbolic trap",
+		[]string{"trap"},
+		map[string]int{"trap": 1},
+		constTerm(0, 1),
+		[]*term{trap},
+	)
+	if !ok || reason != "" {
+		t.Fatalf("export refused: ok=%v reason=%q", ok, reason)
+	}
+	if cnf.Settled == nil || cnf.Settled.Kind != DecisionRefuted {
+		t.Fatalf("settled = %#v, want constant refutation", cnf.Settled)
+	}
+	if cnf.Text != "" || cnf.Clauses != 0 {
+		t.Fatalf("constant obligation emitted DIMACS: clauses=%d text=%q", cnf.Clauses, cnf.Text)
+	}
+}
+
+// The matching Oak.TseitinCNF.SequenceExample has an AND whose output feeds a
+// XOR. Pin the mutable builder's creation order, canonical operand order, and
+// gate-clause portion against that exact example.
+func TestCNFSequentialGateClausesMatchLeanBridge(t *testing.T) {
+	builder := newCNFBuilder()
+	input1, input2 := builder.variable(0), builder.variable(1)
+	and := builder.apply(opAnd, input1, input2)
+	xor := builder.apply(opXor, and, input1^1)
+
+	if and != 6 || xor != 8 {
+		t.Fatalf("gate edges = (%d, %d), want (6, 8)", and, xor)
+	}
+	wantGates := []cnfGate{
+		{op: opAnd, x: 2, y: 4, out: 3},
+		{op: opXor, x: 3, y: 6, out: 4},
+	}
+	if !reflect.DeepEqual(builder.gates, wantGates) {
+		t.Fatalf("gates = %#v, want %#v", builder.gates, wantGates)
+	}
+	wantClauses := [][]int{
+		{-3, 1},
+		{-3, 2},
+		{3, -1, -2},
+		{-4, -1, 3},
+		{-4, 1, -3},
+		{4, 1, 3},
+		{4, -1, -3},
+	}
+	if !reflect.DeepEqual(builder.clauses, wantClauses) {
+		t.Fatalf("clauses = %v, want %v", builder.clauses, wantClauses)
+	}
+}
+
+// The nonconstant final obligation is traps in supplied order followed by the
+// negated claim. No Boolean constant may reach cnfLit: zero is DIMACS syntax,
+// not a literal.
+func TestExportTermCNFFinalClauseOrderAndPolarity(t *testing.T) {
+	trap1 := paramTerm("trap1", 1)
+	trap2 := paramTerm("trap2", 1)
+	claim := paramTerm("claim", 1)
+	cnf, reason, ok := exportTermCNF(
+		"symbolic final obligation",
+		[]string{"trap1", "trap2", "claim"},
+		map[string]int{"trap1": 1, "trap2": 1, "claim": 1},
+		claim,
+		[]*term{trap1, trap2},
+	)
+	if !ok || reason != "" || cnf.Settled != nil {
+		t.Fatalf("export = ok %v reason %q settled %#v", ok, reason, cnf.Settled)
+	}
+	if !reflect.DeepEqual(cnf.obligation, []int{2, 4, 7}) {
+		t.Fatalf("obligation edges = %v, want [2 4 7]", cnf.obligation)
+	}
+	want := "c symbolic final obligation\np cnf 3 1\n1 2 -3 0\n"
+	if cnf.Text != want {
+		t.Fatalf("DIMACS = %q, want %q", cnf.Text, want)
+	}
+	lines := strings.Split(strings.TrimSpace(cnf.Text), "\n")
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(fields) == 0 || fields[len(fields)-1] != "0" {
+		t.Fatalf("final clause has no DIMACS terminator: %v", fields)
+	}
+	for _, field := range fields[:len(fields)-1] {
+		if field == "0" {
+			t.Fatal("the final clause contains a constant/terminator literal")
+		}
 	}
 }

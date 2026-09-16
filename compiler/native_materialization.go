@@ -13,6 +13,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 )
 
 // MaterializationKey identifies every input the native Driver's Materialize
@@ -25,7 +26,7 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v1")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v5")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -48,6 +49,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		enabled bool
 	}{
 		{"vector-reductions", lane.VectorReductions},
+		{"vector-maps", lane.VectorMaps},
+		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
 		{"soft-float", lane.SoftFloat},
@@ -57,13 +60,44 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"vector-blocks", lane.VectorBlocks},
+		{"multiply-add", lane.MultiplyAdd},
+		{"value-select", lane.ValueSelect},
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
+		{"schedule", lane.Schedule},
 		{"packed-stack-args", lane.PackedStackArgs},
 	}
 	for _, flag := range flags {
 		writeNativeMaterializationPart(digest, flag.name, strconv.FormatBool(flag.enabled))
+	}
+	writeNativeMaterializationPart(digest, "optir-fingerprint", lane.OptIRFingerprint, "optir-changes", strconv.Itoa(lane.OptIRChanges))
+	writeNativeMaterializationPart(digest, "optir-memory", strconv.FormatBool(lane.OptIRMemory != nil))
+	if lane.OptIRMemoryAuthority == nil {
+		writeNativeMaterializationPart(digest, "optir-memory-authority:nil")
+	} else {
+		writeNativeMaterializationPart(digest, "optir-memory-authority", lane.OptIRMemoryAuthority.Fingerprint())
+	}
+	if lane.OptIRMemoryProjection == nil {
+		writeNativeMaterializationPart(digest, "optir-memory-projection:nil")
+	} else {
+		writeNativeMaterializationPart(digest, "optir-memory-projection", lane.OptIRMemoryProjection.Fingerprint())
+	}
+	if lane.OptIRMemoryCallCertificate == nil {
+		writeNativeMaterializationPart(digest, "optir-memory-call-certificate:nil")
+	} else {
+		writeNativeMaterializationPart(digest, "optir-memory-call-certificate", lane.OptIRMemoryCallCertificate.Fingerprint())
+	}
+	regionIDs := make([]string, 0, len(lane.OptIRRegionGlobals))
+	for region := range lane.OptIRRegionGlobals {
+		regionIDs = append(regionIDs, string(region))
+	}
+	sort.Strings(regionIDs)
+	writeNativeMaterializationPart(digest, "optir-region-globals", strconv.Itoa(len(regionIDs)))
+	for _, regionID := range regionIDs {
+		binding := lane.OptIRRegionGlobals[optir.RegionID(regionID)]
+		writeNativeMaterializationPart(digest, regionID, binding.Symbol, binding.Global.Type,
+			strconv.Itoa(binding.Global.Bits), strconv.FormatBool(binding.Global.Aggregate), strconv.FormatInt(binding.Global.Size, 10))
 	}
 
 	lines := make([]int, 0, len(lane.GuardLines))

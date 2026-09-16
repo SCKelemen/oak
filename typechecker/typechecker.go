@@ -658,9 +658,18 @@ type TypeChecker struct {
 	checkingSpecialization bool
 	extentFacts            []extentFact
 	provenIndices          map[tokenKey]bool
-	asmBackedFunctions     map[string]bool
-	functionTemplates      map[string]*ast.FunctionStatement
-	functionInstantiations map[string]*ast.FunctionStatement
+	// indexProofs retains the checked proposition behind a proven index.
+	// Native lowering may refer to its opaque ID, but cannot manufacture
+	// authority by merely setting provenIndices.
+	indexProofs map[tokenKey]IndexProof
+	// scalarGlobalDeclarations and scalarGlobalWrites retain the checked
+	// declaration-region and direct-write authority consumed by the first
+	// MemorySSA native-lowering slice (scalar_global_writes.go).
+	scalarGlobalDeclarations map[string]*scalarGlobalDeclaration
+	scalarGlobalWrites       map[tokenKey]ScalarGlobalWriteProof
+	asmBackedFunctions       map[string]bool
+	functionTemplates        map[string]*ast.FunctionStatement
+	functionInstantiations   map[string]*ast.FunctionStatement
 	// instantiationTemplates maps each specialization's mangled name back
 	// to its template, so resource contracts declared for a template apply
 	// to every specialization (docs/spec/50-borrowing.md section 9).
@@ -905,6 +914,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
+	tc.resetScalarGlobalWriteAuthority()
 	tc.kernels = map[string]bool{}
 	for _, stmt := range program.Statements {
 		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Kernel && fn.Name != nil {
@@ -957,6 +967,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		if varType := tc.parseTypeExpression(decl.Type); varType != nil {
 			tc.env.SetType(decl.Name.Value, varType)
 			tc.predeclaredGlobals[decl.Name.Value] = true
+			tc.provisionScalarGlobalDeclaration(decl, varType)
 		}
 	}
 	for _, stmt := range program.Statements {
@@ -966,11 +977,16 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		// Top-level bindings are static storage: constant initializers only
 		// (typechecker/globals.go).
-		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+		before := len(tc.Errors())
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if isDecl {
 			tc.checkMeasured(decl)
 			tc.checkGlobalInitializer(decl)
 		}
 		tc.checkStatement(stmt)
+		if isDecl {
+			tc.finishScalarGlobalDeclaration(decl, len(tc.Errors()) == before)
+		}
 	}
 
 	// Generic function templates are replaced by their monomorphized
@@ -1657,7 +1673,10 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 		// Interface type definitions
 		tc.checkInterfaceType(s)
 	case *ast.ExpressionStatement:
-		resultType := tc.checkExpression(s.Expression)
+		// A root conditional in statement position executes one arm for
+		// effects and discards its value. Nested conditionals remain value
+		// expressions and must still have a runtime-representable join.
+		resultType := tc.checkExpressionContext(s.Expression, true)
 		if ContainsAtomicStorage(resultType) {
 			tc.addError(s.Expression, "Atomic[T] is storage identity, not a value; use an atomic_load_* operation")
 		}
@@ -1705,6 +1724,13 @@ func (tc *TypeChecker) checkStatement(stmt ast.Statement) {
 // checkExpression type checks an expression and returns its type
 // expectedType is optional - if provided, it's used for context-based type inference (e.g., for literals)
 func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type) (result Type) {
+	return tc.checkExpressionContext(expr, false, expectedType...)
+}
+
+// checkExpressionContext keeps statement position local to the root
+// expression. Recursive operands call checkExpression and are value-position
+// expressions even when the enclosing invocation is itself a statement.
+func (tc *TypeChecker) checkExpressionContext(expr ast.Expression, statementPosition bool, expectedType ...Type) (result Type) {
 	defer func() {
 		if info := tc.env.borrowMetadata(); info != nil && expr != nil && result != nil {
 			info.expressions[expr] = result
@@ -1773,7 +1799,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.InvocationExpression:
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
-		return tc.checkMatchExpression(e, expected)
+		return tc.checkMatchExpressionContext(e, statementPosition, expected)
 	case *ast.QuantifierExpression:
 		return tc.checkQuantifierExpression(e)
 	case *ast.VariantExpression:
@@ -1785,7 +1811,7 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	case *ast.SliceExpression:
 		return tc.checkSliceExpression(e)
 	case *ast.BlockExpression:
-		return tc.checkBlockExpression(e.Block, expected)
+		return tc.checkBlockExpressionContext(e.Block, statementPosition, expected)
 	case *ast.ArrayLiteral:
 		return tc.checkArrayLiteral(e, expected)
 	case nil:
@@ -1827,7 +1853,7 @@ func (tc *TypeChecker) checkFieldAccessorExpression(expr *ast.FieldAccessorExpre
 	}
 	// Function-pointer ABIs are invariant: even a value-level numeric
 	// widening would give the helper a different C function type.
-	if !fieldType.Equals(fn.ReturnType) {
+	if !latticeAtomIdentical(fieldType, fn.ReturnType) {
 		tc.addError(expr, "field accessor .%s returns %s, not %s", expr.Field.Value, fieldType, fn.ReturnType)
 		return nil
 	}
@@ -1945,14 +1971,27 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 	if (arithmetic || bitwise) && expected != nil && (tc.isNumericType(expected) || tc.isFloatType(expected)) {
 		operandExpected = expected
 	}
+	comparison := expr.Operator == "==" || expr.Operator == "!="
 	peerContext := func(typ Type) Type {
 		if typ != nil && (tc.isNumericType(typ) || tc.isFloatType(typ)) {
 			return typ
 		}
+		// A bare variant compared with a typed peer (`s == .Established`)
+		// takes the peer's ADT: a state name several typestates of one
+		// package share is not ambiguous when the other side fixes it.
+		if comparison && typ != nil {
+			if _, _, _, isADT := adtInstantiation(typ); isADT {
+				return typ
+			}
+		}
 		return operandExpected
 	}
+	bareVariant := func(e ast.Expression) bool {
+		v, isVariant := e.(*ast.VariantExpression)
+		return isVariant && v.TypeName == nil
+	}
 	var leftType, rightType Type
-	if IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right) {
+	if (IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right)) || (comparison && bareVariant(expr.Left) && !bareVariant(expr.Right)) {
 		rightType = tc.checkExpression(expr.Right, operandExpected)
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
@@ -2257,6 +2296,24 @@ func alignmentFact(align uint32) uint32 {
 	return align
 }
 
+// alignmentFactFlows is the directional order on normalized alignment facts.
+// Zero is the plain fact (semantic alignment one), so every value flows to a
+// plain target. Nonzero facts are powers of two at checked-program boundaries;
+// numeric order is therefore exactly the divisibility order.
+func alignmentFactFlows(value, target uint32) bool {
+	return target == 0 || value >= target
+}
+
+// joinAlignmentFacts returns the weakest fact carried by both alternatives.
+// On normalized power-of-two facts this is their greatest common weakening;
+// the zero sentinel is correctly the least fact under alignmentFactFlows.
+func joinAlignmentFacts(left, right uint32) uint32 {
+	if right < left {
+		return right
+	}
+	return left
+}
+
 // borrowAlignment is the alignment fact of a borrow of an owned array
 // (docs/spec/50-borrowing.md section 2a): the element's natural alignment,
 // raised to the owning record's declared alignment when the array is the
@@ -2495,9 +2552,13 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Restore environment
 	tc.env = oldEnv
 
-	if typed && !returnType.Equals(declaredReturn) {
+	if typed && !tc.isAssignable(returnType, declaredReturn) {
 		if _, unitBody := returnType.(*UnitType); !(unitBody && fn.ReturnType == nil) {
-			tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			if returnType.Equals(declaredReturn) && !tc.alignmentAssignable(returnType, declaredReturn) {
+				tc.addError(fn, "function literal: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", declaredReturn, returnType)
+			} else {
+				tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			}
 			return nil
 		}
 	}
@@ -2961,11 +3022,14 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 				tc.addError(expr.Arguments[i], "argument %d conflicts with an earlier type specialization", i+1)
 				continue
 			}
-			// Unification is structural; a span's alignment fact must still
-			// be at least the parameter's (50-borrowing.md section 2a).
-			if !tc.alignmentAssignable(argType, expectedType) {
+			// Unification discovers generic equations; it does not authorize
+			// value flow. Recheck the substituted concrete types through the
+			// same directional boundary as non-generic arguments.
+			resolvedArgument := merged.Apply(argType)
+			resolvedExpected := merged.Apply(expectedType)
+			if !tc.isAssignable(resolvedArgument, resolvedExpected) {
 				validCall = false
-				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
+				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, resolvedExpected, resolvedArgument)
 				continue
 			}
 			bindings = merged
@@ -3851,6 +3915,10 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 }
 
 func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedType ...Type) Type {
+	return tc.checkMatchExpressionContext(expr, false, expectedType...)
+}
+
+func (tc *TypeChecker) checkMatchExpressionContext(expr *ast.MatchExpression, statementPosition bool, expectedType ...Type) Type {
 	var expected Type
 	if len(expectedType) > 0 {
 		expected = expectedType[0]
@@ -3924,7 +3992,9 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		// match, and the union of their kills applies afterwards.
 		tc.restoreDead(armsBefore)
 		armMark := tc.enterArmFacts(expr, arm)
-		if expected != nil {
+		if statementPosition {
+			armType = tc.checkExpressionContext(arm.Body, true)
+		} else if expected != nil {
 			armType = tc.checkExpression(arm.Body, expected)
 		} else {
 			armType = tc.checkExpression(arm.Body)
@@ -3934,6 +4004,8 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		if armType == nil {
 			// Unreachable or error - use never type
 			armType = &NeverType{}
+		} else if expected != nil && !tc.isAssignable(armType, expected) {
+			tc.addError(arm.Body, "match arm: expected type %s, got %s", expected, armType)
 		}
 		armTypes = append(armTypes, armType)
 
@@ -3941,24 +4013,38 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		tc.env = oldEnv
 	}
 
-	// Compute join of all arm types (lattice-based)
+	// Compute the semantic join, weakening only the separate alignment fact
+	// when every arm has the same view/span representation.
 	tc.restoreDead(armsAfter)
-	returnType := Join(armTypes...)
+	returnType := joinValueFlowTypes(armTypes...)
 
-	// Strict mode: if join is any and we didn't explicitly request any, it's an error
-	// (This prevents accidental type widening)
-	if _, isAny := returnType.(*AnyType); isAny {
-		// Check if all non-never types are the same
-		nonNeverTypes := []Type{}
-		for _, at := range armTypes {
-			if _, ok := at.(*NeverType); !ok {
-				nonNeverTypes = append(nonNeverTypes, at)
-			}
+	// Expected typing keeps branch-local widening, shape satisfaction, and
+	// never elimination out of the runtime representation. A mismatch already
+	// has a located arm diagnostic; returning the expected type is error
+	// recovery and prevents an unrepresentable union from leaking downstream.
+	if expected != nil {
+		if _, allNever := returnType.(*NeverType); allNever {
+			return returnType
 		}
+		return expected
+	}
+	// A statement conditional does not materialize the alternatives' values,
+	// so its semantic join needs no runtime representation. Retain that join
+	// as compiler metadata: established lowering paths use the selected arm's
+	// type even though no enclosing value consumes it.
+	if statementPosition {
+		return returnType
+	}
 
-		if len(nonNeverTypes) > 1 {
-			// Multiple different types - this is an error in strict mode
-			tc.addError(expr, "match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
+	// Without an expected representation, a heterogeneous join is useful to
+	// the checker for diagnostics but is not a runtime value. Oak has not
+	// specified implicit union tags or `any` boxing, so fail closed here.
+	switch returnType.(type) {
+	case *UnionType:
+		tc.addError(expr, "match expression has branches with incompatible runtime types (semantic join %s has no implicit representation)", returnType)
+	case *AnyType:
+		if len(nonNeverDistinctTypes(armTypes)) > 1 {
+			tc.addError(expr, "match expression requires runtime `any`, whose representation is not specified")
 		}
 	}
 
@@ -3966,6 +4052,26 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		return &NeverType{} // No branches matched - unreachable
 	}
 	return returnType
+}
+
+func nonNeverDistinctTypes(types []Type) []Type {
+	result := make([]Type, 0, len(types))
+	for _, typ := range types {
+		if _, isNever := typ.(*NeverType); isNever {
+			continue
+		}
+		distinct := true
+		for _, existing := range result {
+			if latticeAtomIdentical(typ, existing) {
+				distinct = false
+				break
+			}
+		}
+		if distinct {
+			result = append(result, typ)
+		}
+	}
+	return result
 }
 
 func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type {
@@ -3977,7 +4083,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 			// `x: T = try e` (docs/spec/10-syntax.md section 2d): T must be
 			// the payload's type.
 			declared := tc.parseTypeExpression(p.Ascribed)
-			if declared != nil && expectedType != nil && !declared.Equals(expectedType) {
+			if declared != nil && expectedType != nil && !latticeAtomIdentical(declared, expectedType) {
 				tc.addError(p.Name, "try binds %s: %s, but the payload is %s", p.Name.Value, declared, expectedType)
 				return nil
 			}
@@ -4283,7 +4389,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 				valid = false
 				continue
 			}
-			if given != nil && !given.Equals(declared) {
+			if given != nil && !tc.isAssignable(given, declared) {
 				tc.addError(expr, "record literal: field %s expects %s, got %s", name, declared, given)
 				valid = false
 			}
@@ -4609,15 +4715,19 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					if !tc.isAssignable(valueType, varType) {
 						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
-				} else if !tc.alignmentAssignable(valueType, varType) {
-					// Unification is structural; the alignment fact's
-					// direction is checked apart (50-borrowing.md section 2a).
-					tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 				} else {
-					// Apply substitution to get the unified type. Commit equations
-					// for a blocked initializer only after the complete declaration succeeds.
-					varType = sub.Apply(varType)
-					initializerBindings = sub
+					// Unification discovers generic equations; the substituted
+					// types must still pass the directional value-flow boundary.
+					resolvedValue := sub.Apply(valueType)
+					resolvedVariable := sub.Apply(varType)
+					if !tc.isAssignable(resolvedValue, resolvedVariable) {
+						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, resolvedVariable, resolvedValue)
+					} else {
+						// Commit equations for a blocked initializer only after
+						// the complete declaration succeeds.
+						varType = resolvedVariable
+						initializerBindings = sub
+					}
 				}
 			}
 		}
@@ -4655,40 +4765,20 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 	}
 }
 
-// isAssignable checks if a value type can be assigned to a variable type
-// Allows widening conversions (u8 -> u16, etc.) but not narrowing or sign changes
+// isAssignable is the single ordinary value-flow boundary. It composes the
+// proved semantic lattice with the separately specified representation-aware
+// relations; semantic subtyping never silently chooses a runtime layout.
 func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
-	// Open targets use width matching; source representation remains intact.
-	if target, ok := varType.(*RecordType); ok && target.Open {
-		if source, ok := valueType.(*RecordType); ok {
-			for name, required := range target.Fields {
-				actual, present := source.Fields[name]
-				if !present || !actual.Equals(required) {
-					return false
-				}
-			}
-			return true
-		}
+	// Exact atoms and the explicitly directional, representation-preserving
+	// case/shape/alignment/function relations need no runtime conversion.
+	if tc.representationPreservingAssignable(valueType, varType) {
+		return true
 	}
 
-	// A view or span stands where its shape is required with a weaker or
-	// absent alignment fact, never a stronger one (docs/spec/50-borrowing.md
-	// section 2a): the fact's direction is decided here, before equality,
-	// which is structural.
-	if value, isArray := valueType.(*ArrayType); isArray && (value.IsSlice || value.IsSpan) {
-		if target, targetIsArray := varType.(*ArrayType); targetIsArray && (target.IsSlice || target.IsSpan) {
-			return value.alignedInto(target)
-		}
-	}
-
-	// A function value's parameter and result facts have a direction too
-	// (alignmentAssignable), which structural equality does not see.
-	if _, isFunction := valueType.(*FunctionType); isFunction && !tc.alignmentAssignable(valueType, varType) {
-		return false
-	}
-
-	// Exact match
-	if valueType.Equals(varType) {
+	// The lattice admits exact types and bottom without introducing a runtime
+	// representation. Top and nontrivial joins/meets remain static until Oak
+	// specifies their value representation explicitly.
+	if latticeSubtypeWithoutRepresentation(valueType, varType) {
 		return true
 	}
 
@@ -4707,12 +4797,96 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		if (valuePrim.Name[0] == 'i') == (varPrim.Name[0] == 'i') {
 			valueWidth := tc.getBitWidth(valuePrim.Name)
 			varWidth := tc.getBitWidth(varPrim.Name)
+			// Only fixed widths widen: the untyped literal type `int` and
+			// the platform-width integers have no width here, and an `int`
+			// that flowed into a fixed type would reach the emitter as a
+			// type it does not have (`identity(7)` with no type argument).
+			if valueWidth == 0 || varWidth == 0 {
+				return false
+			}
 			// Widening is allowed (value can be narrower)
 			return valueWidth <= varWidth
 		}
 	}
 
 	return false
+}
+
+// representationPreservingAssignable contains the static compatibility
+// relations which keep one runtime representation. It is deliberately
+// directional and recursive; Type.Equals is broader and cannot safely decide
+// lattice identity or nested value flow.
+func (tc *TypeChecker) representationPreservingAssignable(valueType, targetType Type) bool {
+	if latticeAtomIdentical(valueType, targetType) {
+		return true
+	}
+
+	if narrowed, ok := valueType.(*NarrowedADTVariantType); ok {
+		switch target := targetType.(type) {
+		case *ADTType:
+			return len(narrowed.TypeArgs) == 0 && narrowed.ADTName == target.Name
+		case *GenericType:
+			return narrowed.ADTName == target.Name &&
+				latticeTypeListsIdentical(narrowed.TypeArgs, target.TypeArgs, false)
+		}
+	}
+
+	if target, ok := targetType.(*RecordType); ok && !target.Struct {
+		source, sourceIsRecord := valueType.(*RecordType)
+		if !sourceIsRecord || (!target.Open && len(source.Fields) != len(target.Fields)) {
+			return false
+		}
+		for name, required := range target.Fields {
+			actual, present := source.Fields[name]
+			if !present || !latticeAtomIdentical(actual, required) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if value, ok := valueType.(*ArrayType); ok && (value.IsSlice || value.IsSpan) {
+		target, targetIsArray := targetType.(*ArrayType)
+		return targetIsArray && (target.IsSlice || target.IsSpan) &&
+			value.Length == target.Length && value.IsSlice == target.IsSlice &&
+			value.IsSpan == target.IsSpan &&
+			latticeAtomIdentical(value.ElementType, target.ElementType) &&
+			alignmentFactFlows(value.Align, target.Align)
+	}
+
+	if value, ok := valueType.(*FunctionType); ok {
+		target, targetIsFunction := targetType.(*FunctionType)
+		return targetIsFunction && sameTypeModuloAlignment(value, target) &&
+			tc.alignmentAssignable(value, target)
+	}
+
+	return false
+}
+
+// sameTypeModuloAlignment recognizes only the representation-identical
+// function signatures for which alignmentAssignable supplies the directional
+// contract order. Other compatibility relations do not become function
+// variance implicitly.
+func sameTypeModuloAlignment(left, right Type) bool {
+	switch left := left.(type) {
+	case *ArrayType:
+		right, ok := right.(*ArrayType)
+		return ok && left.Length == right.Length && left.IsSlice == right.IsSlice &&
+			left.IsSpan == right.IsSpan && latticeAtomIdentical(left.ElementType, right.ElementType)
+	case *FunctionType:
+		right, ok := right.(*FunctionType)
+		if !ok || left.Variadic != right.Variadic || len(left.Parameters) != len(right.Parameters) {
+			return false
+		}
+		for index := range left.Parameters {
+			if !sameTypeModuloAlignment(left.Parameters[index], right.Parameters[index]) {
+				return false
+			}
+		}
+		return sameTypeModuloAlignment(left.ReturnType, right.ReturnType)
+	default:
+		return latticeAtomIdentical(left, right)
+	}
 }
 
 func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
@@ -4782,6 +4956,9 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 			}
 			tc.addError(stmt, "assignment: variable %s has type %s, cannot assign %s", stmt.Name.Value, varType, valueType)
 		}
+	}
+	if valueType != nil && len(tc.Errors()) == before {
+		tc.recordScalarGlobalWrite(stmt, valueType)
 	}
 }
 
@@ -4998,9 +5175,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		bodyType = &UnitType{}
 	}
 
-	// Check that body type matches return type
-	if !bodyType.Equals(returnType) {
-		tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+	// Check the body through the same expected-position relation as arguments,
+	// initializers, assignments, and match arms. In particular, never is
+	// bottom and a refined value may flow to its base representation.
+	if !tc.isAssignable(bodyType, returnType) {
+		if bodyType.Equals(returnType) && !tc.alignmentAssignable(bodyType, returnType) {
+			// The declared fact on a returned view or span is a claim about
+			// the body, checked like any other position (docs/spec/50-borrowing.md
+			// section 2a): a declaration may not claim more than the borrow gives.
+			tc.addError(stmt, "function %s: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", stmt.Name.Value, returnType, bodyType)
+		} else {
+			tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+		}
 	} else if !tc.alignmentAssignable(bodyType, returnType) {
 		// The declared fact on a returned view or span is a claim about
 		// the body, checked like any other position (docs/spec/50-borrowing.md
@@ -5481,9 +5667,15 @@ func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
 	}
 }
 
-// checkBlockExpression type checks a block expression and returns the type of
-// the last expression, inferring it against the expected type when given.
 func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedType ...Type) Type {
+	return tc.checkBlockExpressionContext(block, false, expectedType...)
+}
+
+// checkBlockExpressionContext type checks a block expression and returns the
+// type of its last expression. Statement position propagates only through the
+// block's tail, so a nested conditional used by a call argument remains a
+// value expression and still requires a runtime representation.
+func (tc *TypeChecker) checkBlockExpressionContext(block *ast.BlockStatement, statementPosition bool, expectedType ...Type) Type {
 	defer tc.enterOrder(block)()
 	var expected Type
 	if len(expectedType) > 0 {
@@ -5517,6 +5709,9 @@ func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedT
 	// statement, never the block's value: the block is unit.
 	lastStmt := block.Statements[len(block.Statements)-1]
 	if exprStmt, ok := lastStmt.(*ast.ExpressionStatement); ok && !exprStmt.Discard {
+		if statementPosition {
+			return tc.checkExpressionContext(exprStmt.Expression, true)
+		}
 		if expected != nil {
 			return tc.checkExpression(exprStmt.Expression, expected)
 		}
@@ -5813,7 +6008,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 		if elemType == nil {
 			continue
 		}
-		if !elemType.Equals(commonType) {
+		if !latticeAtomIdentical(elemType, commonType) {
 			// Try to find a common type (promotion)
 			if tc.isNumericType(elemType) && tc.isNumericType(commonType) {
 				commonType = tc.promoteNumericTypes(expr.Elements[i], commonType, elemType)
@@ -5894,7 +6089,7 @@ func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
 		if !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
 			return true
 		}
-		return target.Align == 0 || value.Align >= target.Align
+		return alignmentFactFlows(value.Align, target.Align)
 	case *FunctionType:
 		// A function value stands where a function type is required when
 		// each argument the target supplies flows into the value's
@@ -5920,10 +6115,10 @@ func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
 // at least as strong (alignments are powers of two, so at least as large
 // means a multiple). A target without a fact takes any.
 func (t *ArrayType) alignedInto(target *ArrayType) bool {
-	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !t.ElementType.Equals(target.ElementType) {
+	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !latticeAtomIdentical(t.ElementType, target.ElementType) {
 		return false
 	}
-	return target.Align == 0 || t.Align >= target.Align
+	return alignmentFactFlows(t.Align, target.Align)
 }
 
 // GenericType represents a generic type application: Option[T], Result[T, E], etc.
@@ -6369,7 +6564,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 			for fieldName, fieldType := range recordType.Fields {
 				// Check for conflicts
 				if existingType, exists := mergedFields[fieldName]; exists {
-					if !existingType.Equals(fieldType) {
+					if !latticeAtomIdentical(existingType, fieldType) {
 						tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 						return nil
 					}
@@ -6384,7 +6579,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 				if recordType, ok := namedType.(*RecordType); ok {
 					for fieldName, fieldType := range recordType.Fields {
 						if existingType, exists := mergedFields[fieldName]; exists {
-							if !existingType.Equals(fieldType) {
+							if !latticeAtomIdentical(existingType, fieldType) {
 								tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 								return nil
 							}
@@ -6426,7 +6621,7 @@ func (tc *TypeChecker) checkIntersectionConstraint(concreteType Type, constraint
 // This is a structural check: the type must have methods matching the interface
 func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type) bool {
 	// If it's the same type, return true
-	if concreteType.Equals(interfaceType) {
+	if latticeAtomIdentical(concreteType, interfaceType) {
 		return true
 	}
 
@@ -6480,7 +6675,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 		}
 
 		// Check that return types match
-		if !concreteMethodType.ReturnType.Equals(requiredMethodType.ReturnType) {
+		if !latticeAtomIdentical(concreteMethodType.ReturnType, requiredMethodType.ReturnType) {
 			// Return type mismatch
 			return false
 		}
@@ -6493,7 +6688,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 		for i, requiredParam := range requiredMethodType.Parameters {
 			concreteParam := concreteMethodType.Parameters[i]
 			// Parameters must match exactly (no subtyping for parameters)
-			if !concreteParam.Equals(requiredParam) {
+			if !latticeAtomIdentical(concreteParam, requiredParam) {
 				return false
 			}
 		}
@@ -6752,7 +6947,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 
 			// Check for duplicate field names
 			if existingType, exists := (*fields)[fieldName]; exists {
-				if !existingType.Equals(fieldType) {
+				if !latticeAtomIdentical(existingType, fieldType) {
 					if node, ok := fieldExpr.(ast.Node); ok {
 						tc.addError(node, "duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
@@ -6784,7 +6979,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			for fieldName, fieldType := range recordType.Fields {
 				// Check for duplicate field names
 				if existingType, exists := (*fields)[fieldName]; exists {
-					if !existingType.Equals(fieldType) {
+					if !latticeAtomIdentical(existingType, fieldType) {
 						tc.addError(ident, "duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
 					}

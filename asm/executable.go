@@ -379,20 +379,25 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 		if !defined {
 			return fmt.Errorf("executable: undefined symbol %s", r.symbol)
 		}
-		if r.offset < 0 || r.offset+4 > int64(len(l.text)) {
+		if r.offset < 0 || len(l.text) < 4 || r.offset > int64(len(l.text)-4) {
 			return fmt.Errorf("executable: relocation at %d outside the text", r.offset)
 		}
-		place := textAddr + uint64(r.offset)
-		delta := int64(target) - int64(place)
 		switch r.kind {
 		case "call26", "jump26", "branch26":
-			if delta%4 != 0 || delta < -(1<<27) || delta >= 1<<27 {
-				return fmt.Errorf("executable: %s to %s at %#x is %d bytes away, beyond the 26-bit branch", r.kind, r.symbol, place, delta)
+			offset := uint64(r.offset)
+			if textAddr > ^uint64(0)-offset {
+				return fmt.Errorf("executable: relocation address %#x + %d overflows", textAddr, r.offset)
 			}
-			word := le.Uint32(l.text[r.offset:])
-			word = word&^0x03ffffff | uint32(delta>>2)&0x03ffffff
-			le.PutUint32(l.text[r.offset:], word)
+			place := textAddr + offset
+			original := le.Uint32(l.text[r.offset:])
+			patched, err := patchAArch64Branch26(r.kind, original, place, target)
+			if err != nil {
+				return fmt.Errorf("executable: %s to %s: %w", r.kind, r.symbol, err)
+			}
+			le.PutUint32(l.text[r.offset:], patched)
 		case "condbr19":
+			place := textAddr + uint64(r.offset)
+			delta := int64(target) - int64(place)
 			if delta%4 != 0 || delta < -(1<<20) || delta >= 1<<20 {
 				return fmt.Errorf("executable: %s to %s at %#x is %d bytes away, beyond the 19-bit branch", r.kind, r.symbol, place, delta)
 			}
@@ -400,8 +405,9 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			word = word&^(0x7ffff<<5) | (uint32(delta>>2)&0x7ffff)<<5
 			le.PutUint32(l.text[r.offset:], word)
 		case "adrl21":
+			place := textAddr + uint64(r.offset)
 			// adrp xR, page(sym) - page(place); add xR, xR, #lo12(sym).
-			if r.offset+8 > int64(len(l.text)) {
+			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
 				return fmt.Errorf("executable: an adrl at %d cut short", r.offset)
 			}
 			pageDelta := (int64(target) >> 12) - (int64(place) >> 12)
@@ -415,8 +421,10 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			le.PutUint32(l.text[r.offset:], adrp)
 			le.PutUint32(l.text[r.offset+4:], add)
 		case "riscv_pcrel":
+			place := textAddr + uint64(r.offset)
+			delta := int64(target) - int64(place)
 			// auipc rd, hi20 then addi rd, rd, lo12: the same split as a call's.
-			if r.offset+8 > int64(len(l.text)) {
+			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
 				return fmt.Errorf("executable: an la at %d cut short", r.offset)
 			}
 			if delta < -(1<<31) || delta >= 1<<31 {
@@ -431,9 +439,11 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			le.PutUint32(l.text[r.offset:], auipc)
 			le.PutUint32(l.text[r.offset+4:], addi)
 		case "riscv_call_plt":
+			place := textAddr + uint64(r.offset)
+			delta := int64(target) - int64(place)
 			// auipc ra, hi20 then jalr ra, lo12(ra): hi rounds so lo is a
 			// signed 12-bit remainder.
-			if r.offset+8 > int64(len(l.text)) {
+			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
 				return fmt.Errorf("executable: a call at %d cut short", r.offset)
 			}
 			if delta < -(1<<31) || delta >= 1<<31 {

@@ -2,7 +2,8 @@
  * Arm's ASL primitives behind the Oak assembler's semantics, as Sail
  * (docs/spec/94-assembler.md §8, grounding stage 3).
  *
- * Every function body below is copied from the Sail model of Armv8.5-A that
+ * The instruction-semantic function bodies below are copied from the Sail
+ * model of Armv8.5-A that
  * Arm and the REMS group generated from Arm's ASL (`sail-arm`,
  * arm-v8.5-a/model/aarch64.sail and aarch_mem.sail; BSD-3-Clause-Clear,
  * copyright Arm Limited and the authors named in its LICENSE). This file
@@ -24,6 +25,9 @@
  *     `integer_conditional_compare_register` read `X(n)`/`X(m)` and write
  *     `X(d)`/`PSTATE`; here the operands are parameters and the result is
  *     returned. The flags they consult arrive as `nzcv`.
+ *   - the final barrier and TLBI decoder/dispatch projections preserve the
+ *     official decoded fields or named call target as pure return values;
+ *     access checks and architecture state effects are explicitly erased.
  */
 
 default Order dec
@@ -738,4 +742,947 @@ function vector_arithmetic_unary_diffneg_fp (datasize, elements, esize, operand,
         result = aset_Elem(result, e, esize, element)
     };
     result
+}
+
+/* ---------------------------------------------------------------------
+ * The A64 STR (unsigned immediate), 64-bit, normal-store request.
+ *
+ * The pinned aarch_decode.sail SEE-1277 clause extracts Rt/Rn/imm12/opc/V/
+ * size and calls the (historically misnamed) signed_postidx decoder.  For
+ * size=11, V=0, opc=00 that decoder fixes wback=false, postindex=false,
+ * scale=3, AccType_NORMAL, MemOp_STORE, regsize=datasize=64, signed=false.
+ * The instruction body then reads Xn (SP only for Rn=31), reads Xt (zero for
+ * Rt=31), and requests Mem(address, 8, AccType_NORMAL) = data.
+ *
+ * These pure functions expose only that decoder result and the request made
+ * immediately before Mem.  They erase __PostDecode admission, syndrome
+ * writes, alignment and endian handling, translation and faults, permissions,
+ * MTE/tag checks, exclusive clearing, MMIO/trickbox paths, physical-memory
+ * writes, CAT events, execution/occurrence, and descriptor classification.
+ */
+
+val decode64_str64_unsigned_pure :
+  bits(32) -> (bool, bits(5), bits(5), bits(12))
+
+function decode64_str64_unsigned_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let imm12 : bits(12) = slice(op_code, 10, 12);
+    if (op_code & 0xFFC00000) == 0xF9000000 then {
+        (true, Rt, Rn, imm12)
+    } else {
+        (false, Rt, Rn, imm12)
+    }
+}
+
+val str64_unsigned_store_request_pure :
+  (bits(5), bits(5), bits(12), bits(64), bits(64), bits(64)) ->
+    (bits(64), bits(64))
+
+function str64_unsigned_store_request_pure (Rt, Rn, imm12, rn_value, rt_value, sp_value) = {
+    let base : bits(64) = if Rn == 0b11111 then sp_value else rn_value;
+    let data : bits(64) = if Rt == 0b11111 then Zeros(64) else rt_value;
+    let offset : bits(64) = sail_shiftleft(sail_zero_extend(imm12, 64), 3);
+    (base + offset, data)
+}
+
+/* ---------------------------------------------------------------------
+ * The A64 barrier decoder (docs/spec/94-assembler.md §9).
+ *
+ * The three word patterns below are the DSB, DMB, and ISB clauses of
+ * aarch_decode.sail's decode64.  system_barriers_decode is copied from
+ * aarch64.sail.  This pure projection makes the decoder result explicit:
+ * architectural state updates and the final barrier call are replaced by
+ * the returned valid/op/domain/types tuple.  Invalid opc is recorded by the
+ * first component instead of throwing Error_Undefined.  No decoded value is
+ * otherwise changed.
+ */
+
+enum MemBarrierOp = {
+  MemBarrierOp_DSB,
+  MemBarrierOp_DMB,
+  MemBarrierOp_ISB,
+  MemBarrierOp_SSBB,
+  MemBarrierOp_PSSBB,
+  MemBarrierOp_SB
+}
+
+enum MBReqDomain = {
+  MBReqDomain_Nonshareable,
+  MBReqDomain_InnerShareable,
+  MBReqDomain_OuterShareable,
+  MBReqDomain_FullSystem
+}
+
+enum MBReqTypes = {MBReqTypes_Reads, MBReqTypes_Writes, MBReqTypes_All}
+
+/* The call targets of the pinned official system_barriers dispatch.  This
+ * projection records which named architecture primitive is selected while
+ * deliberately leaving that primitive's state effect outside this pure
+ * model.  In the pinned sail-arm model InstructionSynchronizationBarrier and
+ * SynchronizeContext are both unit-returning stubs, so target identity is not
+ * evidence of context synchronization by itself. */
+enum BarrierExecutionTarget = {
+  BarrierExecutionTarget_DataSynchronizationBarrier,
+  BarrierExecutionTarget_DataMemoryBarrier,
+  BarrierExecutionTarget_InstructionSynchronizationBarrier,
+  BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA,
+  BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA,
+  BarrierExecutionTarget_SpeculationBarrier
+}
+
+val system_barriers_target_pure :
+  (MBReqDomain, MemBarrierOp, MBReqTypes) -> BarrierExecutionTarget
+
+function system_barriers_target_pure (domain, op, types) =
+  match op {
+    MemBarrierOp_DSB => BarrierExecutionTarget_DataSynchronizationBarrier,
+    MemBarrierOp_DMB => BarrierExecutionTarget_DataMemoryBarrier,
+    MemBarrierOp_ISB => BarrierExecutionTarget_InstructionSynchronizationBarrier,
+    MemBarrierOp_SSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA,
+    MemBarrierOp_PSSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA,
+    MemBarrierOp_SB => BarrierExecutionTarget_SpeculationBarrier
+  }
+
+val system_barriers_decode_pure :
+  (bits(2), bits(4)) -> (bool, MemBarrierOp, MBReqDomain, MBReqTypes)
+
+function system_barriers_decode_pure (opc, CRm) = {
+    valid : bool = true;
+    op : MemBarrierOp = MemBarrierOp_DSB;
+    domain : MBReqDomain = MBReqDomain_FullSystem;
+    types : MBReqTypes = MBReqTypes_All;
+    match opc {
+      0b00 => {
+          op = MemBarrierOp_DSB
+      },
+      0b01 => {
+          op = MemBarrierOp_DMB
+      },
+      0b10 => {
+          op = MemBarrierOp_ISB
+      },
+      _ => {
+          valid = false
+      }
+    };
+    match slice(CRm, 2, 2) {
+      0b00 => {
+          domain = MBReqDomain_OuterShareable
+      },
+      0b01 => {
+          domain = MBReqDomain_Nonshareable
+      },
+      0b10 => {
+          domain = MBReqDomain_InnerShareable
+      },
+      0b11 => {
+          domain = MBReqDomain_FullSystem
+      }
+    };
+    match slice(CRm, 0, 2) {
+      0b01 => {
+          types = MBReqTypes_Reads
+      },
+      0b10 => {
+          types = MBReqTypes_Writes
+      },
+      0b11 => {
+          types = MBReqTypes_All
+      },
+      _ => {
+          if slice(CRm, 2, 2) == 0b01 then {
+              op = MemBarrierOp_PSSBB
+          } else {
+              if slice(CRm, 2, 2) == 0b00 & opc == 0b00 then {
+                  op = MemBarrierOp_SSBB
+              } else {
+                  types = MBReqTypes_All;
+                  domain = MBReqDomain_FullSystem
+              }
+          }
+      }
+    };
+    (valid, op, domain, types)
+}
+
+val decode64_barrier_pure :
+  bits(32) -> (bool, MemBarrierOp, MBReqDomain, MBReqTypes)
+
+function decode64_barrier_pure op_code = {
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    if (op_code & 0xFFFFF0FF) == 0xD503309F then {
+        system_barriers_decode_pure(0b00, CRm)
+    } else if (op_code & 0xFFFFF0FF) == 0xD50330BF then {
+        system_barriers_decode_pure(0b01, CRm)
+    } else if (op_code & 0xFFFFF0FF) == 0xD50330DF then {
+        system_barriers_decode_pure(0b10, CRm)
+    } else {
+        (false, MemBarrierOp_DSB, MBReqDomain_FullSystem, MBReqTypes_All)
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * The A64 TLBI VMALLS12E1IS SYS-field dispatch.
+ *
+ * aarch_decode.sail's generic SYS-write clause extracts op0/op1/CRn/CRm/
+ * op2/Rt and the pinned aarch64.sail AArch64_AutoGen_SysOpsWrite function
+ * selects TLBI_VMALLS12E1IS for op0=01, op1=100, CRn=8, op2=110, CRm=3.
+ * This pure projection records
+ * only that named call target. It erases the execution-level access/trap
+ * checks and every invalidation, shareability, broadcast, visibility, and
+ * completion effect. Rt is irrelevant to this target dispatch; Oak's
+ * canonical nullary encoding uses Rt = 31.
+ */
+
+enum TLBIOperationTarget = {TLBIOperationTarget_VMALLS12E1IS}
+
+val aarch64_sysops_write_tlbi_target_pure :
+  (bits(2), bits(3), bits(4), bits(3), bits(4)) ->
+    (bool, TLBIOperationTarget)
+
+function aarch64_sysops_write_tlbi_target_pure (op0, op1, CRn, op2, CRm) = {
+    if op0 == 0b01 & op1 == 0b100 & CRn == 0x8 &
+        op2 == 0b110 & CRm == 0x3 then {
+        (true, TLBIOperationTarget_VMALLS12E1IS)
+    } else {
+        (false, TLBIOperationTarget_VMALLS12E1IS)
+    }
+}
+
+val decode64_tlbi_target_pure :
+  bits(32) -> (bool, TLBIOperationTarget)
+
+function decode64_tlbi_target_pure (op_code) = {
+    let op0 : bits(2) = slice(op_code, 19, 2);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    if (op_code & 0xFFF80000) == 0xD5080000 then {
+        aarch64_sysops_write_tlbi_target_pure(op0, op1, CRn, op2, CRm)
+    } else {
+        (false, TLBIOperationTarget_VMALLS12E1IS)
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * The A64 PSTATE-immediate DAIFSet dispatch and state body.
+ *
+ * The pinned aarch_decode.sail PSTATE-immediate clause extracts op1/CRm/op2
+ * and system_register_cpsr_decode selects PSTATEField_DAIFSet when
+ * op1 @ op2 = 0b011110. system_register_cpsr then ORs operand[3:0] into
+ * PSTATE.{D,A,I,F}. These pure functions preserve that target and body only.
+ * They erase AArch64_CheckSystemAccess, EL/feature trap checks, PostDecode,
+ * dynamic execution occurrence, all other PSTATE fields, and interrupt
+ * recognition or delivery. Interpreting a true result as an executed state
+ * transition therefore requires those erased checks to admit execution.
+ */
+
+enum PSTATEWriteTarget = {PSTATEWriteTarget_DAIFSet}
+
+val system_register_cpsr_daifset_target_pure :
+  (bits(3), bits(4), bits(3)) -> (bool, PSTATEWriteTarget, bits(4))
+
+function system_register_cpsr_daifset_target_pure (op2, CRm, op1) = {
+    if op1 @ op2 == 0b011110 then {
+        (true, PSTATEWriteTarget_DAIFSet, CRm)
+    } else {
+        (false, PSTATEWriteTarget_DAIFSet, CRm)
+    }
+}
+
+val decode64_pstate_write_target_pure :
+  bits(32) -> (bool, PSTATEWriteTarget, bits(4))
+
+function decode64_pstate_write_target_pure (op_code) = {
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    if (op_code & 0xFFF8F01F) == 0xD500401F then {
+        system_register_cpsr_daifset_target_pure(op2, CRm, op1)
+    } else {
+        (false, PSTATEWriteTarget_DAIFSet, CRm)
+    }
+}
+
+val system_register_cpsr_daifset_pure :
+  (bits(1), bits(1), bits(1), bits(1), bits(4)) ->
+    (bits(1), bits(1), bits(1), bits(1))
+
+function system_register_cpsr_daifset_pure (d, a, i, f, operand) = {
+    let d_out : bits(1) = d | [operand[3]];
+    let a_out : bits(1) = a | [operand[2]];
+    let i_out : bits(1) = i | [operand[1]];
+    let f_out : bits(1) = f | [operand[0]];
+    (d_out, a_out, i_out, f_out)
+}
+
+/* ---------------------------------------------------------------------
+ * General system-register MSR dispatch to selected cold-entry registers and
+ * component updates from the pinned AArch64_AutoGen_SysRegWrite body.
+ *
+ * This pure projection erases AArch64_CheckSystemAccess, PostDecode, the
+ * X-register read, dynamic occurrence, traps, and every state component other
+ * than the selected register. Nested-virtualization redirects are retained as
+ * a flag plus unchanged selected-register component; NVMem itself is erased.
+ * Interpreting a direct update as execution requires separate access/trap
+ * admission and an architectural proof for the projected predicate inputs.
+ */
+
+enum SystemRegisterWriteTarget = {
+  SystemRegisterWriteTarget_VTTBR_EL2,
+  SystemRegisterWriteTarget_VTCR_EL2,
+  SystemRegisterWriteTarget_CNTHCTL_EL2,
+  SystemRegisterWriteTarget_CNTVOFF_EL2,
+  SystemRegisterWriteTarget_SP_EL1,
+  SystemRegisterWriteTarget_ELR_EL2,
+  SystemRegisterWriteTarget_SPSR_EL2,
+  SystemRegisterWriteTarget_HCR_EL2
+}
+
+/* Plain ERET's exact decode/call target. Authenticated ERETAA/ERETAB are
+ * deliberately not members of this projection. */
+enum ExceptionReturnExecutionTarget = {
+  ExceptionReturnExecutionTarget_ERET
+}
+
+struct PlainERETDecode = {
+  encoding_valid : bool,
+  pre_postdecode_checks_pass : bool,
+  target : ExceptionReturnExecutionTarget,
+  op4 : bits(5),
+  Rn : bits(5),
+  M : bits(1),
+  A : bits(1),
+  op2 : bits(5),
+  pac : bool,
+  use_key_a : bool
+}
+
+val decode64_plain_eret_pure : (bits(32), bool) -> PlainERETDecode
+
+function decode64_plain_eret_pure (op_code, at_el0) = {
+    let op4 : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let M : bits(1) = slice(op_code, 10, 1);
+    let A : bits(1) = slice(op_code, 11, 1);
+    let op2 : bits(5) = slice(op_code, 16, 5);
+    let pac : bool = A == 0b1;
+    let use_key_a : bool = M == 0b0;
+    let encoding_valid : bool = op_code == 0xD69F03E0;
+    let pre_postdecode_checks_pass : bool = encoding_valid & ~(at_el0) & ~(pac) &
+      op4 == 0b00000 & Rn == 0b11111;
+    struct {
+      encoding_valid = encoding_valid,
+      pre_postdecode_checks_pass = pre_postdecode_checks_pass,
+      target = ExceptionReturnExecutionTarget_ERET,
+      op4 = op4,
+      Rn = Rn,
+      M = M,
+      A = A,
+      op2 = op2,
+      pac = pac,
+      use_key_a = use_key_a
+    }
+}
+
+/* One parsing pass for the eight register tuples in Oak's cold-entry prefix.
+ * As in the per-register projections below, Rt is preserved rather than fixed
+ * here; the bridge separately proves the exact X0 through X7 words. */
+val system_register_cold_entry_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_cold_entry_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x1 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b010 then {
+        (true, SystemRegisterWriteTarget_VTCR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_CNTHCTL_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x0 &
+        op2 == 0b011 then {
+        (true, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SP_EL1, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b001 then {
+        (true, SystemRegisterWriteTarget_ELR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SPSR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val decode64_cold_entry_system_write_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_cold_entry_system_write_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_cold_entry_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val system_register_vttbr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_vttbr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_vttbr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_vttbr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_vttbr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_vttbr_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_vttbr_el2_pure (at_el1, hcr_nv, hcr_nv2,
+    hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
+      (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
+}
+
+val system_register_vtcr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_vtcr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b010 then {
+        (true, SystemRegisterWriteTarget_VTCR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_VTCR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_vtcr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_vtcr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_vtcr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_VTCR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_vtcr_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(32), bits(64)) ->
+    (bool, bits(32))
+
+function aarch64_sysregwrite_vtcr_el2_pure (at_el1, hcr_nv, hcr_nv2,
+    hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
+      (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, slice(val_name, 0, 32))
+    }
+}
+
+val system_register_cnthctl_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_cnthctl_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_CNTHCTL_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTHCTL_EL2, Rt)
+    }
+}
+
+val decode64_system_write_cnthctl_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_cnthctl_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_cnthctl_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTHCTL_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_cnthctl_el2_pure : bits(64) -> bits(32)
+
+function aarch64_sysregwrite_cnthctl_el2_pure (val_name) = {
+    slice(val_name, 0, 32)
+}
+
+val system_register_cntvoff_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_cntvoff_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x0 &
+        op2 == 0b011 then {
+        (true, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    }
+}
+
+val decode64_system_write_cntvoff_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_cntvoff_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_cntvoff_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_cntvoff_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_cntvoff_el2_pure (at_el1, hcr_nv, hcr_nv2,
+    hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
+      (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
+}
+
+val system_register_sp_el1_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_sp_el1_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SP_EL1, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_SP_EL1, Rt)
+    }
+}
+
+val decode64_system_write_sp_el1_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_sp_el1_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_sp_el1_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_SP_EL1, Rt)
+    }
+}
+
+val aarch64_sysregwrite_sp_el1_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_sp_el1_pure (at_el1, hcr_nv, hcr_nv2,
+    hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & hcr_nv & hcr_nv2 & ~(hcr_tge) &
+      (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
+}
+
+val system_register_elr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_elr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b001 then {
+        (true, SystemRegisterWriteTarget_ELR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_ELR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_elr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_elr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_elr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_ELR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_elr_el2_pure : bits(64) -> bits(64)
+
+function aarch64_sysregwrite_elr_el2_pure (val_name) = {
+    val_name
+}
+
+val system_register_spsr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_spsr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SPSR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_SPSR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_spsr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_spsr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_spsr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_SPSR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_spsr_el2_pure : bits(64) -> bits(32)
+
+function aarch64_sysregwrite_spsr_el2_pure (val_name) = {
+    slice(val_name, 0, 32)
+}
+
+val system_register_hcr_el2_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_hcr_el2_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x1 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val decode64_system_write_hcr_el2_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_system_write_hcr_el2_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_hcr_el2_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val aarch64_sysregwrite_hcr_el2_pure :
+  (bool, bool, bool, bool, bool, bool, bits(64), bits(64)) ->
+    (bool, bits(64))
+
+function aarch64_sysregwrite_hcr_el2_pure (at_el1, old_hcr_nv,
+    old_hcr_nv2, old_hcr_tge, scr_ns, scr_eel2, old_value, val_name) = {
+    let redirected : bool = at_el1 & old_hcr_nv & old_hcr_nv2 &
+      ~(old_hcr_tge) & (scr_ns | scr_eel2);
+    if redirected then {
+        (true, old_value)
+    } else {
+        (false, val_name)
+    }
+}
+
+/* The selected register-component state and X-register inputs for Oak's
+ * ordered EL2 cold-entry prefix. These are projections, not Arm's full state. */
+struct ColdEntryRegisterState = {
+  hcr_el2 : bits(64),
+  vttbr_el2 : bits(64),
+  vtcr_el2 : bits(32),
+  cnthctl_el2 : bits(32),
+  cntvoff_el2 : bits(64),
+  sp_el1 : bits(64),
+  elr_el2 : bits(64),
+  spsr_el2 : bits(32)
+}
+
+struct ColdEntryRegisterInputs = {
+  hcr_el2 : bits(64),
+  vttbr_el2 : bits(64),
+  vtcr_el2 : bits(64),
+  cnthctl_el2 : bits(64),
+  cntvoff_el2 : bits(64),
+  sp_el1 : bits(64),
+  elr_el2 : bits(64),
+  spsr_el2 : bits(64)
+}
+
+/* The eight fixed-position fields are an ordered log, avoiding any claim that
+ * the final projected record alone witnesses dynamic program order. */
+struct ColdEntryRegisterSequenceResult = {
+  state : ColdEntryRegisterState,
+  write0 : SystemRegisterWriteTarget,
+  write1 : SystemRegisterWriteTarget,
+  write2 : SystemRegisterWriteTarget,
+  write3 : SystemRegisterWriteTarget,
+  write4 : SystemRegisterWriteTarget,
+  write5 : SystemRegisterWriteTarget,
+  write6 : SystemRegisterWriteTarget,
+  write7 : SystemRegisterWriteTarget
+}
+
+/* The dedicated AArch64_CheckForERetTrap NV predicate after projecting its
+ * feature/EL/HCR reads to Booleans. False is not a global trap-freedom claim. */
+val eret_nv_trap_route_pure : (bool, bool, bool, bool) -> bool
+
+function eret_nv_trap_route_pure (have_nv_ext, el2_enabled, at_el1, hcr_nv) = {
+    ((have_nv_ext & el2_enabled) & at_el1) & hcr_nv
+}
+
+struct PlainERETInputsAtEL2 = {
+  dedicated_nv_trap : bool,
+  target : bits(64),
+  spsr : bits(32)
+}
+
+/* At AArch64 EL2, ELR() and SPSR() select ELR_EL2 and SPSR_EL2. This returns
+ * those projected inputs to AArch64_ExceptionReturn; it does not execute it. */
+val aarch64_plain_eret_at_el2_inputs_pure :
+  (bool, bool, ColdEntryRegisterState) -> PlainERETInputsAtEL2
+
+function aarch64_plain_eret_at_el2_inputs_pure (have_nv_ext, el2_enabled, state) = {
+    let hcr_nv : bool = state.hcr_el2[42] == bitone;
+    struct {
+      dedicated_nv_trap = eret_nv_trap_route_pure(
+        have_nv_ext, el2_enabled, false, hcr_nv),
+      target = state.elr_el2,
+      spsr = state.spsr_el2
+    }
+}
+
+val aarch64_cold_entry_register_sequence_at_el2_pure :
+  (ColdEntryRegisterState, ColdEntryRegisterInputs, bool, bool) ->
+    ColdEntryRegisterSequenceResult
+
+function aarch64_cold_entry_register_sequence_at_el2_pure (old_state, inputs, scr_ns, scr_eel2) = {
+    let old_hcr_nv : bool = old_state.hcr_el2[42] == bitone;
+    let old_hcr_nv2 : bool = old_state.hcr_el2[45] == bitone;
+    let old_hcr_tge : bool = old_state.hcr_el2[27] == bitone;
+    let (_, hcr_el2) = aarch64_sysregwrite_hcr_el2_pure(false,
+      old_hcr_nv, old_hcr_nv2, old_hcr_tge, scr_ns, scr_eel2,
+      old_state.hcr_el2, inputs.hcr_el2);
+    let hcr_nv : bool = hcr_el2[42] == bitone;
+    let hcr_nv2 : bool = hcr_el2[45] == bitone;
+    let hcr_tge : bool = hcr_el2[27] == bitone;
+    let (_, vttbr_el2) = aarch64_sysregwrite_vttbr_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.vttbr_el2, inputs.vttbr_el2);
+    let (_, vtcr_el2) = aarch64_sysregwrite_vtcr_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.vtcr_el2, inputs.vtcr_el2);
+    let cnthctl_el2 = aarch64_sysregwrite_cnthctl_el2_pure(inputs.cnthctl_el2);
+    let (_, cntvoff_el2) = aarch64_sysregwrite_cntvoff_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.cntvoff_el2, inputs.cntvoff_el2);
+    let (_, sp_el1) = aarch64_sysregwrite_sp_el1_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.sp_el1, inputs.sp_el1);
+    let elr_el2 = aarch64_sysregwrite_elr_el2_pure(inputs.elr_el2);
+    let spsr_el2 = aarch64_sysregwrite_spsr_el2_pure(inputs.spsr_el2);
+    struct {
+      state = struct {
+        hcr_el2 = hcr_el2,
+        vttbr_el2 = vttbr_el2,
+        vtcr_el2 = vtcr_el2,
+        cnthctl_el2 = cnthctl_el2,
+        cntvoff_el2 = cntvoff_el2,
+        sp_el1 = sp_el1,
+        elr_el2 = elr_el2,
+        spsr_el2 = spsr_el2
+      },
+      write0 = SystemRegisterWriteTarget_HCR_EL2,
+      write1 = SystemRegisterWriteTarget_VTTBR_EL2,
+      write2 = SystemRegisterWriteTarget_VTCR_EL2,
+      write3 = SystemRegisterWriteTarget_CNTHCTL_EL2,
+      write4 = SystemRegisterWriteTarget_CNTVOFF_EL2,
+      write5 = SystemRegisterWriteTarget_SP_EL1,
+      write6 = SystemRegisterWriteTarget_ELR_EL2,
+      write7 = SystemRegisterWriteTarget_SPSR_EL2
+    }
+}
+
+/* Ordinary RET's pure decoder and BranchType_RET call target. Pointer
+ * authentication, the X-register read, PostDecode, BTypeNext, and BranchTo
+ * are deliberately not members of this projection. */
+enum BranchRegisterExecutionTarget = {
+  BranchRegisterExecutionTarget_RET
+}
+
+struct OrdinaryRETDecode = {
+  encoding_valid : bool,
+  pre_postdecode_checks_pass : bool,
+  target : BranchRegisterExecutionTarget,
+  Rm : bits(5),
+  Rn : bits(5),
+  M : bits(1),
+  A : bits(1),
+  op2 : bits(5),
+  op : bits(2),
+  Z : bits(1),
+  pac : bool,
+  source_is_sp : bool,
+  use_key_a : bool
+}
+
+val decode64_ordinary_ret_pure : bits(32) -> OrdinaryRETDecode
+
+function decode64_ordinary_ret_pure (op_code) = {
+    let Rm : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let M : bits(1) = slice(op_code, 10, 1);
+    let A : bits(1) = slice(op_code, 11, 1);
+    let op2 : bits(5) = slice(op_code, 16, 5);
+    let op : bits(2) = slice(op_code, 21, 2);
+    let Z : bits(1) = slice(op_code, 24, 1);
+    let pac : bool = A == 0b1;
+    let source_is_sp : bool = Z == 0b1 & Rm == 0b11111;
+    let use_key_a : bool = M == 0b0;
+    let encoding_valid : bool = (op_code & 0xFFFFFC1F) == 0xD65F0000;
+    let pre_postdecode_checks_pass : bool = encoding_valid & ~(pac) &
+      Rm == 0b00000 & op == 0b10;
+    struct {
+      encoding_valid = encoding_valid,
+      pre_postdecode_checks_pass = pre_postdecode_checks_pass,
+      target = BranchRegisterExecutionTarget_RET,
+      Rm = Rm,
+      Rn = Rn,
+      M = M,
+      A = A,
+      op2 = op2,
+      op = op,
+      Z = Z,
+      pac = pac,
+      source_is_sp = source_is_sp,
+      use_key_a = use_key_a
+    }
+}
+
+/* Ordinary B-immediate's pure decoder fields and BranchType_DIR target.
+ * The architectural PC read, PostDecode, BranchTo, target validation, and
+ * observation of a transfer are deliberately not members of this projection.
+ * BL and conditional branches are separate instruction classes. */
+enum DirectBranchImmediateExecutionTarget = {
+  DirectBranchImmediateExecutionTarget_DIR
+}
+
+struct OrdinaryBImmediateDecode = {
+  encoding_valid : bool,
+  target : DirectBranchImmediateExecutionTarget,
+  imm26 : bits(26),
+  op : bits(1),
+  offset : bits(64)
+}
+
+val branch26_offset_pure : bits(26) -> bits(64)
+
+function branch26_offset_pure (imm26) = {
+    let scaled : bits(28) = imm26 @ 0b00;
+    if imm26[25] == bitone then 0xFFFFFFFFF @ scaled
+    else 0x000000000 @ scaled
+}
+
+val decode64_ordinary_b_immediate_pure : bits(32) -> OrdinaryBImmediateDecode
+
+function decode64_ordinary_b_immediate_pure (op_code) = {
+    let imm26 : bits(26) = slice(op_code, 0, 26);
+    let op : bits(1) = slice(op_code, 31, 1);
+    let encoding_valid : bool = (op_code & 0xFC000000) == 0x14000000;
+    struct {
+      encoding_valid = encoding_valid,
+      target = DirectBranchImmediateExecutionTarget_DIR,
+      imm26 = imm26,
+      op = op,
+      offset = branch26_offset_pure(imm26)
+    }
 }

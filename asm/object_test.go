@@ -126,6 +126,40 @@ func TestObjectLayoutErrors(t *testing.T) {
 	if _, err := WriteObject(ELF, []EncodedFunction{{Symbol: "f", Bytes: []byte{0, 0, 0, 0}, Relocs: []Relocation{{Offset: 0, Kind: "condbr19", Symbol: "g"}}}}); err != nil {
 		t.Errorf("ELF carries R_AARCH64_CONDBR19: %v", err)
 	}
+	if _, err := WriteObject(ELF, []EncodedFunction{{Symbol: "f", Bytes: []byte{0, 0, 0, 0}, Relocs: []Relocation{{Offset: 0, Kind: "call26"}}}}); err == nil || !strings.Contains(err.Error(), "has no symbol") {
+		t.Errorf("nameless relocation error = %v", err)
+	}
+	if _, err := WriteObject(ELF, []EncodedFunction{{Symbol: "f", Bytes: []byte{0, 0, 0, 0}, Relocs: []Relocation{{Offset: 0, Kind: "future_pair", Symbol: "g"}}}}); err == nil || !strings.Contains(err.Error(), "relocation kind") {
+		t.Errorf("unclassified relocation error = %v", err)
+	}
+}
+
+func TestObjectLayoutChecksCompletePairedRelocationFootprints(t *testing.T) {
+	for _, test := range []struct {
+		name, arch, kind string
+	}{
+		{name: "AArch64 adrl", arch: ArchArm64, kind: "adrl21"},
+		{name: "RV64 address", arch: ArchRV64, kind: "riscv_pcrel"},
+		{name: "RV64 call", arch: ArchRV64, kind: "riscv_call_plt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			function := func(size, offset int) EncodedFunction {
+				return EncodedFunction{
+					Symbol: "f", Arch: test.arch, Bytes: make([]byte, size),
+					Relocs: []Relocation{{Offset: offset, Kind: test.kind, Symbol: "target"}},
+				}
+			}
+			if _, err := WriteObject(ELF, []EncodedFunction{function(4, 0)}); err == nil || !strings.Contains(err.Error(), "outside the function") {
+				t.Fatalf("four-byte pair error = %v", err)
+			}
+			if _, err := WriteObject(ELF, []EncodedFunction{function(8, 4)}); err == nil || !strings.Contains(err.Error(), "outside the function") {
+				t.Fatalf("pair beginning at final word error = %v", err)
+			}
+			if _, err := WriteObject(ELF, []EncodedFunction{function(8, 0)}); err != nil {
+				t.Fatalf("exact eight-byte pair: %v", err)
+			}
+		})
+	}
 }
 
 // TestObjectLayoutPadsRVCHalfWords: an RV64 function under RVC may end on

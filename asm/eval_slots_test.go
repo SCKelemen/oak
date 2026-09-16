@@ -5,31 +5,34 @@ import (
 	"testing"
 )
 
-// The BDD variable orders evaluate the same term DAG concurrently. Numbering
-// belongs to each evaluator; constructing one must never mutate the shared DAG.
-func TestTermEvaluatorNumbersSharedTermsConcurrently(t *testing.T) {
-	root := binaryTerm("add", paramTerm("x", 32), constTerm(1, 32))
-	start := make(chan struct{})
-	wrong := make(chan uint64, 16)
-	var workers sync.WaitGroup
-	for range 16 {
-		workers.Add(1)
+func TestTermEvaluatorForkedConcurrentEvaluation(t *testing.T) {
+	x := paramTerm("x", 32)
+	y := paramTerm("y", 32)
+	root := binaryTerm("add", binaryTerm("mul", x, constTerm(3, 32)), y)
+	template := newTermEvaluator(root)
+	rootID := root.id
+
+	const attempts = 32
+	results := make([]uint64, attempts)
+	var wait sync.WaitGroup
+	for index := range attempts {
+		wait.Add(1)
 		go func() {
-			defer workers.Done()
-			<-start
-			for range 64 {
-				evaluator := newTermEvaluator(root)
-				if got := evaluator.evaluate(root, map[string]uint64{"x": 41}); got != 42 {
-					wrong <- got
-					return
-				}
-			}
+			defer wait.Done()
+			evaluator := template.fork()
+			results[index] = evaluator.evaluate(root, map[string]uint64{
+				"x": uint64(index), "y": uint64(index + 7),
+			})
 		}()
 	}
-	close(start)
-	workers.Wait()
-	close(wrong)
-	for got := range wrong {
-		t.Errorf("shared term evaluated to %d, want 42", got)
+	wait.Wait()
+
+	if root.id != rootID {
+		t.Fatalf("forked evaluation changed root id from %d to %d", rootID, root.id)
+	}
+	for index, got := range results {
+		if want := uint64(index*4 + 7); got != want {
+			t.Fatalf("fork %d = %d, want %d", index, got, want)
+		}
 	}
 }

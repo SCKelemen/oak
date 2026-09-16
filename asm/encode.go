@@ -1537,10 +1537,20 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 	if !local {
 		return &Relocation{Kind: kind, Symbol: sym.Name}, nil
 	}
-	disp := target - pc
+	disp, ok := exactInt64Difference(target, pc)
+	if !ok {
+		return nil, fmt.Errorf("label %s: target %d minus pc %d overflows int64", sym.Name, target, pc)
+	}
 	scale := fop.Scale
 	if scale <= 0 {
 		scale = 1
+	}
+	// The exact B-immediate proof composes local label encoding with the
+	// object writer's Branch26 model.  Both the instruction place and its
+	// target are instruction addresses, so reject equally misaligned inputs
+	// rather than admitting them merely because their difference is aligned.
+	if fields == "imm26" && e.enc.Mnemonic == "b" && (pc%4 != 0 || target%4 != 0) {
+		return nil, fmt.Errorf("label %s: B place %d and target %d must be four-byte aligned", sym.Name, pc, target)
 	}
 	if disp%scale != 0 {
 		return nil, fmt.Errorf("label %s: displacement %d is not a multiple of %d", sym.Name, disp, scale)
@@ -1554,6 +1564,18 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 		encoded &= (1 << uint(width)) - 1
 	}
 	return nil, e.writeFields(fop.Fields, uint64(encoded))
+}
+
+// exactInt64Difference computes a-b and reports whether the mathematical
+// result is representable as int64. Go's signed overflow is defined, so the
+// wrapped result can be checked immediately without performing a second
+// potentially overflowing operation.
+func exactInt64Difference(a, b int64) (int64, bool) {
+	difference := a - b
+	if b > 0 && difference > a || b < 0 && difference < a {
+		return 0, false
+	}
+	return difference, true
 }
 
 var conditionCodesByName = map[string]uint32{"eq": 0, "ne": 1, "cs": 2, "hs": 2, "cc": 3, "lo": 3, "mi": 4, "pl": 5, "vs": 6, "vc": 7, "hi": 8, "ls": 9, "ge": 10, "lt": 11, "gt": 12, "le": 13, "al": 14, "nv": 15,

@@ -419,6 +419,9 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 				return nil, err
 			}
 		}
+		if err := comp.gate("source", nativeABISuffixDiagnostics(tree.Root), tree.Modules); err != nil {
+			return nil, err
+		}
 		publicSource := tree.Root
 		if tree.Modules != nil && tree.Modules.Public != nil {
 			publicSource = tree.Modules.Public

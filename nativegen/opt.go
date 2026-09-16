@@ -36,6 +36,7 @@ const (
 // Transform names, as the optimization report spells them.
 const (
 	TransformStrength    = "strength-reduce"
+	TransformOptIR       = "optir-emit"
 	TransformElide       = "elide-guards"
 	TransformReuseFlags  = "reuse-flags"
 	TransformHoist       = "hoist-invariants"
@@ -43,8 +44,14 @@ const (
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
+	TransformVectorMaps  = "vectorize-maps"
 	TransformVecBlocks   = "vector-blocks"
+	TransformMultiplyAdd = "multiply-add"
+	TransformValueSelect = "value-select"
 	TransformReallocate  = "reallocate"
+	TransformSchedule    = "schedule"
+	TransformFuse        = "fuse"
+	TransformFuseExits   = "fuse-exits"
 	TransformRotate      = "rotate-loops"
 )
 
@@ -98,10 +105,20 @@ func laneArch(lane Lane) string {
 
 // gatedTransform ships only on a verifier's verdict (opt.Gated): a body
 // the verifier cannot judge keeps a form without it.
-type gatedTransform struct{ laneTransform }
+type gatedTransform struct {
+	laneTransform
+	// neutral marks a transform that moves and renames but changes no
+	// evaluation shape the verifier reads (a register assignment, an
+	// instruction order): its candidate shares its parent's shape in the
+	// search's validation order (opt.Neutral).
+	neutral bool
+}
 
 // NeedsVerdict marks the transform as gated.
 func (t *gatedTransform) NeedsVerdict() bool { return true }
+
+// ShapeNeutral reports a gated transform that changes no evaluation shape.
+func (t *gatedTransform) ShapeNeutral() bool { return t.neutral }
 
 // elideTransform is the guard elision, refinable by source line: the
 // checker's finding names the line of the access it could not admit, that
@@ -181,6 +198,19 @@ func Transforms() []opt.Transform {
 			// the AArch64 emitter's zero tests dropped.
 			fired: func(fn *asm.Function) int { return StrengthReduced(fn) + Reduced(fn) },
 		},
+		&gatedTransform{laneTransform: laneTransform{
+			// The generic SSA middle end's optimized CFG becomes a native
+			// implementation candidate. The closed AArch64 and RV64 selectors
+			// also admit exact whole-region scalar-global stores after verified
+			// MemorySSA, DSE, and region-load forwarding. Unsupported effects
+			// and types refuse, and every
+			// emitted body remains translation-validator gated.
+			name: TransformOptIR, phase: opt.PhaseCanonical, proof: opt.Mechanical,
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return l.UseOptIR || l.OptIR == nil || l.OptIRChanges <= 0 },
+			apply:   func(l Lane) Lane { l.UseOptIR = true; return l },
+			fired:   OptIRLowered,
+		}},
 		&elideTransform{laneTransform{
 			// Guard elision: an element access the typechecker proved in
 			// range is lowered without its guard, and the checker admits
@@ -203,6 +233,39 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ReuseFlags = true; return l },
 			fired:   ReusedCompares,
 		},
+		&gatedTransform{laneTransform: laneTransform{
+			// Peephole fusion (machine.Fuse): a shift folded into an add's
+			// shifted operand, an increment folded into a csinc; machine
+			// shape only, shipping only on the verifier's verdict.
+			name: TransformFuse, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.Fuse },
+			apply:   func(l Lane) Lane { l.Fuse = true; return l },
+			fired:   Fused,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Exit-test fusion (machine.FuseExits): a loop's `b.cond exit;
+			// cbz back` as `ccmp; b.eq back`, one branch for two, the entry
+			// test fused alike; gated like Fuse. The checker reads the
+			// compare's fact through the ccmp, the verifier's loop shapes
+			// read the ccmp in a tail run.
+			name: TransformFuseExits, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.FuseExits },
+			apply:   func(l Lane) Lane { l.FuseExits = true; return l },
+			fired:   FusedExits,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Instruction scheduling (package machine, Phase B): each block's
+			// instructions reordered between barriers so a consumer follows
+			// its producer by the producer's latency; machine shape only,
+			// shipping only on the verifier's verdict.
+			name: TransformSchedule, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return l.Schedule },
+			apply:   func(l Lane) Lane { l.Schedule = true; return l },
+			fired:   Scheduled,
+		}, neutral: true},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the
@@ -233,6 +296,25 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.VectorReductions },
 			apply:   func(l Lane) Lane { l.VectorReductions = true; return l },
 			fired:   Vectorized,
+		},
+		&laneTransform{
+			// Map vectorization (nativegen/vector_map.go): an element-wise
+			// map over span parameters as one vector a trip under the slack
+			// guard, the remainder as written, licensed by Oak.Map.blocked_eq
+			// — lane-wise semantics alone, no law of the element type, so no
+			// fact of the body is required.
+			// AArch64 only for now. The RV64 lane lowers the rewritten shape
+			// to RVV under its fixed configurations, the machine lift reads it
+			// (stride 4, the remainder bounded) and prices it at half the
+			// scalar loop, but the verifier does not yet model a vector store
+			// in a data-dependent loop body on that lane, so the form can
+			// only be trusted and never ships over the proven scalar loop
+			// (2026-09-16; the plumbing through compileRV64 is in place).
+			name: TransformVectorMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorMaps },
+			apply:   func(l Lane) Lane { l.VectorMaps = true; return l },
+			fired:   VectorizedMaps,
 		},
 		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
@@ -268,7 +350,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
-		&gatedTransform{laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
 			// linear scan, its slots moved into registers, its copies
@@ -280,7 +362,9 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.Reallocate },
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
-		}},
+		}, neutral: true},
+		multiplyAddTransform,
+		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
 	}
@@ -290,13 +374,42 @@ func Transforms() []opt.Transform {
 var cleanupTransform = &laneTransform{
 	// Late cleanup (docs/spec/94-assembler.md §9 "Late cleanup"): a copy
 	// read once by the next instruction is forwarded, a definition copied
-	// once writes its destination, a branch to the following label goes —
-	// machine shape only, judged by the checker and the verifier.
+	// once writes its destination, and narrowly proved branch/store materialized
+	// temporaries disappear. Machine shape only: always seam-checked, and judged
+	// by the verifier only where that verifier's subset applies.
 	name: TransformCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
 	arches:  arm64Only,
 	applied: func(l Lane) bool { return l.Cleanup },
 	apply:   func(l Lane) Lane { l.Cleanup = true; return l },
 	fired:   CleanedCopies,
+}
+
+// multiplyAddTransform lowers a product and its addend in one instruction
+// (nativegen/multiply_add.go).
+var multiplyAddTransform = &laneTransform{
+	// Multiply-add forms (docs/spec/94-assembler.md §9 "Multiply-add
+	// forms"): `a + b * c` as madd, `a - b * c` as msub, `0 - b * c` as
+	// mneg — the machine's own arithmetic, judged by the verifier, which
+	// reads all three as the product and its term.
+	name: TransformMultiplyAdd, phase: opt.PhaseCanonical, proof: opt.Canonical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.MultiplyAdd },
+	apply:   func(l Lane) Lane { l.MultiplyAdd = true; return l },
+	fired:   FusedMultiplies,
+}
+
+// valueSelectTransform lowers a value-position conditional as one
+// conditional select (nativegen/value_select.go).
+var valueSelectTransform = &laneTransform{
+	// Select forms (docs/spec/94-assembler.md §9 "Select forms"): a
+	// compare and one csel — or csinc, csneg, csinv where the arms share
+	// an operand — where the lowering branched over two moves. The
+	// verifier models all four already.
+	name: TransformValueSelect, phase: opt.PhaseMachine, proof: opt.Mechanical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.ValueSelect },
+	apply:   func(l Lane) Lane { l.ValueSelect = true; return l },
+	fired:   ValueSelects,
 }
 
 // vecBlocksTransform reads a block's vector loads off one element address
@@ -323,6 +436,7 @@ func Registry() *opt.Registry {
 // every transform off. The search turns them on one by one.
 func PlainLane(lane Lane) Lane {
 	lane.Strength = false
+	lane.UseOptIR = false
 	lane.ElideProven = false
 	lane.GuardLines = nil
 	lane.ReuseFlags = false
@@ -331,8 +445,14 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
+	lane.MultiplyAdd = false
+	lane.ValueSelect = false
 	lane.Reallocate = false
+	lane.Schedule = false
+	lane.Fuse = false
+	lane.FuseExits = false
 	lane.VectorReductions = false
+	lane.VectorMaps = false
 	lane.NoReductions = true
 	return lane
 }
@@ -354,12 +474,23 @@ func FunctionFacts(fn *ast.FunctionStatement, tc *typechecker.TypeChecker) *opt.
 		if !ok || index.Dot || tc == nil || !tc.IndexProven(index.Token) {
 			return
 		}
-		facts.Add(opt.Fact{
+		proof, hasProof := tc.IndexProof(index.Token)
+		fact := opt.Fact{
 			Proposition: opt.Prop(FactIndexInExtent, index.String()),
 			Provenance:  opt.Checked,
 			Source:      "typechecker/extents.go IndexProven",
 			Scope:       fmt.Sprintf("line %d", index.Token.Line),
-		})
+		}
+		if hasProof {
+			fact.ID = proof.ID
+			fact.Proposition = opt.Prop(proof.Proposition, index.Index.String(), proof.Container)
+			fact.Source = proof.Witness
+			fact.Scope = proof.Scope
+			for _, dependency := range proof.Dependencies {
+				fact.Dependencies = append(fact.Dependencies, opt.Prop(dependency))
+			}
+		}
+		facts.Add(fact)
 	})
 	for _, op := range []string{"+", "|", "&", "^", "min", "max"} {
 		facts.Add(opt.Fact{
@@ -506,6 +637,10 @@ func Metrics(fn *asm.Function) opt.Metrics {
 	}
 	m.Instructions, m.Branches, m.Loads, m.Stores, m.Guards = whole.Instructions, whole.Branches, whole.Loads, whole.Stores, whole.Guards
 	m.LoopInstructions, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards = inLoops.Instructions, inLoops.Branches, inLoops.Loads, inLoops.Stores, inLoops.Guards
+	// The stall estimate (machine.StallEstimate): the total, and per loop
+	// the blocks the loop spans, by label.
+	stalls, stallsByLabel := machine.StallEstimate(fn)
+	m.Stalls = stalls
 	// The recurrence analysis (machine.LoopShapes) reads each loop's
 	// index, stride, and trip bound off the lifted body; a body the lift
 	// refuses keeps the register-increment heuristic below.
@@ -559,6 +694,12 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				body.MaxTrips = prev.Stride - 1
 			}
 		}
+		for i := loop.from; i <= loop.to; i++ {
+			if label, ok := fn.Items[i].(asm.Label); ok {
+				body.Stalls += stallsByLabel[label.Name]
+			}
+		}
+		m.LoopStalls += body.Stalls
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
 			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
 				// The analysis found the index: its stride and bound

@@ -1,0 +1,11 @@
+package hypervisor
+
+// Fixed Inner Shareable stage-2 maintenance/context-sync instruction slice.
+// Descriptor break/make, current VMID/regime selection, and proof that this
+// scope is suitable remain obligations of the caller's complete protocol.
+fn stage2_vmalls12e1is_context_sync() -> () {
+  arm64.dsb_ish()
+  arm64.tlbi_vmalls12e1is()
+  arm64.dsb_ish()
+  arm64.isb()
+}

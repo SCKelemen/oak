@@ -87,6 +87,12 @@ func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Enviro
 		}
 		return newError("arm64.%s is an architectural barrier and requires the native AArch64 backend", member)
 	}
+	if _, tlbi := semir.LookupArm64TLBI(member); tlbi {
+		if len(args) != 0 {
+			return newError("arm64.%s takes exactly zero arguments", member)
+		}
+		return newError("arm64.%s is a translation-maintenance machine operation and requires the native AArch64 backend", member)
+	}
 	if arm64VectorMembers[member] {
 		return evalArm64VectorIntrinsic(member, args, env)
 	}

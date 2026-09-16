@@ -70,7 +70,7 @@ func (c *Candidate) With(transform string, config any, facts ...Fact) *Candidate
 	out := &Candidate{
 		Applied: append(append([]string(nil), c.Applied...), transform),
 		Config:  config,
-		Facts:   append(append([]Fact(nil), c.Facts...), facts...),
+		Facts:   cloneFactSlice(append(append([]Fact(nil), c.Facts...), facts...)),
 	}
 	return out
 }
@@ -81,7 +81,15 @@ func (c *Candidate) Reconfigured(config any) *Candidate {
 	return &Candidate{
 		Applied: append([]string(nil), c.Applied...),
 		Config:  config,
-		Facts:   append([]Fact(nil), c.Facts...),
+		Facts:   cloneFactSlice(c.Facts),
 		Refined: c.Refined + 1,
 	}
+}
+
+func cloneFactSlice(facts []Fact) []Fact {
+	out := make([]Fact, len(facts))
+	for index, fact := range facts {
+		out[index] = cloneFact(fact)
+	}
+	return out
 }

@@ -366,7 +366,118 @@ count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
 
-## Found on the way## Found on the way
+## Select forms, 2026-09-16
+
+A conditional in value position is a compare and one conditional select
+(`docs/spec/94-assembler.md` §9 "Select forms"). On a clamp over a span,
+`total = total + (x < cap ? x | cap)`, the loop body:
+
+```
+  ldr  w5, [x0, w4, uxtw #2]        ldr  w5, [x0, w4, uxtw #2]
+  cmp  w5, w2                       cmp  w5, w2
+  b.hs +8                      ->   csel w9, w5, w2, lo
+  b    +8                           add  w3, w3, w9
+  mov  w5, w2                       add  w4, w4, #1
+  add  w3, w3, w5
+  add  w4, w4, #1
+```
+
+| clamp over 2^12 `u32` elements, best of seven over three runs | branch | select |
+| --- | ---: | ---: |
+| the comparison always takes one arm | 0.419–0.431 ns/element | 0.404–0.450 |
+| the comparison is unpredictable | 1.38–1.59 | 0.395–0.420 |
+
+Free where the branch predicts, and 3.4 times faster where it does not.
+This is the first increment in this run whose win the clock sees, and the
+reason is not the instruction count — six body instructions against seven
+— but the mispredict: half of a 16 KiB array at a cap in the middle of
+the data's range is the worst case for a predictor, and about a
+nanosecond an element is what it costs. The same data through the select
+runs at the speed of the loads.
+
+Worth recording as a limit of the cost model: it counts a branch at
+weight one whether or not the data decides it, so it cannot tell these
+two rows apart. It priced the select form below the branch form here for
+the right reason by accident — one instruction fewer — and would have
+made the same choice had the arms been ten instructions and the branch
+perfectly predicted.
+
+## Multiply-add forms, 2026-09-16
+
+An integer product and its addend are one instruction
+(`docs/spec/94-assembler.md` §9 "Multiply-add forms"). The whole of the
+change, on a `u32` dot product over a span:
+
+```
+  ldr   w9,  [x0,  w5, uxtw #2]        ldr   w9,  [x0,  w5, uxtw #2]
+  ldr   w10, [x21, w5, uxtw #2]        ldr   w10, [x21, w5, uxtw #2]
+  mul   w9,  w9, w10              ->   madd  w4,  w9, w10, w4
+  add   w4,  w4, w9
+  add   w5,  w5, #1                    add   w5,  w5, #1
+  cmp   w5,  w1                        cmp   w5,  w1
+  b.lo  loop_0                         b.lo  loop_0
+```
+
+Seven instructions an element become six, and the body stays proven —
+the verifier modeled `madd`, `msub`, and `mneg` before the lowering
+emitted them.
+
+| `u32` dot product, 2^12 elements (32 KiB, L1-resident) | best of seven, five runs |
+| --- | ---: |
+| `mul` then `add` | 0.389–0.459 ns/element |
+| `madd` | 0.425–0.458 ns/element |
+
+No difference: the ranges overlap and neither end is reliably ahead. One
+fewer instruction in a seven-instruction loop is fourteen percent of the
+issue, and this core had the slot to spare — the third increment in a row
+(with the reduction's remainder and the vector block loads) whose static
+saving an M4 absorbs. The saving is real and it is the instruction, not
+the nanosecond: it is worth the same to code size and to a core with a
+narrower issue width, and worth nothing here. Recording that is the
+point. The cost model counts instructions, so on this host it ranks
+candidates by something the clock does not measure, and a port-pressure
+or dependency-chain term is what would tell them apart.
+
+## Map vectorization, 2026-09-16
+
+The element-wise span maps `vectorize-maps` rewrites
+(`docs/spec/94-assembler.md` §9 "Map vectorization"; `map_add.oak`,
+`bench_map.c`, `run_map.sh`), measured over 2^20 elements (the byte map
+over 2^22 bytes, the same 4 MB), best of seven rounds of two hundred
+calls, the vectorized form as the search selects it against the scalar
+loop the search keeps when the transform is withheld
+(`OAK_OPT_SKIP=vectorize-maps`). Three runs on a host at load average
+47–71; every row's checksum agrees, and every row is proven at the bit
+level with the span memory it writes.
+
+| Kernel | scalar loop | one vector a trip (**selected**) | speedup |
+| --- | ---: | ---: | ---: |
+| `add_k` — `dst[i] = a[i] + k`, `u32`, ns/element | 0.394–0.426 | 0.142–0.157 | 2.7–3.0× |
+| `bump` — `v[i] = (v[i] ^ k) + 1` in place, `u32` | 0.407–0.466 | 0.123–0.127 | 3.2–3.7× |
+| `fmadd_k` — `dst[i] = a[i] * k + 0.5`, `f32` | 0.365–0.432 | 0.139–0.168 | 2.5–2.8× |
+| `sum_ab` — `dst[i] = a[i] + b[i]`, a zip, `u32` | 0.483–0.802 | 0.210–0.365 | 2.2–2.5× |
+| `xor_mask` — `dst[i] = a[i] ^ m`, `u8`, ns/byte | 0.453 | 0.028 | 16× |
+
+What the rows say:
+
+- **One vector a trip is enough for a map.** The reduction needed four
+  accumulators because its lanes form a loop-carried chain; a map carries
+  nothing across trips, so the four-element trip already runs near the
+  store bandwidth the host gives one core under this load, and the gain
+  is the 2–3× the lane count and the guard elision predict together.
+- **The byte map is where the lanes pay most.** Sixteen bytes a trip
+  against one, and the scalar loop's per-element guard and branch are the
+  same cost whatever the width: 0.45 ns a byte becomes 0.028, sixteen
+  times, the whole lane count.
+- **The zip is the slowest of the four word kernels either way** — three
+  streams against two — and the one with the widest spread between runs,
+  which is the memory system, not the code.
+- **The float map vectorizes because nothing reassociates.** `fmul` and
+  `fadd` round once per lane as the scalar operators do, so the license
+  (`Oak.Map.blocked_eq`) needs no law of `f32` where the reduction's
+  `fsum` stays scalar.
+
+## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a
   package-level array is refused, so `utf8.valid` as written stays on the

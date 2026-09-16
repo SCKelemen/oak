@@ -159,14 +159,19 @@ ml pilot's F25: the packages whose state lives in flat arenas extract, and
 the oracle's `view` package reaches Lean without being rewritten as pure
 functions over parameters. A read-only global stays a constant.
 
-**Seventh: `f32` arithmetic at the bit level, on request.** Lean's
+**Seventh: `f32` arithmetic and comparisons at the bit level, on request.** Lean's
 `Float32` is the host's binary32 with opaque arithmetic: it computes the
 right bits but a theorem cannot see how `+` rounds. Under `oak build -lean
 out.lean -lean-floats bits` the extraction renders `f32` addition,
 subtraction, and multiplication through `Oak.FloatOps.add32`, `sub32`, and
 `mul32` — each one `fma` with an exact operand, so one rounding of the
 exact result over the bit pattern, executable and defined — and a theorem
-about the extracted code reaches the rounding. `Oak.FloatOps.roundShift_eq_roundNat`
+about the extracted code reaches the rounding. Unary negation and `abs`
+likewise render through `Oak.FloatOps.neg32` and `abs32`; with the existing
+`copysign32`, these are exact sign-bit operations on finite values, signed
+zeros, and infinities. Lean's `Float32.ofBits` canonicalizes NaN sign and
+payload, matching the verifier's result-level NaN quotient; payload-observing
+bitcasts remain outside this refinement. `Oak.FloatOps.roundShift_eq_roundNat`
 and `roundTo_value` are the bridge to the evaluation discipline's integer
 model: the rounding `encode` performs on a significand is
 `Oak.Floats.roundNat`, and in the normal range the value it packs —
@@ -174,10 +179,55 @@ significand times its exponent's power — *is* `roundNat prec n`, so the
 bounds of `Oak.FloatBounds` are bounds on these functions wherever the
 exact result rounds to a normal number (the ml pilot's E4, RFC 0004's
 `bounded`). Subnormal and overflowing results follow IEEE 754-2019 in the
-code and are outside the integer model, as `Oak.Floats` says of itself. Division and the comparisons stay Lean's.
-`compiler/lean_float_bits_test.go` holds the three functions to the host's
-binary32 on edge and random operands; the default mode is unchanged, so an
-extraction that never states a rounding fact keeps Lean's operators.
+code and are outside the integer model, as `Oak.Floats` says of itself.
+The six comparison operators render through `Oak.FloatOps.eq32`, `ne32`,
+`lt32`, `le32`, `gt32`, and `ge32`: NaN is unordered, either signed zero equals
+the other, and nonzero values use the IEEE sign-magnitude order. Division and
+`f64` comparisons stay Lean's. `compiler/lean_float_bits_test.go` holds all
+twelve functions to binary32 on explicit zeros, infinities and NaNs plus edge
+and random operands—arithmetic against the host, sign operations against their
+exact bit transforms under the canonical-NaN carrier, and comparisons against
+the host's IEEE predicates. The default mode is unchanged, so an extraction
+that never states a rounding or bit-level comparison fact keeps Lean's
+operators. Pure guards compose comparison leaves with Boolean literals, `!`,
+`&&`, and `||`; the theorem is intentionally about effect-free leaves, where
+strict verifier conjunction/disjunction and Oak's short circuit have the same
+value. A value-position Bool conditional over these expressions keeps the same
+carriers in its guard and arms and renders as Lean `if`;
+`Oak.FloatLoweringRefinement.lowerFlow_eval` closes every finite nesting of
+such value conditionals. `lowerConditionalAssignment_eval` closes the first
+statement-position case as a corollary of the general
+`lowerConditionalBlock_eval`: any finite sequence of scalar `f32` locals may
+be initialized, and each arm may then assign any finite sequence in statement
+order from the same incoming scope. The theorem derives the union write set,
+merges each written name with the verifier's `iteTerm`, and proves that scope
+agrees with the tuple the extraction's selected do-block returns. Nested
+statement conditionals and effectful arms remain outside this slice.
+Pure `f32` calls compose too:
+arguments are evaluated in the caller scope, bound by the callee's ordered
+parameter list, and the straight-line callee body uses the same bit-level
+carriers. Borrowing, recursion, and effectful calls are outside this slice.
+Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
+`Oak.FloatLoweringRefinement.lowerWiden_eval` proves that extraction's
+`Float32.toFloat` and the verifier's width-changing `fcvt64` consume the same
+binary32 value. This is operation identity and width/operand composition, not
+an independent proof of IEEE conversion, NaN-payload mapping, the production
+evaluator, or either ISA instruction.
+Separately, `lowerF64_eval` closes binary64 `+`, `-`, `*`, `/`, and ordered
+FMA over parameters, already-rounded `UInt64` literal bits, straight-line
+local substitution, and leaves from the widening family. Both readings retain
+the same operation identity and operand order for explicit source trees:
+`a * b + c` remains a
+multiply followed by an add, while the explicit `fma` remains one ordered
+`Oak.FloatOps.fma64` application. The mixed production pin
+`f64(a + b) * x + y` retains verifier `fadd32`/`fcvt64`/`fmul64`/`fadd64`
+and extraction `Float32` addition/`.toFloat` followed by binary64 multiply/add.
+The widened leaf reads the function's initial binary32 parameter scope, not an
+arbitrary mixed-width local scope. Binary64 unary operations and comparisons,
+control flow, calls, memory, the Go evaluator, IEEE implementation details,
+and ISA semantics remain outside this theorem. Locals are modeled by pure
+substitution, so reuse may duplicate a term tree; the theorem does not claim
+runtime evaluation count or sharing.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

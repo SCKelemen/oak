@@ -477,9 +477,11 @@ generators by phase and records the proof kind and fact requirements of each.
 The bounded beam search materializes, de-duplicates, measures, seam-checks, and
 validates candidates through a lane-supplied driver. Static target costs guide
 selection but are never correctness evidence. The identity is always retained
-as the final fallback; checker-driven refinement may narrow a refused
-candidate, and verifier-gated transforms cannot ship on a trusted (unchecked)
-verdict.
+as the final fallback. Beam pruning also keeps the cheapest ungated candidate
+when possible, so a later verifier-gated machine transform cannot evict an
+independently admitted optimization. Checker-driven refinement may narrow a
+refused candidate, and verifier-gated transforms cannot ship on a trusted
+(unchecked) verdict.
 
 The first source and native rules are:
 
@@ -489,6 +491,7 @@ The first source and native rules are:
 | `source.canonical.bool.v1` | a built-in Bool identity after type checking and monomorphization; every non-literal operand remains exactly once, and no literal token is mutated | a fresh checker accepts the changed monomorphic program; the original specializing checker retains fact authority | double negation, `&&`/`\|\|` identities, and identity Bool comparisons are absent for every backend; literal negation waits for typed OptIR |
 | `source.canonical.integer.v1` | a zero/one identity whose checked result and retained operand have the same exact fixed-width integer type; floats, widening expressions, and user-defined operators are excluded, and the non-literal operand remains exactly once | the same cloned post-specialization recheck | redundant `+ 0`, `- 0`, `* 1`, `/ 1`, `\| 0`, `^ 0`, and shifts by zero are absent for every backend |
 | `elide-guards` | the exact accesses carry checked extent facts | the guardless assembly passes the lane seam checker and the selected body passes the native validation policy | per-access bounds guards are absent only where independently admitted |
+| `optir-emit` | a verified post-GVN/DCE/LICM CFG changed at least one operation and lies in the selector's closed vocabulary | target-neutral strict coloring or an independently verified and materialized spill plan succeeds; the selected assembly passes the seam checker and receives a proven or witnessed semantic-verifier verdict, never a trusted one | generic SSA cleanup and invariant motion affect shipping AArch64 and RV64 code |
 
 The native lane proposes its strength reduction, guard elimination, flag reuse,
 invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
@@ -694,33 +697,290 @@ the ordinary checked semantic model to this substrate for concrete scalar
 functions: fixed-width integers, Bool, unit, local assignments, structured
 branches and short-circuiting, exhaustive Bool matches, pre-test loops with
 explicit carried locals, value-preserving integer widening, and effect-marked
-calls. Unsupported memory, methods, kernels, protocol lowerings, and richer
-algebraic forms are per-function refusals, never partial projections.
+calls. Reads and whole-cell assignments of checked package globals whose types
+are Bool or fixed-width integers project as explicit region operations. A call
+mixed with those operations is admitted only when its exact direct internal
+callee and every transitive callee successfully project with no checked global
+writes outside the closed scalar-global vocabulary. A summary is empty
+`NoModRef` or an exact typed set of nonvolatile scalar-global may-effects:
+`Ref`, `Mod`, or `ModRef`. Summary writes are always partial definitions—never
+definite whole-region replacements—because a callee may execute its assignment
+conditionally. Foreign, bodyless, or recursive call graphs receive no such
+summary. Arrays, spans, pointers, partial accesses, methods, kernels, protocol
+lowerings, and richer algebraic forms are per-function refusals, never partial
+projections.
 
-The first analysis-only SCCP pass validates its operation vocabulary before
-computing exact constants and executable CFG edges. Its folds use Oak's exact
-fixed-width signed/unsigned arithmetic and trap boundaries rather than host or
-target arithmetic. Dominance-scoped CSE and fixed-point DCE produce a second,
-verified CFG from a closed vocabulary of total pure scalar operations. Exact
-operation code, types, operands, and ordered attributes must agree; proof facts
-move only when valid at the dominating definition. Calls, traps, memory,
-synchronization, unknown operations, and every explicitly effectful operation
-remain roots. `Compilation.OptIR()` returns the original CFG, SCCP evidence, the
-simplified candidate, and its report. Its loop analysis reports dominators,
+The SCCP analysis validates its operation vocabulary before computing exact
+constants and executable CFG edges. Its folds use Oak's exact fixed-width
+signed/unsigned arithmetic and trap boundaries rather than host or target
+arithmetic. A separate, bounded transform consumes only exact independently
+recomputed evidence to replace known closed total-pure results, select known
+branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
+preserves effectful and trapping operations and independently verifies its
+output. Before GVN, bounded fixed-point cleanup first removes unused non-entry
+block parameters and their exact incoming edge positions, then removes a
+phi-like block parameter only when every explicit incoming edge supplies the
+same dominating SSA value (or the parameter itself on a loop backedge). Entry
+parameters are excluded because their ABI inputs are implicit CFG predecessors.
+Operations, terminators, edge arguments, and proof facts are all uses. Each
+cleanup independently verifies the rewritten CFG. Dominance-scoped
+GVN and fixed-point DCE produce another verified CFG from a closed vocabulary
+of total pure scalar operations. Plain
+copies share a value number; exact commutative integer/equality operations and
+inverse order comparisons receive one canonical key. Result types and ordered
+attributes remain exact, and any unknown attribute disables operand
+normalization. Proof facts move only when valid at the retained dominating
+definition. Calls, traps, memory, synchronization, unknown operations, and
+every explicitly effectful operation remain roots. The first region-memory SSA
+substrate consumes explicit checked region metadata beside operation effects.
+It gives each region deterministic entry/definition/join versions, expands an
+opaque call to a clobber of every declared region, gives an authenticated
+`NoModRef` call no memory version or access, and represents an authenticated
+`Ref` call as exact reads that consume but do not define region versions.
+Authenticated `Mod` and `ModRef` calls create new partial definition versions;
+their incoming versions stay live whenever the output memory version is
+observed. It handles loop phis and binds its independently recomputed evidence
+to exact CFG and metadata fingerprints.
+Missing or inconsistent Mod/Ref information fails closed. A second analysis,
+under an explicit list of regions observable at normal return, propagates live
+definitions through reads and join/loop phis and reports overwritten exact
+writes as dead candidates. Partial writes keep their predecessor live; volatile
+accesses are roots. A separately verified DSE transform can now remove a dead
+operation only when it is the closed `store.region` form and metadata certifies
+one whole-region, nonvolatile write. It rewrites operation sites and metadata,
+then rebuilds MemorySSA. A separately verified load-forwarding transform
+removes only canonical nonvolatile region loads whose exact MemorySSA input
+proves the same typed value is already available from a dominating load or
+whole-region store. For a closed join or loop phi, it proceeds when every real
+predecessor has the exact typed value: either the operand of a direct
+whole-region nonvolatile store defining that incoming version or a canonical
+load of that version which dominates the predecessor terminator. It may instead
+materialize exactly one unavailable input when that input is the entry-memory
+version and its real predecessor branches unconditionally to the phi. The
+transform moves the removed canonical load's checked source/access identity to
+a fresh load immediately before that edge; it neither synthesizes authority nor
+speculates onto another path. It creates one fresh typed parameter in the phi
+block and appends the corresponding value to each edge. Loads in that block and
+blocks it dominates can share the parameter, allowing one preheader load and a
+latch store to carry a value through a loop body and its exit. Conceptual
+function-entry inputs, conditional/critical edges, multiple unavailable inputs,
+partial stores, call definitions, missing edges, type mismatches, and exhausted
+value identities fail closed. The report records both removals and insertions.
+The transform resolves later-removed predecessor loads before materializing
+edges, drops facts bound to removed SSA values, rewrites all uses and metadata
+sites, and rebuilds MemorySSA. The
+scalar-global projection first binds metadata to
+the exact structured operation identity while constructing CFG operation
+sites. It then independently resolves each projected operation's opaque access
+ID against a separate immutable typechecker-backed authority: source, region,
+access kind, scalar type, whole-region contract, and volatility must all match,
+the two projections must agree, and missing, duplicated, forged, or stale IDs
+fail closed. The same authority may carry an exact call-site record binding its
+source, resolved callee, and transitive summary fingerprint. That fingerprint
+also covers the canonical typed effect set, while child summaries bind the
+exact callee graph recursively; absence never implies any effect grade.
+Authority is an upper bound after verified
+rewrites, so a removed operation may leave an unused record, but every active
+operation must resolve exactly once. The record constructor seals transport
+identity only. Production additionally constructs a closed call-summary
+certificate from the final optimized root CFG and every reachable callee's
+original checked CFG and authority. A standalone OptIR checker defensively
+copies that graph, reprojects every node, rejects cycles, missing children,
+duplicate or unreachable nodes, requires exact authority coverage on every
+callee, recomputes canonical per-region joins bottom-up, and compares every
+call record's claimed fingerprint and accesses with the derived child. The
+root alone may retain unused upper-bound records after verified rewrites. Its
+deterministic child-before-parent proof trace is also checked by a smaller
+consumer which reads no CFG or hash: it admits unique names, exact summaries
+of already accepted children, exact typed per-region effect joins, a final
+root, and no unrelated nodes. A single checked CFG-order projection now feeds
+both summary derivation and the proof trace; there is no second unchecked ID
+scan. It rejects missing, unknown, duplicated, or simultaneous access/call
+IDs, moved sources, mismatched direct shapes or callees, and every untagged
+closed memory opcode or opaque effect. Exact mode proves every non-root
+authority record remains active; upper-bound mode permits only removed root
+records. `Oak.OptIRMemoryAuthorityProjection` models this structural
+operation-to-authority seam and proves exact active membership, exact-mode
+coverage, source/shape/callee inversion, and composition with the exact
+summary fold. `Oak.OptIRCallSummaryCertificate` models the following trace
+consumer and proves exact reachable read/write bits, closure, and topological
+acyclicity. Bounded Go tests pin representative projection, effect-join, and
+graph decisions to Lean examples. The Go boundary additionally checks the
+concrete CFG/SSA, source representation, opcode/effect/arity and value types,
+authority construction, fingerprints, and callee-summary claims. Those
+details remain outside the structural models, so the pins are not a universal
+implementation refinement. Its
+length-delimited certificate fingerprint binds the exact final root CFG,
+root authority, every reachable callee CFG/authority, and every derived
+summary. Both production region-memory selectors rerun the checker; a final
+active call whose summary feeds RegionMemorySSA without a certificate, a
+certificate with no such active call, or a template whose function identity
+differs from the root fails closed. A call-only `NoModRef` CFG consumes no
+memory-summary fact and stays on the ordinary call path. The certificate is
+also part of candidate and materialization identity. It authenticates the
+internal consistency of the compiler-supplied checked projection graph; it
+does not independently re-lower Oak source or identify the actual machine
+callee. Final semantic translation validation remains the independent
+source/body shipping gate. Every
+package-global region is observable at normal return. Projection, MemorySSA,
+liveness, evidence, DSE, and load forwarding are exact typed artifact-DAG nodes
+after LICM; each transform independently reruns its complete verifier before
+publishing a candidate. Changed final CFGs now enter AArch64 or RV64 native
+search for closed acyclic control flow containing exact scalar package-global
+reads and whole nonvolatile writes; direct scalar calls may be present only
+with authenticated exact `NoModRef`/`Ref`/`Mod`/`ModRef` summaries. A `Ref`
+call keeps the definitions it observes live for DSE without clobbering
+load-forwarding facts. A write-bearing call creates a new partial memory
+version, retains its predecessor conservatively, and blocks forwarding across
+the call. Every summary causes callee-only globals to be retained in the
+selected machine body without synthesizing caller memory operations. Both
+targets also admit
+exactly one call-free canonical natural loop with a unique preheader, conditional
+header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
+must contain the header phi joining entry memory with the exact body-store
+definition, and selection independently rechecks it. When no preheader load
+already supplies the entry value, load forwarding moves one authenticated body
+load to the unconditional preheader edge, promotes the phi to an SSA loop
+parameter, and removes the body and exit loads. The result has one preheader
+load and one body store. The resulting AArch64 and RV64 fixtures pass `asm.Check`;
+`asm.Verify` proves both their returned values and the package-global state
+they write against the corresponding Oak loop body. If promotion gives the
+same Oak value both a result-register carrier and a global-cell carrier, the
+verifier adds the global alias only after separately proving exact header
+equality and one-step preservation; a divergent store refuses. RV64 recognizes
+a scalar-global address only through exact `la` provenance. Direct positive
+and negative verifier tests prove the correct loop and refute a wrong store,
+closing the former trusted boundary for RV64 package-global loop-carried state.
+Arbitrary, nested, multi-latch, and multi-exit memory loops refuse. Each
+selector independently reprojects the
+immutable checked source-access authority over the exact final CFG, verifies
+rebuilt MemorySSA, and resolves opaque regions only through
+typechecker authority. The resulting descriptor must match a global
+already authorized by the assembler template. Bool and signed/unsigned
+8/16/32/64-bit cells use their exact ABI widths and canonical load extensions.
+The target's independently verified register plan, typed aligned spill frame,
+and reserved scratch discipline compose with those accesses. The resulting
+authority and final projection fingerprints are part of materialization
+identity. The resulting body still requires seam admission and a
+semantic-verifier verdict before selection. Broader memory loops, aggregate
+regions, critical-edge splitting, multiple unavailable phi inputs,
+conceptual-entry loop phis, partial/call-written versions, definite-write
+summaries, and calls in memory loops remain open; exact
+recursive `NoModRef`, `Ref`, `Mod`,
+and `ModRef` may-effect summaries and their standalone graph checker are
+implemented. Every OptIR direct call now carries its nonzero SSA result ID as
+non-emitted machine metadata. After all cleanup, register reallocation, and
+scheduling, candidate admission independently re-verifies the exact CFG and
+block-layout evidence, then requires the final AArch64 `bl` or RV64 `call`
+occurrences to be an exact permutation of the CFG's `{site ID, callee}`
+authority. Untagged, duplicated, missing, added, retargeted, malformed, or
+indirect calls fail closed before a cached or fresh semantic verdict can
+license selection. `Oak.OptIRMachineCallIdentity` proves the small
+collection/permutation checker; bounded production pins cover both targets
+and every refusal shape. This closes static machine-callee occurrence identity
+for all current scalar OptIR calls, including the certificate-bearing memory
+path. It does not prove call placement, dynamic invocation count, argument ABI
+correctness, callee implementation equivalence, or non-OptIR lowering.
+Universal concrete CFG/validator-to-Lean refinement and source re-lowering
+remain TCB-closure work.
+`Compilation.OptIR()` returns
+the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
+deterministic report. Its
+loop analysis reports dominators,
 back edges, natural-loop structure and nesting, canonical preheaders, and typed
 affine loop-carried recurrences. A unique continuation comparison is normalized
 around the induction value; an exact constant trip count is reported only when
 fixed-width range reasoning proves that every update through loop exit avoids
 wrap. Symbolic, multi-exit, and wrapping cases remain unproved rather than
 borrowing mathematical-integer semantics. Its LICM candidate runs after
-CSE/DCE and moves only closed total-pure operations whose operands are
+GVN/DCE and moves only closed total-pure operations whose operands are
 available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to
-the SSA result type. The cloned output is independently verified and carries a
-deterministic movement report. This substrate is not yet an emission path: no
-backend consumes either OptIR CFG, and no OptIR transform can authorize a
-code-generation change until equivalence validation is connected.
+the SSA result type. That fact is no longer self-authorizing metadata: its
+opaque ID, scope, witness, dependencies, and type must match immutable
+authority exported by the specializing typechecker after projection and after
+every SSA rewrite. The cloned output is independently verified and carries a
+deterministic movement report. A changed post-LICM CFG is now an AArch64 or
+RV64 native candidate. Target-neutral SSA liveness/interference analysis assigns
+abstract colors; dead block parameters may share a color only with one another,
+while live and conditional-edge values remain distinct. A deterministic
+target-neutral spill planner partitions high-pressure SSA values between colors
+and typed/aligned abstract stack slots, never spills ABI precolors, and
+independently verifies interference and safe slot reuse. AArch64 materializes
+the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
+using width- and signedness-correct traffic plus register/slot parallel copies.
+For the canonical pre-test spill-loop shape shared with RV64, allocation keeps
+the Bool predicate in a register so only verifier-supported word/doubleword
+frame state crosses the backedge; a loop-carried `u32` fixture is proved from
+Oak body through the emitted AArch64 loop.
+For AArch64, a fingerprint-bound target-independent analysis may replace a
+spilled constant or a bounded copy chain rooted in one with reconstruction at
+each use. A target cost check keeps expensive literals in their slots; accepted
+recipes remove the corresponding frame storage and traffic and are checked
+again during selection. RV64's consumer is narrower: an acyclic CFG with no
+effect except the closed direct-call form may materialize, as may one exact
+call-free natural-loop shape with a unique preheader, conditional header,
+straight-line latch, and return exit. The loop predicate is kept in a register;
+only aligned four- and eight-byte spill slots may cross its backedge. Nested,
+irreducible, multi-latch, multi-exit, narrow-slot, and unfamiliar cycles refuse.
+RV64 verifies the same plan again, checks canonical slot widths and alignments,
+lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses reserved
+`t5`/`t6` scratches for at most two ordinary spilled operands. Loads preserve
+the target's canonical signed/narrow representation, each spilled result is
+stored immediately, spilled conditions reload explicitly outside the loop
+slice, and simultaneous register/slot copies materialize SSA edges and call
+arguments. On acyclic CFGs, independently verified spilled Bool/integer
+constants are reconstructed when their exact RV64 encoded-word cost is no
+greater than one definition store plus their use loads; fully reconstructed
+slots leave the compacted physical frame, while a shared slot remains if any
+resident value needs it. Copy-chain and cyclic rematerialization, and broader
+RV64 loop spill traffic, still refuse.
+
+Each selector maps colors to caller-saved registers, destroys block arguments
+with edge-local parallel copies, and selects the closed Bool and
+8/16/32/64-bit total-integer vocabulary. AArch64 narrow values are normalized in
+W registers. RV64 maintains the psABI's canonical sign-extended 32-bit
+representation and explicitly zero-extends `u32` when widening to `u64`; Bool
+and narrow ABI inputs are canonicalized before use. Both selectors also admit a
+first closed call slice: the target must be a known direct Oak function, with
+zero through eight matching Bool or 8/16/32/64-bit scalar arguments and exactly
+one matching scalar result. Its OptIR operation must carry exactly `EffectCall`
+and one nonempty `callee` attribute, with no other effect or attribute metadata.
+Because every allocatable color is caller-saved, every other non-unit value
+must be dead across the call. An admitted calling body saves and restores
+AArch64 `x30` or RV64 `ra`, places zero through eight arguments simultaneously
+in the integer ABI registers with a cycle-safe parallel copy, and reapplies the
+target's Bool/narrow normalization to the result. Both selectors may source
+arguments from verified spill slots and compose spill storage with the link-
+register save in one checked frame. RV64 keeps its slots below a dedicated
+sixteen-byte save area and caps the combined frame at 2032 bytes. A ninth or
+stack argument refuses, as do unknown, indirect, method, generic, external, or
+multi-result calls, other effects, traps, unauthenticated source-memory/call
+combinations, stack parameters, unfamiliar operations, an oversized frame, or
+unsupported RV64 pressure. When checked scalar region memory is present, the
+production selector reprojects immutable call authority over the exact final
+CFG and accepts only zero-access `NoModRef` or exact typed nonvolatile partial
+`Ref`/`Mod`/`ModRef` sites. Every site must resolve each region through the
+checked authority and exact pre-authorized assembler global; the selector
+retains those globals but emits no caller memory operation for the summary
+itself. Caller-supplied
+metadata, unknown clobbers, stale call IDs, changed callees/effects, and mutated
+projections refuse, as do all memory-carrying calls in cyclic CFGs. The ordinary
+call frame, live-across-call restrictions,
+seam checker, and semantic verifier remain unchanged; target tests require both
+the callee and package-global state to appear in a proven verdict.
+
+A target-independent block-layout analysis assigns neutral branch weights
+except for loop continuation/backedges, which receive a qualitative 8:1
+preference. Its exact-fingerprint proposal is a verified permutation and never
+changes CFG edges. The AArch64 selector consumes only the order: unconditional
+branches to the next block disappear, and a copy-free conditional uses
+`cbz`/`cbnz` with the preferred successor as fallthrough. SSA edge copies remain
+explicit. The direct lowering remains the identity,
+and `optir-emit` is verifier-gated: it ships only after seam admission and a
+proven or witnessed semantic verdict against the Oak body; the evidence grade
+is retained and reported rather than conflated with proof.
 
 Compiler stages, analyses, candidates, and verification verdicts are not yet
 one end-to-end dependency DAG, but the generic OptIR analysis chain and native

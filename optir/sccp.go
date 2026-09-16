@@ -366,7 +366,41 @@ func validateSCCPOperation(operation Operation, types map[ValueID]Type) error {
 				return fmt.Errorf("compares unsupported type %s", operandType)
 			}
 		}
+	case OpLoadRegion:
+		if err := require(1, 0); err != nil {
+			return err
+		}
+		if operation.Results[0].Type != TypeBool {
+			if _, _, ok := integerType(operation.Results[0].Type); !ok {
+				return fmt.Errorf("loads unsupported type %s", operation.Results[0].Type)
+			}
+		}
+		if len(operation.Effects) != 1 || operation.Effects[0] != EffectReadMemory {
+			return fmt.Errorf("has effects %v, want exactly one memory-read effect", operation.Effects)
+		}
+	case OpStoreRegion:
+		if err := require(0, 1); err != nil {
+			return err
+		}
+		operandType := types[operation.Operands[0]]
+		if operandType != TypeBool {
+			if _, _, ok := integerType(operandType); !ok {
+				return fmt.Errorf("stores unsupported type %s", operandType)
+			}
+		}
+		if len(operation.Effects) != 1 || operation.Effects[0] != EffectWriteMemory {
+			return fmt.Errorf("has effects %v, want exactly one memory-write effect", operation.Effects)
+		}
 	case OpCall:
+		if len(operation.Results) != 1 {
+			return fmt.Errorf("has %d results, want exactly one", len(operation.Results))
+		}
+		if len(operation.Effects) != 1 || operation.Effects[0] != EffectCall {
+			return fmt.Errorf("has effects %v, want exactly one call effect", operation.Effects)
+		}
+		if len(operation.Attributes) != 1 {
+			return fmt.Errorf("has %d attributes, want exactly one callee attribute", len(operation.Attributes))
+		}
 		_, err := uniqueAttribute(operation.Attributes, AttributeCallee)
 		return err
 	}

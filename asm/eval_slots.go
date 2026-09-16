@@ -8,14 +8,13 @@ package asm
 // allocation and a rehash per witness input.
 type termEvaluator struct {
 	terms []*term
-	slots map[*term]int
 	value []uint64
 	stamp []uint32
 	gen   uint32
 }
 
 func newTermEvaluator(roots ...*term) *termEvaluator {
-	ev := &termEvaluator{slots: make(map[*term]int)}
+	ev := &termEvaluator{}
 	for _, root := range roots {
 		ev.number(root)
 	}
@@ -24,18 +23,31 @@ func newTermEvaluator(roots ...*term) *termEvaluator {
 	return ev
 }
 
-func (ev *termEvaluator) number(t *term) {
-	// Constants are not numbered: they cost nothing to evaluate. Every ID
-	// stays local to this evaluator, so variable-order goroutines may number
-	// and evaluate one shared, immutable term graph concurrently.
-	if t == nil || t.kind == termConst {
-		return
+// fork reuses an evaluator's immutable term numbering while giving one
+// concurrent evaluation attempt private memo values and generation stamps.
+// The source evaluator must be fully constructed before any forks start.
+func (ev *termEvaluator) fork() *termEvaluator {
+	return &termEvaluator{
+		terms: ev.terms,
+		value: make([]uint64, len(ev.terms)+1),
+		stamp: make([]uint32, len(ev.terms)+1),
 	}
-	if _, numbered := ev.slots[t]; numbered {
+}
+
+// numbered reports whether t already carries this evaluator's id.
+func (ev *termEvaluator) numbered(t *term) bool {
+	return t.id > 0 && int(t.id) <= len(ev.terms) && ev.terms[t.id-1] == t
+}
+
+func (ev *termEvaluator) number(t *term) {
+	// Constants are not numbered: they cost nothing to evaluate, and a
+	// constant term may be shared between theorems (trapPath), which
+	// theorems decided in parallel must not write to.
+	if t == nil || t.kind == termConst || ev.numbered(t) {
 		return
 	}
 	ev.terms = append(ev.terms, t)
-	ev.slots[t] = len(ev.terms)
+	t.id = int32(len(ev.terms))
 	ev.number(t.left)
 	ev.number(t.right)
 	ev.number(t.cond)
@@ -55,11 +67,11 @@ func (ev *termEvaluator) evaluate(t *term, env map[string]uint64) uint64 {
 }
 
 func (ev *termEvaluator) eval(t *term, env map[string]uint64) uint64 {
-	id, numbered := ev.slots[t]
-	if t.kind == termConst || !numbered {
+	if t.kind == termConst || !ev.numbered(t) {
 		// A term outside the numbered roots: evaluated without the memo.
 		return t.evalUncached(env, ev)
 	}
+	id := t.id
 	if ev.stamp[id] == ev.gen {
 		return ev.value[id]
 	}

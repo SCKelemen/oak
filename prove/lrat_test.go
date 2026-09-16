@@ -1,6 +1,9 @@
 package prove
 
 import (
+	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -139,12 +142,10 @@ func TestLRATWordsAgree(t *testing.T) {
 		t.Fatalf("words counted %+v, text %+v", fromWords, fromText)
 	}
 	cases := map[string]struct{ proof, want string }{
-		"no conflict":          {"5 2 0 1 0\n6 0 5 3 4 0\n", "reach no conflict"},
-		"hint not unit":        {"5 0 1 0\n", "neither unit nor the conflict"},
-		"dead hint":            {"5 2 0 1 2 0\n5 d 1 2 0\n6 0 5 1 2 0\n", "names no live clause"},
-		"id does not increase": {"4 2 0 1 2 0\n", "does not increase"},
-		"no empty clause":      {"5 2 0 1 2 0\n", "never derives the empty clause"},
-		"satisfied hint":       {"5 -2 0 1 2 0\n", "already satisfied"},
+		"no conflict":     {"5 2 0 1 0\n6 0 5 3 4 0\n", "reach no conflict"},
+		"hint not unit":   {"5 0 1 0\n", "neither unit nor the conflict"},
+		"no empty clause": {"5 2 0 1 2 0\n", "never derives the empty clause"},
+		"satisfied hint":  {"5 -2 0 1 2 0\n", "already satisfied"},
 	}
 	for name, c := range cases {
 		words, err := EncodeLRATWords(lratFormula, c.proof)
@@ -165,5 +166,131 @@ func TestLRATWordsAgree(t *testing.T) {
 	unknown[8+int(words[3])] = 2
 	if _, err := CheckLRATWords(unknown); err == nil || !strings.Contains(err.Error(), "neither an addition") {
 		t.Errorf("an unknown step kind must be refused, got %v", err)
+	}
+}
+
+func TestEncodeLRATWordsStable(t *testing.T) {
+	want := []uint32{
+		LRATMagic, 2, 4, 12, 19, 6, 9, 0,
+		2, 1, 3,
+		2, 0, 3,
+		2, 1, 2,
+		2, 0, 2,
+		0, 5, 1, 3, 2, 1, 2,
+		1, 5, 2, 1, 2,
+		0, 6, 0, 3, 5, 3, 4,
+	}
+	got, err := EncodeLRATWords(lratFormula, lratProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("encoded words\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestEncodeLRATWordsRemapsSparseClauseIDs(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("sparse source id exceeds a 32-bit host int")
+	}
+	const sparse = uint64(1 << 40)
+	formula := "p cnf 1 2\n1 0\n-1 0\n"
+	proof := fmt.Sprintf("%d 1 0 1 0\n%d d %d 0\n%d 0 1 2 0\n", sparse, sparse, sparse, sparse+1)
+	words, err := EncodeLRATWords(formula, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint32{
+		LRATMagic, 1, 2, 4, 16, 4, 3, 0,
+		1, 1,
+		1, 0,
+		0, 3, 1, 1, 1, 1,
+		1, 3, 1, 3,
+		0, 4, 0, 2, 1, 2,
+	}
+	if !slices.Equal(words, want) {
+		t.Fatalf("encoded sparse IDs\n got %v\nwant %v", words, want)
+	}
+	if _, err := CheckLRATWords(words); err != nil {
+		t.Fatalf("dense replay: %v", err)
+	}
+}
+
+func TestEncodeLRATWordsRefusesInvalidReferences(t *testing.T) {
+	formula := "p cnf 1 2\n1 0\n-1 0\n"
+	cases := map[string]string{
+		"absent hint":        "3 0 9 0\n",
+		"future hint":        "3 0 4 0\n",
+		"absent deletion":    "2 d 9 0\n",
+		"duplicate deletion": "3 1 0 1 0\n3 d 3 3 0\n",
+		"deleted hint":       "3 1 0 1 0\n3 d 3 0\n4 0 3 2 0\n",
+		"addition ordering":  "3 1 0 1 0\n3 0 1 2 0\n",
+		"deletion ordering":  "3 1 0 1 0\n2 d 1 0\n",
+	}
+	for name, proof := range cases {
+		if _, err := EncodeLRATWords(formula, proof); err == nil {
+			t.Errorf("%s: encoded an invalid clause reference", name)
+		}
+	}
+}
+
+func TestEncodeLRATWordsRejectsMinInt(t *testing.T) {
+	minInt := -int(^uint(0)>>1) - 1
+	proof := fmt.Sprintf("1 %d 0 0\n", minInt)
+	if _, err := EncodeLRATWords("p cnf 1 0\n", proof); err == nil {
+		t.Fatal("encoded MinInt as a certificate literal")
+	}
+}
+
+func TestEncodeLRATWordsRepresentability(t *testing.T) {
+	max := maxLRATWord
+	if got, err := lratUint32("test count", max); err != nil || uint64(got) != max {
+		t.Fatalf("maximum word: got %d, %v", got, err)
+	}
+	if _, err := lratUint32("test count", max+1); err == nil {
+		t.Fatal("accepted a count larger than uint32")
+	}
+	if got, err := lratAdd("test aggregate", max-1, 1); err != nil || got != max {
+		t.Fatalf("maximum aggregate: got %d, %v", got, err)
+	}
+	if _, err := lratAdd("test aggregate", max, 1); err == nil {
+		t.Fatal("accepted an overflowing aggregate")
+	}
+	if _, err := lratAdd("test aggregate", max+1, 0); err == nil {
+		t.Fatal("accepted an already overflowing aggregate")
+	}
+
+	if strconv.IntSize != 64 {
+		return
+	}
+	const maxUint32 = uint64(1<<32 - 1)
+	const tooLarge = uint64(1 << 32)
+	words, err := EncodeLRATWords(fmt.Sprintf("p cnf %d 1\n0\n", maxUint32), "")
+	if err != nil {
+		t.Fatalf("maximum variable header: %v", err)
+	}
+	if words[1] != ^uint32(0) {
+		t.Fatalf("variable header %d, want uint32 max", words[1])
+	}
+
+	words, err = EncodeLRATWords(fmt.Sprintf("p cnf %d 1\n%d 0\n", maxLRATLiteralVariable, maxLRATLiteralVariable), "")
+	if err != nil {
+		t.Fatalf("maximum literal: %v", err)
+	}
+	if words[9] != ^uint32(0) {
+		t.Fatalf("literal word %d, want uint32 max", words[9])
+	}
+
+	cases := map[string]struct {
+		formula string
+		proof   string
+	}{
+		"variable count": {fmt.Sprintf("p cnf %d 0\n", tooLarge), ""},
+		"literal":        {fmt.Sprintf("p cnf %d 1\n%d 0\n", maxUint32, maxLRATLiteralVariable+1), ""},
+	}
+	for name, test := range cases {
+		if _, err := EncodeLRATWords(test.formula, test.proof); err == nil {
+			t.Errorf("%s: encoded a value outside the word protocol", name)
+		}
 	}
 }

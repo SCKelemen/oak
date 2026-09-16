@@ -594,10 +594,11 @@ func TestRV64LiftAndCoalesce(t *testing.T) {
 	if alloc.Coalesced+alloc.Propagated != 2 || !strings.Contains(got, "addi a0, a0, #1") {
 		t.Fatalf("coalesced %d propagated %d:\n%s", alloc.Coalesced, alloc.Propagated, got)
 	}
-	// Unknown shapes refuse: an indirect jump, a vector register.
+	// Unknown shapes refuse: an indirect jump, an instruction the lane
+	// never emits.
 	for _, body := range [][]asm.Item{
 		{ins("jr", rx(5))},
-		{ins("vadd.vv", asm.Register{Text: "v1", Class: asm.ClassRV64V, Num: 1, Lane: -1}, asm.Register{Text: "v2", Class: asm.ClassRV64V, Num: 2, Lane: -1}, asm.Register{Text: "v3", Class: asm.ClassRV64V, Num: 3, Lane: -1}), ins("ret")},
+		{ins("vfwcvt.f.x.v", asm.Register{Text: "v1", Class: asm.ClassRV64V, Num: 1, Lane: -1}, asm.Register{Text: "v2", Class: asm.ClassRV64V, Num: 2, Lane: -1}), ins("ret")},
 	} {
 		if _, err := Lift(rvfn(body...)); err == nil {
 			t.Errorf("lift admitted %s", text(body))
@@ -1100,5 +1101,320 @@ func TestShapesInvariantBoundInHeader(t *testing.T) {
 	}
 	if len(shapes) != 1 || shapes[0].Index == nil || shapes[0].Stride != 16 || shapes[0].BoundReg != (Reg{GPR, 9}) {
 		t.Fatalf("%v", shapes[0])
+	}
+}
+
+func TestScheduleSeparatesLoadsFromUses(t *testing.T) {
+	// The load's consumer waits four cycles; two independent adds fill
+	// the gap. The store keeps its order against the load, and the compare
+	// stays before its branch.
+	f := fn(
+		ins("ldr", w(9), mem(x(0), 0)),
+		ins("add", w(10), w(9), imm(1)),
+		ins("add", w(11), w(1), imm(2)),
+		ins("add", w(12), w(2), imm(3)),
+		ins("str", w(11), mem(x(0), 8)),
+		ins("cmp", w(10), w(12)),
+		bcond("hs", "done_1"),
+		ins("ret"),
+		label("done_1"),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11), x(12)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := lifted.Stalls()
+	moved := lifted.Schedule()
+	after, _ := lifted.Stalls()
+	got := text(lifted.Items())
+	if moved == 0 || after >= before {
+		t.Fatalf("moved %d, stalls %d -> %d:\n%s", moved, before, after, got)
+	}
+	ldr, use, st, cmp, br := strings.Index(got, "ldr w9"), strings.Index(got, "add w10, w9"), strings.Index(got, "str w11"), strings.Index(got, "cmp w10"), strings.Index(got, "b.hs")
+	if !(ldr < use && use < cmp && cmp < br && ldr < st) {
+		t.Fatalf("order:\n%s", got)
+	}
+	if strings.Index(got, "add w11") > use || strings.Index(got, "add w12") > use {
+		t.Fatalf("the gap was not filled:\n%s", got)
+	}
+}
+
+func TestScheduleKeepsMemoryAndCallOrder(t *testing.T) {
+	f := fn(
+		ins("str", w(1), mem(x(0), 0)),
+		ins("ldr", w(9), mem(x(0), 4)),
+		ins("add", w(10), w(9), imm(1)),
+		ins("bl", sym("g")),
+		ins("ldr", w(11), mem(x(0), 8)),
+		ins("add", w(0), w(11), w(10)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11), x(30)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifted.Schedule()
+	got := text(lifted.Items())
+	if strings.Index(got, "str w1") > strings.Index(got, "ldr w9") || strings.Index(got, "bl g") > strings.Index(got, "ldr w11") || strings.Index(got, "add w10") > strings.Index(got, "bl g") {
+		t.Fatalf("order:\n%s", got)
+	}
+}
+
+func TestScheduleKeepsTLBIAsMaintenanceBoundary(t *testing.T) {
+	f := fn(
+		ins("str", w(1), mem(x(0), 0)),
+		ins("add", w(9), w(2), imm(1)),
+		ins("tlbi", asm.Option{Name: "vmalls12e1is"}),
+		ins("ldr", w(10), mem(x(0), 4)),
+		ins("add", w(11), w(10), w(9)),
+		ins("ret"),
+	)
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var maintenance *Instr
+	for _, instruction := range lifted.Instrs {
+		if instruction.Asm.Mnemonic == "tlbi" {
+			maintenance = instruction
+			break
+		}
+	}
+	if maintenance == nil || !lifted.t.barrier(maintenance) {
+		t.Fatal("TLBI did not lift as an immovable scheduling boundary")
+	}
+	lifted.Schedule()
+	got := text(lifted.Items())
+	store := strings.Index(got, "str w1")
+	tlbi := strings.Index(got, "tlbi")
+	load := strings.Index(got, "ldr w10")
+	if store < 0 || tlbi < 0 || load < 0 || !(store < tlbi && tlbi < load) {
+		t.Fatalf("store/TLBI/load order changed:\n%s", got)
+	}
+}
+
+func TestScheduleRV64(t *testing.T) {
+	f := rvfn(
+		ins("ld", rx(5), mem(rx(10), 0)),
+		ins("addi", rx(6), rx(5), imm(1)),
+		ins("addi", rx(7), rx(11), imm(2)),
+		ins("add", rx(10), rx(6), rx(7)),
+		ins("ret"),
+	)
+	out, moved, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if moved == 0 || strings.Index(got, "addi t2") > strings.Index(got, "addi t1") {
+		t.Fatalf("moved %d:\n%s", moved, got)
+	}
+}
+
+func TestScheduleKeepsBondedPairs(t *testing.T) {
+	// The RV64 length normalization `slli s3, s2, 32; srli s3, s3, 32` is
+	// one definition to the checker only as adjacent halves: the scheduler
+	// moves the independent copies around the pair, never between.
+	f := rvfn(
+		ins("mv", rx(18), rx(11)),
+		ins("slli", rx(19), rx(18), imm(32)),
+		ins("mv", rx(9), rx(10)),
+		ins("mv", rx(20), rx(12)),
+		ins("srli", rx(19), rx(19), imm(32)),
+		ins("ld", rx(5), mem(rx(9), 0)),
+		ins("add", rx(10), rx(5), rx(19)),
+		ins("ret"),
+	)
+	out, _, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	lines := strings.Split(got, "\n")
+	adjacent := false
+	for i := 0; i+1 < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "slli s3") && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "srli s3") {
+			adjacent = true
+		}
+	}
+	if !adjacent {
+		t.Fatalf("the normalization halves came apart:\n%s", got)
+	}
+}
+
+func rvv(n int) asm.Register {
+	return asm.Register{Text: "v" + itoa(n), Class: asm.ClassRV64V, Num: n, Lane: -1}
+}
+
+func vopt(name string) asm.Option { return asm.Option{Name: name} }
+
+// The RV64 lane's vector loop lifts: the vector registers are a class of
+// their own that keeps its assignment, the configuration is a barrier no
+// vector instruction crosses, and the recurrence analysis reads the
+// index's stride off the loop.
+func TestLiftRV64VectorLoop(t *testing.T) {
+	f := rvfn(
+		ins("li", rx(14), imm(0)),
+		asm.Label{Name: "loop_1"},
+		ins("bgeu", rx(14), rx(11), asm.Symbol{Name: "done_2"}),
+		ins("slli", rx(5), rx(14), imm(2)),
+		ins("add", rx(5), rx(10), rx(5)),
+		ins("vsetivli", rx(0), imm(16), vopt("e8"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vle8.v", rvv(1), mem(rx(5), 0)),
+		ins("vsetivli", rx(0), imm(4), vopt("e32"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vmv.v.x", rvv(2), rx(12)),
+		ins("vadd.vv", rvv(1), rvv(1), rvv(2)),
+		ins("vsetivli", rx(0), imm(16), vopt("e8"), vopt("m1"), vopt("ta"), vopt("ma")),
+		ins("vse8.v", rvv(1), mem(rx(5), 0)),
+		ins("addi", rx(14), rx(14), imm(4)),
+		ins("j", asm.Symbol{Name: "loop_1"}),
+		asm.Label{Name: "done_2"},
+		ins("ret"),
+	)
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatalf("lift: %v", err)
+	}
+	shapes, err := lifted.Shapes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 1 || shapes[0].Stride != 4 {
+		t.Fatalf("shapes %v: want one loop of stride 4", shapes)
+	}
+	out, _, err := Schedule(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	// Every vector instruction stays between the configurations it was
+	// emitted under.
+	lines := strings.Split(got, "\n")
+	config := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "vsetivli"):
+			config = line
+		case strings.HasPrefix(line, "vle8") || strings.HasPrefix(line, "vse8"):
+			if !strings.Contains(config, "16") {
+				t.Fatalf("%s under %q:\n%s", line, config, got)
+			}
+		case strings.HasPrefix(line, "vadd") || strings.HasPrefix(line, "vmv"):
+			if !strings.Contains(config, "#4") { // the four-lane e32 configuration
+
+				t.Fatalf("%s under %q:\n%s", line, config, got)
+			}
+		}
+	}
+	re, alloc, err := ReallocateWith(f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text(re.Items), "vadd.vv v1, v1, v2") {
+		t.Fatalf("the vector registers must keep their assignment (%d renamed):\n%s", alloc.Renamed, text(re.Items))
+	}
+}
+
+// The binary search's inner loop: the shift folds into the add's shifted
+// operand and the increment into a csinc, two instructions fewer.
+func TestFuseShiftAndIncrement(t *testing.T) {
+	f := fn(
+		ins("sub", w(9), w(23), w(7)),
+		ins("lsr", w(9), w(9), imm(1)),
+		ins("add", w(25), w(7), w(9)),
+		ins("ldr", x(26), mem(x(0), 0)),
+		ins("add", w(10), w(25), imm(1)),
+		ins("cmp", x(26), x(6)),
+		ins("csel", w(7), w(10), w(7), asm.Condition{Code: "lo"}),
+		ins("csel", w(23), w(25), w(23), asm.Condition{Code: "hi"}),
+		ins("add", w(0), w(7), w(23)),
+		ins("ret"),
+	)
+	out, fused, err := Fuse(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	shifted, incremented := false, false
+	for _, item := range out.Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
+			if sh, isShifted := ins.Operands[2].(asm.Shifted); isShifted && sh.Kind == "lsr" && sh.Amount == 1 && sh.Reg.Num == 9 {
+				shifted = true
+			}
+		}
+		if ins.Mnemonic == "csinc" && len(ins.Operands) == 4 {
+			if c, isCond := ins.Operands[3].(asm.Condition); isCond && c.Code == "hs" && ins.Operands[2].(asm.Register).Num == 25 && ins.Operands[1].(asm.Register).Num == 7 {
+				incremented = true
+			}
+		}
+	}
+	if fused != 2 || !shifted || !incremented || strings.Contains(got, "lsr w9") || strings.Contains(got, "add w10") {
+		t.Fatalf("fused %d (shifted %v, incremented %v):\n%s", fused, shifted, incremented, got)
+	}
+	// Not fused: the shift's source rewritten before the add, a
+	// two-use intermediate.
+	g := fn(
+		ins("lsr", w(9), w(8), imm(2)),
+		ins("add", w(8), w(8), imm(4)),
+		ins("add", w(10), w(7), w(9)),
+		ins("add", w(11), w(10), w(9)),
+		ins("add", w(0), w(11), w(8)),
+		ins("ret"),
+	)
+	out, fused, err = Fuse(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fused != 0 {
+		t.Fatalf("fused %d:\n%s", fused, text(out.Items))
+	}
+}
+
+// A rotated loop's two exit tests fold into one conditional compare:
+// `b.hs done; cbz w5, loop` becomes `ccmp w5, #0, #0, lo; b.eq loop`.
+func TestFuseExitTests(t *testing.T) {
+	f := fn(
+		ins("mov", w(5), w(0)),
+		asm.Label{Name: "loop_4"},
+		ins("add", w(3), w(3), imm(1)),
+		ins("cmp", w(3), w(4)),
+		asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_5"}}},
+		ins("cbz", w(5), asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("mov", w(0), w(3)),
+		ins("ret"),
+	)
+	out, fused, err := FuseExits(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ccmp, back bool
+	for _, item := range out.Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "ccmp" && len(ins.Operands) == 4 {
+			if c, isCond := ins.Operands[3].(asm.Condition); isCond && c.Code == "lo" && ins.Operands[2].(asm.Immediate).Value == 0 {
+				ccmp = true
+			}
+		}
+		if ins.Mnemonic == "b" && ins.Cond == "eq" {
+			back = true
+		}
+		if ins.Mnemonic == "cbz" {
+			t.Fatalf("the cbz survived:\n%s", text(out.Items))
+		}
+	}
+	if fused != 1 || !ccmp || !back {
+		t.Fatalf("fused %d (ccmp %v, back %v):\n%s", fused, ccmp, back, text(out.Items))
 	}
 }

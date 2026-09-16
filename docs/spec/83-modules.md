@@ -655,10 +655,13 @@ decodes uniquely (`Oak.Modules.Mangle`: `unescape_escape`, `escape_noDouble`,
 prefix: `oak_example_dcom_shello_sgeometry__make`. Diagnostics demangle
 internal names back to `path.name`.
 
-**Reserved identifiers.** User identifiers may not contain `__`
-(`OAK-M0108`). Every internal name does (`mangle_reserved`), so user code can
-never spell — or capture — an internal name. This is the capture-freedom
-argument for the whole-program elaboration.
+**Reserved identifiers.** User identifiers may not contain `__` or end in
+the backend-owned `_neon_abi` or `_rvv_abi` suffix (`OAK-M0108`). Every
+internal package name contains `__` (`mangle_reserved`), so user code can
+never spell — or capture — an internal name. The suffix reservation likewise
+keeps a source declaration from colliding with the generated native entry of
+a fixed-vector function. These checks run before elaboration introduces any
+internal spelling.
 
 **Scope is per package.** The flattened program is an implementation device,
 not a scoping rule. The names legal inside a package — its locals,
@@ -710,7 +713,7 @@ Family `M` (`15-diagnostics.md`). Structural tests assert each code.
 | `OAK-M0105` | `alias.name`: no such member |
 | `OAK-M0106` | `alias.name`: member not `pub` |
 | `OAK-M0107` | alias misuse: used as a value or redeclared, bound twice inconsistently, colliding with a declaration or compiler-known library, unused import |
-| `OAK-M0108` | identifier or alias contains the reserved sequence `__` |
+| `OAK-M0108` | identifier or alias contains `__` or ends in a reserved native ABI suffix |
 | `OAK-M0109` | sealed import: member outside the signature, or the package lacks a signature member with the demanded kind |
 | `OAK-M0110` | projection of a `pub(opaque)` type outside its package |
 | `OAK-M0111` | `import(...)` in an illegal position; imports after declarations; bootstrap import bound or sealed |

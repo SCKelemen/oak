@@ -2,11 +2,18 @@ package compiler
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
 )
 
 // The verdict cache (compiler/verdict_cache.go): a second build of the same
@@ -24,7 +31,7 @@ func TestVerdictCache(t *testing.T) {
 			"other: (a: u32) -> u32 = a * u32(3)\n" +
 			"main: (): i32 { assert(twice(u32(1)) > u32(0))\n  assert(other(u32(1)) == u32(3))\n  0 }\n"
 	}
-	tally := func(source string, fresh bool) (fromCache, verified int, verdicts map[string]string) {
+	tally := func(source string, fresh bool) (fromCache, verified int, verdicts map[string]string, native map[string]asm.Verdict) {
 		t.Helper()
 		verdicts = map[string]string{}
 		comp := New().WithSource("cache.oak", source).WithNativeBodies()
@@ -45,16 +52,17 @@ func TestVerdictCache(t *testing.T) {
 				}
 			}
 		})
-		if _, err := comp.EmitNative(HostObjectFormat()).Get(); err != nil {
+		model, err := comp.Check().Get()
+		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		return fromCache, verified, verdicts
+		return fromCache, verified, verdicts, model.NativeVerdicts
 	}
-	cold, total, first := tally(program("a + u32(1)"), false)
+	cold, total, first, firstNative := tally(program("a + u32(1)"), false)
 	if cold != 0 || total < 3 {
 		t.Fatalf("a cold build must verify every body itself, got %d of %d from the cache", cold, total)
 	}
-	warm, again, second := tally(program("a + u32(1)"), false)
+	warm, again, second, secondNative := tally(program("a + u32(1)"), false)
 	if warm != total || again != total {
 		t.Fatalf("a second build of the same program must take every verdict from the cache, got %d of %d", warm, again)
 	}
@@ -63,14 +71,248 @@ func TestVerdictCache(t *testing.T) {
 			t.Errorf("%s: the cached verdict differs:\n  %s\n  %s", name, verdict, second[name])
 		}
 	}
+	for label, verdicts := range map[string]map[string]asm.Verdict{"cold": firstNative, "warm": secondNative} {
+		if got := strings.Join(verdicts["twice"].Callees, ","); got != "inc" {
+			t.Fatalf("%s twice dependency metadata = %q, want inc", label, got)
+		}
+	}
+	closureInput := make(map[string]asm.Verdict, len(secondNative))
+	for name, verdict := range secondNative {
+		closureInput[name] = verdict
+	}
+	inc := closureInput["inc"]
+	inc.Kind = asm.VerdictTrusted
+	closureInput["inc"] = inc
+	if got := provenRestingOnUnproven(closureInput)["twice"]; got != "inc" {
+		t.Fatalf("warm cached caller did not retain verified-profile closure: twice via %q", got)
+	}
 	// A change to inc's body invalidates inc, its caller twice, and main
 	// (which reaches inc through twice); other keeps its key.
-	changed, changedTotal, _ := tally(program("a + u32(2)"), false)
+	changed, changedTotal, _, _ := tally(program("a + u32(2)"), false)
 	if changedTotal != total || changed != 1 {
 		t.Fatalf("after a callee change exactly the bodies reaching it must be re-verified, got %d of %d from the cache", changed, changedTotal)
 	}
-	fresh, freshTotal, _ := tally(program("a + u32(2)"), true)
+	fresh, freshTotal, _, _ := tally(program("a + u32(2)"), true)
 	if fresh != 0 || freshTotal != total {
 		t.Fatalf("WithVerifyFresh must bypass the cache, got %d of %d", fresh, freshTotal)
+	}
+}
+
+func TestVerdictCacheRoundTripsDependencies(t *testing.T) {
+	dir := t.TempDir()
+	key := strings.Repeat("a", 64)
+	want := asm.Verdict{
+		Kind:    asm.VerdictProven,
+		Message: "proof line one\nproof line two",
+		Callees: []string{"leaf", "unicodeλ"},
+	}
+	functions := map[string]*ast.FunctionStatement{
+		"leaf":     {},
+		"unicodeλ": {},
+	}
+	storeVerdict(dir, key, want)
+	got, ok := cachedVerdict(dir, key, functions)
+	if !ok || got.Kind != want.Kind || got.Message != want.Message ||
+		strings.Join(got.Callees, "\x00") != strings.Join(want.Callees, "\x00") {
+		t.Fatalf("cached verdict = %#v, %v; want %#v, true", got, ok, want)
+	}
+	got.Callees[0] = "mutated"
+	again, ok := cachedVerdict(dir, key, functions)
+	if !ok || again.Callees[0] != "leaf" {
+		t.Fatalf("cache returned aliased dependency storage: %#v, %v", again, ok)
+	}
+}
+
+func TestVerdictCacheRejectsMalformedDependencyRecords(t *testing.T) {
+	dir := t.TempDir()
+	functions := map[string]*ast.FunctionStatement{"leaf": {}}
+	cases := []struct {
+		name string
+		data string
+	}{
+		{name: "legacy v1", data: "1\nlegacy proof"},
+		{name: "wrong version", data: `{"version":1,"kind":1,"message":"proof","callees":[]}`},
+		{name: "missing callees", data: `{"version":2,"kind":1,"message":"proof"}`},
+		{name: "null callees", data: `{"version":2,"kind":1,"message":"proof","callees":null}`},
+		{name: "invalid kind", data: `{"version":2,"kind":9,"message":"proof","callees":[]}`},
+		{name: "empty callee", data: `{"version":2,"kind":1,"message":"proof","callees":[""]}`},
+		{name: "duplicate callee", data: `{"version":2,"kind":1,"message":"proof","callees":["leaf","leaf"]}`},
+		{name: "unknown callee", data: `{"version":2,"kind":1,"message":"proof","callees":["other"]}`},
+		{name: "unknown field", data: `{"version":2,"kind":1,"message":"proof","callees":[],"proof":true}`},
+		{name: "trailing data", data: `{"version":2,"kind":1,"message":"proof","callees":[]} false`},
+		{name: "truncated", data: `{"version":2,"kind":1`},
+	}
+	for i, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			key := fmt.Sprintf("%064x", i+1)
+			if err := os.WriteFile(filepath.Join(dir, key+".verdict"), []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if verdict, ok := cachedVerdict(dir, key, functions); ok {
+				t.Fatalf("malformed cache record was accepted: %#v", verdict)
+			}
+		})
+	}
+	if verdict, ok := cachedVerdict(dir, "../escape", functions); ok {
+		t.Fatalf("unsafe cache key was accepted: %#v", verdict)
+	}
+}
+
+func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
+	functionMap := func(rootBody, helperBody string) (map[string]*ast.FunctionStatement, *ast.FunctionStatement) {
+		source := "root: (x: u32): u32 = " + rootBody + "\nhelper: (x: u32): u32 = " + helperBody + "\n"
+		p := parser.New(layout.New(scanner.New(source)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		functions := map[string]*ast.FunctionStatement{}
+		for _, statement := range program.Statements {
+			if function, ok := statement.(*ast.FunctionStatement); ok {
+				functions[function.Name.Value] = function
+			}
+		}
+		return functions, functions["root"]
+	}
+
+	before, rootBefore := functionMap("x", "x + u32(1)")
+	after, rootAfter := functionMap("x", "x + u32(2)")
+	machine := &asm.Function{
+		Name:      "root",
+		Arch:      asm.ArchArm64,
+		Signature: rootBefore,
+		Items: []asm.Item{
+			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: "helper"}}},
+		},
+	}
+	beforeKey := verdictCacheKey(machine, rootBefore, before, "")
+	machine.Signature = rootAfter
+	afterKey := verdictCacheKey(machine, rootAfter, after, "")
+	if beforeKey == afterKey {
+		t.Fatal("machine-only scalar callee did not contribute its source identity to the cache key")
+	}
+
+	vectorFunctionMap := func(helperBody string) (map[string]*ast.FunctionStatement, *ast.FunctionStatement) {
+		source := "root: (x: u32): u32 = x\ndouble: (v: simd.U8x16): simd.U8x16 = " + helperBody + "\n"
+		p := parser.New(layout.New(scanner.New(source)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		functions := map[string]*ast.FunctionStatement{}
+		for _, statement := range program.Statements {
+			if function, ok := statement.(*ast.FunctionStatement); ok {
+				functions[function.Name.Value] = function
+			}
+		}
+		return functions, functions["root"]
+	}
+	vectorBefore, vectorRootBefore := vectorFunctionMap("simd.add_u8x16(v, v)")
+	vectorAfter, vectorRootAfter := vectorFunctionMap("simd.sub_u8x16(v, v)")
+	vectorSymbol := "double" + asm.VectorEntrySuffix(asm.ArchArm64)
+	vectorMachine := &asm.Function{
+		Name:      "root",
+		Arch:      asm.ArchArm64,
+		Signature: vectorRootBefore,
+		Items: []asm.Item{
+			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: vectorSymbol}}},
+		},
+	}
+	vectorBeforeKey := verdictCacheKey(vectorMachine, vectorRootBefore, vectorBefore, "")
+	vectorMachine.Signature = vectorRootAfter
+	vectorAfterKey := verdictCacheKey(vectorMachine, vectorRootAfter, vectorAfter, "")
+	if vectorBeforeKey == vectorAfterKey {
+		t.Fatal("machine-only vector callee did not contribute its source identity to the cache key")
+	}
+
+	before, rootBefore = functionMap("x", "x + u32(1)")
+	after, rootAfter = functionMap("x", "x + u32(2)")
+	_, rewritten := functionMap("helper(x)", "x")
+	machine = &asm.Function{Name: "root", Arch: asm.ArchArm64, Signature: rootBefore, Body: rewritten.Body}
+	beforeKey = verdictCacheKey(machine, rootBefore, before, "")
+	machine.Signature = rootAfter
+	afterKey = verdictCacheKey(machine, rootAfter, after, "")
+	if beforeKey == afterKey {
+		t.Fatal("a callee reachable only from the verified rewritten body did not contribute to the cache key")
+	}
+}
+
+func TestVerdictCacheMachineCalleesAgreeWithStrictResolver(t *testing.T) {
+	parse := func(source string) map[string]*ast.FunctionStatement {
+		p := parser.New(layout.New(scanner.New(source)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		functions := map[string]*ast.FunctionStatement{}
+		for _, statement := range program.Statements {
+			if function, ok := statement.(*ast.FunctionStatement); ok {
+				functions[function.Name.Value] = function
+			}
+		}
+		return functions
+	}
+	versions := func() (map[string]*ast.FunctionStatement, map[string]*ast.FunctionStatement) {
+		before := parse("root: (x: u32): u32 = x\nhelper: (x: u32): u32 = x + u32(1)\ndouble: (v: simd.U8x16): simd.U8x16 = simd.add_u8x16(v, v)\n")
+		after := parse("root: (x: u32): u32 = x\nhelper: (x: u32): u32 = x + u32(2)\ndouble: (v: simd.U8x16): simd.U8x16 = simd.sub_u8x16(v, v)\n")
+		return before, after
+	}
+	for _, arch := range []string{asm.ArchArm64, asm.ArchRV64} {
+		arch := arch
+		t.Run(arch, func(t *testing.T) {
+			activeSuffix := asm.VectorEntrySuffix(arch)
+			oppositeSuffix := asm.VectorEntrySuffix(asm.ArchArm64)
+			if arch == asm.ArchArm64 {
+				oppositeSuffix = asm.VectorEntrySuffix(asm.ArchRV64)
+			}
+			tests := []struct {
+				name   string
+				symbol string
+				mutate func(map[string]*ast.FunctionStatement)
+			}{
+				{name: "canonical scalar", symbol: "helper"},
+				{name: "active vector", symbol: "double" + activeSuffix},
+				{name: "unsuffixed vector", symbol: "double"},
+				{name: "scalar suffix", symbol: "helper" + activeSuffix},
+				{name: "opposite suffix", symbol: "double" + oppositeSuffix},
+				{name: "alias", symbol: "alias", mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["alias"] = functions["helper"]
+				}},
+				{name: "key name mismatch", symbol: "helper", mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["helper"] = functions["double"]
+				}},
+				{name: "suffixed shadow", symbol: "double" + activeSuffix, mutate: func(functions map[string]*ast.FunctionStatement) {
+					functions["double"+activeSuffix] = functions["helper"]
+				}},
+			}
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					before, after := versions()
+					if test.mutate != nil {
+						test.mutate(before)
+						test.mutate(after)
+					}
+					_, resolved := asm.ResolveNativeCallee(arch, test.symbol, before)
+					mnemonic := "bl"
+					if arch == asm.ArchRV64 {
+						mnemonic = "call"
+					}
+					machine := &asm.Function{
+						Name:      "root",
+						Arch:      arch,
+						Signature: before["root"],
+						Items: []asm.Item{
+							asm.Instruction{Mnemonic: mnemonic, Operands: []asm.Operand{asm.Symbol{Name: test.symbol}}},
+						},
+					}
+					beforeKey := verdictCacheKey(machine, before["root"], before, "")
+					machine.Signature = after["root"]
+					afterKey := verdictCacheKey(machine, after["root"], after, "")
+					if changed := beforeKey != afterKey; changed != resolved {
+						t.Fatalf("cache dependency changed = %v, strict resolver = %v", changed, resolved)
+					}
+				})
+			}
+		})
 	}
 }

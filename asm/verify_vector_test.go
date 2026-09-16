@@ -3,6 +3,8 @@ package asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // The movemask sequence the native backend emits (nativegen/simd.go
@@ -68,6 +70,36 @@ func TestVerifyVectorContract(t *testing.T) {
 	lanes := verifyCase(t, decl, "simd.add_u8x16(v, v)", "  bind v0 = v\n  add v0.4s, v0.4s, v0.4s\n  ret")
 	if lanes.Kind != VerdictMismatch {
 		t.Fatalf("adding at the wrong lane width must be a mismatch, got %s: %s", lanes.Kind, lanes.Message)
+	}
+}
+
+func TestVerifyVectorResultRetainsCalleeDependency(t *testing.T) {
+	callee, err := parseSignatureWithBody("double: (v: simd.U8x16) -> simd.U8x16 = simd.add_u8x16(v, v)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := "through_double: (v: simd.U8x16) -> simd.U8x16"
+	symbol := "double" + VectorEntrySuffix(ArchArm64)
+	unit, errs := ParseUnit("vector_call.oakasm", decl+" = {\n  bind v0 = v\n  clobber x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n  bl "+symbol+"\n  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := unit.Functions[0]
+	fn.Callees = map[string]*ast.FunctionStatement{"double": callee}
+	sig, err := parseSignature(decl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := Check(fn, sig, map[string]bool{symbol: true}); len(findings) != 0 {
+		t.Fatalf("checker: %v", findings)
+	}
+	spec, err := parseSignatureWithBody(decl + " = double(v)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := Verify(fn, sig, spec.Body)
+	if verdict.Kind != VerdictProven || strings.Join(verdict.Callees, ",") != "double" {
+		t.Fatalf("a proven vector caller must retain its callee dependency, got %s: %s, callees %v", verdict.Kind, verdict.Message, verdict.Callees)
 	}
 }
 

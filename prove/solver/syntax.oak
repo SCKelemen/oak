@@ -2081,7 +2081,7 @@ step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
                 w[pa + u32(1)] = NONE
                 w[pa + u32(2)] = u32(0)
                 w[pa + u32(3)] = u32(0)
-                sr_add_symbol(s, w, f, rp_word(rx, raw, rps + i, u32(0)), t)
+                _ = sr_add_symbol(s, w, f, rp_word(rx, raw, rps + i, u32(0)), t)
               }
             }
             i = i + u32(1)

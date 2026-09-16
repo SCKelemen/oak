@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -182,18 +183,41 @@ func guardWrites(writes []*spanWrite, cond *term) []*spanWrite {
 	for _, w := range writes {
 		guard := cond
 		if w.guard != nil {
-			guard = binaryTerm("and", truncate(w.guard, 1), cond)
+			guard = conjoin(truncate(w.guard, 1), cond)
 		}
 		out = append(out, &spanWrite{index: w.index, value: w.value, guard: guard, memory: w.memory})
 	}
 	return out
 }
 
+// sameWrite reports two writes that are the same store: one entry, or
+// the same index, value and guard as terms — a store both paths make
+// after they meet again, built afresh on each (`w[at + 1] = 0` after a
+// conditional), whose terms denote the same values on either path.
+func sameWrite(a, b *spanWrite) bool {
+	if a == b {
+		return true
+	}
+	if a.memory != b.memory || (a.guard == nil) != (b.guard == nil) {
+		return false
+	}
+	if a.guard != nil && !equalTerms(a.guard, b.guard) {
+		return false
+	}
+	return equalTerms(a.index, b.index) && equalTerms(a.value, b.value)
+}
+
 // mergeWrites joins the write logs of a fork's two paths: the writes both
 // made before the fork (the shared prefix) stay as they are, the taken
 // path's own writes run under cond and the fall-through path's under its
-// negation. The two remainders are exclusive, so their order in the merged
-// log is immaterial.
+// negation, and the writes both made after they met again (the common
+// suffix, sameWrite) follow once, unguarded by the fork. The two
+// remainders are exclusive, so their order in the merged log is
+// immaterial; the suffix's stores come after either remainder on both
+// paths, so they come after both in the merged log. Without the suffix a
+// store past a conditional is logged once per path and the log doubles
+// at every conditional (the prover's `protocol_line_done`: nine writes to
+// the Oak side's five after one push, twenty-seven to eight after two).
 func mergeWrites(cond *term, taken, fallThrough map[string][]*spanWrite) map[string][]*spanWrite {
 	if len(taken) == 0 && len(fallThrough) == 0 {
 		return nil
@@ -212,9 +236,14 @@ func mergeWrites(cond *term, taken, fallThrough map[string][]*spanWrite) map[str
 		for shared < len(t) && shared < len(f) && t[shared] == f[shared] {
 			shared++
 		}
+		suffix := 0
+		for shared+suffix < len(t) && shared+suffix < len(f) && sameWrite(t[len(t)-1-suffix], f[len(f)-1-suffix]) {
+			suffix++
+		}
 		log := append([]*spanWrite{}, t[:shared]...)
-		log = append(log, guardWrites(t[shared:], cond)...)
-		log = append(log, guardWrites(f[shared:], notTerm(cond))...)
+		log = append(log, guardWrites(t[shared:len(t)-suffix], cond)...)
+		log = append(log, guardWrites(f[shared:len(f)-suffix], notTerm(cond))...)
+		log = append(log, t[len(t)-suffix:]...)
 		merged[span] = log
 	}
 	return merged
@@ -271,7 +300,7 @@ func withTrap(effects *pathEffects, trap *term) *pathEffects {
 // the newest store on the path at that index, else the entry memory
 // (element), which in a concrete run is the witness memory's value.
 func (x *pathExecutor) elementIn(state *symbolicState, span string, index *term, width int) *term {
-	return memoryAt(state.writes[span], index, x.element(span, index, width))
+	return x.noteRead(span, len(state.writes[span]), index, memoryAt(state.writes[span], index, x.element(span, index, width)))
 }
 
 // spanStore executes a store through a span parameter's base: the
@@ -541,10 +570,20 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		// that differ where a later write overrides them, or writes under
 		// complementary guards logged in opposite orders — leaves the
 		// decision to the memories themselves, never refutes on its own.
-		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name], width); aligned {
+		pairs, misaligned := alignedWrites(exec.writes[name], lowering.writes[name], width)
+		if misaligned == "" {
 			decided := true
-			for _, pair := range pairs {
+			oakReads := oakReadsByPrefix(lowering.reads)
+			aligned := map[*term]*term{}
+			for k, pair := range pairs {
+				// The pairs decide in log order, so every write before this
+				// pair's is proven when it is decided: the machine's reads
+				// over those prefixes are the Oak side's (alignReads).
+				pair.asm = alignReads(pair.asm, exec.reads, oakReads, lowering.reads, pair.write, aligned)
 				if verdict := decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, ""); verdict.Kind != VerdictProven {
+					if os.Getenv("OAK_VERIFY_TRACE") != "" {
+						fmt.Fprintf(os.Stderr, "verify %s: the aligned writes of %s: pair %d of %d not proven (%s)\n  asm: %s\n  oak: %s\n", fn.Name, name, k, len(pairs), verdict.Message, pair.asm, pair.oak)
+					}
 					decided = false
 					break
 				}
@@ -552,6 +591,43 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 			if decided {
 				continue
 			}
+		} else if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: the writes of %s do not align: %s\n", fn.Name, name, misaligned)
+		}
+		if exec.deferMemory && exec.joins == nil && len(exec.writes[name]) != len(lowering.writes[name]) {
+			// The logs differ in length with every path run to its end: a
+			// store past a conditional logged once per path (mergeWrites).
+			// The memory decision at a symbolic index over such a log
+			// exhausts the diagrams for seconds and proves nothing the run
+			// merging at the joins (verifyChunk) would not prove faster;
+			// it is left to deferredSpans, for after that run.
+			exec.deferredSpans = func() Verdict {
+				exec.deferMemory = false
+				return decideSpans(fn, lowering, exec, result)
+			}
+			return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s (the span %s): agrees with its Oak body on every witness input (evidence, not proof: the write logs differ in length, %d and %d, with every path run to its end)", fn.Name, name, len(exec.writes[name]), len(lowering.writes[name]))}
+		}
+		// The loop verifier's pointwise theorem also applies to straight-line
+		// effects. It can prove equal masked indices and modular narrow values
+		// that are not one linear form, without constructing the nested
+		// fresh-index memory expression. Failure proves nothing and retains the
+		// whole-memory decision below as the fallback.
+		pointwise := func(premise *term) bool {
+			budget := &nodeBudget{remaining: loopProofNodeBudget}
+			implies := func(premise, a, b *term) (bool, bool) {
+				return impliesEqualWithin(premise, a, b, lowering.declaredWidth, budget)
+			}
+			return writeLogsEqualUnder(lowering.writes[name], exec.writes[name], premise, implies)
+		}
+		// A proof without the function domain is stronger and often much
+		// cheaper: trap/path formulas unrelated to the write cannot dominate
+		// the guard decision. Failure consumes only this attempt's budget.
+		if pointwise(constTerm(1, 1)) {
+			continue
+		}
+		premise := lowering.domainCondition()
+		if premise != nil && pointwise(premise) {
+			continue
 		}
 		asmMemory := memoryAt(exec.writes[name], at, entry)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
@@ -569,43 +645,168 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 }
 
 // writePair is one equality the aligned fast path decides: two values at
-// the element width, or two guards at one bit.
+// the element width, two indices at 32 bits, or two guards at one bit;
+// write is the log position it belongs to.
 type writePair struct {
 	asm, oak *term
 	width    int
+	write    int
+}
+
+// spanRead is a read of a span's memory through the write log (memoryAt):
+// the span, the log's length when read — the prefix the value is over —
+// and the index. Each side notes its reads (pathExecutor.noteRead,
+// oakLowering.noteRead) so that alignReads can share them.
+type spanRead struct {
+	span  string
+	depth int
+	index *term
+}
+
+// readKey names the reads over one prefix of one span's log.
+type readKey struct {
+	span  string
+	depth int
+}
+
+// noteRead records t as the read of span at index over the log's first
+// depth writes; a read that folded to the entry element or a constant
+// needs no note.
+func noteRead(table map[*term]spanRead, span string, depth int, index, t *term) {
+	if t.kind == termConst || t.kind == termParam || t.kind == termSelect {
+		return
+	}
+	table[t] = spanRead{span: span, depth: depth, index: index}
+}
+
+func (x *pathExecutor) noteRead(span string, depth int, index, t *term) *term {
+	if x.concrete {
+		return t
+	}
+	if x.reads == nil {
+		x.reads = map[*term]spanRead{}
+	}
+	noteRead(x.reads, span, depth, index, t)
+	return t
+}
+
+func (lo *oakLowering) noteRead(span string, depth int, index, t *term) *term {
+	if lo.concrete != nil {
+		return t
+	}
+	if lo.reads == nil {
+		lo.reads = map[*term]spanRead{}
+	}
+	noteRead(lo.reads, span, depth, index, t)
+	return t
+}
+
+// oakReadsByPrefix indexes the Oak side's reads by span and depth.
+func oakReadsByPrefix(reads map[*term]spanRead) map[readKey][]*term {
+	out := map[readKey][]*term{}
+	for node, r := range reads {
+		out[readKey{r.span, r.depth}] = append(out[readKey{r.span, r.depth}], node)
+	}
+	return out
+}
+
+// alignReads rewrites the machine side's term for the aligned fast path:
+// a read of a span over a prefix of the log that alignment has proven —
+// every write before position upto equal on the two sides in guard, index
+// and value — is the same value as the Oak side's read of that span over
+// the same prefix at an equal index, so the machine's read node becomes
+// the Oak node. The two sides then meet in the reads through the log, and
+// a pair whose operands are such reads (the stack pointer of an
+// accumulator in the same span, read back after each push) decides by
+// its structure where the memory's conditional chains over address sums
+// exhausted the diagrams. Indices are compared aligned themselves, in
+// linear form or as terms.
+func alignReads(t *term, asmReads map[*term]spanRead, oakReads map[readKey][]*term, oakTable map[*term]spanRead, upto int, memo map[*term]*term) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	out := t
+	if r, isRead := asmReads[t]; isRead && r.depth <= upto {
+		index := alignReads(r.index, asmReads, oakReads, oakTable, upto, memo)
+		form := index.linearAt(32)
+		for _, cand := range oakReads[readKey{r.span, r.depth}] {
+			if cand.width != t.width {
+				continue
+			}
+			candIndex := oakTable[cand].index
+			if known, equal := indexRelation(form, candIndex); (known && equal) || (!known && equalTerms(index, candIndex)) {
+				out = cand
+				break
+			}
+		}
+	}
+	if out == t {
+		cond := alignReads(t.cond, asmReads, oakReads, oakTable, upto, memo)
+		left := alignReads(t.left, asmReads, oakReads, oakTable, upto, memo)
+		right := alignReads(t.right, asmReads, oakReads, oakTable, upto, memo)
+		if cond != t.cond || left != t.left || right != t.right {
+			copied := *t
+			copied.cond, copied.left, copied.right = cond, left, right
+			copied.id, copied.kbDone = 0, false
+			out = &copied
+		}
+	}
+	memo[t] = out
+	return out
 }
 
 // alignedWrites pairs the values of two write logs that are the same
 // sequence of writes at the same indices (each index pair equal in linear
-// normal form): the values, and — for writes guarded on both sides, as a
-// store under a conditional is — the guards, decided as one-bit terms.
-// False when the logs differ in length, a write is guarded on one side
-// only, or an index pair is not known equal.
-func alignedWrites(asm, oak []*spanWrite, width int) ([]writePair, bool) {
+// normal form, or a pair to decide when the forms cannot relate them):
+// the values, and — for writes guarded on both sides, as a store under a
+// conditional is — the guards, decided as one-bit terms.
+// The reason is empty when aligned, otherwise why not: the logs differ in
+// length, a write is guarded on one side only, or an index pair is not
+// known equal.
+func alignedWrites(asm, oak []*spanWrite, width int) ([]writePair, string) {
 	if len(asm) == 0 || len(asm) != len(oak) {
-		return nil, false
+		return nil, fmt.Sprintf("%d writes on the asm side and %d on the Oak side", len(asm), len(oak))
 	}
 	var pairs []writePair
 	for i := range asm {
-		if (asm[i].guard == nil) != (oak[i].guard == nil) || asm[i].memory != "" || oak[i].memory != "" {
-			return nil, false
+		if (asm[i].guard == nil) != (oak[i].guard == nil) {
+			return nil, fmt.Sprintf("write %d is guarded on one side only", i)
+		}
+		if asm[i].memory != "" || oak[i].memory != "" {
+			return nil, fmt.Sprintf("write %d is a loop memory marker", i)
 		}
 		known, equal := indexRelation(asm[i].index.linearAt(32), oak[i].index)
-		if !known || !equal {
-			return nil, false
+		if known && !equal {
+			return nil, fmt.Sprintf("the indices of write %d differ (asm %s, Oak %s)", i, asm[i].index, oak[i].index)
 		}
 		if asm[i].guard != nil {
 			// Guarded on both sides: the guards must agree, and the values
-			// where the guard holds (elsewhere the store does not happen).
+			// — and the indices the linear forms cannot relate (an index
+			// read through the log, a conditional) — where the guard holds
+			// (elsewhere the store does not happen).
+			// The pairs decide in order, so the guards are proven equivalent
+			// before the index and the value: the Oak guard stands on both
+			// sides of those, and a value the two sides build alike (their
+			// reads aligned, alignReads) is equal by its structure alone.
 			ga, go_ := truncate(asm[i].guard, 1), truncate(oak[i].guard, 1)
-			pairs = append(pairs, writePair{asm: ga, oak: go_, width: 1})
+			pairs = append(pairs, writePair{asm: ga, oak: go_, width: 1, write: i})
+			if !known {
+				zero := constTerm(0, 32)
+				pairs = append(pairs, writePair{asm: iteTerm(go_, asm[i].index, zero), oak: iteTerm(go_, oak[i].index, zero), width: 32, write: i})
+			}
 			zero := constTerm(0, width)
-			pairs = append(pairs, writePair{asm: iteTerm(ga, asm[i].value, zero), oak: iteTerm(go_, oak[i].value, zero), width: width})
+			pairs = append(pairs, writePair{asm: iteTerm(go_, asm[i].value, zero), oak: iteTerm(go_, oak[i].value, zero), width: width, write: i})
 			continue
 		}
-		pairs = append(pairs, writePair{asm: asm[i].value, oak: oak[i].value, width: width})
+		if !known {
+			pairs = append(pairs, writePair{asm: asm[i].index, oak: oak[i].index, width: 32, write: i})
+		}
+		pairs = append(pairs, writePair{asm: asm[i].value, oak: oak[i].value, width: width, write: i})
 	}
-	return pairs, true
+	return pairs, ""
 }
 
 // decideEffects decides the package cells and then the span memories

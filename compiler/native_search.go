@@ -83,7 +83,20 @@ func (d *nativeDriver) Measure(c *opt.Candidate) opt.Metrics {
 
 // Check runs the seam checker.
 func (d *nativeDriver) Check(c *opt.Candidate) []string {
-	return asm.Check(c.Body.(*asm.Function), d.source, d.symbols)
+	var facts map[string]typechecker.IndexProof
+	if d.tc != nil {
+		facts = d.tc.IndexProofs()
+	}
+	function := c.Body.(*asm.Function)
+	findings := asm.CheckWithFacts(function, d.source, d.symbols, facts)
+	if lane, ok := c.Config.(nativegen.Lane); ok && lane.UseOptIR {
+		if lane.OptIR == nil {
+			findings = append(findings, "compiler: OptIR machine-call identity has no CFG authority")
+		} else if err := checkOptIRMachineCallIdentity(*lane.OptIR, function); err != nil {
+			findings = append(findings, err.Error())
+		}
+	}
+	return findings
 }
 
 // Validate runs the verifier, through the verdict cache
@@ -97,7 +110,7 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 	if d.cacheDir != "" {
 		key = verdictCacheKey(fn, d.source, d.functions, d.declarations)
 	}
-	verdict, cached := cachedVerdict(d.cacheDir, key)
+	verdict, cached := cachedVerdict(d.cacheDir, key, d.functions)
 	if !cached {
 		verdict = asm.Verify(fn, d.source, verifiedBody(fn, d.source))
 		storeVerdict(d.cacheDir, key, verdict)
@@ -135,7 +148,26 @@ func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 // default for experiments; -opt keeps its one meaning, the C compiler's
 // level, docs/spec/90-backend.md §16 item 5).
 func nativeSearch(arch string, report *opt.Report) *opt.Search {
-	search := &opt.Search{Registry: nativegen.Registry(), Costs: opt.CostsFor(arch), Report: report}
+	registry := nativegen.Registry()
+	if skip := os.Getenv("OAK_OPT_SKIP"); skip != "" {
+		// For experiments and benchmarks: the named transforms (by their
+		// report names, comma-separated) propose nothing; unknown names are
+		// ignored. The identity candidate and the verdicts are as always.
+		skipped := map[string]bool{}
+		for _, name := range strings.Split(skip, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				skipped[name] = true
+			}
+		}
+		var kept []opt.Transform
+		for _, tr := range registry.Transforms() {
+			if !skipped[tr.Name()] {
+				kept = append(kept, tr)
+			}
+		}
+		registry = opt.NewRegistry(kept...)
+	}
+	search := &opt.Search{Registry: registry, Costs: opt.CostsFor(arch), Report: report}
 	if beam, err := strconv.Atoi(os.Getenv("OAK_OPT_BEAM")); err == nil && beam > 0 {
 		search.Beam = beam
 	}
@@ -154,6 +186,7 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 // transform's form was tried and not kept.
 var setAside = map[string]string{
 	nativegen.TransformStrength:    "keeps its plain arithmetic",
+	nativegen.TransformOptIR:       "keeps its direct lowering",
 	nativegen.TransformElide:       "keeps its element guards",
 	nativegen.TransformReuseFlags:  "repeats its compares",
 	nativegen.TransformHoist:       "keeps its loop invariants in place",
@@ -161,8 +194,14 @@ var setAside = map[string]string{
 	nativegen.TransformVectorHomes: "keeps its vector slots",
 	nativegen.TransformCleanup:     "keeps its copies",
 	nativegen.TransformVectorize:   "keeps its scalar reduction",
+	nativegen.TransformVectorMaps:  "keeps its scalar map",
 	nativegen.TransformVecBlocks:   "addresses each vector load",
+	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",
+	nativegen.TransformValueSelect: "branches around its conditional",
 	nativegen.TransformReallocate:  "keeps its register assignment",
+	nativegen.TransformSchedule:    "keeps its instruction order",
+	nativegen.TransformFuse:        "keeps its instructions apart",
+	nativegen.TransformFuseExits:   "keeps its exit tests apart",
 }
 
 // setAsideReasons reads, from the function's remarks, the transforms the

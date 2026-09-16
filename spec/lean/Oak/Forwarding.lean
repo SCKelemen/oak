@@ -58,4 +58,38 @@ theorem cbz_cset (c : Bool) : (cset c = 0) = (c = false) := by
 theorem cbnz_cset (c : Bool) : (cset c ≠ 0) = (c = true) := by
   cases c <;> simp [cset]
 
+/-- For an unsigned value, the branch condition `x < 1` is exactly a zero
+test; its complement `x ≥ 1` is therefore exactly a nonzero test. -/
+theorem unsigned_lt_one_is_zero (x : Nat) : x < 1 ↔ x = 0 := by
+  constructor
+  · intro h
+    exact Nat.eq_zero_of_le_zero (Nat.le_of_lt_succ h)
+  · intro h
+    simp [h]
+
+/-! ## Zero-index scalar store cleanup
+
+This is the deliberately small equality used by AArch64 late cleanup. It
+models only the address and value observed at the store boundary. It is not a
+memory model, an alignment proof, or an instruction-execution semantics. -/
+
+/-- The scalar indexed-address shape, in bytes: A64's register index is
+zero-extended and shifted by the access-size log2. -/
+def indexedAddress (base index shift : Nat) : Nat := base + index * 2 ^ shift
+
+/-- Materializing a zero index cannot change the store address. -/
+theorem indexedAddress_zero (base shift : Nat) :
+    indexedAddress base 0 shift = base := by
+  simp [indexedAddress]
+
+/-- The address/value observation of an indexed scalar store. -/
+def storeObservation (base index shift value : Nat) : Nat × Nat :=
+  (indexedAddress base index shift, value)
+
+/-- Forwarding the source value and erasing a materialized zero index preserves
+the local store address/value observation. -/
+theorem zero_index_store (base shift value : Nat) :
+    storeObservation base 0 shift value = (base, value) := by
+  simp [storeObservation, indexedAddress]
+
 end Oak.Forwarding

@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -199,7 +200,7 @@ func writesRegisterIn(items []Item, from, to, reg int) bool {
 // Back edges are met in item order, so an inner loop is recognized before
 // the outer body containing it is examined.
 func findLoops(items []Item, labels map[string]int) map[int]loopShape {
-	return findLoopsIn("", items, labels, nil)
+	return findLoopsIn("", ArchArm64, items, labels, nil)
 }
 
 // findLoopsIn is findLoops naming the function for the OAK_VERIFY_TRACE
@@ -207,7 +208,7 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 // program's functions: a call to one of them, in a header or a body, is
 // summarized in place (summarizeCall), so it is not a reason to refuse
 // the loop; a call to anything else is.
-func findLoopsIn(function string, items []Item, labels map[string]int, callees map[string]*ast.FunctionStatement) map[int]loopShape {
+func findLoopsIn(function, arch string, items []Item, labels map[string]int, callees map[string]*ast.FunctionStatement) map[int]loopShape {
 	summarizable := func(instr Instruction) bool {
 		if (instr.Mnemonic != "bl" && instr.Mnemonic != "call") || len(instr.Operands) == 0 {
 			return false
@@ -216,17 +217,8 @@ func findLoopsIn(function string, items []Item, labels map[string]int, callees m
 		if !isSym {
 			return false
 		}
-		if callees[sym.Name] != nil {
-			return true
-		}
-		// A vector-contract callee is reached at its native entry, the Oak
-		// name under the lane's suffix (summarizeCall reads it the same way).
-		for _, arch := range []string{ArchArm64, ArchRV64} {
-			if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(arch)); suffixed && callees[base] != nil {
-				return true
-			}
-		}
-		return false
+		_, resolved := ResolveNativeCallee(arch, sym.Name, callees)
+		return resolved
 	}
 	loops := map[int]loopShape{}
 	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
@@ -484,7 +476,10 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		if !isInstr {
 			break
 		}
-		if instr.Mnemonic == "cmp" {
+		if instr.Mnemonic == "cmp" || instr.Mnemonic == "ccmp" {
+			// A conditional compare is a test fused with the compare
+			// before it (machine.FuseExits): its flags decide the branch
+			// after, and the executor models it as it models cmp.
 			tailStart--
 			continue
 		}
@@ -496,7 +491,7 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		}
 		break
 	}
-	if branch.Mnemonic == "b." && (tailStart == back || items[back-1].(Instruction).Mnemonic != "cmp") {
+	if branch.Mnemonic == "b." && (tailStart == back || (items[back-1].(Instruction).Mnemonic != "cmp" && items[back-1].(Instruction).Mnemonic != "ccmp")) {
 		return loopShape{}, "a conditional back edge whose test is not a compare", false
 	}
 	if header+1 >= tailStart {
@@ -723,10 +718,13 @@ type loopEvent struct {
 	entry map[string][]*spanWrite
 	// reached, on the machine side, is the path's condition at the loop's
 	// entry (nil: every path): the summary holds on those inputs, and the
-	// coupling proof's body premise assumes it — a loop under `ok ? {…}`
-	// couples its counter's register on the inputs where ok holds, where
-	// the register's header value is what the path made it.
+	// coupling proof's body premise assumes it.
 	reached *term
+	// oakPath, on the Oak side, is the lowering's path condition at the
+	// loop (an arm the loop sits in): a call summary conjoins it with the
+	// machine's path at the call as the callee loop's reached condition
+	// (summarizeCall). The Oak side's own events leave reached nil.
+	oakPath *term
 	// at is the event's place in the layout: the loop header's item
 	// index, or the call's for a callee's loops. Sibling events out of
 	// layout order mean the paths ran the sides of a fork in another
@@ -735,6 +733,54 @@ type loopEvent struct {
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
+
+// entryCondition is the loop's continue condition at the header's entry
+// values: the test that decides whether the loop runs at all. Fresh loop
+// variables become their saved header values and reads from the iteration's
+// unknown memories become reads from the exact entry memories. A loop that
+// does not run leaves its memories alone, so the memory marker holds only
+// under this condition. nil means the condition is constant true. The second
+// result fails closed when an entry value or memory cannot be reconstructed.
+func (ev *loopEvent) entryCondition() (*term, bool) {
+	if ev.cond == nil {
+		return nil, true
+	}
+	sigma := map[string]*term{}
+	for name, fresh := range ev.fresh {
+		header, known := ev.header[name]
+		if !known || fresh == nil || header == nil {
+			return nil, false
+		}
+		sigma[fresh.name] = header
+	}
+	entry := truncate(substitute(ev.cond, sigma), 1)
+	valid := true
+	entry = restoreLoopEntryMemories(entry, ev, map[*term]*term{}, &valid)
+	if !valid {
+		return nil, false
+	}
+	if entry.kind == termConst && entry.value&1 == 1 {
+		return nil, true
+	}
+	return entry, true
+}
+
+// guardMarker conjoins cond onto the loop memory marker at the end of a
+// span's write log, which appendMarker has just placed there.
+func guardMarker(log []*spanWrite, cond *term) {
+	if cond == nil || len(log) == 0 {
+		return
+	}
+	marker := log[len(log)-1]
+	if marker.memory == "" {
+		return
+	}
+	if marker.guard != nil {
+		marker.guard = binaryTerm("and", truncate(marker.guard, 1), cond)
+		return
+	}
+	marker.guard = cond
+}
 
 // substituteAll rewrites every term of the event under sigma: the
 // condition, the header and next values, and the stores. The memo is
@@ -761,6 +807,62 @@ func (ev *loopEvent) substituteAll(sigma map[string]*term, memo map[*term]*term)
 			}
 		}
 	}
+}
+
+// substituteWriteLog returns a rewritten copy of a span write log. Logs
+// shared by forked states stay immutable; only their terms are coupled.
+func substituteWriteLog(log []*spanWrite, sigma map[string]*term) []*spanWrite {
+	if len(log) == 0 {
+		return log
+	}
+	memo := map[*term]*term{}
+	out := make([]*spanWrite, 0, len(log))
+	for _, w := range log {
+		if w == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &spanWrite{
+			index:  substituteMemo(w.index, sigma, memo),
+			value:  substituteMemo(w.value, sigma, memo),
+			guard:  substituteMemo(w.guard, sigma, memo),
+			memory: w.memory,
+		})
+	}
+	return out
+}
+
+// pruneWritesUnder removes stores whose guards a postcondition refutes
+// and strips guards it implies. Doing this before memoryAt combines a
+// guard with a symbolic index equality avoids constructing a large,
+// irrelevant lookup branch on paths where the store never happened.
+func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int) []*spanWrite {
+	if len(log) == 0 {
+		return log
+	}
+	one, zero := constTerm(1, 1), constTerm(0, 1)
+	out := make([]*spanWrite, 0, len(log))
+	for _, w := range log {
+		if w == nil || w.guard == nil {
+			out = append(out, w)
+			continue
+		}
+		selected := iteTerm(truncate(w.guard, 1), one, zero)
+		selected = canonical(pruneUnder(premise, []*term{selected}, widthOf)[0])
+		if selected.kind == termConst {
+			if selected.value&1 == 0 {
+				continue
+			}
+			copy := *w
+			copy.guard = nil
+			out = append(out, &copy)
+			continue
+		}
+		copy := *w
+		copy.guard = selected
+		out = append(out, &copy)
+	}
+	return out
 }
 
 // descends reports whether inner was summarized inside outer's body: outer
@@ -1125,6 +1227,28 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.header[name] = value
 		ev.fresh[name] = fresh
 	}
+	// The package cells the body stores (`st = u8(4)` inside `while un {
+	// … }`, the OS pilot's flag idiom) are loop-carried too: each a fresh
+	// symbol at the cell's width, its header value the cell as this path
+	// holds it, paired with the Oak side's cell local like a register.
+	carriedCells := map[string]bool{}
+	for _, name := range x.cellsStoredIn(shape) {
+		global := x.globals[name]
+		varName := "global:" + name
+		width := cellWidth(global)
+		fresh := paramTerm(ev.freshName(varName), width)
+		x.declared[fresh.name] = width
+		value, _ := globalStateValue(x.globals, state.globals, name)
+		if freshState.globals == nil {
+			freshState.globals = map[string]*term{}
+		}
+		freshState.globals[name] = fresh
+		carriedCells[name] = true
+		ev.vars = append(ev.vars, varName)
+		ev.width[varName] = width
+		ev.header[varName] = truncate(value, width)
+		ev.fresh[varName] = fresh
+	}
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
@@ -1173,6 +1297,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
 	}
+	entryCond, entryKnown := ev.entryCondition()
+	if !entryKnown {
+		return nil, "the loop's entry condition could not be reconstructed", false
+	}
+	for _, span := range writtenSpans {
+		guardMarker(freshState.writes[span], entryCond)
+	}
 	// One iteration of the body on the fresh state: its paths (a branch
 	// inside the body forks on its condition; an inner loop is summarized
 	// in place) all reach the back edge and merge register by register
@@ -1187,11 +1318,22 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if !ok {
 		return nil, reason + " (in a loop body)", false
 	}
-	// Loop events model registers, frame slots, and span memories, but not
-	// package cells. A cell may be written before or after the loop; changing
-	// one in an iteration remains outside the theorem and fails closed.
+	// A cell the body stores is a loop variable (carriedCells, above); a
+	// cell changed some other way — a callee's write the summary let
+	// through — remains outside the theorem and fails closed.
 	for _, end := range ends {
-		if name, differs := differingGlobalState(x.globals, freshState.globals, end.state.globals); differs {
+		before, after := map[string]*term{}, map[string]*term{}
+		for name, value := range freshState.globals {
+			if !carriedCells[name] {
+				before[name] = value
+			}
+		}
+		for name, value := range end.state.globals {
+			if !carriedCells[name] {
+				after[name] = value
+			}
+		}
+		if name, differs := differingGlobalState(x.globals, before, after); differs {
 			return nil, fmt.Sprintf("a store to package global %s in a loop body", name), false
 		}
 	}
@@ -1199,7 +1341,21 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// order; the state past the loop keeps the marker alone (the loop's
 	// memory is the iteration's unknown memory, which the coupling proof
 	// identifies with the Oak side's).
+	// The memories the iteration may store into: a scalar span's own, a
+	// span of records' per-leaf memories (`s.pages`, `s.free_count`) — the
+	// Oak side's loopEvent marks and collects the same names.
+	var storedMemories []string
 	for _, span := range writtenSpans {
+		if arg, isRecord := x.recordSpans[span]; isRecord {
+			for _, memory := range arg.memories(span) {
+				storedSpans[memory] = true
+				storedMemories = append(storedMemories, memory)
+			}
+			continue
+		}
+		storedMemories = append(storedMemories, span)
+	}
+	for _, span := range storedMemories {
 		before := len(freshState.writes[span])
 		var stores []*spanWrite
 		for _, end := range ends {
@@ -1207,6 +1363,26 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			if len(log) > before {
 				stores = append(stores, guardWrites(log[before:], end.cond)...)
 			}
+		}
+		if len(stores) == 0 {
+			// The complete symbolic iteration wrote no element of this
+			// exact memory on any path.  A record span is split into leaf
+			// memories, so a store through s.words does not make s.count
+			// loop-carried.  Restore the entry log: retaining the marker
+			// would invent a change to an untouched sibling field, and a
+			// peeled loop would guard that invented change differently.
+			// The entry record stays until the pass below, which restores
+			// untouched memories once more and drops their markers: an
+			// entry deleted here read as empty there, and the pass deleted
+			// the whole log — the store before the loop with it (the OS
+			// pilot's alloc_table: `free_count - 1` before its zeroing
+			// loop vanished, and the memory after the loop was unproven).
+			if len(ev.entry[span]) == 0 {
+				delete(freshState.writes, span)
+			} else {
+				freshState.writes[span] = ev.entry[span]
+			}
+			continue
 		}
 		if ev.writes == nil {
 			ev.writes = map[string][]*spanWrite{}
@@ -1219,6 +1395,29 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
 			}
 		}
+	}
+	// A memory no path of the iteration stores to is unchanged by the loop,
+	// so its marker stands for nothing and is dropped for the entry memory
+	// it replaced. It matters because a record span marks one memory per
+	// leaf: a loop writing one field marked every field, and the memory
+	// past the loop then became an unknown function of the entry memory
+	// that the Oak side's own marker had to match under the same path
+	// conditions. Where the asm tests loop entry before the loop and the
+	// Oak model does not, those conditions differ, and a leaf nothing
+	// writes was the one thing left unproven (the os pilot's page-zeroing
+	// loop, compiler/e2e_native_licm_test.go). The two sides prune the
+	// same way, and a divergence fails closed in coupledEntryMemories.
+	for _, span := range writtenSpans {
+		if len(ev.writes[span]) > 0 {
+			continue
+		}
+		if len(ev.entry[span]) == 0 {
+			delete(freshState.writes, span)
+		} else {
+			freshState.writes[span] = ev.entry[span]
+		}
+		delete(ev.writes, span)
+		delete(ev.entry, span)
 	}
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
@@ -1278,6 +1477,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		for reg, value := range freshState.fregs {
 			freshState.fregs[reg] = substitute(value, invariant)
+		}
+		for name, value := range freshState.globals {
+			freshState.globals[name] = substitute(value, invariant)
 		}
 		for addr, slot := range freshState.frame {
 			freshState.frame[addr] = frameSlot{value: substitute(slot.value, invariant), width: slot.width}
@@ -1365,9 +1567,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 }
 
 // exitReadSymbols reports, for the loop symbols of a side's events, the
-// ones some other event's terms or the result term read: the variables
-// whose value at the loop's exit flows on.
-func exitReadSymbols(events []*loopEvent, result *term) map[string]bool {
+// ones some other event's terms or the result terms (a record result's
+// words, counted as one reader) read: the variables whose value at the
+// loop's exit flows on.
+func exitReadSymbols(events []*loopEvent, results ...*term) map[string]bool {
 	count := map[string]int{}
 	own := make([]map[string]bool, len(events))
 	for k, ev := range events {
@@ -1392,9 +1595,11 @@ func exitReadSymbols(events []*loopEvent, result *term) map[string]bool {
 			count[name]++
 		}
 	}
-	if result != nil {
+	if len(results) > 0 {
 		mentioned := map[string]bool{}
-		collectParams(result, mentioned)
+		for _, result := range results {
+			collectParams(result, mentioned)
+		}
 		for name := range mentioned {
 			count[name]++
 		}
@@ -1540,12 +1745,48 @@ func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, b
 		merged.next[name] = select_(fresh.next[name], prior.next[name])
 	}
 	merged.cond = select_(fresh.cond, prior.cond)
-	merged.writes = mergeWrites(cond, fresh.writes, prior.writes)
+	if equalLoopWrites(fresh.writes, prior.writes) {
+		// Both paths ran the same iteration stores. The event's reached
+		// condition below already restricts their proof obligations to the
+		// union of those paths, so wrapping duplicate copies in cond and
+		// !cond only obscures the one operation the callee body describes.
+		merged.writes = fresh.writes
+	} else {
+		merged.writes = mergeWrites(cond, fresh.writes, prior.writes)
+	}
 	merged.entry = mergeWrites(cond, fresh.entry, prior.entry)
 	if fresh.reached != nil && prior.reached != nil {
 		merged.reached = binaryTerm("or", truncate(fresh.reached, 1), truncate(prior.reached, 1))
 	}
 	return merged, "", true
+}
+
+// equalLoopWrites reports structurally identical iteration write logs.
+// The two events are lowered independently, so equal operations need not
+// share pointers even though their symbolic terms have the same shape.
+func equalLoopWrites(a, b map[string][]*spanWrite) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for span, left := range a {
+		right, ok := b[span]
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for i, l := range left {
+			r := right[i]
+			if l == nil || r == nil {
+				if l != r {
+					return false
+				}
+				continue
+			}
+			if l.memory != r.memory || !equalTerms(l.index, r.index) || !equalTerms(l.value, r.value) || !equalTerms(l.guard, r.guard) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // writableSpanParams names the function's writable span parameters (`[*]T`)
@@ -1580,6 +1821,53 @@ func writableSpanMemories(fn *Function, spans map[string]int64, recordSpans map[
 			continue
 		}
 		out = append(out, span)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cellsStoredIn names the package cells a loop body stores: AArch64
+// materializes a cell's address as `adrp xA, G; add xA, xA, :lo12:G`, while
+// RV64 uses `la xA, G`; each stores through offset zero from that register.
+// The target checkers admit no other scalar-global access, so the scan follows
+// the exact symbol provenance until any write to the address register. Sorted;
+// an aggregate global or one the function does not declare is left to the
+// executor's refusal.
+func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
+	named := map[int]string{}
+	stored := map[string]bool{}
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		_, isRV64Store := rv64Stores[instr.Mnemonic]
+		if (isStoreMnemonic(instr.Mnemonic) || isRV64Store) && len(instr.Operands) == 2 {
+			if mem, isMem := instr.Operands[1].(Memory); isMem && mem.Index == nil && mem.Offset == 0 {
+				classMatches := (mem.Base.Class == ClassX && !isRV64Store) || (mem.Base.Class == ClassRV64X && isRV64Store)
+				if name, isCell := named[mem.Base.Num]; isCell && classMatches {
+					if global, declared := x.globals[name]; declared && !global.Aggregate {
+						stored[name] = true
+					}
+				}
+			}
+			continue
+		}
+		dest, isReg := instr.Operands[0].(Register)
+		if !isReg || dest.Class == ClassV {
+			continue
+		}
+		delete(named, dest.Num)
+		sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol)
+		aarch64Address := isSym && dest.Class == ClassX && (instr.Mnemonic == "adrp" || instr.Mnemonic == "add")
+		rv64Address := isSym && instr.Mnemonic == "la" && len(instr.Operands) == 2 && dest.Class == ClassRV64X && dest.Num != 0 && sym.Name != "" && !sym.Lo12
+		if aarch64Address || rv64Address {
+			named[dest.Num] = sym.Name
+		}
+	}
+	out := make([]string, 0, len(stored))
+	for name := range stored {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
@@ -1718,6 +2006,16 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 // loopEventBudget bounds the data-dependent loops one body may hold.
 const loopEventBudget = 32
 
+// witnessWorkBudget bounds the work a loop proof's witness runs take in
+// all — the machine's steps, and the Oak lowering's loop iterations at
+// witnessIterationCost steps each: a cheap body runs every input
+// loopWitnessInputs offers, one whose callees unroll their loops on each
+// input runs a few.
+const (
+	witnessWorkBudget    = 1 << 21
+	witnessIterationCost = 256
+)
+
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.
 type bodyEnd struct {
@@ -1752,6 +2050,12 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 			return value
 		}
 		return header.fregs[reg]
+	case strings.HasPrefix(name, "global:"):
+		cell := strings.TrimPrefix(name, "global:")
+		if value, written := e.state.globals[cell]; written {
+			return value
+		}
+		return header.globals[cell]
 	case len(name) > 1 && name[0] == 'v':
 		fmt.Sscanf(name, "v%d.%s", &reg, &side)
 		value, bound := e.state.vregs[reg]
@@ -1887,13 +2191,8 @@ func (x *pathExecutor) outgoingArea() int64 {
 			if !isSym {
 				continue
 			}
-			callee := x.fn.Callees[sym.Name]
-			if callee == nil {
-				if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-					callee = x.fn.Callees[base]
-				}
-			}
-			if callee == nil {
+			callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+			if !resolved {
 				continue
 			}
 			var classes []ArgClass
@@ -1934,13 +2233,8 @@ func (x *pathExecutor) loopsInside(shape loopShape) bool {
 		if !isSym {
 			continue
 		}
-		callee := x.fn.Callees[sym.Name]
-		if callee == nil {
-			if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-				callee = x.fn.Callees[base]
-			}
-		}
-		if callee != nil && callee.Body != nil && bodyHasLoop(callee.Body, x.fn.Callees) {
+		callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+		if resolved && bodyHasLoop(callee.Body, x.fn.Callees) {
 			inside = true
 		}
 	}
@@ -2318,6 +2612,16 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					continue
 				}
 				if !isLoad(instr.Mnemonic) {
+					// A store to a package cell: the loop-carried cell's new
+					// value on this path (summarizeLoop pairs it with the
+					// Oak side's cell local).
+					if handled, reason, ok := x.globalStore(instr, st); handled {
+						if !ok {
+							return nil, reason, false
+						}
+						pc++
+						continue
+					}
 					// A store through a span: into the iteration's memory
 					// (the loop's marker), recorded for the coupling proof.
 					if handled, reason, ok := x.spanStore(instr, st); handled {
@@ -2480,7 +2784,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	assignedLocals(loop.Body, assigned)
 	declared := map[string]bool{}
 	declaredLocals(loop.Body, declared)
-	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	// The Oak path condition at the loop (an arm the loop sits in): a call
+	// summary's callee loops carry it as their reaching condition, with the
+	// machine's path at the call (summarizeCall).
+	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, oakPath: lo.path}
 	if n := len(lo.loopStack); n > 0 {
 		ev.parent = lo.loopStack[n-1]
 	}
@@ -2582,6 +2889,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for _, span := range storedSpans {
 		ev.entry[span] = lo.writes[span]
 		lo.writes = appendMarker(lo.writes, span, ev.index)
+		if lo.path != nil {
+			// A loop inside a conditional's arm: past the conditional the
+			// memory is the loop's on the paths that ran it and the entry
+			// memory on the others — the guard the asm side's join gives
+			// its marker (mergeWrites).
+			log := lo.writes[span]
+			log[len(log)-1].guard = lo.path
+		}
 		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
@@ -2590,6 +2905,24 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		return reason, false
 	}
 	ev.cond = truncate(cond, 1)
+	entryCond, entryKnown := ev.entryCondition()
+	if !entryKnown {
+		return "the loop's entry condition could not be reconstructed", false
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify oak loop %d: cond %s\n", ev.index, ev.cond)
+		for _, name := range ev.vars {
+			fmt.Fprintf(os.Stderr, "verify oak loop %d:   %s header %s\n", ev.index, name, ev.header[name])
+		}
+	}
+	// A `while` whose condition is already false touches no memory, so the
+	// marker holds only where the loop is entered (entryCondition), on top
+	// of the enclosing arm's condition when the loop is inside one.
+	if entryCond != nil {
+		for _, span := range storedSpans {
+			guardMarker(lo.writes[span][:before[span]], entryCond)
+		}
+	}
 	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
@@ -2601,11 +2934,40 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// span's contents are the marker's unknown memory.
 	for _, span := range storedSpans {
 		log := lo.writes[span]
+		stores := append([]*spanWrite{}, log[before[span]:]...)
+		if len(stores) == 0 {
+			// Successful lowering of the whole iteration found no write
+			// to this exact memory.  The pass below frames an untouched
+			// record leaf across the loop — the entry memory restored,
+			// the marker dropped — instead of replacing it with an
+			// unconstrained loop memory; it needs the entry, which stays
+			// recorded until then (an inner loop that dropped its entry
+			// here left the pass deleting the whole log, the enclosing
+			// loop's marker with it). Unknown stores never reach here:
+			// lowering them fails closed before an event is accepted.
+			continue
+		}
 		if ev.writes == nil {
 			ev.writes = map[string][]*spanWrite{}
 		}
-		ev.writes[span] = append([]*spanWrite{}, log[before[span]:]...)
+		ev.writes[span] = stores
 		lo.writes[span] = log[:before[span]:before[span]]
+	}
+	// The marker of a memory the iteration never stores to is dropped for
+	// the entry memory, as the asm side drops it (summarizeLoop): a record
+	// span marks one memory per leaf, and a loop writing one field left
+	// every other field an unknown memory that nothing had written.
+	for _, span := range storedSpans {
+		if len(ev.writes[span]) > 0 {
+			continue
+		}
+		if len(ev.entry[span]) == 0 {
+			delete(lo.writes, span)
+		} else {
+			lo.writes[span] = ev.entry[span]
+		}
+		delete(ev.writes, span)
+		delete(ev.entry, span)
 	}
 	for _, name := range ev.vars {
 		if local, isLocal := lo.locals[name]; isLocal && local.agg == nil {
@@ -2980,7 +3342,22 @@ func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 }
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
-func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerm, oakTerm *term, width int) Verdict {
+func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
+	// A scalar result is one term a side; a record result through memory
+	// is its words (verifyChunk): one coupling proves them all. asmTerm
+	// stands for "there is a result".
+	var asmTerm *term
+	if len(asmTerms) > 0 {
+		asmTerm = asmTerms[0]
+	}
+	// wordOf is the record chunk that word k of the result is: the run's
+	// chunk for a one-term result (a register chunk verified on its own).
+	wordOf := func(k int) int {
+		if len(asmTerms) == 1 {
+			return exec.resultChunk
+		}
+		return k
+	}
 	trusted := func(reason string) Verdict {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -3030,24 +3407,45 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// result term: the span memories are the comparison) has none here;
 	// its proof is the coupling alone.
 	checked := 0
+	work := 0
+	stageStarted := time.Now()
+	stage := func(name string) {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: %s took %s\n", fn.Name, name, time.Since(stageStarted).Round(time.Millisecond))
+		}
+		stageStarted = time.Now()
+	}
 	for _, env := range loopWitnessInputs(fn, sig) {
 		if !lowering.inDomain(env) {
 			continue // a union tag outside its variants: not a well-typed input
 		}
+		// The pass is bounded by the work its machine runs did, not by
+		// their number: a body whose callees unroll their loops on every
+		// input (add_bits spent three minutes here) stops after a few,
+		// a cheap body runs every input.
+		if work > witnessWorkBudget {
+			break
+		}
+		inputStarted := time.Now()
 		asmValue, asmRun, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
+		if asmRun != nil {
+			work += asmRun.steps
+		}
+		asmTook := time.Since(inputStarted)
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk
-		var oakValue *term
+		var oakValues []*term
 		var reasonO string
 		var okO bool
 		if asmTerm != nil {
-			oakValue, _, reasonO, okO = concrete.resultTerm(fn, sig, oakBody)
+			oakValues, _, reasonO, okO = concrete.resultTerms(fn, sig, oakBody, len(asmTerms))
 		} else {
 			// A unit function: the concrete run's memories are the comparison.
 			reasonO, okO = concrete.lowerUnitBody(oakBody)
 		}
+		work += witnessIterationCost * concrete.work
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
-			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
+			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v (%s); oak ok=%v %q (%s, work %d)\n", fn.Name, env, okA, reasonA, asmValue == trapPath, asmTook.Round(time.Millisecond), okO, reasonO, (time.Since(inputStarted) - asmTook).Round(time.Millisecond), concrete.work)
 		}
 		names := make([]string, 0, len(env))
 		for name := range env {
@@ -3067,9 +3465,18 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			continue
 		}
 		if asmTerm != nil {
-			got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
-			if got != want {
-				return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
+			asmValues := append([]*term{asmValue}, asmRun.moreResults...)
+			if len(asmValues) != len(asmTerms) || len(oakValues) != len(asmTerms) {
+				return trusted(fmt.Sprintf("a witness run delivered %d of the result's %d words", len(asmValues), len(asmTerms)))
+			}
+			for k := range asmTerms {
+				got, want := truncate(maskResult(fn, sig, asmValues[k], wordOf(k)), width).eval(env), oakValues[k].eval(env)
+				if got != want {
+					if len(asmTerms) > 1 {
+						return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents) in word %d of the result: asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), k, got, want)}
+					}
+					return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
+				}
 			}
 		}
 		// The memories the concrete runs leave: every store's index is a
@@ -3114,10 +3521,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// proof on the prover and the kernels needs 291 nodes (`valid_with`),
 	// and the seven bodies past 512 all end as evidence.
 	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
-	budget := &nodeBudget{remaining: proofNodes}
+	budget := &nodeBudget{remaining: proofNodes, loop: true}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
+	domainPremise := lowering.domainCondition()
 
 	// The coupling search substitutes into and walks the events' terms for
 	// every candidate; terms past the size budget (a body of summarized
@@ -3151,8 +3559,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// after the loop; an accumulator's spill slot, reloaded past the loop,
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
-	exitReadAsm := exitReadSymbols(asmLoops, asmTerm)
-	exitReadOak := exitReadSymbols(oakLoops, oakTerm)
+	stage(fmt.Sprintf("the witness pass (%d inputs, %d work)", checked, work))
+	defer func() { stage("the coupling and the decisions") }()
+	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
+	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
 	// Slots whose one-iteration value mentions fewer of the event's own
 	// variables come first: their register's value after one iteration then
 	// mentions only coupled symbols as soon as they are paired, so a wrong
@@ -3208,16 +3618,72 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for k, ev := range oakLoops {
 		children[ev.parent-1] = append(children[ev.parent-1], k)
 	}
-	// exitPremise of event k: its invariant and negated guard, and its
-	// children's exit premises.
-	var exitPremise func(k int, sigma map[string]*term) *term
+	// notRunPins of event k: a loop that never ran leaves its variables at
+	// their header values — the scalar counterpart of "loops that never
+	// ran keep the entry memory" (spanEqualSplitting). The loop runs where
+	// its guard holds at the header and the machine's path reached it;
+	// otherwise each loop symbol is its header value. Without the fact, a
+	// machine that skips a loop under a hoisted guard (`len(a) < 4` around
+	// a vector main loop) carries the header value into the next loop
+	// where the Oak side carries the loop symbol, and the two are not
+	// provably one. Only the symbols the terms at hand mention are pinned,
+	// and only scalars whose header value is a constant or a symbol (a
+	// vector kernel's sixteen lane variables, each pinned to a lane of the
+	// loop before, blast past the node budget for nothing); nil when none
+	// is.
+	notRunPins := func(k int, sigma map[string]*term, mentioned map[string]bool) *term {
+		ev := oakLoops[k]
+		pins := constTerm(1, 1)
+		pinned := false
+		for _, v := range ev.vars {
+			fresh, header := ev.fresh[v], ev.header[v]
+			if fresh == nil || header == nil || fresh.width != header.width || fresh.width > 64 || !mentioned[fresh.name] {
+				continue
+			}
+			if strings.Contains(v, "[") || (header.kind != termConst && header.kind != termParam) {
+				continue
+			}
+			pins = binaryTerm("and", pins, truncate(cmpTerm("eq", fresh, header), 1))
+			pinned = true
+		}
+		if !pinned {
+			return nil
+		}
+		headerSigma := map[string]*term{}
+		for v, fresh := range ev.fresh {
+			if header, ok := ev.header[v]; ok {
+				headerSigma[fresh.name] = header
+			}
+		}
+		runs := truncate(substitute(ev.cond, headerSigma), 1)
+		if k < len(asmLoops) && asmLoops[k] != nil {
+			if reached := asmLoops[k].reached; reached != nil {
+				runs = binaryTerm("and", runs, truncate(substitute(reached, sigma), 1))
+			}
+		}
+		return binaryTerm("or", runs, pins)
+	}
+	// exitPremise of a reached event k: its invariant and negated guard,
+	// and each child's complete postcondition. A conditional child either
+	// was not reached or was reached and exited; its exit condition is not
+	// an assumption on the paths that skipped it.
+	var exitPremise, eventPostcondition func(k int, sigma map[string]*term) *term
 	exitPremise = func(k int, sigma map[string]*term) *term {
 		ev := oakLoops[k]
 		premise := binaryTerm("and", substitute(invariants[k], sigma), binaryTerm("xor", truncate(substitute(ev.cond, sigma), 1), constTerm(1, 1)))
 		for _, child := range children[k] {
-			premise = binaryTerm("and", premise, exitPremise(child, sigma))
+			premise = binaryTerm("and", premise, eventPostcondition(child, sigma))
 		}
 		return premise
+	}
+	eventPostcondition = func(k int, sigma map[string]*term) *term {
+		exit := exitPremise(k, sigma)
+		reached := oakLoops[k].oakPath
+		if reached == nil {
+			return exit
+		}
+		reached = truncate(substitute(reached, sigma), 1)
+		return binaryTerm("or", notTerm(reached), binaryTerm("and", reached, exit))
 	}
 	// bodyPremise of event k: its invariant — and its guard only when
 	// checking one iteration, never when checking that the guards agree
@@ -3233,6 +3699,27 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// The machine's summary holds where the path reached the loop.
 			premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
 		}
+		// The loops before this one at the same level ran or left their
+		// symbols at their header values: this loop's header values and
+		// continue condition may read them (under the coupling, an asm
+		// register's header value spells the earlier loop's symbol).
+		if earlier := earlierSiblings(k, oakLoops); len(earlier) > 0 {
+			mentioned := map[string]bool{}
+			for _, v := range oakLoops[k].vars {
+				collectParams(oakLoops[k].header[v], mentioned)
+			}
+			if asmEv := asmLoops[k]; asmEv != nil {
+				for _, v := range asmEv.vars {
+					collectParams(substitute(asmEv.header[v], sigma), mentioned)
+				}
+				collectParams(substitute(asmEv.cond, sigma), mentioned)
+			}
+			for _, j := range earlier {
+				if pins := notRunPins(j, sigma, mentioned); pins != nil {
+					premise = binaryTerm("and", premise, pins)
+				}
+			}
+		}
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
 			if reached := asmLoops[at].reached; reached != nil {
@@ -3240,7 +3727,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 		}
 		for _, child := range children[k] {
-			premise = binaryTerm("and", premise, exitPremise(child, sigma))
+			premise = binaryTerm("and", premise, eventPostcondition(child, sigma))
 		}
 		return premise
 	}
@@ -3286,6 +3773,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				// A Bool local: 0 or 1 in a general register, zero-extended
 				// (the C enum's word, `cset`, `sltu`).
 				widenings = []string{"zext"}
+			case len(s.locals) == 1 && (s.width() == 16 || s.width() == 8) && (asmEv.width[reg] == 32 || asmEv.width[reg] == 64) && strings.HasPrefix(reg, "r"):
+				// A u16/u8 (i16/i8) counter in a general register: the
+				// lane keeps it zero-extended (`and #0xFFFF`, `uxth`) or
+				// sign-extended (`sxth`) after each step — the OS pilot's
+				// `i: u16` over max_pages in reset. Each widening is a
+				// candidate image; one iteration must preserve it.
+				widenings = []string{"zext", "sext"}
 			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
 				// An f32 local in the low lane of a v register (a scalar
 				// write zeroes the rest) or in an RV64 f register (the file's
@@ -3668,9 +4162,95 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if ok, _ := search(0); !ok {
 		return evidence(failure)
 	}
+	// A promoted scalar package cell may have two exact machine carriers:
+	// one register supplies the expression result while the memory cell records
+	// the observable effect. The primary coupling remains one-to-one. Extend it
+	// to an otherwise unused global carrier only after proving both the
+	// induction base and one iteration of the same identity coupling.
+	var aliases []string
+	for _, s := range slots {
+		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
+		candidates, _ := candidatesFor(s)
+		for _, c := range candidates {
+			asmName := asmEv.freshName(c.reg)
+			if !strings.HasPrefix(c.reg, globalParamPrefix) || sigma[asmName] != nil || c.a != 1 || c.b.kind != termConst || c.b.value != 0 {
+				continue
+			}
+			oakHeader := widen(substitute(s.pack(oakEv.header), sigma), c.ext, asmEv.width[c.reg])
+			asmHeader := substitute(asmEv.header[c.reg], sigma)
+			headerEqual, headerDecided := implies(constTerm(1, 1), oakHeader, asmHeader)
+			if !headerDecided || !headerEqual {
+				continue
+			}
+			trial := make(map[string]*term, len(sigma)+1)
+			for name, value := range sigma {
+				trial[name] = value
+			}
+			trial[asmName] = widen(substitute(s.pack(oakEv.fresh), sigma), c.ext, asmEv.width[c.reg])
+			oakNext := widen(substitute(s.pack(oakEv.next), trial), c.ext, asmEv.width[c.reg])
+			asmNext := substitute(asmEv.next[c.reg], trial)
+			stepEqual, stepDecided := implies(bodyPremise(s.event, trial, true), oakNext, asmNext)
+			if !stepDecided || !stepEqual {
+				continue
+			}
+			sigma[asmName] = trial[asmName]
+			aliases = append(aliases, c.show())
+		}
+	}
 	var pairs []string
 	for _, s := range slots {
 		pairs = append(pairs, chosen[s.key].show())
+	}
+	pairs = append(pairs, aliases...)
+	// A source reach condition may replace the machine CFG's larger path
+	// formula below only after the coupling proves they select exactly the
+	// same inputs. Earlier machine traps are outside the verifier's domain;
+	// a nested event is compared while its parent iteration is active.
+	for k, oakEv := range oakLoops {
+		asmEv := asmLoops[k]
+		premise := constTerm(1, 1)
+		if oakEv.parent > 0 {
+			premise = binaryTerm("and", premise, bodyPremise(oakEv.parent-1, sigma, true))
+		}
+		oakReached, asmReached := oakEv.oakPath, asmEv.reached
+		if oakReached == nil {
+			oakReached = constTerm(1, 1)
+		}
+		if asmReached == nil {
+			asmReached = constTerm(1, 1)
+		}
+		oakReached = truncate(substitute(oakReached, sigma), 1)
+		asmReached = truncate(substitute(asmReached, sigma), 1)
+		equal, decided := implies(premise, oakReached, asmReached)
+		if (!decided || !equal) && domainPremise != nil {
+			premise = binaryTerm("and", domainPremise, premise)
+			equal, decided = implies(premise, oakReached, asmReached)
+		}
+		// A bottom-tested loop (docs/spec/94-assembler.md §9 "Loop
+		// rotation") is entered only where its first test passes; the
+		// source loop is reached there and elsewhere, running no iteration
+		// where that test fails. The two select the same iterations when
+		// one side's reach condition is the other's conjoined with its
+		// own entry condition — a loop that does not run leaves every
+		// value and memory at its header, as the unreached loop does.
+		if !decided || !equal {
+			if entry, known := oakEv.entryCondition(); known && entry != nil {
+				oakRuns := binaryTerm("and", oakReached, truncate(substitute(entry, sigma), 1))
+				equal, decided = implies(premise, oakRuns, asmReached)
+			}
+		}
+		if !decided || !equal {
+			if entry, known := asmEv.entryCondition(); known && entry != nil {
+				asmRuns := binaryTerm("and", asmReached, truncate(substitute(entry, sigma), 1))
+				equal, decided = implies(premise, oakReached, asmRuns)
+			}
+		}
+		if !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: loop %d reach conditions not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, k+1, decided, oakReached, asmReached, premise)
+			}
+			return evidence(fmt.Sprintf("the conditions for reaching loop %d were not proven equal", k+1))
+		}
 	}
 	// The iterations' stores: each event's two sides store through the
 	// same spans, the same number of times, at indices and values proven
@@ -3686,7 +4266,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if oakEv.parent > 0 {
 			entryPremise = bodyPremise(oakEv.parent-1, sigma, true)
 		}
-		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies); !ok {
+		if reached := asmEv.reached; reached != nil {
+			// The machine reached the loop on this path's condition, and
+			// its stores before the loop are unguarded there; the Oak
+			// side's carry the arm's condition as their guard (`ok ? {
+			// s[dom].free_count = …; while … }`), so the entry memories
+			// agree only under it.
+			entryPremise = binaryTerm("and", entryPremise, truncate(substitute(reached, sigma), 1))
+		}
+		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies, splitsFor(earlierSiblings(k, oakLoops), oakLoops, asmLoops, sigma)); !ok {
 			return evidence(reason)
 		}
 		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
@@ -3694,7 +4282,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// may still be one memory (stores in another order, a guarded
 			// store against a split path): the iteration's memories are
 			// compared whole at a fresh index.
-			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !memOk {
+			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies, splitsFor(children[k], oakLoops, asmLoops, sigma)); !memOk {
 				return evidence(reason + "; " + memReason)
 			}
 		}
@@ -3705,7 +4293,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// a mismatch — the states may be unreachable — only the concrete layer
 	// refutes.
 	mentioned := map[string]bool{}
-	collectParams(asmTerm, mentioned)
+	for _, t := range asmTerms {
+		collectParams(t, mentioned)
+	}
 	for name := range mentioned {
 		var k int
 		var reg string
@@ -3717,24 +4307,145 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence(fmt.Sprintf("the result reads loop-carried %s of loop %d, which no Oak variable is coupled to", reg, k))
 		}
 	}
-	premise := constTerm(1, 1)
+	// Every terminating path after the top-level loops: an unconditional
+	// event exited; a conditional event was either skipped, or reached and
+	// exited. Small sets are split explicitly so each condition prunes the
+	// large result and memory terms before the bit-level decision. The
+	// single combined postcondition is the equivalent bounded fallback.
+	postPremise := constTerm(1, 1)
+	var topLevel []int
 	for k, ev := range oakLoops {
 		if ev.parent == 0 {
-			premise = binaryTerm("and", premise, exitPremise(k, sigma))
+			postPremise = binaryTerm("and", postPremise, eventPostcondition(k, sigma))
+			topLevel = append(topLevel, k)
 		}
 	}
+	const postLoopCaseLimit = 8
+	postCases := []*term{constTerm(1, 1)}
+	explicitCases := true
+	var reachFactors func(*term) []*term
+	reachFactors = func(t *term) []*term {
+		t = truncate(t, 1)
+		if t.kind == termBinary && t.op == "and" {
+			return append(reachFactors(t.left), reachFactors(t.right)...)
+		}
+		return []*term{t}
+	}
+	for k, ev := range oakLoops {
+		if ev.parent != 0 {
+			continue
+		}
+		exit := exitPremise(k, sigma)
+		reached := oakLoops[k].oakPath
+		if reached == nil {
+			for i := range postCases {
+				postCases[i] = binaryTerm("and", postCases[i], exit)
+			}
+			continue
+		}
+		reached = truncate(substitute(reached, sigma), 1)
+		factors := refinePureReachFactors(reachFactors(reached))
+		if len(postCases)*(len(factors)+1) > postLoopCaseLimit {
+			explicitCases = false
+			break
+		}
+		next := make([]*term, 0, len(postCases)*(len(factors)+1))
+		for _, premise := range postCases {
+			prefix := premise
+			for _, factor := range factors {
+				factor = refineReachFactorUnder(prefix, factor)
+				next = append(next, binaryTerm("and", prefix, notTerm(factor)))
+				prefix = binaryTerm("and", prefix, factor)
+			}
+			next = append(next, binaryTerm("and", prefix, exit))
+		}
+		postCases = next
+	}
+	if !explicitCases {
+		postCases = []*term{postPremise}
+	}
+	// A result reading a loop's symbols after a path that skipped the loop
+	// reads their header values on the machine side. Add the corresponding
+	// header equalities to every exhaustive post-loop case that compares a
+	// result; these are semantic loop facts, not assumptions about one arm.
 	if asmTerm != nil {
-		equal, decided := implies(premise, oakTerm, substitute(truncate(asmTerm, width), sigma))
+		resultMentions := map[string]bool{}
+		for k := range asmTerms {
+			collectParams(oakTerms[k], resultMentions)
+			collectParams(substitute(truncate(asmTerms[k], width), sigma), resultMentions)
+		}
+		for _, k := range topLevel {
+			if pins := notRunPins(k, sigma, resultMentions); pins != nil {
+				postPremise = binaryTerm("and", postPremise, pins)
+				for i := range postCases {
+					postCases[i] = binaryTerm("and", postCases[i], pins)
+				}
+			}
+		}
+	}
+	// A memory marker may remain conditionally on the machine side when a
+	// loop is skipped. Keep the upstream split theorem as the bounded
+	// fallback after pointwise guarded-log comparison.
+	topSplits := splitsFor(topLevel, oakLoops, asmLoops, sigma)
+	failedPostPremise := postPremise
+	failedPostCase := postPremise
+	failedPostCaseIndex := -1
+	type postconditionDecider func(premise, a, b *term) (bool, bool)
+	impliesPostconditionTerms := func(terms func(*term) (*term, *term), decide postconditionDecider) (bool, bool) {
+		for caseIndex, premise := range postCases {
+			a, b := terms(premise)
+			equal, decided := decide(premise, a, b)
+			if decided && equal {
+				continue // the stronger, domain-independent theorem
+			}
+			failedPostCase, failedPostCaseIndex = premise, caseIndex
+			failedPostPremise = premise
+			if domainPremise != nil {
+				failedPostPremise = binaryTerm("and", domainPremise, premise)
+				a, b = terms(failedPostPremise)
+				equal, decided = decide(failedPostPremise, a, b)
+				if decided && equal {
+					continue
+				}
+			}
+			return equal, decided
+		}
+		return true, true
+	}
+	impliesPostconditions := func(a, b *term) (bool, bool) {
+		return impliesPostconditionTerms(func(*term) (*term, *term) { return a, b }, implies)
+	}
+	decideResult := func(premise, a, b *term) (bool, bool) {
+		if equal, decided, applicable := impliesFiniteConditionalEqual(premise, a, b, widthOfName, budget); applicable {
+			return equal, decided
+		}
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify %s: finite result theorem not applicable (oak width %d, asm width %d)\n  oak: %s\n  asm: %s\n", fn.Name, a.width, b.width, spineOf(a, 6), spineOf(b, 6))
+		}
+		return implies(premise, a, b)
+	}
+	for k := range asmTerms {
+		// Every word of the result (one for a scalar) is checked under
+		// every exhaustive post-loop case and the one coupling.
+		oakResult := canonical(oakTerms[k])
+		asmResult := canonical(substitute(truncate(asmTerms[k], width), sigma))
+		equal, decided := impliesPostconditionTerms(func(*term) (*term, *term) { return oakResult, asmResult }, decideResult)
 		if !decided || !equal {
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
+				fmt.Fprintf(os.Stderr, "verify %s: result word %d not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  post case %d: %s\n  retry premise: %s\n", fn.Name, k, decided, oakTerms[k], substitute(truncate(asmTerms[k], width), sigma), failedPostCaseIndex, failedPostCase, failedPostPremise)
+			}
+			if len(asmTerms) > 1 {
+				return evidence(fmt.Sprintf("word %d of the result after the loops was not proven equal", k))
 			}
 			return evidence("the results after the loops were not proven equal")
 		}
 	}
-	// Package cells written before or after the loops are ordinary final
-	// effects. The loop summarizer rejected any per-iteration cell change, so
-	// compare these under the same coupling and exit premise as the result.
+	// The package cells after the loops, under the coupling and the exit
+	// premise, as decideEffects compares them in a body without loops: a
+	// cell written before or after a loop (`st = u8(0)` around the
+	// table-zeroing loop of the OS pilot's reset) meets its entry value or
+	// the other side's write; a cell the body writes inside a loop the
+	// coupling has not modeled leaves the comparison undecided — evidence.
 	oakCells := lowering.writtenCells()
 	cellSet := map[string]bool{}
 	for name := range exec.cells {
@@ -3753,6 +4464,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if !declared {
 			return trusted(fmt.Sprintf("a store through undeclared package global %s", name))
 		}
+		cellBits := cellWidth(global)
 		asmCell, asmWritten := exec.cells[name]
 		if !asmWritten {
 			asmCell = cellEntry(name, global)
@@ -3761,7 +4473,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if !oakWritten {
 			oakCell = cellEntry(name, global)
 		}
-		if equal, decided := implies(premise, oakCell, substitute(asmCell, sigma)); !decided || !equal {
+		asmCell = substitute(truncate(asmCell, cellBits), sigma)
+		oakCell = truncate(oakCell, cellBits)
+		if equal, decided := impliesPostconditions(oakCell, asmCell); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: cell %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n  post case %d: %s\n  retry premise: %s\n", fn.Name, name, decided, oakCell, asmCell, failedPostCaseIndex, failedPostCase, failedPostPremise)
+			}
 			return evidence(fmt.Sprintf("the package global %s after the loops was not proven equal", name))
 		}
 	}
@@ -3788,22 +4505,53 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
 		entry := selectTerm(name, at, elemWidth)
-		asmMemory := substitute(memoryAt(exec.writes[name], at, entry), sigma)
-		oakMemory := memoryAt(lowering.writes[name], at, entry)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		asmLog := substituteWriteLog(exec.writes[name], sigma)
+		var oakMemory, asmMemory *term
+		terms := func(premise *term) (*term, *term) {
+			oakLog := pruneWritesUnder(premise, lowering.writes[name], widthOfName)
+			prunedAsmLog := pruneWritesUnder(premise, asmLog, widthOfName)
+			if writeLogsEqualUnder(oakLog, prunedAsmLog, premise, implies) {
+				return entry, entry
+			}
+			oakMemory = memoryAt(oakLog, at, entry)
+			asmMemory = memoryAt(prunedAsmLog, at, entry)
+			return oakMemory, asmMemory
+		}
+		decideSpan := func(premise, oak, machine *term) (bool, bool) {
+			// The memories may read a loop's symbols where the machine
+			// skipped the loop (a hoisted guard around a vector main loop:
+			// the remainder's entry condition reads the main loop's exit
+			// index), so the symbols they mention are pinned where their
+			// loop never ran, as the results' are.
+			mentioned := map[string]bool{}
+			collectParams(oak, mentioned)
+			collectParams(machine, mentioned)
+			for _, k := range topLevel {
+				if pins := notRunPins(k, sigma, mentioned); pins != nil {
+					premise = binaryTerm("and", premise, pins)
+				}
+			}
+			if equal, decided := implies(premise, oak, machine); decided {
+				return equal, true
+			}
+			return spanEqualSplitting(premise, name, elemWidth, oak, machine, topSplits, implies)
+		}
+		if equal, decided := impliesPostconditionTerms(terms, decideSpan); !decided || !equal {
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakMemory, asmMemory)
+				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n  post case %d: %s\n  retry premise: %s\n", fn.Name, name, decided, oakMemory, asmMemory, failedPostCaseIndex, failedPostCase, failedPostPremise)
 			}
 			return evidence(fmt.Sprintf("the memory of the span %s after the loops was not proven equal", name))
 		}
 	}
+	// One note for both kinds of memory, cells before spans: it was built
+	// twice and interpolated twice, so every proven loop verdict said
+	// "and the package state it writes" two times over.
 	memoryNote := ""
-	if len(writtenSpans) > 0 {
-		memoryNote = " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
-	}
-	cellNote := ""
 	if len(writtenCells) > 0 {
-		cellNote = " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
+		memoryNote += " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
+	}
+	if len(writtenSpans) > 0 {
+		memoryNote += " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
 	}
 	var notes []string
 	for k, inv := range invariants {
@@ -3830,7 +4578,123 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if asmTerm == nil {
 		witnessNote = ""
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, cellNote, witnessNote)}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, witnessNote)}
+}
+
+// logicalConjuncts flattens only genuine one-bit conjunctions. In particular,
+// a one-bit truncation can be spelled `and1(wider, 1)`; its wider operand
+// makes that a mask, not a pair of logical facts.
+func logicalConjuncts(t *term) []*term {
+	if t != nil && t.kind == termBinary && t.op == "and" && t.width == 1 && t.left.width == 1 && t.right.width == 1 {
+		return append(logicalConjuncts(t.left), logicalConjuncts(t.right)...)
+	}
+	return []*term{t}
+}
+
+// negatedDisjunctionConjuncts applies De Morgan to a pure pass predicate:
+// `not (fail1 or fail2)` is the conjunction `not fail1, not fail2`. Keeping
+// those as ordered factors makes the corresponding failure cases `fail1` and
+// `not fail1 and fail2`, matching a machine CFG's sequential tests.
+func negatedDisjunctionConjuncts(t *term) ([]*term, bool) {
+	if t == nil || t.kind != termBinary || t.op != "xor" || t.width != 1 || t.right.kind != termConst || t.right.value != 1 {
+		return nil, false
+	}
+	disjunction := t.left
+	booleans := map[*term]bool{}
+	if disjunction.kind != termBinary || disjunction.op != "or" || !booleanValued(disjunction, booleans) {
+		return nil, false
+	}
+	var disjuncts func(*term) []*term
+	disjuncts = func(t *term) []*term {
+		if t.kind == termBinary && t.op == "or" && booleanValued(t, booleans) {
+			return append(disjuncts(t.left), disjuncts(t.right)...)
+		}
+		return []*term{t}
+	}
+	terms := disjuncts(disjunction)
+	out := make([]*term, 0, len(terms))
+	for _, term := range terms {
+		out = append(out, canonical(notTerm(truncate(term, 1))))
+	}
+	return out, true
+}
+
+// purePassFactors recursively exposes the conjunction represented by a pure
+// pass predicate, including De Morgan forms nested inside an outer conjunction.
+func purePassFactors(t *term) []*term {
+	if conjuncts := logicalConjuncts(t); len(conjuncts) > 1 {
+		var out []*term
+		for _, conjunct := range conjuncts {
+			out = append(out, purePassFactors(conjunct)...)
+		}
+		return out
+	}
+	if conjuncts, ok := negatedDisjunctionConjuncts(t); ok {
+		var out []*term
+		for _, conjunct := range conjuncts {
+			out = append(out, purePassFactors(conjunct)...)
+		}
+		return out
+	}
+	return []*term{t}
+}
+
+// termContainsSelect reports a symbolic memory read anywhere in a term DAG.
+func termContainsSelect(t *term) bool {
+	seen := map[*term]bool{}
+	var visit func(*term) bool
+	visit = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		return t.kind == termSelect || visit(t.cond) || visit(t.left) || visit(t.right)
+	}
+	return visit(t)
+}
+
+// refinePureReachFactors exposes the conjunction inside a pure scalar reach
+// factor after canonicalization. This gives ordered fail-closed checks their
+// own post cases. A memory-dependent factor stays in its original spelling:
+// expanding it can duplicate a callee-derived page-table condition throughout
+// every result and memory obligation.
+func refinePureReachFactors(factors []*term) []*term {
+	out := make([]*term, 0, len(factors))
+	for _, factor := range factors {
+		canonicalFactor := canonical(truncate(factor, 1))
+		containsSelect := termContainsSelect(canonicalFactor)
+		if containsSelect {
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify: reach factor kept for memory (raw %s; canonical %s)\n", spineOf(factor, 5), spineOf(canonicalFactor, 5))
+			}
+			out = append(out, factor)
+			continue
+		}
+		parts := purePassFactors(canonicalFactor)
+		if len(parts) <= 1 {
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify: reach factor kept atomic (raw %s; canonical %s)\n", spineOf(factor, 5), spineOf(canonicalFactor, 5))
+			}
+			out = append(out, factor)
+			continue
+		}
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: reach factor refined into %d parts (raw %s; canonical %s)\n", len(parts), spineOf(factor, 5), spineOf(canonicalFactor, 5))
+		}
+		out = append(out, parts...)
+	}
+	return out
+}
+
+// refineReachFactorUnder removes conditions an earlier reach factor already
+// established. The two partitions prefix ∧ factor and prefix ∧ ¬factor are
+// unchanged under this replacement, while their explicit premises become
+// strong enough to prune guarded effects on each path.
+func refineReachFactorUnder(prefix, factor *term) *term {
+	if prefix == nil || prefix.kind == termConst {
+		return factor
+	}
+	return canonical(pruneUnderFacts(prefix, []*term{factor})[0])
 }
 
 // coupledWrites checks that one iteration of loop k stores alike on both
@@ -3890,11 +4754,194 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 	return "", true
 }
 
+// booleanConjunctionsEqualUnder proves equality modulo associativity,
+// commutativity, and idempotence of one-bit conjunction. Equal factors are
+// paired first (one factor may cover a duplicate). Any residual conjunctions
+// are then compared under the paired common factors: C ∧ L equals C ∧ R when
+// L equals R wherever C holds. Every pair and residual equality is proved by
+// the bounded implication decision; an undecided result makes the shortcut
+// fail.
+func booleanConjunctionsEqualUnder(premise, leftGuard, rightGuard *term, implies func(premise, a, b *term) (bool, bool)) bool {
+	left := logicalConjuncts(canonical(truncate(leftGuard, 1)))
+	right := logicalConjuncts(canonical(truncate(rightGuard, 1)))
+	if len(left) <= 1 && len(right) <= 1 {
+		return false
+	}
+	type pairDecision struct {
+		holds, decided bool
+	}
+	decisions := map[[2]*term]pairDecision{}
+	decidePair := func(a, b *term) (bool, bool) {
+		if equalTerms(a, b) {
+			return true, true
+		}
+		key := [2]*term{a, b}
+		if result, found := decisions[key]; found {
+			return result.holds, result.decided
+		}
+		holds, decided := implies(premise, a, b)
+		result := pairDecision{holds: holds, decided: decided}
+		decisions[key] = result
+		decisions[[2]*term{b, a}] = result
+		return holds, decided
+	}
+	findMatch := func(factor *term, candidates []*term) int {
+		// Canonical counterparts normally have the same root operation. Try
+		// those first so an unrelated memory predicate cannot spend a full
+		// diagram before the corresponding range or status fact.
+		for pass := 0; pass < 2; pass++ {
+			for i, candidate := range candidates {
+				sameRoot := factor.kind == candidate.kind && factor.op == candidate.op
+				if (pass == 0) != sameRoot {
+					continue
+				}
+				if holds, decided := decidePair(factor, candidate); decided && holds {
+					return i
+				}
+			}
+		}
+		return -1
+	}
+	leftMatched := make([]bool, len(left))
+	rightMatched := make([]bool, len(right))
+	for i, factor := range left {
+		if j := findMatch(factor, right); j >= 0 {
+			leftMatched[i], rightMatched[j] = true, true
+		}
+	}
+	for j, factor := range right {
+		if rightMatched[j] {
+			continue
+		}
+		if i := findMatch(factor, left); i >= 0 {
+			rightMatched[j], leftMatched[i] = true, true
+		}
+	}
+	allMatched, common := true, false
+	for _, matched := range leftMatched {
+		allMatched = allMatched && matched
+		common = common || matched
+	}
+	for _, matched := range rightMatched {
+		allMatched = allMatched && matched
+		common = common || matched
+	}
+	if allMatched {
+		return true
+	}
+	if !common {
+		return false
+	}
+	context := premise
+	residual := func(factors []*term, matched []bool) *term {
+		out := constTerm(1, 1)
+		for i, factor := range factors {
+			if matched[i] {
+				context = binaryTerm("and", context, factor)
+			} else {
+				out = binaryTerm("and", out, factor)
+			}
+		}
+		return out
+	}
+	leftResidual := residual(left, leftMatched)
+	rightResidual := residual(right, rightMatched)
+	holds, decided := implies(context, leftResidual, rightResidual)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" && (!decided || !holds) {
+		fmt.Fprintf(os.Stderr, "verify: conjunction residuals not proven equal (holds=%v decided=%v)\n  left: %s\n  right: %s\n", holds, decided, spineOf(leftResidual, 8), spineOf(rightResidual, 8))
+	}
+	return decided && holds
+}
+
+// booleanGuardsEqualUnder proves two write conditions equivalent. Conjunctions
+// first meet factor-by-factor, then are proved in both directions: assuming
+// either condition lets the premise-local fact pass discharge its shared
+// factors without constructing a diagram for the complete path condition. The
+// ordinary equality decision is retained as the final fallback.
+func booleanGuardsEqualUnder(premise, oakGuard, asmGuard *term, implies func(premise, a, b *term) (bool, bool)) bool {
+	oakGuard = truncate(oakGuard, 1)
+	asmGuard = truncate(asmGuard, 1)
+	if len(logicalConjuncts(oakGuard)) > 1 || len(logicalConjuncts(asmGuard)) > 1 {
+		if booleanConjunctionsEqualUnder(premise, oakGuard, asmGuard, implies) {
+			return true
+		}
+		always := constTerm(1, 1)
+		forward, forwardDecided := implies(binaryTerm("and", premise, oakGuard), asmGuard, always)
+		if forwardDecided && !forward {
+			return false
+		}
+		backward, backwardDecided := implies(binaryTerm("and", premise, asmGuard), oakGuard, always)
+		if backwardDecided && !backward {
+			return false
+		}
+		if forwardDecided && backwardDecided {
+			return true
+		}
+	}
+	equal, decided := implies(premise, oakGuard, asmGuard)
+	return decided && equal
+}
+
+// writeLogsEqualUnder proves that two already-pruned logs apply the same
+// ordered operations to one memory. A loop marker names memory whose
+// equality the induction established. Ordinary stores need equivalent guards;
+// where that guard holds, they need equal indices and values. Failure only
+// selects the whole-memory fallback.
+func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies func(premise, a, b *term) (bool, bool)) bool {
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	if len(oakLog) != len(asmLog) {
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: pointwise write logs differ in length: oak %d, asm %d\n", len(oakLog), len(asmLog))
+		}
+		return false
+	}
+	always := constTerm(1, 1)
+	for i, oakWrite := range oakLog {
+		asmWrite := asmLog[i]
+		if oakWrite == nil || asmWrite == nil || oakWrite.memory != asmWrite.memory {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify: pointwise write %d has different memory markers\n", i+1)
+			}
+			return false
+		}
+		if oakWrite.memory != "" {
+			continue
+		}
+		oakGuard, asmGuard := oakWrite.guard, asmWrite.guard
+		if oakGuard == nil {
+			oakGuard = always
+		}
+		if asmGuard == nil {
+			asmGuard = always
+		}
+		if !booleanGuardsEqualUnder(premise, oakGuard, asmGuard, implies) {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify: pointwise write %d guard not proven equal\n  oak: %s\n  asm: %s\n", i+1, spineOf(oakGuard, 7), spineOf(asmGuard, 7))
+			}
+			return false
+		}
+		active := binaryTerm("and", premise, truncate(oakGuard, 1))
+		if equal, decided := implies(active, truncate(oakWrite.index, 32), truncate(asmWrite.index, 32)); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify: pointwise write %d index not proven equal where its guard holds (holds=%v decided=%v)\n  oak: %s\n  asm: %s\n", i+1, equal, decided, spineOf(oakWrite.index, 7), spineOf(asmWrite.index, 7))
+			}
+			return false
+		}
+		if equal, decided := implies(active, oakWrite.value, asmWrite.value); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify: pointwise write %d value not proven equal where its guard holds (holds=%v decided=%v)\n  oak: %s\n  asm: %s\n", i+1, equal, decided, spineOf(oakWrite.value, 7), spineOf(asmWrite.value, 7))
+			}
+			return false
+		}
+	}
+	return true
+}
+
 // coupledEntryMemories requires the two sides' memories at loop k's
 // entry equal, span by span: the stores before the loop over the span's
 // entry memory, at a fresh index, the asm side under the coupling. This
 // is the induction's base; the iteration's stores are its step.
-func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool), splits []loopSplit) (string, bool) {
 	spans := map[string]bool{}
 	for span := range oakEv.entry {
 		spans[span] = true
@@ -3925,7 +4972,7 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 		entry := selectTerm(span, at, elemWidth)
 		oakMemory := memoryAt(oakLog, at, entry)
 		asmMemory := substitute(memoryAt(asmLog, at, entry), sigma)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		if equal, decided := spanEqualSplitting(premise, span, elemWidth, oakMemory, asmMemory, splits, implies); !decided || !equal {
 			reason := fmt.Sprintf("the memory of %s at loop %d's entry was not proven equal", span, k+1)
 			if !decided {
 				reason += " (the bit-level decision exceeded its node budget)"
@@ -3940,7 +4987,7 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 // leaves, span by span, as memories rather than store by store: the
 // iteration's stores over the loop's unknown memory, at a fresh index,
 // the asm side under the coupling and the body premise.
-func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool), splits []loopSplit) (string, bool) {
 	spans := map[string]bool{}
 	for span := range oakEv.writes {
 		spans[span] = true
@@ -3963,7 +5010,7 @@ func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*
 		unknown := selectTerm(loopMemoryName(oakEv.index, span), at, elemWidth)
 		oakMemory := memoryAt(oakEv.writes[span], at, unknown)
 		asmMemory := substitute(memoryAt(asmEv.writes[span], at, unknown), sigma)
-		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+		if equal, decided := spanEqualSplitting(premise, span, elemWidth, oakMemory, asmMemory, splits, implies); !decided || !equal {
 			reason := fmt.Sprintf("one iteration of loop %d was not proven to leave the memory of %s equal", k+1, span)
 			if !decided {
 				reason += " (the bit-level decision exceeded its node budget)"
@@ -4067,6 +5114,85 @@ func substitute(t *term, sigma map[string]*term) *term {
 	return substituteMemo(t, sigma, map[*term]*term{})
 }
 
+func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, valid *bool) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	if t.kind == termSelect {
+		at := restoreLoopEntryMemories(t.left, ev, memo, valid)
+		prefix := fmt.Sprintf("loop%d.", ev.index)
+		if strings.HasPrefix(t.name, prefix) {
+			span := strings.TrimPrefix(t.name, prefix)
+			if entry, marked := ev.entry[span]; marked {
+				restored := memoryAt(entry, at, selectTerm(span, at, t.width))
+				memo[t] = restored
+				return restored
+			}
+			*valid = false
+		}
+	}
+	if t.kind == termParam {
+		// A select at a constant index is represented as a parameter:
+		// loop1[3].tables.count.  Match it against the event's exact
+		// memory names and rebuild the corresponding entry-memory read.
+		var restored *term
+		for span, entry := range ev.entry {
+			memory := loopMemoryName(ev.index, span)
+			dot := strings.IndexByte(memory, '.')
+			if dot < 0 {
+				continue
+			}
+			prefix, suffix := memory[:dot]+"[", memory[dot:]
+			if !strings.HasPrefix(t.name, prefix) {
+				continue
+			}
+			close := strings.IndexByte(t.name[len(prefix):], ']')
+			if close < 0 {
+				continue
+			}
+			close += len(prefix)
+			if t.name[close+1:] != suffix {
+				continue
+			}
+			index, err := strconv.ParseUint(t.name[len(prefix):close], 10, 32)
+			if err != nil || restored != nil {
+				*valid = false
+				return t
+			}
+			at := constTerm(index, 32)
+			restored = memoryAt(entry, at, selectTerm(span, at, t.width))
+		}
+		if restored != nil {
+			memo[t] = restored
+			return restored
+		}
+		if strings.HasPrefix(t.name, fmt.Sprintf("loop%d.", ev.index)) || strings.HasPrefix(t.name, fmt.Sprintf("loop%d[", ev.index)) {
+			*valid = false
+		}
+		return t
+	}
+	cond := restoreLoopEntryMemories(t.cond, ev, memo, valid)
+	left := restoreLoopEntryMemories(t.left, ev, memo, valid)
+	right := restoreLoopEntryMemories(t.right, ev, memo, valid)
+	if cond == t.cond && left == t.left && right == t.right {
+		// Nothing below reads a loop memory: the node stands, shared.
+		// Copying it anyway copied the whole graph once per call — an
+		// inner loop event of every inlined callee, on a body whose
+		// terms are large — and add_carry's lowering grew past twenty
+		// gigabytes in the copies.
+		memo[t] = t
+		return t
+	}
+	out := *t
+	out.kbDone = false
+	out.cond, out.left, out.right = cond, left, right
+	memo[t] = &out
+	return &out
+}
+
 func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term {
 	if t == nil {
 		return nil
@@ -4097,11 +5223,22 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		memo[t] = rebuilt
 		return rebuilt
 	}
+	cond := substituteMemo(t.cond, sigma, memo)
+	left := substituteMemo(t.left, sigma, memo)
+	right := substituteMemo(t.right, sigma, memo)
+	if cond == t.cond && left == t.left && right == t.right {
+		// Nothing below is substituted: the node stands, shared, rather
+		// than copied once per substitution (restoreLoopEntryMemories).
+		if lane, isExtraction := extractedLane(t); isExtraction {
+			memo[t] = lane
+			return lane
+		}
+		memo[t] = t
+		return t
+	}
 	out := *t
 	out.kbDone = false
-	out.cond = substituteMemo(t.cond, sigma, memo)
-	out.left = substituteMemo(t.left, sigma, memo)
-	out.right = substituteMemo(t.right, sigma, memo)
+	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
 		// the Oak lanes is that Oak lane (extractedLane).
@@ -4153,17 +5290,49 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 // nodeBudget is the diagram nodes one loop proof may spend across all of
 // its implications (loopProofNodeBudget): a coupling search that keeps
 // failing candidates near the per-decision budget ends as evidence rather
-// than running for minutes.
+// than running for minutes. It also carries the proof's decisions so far
+// (decided), by the terms' identity: the sides are DAGs whose tree
+// unfolding may be exponential, and the congruence rule descends them by
+// operand pairs, so a shared pair is met once per parent and decided
+// once. An undecided result stays: the decision is deterministic and the
+// budget only shrinks.
 type nodeBudget struct {
 	remaining int // diagram nodes the proof may still spend
 	calls     int // implications tried so far (implicationCallLimit)
+	decided   map[decisionKey]decisionResult
+	// loop marks a loop proof's budget, whose implications are each
+	// capped at loopDecisionNodeBudget; a straight-line decision's
+	// allowance (synthesized in impliesEqualDepth) lets one diagram grow
+	// to the full blastNodeBudget.
+	loop bool
 }
 
+// decisionKey identifies one implication within a proof: its premise and
+// sides by identity, at its case-split depth (the depth bounds the splits
+// a decision may still make).
+type decisionKey struct {
+	premise, a, b *term
+	depth         int
+}
+
+type decisionResult struct{ holds, decided bool }
+
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
-// loopDecisionNodeBudget bounds each of its implications.
+// loopDecisionNodeBudget bounds each of its implications. Each of a loop
+// proof's implications gets half of the straight-line decision's nodes:
+// the implications that hold mostly do so in tens of thousands, a
+// vectorized map's sixteen-lane memory equality needs more than a quarter
+// of the diagram, and a failing one at two million nodes cost half a
+// minute per order under load. The proof holds sixteen such failures'
+// worth, and every implication charges its terms' nodes as well
+// (impliesEqualDepth), so the UTF-8 kernel's three-loop coupling, which
+// decides hundreds of implications over wide terms and loses a few, fits,
+// while a search that keeps failing ends within a few minutes. Only a
+// loop proof's budget carries the cap (nodeBudget.loop): the theorem
+// decider and the straight-line coupling keep the whole diagram.
 const (
-	loopProofNodeBudget    = 8 * blastNodeBudget
-	loopDecisionNodeBudget = blastNodeBudget
+	loopDecisionNodeBudget = blastNodeBudget / 2
+	loopProofNodeBudget    = 16 * loopDecisionNodeBudget
 )
 
 // impliesEqual decides premise → (a = b) at the terms' common width:
@@ -4176,6 +5345,96 @@ func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, de
 	return impliesEqualWithin(premise, a, b, widthOf, nil)
 }
 
+// finiteConditionalValues returns the complete range of a bounded decision
+// tree whose leaves are constants or structurally Boolean values. No other
+// term shape is admitted: the finite-result theorem below relies on this being
+// the complete range. A Boolean leaf contributes both 0 and 1, conservatively.
+func finiteConditionalValues(t *term, limit int) ([]uint64, bool) {
+	values := map[uint64]bool{}
+	seen := map[*term]bool{}
+	booleans := map[*term]bool{}
+	var visit func(*term) bool
+	visit = func(t *term) bool {
+		if t == nil {
+			return false
+		}
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+		switch t.kind {
+		case termConst:
+			values[t.value&mask(t.width)] = true
+			return len(values) <= limit
+		case termIte:
+			return visit(t.left) && visit(t.right)
+		default:
+			if booleanValued(t, booleans) {
+				values[0], values[1] = true, true
+				return len(values) <= limit
+			}
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify: finite result rejected leaf (width %d): %s\n", t.width, spineOf(t, 7))
+			}
+			return false
+		}
+	}
+	if limit <= 0 || !visit(t) {
+		return nil, false
+	}
+	out := make([]uint64, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, true
+}
+
+// impliesFiniteConditionalEqual proves equality of two small finite-valued
+// decision trees without requiring their branches to occur in the same order.
+// Each value in their complete finite range must select exactly the same inputs
+// on both sides. Since every input selects one of those leaves, the collection
+// of predicate equivalences entails equality of the original values.
+func impliesFiniteConditionalEqual(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds, decided, applicable bool) {
+	const valueLimit = 8
+	if a == nil || b == nil || a.width != b.width || a.width > 8 {
+		return false, false, false
+	}
+	a, b = canonical(a), canonical(b)
+	leftValues, leftOK := finiteConditionalValues(a, valueLimit)
+	rightValues, rightOK := finiteConditionalValues(b, valueLimit)
+	if !leftOK || !rightOK {
+		return false, false, false
+	}
+	values := map[uint64]bool{}
+	for _, value := range leftValues {
+		values[value] = true
+	}
+	for _, value := range rightValues {
+		values[value] = true
+	}
+	if len(values) > valueLimit {
+		return false, false, false
+	}
+	ordered := make([]uint64, 0, len(values))
+	for value := range values {
+		ordered = append(ordered, value)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	for _, value := range ordered {
+		constant := constTerm(value, a.width)
+		leftIsValue := truncate(cmpTerm("eq", a, constant), 1)
+		rightIsValue := truncate(cmpTerm("eq", b, constant), 1)
+		if equal, decided := impliesEqualWithin(premise, leftIsValue, rightIsValue, widthOf, budget); !decided || !equal {
+			if os.Getenv("OAK_VERIFY_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify: finite result value %d not proven equivalent (holds=%v decided=%v)\n  left: %s\n  right: %s\n  premise: %s\n", value, equal, decided, spineOf(leftIsValue, 5), spineOf(rightIsValue, 5), spineOf(premise, 4))
+			}
+			return equal, decided, true
+		}
+	}
+	return true, true, true
+}
+
 // impliesEqualWithin is impliesEqual spending from a shared budget when
 // one is given: a decision that would exceed what remains is undecided.
 func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
@@ -4185,24 +5444,61 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // impliesEqualDepth is impliesEqualWithin at a case-split depth: when every
 // variable order exceeds its budget, the decision splits on the condition
 // of the largest branch in the terms and decides both cases under it
-// (splitDecide), up to splitDepth deep.
+// (splitDecide), up to splitDepth deep. Each decision is made once per
+// proof (nodeBudget.decided).
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
-	if budget != nil {
-		// Each implication costs a call from the proof's allowance, and
-		// terms too large to blast cost a failed diagram's nodes, before
-		// they are canonicalized, pruned, or substituted: those walks are
-		// linear, and a body whose write coupling tries thousands of
-		// implications over a memory's selects (`add_bits`) would spend
-		// hours in them alone.
-		budget.calls++
-		if budget.calls > implicationCallLimit {
-			return false, false
-		}
-		if dagNodesExceed(implicationNodeLimit, premise, a, b) {
-			budget.remaining -= blastNodeBudget
-			return false, false
-		}
+	if budget == nil {
+		// A decision that arrives without a budget (decideEqual on a
+		// chunk's terms) still ends: the case splits and the congruence
+		// rule recurse over the operands of both sides, each pair pruned
+		// and blasted anew, and over a hash block's term that walk ran
+		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
+		// implication budget). A loop proof's allowance bounds it — the
+		// body's decision is one, where a loop proof spreads its
+		// allowance over a coupling's many implications — and past the
+		// allowance the implication is undecided, not unending.
+		// crc32c_chunk proves within it in seven seconds; under one
+		// implication's allowance it was witness-checked after sixteen,
+		// the rules and splits tried and failed.
+		budget = &nodeBudget{remaining: loopProofNodeBudget}
 	}
+	key := decisionKey{premise, a, b, depth}
+	if r, seen := budget.decided[key]; seen {
+		return r.holds, r.decided // met before, under another parent
+	}
+	// Each implication costs a call from the proof's allowance, and
+	// terms too large to blast cost a failed diagram's nodes, before
+	// they are canonicalized, pruned, or substituted: those walks are
+	// linear, and a body whose write coupling tries thousands of
+	// implications over a memory's selects (`add_bits`) would spend
+	// hours in them alone.
+	budget.calls++
+	if budget.calls > implicationCallLimit {
+		return false, false
+	}
+	nodes, exceeded := dagNodes(implicationNodeLimit, premise, a, b)
+	if exceeded {
+		budget.remaining -= blastNodeBudget
+		return false, false
+	}
+	// The terms are walked whatever the diagrams come to — blasted,
+	// canonicalized, pruned — so an implication costs the proof its
+	// terms' nodes even when it decides in a small diagram: two
+	// thousand such over a long write log took seven minutes
+	// (`protocol_line_done`) under a budget that saw only diagrams.
+	budget.remaining -= nodes
+	if budget.remaining <= 0 {
+		return false, false
+	}
+	holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
+	if budget.decided == nil {
+		budget.decided = map[decisionKey]decisionResult{}
+	}
+	budget.decided[key] = decisionResult{holds, decided}
+	return holds, decided
+}
+
+func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	if depth == 0 {
 		premise, a, b = canonical(premise), canonical(a), canonical(b)
 	}
@@ -4211,6 +5507,18 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	a, b = pushNarrowArithmetic(a), pushNarrowArithmetic(b)
+	a, b = normalizeLowMaskChain(a), normalizeLowMaskChain(b)
+	boolean := map[*term]bool{}
+	if premise.kind != termConst && booleanValued(a, boolean) && booleanValued(b, boolean) {
+		// A post-case premise often states the small guards whose conjunction
+		// occurs on one side of the next equality. Settle those guards from
+		// the premise's conjuncts before asking a diagram to rediscover them.
+		// This pass is structural and cheap even when the premise's complete
+		// diagram is too large for pruneUnder's bounded branch pass.
+		pruned := pruneUnderFacts(premise, []*term{a, b})
+		a, b = canonical(pruned[0]), canonical(pruned[1])
+	}
 	branching := hasLargeBranch(a) || hasLargeBranch(b)
 	if premise.kind != termConst && branching {
 		// The premise settles branches on both sides (a loop guard, a case
@@ -4281,11 +5589,17 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
-		if budget != nil && budget.remaining < bl.bdd.budget {
+		if budget != nil {
 			// One implication spends no more than the proof has left: the
 			// shared budget bounds the diagrams as they grow, not only the
-			// number of implications tried.
-			bl.bdd.budget = budget.remaining
+			// number of implications tried — and no more than a loop
+			// proof's per-implication cap (loopDecisionNodeBudget).
+			if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
+				bl.bdd.budget = loopDecisionNodeBudget
+			}
+			if budget.remaining < bl.bdd.budget {
+				bl.bdd.budget = budget.remaining
+			}
 		}
 		go func(bl *blaster) {
 			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
@@ -4321,6 +5635,9 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 			remaining = budget.remaining
 		}
 		fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
+		if termSize(a, map[*term]int{}) <= 256 && termSize(b, map[*term]int{}) <= 256 {
+			fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
+		}
 		for _, bl := range blasters {
 			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, exceeded=%v, budget %d\n", bl.label, len(bl.bdd.nodes), bl.bdd.exceeded, bl.bdd.budget)
 		}
@@ -4329,6 +5646,48 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		return false, false // no branch worth a split: the diagrams were the decision
 	}
 	return splitDecide(premise, a, b, widthOf, budget, depth)
+}
+
+// pushNarrowArithmetic applies the modular homomorphism for an explicit
+// truncation of addition or subtraction. Machine code commonly performs a
+// u16 update in a wider register and masks the result, while Oak performs the
+// operation at u16 directly. Keeping this normalization local to an equality
+// decision avoids rebuilding unrelated canonical DAGs.
+func pushNarrowArithmetic(t *term) *term {
+	if t.kind != termBinary || t.op != "and" || t.right.kind != termConst || t.right.value != mask(t.width) || t.left.width <= t.width || t.left.kind != termBinary {
+		return t
+	}
+	if t.left.op != "add" && t.left.op != "sub" {
+		return t
+	}
+	return binaryTerm(t.left.op, truncate(t.left.left, t.width), truncate(t.left.right, t.width))
+}
+
+// normalizeLowMaskChain collapses a top-level chain of low masks to the one
+// narrow view it denotes. The intersection of low masks is the smallest
+// retained low-bit prefix. This is local to one equality decision: unlike
+// canonical DAG rewriting it follows existing left children and therefore
+// always terminates. The original result width is restored after narrowing.
+func normalizeLowMaskChain(t *term) *term {
+	width := t.width
+	kept := width
+	peeled := false
+	for t.kind == termBinary && t.op == "and" && t.right.kind == termConst && isLowMask(t.right.value) {
+		kept = min(kept, min(bits.Len64(t.right.value), t.width))
+		t = t.left
+		peeled = true
+	}
+	if !peeled {
+		return t
+	}
+	if kept == 0 {
+		return constTerm(0, width)
+	}
+	base := adaptWidth(t, width)
+	if significantBits(base) <= kept {
+		return base
+	}
+	return binaryTerm("and", base, constTerm(mask(kept), width))
 }
 
 // hasLargeBranch reports an ite in the term, other than a table lookup's
@@ -4391,6 +5750,194 @@ func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudg
 // splitDepth bounds the case splits nested in one decision.
 const splitDepth = 2
 
+// maskedZeroTestRelation recognizes equal or opposite zero tests after
+// discarding only masks that cannot clear a possible set bit. It is a
+// premise-local fact rule: the terms themselves stay untouched, preserving
+// their DAG identities for the pruning walk.
+//
+// The result is 1 for the same predicate, -1 for opposite predicates, and 0
+// when the relation is not proved.
+func maskedZeroTestRelation(a, b *term) int {
+	value := func(t *term) (*term, string, bool) {
+		if t.kind != termCmp || (t.op != "eq" && t.op != "ne") || t.right.kind != termConst || t.right.value != 0 {
+			return nil, "", false
+		}
+		v := t.left
+		for v.kind == termBinary && v.op == "and" && v.right.kind == termConst && isLowMask(v.right.value) && significantBits(v.left) <= min(bits.Len64(v.right.value), v.width) {
+			v = v.left
+		}
+		return v, t.op, true
+	}
+	left, leftOp, leftOK := value(a)
+	right, rightOp, rightOK := value(b)
+	if !leftOK || !rightOK || !equalTerms(left, right) {
+		return 0
+	}
+	if leftOp == rightOp {
+		return 1
+	}
+	return -1
+}
+
+// pruneUnderFacts rewrites terms using only direct Boolean facts in a
+// premise. It is deliberately independent of the bit-level solver: a large
+// post-case premise can exceed the pruning diagram's budget even though one
+// of its conjuncts directly settles a guard in the terms. Unknown formulas
+// remain in place, so this pass proves and never guesses.
+func pruneUnderFacts(premise *term, terms []*term) []*term {
+	premise = canonical(truncate(premise, 1))
+	var facts []*term
+	var collectFacts func(*term)
+	collectFacts = func(t *term) {
+		if t.kind == termBinary && t.op == "and" && t.width == 1 {
+			collectFacts(t.left)
+			collectFacts(t.right)
+			return
+		}
+		if t.kind != termConst {
+			facts = append(facts, canonical(truncate(t, 1)))
+		}
+	}
+	collectFacts(premise)
+
+	type knownTruth struct {
+		value, known bool
+	}
+	truthMemo := map[*term]knownTruth{}
+	boolean := map[*term]bool{}
+	var truthUnderFacts func(*term) (bool, bool)
+	truthUnderFacts = func(t *term) (bool, bool) {
+		if result, seen := truthMemo[t]; seen {
+			return result.value, result.known
+		}
+		// Truncating a wider Boolean can retain t as the left operand of a
+		// mask. Mark it in progress before normalization so structural descent
+		// through that wrapper stops rather than recursing.
+		truthMemo[t] = knownTruth{}
+		normalized := canonical(truncate(t, 1))
+		result := knownTruth{}
+		if normalized.kind == termConst {
+			result = knownTruth{value: normalized.value != 0, known: true}
+		} else {
+			for _, fact := range facts {
+				switch {
+				case equalTerms(normalized, fact):
+					result = knownTruth{value: true, known: true}
+				case complementary(normalized, fact):
+					result = knownTruth{value: false, known: true}
+				case maskedZeroTestRelation(normalized, fact) == 1:
+					result = knownTruth{value: true, known: true}
+				case maskedZeroTestRelation(normalized, fact) == -1:
+					result = knownTruth{value: false, known: true}
+				}
+				if result.known {
+					break
+				}
+			}
+		}
+		if !result.known {
+			switch normalized.kind {
+			case termBinary:
+				switch normalized.op {
+				case "and":
+					left, leftKnown := truthUnderFacts(normalized.left)
+					if leftKnown && !left {
+						result = knownTruth{value: false, known: true}
+					} else {
+						right, rightKnown := truthUnderFacts(normalized.right)
+						if rightKnown && !right {
+							result = knownTruth{value: false, known: true}
+						} else if leftKnown && rightKnown {
+							result = knownTruth{value: left && right, known: true}
+						}
+					}
+				case "or":
+					left, leftKnown := truthUnderFacts(normalized.left)
+					if leftKnown && left {
+						result = knownTruth{value: true, known: true}
+					} else {
+						right, rightKnown := truthUnderFacts(normalized.right)
+						if rightKnown && right {
+							result = knownTruth{value: true, known: true}
+						} else if leftKnown && rightKnown {
+							result = knownTruth{value: left || right, known: true}
+						}
+					}
+				case "xor":
+					left, leftKnown := truthUnderFacts(normalized.left)
+					right, rightKnown := truthUnderFacts(normalized.right)
+					if leftKnown && rightKnown {
+						result = knownTruth{value: left != right, known: true}
+					}
+				}
+			case termIte:
+				if cond, known := truthUnderFacts(normalized.cond); known {
+					if cond {
+						result.value, result.known = truthUnderFacts(normalized.left)
+					} else {
+						result.value, result.known = truthUnderFacts(normalized.right)
+					}
+				} else {
+					left, leftKnown := truthUnderFacts(normalized.left)
+					right, rightKnown := truthUnderFacts(normalized.right)
+					if leftKnown && rightKnown && left == right {
+						result = knownTruth{value: left, known: true}
+					}
+				}
+			}
+		}
+		truthMemo[t] = result
+		return result.value, result.known
+	}
+
+	memo := map[*term]*term{}
+	var rewrite func(*term) *term
+	rewrite = func(t *term) *term {
+		if t == nil {
+			return nil
+		}
+		if done, seen := memo[t]; seen {
+			return done
+		}
+		if booleanValued(t, boolean) {
+			if value, known := truthUnderFacts(t); known {
+				out := constTerm(0, t.width)
+				if value {
+					out = constTerm(1, t.width)
+				}
+				memo[t] = out
+				return out
+			}
+		}
+		out := t
+		if t.kind == termIte {
+			if takeLeft, known := truthUnderFacts(t.cond); known {
+				if takeLeft {
+					out = adaptWidth(rewrite(t.left), t.width)
+				} else {
+					out = adaptWidth(rewrite(t.right), t.width)
+				}
+				memo[t] = out
+				return out
+			}
+		}
+		cond, left, right := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
+		if cond != t.cond || left != t.left || right != t.right {
+			copy := *t
+			copy.cond, copy.left, copy.right = cond, left, right
+			out = &copy
+		}
+		memo[t] = out
+		return out
+	}
+
+	pruned := make([]*term, len(terms))
+	for i, t := range terms {
+		pruned[i] = rewrite(t)
+	}
+	return pruned
+}
+
 // pruneUnder rewrites terms under a premise: an ite whose condition the
 // premise implies or refutes — decided on a small diagram of the premise
 // and the condition alone — becomes the arm the premise selects, so that
@@ -4399,6 +5946,8 @@ const splitDepth = 2
 // built is over the arms alone. The walk is memoized over the DAG; a
 // condition past the small budget leaves its branch in place.
 func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term {
+	premise = canonical(truncate(premise, 1))
+	terms = pruneUnderFacts(premise, terms)
 	mentioned := map[string]bool{}
 	collectParams(premise, mentioned)
 	for _, t := range terms {
@@ -4649,9 +6198,9 @@ const (
 	implicationCallLimit = 2048
 )
 
-// dagNodesExceed reports whether the terms hold more than limit distinct
-// nodes between them, stopping the count there.
-func dagNodesExceed(limit int, terms ...*term) bool {
+// dagNodes counts the distinct nodes the terms hold between them, up to
+// limit, and reports whether they hold more.
+func dagNodes(limit int, terms ...*term) (int, bool) {
 	seen := map[*term]bool{}
 	var walk func(t *term) bool
 	walk = func(t *term) bool {
@@ -4666,10 +6215,10 @@ func dagNodesExceed(limit int, terms ...*term) bool {
 	}
 	for _, t := range terms {
 		if walk(t) {
-			return true
+			return len(seen), true
 		}
 	}
-	return false
+	return len(seen), false
 }
 
 // abbreviate cuts a rendering for a trace line.
@@ -4767,6 +6316,20 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 	case termBinary:
 		if a.op != b.op || a.left.width != b.left.width || a.right.width != b.right.width {
 			return false, false
+		}
+		// Equality beneath one identical low mask only needs equality of the
+		// bits that survive it. In particular, a narrow summarized call result
+		// may carry AAPCS64-unspecified high bits until the caller's `and`; asking
+		// for its whole operand to equal the source's zero-extended value is
+		// unnecessarily strong, and can send a small address equality into a
+		// multi-million-node diagram. Truncation also removes a shifted high
+		// fragment structurally, without rewriting either original DAG.
+		if a.op == "and" && a.right.kind == termConst && b.right.kind == termConst && a.right.value == b.right.value {
+			if kept := lowOnes(a.right.value & mask(a.width)); kept > 0 && kept < a.width {
+				if pair(truncate(a.left, kept), truncate(b.left, kept)) {
+					return true, true
+				}
+			}
 		}
 		if pair(a.left, b.left) && pair(a.right, b.right) {
 			return true, true
@@ -5404,4 +6967,141 @@ func sigmaShow(sigma map[string]*term) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+// renameLoopMemory rewrites every read of the loop's unknown memory
+// `from` in the term as a read of the memory the loop found on entry —
+// the entry log's element at the index over the span's entry memory —
+// for the case in which the loop ran no iteration. Shared subterms are
+// rewritten once.
+func renameLoopMemory(t *term, from string, entryLog []*spanWrite, base string, width int, memo map[*term]*term) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	var out *term
+	switch t.kind {
+	case termConst, termParam:
+		out = t
+	case termSelect:
+		index := renameLoopMemory(t.left, from, entryLog, base, width, memo)
+		if t.name == from {
+			out = memoryAt(entryLog, index, selectTerm(base, index, t.width))
+		} else if index != t.left {
+			copied := *t
+			copied.left = index
+			out = &copied
+		} else {
+			out = t
+		}
+	default:
+		left := renameLoopMemory(t.left, from, entryLog, base, width, memo)
+		right := renameLoopMemory(t.right, from, entryLog, base, width, memo)
+		cond := renameLoopMemory(t.cond, from, entryLog, base, width, memo)
+		if left == t.left && right == t.right && cond == t.cond {
+			out = t
+		} else {
+			copied := *t
+			copied.left, copied.right, copied.cond = left, right, cond
+			copied.id = 0
+			out = &copied
+		}
+	}
+	memo[t] = out
+	return out
+}
+
+// loopSplit is a loop whose memory marker the two sides may place under
+// different conditions: the Oak side where the loop is lowered, the
+// machine side only where its path reached the loop and entered it — a
+// peeled or rotated loop, a loop inside a conditional arm.
+type loopSplit struct {
+	ev      *loopEvent // the Oak side's event
+	reached *term      // the machine's condition for reaching the loop, over the Oak symbols; nil when always
+}
+
+// splitsFor builds the splits for the listed loops (indices into the
+// matched events).
+func splitsFor(indices []int, oakLoops, asmLoops []*loopEvent, sigma map[string]*term) []loopSplit {
+	var out []loopSplit
+	for _, k := range indices {
+		if k < 0 || k >= len(oakLoops) || k >= len(asmLoops) {
+			continue
+		}
+		s := loopSplit{ev: oakLoops[k]}
+		if reached := asmLoops[k].reached; reached != nil {
+			s.reached = truncate(substitute(reached, sigma), 1)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// earlierSiblings lists the loops before k under the same parent: the
+// loops whose markers loop k's entry memory may carry.
+func earlierSiblings(k int, oakLoops []*loopEvent) []int {
+	var out []int
+	for i := 0; i < k && i < len(oakLoops); i++ {
+		if oakLoops[i].parent == oakLoops[k].parent {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// spanEqualSplitting decides that two span memories agree. When the
+// direct decision closes as unequal, it splits on whether each listed
+// loop ran — reached and entered, over the header values: then both
+// sides keep the loop's marker; otherwise the loop's unknown memory is
+// the memory it found on entry, on both sides (renameLoopMemory), which
+// is what the machine's conditional marker spells. A loop that never ran
+// leaves memory as it found it. At most two loops split, four cases.
+func spanEqualSplitting(premise *term, name string, elemWidth int, oakMemory, asmMemory *term, splits []loopSplit, implies func(premise, a, b *term) (bool, bool)) (equal, decided bool) {
+	if equal, decided = implies(premise, oakMemory, asmMemory); !decided || equal {
+		return equal, decided // closed, or past the budget: the cases would be too
+	}
+	var marking []loopSplit
+	for _, s := range splits {
+		if _, marked := s.ev.entry[name]; marked {
+			marking = append(marking, s)
+		}
+	}
+	if len(marking) == 0 || len(marking) > 2 {
+		return equal, decided
+	}
+	allEqual := true
+	for mask := 0; mask < 1<<len(marking); mask++ {
+		p, o, a := premise, oakMemory, asmMemory
+		for i, s := range marking {
+			ev := s.ev
+			headerSigma := map[string]*term{}
+			for v, fresh := range ev.fresh {
+				if header, ok := ev.header[v]; ok {
+					headerSigma[fresh.name] = header
+				}
+			}
+			runs := truncate(substitute(ev.cond, headerSigma), 1)
+			if s.reached != nil {
+				runs = binaryTerm("and", runs, s.reached)
+			}
+			if mask&(1<<i) != 0 {
+				p = binaryTerm("and", p, runs)
+				continue
+			}
+			p = binaryTerm("and", p, binaryTerm("xor", runs, constTerm(1, 1)))
+			from := loopMemoryName(ev.index, name)
+			o = renameLoopMemory(o, from, ev.entry[name], name, elemWidth, map[*term]*term{})
+			a = renameLoopMemory(a, from, ev.entry[name], name, elemWidth, map[*term]*term{})
+		}
+		caseEqual, caseDecided := implies(p, o, a)
+		if !caseDecided {
+			return false, false
+		}
+		if !caseEqual {
+			allEqual = false
+		}
+	}
+	return allEqual, true
 }

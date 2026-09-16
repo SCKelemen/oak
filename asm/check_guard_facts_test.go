@@ -29,6 +29,8 @@ func TestCheckerGuardFacts(t *testing.T) {
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, lo\n  cbz w9, skip\n  ldrb w0, [x0, w2, uxtw]\n  ret\nskip:\n  mov w0, wzr\n  ret"},
 		{"the negated condition: cset hs, cbnz (Oak.Assembler.cset_cbnz)",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, hs\n  cbnz w9, skip\n  ldrb w0, [x0, w2, uxtw]\n  ret\nskip:\n  mov w0, wzr\n  ret"},
+		{"a nonzero span length admits element zero (Oak.Forwarding.unsigned_lt_one_is_zero)",
+			"  bind x0, w1 = v\n  bind w2 = i\n  cbz w1, trap\n  ldrb w0, [x0]\n  ret" + epilogue},
 		{"the inclusive slack guard through a boolean: cset ls, cbz",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  cmp w1, #4\n  b.lo trap\n  mov w9, w1\n  sub w9, w9, #4\n  cmp w2, w9\n  cset w10, ls\n  cbz w10, trap\n  add w9, w2, #3\n  ldrb w0, [x0, w9, uxtw]\n  ret" + epilogue},
 		{"a masked index is bounded by its mask (Oak.Assembler.masked_index_bound)",
@@ -47,6 +49,12 @@ func TestCheckerGuardFacts(t *testing.T) {
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w1, #4\n  b.lo trap\n  movz w9, #3\n  ldrb w0, [x0, w9, uxtw]\n  ret" + epilogue},
 		{"a guarded index spilled to a slot is guarded when it is loaded back (Oak.Assembler.guard_through_slot)",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  cmp w2, w1\n  b.hs trap\n  str w2, [sp, #8]\n  ldr w9, [sp, #8]\n  ldrb w0, [x0, w9, uxtw]\n  add sp, sp, #16\n  ret" + epilogue},
+		// Block versioning by fact context (docs/spec/94-assembler.md): the
+		// guard holds on the path that reaches the access, and the other
+		// path into the join cannot reach it, so the meet's loss of the
+		// fact is not a refusal.
+		{"a guard lost at a join is admitted per arriving context",
+			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, lo\n  cbz w9, skip\n  b body\nbody:\n  ldrb w0, [x0, w2, uxtw]\n  ret\nskip:\n  mov w0, wzr\n  ret"},
 		{"proven minimum survives a call with the span",
 			callPrologue + "  cmp w20, #2\n  b.lo trap\n  bl helper\n  ldrb w0, [x19, #1]" + callEpilogue},
 	}
@@ -87,6 +95,12 @@ func TestCheckerGuardFacts(t *testing.T) {
 		{"cbz on a register no compare defined proves nothing",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  mov w9, #1\n  cbz w9, skip\n  ldrb w0, [x0, w2, uxtw]\n  ret\nskip:\n  mov w0, wzr\n  ret",
 			"without a dominating index guard"},
+		{"cbnz on a span length gives no nonempty fall-through fact",
+			"  bind x0, w1 = v\n  bind w2 = i\n  cbnz w1, trap\n  ldrb w0, [x0]\n  ret" + epilogue,
+			"without a dominating bounds guard"},
+		{"the taken cbz edge keeps the zero-length state",
+			"  bind x0, w1 = v\n  bind w2 = i\n  cbz w1, zero\n  mov w0, wzr\n  ret\nzero:\n  ldrb w0, [x0]\n  ret",
+			"without a dominating bounds guard"},
 		{"a mask wider than the array proves too little",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x11\n  frame 16\n  sub sp, sp, #16\n  mov x9, #0\n  stp x9, x9, [sp]\n  add x9, sp, #0\n  and w10, w2, #7\n  add x11, x9, w10, uxtw #2\n  ldr w0, [x11]\n  add sp, sp, #16\n  ret",
 			""},
@@ -101,6 +115,9 @@ func TestCheckerGuardFacts(t *testing.T) {
 			"proven minimum length"},
 		{"a slot fact dies with the length register it names",
 			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  frame 16\n  sub sp, sp, #16\n  cmp w2, w1\n  b.hs trap\n  str w2, [sp, #8]\n  mov w1, #0\n  ldr w9, [sp, #8]\n  ldrb w0, [x0, w9, uxtw]\n  add sp, sp, #16\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"a join whose other path reaches the access unguarded is refused",
+			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  cset w9, lo\n  cbz w9, body\n  b body\nbody:\n  ldrb w0, [x0, w2, uxtw]\n  ret",
 			"without a dominating index guard"},
 		{"guard on a caller-saved index dies at a call",
 			callPrologue + "  mov w9, w21\n  cmp w9, w20\n  b.hs trap\n  bl helper\n  ldrb w0, [x19, w9, uxtw]" + callEpilogue,

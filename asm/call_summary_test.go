@@ -18,7 +18,7 @@ func TestVerifyCallSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fill, err := parseSignatureWithBody("fill: (v: [*]u8, i: u32) -> u32 { v[0] = u8(1)\n i }")
+	fill, err := parseSignatureWithBody("inc: (v: [*]u8, i: u32) -> u32 { v[0] = u8(1)\n i }")
 	if err != nil {
 		t.Fatal(err)
 	}

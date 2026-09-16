@@ -15,7 +15,7 @@ import (
 // materialization recipe.
 func (tc *TypeChecker) NativeLoweringFingerprint() string {
 	digest := sha256.New()
-	writeNativeFingerprintPart(digest, "oak.typechecker.native-lowering.v1")
+	writeNativeFingerprintPart(digest, "oak.typechecker.native-lowering.v4")
 	if tc == nil {
 		writeNativeFingerprintPart(digest, "nil")
 		return hex.EncodeToString(digest.Sum(nil))
@@ -23,10 +23,52 @@ func (tc *TypeChecker) NativeLoweringFingerprint() string {
 	writeNativeFingerprintPart(digest, strconv.Itoa(tc.intSize))
 	writeNativeFingerprintPart(digest, strconv.Itoa(tc.ptrSize))
 	writeTokenBoolMap(digest, "proven-indices", tc.provenIndices)
+	writeIndexProofMap(digest, tc.indexProofs)
 	writeTokenStringMap(digest, "arithmetic-types", tc.arithmeticTypes)
 	writeTokenIntMap(digest, "shift-widths", tc.shiftWidths)
 	writeTokenStringMap(digest, "variant-resolutions", tc.variantResolutions)
+	writeTokenStringMap(digest, "optir-expression-types", nativeOptIRExpressionTypes(tc))
+	writeScalarGlobalRegionAuthority(digest, tc.ScalarGlobalRegions())
+	writeScalarGlobalWriteAuthority(digest, tc.ScalarGlobalWriteProofs())
 	return hex.EncodeToString(digest.Sum(nil))
+}
+
+// nativeOptIRExpressionTypes selects exactly the closed scalar type vocabulary
+// whose checker authority the native OptIR projection consumes. Keeping
+// aggregate and algebraic types out also avoids depending on diagnostic String
+// forms whose internal maps are not canonical serialization.
+func nativeOptIRExpressionTypes(tc *TypeChecker) map[tokenKey]string {
+	values := make(map[tokenKey]string)
+	for key, typ := range tc.expressionTypes {
+		switch concrete := typ.(type) {
+		case *BoolType:
+			values[key] = concrete.String()
+		case *UnitType:
+			values[key] = concrete.String()
+		case *PrimitiveType:
+			if concrete.Refinement == "" && tc.FixedWidthName(concrete.Name) != "" {
+				values[key] = concrete.String()
+			}
+		}
+	}
+	return values
+}
+
+func writeIndexProofMap(digest hash.Hash, values map[tokenKey]IndexProof) {
+	keys := sortedTokenKeys(values)
+	writeNativeFingerprintPart(digest, "index-proofs")
+	writeNativeFingerprintPart(digest, strconv.Itoa(len(keys)))
+	for _, key := range keys {
+		proof := values[key]
+		writeTokenKey(digest, key)
+		for _, value := range []string{proof.ID, proof.Proposition, proof.Container, strconv.FormatInt(proof.Extent, 10), proof.Scope, proof.Provenance, proof.Witness} {
+			writeNativeFingerprintPart(digest, value)
+		}
+		writeNativeFingerprintPart(digest, strconv.Itoa(len(proof.Dependencies)))
+		for _, dependency := range proof.Dependencies {
+			writeNativeFingerprintPart(digest, dependency)
+		}
+	}
 }
 
 func writeTokenBoolMap(digest hash.Hash, domain string, values map[tokenKey]bool) {
@@ -57,6 +99,61 @@ func writeTokenIntMap(digest hash.Hash, domain string, values map[tokenKey]int) 
 		writeTokenKey(digest, key)
 		writeNativeFingerprintPart(digest, strconv.Itoa(values[key]))
 	}
+}
+
+func writeScalarGlobalRegionAuthority(digest hash.Hash, values map[string]ScalarGlobalRegion) {
+	keys := sortedStringKeys(values)
+	writeNativeFingerprintPart(digest, "scalar-global-regions")
+	writeNativeFingerprintPart(digest, strconv.Itoa(len(keys)))
+	for _, key := range keys {
+		region := values[key]
+		for _, value := range []string{
+			key,
+			region.ID,
+			region.Name,
+			region.Type,
+			region.DeclarationScope,
+			region.Provenance,
+			region.Witness,
+		} {
+			writeNativeFingerprintPart(digest, value)
+		}
+	}
+}
+
+func writeScalarGlobalWriteAuthority(digest hash.Hash, values map[string]ScalarGlobalWriteProof) {
+	keys := sortedStringKeys(values)
+	writeNativeFingerprintPart(digest, "scalar-global-writes")
+	writeNativeFingerprintPart(digest, strconv.Itoa(len(keys)))
+	for _, key := range keys {
+		proof := values[key]
+		for _, value := range []string{
+			key,
+			proof.ID,
+			proof.Proposition,
+			proof.RegionID,
+			proof.Global,
+			proof.Type,
+			proof.Scope,
+			proof.Provenance,
+			proof.Witness,
+		} {
+			writeNativeFingerprintPart(digest, value)
+		}
+		writeNativeFingerprintPart(digest, strconv.Itoa(len(proof.Dependencies)))
+		for _, dependency := range proof.Dependencies {
+			writeNativeFingerprintPart(digest, dependency)
+		}
+	}
+}
+
+func sortedStringKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func sortedTokenKeys[T any](values map[tokenKey]T) []tokenKey {

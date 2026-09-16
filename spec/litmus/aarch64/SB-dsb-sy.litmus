@@ -1,0 +1,12 @@
+AArch64 Oak-SB-dsb-sy
+{
+ 0:X1=x; 0:X3=y;
+ 1:X1=x; 1:X3=y;
+}
+ P0           | P1           ;
+ MOV W0,#1    | MOV W0,#1    ;
+ STR W0,[X1]  | STR W0,[X3]  ;
+ DSB SY       | DSB SY       ;
+ LDR W2,[X3]  | LDR W2,[X1]  ;
+
+exists (0:X2=0 /\ 1:X2=0)

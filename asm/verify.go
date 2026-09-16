@@ -47,6 +47,25 @@ type Verdict struct {
 	Callees []string
 }
 
+// verdictWithCallees attaches the exact dependency union accumulated by
+// independent verifier runs (result chunks or vector halves). First occurrence
+// determines the stable order; the returned slice never aliases an executor.
+func verdictWithCallees(verdict Verdict, groups ...[]string) Verdict {
+	seen := make(map[string]bool)
+	callees := make([]string, 0)
+	for _, group := range groups {
+		for _, callee := range group {
+			if seen[callee] {
+				continue
+			}
+			seen[callee] = true
+			callees = append(callees, callee)
+		}
+	}
+	verdict.Callees = callees
+	return verdict
+}
+
 type VerdictKind int
 
 const (
@@ -122,7 +141,33 @@ func selectTerm(span string, index *term, width int) *term {
 		}
 		return paramTerm(spanElemName(span, k), width)
 	}
-	return &term{kind: termSelect, width: width, name: span, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: span, left: canonicalIndex(index)}
+}
+
+// canonicalIndex spells a memory read's index one way on both sides, so
+// the same read is one term (the linear normal form's atom): a mask of
+// low ones covering every bit its operand can have set is dropped — the
+// machine's read of a u32 argument register under `and 0xFFFFFFFF` is
+// the parameter, whose wide reading is zero-extended by convention — and
+// the index is taken at 32 bits.
+func canonicalIndex(index *term) *term {
+	for index.kind == termBinary && index.op == "and" {
+		var maskTerm, operand *term
+		switch {
+		case index.right.kind == termConst:
+			maskTerm, operand = index.right, index.left
+		case index.left.kind == termConst:
+			maskTerm, operand = index.left, index.right
+		default:
+			return truncate(index, 32)
+		}
+		k := lowOnes(maskTerm.value & mask(index.width))
+		if k < 0 || operand.knownBits() > k {
+			break
+		}
+		index = operand
+	}
+	return truncate(index, 32)
 }
 
 // elementValue is the witness evaluator's fixed memory: element k of span
@@ -171,8 +216,115 @@ func elementParam(name string) (span string, k uint64, ok bool) {
 // record's scalar leaves, offsets relative to the element, names starting
 // with the dot (`.f`, `.a.b`, `.buf[2]`).
 type recordSpanArg struct {
+	size              int64
+	leaves            []compositeLeaf
+	leavesByPlace     map[recordSpanLeafPlace]int
+	leavesByName      map[string]int
+	arraysByOffset    map[int64]recordSpanArrayField
+	arraysByName      map[string]recordSpanArrayField
+	memoryFields      []recordSpanMemoryField
+	memoryFieldByName map[string]int
+}
+
+type recordSpanLeafPlace struct {
+	offset int64
 	size   int64
-	leaves []compositeLeaf
+}
+
+type recordSpanArrayField struct {
+	prefix string
+	length int64
+	stride int64
+	first  compositeLeaf
+}
+
+type recordSpanMemoryField struct {
+	name  string
+	width int
+}
+
+// newRecordSpanArg indexes a record span's enumerated leaves once. Large
+// array fields (the OS pilot's 49,152-entry page arena) otherwise made every
+// machine load/store and every Oak field access scan all leaves again while
+// the optimizer validated its candidates. The maps are immutable after this
+// constructor and are shared read-only by copied verifier states.
+func newRecordSpanArg(size int64, leaves []compositeLeaf) recordSpanArg {
+	arg := recordSpanArg{
+		size:              size,
+		leaves:            leaves,
+		leavesByPlace:     make(map[recordSpanLeafPlace]int, len(leaves)),
+		leavesByName:      make(map[string]int, len(leaves)),
+		arraysByOffset:    map[int64]recordSpanArrayField{},
+		arraysByName:      map[string]recordSpanArrayField{},
+		memoryFieldByName: map[string]int{},
+	}
+	var arrayOrder []string
+	for i, leaf := range leaves {
+		cellSize := int64(leaf.width+7) / 8
+		if leaf.width == 1 {
+			cellSize = 4 // Bool occupies the C enum's four-byte cell.
+		}
+		place := recordSpanLeafPlace{offset: leaf.offset, size: cellSize}
+		if _, exists := arg.leavesByPlace[place]; !exists {
+			// Overlapping union payloads keep compositeLeaves' first match,
+			// as the former linear lookup did.
+			arg.leavesByPlace[place] = i
+		}
+		if _, exists := arg.leavesByName[leaf.name]; !exists {
+			arg.leavesByName[leaf.name] = i
+		}
+
+		memory := leaf.name
+		if open := strings.IndexByte(memory, '['); open > 0 {
+			memory = memory[:open]
+		}
+		if at, exists := arg.memoryFieldByName[memory]; exists {
+			// Preserve memoryWidths' last-leaf behavior for a composite shape
+			// with several leaves under one memory name.
+			arg.memoryFields[at].width = leaf.width
+		} else {
+			arg.memoryFieldByName[memory] = len(arg.memoryFields)
+			arg.memoryFields = append(arg.memoryFields, recordSpanMemoryField{name: memory, width: leaf.width})
+		}
+
+		prefix, k, isArray := recordSpanArrayElement(leaf.name)
+		if !isArray {
+			continue
+		}
+		field, exists := arg.arraysByName[prefix]
+		if !exists {
+			field = recordSpanArrayField{prefix: prefix}
+			arrayOrder = append(arrayOrder, prefix)
+		}
+		field.length++
+		if k == 0 {
+			field.first = leaf
+			field.stride = cellSize
+		}
+		arg.arraysByName[prefix] = field
+	}
+	for _, prefix := range arrayOrder {
+		field := arg.arraysByName[prefix]
+		if field.stride == 0 {
+			continue
+		}
+		if _, exists := arg.arraysByOffset[field.first.offset]; !exists {
+			arg.arraysByOffset[field.first.offset] = field
+		}
+	}
+	return arg
+}
+
+func recordSpanArrayElement(name string) (prefix string, k int64, ok bool) {
+	open := strings.LastIndexByte(name, '[')
+	if open <= 0 || !strings.HasSuffix(name, "]") {
+		return "", 0, false
+	}
+	index, err := strconv.ParseInt(name[open+1:len(name)-1], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return name[:open], index, true
 }
 
 // recordSpanOf recognizes `[*]T` / `[]T` with T a composite of the
@@ -196,61 +348,37 @@ func recordSpanOf(comps map[string]Composite, typ ast.Expression) (arg recordSpa
 	if !ok {
 		return recordSpanArg{}, reason, true, false
 	}
-	return recordSpanArg{size: comp.Size, leaves: leaves}, "", true, true
+	return newRecordSpanArg(comp.Size, leaves), "", true, true
 }
 
 // leafAt is the leaf at an offset with a width in bytes (a Bool leaf is
 // one bit in its 4-byte cell).
 func (arg recordSpanArg) leafAt(offset, size int64) (compositeLeaf, bool) {
-	for _, leaf := range arg.leaves {
-		if leaf.offset != offset {
-			continue
-		}
-		if int64(leaf.width) == size*8 || (leaf.width == 1 && size == 4) {
-			return leaf, true
-		}
+	at, ok := arg.leavesByPlace[recordSpanLeafPlace{offset: offset, size: size}]
+	if !ok {
+		return compositeLeaf{}, false
 	}
-	return compositeLeaf{}, false
+	return arg.leaves[at], true
 }
 
 // arrayFieldAt is the array field starting at an offset — its leaf-name
 // prefix (`.entries`), its length, and its element stride — read off the
 // enumerated leaves `.entries[0]`, `.entries[1]`, ….
 func (arg recordSpanArg) arrayFieldAt(offset int64) (prefix string, length, stride int64, ok bool) {
-	for _, leaf := range arg.leaves {
-		if leaf.offset != offset || !strings.HasSuffix(leaf.name, "[0]") {
-			continue
-		}
-		prefix = strings.TrimSuffix(leaf.name, "[0]")
-		stride = int64(leaf.width+7) / 8
-		if leaf.width == 1 {
-			stride = 4
-		}
-		for _, other := range arg.leaves {
-			if strings.HasPrefix(other.name, prefix+"[") {
-				length++
-			}
-		}
-		return prefix, length, stride, true
+	field, ok := arg.arraysByOffset[offset]
+	if !ok {
+		return "", 0, 0, false
 	}
-	return "", 0, 0, false
+	return field.prefix, field.length, field.stride, true
 }
 
 // memories lists the span's per-leaf memories: `v.f` for each scalar
 // leaf outside an array field, `v.a` for each array field — the names the
 // write logs and the loop memory markers use.
 func (arg recordSpanArg) memories(span string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, leaf := range arg.leaves {
-		name := leaf.name
-		if open := strings.IndexByte(name, '['); open > 0 {
-			name = name[:open]
-		}
-		if !seen[name] {
-			seen[name] = true
-			out = append(out, span+name)
-		}
+	out := make([]string, len(arg.memoryFields))
+	for i, field := range arg.memoryFields {
+		out[i] = span + field.name
 	}
 	return out
 }
@@ -260,21 +388,15 @@ func (arg recordSpanArg) memories(span string) []string {
 // such a leaf lives in the array's memory at the linear index i·N + k, as
 // an element read by a register does.
 func (arg recordSpanArg) arrayElementLeaf(leaf compositeLeaf) (prefix string, k, length int64, ok bool) {
-	open := strings.LastIndexByte(leaf.name, '[')
-	if open <= 0 || !strings.HasSuffix(leaf.name, "]") {
+	prefix, k, ok = recordSpanArrayElement(leaf.name)
+	if !ok {
 		return "", 0, 0, false
 	}
-	index, err := strconv.ParseInt(leaf.name[open+1:len(leaf.name)-1], 10, 64)
-	if err != nil {
+	field, found := arg.arraysByName[prefix]
+	if !found {
 		return "", 0, 0, false
 	}
-	prefix = leaf.name[:open]
-	for _, other := range arg.leaves {
-		if strings.HasPrefix(other.name, prefix+"[") {
-			length++
-		}
-	}
-	return prefix, index, length, true
+	return prefix, k, field.length, true
 }
 
 // leafMemory is the memory and index a leaf of element `index` lives at:
@@ -291,15 +413,32 @@ func (arg recordSpanArg) leafMemory(span string, index *term, leaf compositeLeaf
 // memoryWidths maps each per-leaf memory of the span (memories) to its
 // element width.
 func (arg recordSpanArg) memoryWidths(span string) map[string]int {
-	out := map[string]int{}
-	for _, leaf := range arg.leaves {
-		name := leaf.name
-		if open := strings.IndexByte(name, '['); open > 0 {
-			name = name[:open]
-		}
-		out[span+name] = leaf.width
+	out := make(map[string]int, len(arg.memoryFields))
+	for _, field := range arg.memoryFields {
+		out[span+field.name] = field.width
 	}
 	return out
+}
+
+func (arg recordSpanArg) leafNamed(name string) (compositeLeaf, bool) {
+	at, ok := arg.leavesByName[name]
+	if !ok {
+		return compositeLeaf{}, false
+	}
+	return arg.leaves[at], true
+}
+
+func (arg recordSpanArg) arrayNamed(name string) (recordSpanArrayField, bool) {
+	field, ok := arg.arraysByName[name]
+	return field, ok
+}
+
+func (arg recordSpanArg) memoryWidth(name string) (int, bool) {
+	at, ok := arg.memoryFieldByName[name]
+	if !ok {
+		return 0, false
+	}
+	return arg.memoryFields[at].width, true
 }
 
 // recordFieldTerm is a record span's leaf at an element index: the
@@ -314,7 +453,7 @@ func recordFieldTerm(span string, index *term, leafName string, width int, concr
 		}
 		return paramTerm(spanElemName(span, int64(k))+leafName, width)
 	}
-	return &term{kind: termSelect, width: width, name: memory, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: memory, left: canonicalIndex(index)}
 }
 
 // recordElementOf recognizes a record span element's address: `&v` plus
@@ -492,12 +631,16 @@ type term struct {
 	// use width): an element parameter's fixed-memory value is its
 	// declared width's, whatever width it is read at. Zero: the width.
 	declared int
-	name     string // termParam
-	value    uint64 // termConst (already masked to width)
-	op       string // termBinary: add sub and or xor shl shr; termCmp: condition code
-	left     *term
-	right    *term
-	cond     *term // termIte
+	// id is the term's index in the termEvaluator that last numbered it,
+	// one-based; zero before any numbering. Only the witness pass sets it,
+	// before the variable orders' goroutines start reading the terms.
+	id    int32
+	name  string // termParam
+	value uint64 // termConst (already masked to width)
+	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
+	left  *term
+	right *term
+	cond  *term // termIte
 	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
 	kbDone  bool
 	kbValue uint64
@@ -1037,7 +1180,19 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect, termFloat, termQuant:
+	case termSelect:
+		// A memory read at a symbolic index is an atom of the form — the
+		// same read on both sides (one memory, one index term) is one
+		// unknown, so `s[dom].pool_base + u64(s[dom].root) * page_size`
+		// (the OS pilot's get_root_pa) decides linearly, where the
+		// 64-bit sum at the bit level exceeded the budget. Only a read
+		// whose element fits the form's width (a narrower one is
+		// zero-extended by the convention over parameters).
+		if t.width > w {
+			return nil
+		}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
 	switch t.op {
@@ -1047,6 +1202,30 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		}
 		if t.left.kind == termConst && t.left.value&m == m {
 			return t.right.linearAtMemo(w, memo, seen)
+		}
+		// A mask of low ones that covers every bit the operand can have
+		// set is the identity: `u64(index)` over a u16 parameter is
+		// `index and 0xFFFF` on the Oak side and `and w1, w1, #65535` read
+		// as x1 on the machine's — both the parameter itself, so
+		// `pool_base + index * 4096` and `pool_base + (index << 12)`
+		// decide in the linear normal form rather than at the bit level,
+		// where the 64-bit sum of two unknowns exceeds the budget.
+		for _, sides := range [2][2]*term{{t.right, t.left}, {t.left, t.right}} {
+			maskTerm, operand := sides[0], sides[1]
+			if maskTerm.kind != termConst {
+				continue
+			}
+			k := lowOnes(maskTerm.value & m)
+			if k < 0 {
+				continue
+			}
+			// The operand's bits at or above the mask are gone: the
+			// machine's read of a u16 argument register is
+			// `(index#hi shl 16) or index`, the unspecified upper bits
+			// beside the value, and `and 65535` leaves the value.
+			if kept := stripAbove(operand, k); kept != nil && kept.knownBits() <= k {
+				return kept.linearAtMemo(w, memo, seen)
+			}
 		}
 		return nil
 	case "add", "sub":
@@ -1108,6 +1287,88 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return out.trim()
 	}
 	return nil
+}
+
+// lowOnes is the count of a mask's low ones when the mask is exactly that
+// (2^k - 1), else -1.
+func lowOnes(mask uint64) int {
+	if mask&(mask+1) != 0 {
+		return -1
+	}
+	return bits.Len64(mask)
+}
+
+// stripAbove is the term equal to t under a mask of k low ones, when the
+// bits at or above k are separable: a term whose known bits fit is
+// itself, a constant is masked, a shift by at least k is zero, and an or
+// or xor strips each side (a side that vanishes leaves the other). Nil
+// when the bits cannot be separated.
+func stripAbove(t *term, k int) *term {
+	if k <= 0 || k > t.width {
+		return nil
+	}
+	if t.knownBits() <= k {
+		return t
+	}
+	switch {
+	case t.kind == termConst:
+		return constTerm(t.value&(uint64(1)<<uint(k)-1), t.width)
+	case t.kind == termBinary && t.op == "shl" && t.right.kind == termConst && t.right.value >= uint64(k) && t.right.value < uint64(t.width):
+		return constTerm(0, t.width)
+	case t.kind == termBinary && (t.op == "or" || t.op == "xor"):
+		left, right := stripAbove(t.left, k), stripAbove(t.right, k)
+		if left == nil || right == nil {
+			return nil
+		}
+		if left.kind == termConst && left.value == 0 {
+			return right
+		}
+		if right.kind == termConst && right.value == 0 {
+			return left
+		}
+		return binaryTerm(t.op, left, right)
+	case t.kind == termBinary && t.op == "and":
+		left, right := stripAbove(t.left, k), stripAbove(t.right, k)
+		if left == nil || right == nil {
+			return nil
+		}
+		return binaryTerm("and", left, right)
+	}
+	return nil
+}
+
+// knownBits is the number of low bits a term can have set: a parameter's
+// declared width (a u16 parameter read at 64 bits is zero-extended, the
+// convention of zeroExtend and truncate over parameters), a constant's
+// length, a mask's low ones, else the term's width.
+func (t *term) knownBits() int {
+	switch t.kind {
+	case termParam:
+		if t.declared > 0 && t.declared < t.width {
+			return t.declared
+		}
+		return t.width
+	case termConst:
+		return bits.Len64(t.value & mask(t.width))
+	case termBinary:
+		if t.op == "and" {
+			known := t.width
+			for _, side := range [2]*term{t.left, t.right} {
+				if side.kind == termConst {
+					if ones := lowOnes(side.value & mask(t.width)); ones >= 0 && ones < known {
+						known = ones
+					}
+				} else if k := side.knownBits(); k < known {
+					known = k
+				}
+			}
+			return known
+		}
+		if t.op == "shr" && t.right.kind == termConst && t.right.value < uint64(t.width) {
+			return t.width - int(t.right.value)
+		}
+	}
+	return t.width
 }
 
 func (f *linearForm) trim() *linearForm {
@@ -1730,6 +1991,9 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	exec.floatResult = floatResult
 	exec.resultChunk = chunk
 	exec.resultArea = resultArea
+	if resultArea != nil {
+		_, exec.resultChunks, _ = resultComposite(fn, sig)
+	}
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
 		if floatResult != 0 {
@@ -1737,7 +2001,7 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 		}
 	}
 	exec.hasResult = hasResult
-	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
+	exec.loopExits = findLoopsIn(fn.Name, fn.Arch, fn.Items, labels, fn.Callees)
 	if joins {
 		exec.joins = joinPoints(fn.Items, labels)
 	}
@@ -1782,12 +2046,26 @@ type pathExecutor struct {
 	// floatResult is the width of an f32/f64 result (the low lane of v0),
 	// zero for the other result kinds.
 	floatResult int
-	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
-	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
-	resultArea  []compositeLeaf   // a record result returned through memory (x8): its leaves; nil otherwise
-	spans       map[string]int64  // span parameter -> element size in bytes
-	declared    map[string]int    // parameter -> declared width
-	globals     map[string]Global // the globals the body addresses (fn.Globals)
+	resultHalf  int             // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
+	resultChunk int             // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
+	resultArea  []compositeLeaf // a record result returned through memory (x8): its leaves; nil otherwise
+	// resultChunks: the words of the result area. One run delivers them
+	// all: the ret assembles every word (resultAreaChunks), each path end
+	// carries the words past the first, and runAll folds each word along
+	// the same fork tree into moreResults.
+	resultChunks int
+	moreResults  []*term // the area's words past the first, folded over the paths (runAll)
+	// reads are the body's reads of span memory through the write log, by
+	// node (spanRead), for the aligned fast path's alignReads.
+	reads map[*term]spanRead
+	// deferMemory asks decideSpans to leave the memory decision of a span
+	// whose logs differ in length to deferredSpans (verifyChunk runs the
+	// body again merging at the joins first, whose logs align).
+	deferMemory   bool
+	deferredSpans func() Verdict
+	spans         map[string]int64  // span parameter -> element size in bytes
+	declared      map[string]int    // parameter -> declared width
+	globals       map[string]Global // the globals the body addresses (fn.Globals)
 	// recordSpans: span parameters whose elements are records, by name —
 	// the element size and the record's scalar leaves (relative to the
 	// element), so a field read through an element address is the leaf's
@@ -2417,32 +2695,38 @@ func frameAddressTerm(addr int64) *term { return paramTerm(fmt.Sprintf("sp#%d", 
 // argument, so the area's slots never meet the function's own.
 const resultAreaBase = int64(1) << 40
 
-// resultAreaChunk assembles chunk resultChunk of a record result returned
+// resultAreaChunks assembles every word of a record result returned
 // through memory from the slots the body stored in the x8 area: every
-// leaf in the chunk read at its offset and width, placed at its bit
-// position; a leaf the body never stored leaves the chunk undefined.
-func (x *pathExecutor) resultAreaChunk(state *symbolicState) (*term, string, bool) {
+// leaf in a word read at its offset and width, placed at its bit
+// position; a leaf the body never stored leaves the word undefined. One
+// run of the paths delivers all the words (a 256-byte Bits value is
+// thirty-two), where a run per word ran the whole pipeline that many
+// times deciding nothing past the first it had not decided already.
+func (x *pathExecutor) resultAreaChunks(state *symbolicState) ([]*term, string, bool) {
 	var missing string
-	chunk := chunkTerm(x.resultArea, int64(x.resultChunk), func(name string, width int) *term {
-		for _, leaf := range x.resultArea {
-			if leaf.name != name {
-				continue
+	chunks := make([]*term, x.resultChunks)
+	for k := range chunks {
+		chunks[k] = chunkTerm(x.resultArea, int64(k), func(name string, width int) *term {
+			for _, leaf := range x.resultArea {
+				if leaf.name != name {
+					continue
+				}
+				size := (int64(leaf.width) + 7) / 8
+				value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
+				if !ok {
+					missing = name
+					return constTerm(0, width)
+				}
+				return truncate(value, width)
 			}
-			size := (int64(leaf.width) + 7) / 8
-			value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
-			if !ok {
-				missing = name
-				return constTerm(0, width)
-			}
-			return truncate(value, width)
-		}
-		missing = name
-		return constTerm(0, width)
-	})
+			missing = name
+			return constTerm(0, width)
+		})
+	}
 	if missing != "" {
 		return nil, fmt.Sprintf("the result field %s was never stored to the result area", missing), false
 	}
-	return chunk, "", true
+	return chunks, "", true
 }
 
 // registerFrameAccess executes a load or store whose base register holds a
@@ -2809,11 +3093,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if x.resultArea != nil {
 				// The chunk of the result area the caller reads: each leaf in
 				// it from the slot the body stored, at its offset and width.
-				chunk, reason, okArea := x.resultAreaChunk(state)
+				chunks, reason, okArea := x.resultAreaChunks(state)
 				if !okArea {
 					return nil, nil, atInstruction(reason, instr), false
 				}
-				return x.end(chunk, state)
+				return x.endWords(chunks, state)
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
@@ -3066,6 +3350,7 @@ func atInstruction(reason string, instr Instruction) string {
 // with the guard's).
 type pathEnd struct {
 	result  *term
+	more    []*term // a record result through memory: its words past the first
 	effects *pathEffects
 	cond    *term
 	path    *pathNode
@@ -3077,15 +3362,107 @@ func (x *pathExecutor) end(result *term, state *symbolicState) (*term, *pathEffe
 	return nil, nil, "", true
 }
 
+// endWords records a path that returned the words of a record result
+// through memory: the first is the path's result, the rest ride along.
+func (x *pathExecutor) endWords(words []*term, state *symbolicState) (*term, *pathEffects, string, bool) {
+	x.ends = append(x.ends, pathEnd{result: words[0], more: words[1:], effects: state.effects(), path: state.path})
+	return nil, nil, "", true
+}
+
+// word is the end's word k of a record result: the result for the first.
+func (e *pathEnd) word(k int) *term {
+	if k == 0 {
+		return e.result
+	}
+	return e.more[k-1]
+}
+
 // conjoin is the conjunction of two 1-bit conditions, either nil for true.
+// A constant decides or drops out, and a condition against its complement
+// (`c and not c`) is false: the paths' conditions meet their negations at
+// the joins (mergeStates) and in the guards past them, and left standing
+// the clutter grows every decision after the join.
 func conjoin(a, b *term) *term {
-	switch {
-	case a == nil:
+	if a == nil {
 		return b
-	case b == nil:
+	}
+	if b == nil {
 		return a
 	}
+	a, b = truncate(a, 1), truncate(b, 1)
+	if a.kind == termConst {
+		if a.value&1 == 0 {
+			return a
+		}
+		return b
+	}
+	if b.kind == termConst {
+		if b.value&1 == 0 {
+			return b
+		}
+		return a
+	}
+	if complementary(a, b) {
+		return constTerm(0, 1)
+	}
+	// Absorption: a conjunct the other side already holds adds nothing
+	// (`(c and d) and c`: a path condition conjoined onto a guard that
+	// carries it, guardWrites), and the duplicate is what told the two
+	// sides' guards apart in the aligned fast path.
+	if hasOperand(a, "and", b) {
+		return a
+	}
+	if hasOperand(b, "and", a) {
+		return b
+	}
 	return binaryTerm("and", a, b)
+}
+
+// hasOperand reports b among the operands of a's tree of op nodes, to a
+// small depth: the same node, or the same term (sameTerm).
+func hasOperand(a *term, op string, b *term) bool {
+	budget := sameTermBudget
+	var walk func(t *term, depth int) bool
+	walk = func(t *term, depth int) bool {
+		if t == b || sameTerm(t, b, &budget) {
+			return true
+		}
+		if depth == 0 || t.kind != termBinary || t.op != op {
+			return false
+		}
+		return walk(t.left, depth-1) || walk(t.right, depth-1)
+	}
+	return walk(a, 8)
+}
+
+// disjoin is the disjunction of two 1-bit conditions (neither nil), with
+// conjoin's folds: a constant decides or drops out, and a condition
+// against its complement (`c or not c`, the two sides of a fork meeting at
+// their join) is true.
+func disjoin(a, b *term) *term {
+	a, b = truncate(a, 1), truncate(b, 1)
+	if a.kind == termConst {
+		if a.value&1 == 1 {
+			return a
+		}
+		return b
+	}
+	if b.kind == termConst {
+		if b.value&1 == 1 {
+			return b
+		}
+		return a
+	}
+	if complementary(a, b) {
+		return constTerm(1, 1)
+	}
+	if hasOperand(a, "or", b) {
+		return a
+	}
+	if hasOperand(b, "or", a) {
+		return b
+	}
+	return binaryTerm("or", a, b)
 }
 
 // runAll executes the body from its first item and folds the paths' ends
@@ -3124,9 +3501,18 @@ func (x *pathExecutor) runAll(state *symbolicState) (*term, *pathEffects, string
 			}
 		}
 	}
-	result, effects := x.foldTree(all, chains, 0, nil, nil)
+	result, effects := x.foldTree(all, chains, 0, 0, nil, nil)
 	if result == nil {
 		return trapPath, &pathEffects{trap: trap}, "", true
+	}
+	if x.resultChunks > 1 {
+		// The other words of a record result through memory, each folded
+		// along the same fork tree (a trapping end has no words; the fold
+		// skips it as it skips the end's first word).
+		x.moreResults = make([]*term, x.resultChunks-1)
+		for k := 1; k < x.resultChunks; k++ {
+			x.moreResults[k-1], _ = x.foldTree(all, chains, 0, k, nil, nil)
+		}
 	}
 	out := pathEffects{trap: trap}
 	if effects != nil {
@@ -3142,8 +3528,9 @@ func (x *pathExecutor) runAll(state *symbolicState) (*term, *pathEffects, string
 // both sides of the fork share: the fallback for a side that parked there
 // instead of ending. A side with no value (it trapped, or every path in
 // it did) yields the other side's, as the fork did when its paths ran to
-// their ends.
-func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, fallback *term, fallbackEffects *pathEffects) (*term, *pathEffects) {
+// their ends. word picks the word of a record result through memory
+// (0 for every other result); the effects fold with the first word only.
+func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, word int, fallback *term, fallbackEffects *pathEffects) (*term, *pathEffects) {
 	var here *pathEnd
 	var fork *forkMark
 	var trueEnds, falseEnds, joinEnds []int
@@ -3169,21 +3556,24 @@ func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, fal
 		}
 	}
 	if here != nil {
-		return here.result, here.effects
+		return here.word(word), here.effects
 	}
 	if len(joinEnds) > 0 {
-		fallback, fallbackEffects = x.foldTree(joinEnds, chains, level+1, fallback, fallbackEffects)
+		fallback, fallbackEffects = x.foldTree(joinEnds, chains, level+1, word, fallback, fallbackEffects)
 	}
 	if fork == nil {
 		return fallback, fallbackEffects
 	}
-	taken, takenEffects := x.foldTree(trueEnds, chains, level+1, fallback, fallbackEffects)
-	fallThrough, fallEffects := x.foldTree(falseEnds, chains, level+1, fallback, fallbackEffects)
+	taken, takenEffects := x.foldTree(trueEnds, chains, level+1, word, fallback, fallbackEffects)
+	fallThrough, fallEffects := x.foldTree(falseEnds, chains, level+1, word, fallback, fallbackEffects)
 	switch {
 	case taken == nil:
 		return fallThrough, fallEffects
 	case fallThrough == nil:
 		return taken, takenEffects
+	}
+	if word > 0 {
+		return iteTerm(fork.cond, taken, fallThrough), nil
 	}
 	return iteTerm(fork.cond, taken, fallThrough), x.mergeEffects(fork.cond, takenEffects, fallEffects)
 }
@@ -3212,7 +3602,7 @@ func (x *pathExecutor) mergeStates(parent *pathNode, parked []*symbolicState) (*
 		}
 		acc = merged
 		if below := s.path.conditionBelow(parent); below != nil && rel != nil {
-			rel = binaryTerm("or", below, rel)
+			rel = disjoin(below, rel)
 		} else {
 			rel = nil
 		}
@@ -3547,13 +3937,48 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if record, isRecord := x.records[param]; isRecord {
 		// The caller's copy of a record argument: a load at a leaf's exact
 		// offset and width is that leaf.
-		if mem.Index != nil {
-			return "an indexed load through a record argument", false
-		}
 		size := memorySize(instr.Mnemonic, dest.Class)
-		value, ok := x.recordBytes(record.leaves, baseOffset+mem.Offset, size)
-		if !ok {
-			return "a load from a record argument cutting through a field", false
+		var value *term
+		if mem.Index != nil {
+			// At a register index under the checker's guard (`cmp wI, #K;
+			// b.hs trap`, state.bounds): the element of the array field
+			// the address starts, selected from the field's leaves by the
+			// index — the fold the Oak side builds for `a.at[i]`
+			// (elementUnderIndexTerm), last leaf first.
+			arg := newRecordSpanArg(record.size, record.leaves)
+			prefix, length, stride, isArray := arg.arrayFieldAt(baseOffset + mem.Offset)
+			if !isArray {
+				return "an indexed load through a record argument at an offset that starts no array field", false
+			}
+			if int64(1)<<uint(mem.Shift) != stride || size != stride {
+				return fmt.Sprintf("an indexed load through a record argument (%s) whose scale is not the element size", prefix), false
+			}
+			bound, isBounded := state.bounds[mem.Index.Num]
+			if !isBounded || int64(bound) > length {
+				return "an indexed load through a record argument without a dominating constant index guard", false
+			}
+			idx, okIndex := state.read(*mem.Index)
+			if !okIndex {
+				return "unbound register read", false
+			}
+			index := truncate(idx, 32)
+			for k := length - 1; k >= 0; k-- {
+				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
+				if !okLeaf {
+					return "an indexed load through a record argument cutting through a field", false
+				}
+				if value == nil {
+					value = leaf
+				} else {
+					value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+				}
+			}
+		} else {
+			var ok bool
+			value, ok = x.recordBytes(record.leaves, baseOffset+mem.Offset, size)
+			if !ok {
+				return "a load from a record argument cutting through a field", false
+			}
 		}
 		if isSignExtendingLoad(instr.Mnemonic) {
 			state.write(dest, extendTerm(value, int(size)*8, widthOf(dest.Class), true))
@@ -3907,6 +4332,16 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			if !okN || !okM {
 				return "unbound register read", false
 			}
+			if instr.Mnemonic == "udiv" && m.kind == termConst && m.value != 0 && m.value&(m.value-1) == 0 {
+				// An unsigned quotient by a constant power of two is the
+				// shift — the spelling the Oak lowering and the
+				// strength-reduced lowering use — so `va % page_size` as
+				// `udiv; msub` (the un-reduced form the pilot's flag idiom
+				// keeps) meets `va and 4095` at the bit level rather than
+				// as an uninterpreted division.
+				state.write(dest, binaryTerm("shr", n, constTerm(uint64(bits.TrailingZeros64(m.value)), width)))
+				break
+			}
 			state.write(dest, floatTerm(instr.Mnemonic, width, n, m))
 		case "umaddl", "smaddl":
 			// xD = xA + ext32(wN) * ext32(wM): the element idiom's stride
@@ -4246,9 +4681,15 @@ type oakLowering struct {
 	tableLens map[string]int64
 	locals    map[string]*oakLocal // statement-body locals, in declaration scope
 	concrete  map[string]uint64    // a witness run: parameters are these constants
-	loops     []*loopEvent         // data-dependent loops met, in creation order
-	loopStack []int                // indices of the loops whose bodies are being lowered
-	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// work counts the loop iterations this lowering has run, its inlined
+	// callees' included (loweringWorkBudget): a body whose unrolled loops
+	// inline callees that unroll their own (the BDD apply's, sixty-four
+	// trips each way) is left to the machine comparison's budgets rather
+	// than lowered for minutes.
+	work      int
+	loops     []*loopEvent   // data-dependent loops met, in creation order
+	loopStack []int          // indices of the loops whose bodies are being lowered
+	fresh     map[string]int // loop-carried fresh symbols -> width
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
@@ -4257,6 +4698,9 @@ type oakLowering struct {
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
+	// reads are the body's reads of span memory through the write log, by
+	// node (spanRead), for the aligned fast path's alignReads.
+	reads map[*term]spanRead
 	// globals are the mutable top-level scalars the body addresses
 	// (Function.Globals): a read of one is the parameter `global:NAME` of
 	// the proof, the value the cell holds on entry; a write leaves the body
@@ -4422,6 +4866,51 @@ func (v *oakValue) copy() *oakValue {
 		}
 	}
 	return out
+}
+
+// overwriteValue copies src into dst without replacing aggregate nodes.
+// Assignments resolve their destination before lowering the right-hand side;
+// a conditional on that side snapshots and restores locals. Keeping the
+// nodes stable ensures the resolved destination still belongs to its local
+// after the restore rather than naming a detached pre-branch copy.
+func overwriteValue(dst, src *oakValue) {
+	dst.typ = src.typ
+	dst.scalar = src.scalar
+	if src.fields == nil {
+		dst.fields = nil
+	} else {
+		if dst.fields == nil {
+			dst.fields = make(map[string]*oakValue, len(src.fields))
+		}
+		for name := range dst.fields {
+			if _, present := src.fields[name]; !present {
+				delete(dst.fields, name)
+			}
+		}
+		for name, field := range src.fields {
+			if current := dst.fields[name]; current != nil {
+				overwriteValue(current, field)
+			} else {
+				dst.fields[name] = field.copy()
+			}
+		}
+	}
+	if src.elems == nil {
+		dst.elems = nil
+	} else {
+		if len(dst.elems) != len(src.elems) {
+			current := dst.elems
+			dst.elems = make([]*oakValue, len(src.elems))
+			copy(dst.elems, current)
+		}
+		for i, elem := range src.elems {
+			if dst.elems[i] != nil {
+				overwriteValue(dst.elems[i], elem)
+			} else {
+				dst.elems[i] = elem.copy()
+			}
+		}
+	}
 }
 
 // leaves visits every scalar leaf of two values of one type in step.
@@ -4670,15 +5159,10 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 				}
 				return lo.aggregateValue(whenFalse, typ)
 			}
-			restore := lo.underPath(cond)
-			t, reason, ok := lo.aggregateValue(whenTrue, typ)
-			restore()
-			if !ok {
-				return nil, reason, false
-			}
-			restore = lo.underPath(notTerm(cond))
-			f, reason, ok := lo.aggregateValue(whenFalse, typ)
-			restore()
+			var t, f *oakValue
+			reason, ok = lo.forkLocals(cond,
+				func() (reason string, ok bool) { t, reason, ok = lo.aggregateValue(whenTrue, typ); return },
+				func() (reason string, ok bool) { f, reason, ok = lo.aggregateValue(whenFalse, typ); return })
 			if !ok {
 				return nil, reason, false
 			}
@@ -5448,7 +5932,7 @@ type matchArm struct {
 // arm, which becomes the fallback. Without a wildcard the checker proved
 // the arms exhaustive, so the last arm is the fallback. A scrutinee that
 // folds decides statically through the same chain.
-func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index int, body ast.Expression) (string, bool)) (cases []matchArm, fallback int, reason string, ok bool) {
+func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index int, body ast.Expression, bind func()) (string, bool)) (cases []matchArm, fallback int, reason string, ok bool) {
 	fallback = -1
 	place, _, isAggregate := lo.readPlace(match.Scrutinee)
 	var tag, scrutinee *term
@@ -5467,8 +5951,29 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 		}
 		scrutinee = value
 	}
+	// bindArm installs the arm's pattern binding where the caller asks for
+	// it — after the caller has restored the locals the arms fork from —
+	// and unbindArm drops it when the arm is done, since a payload binder
+	// belongs to its arm. Binding before the caller's restore lost the
+	// payload of every match after the first in a body: the restore put
+	// back the value the name held before, which for a reused binder was
+	// the previous match's last arm (asm/verify.go, selectMatch).
+	bindArm := func() {}
+	unbindArm := func() {}
+	bindLocal := func(name string, local *oakLocal) {
+		prior, had := lo.locals[name]
+		bindArm = func() { lo.locals[name] = local }
+		unbindArm = func() {
+			if had {
+				lo.locals[name] = prior
+				return
+			}
+			delete(lo.locals, name)
+		}
+	}
 	taken := constTerm(0, 1)
 	for i, arm := range match.Arms {
+		bindArm, unbindArm = func() {}, func() {}
 		var cond *term
 		switch pattern := arm.Pattern.(type) {
 		case *ast.VariantPattern:
@@ -5487,9 +5992,9 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 				}
 				payload := place.fields[variant.name].copy()
 				if payload.typ.kind == oakScalar {
-					lo.locals[binding.Name.Value] = &oakLocal{value: payload.scalar, width: payload.typ.width, signed: payload.typ.signed}
+					bindLocal(binding.Name.Value, &oakLocal{value: payload.scalar, width: payload.typ.width, signed: payload.typ.signed})
 				} else {
-					lo.locals[binding.Name.Value] = &oakLocal{agg: payload}
+					bindLocal(binding.Name.Value, &oakLocal{agg: payload})
 				}
 			case pattern.Payload == nil, isBinding:
 			default:
@@ -5513,7 +6018,7 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 				if tag == nil {
 					return nil, -1, "a binding pattern over a scalar", false
 				}
-				lo.locals[pattern.Name.Value] = &oakLocal{agg: place.copy()}
+				bindLocal(pattern.Name.Value, &oakLocal{agg: place.copy()})
 			}
 		default:
 			return nil, -1, fmt.Sprintf("the pattern %s", arm.Pattern.String()), false
@@ -5525,7 +6030,8 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 			taken = binaryTerm("or", taken, cond)
 		}
 		restore := lo.underPath(armPath)
-		reason, ok := visit(i, arm.Body)
+		reason, ok := visit(i, arm.Body, bindArm)
+		unbindArm()
 		restore()
 		if !ok {
 			return nil, -1, reason, false
@@ -5550,16 +6056,45 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 // condition, merged leaf-wise into the fallback.
 func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Expression) (*oakValue, string, bool)) (*oakValue, string, bool) {
 	values := map[int]*oakValue{}
-	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression) (string, bool) {
+	// Every arm runs on a copy of the locals before the match, and the
+	// locals after are the arms' outcomes selected by the arms' conditions
+	// (as lowerMatchStatement merges them): an arm's block may assign.
+	before := lo.snapshotLocals()
+	outcomes := map[int]map[string]localSnapshot{}
+	cases, fallback, reason, ok := lo.matchArms(match, func(index int, armBody ast.Expression, bind func()) (string, bool) {
+		lo.restoreLocals(before)
+		bind()
 		value, reason, ok := body(armBody)
 		if !ok {
 			return reason, false
 		}
 		values[index] = value
+		outcomes[index] = lo.snapshotLocals()
 		return "", true
 	})
 	if !ok {
 		return nil, reason, false
+	}
+	lo.restoreLocals(before)
+	for name, local := range lo.locals {
+		if _, existed := before[name]; !existed {
+			continue
+		}
+		if local.agg != nil {
+			merged := outcomes[fallback][name].agg
+			for i := len(cases) - 1; i >= 0; i-- {
+				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
+			}
+			overwriteValue(local.agg, merged)
+			continue
+		}
+		merged := outcomes[fallback][name].value
+		for i := len(cases) - 1; i >= 0; i-- {
+			if v := outcomes[cases[i].index][name].value; v != merged {
+				merged = iteTerm(cases[i].cond, v, merged)
+			}
+		}
+		local.value = merged
 	}
 	result := values[fallback]
 	for i := len(cases) - 1; i >= 0; i-- {
@@ -5791,12 +6326,16 @@ func (lo *oakLowering) assignPlace(target *oakValue, value ast.Expression) (stri
 	if !ok {
 		return reason, false
 	}
-	target.fields, target.elems = fresh.fields, fresh.elems
+	overwriteValue(target, fresh)
 	return "", true
 }
 
 // loopBudget bounds the iterations a `while` may unroll.
 const loopBudget = 4096
+
+// loweringWorkBudget bounds the loop iterations one lowering runs in all,
+// its inlined callees' included (oakLowering.work).
+const loweringWorkBudget = 1 << 15
 
 // witnessLoopBudget and witnessStepBudget bound a witness run — one
 // concrete input through the body — far below the symbolic budgets: a
@@ -6063,6 +6602,10 @@ func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state
 
 // lowerLoopBody executes one iteration of a loop body.
 func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
+	lo.work++
+	if lo.work > loweringWorkBudget {
+		return "a loop beyond the verifier's unrolling budget (the body's loops and its callees' in all)", false
+	}
 	for _, stmt := range body.Statements {
 		switch s := stmt.(type) {
 		case *ast.AssignmentStatement:
@@ -6143,9 +6686,22 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 		}
 		return lo.lowerArm(whenFalse)
 	}
+	return lo.forkLocals(cond,
+		func() (string, bool) { return lo.lowerArm(whenTrue) },
+		func() (string, bool) { return lo.lowerArm(whenFalse) })
+}
+
+// forkLocals runs the two arms of a Bool conditional from the same locals
+// — the true arm under cond, the false arm under its negation, each on a
+// snapshot of the locals before — and leaves every local (a package cell
+// among them) either arm assigned as a select on the condition. The
+// statement conditional and the value-position conditionals (a scalar, an
+// aggregate) share it: an arm's block may assign before its value, and an
+// assignment that escaped the merge would stand unconditionally.
+func (lo *oakLowering) forkLocals(cond *term, whenTrue, whenFalse func() (string, bool)) (string, bool) {
 	before := lo.snapshotLocals()
 	restore := lo.underPath(cond)
-	reason, ok = lo.lowerArm(whenTrue)
+	reason, ok := whenTrue()
 	restore()
 	if !ok {
 		return reason, false
@@ -6153,11 +6709,18 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 	afterTrue := lo.snapshotLocals()
 	lo.restoreLocals(before)
 	restore = lo.underPath(notTerm(cond))
-	reason, ok = lo.lowerArm(whenFalse)
+	reason, ok = whenFalse()
 	restore()
 	if !ok {
 		return reason, false
 	}
+	lo.mergeLocals(cond, afterTrue)
+	return "", true
+}
+
+// mergeLocals selects, for every local both arms know, the true arm's
+// outcome (afterTrue) over the false arm's (the locals as they stand).
+func (lo *oakLowering) mergeLocals(cond *term, afterTrue map[string]localSnapshot) {
 	for name, local := range lo.locals {
 		snap, seen := afterTrue[name]
 		if !seen {
@@ -6176,7 +6739,6 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 			local.value = iteTerm(truncate(cond, 1), snap.value, local.value)
 		}
 	}
-	return "", true
 }
 
 // lowerMatchStatement executes a statement-position match: every arm runs
@@ -6186,8 +6748,9 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, bool) {
 	before := lo.snapshotLocals()
 	outcomes := map[int]map[string]localSnapshot{}
-	cases, fallback, reason, ok := lo.matchArms(match, func(index int, body ast.Expression) (string, bool) {
+	cases, fallback, reason, ok := lo.matchArms(match, func(index int, body ast.Expression, bind func()) (string, bool) {
 		lo.restoreLocals(before)
+		bind()
 		if reason, ok := lo.lowerArm(body); !ok {
 			return reason, false
 		}
@@ -6207,7 +6770,7 @@ func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, 
 			for i := len(cases) - 1; i >= 0; i-- {
 				merged = mergeValues(cases[i].cond, outcomes[cases[i].index][name].agg, merged)
 			}
-			local.agg = merged
+			overwriteValue(local.agg, merged)
 			continue
 		}
 		merged := outcomes[fallback][name].value
@@ -6292,7 +6855,7 @@ func (lo *oakLowering) restoreLocals(values map[string]localSnapshot) {
 		local := lo.locals[name]
 		local.value = snap.value
 		if snap.agg != nil {
-			local.agg = snap.agg.copy()
+			overwriteValue(local.agg, snap.agg)
 		}
 	}
 }
@@ -6356,7 +6919,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 				return nil, contract, fmt.Sprintf("an index past len(%s) on this input", span), false
 			}
 		}
-		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
+		return lo.noteRead(span, len(lo.writes[span]), constTerm(k, 32), memoryAt(lo.writes[span], constTerm(k, 32), entry)), contract, "", true
 	}
 	ident, isIdent := index.Left.(*ast.Identifier)
 	if !isIdent || index.Dot {
@@ -6382,7 +6945,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	idx = lo.spanIndex(ident.Value, idx) // a derived span: start + i in the root
 	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
-		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
+		return lo.noteRead(span, len(lo.writes[span]), idx, memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth))), contract, "", true
 	}
 	entry := selectTerm(span, idx, contract.elemWidth)
 	if !lo.trapsTracked {
@@ -6391,7 +6954,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		// decider keeps the read whole, as its Oak twin builds it.
 		entry = selectSplit(span, idx, contract.elemWidth, 0)
 	}
-	return memoryAt(lo.writes[span], idx, entry), contract, "", true
+	return lo.noteRead(span, len(lo.writes[span]), idx, memoryAt(lo.writes[span], idx, entry)), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -6648,17 +7211,11 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 						// field's leaf memory (`s.f`) at the offset i·N with
 						// the field's length (docs/spec/50-borrowing.md §2),
 						// as the asm side binds it (summarizeCall).
-						var count int64
-						width := 0
-						for _, leaf := range recordArg.leaves {
-							if strings.HasPrefix(leaf.name, path+"[") {
-								count++
-								width = leaf.width
-							}
-						}
-						if count == 0 {
+						field, isArray := recordArg.arrayNamed(path)
+						if !isArray {
 							return nil, fmt.Sprintf("a call to %s: %s is not an array field of %s's element", name, path, root), false
 						}
+						count, width := field.length, field.first.width
 						elem, _, _ := spanShape(param.Type)
 						if int(elem)*8 != width {
 							return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, arg.String(), width, elem*8), false
@@ -7439,16 +7996,14 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return lo.lower(whenFalse, width)
 		}
-		restore := lo.underPath(cond)
-		left, reason, okL := lo.lower(whenTrue, width)
-		restore()
-		if !okL {
-			return nil, reason, false
-		}
-		restore = lo.underPath(notTerm(cond))
-		right, reason, okR := lo.lower(whenFalse, width)
-		restore()
-		if !okR {
+		// Each arm on the locals before it, the locals after selected on
+		// the condition (forkLocals): an arm's block may assign a local or
+		// a package cell before its value.
+		var left, right *term
+		reason, ok = lo.forkLocals(cond,
+			func() (reason string, ok bool) { left, reason, ok = lo.lower(whenTrue, width); return },
+			func() (reason string, ok bool) { right, reason, ok = lo.lower(whenFalse, width); return })
+		if !ok {
 			return nil, reason, false
 		}
 		return iteTerm(cond, left, right), "", true
@@ -7846,12 +8401,19 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
 	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks >= 2 {
-		// Each chunk of the record — two registers, or the words of the
-		// result area beyond them — verified in its own run.
 		first := verifyChunk(fn, sig, oakBody, 0)
 		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
 			return first
 		}
+		if chunks > 2 {
+			// Returned through memory: the one run delivered and decided
+			// every word (verifyChunk, exec.resultChunks).
+			if first.Kind == VerdictProven {
+				first.Message += fmt.Sprintf(" (all %d result chunks)", chunks)
+			}
+			return first
+		}
+		// Two register chunks (x0 then x1): each verified in its own run.
 		var second Verdict
 		for k := 1; k < chunks; k++ {
 			second = verifyChunk(fn, sig, oakBody, k)
@@ -7862,10 +8424,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		if first.Kind != VerdictProven {
 			return first
 		}
-		if chunks == 2 {
-			return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
-		}
-		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("%s (all %d result chunks)", first.Message, chunks)}
+		return verdictWithCallees(
+			Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"},
+			first.Callees, second.Callees,
+		)
 	}
 	return verifyChunk(fn, sig, oakBody, 0)
 }
@@ -7950,7 +8512,58 @@ func describeEnvSorted(env map[string]uint64) string {
 // verifyChunk is Verify for one result chunk (0 for a scalar or a
 // one-chunk record).
 func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
-	asmTerm, exec, reason, ok := executeBodyChunk(fn, sig, nil, 0, chunk)
+	verdict, exec := verifyChunkJoining(fn, sig, oakBody, chunk, false)
+	if verdict.Kind == VerdictWitnessed && strings.Contains(verdict.Message, "(the span ") {
+		// The span memories were not proven equal with every path run to
+		// its end: a store past a conditional is then logged once per path
+		// (mergeWrites keeps one copy of a store both paths make afresh,
+		// but not of one whose value reads the memory each path left), the
+		// log doubles at every conditional, and the two logs do not align
+		// (alignedWrites) — the whole memory at a symbolic index goes to
+		// the diagrams, which a handful of symbolic-index reads exhaust.
+		// Merging the paths at their joins shapes the log as the Oak side
+		// shapes its own — one guarded store per conditional arm, later
+		// stores once over the merged memory — and the logs align write by
+		// write: the prover's protocol_line_done proves in a tenth of a
+		// second where the memory decision spent seconds and failed. The
+		// first run stands when the second proves nothing more.
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: the span memories were not proven; running again merging at the joins\n", fn.Name)
+		}
+		if joined, _ := verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
+			return joined
+		}
+		if exec != nil && exec.deferredSpans != nil {
+			// The first run left its memory decision (the logs differed
+			// in length) for after the joined run: decided now.
+			return verdictWithCallees(exec.deferredSpans(), exec.summarized)
+		}
+	}
+	return verdict
+}
+
+// verifyChunkJoining is verifyChunk with the paths run to their ends
+// (joins false: the fold along the fork tree, executeBodyChunk) or merged
+// at their joins (executeBodyChunkJoining).
+func verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, joins bool) (Verdict, *pathExecutor) {
+	var asmTerm *term
+	var exec *pathExecutor
+	var reason string
+	var ok bool
+	if joins {
+		asmTerm, exec, reason, ok = executeBodyChunkJoining(fn, sig, nil, 0, chunk, true)
+	} else {
+		asmTerm, exec, reason, ok = executeBodyChunk(fn, sig, nil, 0, chunk)
+	}
+	if ok && exec != nil && exec.joins == nil {
+		exec.deferMemory = true
+	}
+	verdict := verifyExecution(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok)
+	return verdict, exec
+}
+
+// verifyExecution decides one execution of the body against the Oak body.
+func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok bool) Verdict {
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -7992,35 +8605,46 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
-				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-			}
-			// The package cells and span memories are compared under the loop
-			// coupling for one call-derived loop; summarizeLoop has rejected cell
-			// writes in its iteration. Native and multiple-loop cell proofs remain
-			// outside the subset.
-			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
+			// The span memories and the package cells are the comparison,
+			// under the loop coupling.
+			return verdictWithCallees(
+				verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0),
+				exec.summarized,
+			)
 		}
 		if verdict, refuted := trapClaim(); refuted {
 			return verdict
 		}
-		return decideEffects(fn, lowering, exec, nil)
+		return verdictWithCallees(decideEffects(fn, lowering, exec, nil), exec.summarized)
 	}
-	oakTerm, width, reason, ok := lowering.resultTerm(fn, sig, oakBody)
+	// A record result through memory: the run delivered every word
+	// (exec.moreResults), the lowering packs every word from one value,
+	// and each word is decided in turn under the one execution, one
+	// witness pass and one coupling.
+	words := 1
+	if exec.resultArea != nil && exec.resultChunks > 1 {
+		words = exec.resultChunks
+	}
+	oakTerms, width, reason, ok := lowering.resultTerms(fn, sig, oakBody, words)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	asmTerm = maskResult(fn, sig, asmTerm, chunk)
+	asmTerms := []*term{maskResult(fn, sig, asmTerm, chunk)}
+	if words > 1 {
+		if len(exec.moreResults) != words-1 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the run delivered %d of the result's %d words) — trusted per docs/spec/94-assembler.md §5", fn.Name, len(exec.moreResults)+1, words)}
+		}
+		for k, more := range exec.moreResults {
+			asmTerms = append(asmTerms, maskResult(fn, sig, more, k+1))
+		}
+	}
 	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
 		// A float result is decided up to its NaN payload (floatCanonicalNaN).
-		asmTerm = floatCanonicalNaN(truncate(asmTerm, width), width)
-		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
+		asmTerms[0] = floatCanonicalNaN(truncate(asmTerms[0], width), width)
+		oakTerms[0] = floatCanonicalNaN(truncate(oakTerms[0], width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if (len(exec.cells) > 0 || len(lowering.writtenCells()) > 0) && (len(exec.loops) != 1 || len(lowering.loops) != 1 || !exec.loops[0].oakDerived) {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a native or multiple data-dependent loops) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
-		}
-		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width)
 		verdict.Callees = exec.summarized
 		return verdict
 	}
@@ -8031,10 +8655,16 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
-	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	verdict := decideEqual(fn, lowering, asmTerms[0], oakTerms[0], width, note)
 	verdict.Callees = exec.summarized
 	if verdict.Kind != VerdictProven {
 		return verdict
+	}
+	for k := 1; k < words; k++ {
+		if other := decideEqual(fn, lowering, asmTerms[k], oakTerms[k], width, note); other.Kind != VerdictProven {
+			other.Callees = exec.summarized
+			return other
+		}
 	}
 	effects := decideEffects(fn, lowering, exec, &verdict)
 	effects.Callees = exec.summarized
@@ -8142,15 +8772,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if !isSym {
 		return opaque, false
 	}
-	callee := x.fn.Callees[sym.Name]
-	if callee == nil {
-		// A vector-contract callee is reached at its native entry, the Oak
-		// name under the lane's suffix (VectorEntrySuffix).
-		if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
-			callee = x.fn.Callees[base]
-		}
-	}
-	if callee == nil || callee.Body == nil || callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
+	callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+	if !resolved {
 		return opaque, false
 	}
 	name := callee.Name.Value
@@ -8593,10 +9216,27 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// after the caller's (loopBase), nested under the loop being executed,
 	// their fresh symbols declared for the verdict; the Oak side inlines
 	// the same body and creates the same events, which the coupling pairs
-	// by identity (asm/loops.go).
+	// by identity (asm/loops.go). Their reaching condition is the caller's
+	// path to this call together with the callee's path to the loop. Keeping
+	// both is essential for the induction base: stores before a loop inside
+	// a conditional are equal only on the paths that actually enter it.
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
 		ev.at = x.callAt
+		// The callee's loop is reached where the machine's path reached
+		// the call and the callee's own Oak path reached the loop (an arm
+		// inside the callee): the coupling's premises assume both — a
+		// store before the loop inside `ok ? { … }` is unguarded on the
+		// machine's side and guarded by ok on the Oak side, and the two
+		// agree exactly there (walk_leaf calling alloc_table).
+		ev.reached = ev.oakPath
+		if callPath := state.pathCondition(); callPath != nil {
+			if ev.reached != nil {
+				ev.reached = binaryTerm("and", truncate(callPath, 1), truncate(ev.reached, 1))
+			} else {
+				ev.reached = callPath
+			}
+		}
 	}
 	if siteSeen {
 		if len(lo.loops) != priorSite.count {
@@ -8966,30 +9606,19 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 		if !okJ {
 			return recordSpanPlace{}, true, reason, false
 		}
-		var length int64
-		var elemLeaf compositeLeaf
-		found := false
-		for _, leaf := range arg.leaves {
-			if strings.HasPrefix(leaf.name, path+"[") {
-				if !found {
-					elemLeaf, found = leaf, true
-				}
-				length++
-			}
-		}
+		field, found := arg.arrayNamed(path)
 		if !found {
 			return recordSpanPlace{}, true, fmt.Sprintf("%s is not an array field of %s's element", path, root.Value), false
 		}
+		length, elemLeaf := field.length, field.first
 		if j.kind == termConst && int64(j.value) >= length {
 			return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s", length, path), false
 		}
 		linear := binaryTerm("add", binaryTerm("mul", idx, constTerm(uint64(length), 32)), j)
 		return recordSpanPlace{span: span, memory: span + path, leafName: path, index: linear, width: elemLeaf.width}, true, "", true
 	}
-	for _, leaf := range arg.leaves {
-		if leaf.name == path {
-			return recordSpanPlace{span: span, memory: span + path, leafName: path, index: idx, width: leaf.width}, true, "", true
-		}
+	if leaf, found := arg.leafNamed(path); found {
+		return recordSpanPlace{span: span, memory: span + path, leafName: path, index: idx, width: leaf.width}, true, "", true
 	}
 	return recordSpanPlace{}, true, fmt.Sprintf("%s is not a scalar leaf of %s's element", path, root.Value), false
 }
@@ -9029,7 +9658,20 @@ func (lo *oakLowering) recordSpanField(e *ast.IndexExpression) (t *term, width i
 		return nil, 0, handled, reason, false
 	}
 	entry := recordFieldTerm(place.span, place.index, place.leafName, place.width, lo.concrete != nil)
-	return memoryAt(lo.writes[place.memory], place.index, entry), place.width, true, "", true
+	return lo.noteRead(place.memory, len(lo.writes[place.memory]), place.index, memoryAt(lo.writes[place.memory], place.index, entry)), place.width, true, "", true
+}
+
+// memoryContract is the element contract of a memory a body stores
+// through: a span parameter's own, or — a span of records' leaf memory
+// (`s.pages`) — the leaf's width (docs/spec/94-assembler.md §9).
+func (lo *oakLowering) memoryContract(memory string) (spanContract, bool) {
+	if contract, isSpan := lo.spans[memory]; isSpan {
+		return contract, true
+	}
+	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+		return spanContract{elemWidth: width}, true
+	}
+	return spanContract{}, false
 }
 
 // recordLeafWidth is the width of a record span's leaf named by a
@@ -9046,13 +9688,11 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 	}
 	// A scalar leaf's own memory (`v.f`), or an array field's (`v.a`); the
 	// parameter `v[k].a[j]` folds to the memory `v.a[j]`, an element leaf.
-	if width, isMemory := arg.memoryWidths(span)[span+memory[dot:]]; isMemory {
+	if width, isMemory := arg.memoryWidth(memory[dot:]); isMemory {
 		return width, true
 	}
-	for _, leaf := range arg.leaves {
-		if leaf.name == memory[dot:] {
-			return leaf.width, true
-		}
+	if leaf, isLeaf := arg.leafNamed(memory[dot:]); isLeaf {
+		return leaf.width, true
 	}
 	return 0, false
 }
@@ -9194,6 +9834,35 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 	width, _, _ := contractBits(sig.ReturnType)
 	t, reason, ok := lo.lower(oakBody, width)
 	return t, width, reason, ok
+}
+
+// resultTerms lowers the Oak body once and packs every word of a record
+// result returned through memory (words of them, executeBodyChunk's
+// resultChunks): the executor's one run delivers as many. For a scalar or
+// a register-chunk record it is resultTerm's one term.
+func (lo *oakLowering) resultTerms(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, words int) ([]*term, int, string, bool) {
+	leaves, _, isComposite := resultComposite(fn, sig)
+	if !isComposite || words <= 1 {
+		t, width, reason, ok := lo.resultTerm(fn, sig, oakBody)
+		return []*term{t}, width, reason, ok
+	}
+	typ, ok := lo.oakTypeOf(sig.ReturnType)
+	if !ok || typ.kind == oakScalar {
+		return nil, 0, "a result whose type has no model", false
+	}
+	value, reason, ok := lo.aggregateValue(oakBody, typ)
+	if !ok {
+		return nil, 0, reason, false
+	}
+	out := make([]*term, words)
+	for k := range out {
+		packed, ok := packAggregateChunk(value, leaves, int64(k))
+		if !ok {
+			return nil, 0, "a record result with a leaf the layout lacks", false
+		}
+		out[k] = packed
+	}
+	return out, 64, "", true
 }
 
 // maskResult hides the padding bytes of a record result's chunk (the Oak
@@ -9402,6 +10071,79 @@ func canonical(t *term) *term {
 	return canonicalMemo(t, map[*term]*term{}, map[*term]bool{})
 }
 
+// compareSmallConditional distributes an equality test over a narrow
+// conditional value. Package status cells and u16 counters are commonly
+// updated as a chain of `condition ? update : prior`; testing the final value
+// against zero otherwise leaves the whole decision tree inside one comparison.
+// The machine CFG has already split those decisions into branches, so spelling
+// the source test arm by arm lets the two decision trees meet without one large
+// bit diagram.
+//
+// The rewrite is deliberately limited to at-most-u16 eq/ne tests against a
+// constant. It is pointwise: (c ? x : y) == k is c ? (x == k) : (y == k),
+// and likewise for !=. Memoizing by arm preserves sharing in the input DAG.
+func compareSmallConditional(code string, value, constant *term) (*term, bool) {
+	if (code != "eq" && code != "ne") || value == nil || constant == nil || value.kind != termIte || constant.kind != termConst || value.width > 16 || constant.width != value.width {
+		return nil, false
+	}
+	memo := map[*term]*term{}
+	var compare func(*term) *term
+	compare = func(arm *term) *term {
+		if done, seen := memo[arm]; seen {
+			return done
+		}
+		if arm.kind != termIte {
+			out := cmpTerm(code, arm, constant)
+			memo[arm] = out
+			return out
+		}
+		left, right := compare(arm.left), compare(arm.right)
+		var out *term
+		cond := truncate(arm.cond, 1)
+		asWidth := func(bit *term) *term { return zeroExtend(bit, value.width) }
+		switch {
+		case equalTerms(left, right):
+			out = left
+		case left.kind == termConst && right.kind == termConst && left.value == 1 && right.value == 0:
+			out = asWidth(cond)
+		case left.kind == termConst && right.kind == termConst && left.value == 0 && right.value == 1:
+			out = asWidth(notTerm(cond))
+		case left.kind == termConst && left.value == 0:
+			prior := truncate(right, 1)
+			// A fail-closed update is `c = prior && fail; c ? error :
+			// prior`. Testing it for the non-error value yields
+			// `not (prior && fail) && prior`, i.e. `prior && not fail`.
+			// Keep that linear conjunction instead of nesting the whole
+			// prior predicate under its own negation again.
+			var fail *term
+			if cond.kind == termBinary && cond.op == "and" && cond.width == 1 {
+				switch {
+				case equalTerms(cond.left, prior):
+					fail = cond.right
+				case equalTerms(cond.right, prior):
+					fail = cond.left
+				}
+			}
+			if fail != nil {
+				out = asWidth(binaryTerm("and", prior, notTerm(fail)))
+			} else {
+				out = asWidth(binaryTerm("and", notTerm(cond), prior))
+			}
+		case left.kind == termConst && left.value == 1:
+			out = asWidth(binaryTerm("or", cond, truncate(right, 1)))
+		case right.kind == termConst && right.value == 0:
+			out = asWidth(binaryTerm("and", cond, truncate(left, 1)))
+		case right.kind == termConst && right.value == 1:
+			out = asWidth(binaryTerm("or", notTerm(cond), truncate(left, 1)))
+		default:
+			out = iteTerm(arm.cond, left, right)
+		}
+		memo[arm] = out
+		return out
+	}
+	return compare(value), true
+}
+
 func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term {
 	if t == nil {
 		return nil
@@ -9551,7 +10293,54 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				// two u32 parameters, against the Oak body's `start > n`).
 				left, right = narrow.left, narrow.right
 			}
+			if distributed, ok := compareSmallConditional(t.op, left, right); ok {
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			} else if distributed, ok := compareSmallConditional(t.op, right, left); ok {
+				// Equality and inequality are symmetric; keep the conditional
+				// in the position the helper expects.
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			}
+			if out != nil {
+				break
+			}
 			switch {
+			case right.kind == termConst && right.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case left.kind == termConst && left.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case right.kind == termConst && right.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				// A value already known to be 0/1 compares with one as
+				// itself, or its negation. This commonly follows a cset-like
+				// status test through another comparison at register width.
+				out = left
+				if t.op == "ne" {
+					out = notTerm(left)
+				}
+				out = adaptWidth(out, t.width)
+			case left.kind == termConst && left.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				out = right
+				if t.op == "ne" {
+					out = notTerm(right)
+				}
+				out = adaptWidth(out, t.width)
+			case right.kind == termConst && right.value == 0 && (t.op == "eq" || t.op == "ne") && left.kind == termBinary && left.op == "and" && left.right.kind == termConst && left.right.value == mask(left.width) && left.left.width > left.width && significantBits(left.left) <= 1:
+				// A known 0/1 value tests as its low bit even when a narrow
+				// register view wrapped it in a wider full mask. Read only
+				// that bit; re-entering on this small Boolean expression
+				// avoids rebuilding the value's surrounding decision DAG.
+				bit := canonicalMemo(truncate(left.left, 1), memo, boolean)
+				if t.op == "eq" {
+					bit = notTerm(bit)
+				}
+				out = canonicalMemo(adaptWidth(bit, t.width), memo, boolean)
 			case right.kind == termConst && right.value == 0 && t.op == "ne" && booleanValued(left, boolean):
 				// A zero test of a 1/0 value is the value (the machine's
 				// `cset` then `cmp #0`); of its negation, the negation.
@@ -9664,6 +10453,8 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	}
 	if a, o := asmTerm.linearAt(width), oakTerm.linearAt(width); a != nil && o != nil && a.equal(o) {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)%s", fn.Name, a, note)}
+	} else if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: not one linear form\n  asm: %s -> %v\n  oak: %s -> %v\n", fn.Name, asmTerm, a, oakTerm, o)
 	}
 	if equalTerms(asmTerm, adaptWidth(oakTerm, width)) {
 		// The same term on both sides (a memory both sides built from the

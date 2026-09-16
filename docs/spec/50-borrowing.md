@@ -123,6 +123,17 @@ element-index rule `subslice_index`), a value from either arm carries the
 weaker fact (`join`), and a packed record's offset one carries no fact
 (`packed_offset_one`).
 
+`Oak.AlignmentFactRefinement` connects that proposition to the checker's
+numeric representation: `0` is the canonical `align 1` sentinel, stronger
+power-of-two facts flow to weaker ones by numeric comparison, and a value-flow
+join takes the minimum. It proves accepted flows sound as divisibility
+weakening and the selected join the strongest common weakening. Production
+normalization, all alignment-flow consumers, and the value-flow join share the
+corresponding Go helpers; bounded executable examples pin those decisions to
+Lean. This refinement begins after view/span shape equality has been
+established and does not claim refinement of shape identity or whole type
+assignability.
+
 ## 3. Borrow states
 
 For one owner, the core abstract states are:

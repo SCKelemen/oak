@@ -80,6 +80,12 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 		for _, b := range l.Blocks {
 			for _, ins := range b.Instrs {
 				reg, step, ok := f.t.increment(ins.Asm)
+				if !ok {
+					// A register step: `add rd, rd, rs` with rs a
+					// materialized constant (`li t0, 4; addw t1, t1, t0`,
+					// the RV64 lane's stride).
+					reg, step, ok = f.registerIncrement(ins, siteWeb)
+				}
 				if !ok || len(ins.Defs) != 1 {
 					continue
 				}
@@ -165,6 +171,12 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 				break
 			}
 		}
+		if sh.Index == nil && len(sh.Inductions) == 1 {
+			// No exit test the analysis reads (a slack guard computed into
+			// a flag, `sltu; xori; beqz`), one induction: the loop walks
+			// it, so its step is the stride; no trip bound.
+			sh.Index = &sh.Inductions[0]
+		}
 		if sh.Index != nil {
 			if sh.Index.Step < 0 {
 				sh.Stride = int(-sh.Index.Step)
@@ -196,11 +208,48 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 		if cur.Index == nil || prev.Index == nil || cur.Stride != 1 || prev.Stride <= 1 || cur.MaxTrips != 0 {
 			continue
 		}
-		if cur.Index.Web == prev.Index.Web && cur.BoundReg == prev.BoundReg && cur.BoundIsImm == prev.BoundIsImm && prev.Loop.Header.Index < cur.Loop.Header.Index {
+		sameBound := cur.BoundReg == prev.BoundReg && cur.BoundIsImm == prev.BoundIsImm
+		// A strided loop whose exit test the analysis could not read (a
+		// slack guard computed into a flag) still walks the same index to
+		// the same length as the remainder after it: the remainder runs
+		// fewer than the stride's trips (a cost, not a proof).
+		unreadBound := prev.BoundReg == (Reg{}) && !prev.BoundIsImm
+		if cur.Index.Web == prev.Index.Web && (sameBound || unreadBound) && prev.Loop.Header.Index < cur.Loop.Header.Index {
 			cur.MaxTrips = prev.Stride - 1
 		}
 	}
 	return shapes, nil
+}
+
+// registerIncrement reads `add rd, rd, rs` (or the word form) whose step
+// register rs has one definition, a materialized constant: rd advances by
+// that constant. The web of rs at this use finds its definition.
+func (f *Function) registerIncrement(ins *Instr, siteWeb map[site]*Web) (Reg, int64, bool) {
+	a := ins.Asm
+	switch a.Mnemonic {
+	case "add", "addw", "sub", "subw":
+	default:
+		return Reg{}, 0, false
+	}
+	if len(a.Operands) != 3 || len(ins.Defs) != 1 || len(ins.Uses) != 2 {
+		return Reg{}, 0, false
+	}
+	dst := ins.Defs[0]
+	if ins.Uses[0].Op != 1 || ins.Uses[0].Reg != dst.Reg || ins.Uses[1].Op != 2 {
+		return Reg{}, 0, false
+	}
+	w := siteWeb[site{ins, ins.Uses[1], false}]
+	if w == nil || len(w.Defs) != 1 || w.Defs[0].Instr == nil {
+		return Reg{}, 0, false
+	}
+	c, isConst := f.t.constant(w.Defs[0].Instr.Asm)
+	if !isConst {
+		return Reg{}, 0, false
+	}
+	if a.Mnemonic == "sub" || a.Mnemonic == "subw" {
+		c = -c
+	}
+	return dst.Reg, c, true
 }
 
 // LoopShapes lifts a lowered body and analyzes its loops. An error means

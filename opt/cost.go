@@ -23,12 +23,17 @@ type Metrics struct {
 	// checks, zero-divisor tests, and the other checks a proof may remove.
 	Guards int
 	Loops  int
+	// Stalls estimate the cycles an in-order core waits for a producer
+	// within a block (a load's result used the next instruction):
+	// machine.StallEstimate.
+	Stalls int
 
 	LoopInstructions int
 	LoopBranches     int
 	LoopLoads        int
 	LoopStores       int
 	LoopGuards       int
+	LoopStalls       int
 
 	// LoopBodies are the loops in body order, each with its own items: a
 	// nested loop's items are its own, not its outer loops', and the cost
@@ -49,6 +54,7 @@ type LoopMetrics struct {
 	Loads        int
 	Stores       int
 	Guards       int
+	Stalls       int
 	Stride       int
 	MaxTrips     int
 	// Depth is how many loops enclose this one; Outer the 1-based index
@@ -72,8 +78,14 @@ func (m Metrics) String() string {
 		parts = append(parts, fmt.Sprintf("divides %d", m.Divides))
 	}
 	parts = append(parts, fmt.Sprintf("guards %d", m.Guards))
+	if m.Stalls > 0 {
+		parts = append(parts, fmt.Sprintf("stalls %d", m.Stalls))
+	}
 	for _, loop := range m.LoopBodies {
 		shape := fmt.Sprintf("loop[%d instructions, %d branches, %d loads, %d stores, %d guards", loop.Instructions, loop.Branches, loop.Loads, loop.Stores, loop.Guards)
+		if loop.Stalls > 0 {
+			shape += fmt.Sprintf(", %d stalls", loop.Stalls)
+		}
 		if loop.Stride > 1 {
 			shape += fmt.Sprintf(", stride %d", loop.Stride)
 		}
@@ -107,10 +119,12 @@ func Delta(before, after Metrics) string {
 		{"multiplies", before.Multiplies, after.Multiplies},
 		{"divides", before.Divides, after.Divides},
 		{"guards", before.Guards, after.Guards},
+		{"stalls", before.Stalls, after.Stalls},
 		{"loop instructions", before.LoopInstructions, after.LoopInstructions},
 		{"loop branches", before.LoopBranches, after.LoopBranches},
 		{"loop loads", before.LoopLoads, after.LoopLoads},
 		{"loop guards", before.LoopGuards, after.LoopGuards},
+		{"loop stalls", before.LoopStalls, after.LoopStalls},
 	}
 	var out []string
 	for _, row := range rows {
@@ -165,18 +179,19 @@ type TargetCosts struct {
 	Branch     float64
 	Guard      float64 // a conditional branch to the trap: predicted, but a compare and a branch
 	Call       float64
+	Stall      float64 // one estimated stall cycle (machine.StallEstimate)
 	LoopWeight float64
 }
 
 // AArch64Costs are the AArch64 lane's initial weights (an Apple M-series
 // or Neoverse-class core: 4-cycle loads, 2-cycle multiplies, 10+ cycle
 // divides, cheap predicted branches).
-var AArch64Costs = TargetCosts{Arch: "arm64", Arithmetic: 1, Multiply: 3, Divide: 12, Load: 4, Store: 2, Branch: 1, Guard: 1.5, Call: 8, LoopWeight: 256}
+var AArch64Costs = TargetCosts{Arch: "arm64", Arithmetic: 1, Multiply: 3, Divide: 12, Load: 4, Store: 2, Branch: 1, Guard: 1.5, Call: 8, Stall: 0.5, LoopWeight: 256}
 
 // RV64Costs are the RV64 lane's initial weights (an in-order or modest
 // out-of-order core: slower multiplies and divides, fewer addressing
 // modes so loads carry their address arithmetic separately).
-var RV64Costs = TargetCosts{Arch: "rv64", Arithmetic: 1, Multiply: 4, Divide: 20, Load: 4, Store: 2, Branch: 1.5, Guard: 2, Call: 8, LoopWeight: 256}
+var RV64Costs = TargetCosts{Arch: "rv64", Arithmetic: 1, Multiply: 4, Divide: 20, Load: 4, Store: 2, Branch: 1.5, Guard: 2, Call: 8, Stall: 1, LoopWeight: 256}
 
 // CostsFor returns the lane's weights; an unknown lane gets AArch64's.
 func CostsFor(arch string) TargetCosts {
@@ -204,14 +219,15 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 	total := t.weigh(m.Instructions-classed, m.Branches, m.Loads, m.Stores, m.Guards) +
 		float64(m.Multiplies)*t.Multiply +
 		float64(m.Divides)*t.Divide +
-		float64(m.Calls)*t.Call
+		float64(m.Calls)*t.Call +
+		float64(m.Stalls)*t.Stall
 	if len(m.LoopBodies) == 0 {
-		loop := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards)
+		loop := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards) + float64(m.LoopStalls)*t.Stall
 		return total - loop + loop*weight
 	}
 	// The straight-line share is what no loop holds; the loop share is
 	// each body at its own trip weight.
-	inLoops := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards)
+	inLoops := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards) + float64(m.LoopStalls)*t.Stall
 	cost := total - inLoops
 	// Each loop's own trips; a nested loop's body runs them for every
 	// trip of its outer loops, so its factor is the product along the
@@ -233,7 +249,7 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 		if loop.Outer > 0 && loop.Outer-1 < k {
 			factors[k] *= factors[loop.Outer-1]
 		}
-		cost += t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) * factors[k]
+		cost += (t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) + float64(loop.Stalls)*t.Stall) * factors[k]
 	}
 	return cost
 }

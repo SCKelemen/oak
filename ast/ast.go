@@ -1450,8 +1450,13 @@ func (fs *FunctionStatement) String() string {
 		out.WriteString(strings.Join(slots, ", "))
 		out.WriteString(" }")
 	}
-	out.WriteRune(' ')
-	out.WriteString(fs.Body.String())
+	// A body-less declaration (a dispatching function realized by its
+	// slots, or one paired with an assembly unit, docs/spec/94-assembler.md
+	// §7) prints its signature alone.
+	if fs.Body != nil {
+		out.WriteRune(' ')
+		out.WriteString(fs.Body.String())
+	}
 	return out.String()
 }
 

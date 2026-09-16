@@ -6,9 +6,22 @@ import "fmt"
 // the structured input first and independently verifies the result before
 // returning it to an analysis.
 func Project(function Function) (CFG, error) {
+	cfg, _, err := project(function, StructuredRegionMemoryMetadata{}, false)
+	return cfg, err
+}
+
+// ProjectWithRegionMemory lowers structured OptIR and translates checked
+// pointer-bound memory metadata to exact CFG operation sites. Every metadata
+// operation must occur exactly once in function. The projected metadata is
+// independently admitted by RegionMemorySSA before it is returned.
+func ProjectWithRegionMemory(function Function, metadata StructuredRegionMemoryMetadata) (CFG, RegionMemoryMetadata, error) {
+	return project(function, metadata, true)
+}
+
+func project(function Function, metadata StructuredRegionMemoryMetadata, validateMemory bool) (CFG, RegionMemoryMetadata, error) {
 	maximum, err := validateStructured(function)
 	if err != nil {
-		return CFG{}, err
+		return CFG{}, RegionMemoryMetadata{}, err
 	}
 	p := projector{
 		cfg: CFG{
@@ -18,27 +31,55 @@ func Project(function Function) (CFG, error) {
 		},
 		nextValue: maximum + 1,
 	}
+	if validateMemory {
+		p.memory = RegionMemoryMetadata{Regions: append([]RegionID(nil), metadata.Regions...)}
+		p.structuredMemory = make(map[*Operation]StructuredMemoryOperationMetadata, len(metadata.Operations))
+		p.consumedMemory = make(map[*Operation]bool, len(metadata.Operations))
+		for _, operation := range metadata.Operations {
+			if operation.Operation == nil {
+				return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: structured memory metadata has a nil operation")
+			}
+			if _, duplicate := p.structuredMemory[operation.Operation]; duplicate {
+				return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: structured memory metadata repeats an operation")
+			}
+			operation.Accesses = append([]MemoryAccessSpec(nil), operation.Accesses...)
+			p.structuredMemory[operation.Operation] = operation
+		}
+	}
 	entry := p.newBlock()
 	p.cfg.Entry = entry
 	p.block(entry).Parameters = cloneValues(function.Parameters)
 	last, err := p.emitRegion(function.Body, entry, nil)
 	if err != nil {
-		return CFG{}, err
+		return CFG{}, RegionMemoryMetadata{}, err
 	}
 	p.block(last).Terminator = Terminator{
 		Kind:   TerminatorReturn,
 		Values: remapValues(function.Body.Yield, nil),
 	}
 	if err := Verify(p.cfg); err != nil {
-		return CFG{}, fmt.Errorf("optir: projected CFG is invalid: %w", err)
+		return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: projected CFG is invalid: %w", err)
 	}
-	return p.cfg, nil
+	if validateMemory {
+		for operation := range p.structuredMemory {
+			if !p.consumedMemory[operation] {
+				return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: structured memory metadata names an operation outside the function")
+			}
+		}
+		if _, err := AnalyzeRegionMemorySSA(p.cfg, p.memory); err != nil {
+			return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: projected region memory is invalid: %w", err)
+		}
+	}
+	return p.cfg, p.memory, nil
 }
 
 type projector struct {
-	cfg       CFG
-	nextBlock BlockID
-	nextValue ValueID
+	cfg              CFG
+	nextBlock        BlockID
+	nextValue        ValueID
+	memory           RegionMemoryMetadata
+	structuredMemory map[*Operation]StructuredMemoryOperationMetadata
+	consumedMemory   map[*Operation]bool
 }
 
 func (p *projector) newBlock() BlockID {
@@ -62,6 +103,17 @@ func (p *projector) emitRegion(region Region, current BlockID, bindings map[Valu
 	for _, node := range region.Nodes {
 		switch {
 		case node.Operation != nil:
+			if metadata, tracked := p.structuredMemory[node.Operation]; tracked {
+				if p.consumedMemory[node.Operation] {
+					return 0, fmt.Errorf("optir: structured memory operation occurs more than once")
+				}
+				p.consumedMemory[node.Operation] = true
+				p.memory.Operations = append(p.memory.Operations, MemoryOperationMetadata{
+					Site:       OperationSite{Block: current, Index: len(p.block(current).Operations)},
+					Accesses:   append([]MemoryAccessSpec(nil), metadata.Accesses...),
+					CallEffect: metadata.CallEffect,
+				})
+			}
 			op := cloneOperation(*node.Operation)
 			op.Operands = remapValues(op.Operands, bindings)
 			for i := range op.Facts {
@@ -192,6 +244,7 @@ func cloneFacts(facts []Fact) []Fact {
 	for i, fact := range facts {
 		out[i] = fact
 		out[i].Values = append([]ValueID(nil), fact.Values...)
+		out[i].Dependencies = append([]string(nil), fact.Dependencies...)
 	}
 	return out
 }

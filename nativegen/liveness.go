@@ -104,6 +104,11 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 			continue
 		}
 		b, ok := top[name]
+		// A scalar-replaced array (b.sa) owns no slot or register of its
+		// own — its elements are scalars bound under their own names —
+		// and its binding's zero offset is nobody's slot to recycle (the
+		// first frame slot, a live array's, went to the pool through it
+		// once: the blake3 compression's state word zero).
 		if !ok || b.arr != nil || b.rec != nil || b.sp != nil || b.sa != nil || b.freed {
 			continue
 		}
@@ -116,6 +121,7 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 			g.freeSlots16 = append(g.freeSlots16, b.offset)
 		case b.offset >= 0:
 			g.freeSlots8 = append(g.freeSlots8, b.offset)
+			traceSlot("release-dead", name, b.offset, b.reg, g.nslots, len(g.freeSlots8))
 		}
 		b.freed = true
 		top[name] = b

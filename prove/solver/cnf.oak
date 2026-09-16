@@ -134,7 +134,7 @@ cnf_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
 // the solver must decide, CNF_PROVEN when the obligation folded to false
 // (no trap can fire and the claim is the constant true), CNF_REFUTED when
 // it folded to true (a trap always fires, or the claim is the constant
-// false and no trap is present).
+// false, regardless of any other nonconstant trap roots).
 CNF_CLAUSE: u32 = 0
 CNF_PROVEN: u32 = 1
 CNF_REFUTED: u32 = 2

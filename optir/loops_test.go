@@ -74,7 +74,7 @@ func TestLoopStructureReuseRequiresCheckedTopologyPreservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, _, err := SimplifyCSEDCE(before)
+	after, _, err := SimplifyGVNDCE(before)
 	if err != nil {
 		t.Fatal(err)
 	}

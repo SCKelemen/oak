@@ -68,8 +68,10 @@ full inner-shareable data barrier.
 
 ### 3.2 DSB
 
-DSB provides the full data-ordering profile in the selected domain and adds the
-completion property on which Oak machine code may rely.
+DSB provides the full data-ordering profile in the selected domain. Oak's
+barrier capability also records the architectural completion obligation on
+which machine code may rely once an execution-level Arm refinement discharges
+it.
 
 `dsb_ish` is inner-shareable.
 
@@ -86,6 +88,48 @@ substitute for DMB/DSB data ordering or completion.
 
 Code that changes architectural state and requires an ISB must request
 `arm64.isb()` explicitly.
+
+### 3.4 TLBI is translation maintenance, not a fourth barrier
+
+The adjacent closed operation:
+
+```text
+arm64.tlbi_vmalls12e1is() -> ()
+```
+
+names exactly `TLBI VMALLS12E1IS`. It lives in a separate
+`semir.Arm64TLBISpec` catalog and projects
+`Machine.TranslationMaintenance[tlbi, vmalls12e1, inner-shareable]`, never a
+`Machine.Barrier` capability. It does not insert or imply a preceding or
+following DSB or ISB. Any required surrounding DSB or ISB must be spelled
+separately, and the protocol must discharge its applicable ordering,
+completion, and context-synchronization obligations.
+
+The source identity deliberately includes `is`: a future plain, local-PE
+`TLBI VMALLS12E1` operation would require a distinct catalog member. Runtime
+instruction or scope operands are not accepted.
+
+### 3.5 Fixed VMALLS12E1IS context-sync slice
+
+The reference leaf
+`examples/hypervisor/stage2_vmalls12e1is_context_sync.oak` spells this fixed
+sequence in Oak source:
+
+```text
+DSB ISH
+TLBI VMALLS12E1IS
+DSB ISH
+ISB
+```
+
+It is an IS-only maintenance/context-synchronization slice, not a compound
+intrinsic or a complete break-before-make protocol. Descriptor break/make,
+target and scope suitability, completion, and context synchronization remain
+protocol proof obligations. The initial DSB ISH is deliberately conservative;
+the existence of this fixed leaf is not a claim that it is cheaper than every
+protocol-specific sequence that can justify a narrower barrier. Callers that
+do not require context synchronization should continue to spell only the
+operations their proof requires rather than pay for an unconditional ISB.
 
 ## 4. Backend lowering
 
@@ -105,6 +149,11 @@ The inline assembly is `volatile` and carries a C compiler `"memory"` clobber.
 That prevents the bootstrap C compiler from moving ordinary memory operations
 through the explicit machine barrier in ways that would destroy Oak's intended
 ordering boundary.
+
+The TLBI helper uses the same `volatile`/`"memory"` form, and the direct-native
+scheduler and memory-value forwarder keep TLBI as an immovable compiler
+boundary. These are compiler-ordering constraints only. They are not DSB
+ordering, invalidation completion, or evidence about architectural broadcast.
 
 There is no Oak runtime call, heap object, dynamically selected instruction, or
 hidden second barrier.
@@ -178,7 +227,7 @@ instruction synchronization
 scope: inner-shareable / system
 ```
 
-Lean proves:
+Lean proves these facts about Oak's profile capability record:
 
 - admitted DMB variants do not claim completion;
 - admitted DSB variants do claim completion;
@@ -188,6 +237,66 @@ Lean proves:
 - DSB SY likewise extends DMB SY with completion;
 - DMB ISHLD is not classified as a full data barrier;
 - ISB makes no DMB/DSB-style data-order/completion claim.
+
+`Oak.AArch64Encoding` and the generated Sail bridge refine the six literal
+instruction words into these exact capabilities through Arm's decoded
+operation/domain/access tuple. The decoded DMB ISHLD/ISH/SY tuples index the
+restricted weak-memory `bob` rule: ISHLD orders only a returning load before
+following scalar memory, while ISH and SY provide full scalar data ordering.
+Decoded DSB ISH/SY tuples index a separate full scalar `DSB-ob` rule. The pinned
+CAT certificate covers `dmb.full`, `dmb.ld`, the selected `bob` arms,
+`dsb.full`, the full scalar `DSB-ob` arm, ISB membership in `IFB`, a
+dependency-sensitive `IFB-ob` arm, the exact `DSB-ob; [IFB]; po` arm, and their
+routes through `lob`. DSB and ISB are not smuggled through DMB ordering. Eleven
+official-model Herd cases include forbidden DSB ISH/SY store buffering and
+allowed bare-ISB store buffering.
+
+Oak's pure Sail fragment projects barrier decoding to the
+operation/domain/access tuple and now separately projects the official
+`system_barriers` call target. The Lean bridge kernel-proves that the exact ISB
+word selects `InstructionSynchronizationBarrier` in this local projection; a
+Go drift gate audits all six mappings against the pinned official Sail source.
+The projection does not execute architectural state changes: the pinned model
+implements `InstructionSynchronizationBarrier` and `SynchronizeContext` as
+separate unit-returning stubs. The drift gate pins that boundary. DSB completion
+and ISB context synchronization therefore remain external obligations;
+the stage-2 `IFB-ob` projection requires both its exact preceding `DSB-ob`
+witness and an explicit program-order edge to an occurrence after the ISB.
+Other positive `IFB-ob` arms retain their specified dependency premises.
+
+`compiler/e2e_native_barrier_words_test.go` independently checks occurrence at
+the direct-native object seam. Each of six Oak source functions must be exactly
+one literal barrier word followed by `RET`; the expectation is not computed by
+the encoder being tested. The same gate pins the actual cold prepare/entry
+functions through their eight context writes, exact ISB, and final `RET` or
+`ERET`. This is executable compiler evidence, not an Arm execution-semantics
+proof and not the source of the word-to-decoder theorem.
+
+The same object seam separately requires an Oak
+`arm64.tlbi_vmalls12e1is()` leaf to contain exactly `0xd50c83df; RET`.
+`Oak.AArch64Encoding` proves the word from the generated fields, and the Sail
+bridge proves the named call target in Oak's pure projection. The object check
+proves neither access admission nor the target's execution effects.
+
+The fixed context-sync leaf is separately required to be exactly
+`DSB ISH; VMALLS12E1IS; DSB ISH; ISB; RET` in the direct-native object. The C
+bootstrap assembly gate requires the same four system instructions in order.
+The C gate establishes system-instruction occurrence/order, while the exact
+native body additionally establishes zero hidden work. Lean constructs Oak's
+restricted local ordering shape for the exact TLBI/post-DSB/ISB occurrences,
+corresponding to CAT's `DSB-ob` arm; with an explicit following occurrence it
+also constructs the shape corresponding to `DSB-ob; [IFB]; po`. Official CAT
+event membership remains external. Neither result proves DSB completion or ISB
+architectural context synchronization.
+
+For the descriptor-BBM projection, the concrete wrapper separately ties the
+same indexed ordering chain to exact `DSB ISH; VMALLS12E1IS; DSB ISH` words
+and actions, and proves its five `po`-linked break-through-make occurrences
+pairwise distinct. Two byte-identical tests from Herdtools7's official
+AArch64-BBM catalogue gate the positive synchronized result and the negative
+`Warning-BBM-expected` diagnostic. Those tests use stage-1 `VAAE1IS`, not
+Oak's stage-2 instruction, and do not prove completion, target/scope
+suitability, trace extraction, or the local-to-official CAT refinement.
 
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
@@ -201,12 +310,25 @@ The slice is accepted only if all of the following hold:
 - typechecker accepts every exact nullary barrier and rejects operands/unknown
   spellings;
 - evaluator diagnoses every barrier as native-AArch64-only;
+- the evaluator likewise diagnoses TLBI as native-AArch64-only rather than a
+  no-op or host fence;
 - Oak-generated C contains no heap primitive in the barrier path;
 - Clang cross-compiles the generated source for freestanding ARMv8-A;
 - each Oak function contains the exact requested DMB/DSB/ISB instruction and no
   additional barrier family;
+- direct-native object bodies contain the independently pinned exact word with
+  no prologue, dispatch, or second instruction before `RET`;
+- the exact TLBI leaf is `0xd50c83df; RET`, and compiler scheduling/value
+  forwarding cannot cross the TLBI occurrence;
+- the fixed context-sync leaf contains exactly the two DSB words, IS TLBI word,
+  ISB word, and `RET`, while its C lowering preserves the four-operation order;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
+- the generated Sail decoder refines all six words into those capabilities,
+  the three decoded DMB forms into restricted weak-memory ordering, and both
+  decoded DSB forms into the separate full scalar ordering;
+- pinned Herd tests cover DMB SY, DSB ISH/SY, bare ISB, and both the ordering
+  and non-ordering directions of DMB ISHLD;
 - ordinary Go/race, golden, and AArch64-refinement CI remain green.
 
 ## 10. Relationship to atomics and volatile access

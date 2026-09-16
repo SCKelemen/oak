@@ -67,6 +67,12 @@ func TestE2ENativeLoopInvariants(t *testing.T) {
 	if strings.Contains(joined, "the checker refuses the lowering of zero_page") {
 		t.Errorf("the hoisted form must be admitted:\n%s", joined)
 	}
+	if strings.Contains(joined, "zero_page keeps its loop invariants in place") || !strings.Contains(joined, "asm unit zero_page: proven equal to its Oak body at the bit level") {
+		t.Errorf("the field-sensitive memory frame must let the proven hoisted form win:\n%s", joined)
+	}
+	if !strings.Contains(joined, "the span memory it writes (tables.words)") || strings.Contains(joined, "the span memory it writes (tables.count") || strings.Contains(joined, "the span memory it writes (tables.tag") {
+		t.Errorf("only the written words leaf may be loop-carried; count and tag must be framed:\n%s", joined)
+	}
 	counts := map[string]int{}
 	traps := 0
 	for _, ins := range loopBody(fn) {

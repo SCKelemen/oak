@@ -1,0 +1,151 @@
+import(std)
+import(testing)
+
+// Double-Ratchet-shaped lifecycle POCs.
+// Cryptographic transforms remain idealized. The properties here are bounded
+// storage, ordering/state evolution, and key-consumption plumbing.
+
+// --------------------------------------------------------------------------
+// 1. Bounded skipped-message-key cache.
+//
+// There is deliberately no dynamic map. A fixed four-slot cache makes the
+// resource limit explicit and suitable for strict-discipline systems code.
+// --------------------------------------------------------------------------
+
+SkippedKeys: protocol = {
+  data {
+    skipped: [4]Bool,
+    live: u8
+  }
+  init {
+    skipped: [4]Bool{ false, false, false, false },
+    live: u8(0)
+  }
+  initial Open
+
+  remember(slot: u8): Open -> Open when u32(slot) < u32(4) && !data.skipped[u32(slot)] && data.live < u8(4) then {
+    data.skipped[u32(slot)] = true
+    data.live = data.live + u8(1)
+  }
+  consume(slot: u8): Open -> Open when u32(slot) < u32(4) && data.skipped[u32(slot)] && data.live > u8(0) then {
+    data.skipped[u32(slot)] = false
+    data.live = data.live - u8(1)
+  }
+  close: Open -> Closed then {
+    data.skipped[u32(0)] = false
+    data.skipped[u32(1)] = false
+    data.skipped[u32(2)] = false
+    data.skipped[u32(3)] = false
+    data.live = u8(0)
+  }
+}
+
+skipped_keys_count_bounded: theorem (s: SkippedKeysState, d: SkippedKeysData) {
+  d.live <= u8(4)
+}
+
+skipped_keys_closed_empty: theorem (s: SkippedKeysState, d: SkippedKeysData) {
+  !(s == .Closed) || d.live == u8(0)
+}
+
+TestBoundedSkippedKeys: (): () {
+  store: [1]SkippedKeysData
+  data: [*]SkippedKeysData = span(&store)
+  data[0] = skipped_keys_initial_data()
+  s: SkippedKeysState = skipped_keys_initial()
+
+  s = skipped_keys_next(s, data, .Remember(u8(0)))
+  s = skipped_keys_next(s, data, .Remember(u8(3)))
+  test_check(data[0].live == u8(2), u32(7270))
+  test_check(data[0].skipped[u32(0)] && data[0].skipped[u32(3)], u32(7271))
+  test_check(!skipped_keys_legal(s, data[0], .Remember(u8(3))), u32(7272))
+
+  s = skipped_keys_next(s, data, .Consume(u8(0)))
+  test_check(data[0].live == u8(1) && !data[0].skipped[u32(0)], u32(7273))
+
+  s = skipped_keys_next(s, data, .Close)
+  test_check(s == .Closed && data[0].live == u8(0), u32(7274))
+}
+
+// --------------------------------------------------------------------------
+// 2. Double-ratchet epoch/counter skeleton.
+//
+// `dh_ratchet` represents successful authentication of a new remote ratchet
+// public key plus the idealized DH/KDF transition. It advances both epochs and
+// resets per-epoch message counters. No claim is made here about DH hardness,
+// KDF security, or post-compromise security.
+// --------------------------------------------------------------------------
+
+DoubleRatchet: protocol = {
+  data {
+    send_epoch: u16,
+    recv_epoch: u16,
+    send_sequence: u16,
+    recv_sequence: u16,
+    root_ready: Bool,
+    send_chain_live: Bool,
+    recv_chain_live: Bool
+  }
+  init {
+    send_epoch: u16(0),
+    recv_epoch: u16(0),
+    send_sequence: u16(0),
+    recv_sequence: u16(0),
+    root_ready: true,
+    send_chain_live: true,
+    recv_chain_live: true
+  }
+  initial Established
+
+  send: Established -> Established when data.send_chain_live && data.send_sequence < u16(65535) then {
+    data.send_sequence = data.send_sequence + u16(1)
+  }
+  receive: Established -> Established when data.recv_chain_live && data.recv_sequence < u16(65535) then {
+    data.recv_sequence = data.recv_sequence + u16(1)
+  }
+  dh_ratchet: Established -> Established when data.root_ready && data.send_epoch < u16(65535) && data.recv_epoch < u16(65535) then {
+    data.send_epoch = data.send_epoch + u16(1)
+    data.recv_epoch = data.recv_epoch + u16(1)
+    data.send_sequence = u16(0)
+    data.recv_sequence = u16(0)
+    data.send_chain_live = true
+    data.recv_chain_live = true
+  }
+  close: Established -> Closed then {
+    data.root_ready = false
+    data.send_chain_live = false
+    data.recv_chain_live = false
+  }
+}
+
+double_ratchet_established_has_live_root: theorem (s: DoubleRatchetState, d: DoubleRatchetData) {
+  !(s == .Established) || (d.root_ready && d.send_chain_live && d.recv_chain_live)
+}
+
+double_ratchet_closed_has_no_live_keys: theorem (s: DoubleRatchetState, d: DoubleRatchetData) {
+  !(s == .Closed) || (!d.root_ready && !d.send_chain_live && !d.recv_chain_live)
+}
+
+double_ratchet_epochs_agree: theorem (s: DoubleRatchetState, d: DoubleRatchetData) {
+  d.send_epoch == d.recv_epoch
+}
+
+TestDoubleRatchetEpochs: (): () {
+  store: [1]DoubleRatchetData
+  data: [*]DoubleRatchetData = span(&store)
+  data[0] = double_ratchet_initial_data()
+  s: DoubleRatchetState = double_ratchet_initial()
+
+  s = double_ratchet_next(s, data, .Send)
+  s = double_ratchet_next(s, data, .Send)
+  s = double_ratchet_next(s, data, .Receive)
+  test_check(data[0].send_sequence == u16(2) && data[0].recv_sequence == u16(1), u32(7280))
+
+  s = double_ratchet_next(s, data, .Dh_ratchet)
+  test_check(data[0].send_epoch == u16(1) && data[0].recv_epoch == u16(1), u32(7281))
+  test_check(data[0].send_sequence == u16(0) && data[0].recv_sequence == u16(0), u32(7282))
+
+  s = double_ratchet_next(s, data, .Close)
+  test_check(s == .Closed, u32(7283))
+  test_check(!data[0].root_ready && !data[0].send_chain_live && !data[0].recv_chain_live, u32(7284))
+}

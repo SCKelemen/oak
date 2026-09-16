@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/layout"
@@ -69,7 +70,8 @@ const (
 	// library, and an unused import.
 	CodeImportAlias = "OAK-M0107"
 	// CodeReservedIdentifier rejects identifiers containing `__`, which are
-	// reserved for internal names (the capture-freedom rule).
+	// reserved for internal names (the capture-freedom rule), and identifiers
+	// ending in a native vector-ABI suffix owned by the backend.
 	CodeReservedIdentifier = "OAK-M0108"
 	// CodeSignatureMismatch rejects a sealed import whose package does not
 	// provide a signature member with the demanded kind, and access through
@@ -103,6 +105,43 @@ const (
 	// loader cannot resolve to a type or constant.
 	CodeGenericPackageArgument = "OAK-M0302"
 )
+
+// reservedNativeABISuffix reports the backend-owned suffix whose spelling
+// would make a source identifier collide with a generated vector entry.
+func reservedNativeABISuffix(name string) string {
+	for _, arch := range []string{asm.ArchArm64, asm.ArchRV64} {
+		suffix := asm.VectorEntrySuffix(arch)
+		if strings.HasSuffix(name, suffix) {
+			return suffix
+		}
+	}
+	return ""
+}
+
+// nativeABISuffixDiagnostics applies the backend-owned suffix reservation to
+// every compilation shape, including the single-file path which does not run
+// module elaboration. Package builds normally reject these spellings earlier
+// in the loader; repeating the pure check here also protects syntax rewrites.
+func nativeABISuffixDiagnostics(root *ast.Program) []*diagnostic.Diagnostic {
+	if root == nil {
+		return nil
+	}
+	var diagnostics []*diagnostic.Diagnostic
+	(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+		if label || strings.Contains(id.Value, ".") {
+			return
+		}
+		if suffix := reservedNativeABISuffix(id.Value); suffix != "" {
+			diagnostics = append(diagnostics, diagnostic.NewDiagnosticFromNodeWithCode(
+				id,
+				"compiler",
+				CodeReservedIdentifier,
+				fmt.Sprintf("identifier %q ends in reserved native ABI suffix %q", id.Value, suffix),
+			))
+		}
+	}}).walk(reflect.ValueOf(root), false)
+	return diagnostics
+}
 
 // ModuleInfo is what elaboration hands the later phases.
 type ModuleInfo struct {
@@ -1121,6 +1160,10 @@ func (l *moduleLoader) extractNestedModules(pkg *loadedPackage) bool {
 				l.reportAt(CodeReservedIdentifier, file.Path, decl.Name, "identifier %q contains the reserved sequence __", name)
 				ok = false
 				continue
+			case reservedNativeABISuffix(name) != "":
+				l.reportAt(CodeReservedIdentifier, file.Path, decl.Name, "identifier %q ends in reserved native ABI suffix %q", name, reservedNativeABISuffix(name))
+				ok = false
+				continue
 			}
 			if prior, dup := seen[name]; dup {
 				l.reportAt(CodeNestedModule, file.Path, decl.Name, "nested module %s declared twice (first in %s)", name, prior)
@@ -1425,6 +1468,11 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 						ok = false
 						continue
 					}
+					if suffix := reservedNativeABISuffix(name.Value); suffix != "" {
+						l.reportAt(CodeReservedIdentifier, file.Path, name, "identifier %q ends in reserved native ABI suffix %q", name.Value, suffix)
+						ok = false
+						continue
+					}
 					if _, declared := pkg.Exports[name.Value]; declared {
 						l.reportAt(CodeImportAlias, file.Path, name, "selective import %q collides with a package-level declaration", name.Value)
 						ok = false
@@ -1457,6 +1505,11 @@ func (l *moduleLoader) collectImports(pkg *loadedPackage) bool {
 			}
 			if modules.Reserved(alias) {
 				l.reportAt(CodeReservedIdentifier, file.Path, imp, "import alias %q contains the reserved sequence __", alias)
+				ok = false
+				continue
+			}
+			if suffix := reservedNativeABISuffix(alias); suffix != "" {
+				l.reportAt(CodeReservedIdentifier, file.Path, imp, "import alias %q ends in reserved native ABI suffix %q", alias, suffix)
 				ok = false
 				continue
 			}
@@ -1503,8 +1556,13 @@ func (l *moduleLoader) elaborate(pkg *loadedPackage) {
 	// Reserved identifiers are checked before any renaming introduces __.
 	for _, file := range pkg.Files {
 		(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
-			if !label && modules.Reserved(id.Value) && !strings.Contains(id.Value, ".") {
+			if label || strings.Contains(id.Value, ".") {
+				return
+			}
+			if modules.Reserved(id.Value) {
 				l.reportAt(CodeReservedIdentifier, file.Path, id, "identifier %q contains the reserved sequence __", id.Value)
+			} else if suffix := reservedNativeABISuffix(id.Value); suffix != "" {
+				l.reportAt(CodeReservedIdentifier, file.Path, id, "identifier %q ends in reserved native ABI suffix %q", id.Value, suffix)
 			}
 		}}).walk(reflect.ValueOf(file.Root), false)
 	}

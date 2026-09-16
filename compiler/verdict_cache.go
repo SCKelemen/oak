@@ -1,9 +1,12 @@
 package compiler
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +18,28 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/nativegen"
 )
+
+const (
+	verdictCacheNamespace     = "verdict-cache-2"
+	verdictCacheFormatVersion = 2
+)
+
+type storedVerdict struct {
+	Version int             `json:"version"`
+	Kind    asm.VerdictKind `json:"kind"`
+	Message string          `json:"message"`
+	Callees []string        `json:"callees"`
+}
+
+// decodedVerdict uses pointers so a missing or null field cannot silently
+// become the zero value. In particular, every cache entry must state its
+// callee dependency list even when that list is empty.
+type decodedVerdict struct {
+	Version *int             `json:"version"`
+	Kind    *asm.VerdictKind `json:"kind"`
+	Message *string          `json:"message"`
+	Callees *[]string        `json:"callees"`
+}
 
 // The verdict cache (docs/spec/94-assembler.md §9). A body's verdict is a
 // function of what the verifier reads: the lowered assembly as the checker
@@ -50,7 +75,7 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 			write(fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano()))
 		}
 	}
-	write("verdict-cache-1", asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
+	write(verdictCacheNamespace, asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
 	if asmFn.Body != nil {
 		write("lowered-body", asmFn.Body.String()) // a verified rewrite: the body the verdict judged
 	}
@@ -71,17 +96,49 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 	// over-approximation of the calls, the safe direction for a key).
 	reached := map[string]bool{}
 	var reach func(f *ast.FunctionStatement)
+	var reachName func(name string)
+	reachName = func(name string) {
+		callee, isFunction := functions[name]
+		if !isFunction || reached[name] {
+			return
+		}
+		reached[name] = true
+		reach(callee)
+	}
 	reach = func(f *ast.FunctionStatement) {
-		identifiersUnder(f.Body, func(name string) {
-			callee, isFunction := functions[name]
-			if !isFunction || reached[name] {
-				return
-			}
-			reached[name] = true
-			reach(callee)
-		})
+		identifiersUnder(f.Body, reachName)
 	}
 	reach(fn)
+	if asmFn.Body != nil {
+		// A theorem-licensed rewrite is the verifier's reference body. Its
+		// call graph may differ from the original body even though both texts
+		// are already part of the key.
+		identifiersUnder(asmFn.Body, reachName)
+	}
+	// Candidate construction is untrusted. Include every known Oak function
+	// named by a direct machine call even when the original source body did not
+	// call it: asm.Verify may summarize that callee and make this verdict depend
+	// on its semantic body. Unreachable calls are harmless over-approximation.
+	for _, item := range asmFn.Items {
+		instruction, ok := item.(asm.Instruction)
+		if !ok || (instruction.Mnemonic != "bl" && instruction.Mnemonic != "call") || len(instruction.Operands) == 0 {
+			continue
+		}
+		symbol, ok := instruction.Operands[0].(asm.Symbol)
+		if !ok {
+			continue
+		}
+		callee, resolved := asm.ResolveNativeCallee(asmFn.Arch, symbol.Name, functions)
+		if !resolved {
+			continue
+		}
+		name := callee.Name.Value
+		if reached[name] {
+			continue
+		}
+		reached[name] = true
+		reach(callee)
+	}
 	names := make([]string, 0, len(reached))
 	for name := range reached {
 		names = append(names, name)
@@ -138,40 +195,60 @@ func programDeclarations(root *ast.Program) string {
 }
 
 // cachedVerdict reads a verdict for the key, if one is on disk.
-func cachedVerdict(dir, key string) (asm.Verdict, bool) {
-	if dir == "" {
+func cachedVerdict(dir, key string, functions map[string]*ast.FunctionStatement) (asm.Verdict, bool) {
+	if dir == "" || !validVerdictCacheKey(key) {
 		return asm.Verdict{}, false
 	}
 	data, err := os.ReadFile(filepath.Join(dir, key+".verdict"))
 	if err != nil {
 		return asm.Verdict{}, false
 	}
-	text := string(data)
-	newline := strings.IndexByte(text, '\n')
-	if newline < 0 {
+	var stored decodedVerdict
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&stored); err != nil {
 		return asm.Verdict{}, false
 	}
-	kind, err := strconv.Atoi(text[:newline])
-	if err != nil {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return asm.Verdict{}, false
 	}
-	return asm.Verdict{Kind: asm.VerdictKind(kind), Message: text[newline+1:]}, true
+	if stored.Version == nil || *stored.Version != verdictCacheFormatVersion ||
+		stored.Kind == nil || !validVerdictKind(*stored.Kind) ||
+		stored.Message == nil || stored.Callees == nil ||
+		!validVerdictCallees(*stored.Callees, functions, true) {
+		return asm.Verdict{}, false
+	}
+	return asm.Verdict{
+		Kind:    *stored.Kind,
+		Message: *stored.Message,
+		Callees: append([]string(nil), (*stored.Callees)...),
+	}, true
 }
 
 // storeVerdict writes a verdict under the key (a temporary file renamed
 // into place, so a concurrent build never reads a partial one).
 func storeVerdict(dir, key string, verdict asm.Verdict) {
-	if dir == "" {
+	if dir == "" || !validVerdictCacheKey(key) || !validVerdictKind(verdict.Kind) ||
+		!validVerdictCallees(verdict.Callees, nil, false) {
 		return
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	data, err := json.Marshal(storedVerdict{
+		Version: verdictCacheFormatVersion,
+		Kind:    verdict.Kind,
+		Message: verdict.Message,
+		Callees: append([]string{}, verdict.Callees...),
+	})
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	tmp, err := os.CreateTemp(dir, key+".*.tmp")
 	if err != nil {
 		return
 	}
-	_, writeErr := fmt.Fprintf(tmp, "%d\n%s", int(verdict.Kind), verdict.Message)
+	_, writeErr := tmp.Write(data)
 	closeErr := tmp.Close()
 	if writeErr != nil || closeErr != nil {
 		os.Remove(tmp.Name())
@@ -180,4 +257,32 @@ func storeVerdict(dir, key string, verdict asm.Verdict) {
 	if err := os.Rename(tmp.Name(), filepath.Join(dir, key+".verdict")); err != nil {
 		os.Remove(tmp.Name())
 	}
+}
+
+func validVerdictCacheKey(key string) bool {
+	if len(key) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(key)
+	return err == nil
+}
+
+func validVerdictKind(kind asm.VerdictKind) bool {
+	switch kind {
+	case asm.VerdictTrusted, asm.VerdictProven, asm.VerdictWitnessed, asm.VerdictMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
+func validVerdictCallees(callees []string, functions map[string]*ast.FunctionStatement, requireKnown bool) bool {
+	seen := make(map[string]bool, len(callees))
+	for _, name := range callees {
+		if name == "" || seen[name] || (requireKnown && functions[name] == nil) {
+			return false
+		}
+		seen[name] = true
+	}
+	return true
 }

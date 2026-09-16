@@ -253,10 +253,8 @@ func (tc *TypeChecker) recordRefinedIndexProof(expr *ast.IndexExpression, arr *A
 	if !ok || bound > arr.Length {
 		return
 	}
-	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[tokenKey]bool)
-	}
-	tc.provenIndices[positionKey(expr.Token)] = true
+	name, _ := pathOf(expr.Left)
+	tc.recordCheckedIndexProof(expr.Token, name, arr, "index-in-extent", "checked refinement predicate", "refinement="+prim.Refinement)
 }
 
 // RefinementConstructions counts the constructions the program makes: the
