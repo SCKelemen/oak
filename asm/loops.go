@@ -4498,6 +4498,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return oakMemory, asmMemory
 		}
 		decideSpan := func(premise, oak, machine *term) (bool, bool) {
+			// The memories may read a loop's symbols where the machine
+			// skipped the loop (a hoisted guard around a vector main loop:
+			// the remainder's entry condition reads the main loop's exit
+			// index), so the symbols they mention are pinned where their
+			// loop never ran, as the results' are.
+			mentioned := map[string]bool{}
+			collectParams(oak, mentioned)
+			collectParams(machine, mentioned)
+			for _, k := range topLevel {
+				if pins := notRunPins(k, sigma, mentioned); pins != nil {
+					premise = binaryTerm("and", premise, pins)
+				}
+			}
 			if equal, decided := implies(premise, oak, machine); decided {
 				return equal, true
 			}
