@@ -150,4 +150,13 @@ synchronization proof.
 
 ## Next milestone
 
-The next correctness layer is live stage-2 maintenance. Before a previously active guest context can change translation state, Oak needs explicit TLBI operations and an architecture-verified invalidation protocol. After that, this entry path can become the final transfer step of a reusable vCPU re-entry path and can be exercised in the OS QEMU EL2 smoke test.
+The next correctness increment is live stage-2 maintenance.
+`Oak.AArch64Stage2Maintenance` now proves a conditional per-old-event
+BBM-shaped local ordering skeleton corresponding to CAT around an abstract
+TLBI occurrence. Before
+a previously active guest context can change translation state, Oak still
+needs a concrete source-to-object TLBI operation and architecture-verified
+target/scope, descriptor publication, invalidation completion, and final
+context synchronization. After that, this entry path can become the final
+transfer step of a reusable vCPU re-entry path and can be exercised in the OS
+QEMU EL2 smoke test.

@@ -35,6 +35,7 @@ Lean AArch64 local-order model
         |
 Lean Arm ordered-before projection
         +----> inductive MP / SB / IRIW / DMB / full-DSB proofs
+        +----> conditional per-old-event stage-2 BBM projection
         |
 Pinned CAT sources + cat2lisp AST
         +----> byte identity + structural projection certificate
@@ -56,8 +57,12 @@ These layers make different claims.
 - Lean proves the corresponding machine outcomes from the `bob`, `DSB-ob`,
   `obs`, and irreflexive/transitive `ob` consequences of Arm's official
   A-profile model.
+- Lean separately proves a BBM-shaped local skeleton from DSB ISH-classified
+  occurrences and externally classified descriptor/TLBI events, corresponding
+  to the ordered operands of stage-2 break-before-make.
 - Herd's pinned parser structurally certifies that the exact CAT sources contain
-  those restricted consequences and their route into `ob`.
+  the restricted scalar consequences and their route into `ob`, and separately
+  pins the syntax of the `BBM` relation.
 - Lean generated from the Arm Sail fragment proves Oak's six barrier words
   decode to their intended DMB, DSB, or ISB operation and option. The decoded
   records refine fail-closed into Oak's capability classes; the three DMB
@@ -297,6 +302,23 @@ local-hw-reqs -> hw-reqs -> ob` and
 `irreflexive ob`. Exact AST hashes make any pin/model drift a reviewed change;
 mutation checks show each required edge is fail-closed.
 
+The same certificate now pins CAT's exact `BBM` definition:
+
+```text
+[TLBCacheableTTD]; ca; [TLBUncacheableTTD]; ob; [TLBI];
+(ob & inv-scope); [TLBCacheableTTD]
+```
+
+`Oak.AArch64Stage2Maintenance` gives those seven operands an
+occurrence-indexed Lean projection. It proves that an explicit descriptor
+break, DSB ISH, TLBI, DSB ISH, and explicit descriptor make construct two
+local projected edges corresponding to CAT's `ob` operands for one old
+cacheable TTD event, provided assumed projections of `ca` and `inv-scope` are
+supplied by the architecture refinement. A conditional theorem covers every
+make event selected by an external `requiresBBM` predicate. It does not prove
+that those local edges belong to an actual CAT execution or equate that
+predicate with CAT's complete `TTD-update-needsBBM` classification.
+
 This is mechanical structural provenance for the restricted projection, not a
 complete formal semantics of CAT. The local mapping, projection theorems, CAT
 certificate, and `Oak.SequentialConsistency` remain separate proof layers so
@@ -362,6 +384,11 @@ This chapter does **not** claim:
   tags, decoded barrier-occurrence relation, reads-from, and coherence-after relations;
 - a proof of DSB completion or ISB context synchronization from an Arm
   execution model;
+- a proof that Oak descriptor values receive CAT's cacheable/uncacheable TTD
+  event tags, that a concrete IPA/VMID/regime selects the required TLBI scope,
+  or that descriptor publication and invalidation have completed;
+- a complete live stage-2 remapping protocol or a source-to-object TLBI
+  occurrence proof;
 - exhaustive compiler-version correctness;
 - stochastic execution of weak-memory litmus tests on real AArch64 hardware;
 - cache/coherency/DMA/device-memory correctness;

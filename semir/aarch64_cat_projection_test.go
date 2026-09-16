@@ -36,6 +36,7 @@ var pinnedAArch64ProjectionHashes = map[string]string{
 	"DSB-ob":        "2c2d1203a9426dcbce587d994668dd5996870cd6dae02a9c9ae08937fec08abb",
 	"IFB":           "a58fe8df59d374ab93bbd99a0f8c531cecf0f4a963faba7583715c6291c33e8f",
 	"IFB-ob":        "fb843e22617036291fa424a8b744854f5980d51c21502d12a8ebfe1ef05253f9",
+	"BBM":           "a62ebb7ec51abaaa8cf711db47c5735306743a417163e0cf5561c003aa57bd35",
 	"bob":           "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
 	"lob":           "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
 	"local-hw-reqs": "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
@@ -469,6 +470,28 @@ func containsSequence(node *catLispNode, predicate func([]*catLispNode) bool) bo
 	return false
 }
 
+func catSetFilter(node *catLispNode, name string) bool {
+	set, ok := catUnaryOperator(node, ":toid")
+	return ok && catVariable(set, name)
+}
+
+func isAArch64BBMSequence(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	if !ok || len(operands) != 7 {
+		return false
+	}
+	intersection, ok := catOperator(operands[5], ":inter")
+	return catSetFilter(operands[0], "TLBCacheableTTD") &&
+		catVariable(operands[1], "ca") &&
+		catSetFilter(operands[2], "TLBUncacheableTTD") &&
+		catVariable(operands[3], "ob") &&
+		catSetFilter(operands[4], "TLBI") &&
+		ok && len(intersection) == 2 &&
+		catVariable(intersection[0], "ob") &&
+		catVariable(intersection[1], "inv-scope") &&
+		catSetFilter(operands[6], "TLBCacheableTTD")
+}
+
 type aarch64CATProjection struct {
 	definitions map[string]*catLispNode
 	external    *catLispNode
@@ -521,6 +544,9 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	}
 	if !directUnionContainsVariable(definition["IFB"], "ISB") {
 		return errors.New("IFB does not directly contain ISB")
+	}
+	if !isAArch64BBMSequence(definition["BBM"]) {
+		return errors.New("BBM is not the exact cacheable-ca-uncacheable-ob-TLBI-(ob & inv-scope)-cacheable sequence")
 	}
 	bobArms, ok := catOperator(definition["bob"], ":union")
 	if !ok {
@@ -703,6 +729,36 @@ func replaceFirstCATAtom(node *catLispNode, from, to string) bool {
 	return false
 }
 
+func replaceNthCATAtom(node *catLispNode, from, to string, occurrence int) bool {
+	if occurrence <= 0 {
+		return false
+	}
+	seen := 0
+	var replace func(*catLispNode) bool
+	replace = func(current *catLispNode) bool {
+		if current == nil {
+			return false
+		}
+		if !current.isList() {
+			if current.atom == from {
+				seen++
+				if seen == occurrence {
+					current.atom = to
+					return true
+				}
+			}
+			return false
+		}
+		for _, child := range current.list {
+			if replace(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return replace(node)
+}
+
 func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) error {
 	mutations := []struct{ definition, from string }{
 		{"dmb.full", "DMB.ISH"},
@@ -715,6 +771,12 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		{"DSB-ob", "dsb.full"},
 		{"IFB", "ISB"},
 		{"IFB-ob", "ctrl"},
+		{"BBM", "TLBCacheableTTD"},
+		{"BBM", "TLBUncacheableTTD"},
+		{"BBM", "ca"},
+		{"BBM", "TLBI"},
+		{"BBM", "ob"},
+		{"BBM", "inv-scope"},
 		{"bob", "dmb.full"},
 		{"bob", "dmb.ld"},
 		{"bob", "NoRet"},
@@ -740,6 +802,24 @@ func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) err
 		}
 		if verifyAArch64ProjectionStructure(copyProjection) == nil {
 			return fmt.Errorf("projection checker accepted %s without %s", mutation.definition, mutation.from)
+		}
+	}
+	for _, mutation := range []struct {
+		atom       string
+		occurrence int
+	}{
+		{"TLBCacheableTTD", 2},
+		{"ob", 2},
+	} {
+		copyProjection := &aarch64CATProjection{definitions: make(map[string]*catLispNode), external: projection.external.clone()}
+		for name, definition := range projection.definitions {
+			copyProjection.definitions[name] = definition.clone()
+		}
+		if !replaceNthCATAtom(copyProjection.definitions["BBM"], mutation.atom, mutation.atom+".removed", mutation.occurrence) {
+			return fmt.Errorf("mutation fixture cannot find BBM %s occurrence %d", mutation.atom, mutation.occurrence)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted BBM without %s occurrence %d", mutation.atom, mutation.occurrence)
 		}
 	}
 	copyProjection := &aarch64CATProjection{definitions: projection.definitions, external: projection.external.clone()}

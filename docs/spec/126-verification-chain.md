@@ -143,6 +143,18 @@ mappings against the pinned official Sail source. Its
 separate unit-returning stubs, so this new dispatch proof deliberately does not
 discharge the external state-semantic obligation.
 
+Live stage-2 maintenance has a separate restricted proof layer.
+`Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
+old descriptor event and proves that DSB ISH-classified occurrences around an
+abstract TLBI construct two local projected edges corresponding to its
+ordered-before operands. The CAT AST gate pins the exact seven-operand `BBM`
+definition and separately pins `DSB-ob`/`ob`; an execution-refinement theorem
+between them remains open. Descriptor event classification, coherence-after,
+invalidation scope, concrete IPA/VMID target selection, completion, and the
+source-to-object TLBI occurrence are explicit remaining obligations. Sail's
+coarse single-model-TLB reset implementation, which ignores architectural
+target granularity, is not used to discharge them.
+
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s
 per-register equality/reconciliation decision, and `meetFact_sound` proves
