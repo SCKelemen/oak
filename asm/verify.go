@@ -1878,6 +1878,9 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	exec.floatResult = floatResult
 	exec.resultChunk = chunk
 	exec.resultArea = resultArea
+	if resultArea != nil {
+		_, exec.resultChunks, _ = resultComposite(fn, sig)
+	}
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
 		if floatResult != 0 {
@@ -1930,12 +1933,18 @@ type pathExecutor struct {
 	// floatResult is the width of an f32/f64 result (the low lane of v0),
 	// zero for the other result kinds.
 	floatResult int
-	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
-	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
-	resultArea  []compositeLeaf   // a record result returned through memory (x8): its leaves; nil otherwise
-	spans       map[string]int64  // span parameter -> element size in bytes
-	declared    map[string]int    // parameter -> declared width
-	globals     map[string]Global // the globals the body addresses (fn.Globals)
+	resultHalf  int             // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
+	resultChunk int             // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
+	resultArea  []compositeLeaf // a record result returned through memory (x8): its leaves; nil otherwise
+	// resultChunks: the words of the result area. One run delivers them
+	// all: the ret assembles every word (resultAreaChunks), each path end
+	// carries the words past the first, and runAll folds each word along
+	// the same fork tree into moreResults.
+	resultChunks int
+	moreResults  []*term           // the area's words past the first, folded over the paths (runAll)
+	spans        map[string]int64  // span parameter -> element size in bytes
+	declared     map[string]int    // parameter -> declared width
+	globals      map[string]Global // the globals the body addresses (fn.Globals)
 	// recordSpans: span parameters whose elements are records, by name —
 	// the element size and the record's scalar leaves (relative to the
 	// element), so a field read through an element address is the leaf's
@@ -2565,32 +2574,38 @@ func frameAddressTerm(addr int64) *term { return paramTerm(fmt.Sprintf("sp#%d", 
 // argument, so the area's slots never meet the function's own.
 const resultAreaBase = int64(1) << 40
 
-// resultAreaChunk assembles chunk resultChunk of a record result returned
+// resultAreaChunks assembles every word of a record result returned
 // through memory from the slots the body stored in the x8 area: every
-// leaf in the chunk read at its offset and width, placed at its bit
-// position; a leaf the body never stored leaves the chunk undefined.
-func (x *pathExecutor) resultAreaChunk(state *symbolicState) (*term, string, bool) {
+// leaf in a word read at its offset and width, placed at its bit
+// position; a leaf the body never stored leaves the word undefined. One
+// run of the paths delivers all the words (a 256-byte Bits value is
+// thirty-two), where a run per word ran the whole pipeline that many
+// times deciding nothing past the first it had not decided already.
+func (x *pathExecutor) resultAreaChunks(state *symbolicState) ([]*term, string, bool) {
 	var missing string
-	chunk := chunkTerm(x.resultArea, int64(x.resultChunk), func(name string, width int) *term {
-		for _, leaf := range x.resultArea {
-			if leaf.name != name {
-				continue
+	chunks := make([]*term, x.resultChunks)
+	for k := range chunks {
+		chunks[k] = chunkTerm(x.resultArea, int64(k), func(name string, width int) *term {
+			for _, leaf := range x.resultArea {
+				if leaf.name != name {
+					continue
+				}
+				size := (int64(leaf.width) + 7) / 8
+				value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
+				if !ok {
+					missing = name
+					return constTerm(0, width)
+				}
+				return truncate(value, width)
 			}
-			size := (int64(leaf.width) + 7) / 8
-			value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
-			if !ok {
-				missing = name
-				return constTerm(0, width)
-			}
-			return truncate(value, width)
-		}
-		missing = name
-		return constTerm(0, width)
-	})
+			missing = name
+			return constTerm(0, width)
+		})
+	}
 	if missing != "" {
 		return nil, fmt.Sprintf("the result field %s was never stored to the result area", missing), false
 	}
-	return chunk, "", true
+	return chunks, "", true
 }
 
 // registerFrameAccess executes a load or store whose base register holds a
@@ -2954,11 +2969,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if x.resultArea != nil {
 				// The chunk of the result area the caller reads: each leaf in
 				// it from the slot the body stored, at its offset and width.
-				chunk, reason, okArea := x.resultAreaChunk(state)
+				chunks, reason, okArea := x.resultAreaChunks(state)
 				if !okArea {
 					return nil, nil, atInstruction(reason, instr), false
 				}
-				return x.end(chunk, state)
+				return x.endWords(chunks, state)
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
@@ -3211,6 +3226,7 @@ func atInstruction(reason string, instr Instruction) string {
 // with the guard's).
 type pathEnd struct {
 	result  *term
+	more    []*term // a record result through memory: its words past the first
 	effects *pathEffects
 	cond    *term
 	path    *pathNode
@@ -3220,6 +3236,21 @@ type pathEnd struct {
 func (x *pathExecutor) end(result *term, state *symbolicState) (*term, *pathEffects, string, bool) {
 	x.ends = append(x.ends, pathEnd{result: result, effects: state.effects(), path: state.path})
 	return nil, nil, "", true
+}
+
+// endWords records a path that returned the words of a record result
+// through memory: the first is the path's result, the rest ride along.
+func (x *pathExecutor) endWords(words []*term, state *symbolicState) (*term, *pathEffects, string, bool) {
+	x.ends = append(x.ends, pathEnd{result: words[0], more: words[1:], effects: state.effects(), path: state.path})
+	return nil, nil, "", true
+}
+
+// word is the end's word k of a record result: the result for the first.
+func (e *pathEnd) word(k int) *term {
+	if k == 0 {
+		return e.result
+	}
+	return e.more[k-1]
 }
 
 // conjoin is the conjunction of two 1-bit conditions, either nil for true.
@@ -3269,9 +3300,18 @@ func (x *pathExecutor) runAll(state *symbolicState) (*term, *pathEffects, string
 			}
 		}
 	}
-	result, effects := x.foldTree(all, chains, 0, nil, nil)
+	result, effects := x.foldTree(all, chains, 0, 0, nil, nil)
 	if result == nil {
 		return trapPath, &pathEffects{trap: trap}, "", true
+	}
+	if x.resultChunks > 1 {
+		// The other words of a record result through memory, each folded
+		// along the same fork tree (a trapping end has no words; the fold
+		// skips it as it skips the end's first word).
+		x.moreResults = make([]*term, x.resultChunks-1)
+		for k := 1; k < x.resultChunks; k++ {
+			x.moreResults[k-1], _ = x.foldTree(all, chains, 0, k, nil, nil)
+		}
 	}
 	out := pathEffects{trap: trap}
 	if effects != nil {
@@ -3287,8 +3327,9 @@ func (x *pathExecutor) runAll(state *symbolicState) (*term, *pathEffects, string
 // both sides of the fork share: the fallback for a side that parked there
 // instead of ending. A side with no value (it trapped, or every path in
 // it did) yields the other side's, as the fork did when its paths ran to
-// their ends.
-func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, fallback *term, fallbackEffects *pathEffects) (*term, *pathEffects) {
+// their ends. word picks the word of a record result through memory
+// (0 for every other result); the effects fold with the first word only.
+func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, word int, fallback *term, fallbackEffects *pathEffects) (*term, *pathEffects) {
 	var here *pathEnd
 	var fork *forkMark
 	var trueEnds, falseEnds, joinEnds []int
@@ -3314,21 +3355,24 @@ func (x *pathExecutor) foldTree(ends []int, chains [][]*pathNode, level int, fal
 		}
 	}
 	if here != nil {
-		return here.result, here.effects
+		return here.word(word), here.effects
 	}
 	if len(joinEnds) > 0 {
-		fallback, fallbackEffects = x.foldTree(joinEnds, chains, level+1, fallback, fallbackEffects)
+		fallback, fallbackEffects = x.foldTree(joinEnds, chains, level+1, word, fallback, fallbackEffects)
 	}
 	if fork == nil {
 		return fallback, fallbackEffects
 	}
-	taken, takenEffects := x.foldTree(trueEnds, chains, level+1, fallback, fallbackEffects)
-	fallThrough, fallEffects := x.foldTree(falseEnds, chains, level+1, fallback, fallbackEffects)
+	taken, takenEffects := x.foldTree(trueEnds, chains, level+1, word, fallback, fallbackEffects)
+	fallThrough, fallEffects := x.foldTree(falseEnds, chains, level+1, word, fallback, fallbackEffects)
 	switch {
 	case taken == nil:
 		return fallThrough, fallEffects
 	case fallThrough == nil:
 		return taken, takenEffects
+	}
+	if word > 0 {
+		return iteTerm(fork.cond, taken, fallThrough), nil
 	}
 	return iteTerm(fork.cond, taken, fallThrough), x.mergeEffects(fork.cond, takenEffects, fallEffects)
 }
@@ -8096,12 +8140,19 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
 	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks >= 2 {
-		// Each chunk of the record — two registers, or the words of the
-		// result area beyond them — verified in its own run.
 		first := verifyChunk(fn, sig, oakBody, 0)
 		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
 			return first
 		}
+		if chunks > 2 {
+			// Returned through memory: the one run delivered and decided
+			// every word (verifyChunk, exec.resultChunks).
+			if first.Kind == VerdictProven {
+				first.Message += fmt.Sprintf(" (all %d result chunks)", chunks)
+			}
+			return first
+		}
+		// Two register chunks (x0 then x1): each verified in its own run.
 		var second Verdict
 		for k := 1; k < chunks; k++ {
 			second = verifyChunk(fn, sig, oakBody, k)
@@ -8112,10 +8163,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		if first.Kind != VerdictProven {
 			return first
 		}
-		if chunks == 2 {
-			return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
-		}
-		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("%s (all %d result chunks)", first.Message, chunks)}
+		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
 	}
 	return verifyChunk(fn, sig, oakBody, 0)
 }
@@ -8251,19 +8299,34 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return decideEffects(fn, lowering, exec, nil)
 	}
-	oakTerm, width, reason, ok := lowering.resultTerm(fn, sig, oakBody)
+	// A record result through memory: the run delivered every word
+	// (exec.moreResults), the lowering packs every word from one value,
+	// and each word is decided in turn under the one execution, one
+	// witness pass and one coupling.
+	words := 1
+	if exec.resultArea != nil && exec.resultChunks > 1 {
+		words = exec.resultChunks
+	}
+	oakTerms, width, reason, ok := lowering.resultTerms(fn, sig, oakBody, words)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	asmTerm = maskResult(fn, sig, asmTerm, chunk)
+	asmTerms := []*term{maskResult(fn, sig, asmTerm, chunk)}
+	if words > 1 {
+		if len(exec.moreResults) != words-1 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the run delivered %d of the result's %d words) — trusted per docs/spec/94-assembler.md §5", fn.Name, len(exec.moreResults)+1, words)}
+		}
+		for k, more := range exec.moreResults {
+			asmTerms = append(asmTerms, maskResult(fn, sig, more, k+1))
+		}
+	}
 	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
 		// A float result is decided up to its NaN payload (floatCanonicalNaN).
-		asmTerm = floatCanonicalNaN(truncate(asmTerm, width), width)
-		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
+		asmTerms[0] = floatCanonicalNaN(truncate(asmTerms[0], width), width)
+		oakTerms[0] = floatCanonicalNaN(truncate(oakTerms[0], width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-
-		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width)
 		verdict.Callees = exec.summarized
 		return verdict
 	}
@@ -8274,10 +8337,16 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
-	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	verdict := decideEqual(fn, lowering, asmTerms[0], oakTerms[0], width, note)
 	verdict.Callees = exec.summarized
 	if verdict.Kind != VerdictProven {
 		return verdict
+	}
+	for k := 1; k < words; k++ {
+		if other := decideEqual(fn, lowering, asmTerms[k], oakTerms[k], width, note); other.Kind != VerdictProven {
+			other.Callees = exec.summarized
+			return other
+		}
 	}
 	effects := decideEffects(fn, lowering, exec, &verdict)
 	effects.Callees = exec.summarized
@@ -9464,6 +9533,35 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 	width, _, _ := contractBits(sig.ReturnType)
 	t, reason, ok := lo.lower(oakBody, width)
 	return t, width, reason, ok
+}
+
+// resultTerms lowers the Oak body once and packs every word of a record
+// result returned through memory (words of them, executeBodyChunk's
+// resultChunks): the executor's one run delivers as many. For a scalar or
+// a register-chunk record it is resultTerm's one term.
+func (lo *oakLowering) resultTerms(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, words int) ([]*term, int, string, bool) {
+	leaves, _, isComposite := resultComposite(fn, sig)
+	if !isComposite || words <= 1 {
+		t, width, reason, ok := lo.resultTerm(fn, sig, oakBody)
+		return []*term{t}, width, reason, ok
+	}
+	typ, ok := lo.oakTypeOf(sig.ReturnType)
+	if !ok || typ.kind == oakScalar {
+		return nil, 0, "a result whose type has no model", false
+	}
+	value, reason, ok := lo.aggregateValue(oakBody, typ)
+	if !ok {
+		return nil, 0, reason, false
+	}
+	out := make([]*term, words)
+	for k := range out {
+		packed, ok := packAggregateChunk(value, leaves, int64(k))
+		if !ok {
+			return nil, 0, "a record result with a leaf the layout lacks", false
+		}
+		out[k] = packed
+	}
+	return out, 64, "", true
 }
 
 // maskResult hides the padding bytes of a record result's chunk (the Oak

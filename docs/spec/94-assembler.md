@@ -5723,8 +5723,9 @@ memory"). The executor now binds x8 to a frame address of the area's own
 the body's stores through x8 tile it as they tile the frame — and the
 `ret` delivers each word of the record assembled from the area's slots,
 leaf by leaf; a leaf the body never stored leaves the body trusted with
-its name. Verify runs one chunk per word, as it runs two for a two-chunk
-record, and the Oak side packs the same chunk from its aggregate
+its name. Verify ran one chunk per word at first, as it runs two for a
+two-chunk record (since 2026-09-16 one run delivers every word, below),
+and the Oak side packs the same chunk from its aggregate
 (`packAggregateChunk`). Seven of the twenty-eight prove, eight are
 evidence, and thirteen stop at a callee returning such a record — the
 call summary does not carry the area yet. Alongside, the decision
@@ -5961,9 +5962,31 @@ coupling keep the whole diagram. Prover build per body, measured at
 three failures' worth:
 proven 536, evidence 205, trusted 216, no disagreement — the `Bits`
 family moved from trusted to evidence, and ten proofs at the budget's
-edge came back at four. The one execution and one coupling for all of a
-record's words, and `protocol_line_done`'s remaining minutes, are the
-next increments.
+edge came back at four. `protocol_line_done`'s remaining minutes are the
+next increment.
+
+**One run for every word of a record (2026-09-16).** A record result
+through memory ran the whole pipeline once per word: `Verify` called
+`verifyChunk` for each of a `Bits` value's thirty-two, and each call
+executed the paths, lowered the Oak body, ran the witness pass and
+searched the coupling again, deciding past the first word nothing it had
+not decided already. Now the `ret` assembles every word of the result
+area (`resultAreaChunks`), a path end carries the words past the first,
+`runAll` folds each word along the same fork tree (`foldTree` takes the
+word; the effects fold with the first), and the executor leaves them in
+`moreResults`. The Oak side lowers its aggregate once and packs every
+word (`resultTerms`), and `verifyChunk` decides the words in turn under
+the one execution, one witness pass (every word of a witness run is
+compared) and one coupling (`verifyLoops` takes the words; the exit-read
+symbols, the mentions, and the final implication range over them). Two
+register chunks still run twice (x0 then x1: the result register
+differs). The prover's `add_bits` shape — a wrapper returning a callee's
+256-byte field, the callee filling it in a loop — proves in 0.4 s where
+it took 7.2 s (`TestE2ENativeRecordWords`). The prover build itself has
+not typechecked since the lattice-assignability integration (a04754b8:
+`match expression has branches with incompatible runtime types (semantic
+join () | u32 ...)` in `prove/solver/syntax.oak` and `tree.oak`), so the
+tally waits on that.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.

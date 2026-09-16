@@ -1518,9 +1518,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 }
 
 // exitReadSymbols reports, for the loop symbols of a side's events, the
-// ones some other event's terms or the result term read: the variables
-// whose value at the loop's exit flows on.
-func exitReadSymbols(events []*loopEvent, result *term) map[string]bool {
+// ones some other event's terms or the result terms (a record result's
+// words, counted as one reader) read: the variables whose value at the
+// loop's exit flows on.
+func exitReadSymbols(events []*loopEvent, results ...*term) map[string]bool {
 	count := map[string]int{}
 	own := make([]map[string]bool, len(events))
 	for k, ev := range events {
@@ -1545,9 +1546,11 @@ func exitReadSymbols(events []*loopEvent, result *term) map[string]bool {
 			count[name]++
 		}
 	}
-	if result != nil {
+	if len(results) > 0 {
 		mentioned := map[string]bool{}
-		collectParams(result, mentioned)
+		for _, result := range results {
+			collectParams(result, mentioned)
+		}
 		for name := range mentioned {
 			count[name]++
 		}
@@ -3258,7 +3261,22 @@ func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 }
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
-func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerm, oakTerm *term, width int) Verdict {
+func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
+	// A scalar result is one term a side; a record result through memory
+	// is its words (verifyChunk): one coupling proves them all. asmTerm
+	// stands for "there is a result".
+	var asmTerm *term
+	if len(asmTerms) > 0 {
+		asmTerm = asmTerms[0]
+	}
+	// wordOf is the record chunk that word k of the result is: the run's
+	// chunk for a one-term result (a register chunk verified on its own).
+	wordOf := func(k int) int {
+		if len(asmTerms) == 1 {
+			return exec.resultChunk
+		}
+		return k
+	}
 	trusted := func(reason string) Verdict {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -3326,11 +3344,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk
-		var oakValue *term
+		var oakValues []*term
 		var reasonO string
 		var okO bool
 		if asmTerm != nil {
-			oakValue, _, reasonO, okO = concrete.resultTerm(fn, sig, oakBody)
+			oakValues, _, reasonO, okO = concrete.resultTerms(fn, sig, oakBody, len(asmTerms))
 		} else {
 			// A unit function: the concrete run's memories are the comparison.
 			reasonO, okO = concrete.lowerUnitBody(oakBody)
@@ -3357,9 +3375,18 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			continue
 		}
 		if asmTerm != nil {
-			got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
-			if got != want {
-				return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
+			asmValues := append([]*term{asmValue}, asmRun.moreResults...)
+			if len(asmValues) != len(asmTerms) || len(oakValues) != len(asmTerms) {
+				return trusted(fmt.Sprintf("a witness run delivered %d of the result's %d words", len(asmValues), len(asmTerms)))
+			}
+			for k := range asmTerms {
+				got, want := truncate(maskResult(fn, sig, asmValues[k], wordOf(k)), width).eval(env), oakValues[k].eval(env)
+				if got != want {
+					if len(asmTerms) > 1 {
+						return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents) in word %d of the result: asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), k, got, want)}
+					}
+					return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
+				}
 			}
 		}
 		// The memories the concrete runs leave: every store's index is a
@@ -3441,8 +3468,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// after the loop; an accumulator's spill slot, reloaded past the loop,
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
-	exitReadAsm := exitReadSymbols(asmLoops, asmTerm)
-	exitReadOak := exitReadSymbols(oakLoops, oakTerm)
+	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
+	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
 	// Slots whose one-iteration value mentions fewer of the event's own
 	// variables come first: their register's value after one iteration then
 	// mentions only coupled symbols as soon as they are paired, so a wrong
@@ -4076,7 +4103,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// a mismatch — the states may be unreachable — only the concrete layer
 	// refutes.
 	mentioned := map[string]bool{}
-	collectParams(asmTerm, mentioned)
+	for _, t := range asmTerms {
+		collectParams(t, mentioned)
+	}
 	for name := range mentioned {
 		var k int
 		var reg string
@@ -4101,8 +4130,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// results mention are pinned where their loop never ran.
 	if asmTerm != nil {
 		resultMentions := map[string]bool{}
-		collectParams(oakTerm, resultMentions)
-		collectParams(substitute(truncate(asmTerm, width), sigma), resultMentions)
+		for k := range asmTerms {
+			collectParams(oakTerms[k], resultMentions)
+			collectParams(substitute(truncate(asmTerms[k], width), sigma), resultMentions)
+		}
 		for _, k := range topLevel {
 			if pins := notRunPins(k, sigma, resultMentions); pins != nil {
 				premise = binaryTerm("and", premise, pins)
@@ -4112,11 +4143,16 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// The loops whose markers the memories after the loops may carry
 	// conditionally on the machine side (spanEqualSplitting).
 	topSplits := splitsFor(topLevel, oakLoops, asmLoops, sigma)
-	if asmTerm != nil {
-		equal, decided := implies(premise, oakTerm, substitute(truncate(asmTerm, width), sigma))
+	for k := range asmTerms {
+		// Every word of the result (one for a scalar) under the one
+		// coupling and premise.
+		equal, decided := implies(premise, oakTerms[k], substitute(truncate(asmTerms[k], width), sigma))
 		if !decided || !equal {
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
+				fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerms[k], substitute(truncate(asmTerms[k], width), sigma), premise)
+			}
+			if len(asmTerms) > 1 {
+				return evidence(fmt.Sprintf("word %d of the result after the loops was not proven equal", k))
 			}
 			return evidence("the results after the loops were not proven equal")
 		}
