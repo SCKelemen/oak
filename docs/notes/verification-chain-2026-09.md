@@ -158,8 +158,12 @@ or the verifier, not in the program:
    nest of `hi - lo + 1` sums); and the six branch theorems were false as
    stated — the model encodes a branch only for an even offset and errors
    otherwise, so they carry the evenness as a hypothesis. The encoder is
-   now proved against the ISA's `encdec` for the decided RV64 mnemonics;
-   AArch64's remains tested.
+   now proved against the ISA's `encdec` for the decided RV64 mnemonics.
+   **First ordinary AArch64 class (2026-09-16):** operandless `RET X30` has
+   exact fixed-bit/Rn encoding theorems and a generated Sail projection to the
+   source-audited ordinary RET/`BranchType_RET` decoder route. The remaining
+   AArch64 instruction forms remain generated/audited rather than universally
+   decoder-proved.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the

@@ -963,6 +963,16 @@ This proves exact static decode and selected inputs only: it does not execute
 SPSR legality, give `SynchronizeContext` a formal effect, or prove the branch
 occurs or is observed.
 
+The ordinary epilogue `RET` has an equally narrow encoding/decoder seam.
+`Oak.AArch64ReturnEncoding` proves the generated `RET_64R_branch_reg` fixed
+bits, the `Rn[9:5]` round-trip, and the operandless default `RET X30` word
+`0xd65f03c0`. The generated Sail projection accepts that word as ordinary
+non-PAC RET with `Rn = 30` and `BranchType_RET`, and rejects a corrupted fixed
+bit. Go gates pin the generated encoding-table row, encoder bytes, official
+decode class and dispatch, and the local projection. This does not prove the
+value or provenance of X30, frame/ABI restoration, target alignment or mapping, PAC,
+dynamic `BranchTo`, linking, or an observed return.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization

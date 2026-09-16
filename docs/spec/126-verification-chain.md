@@ -360,6 +360,18 @@ target, and selected inputs—not dynamic occurrence, `__PostDecode`, global
 trap freedom, SPSR validity, synchronization semantics, architectural state
 transition, branch success, or observation.
 
+The ordinary operandless `RET` emitted at every returning AArch64 epilogue has
+a separate static encoding seam. `Oak.AArch64ReturnEncoding` pins the generated
+`RET_64R_branch_reg` row, proves that `Rn[9:5]` round-trips while all fixed bits
+are preserved, and proves the default `X30` word is `0xd65f03c0`. Generated
+Sail Lean accepts that word as the ordinary non-PAC `RET` class with `Rn = 30`
+and `BranchType_RET`; a corrupted fixed bit is rejected. Go drift gates pin the
+generated encoding-table row/default, encoder bytes, official decoder clause
+and dispatch, and the local Sail projection. This proves static
+encode/decode/dispatch identity only—not X30 provenance, ABI/frame restoration,
+target validity or mapping,
+PAC behavior, `BranchTo` execution, object/link correctness, or observation.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
@@ -658,8 +670,11 @@ one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
 the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
 the production render retains `fcvt64` over the exact width-32 operand term.
 The separate `lowerF64_eval` family proves ordered `Oak.FloatOps.fma64` over
-binary64 parameters, already-rounded bit literals, and straight-line local
-substitution. It does not yet compose with the widening family.
+binary64 parameters, already-rounded bit literals, straight-line local
+substitution, and leaves from the proved widening family. Thus
+`fma(f64(a + b), x, y)` retains and composes the exact `fadd32`, `fcvt64`, and
+ordered `fma64` nodes. The widened leaf starts in its own initial binary32
+parameter scope; this is not arbitrary mixed-width local sequencing.
 This is deliberately still a first slice: decimal parsing into the literal
 bits, all other conversions, spans, effectful conditions, nested or effectful
 statement arms, borrowing/recursive/effectful calls, other `f64` arithmetic,

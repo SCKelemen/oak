@@ -269,9 +269,11 @@ memory, effectful control flow, borrowing/recursive/effectful calls, other
 score above remain. Ordered pure `f32` calls are included by the existing
 call-environment refinement.
 The separate `lowerF64_eval` family covers ordered binary64 FMA over
-parameters, already-rounded literal bits, and pure local substitution through
-the shared `Oak.FloatOps.fma64` carrier. It does not compose with widening or
-prove the Go evaluator, IEEE rounding/NaN behavior, or either ISA instruction.
+parameters, already-rounded literal bits, pure local substitution, and leaves
+from the widening family through the shared `Oak.FloatOps.fma64` carrier. The
+production pin `fma(f64(a + b), x, y)` retains the `fadd32`/`fcvt64`/`fma64`
+order. It does not prove arbitrary mixed-width sequencing, the Go evaluator,
+IEEE rounding/NaN behavior, or either ISA instruction.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
 rounding or NaN-payload behavior. The FMA case similarly relates both sides to
@@ -458,6 +460,12 @@ of proof:
 - tables are generated from Arm's machine-readable ISA material;
 - operand and decode coverage are audited; and
 - emitted encodings are checked against `llvm-mc`.
+
+The ordinary epilogue `RET X30` is now one exact closed class within that larger
+surface: its generated encoding-table row and default operand are pinned, its
+fixed bits and Rn round-trip are proved, and generated Sail Lean establishes
+the exact ordinary RET/`BranchType_RET` decode for `0xd65f03c0`. This is static instruction
+identity, not a proof of LR provenance, target validity, or dynamic return.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable

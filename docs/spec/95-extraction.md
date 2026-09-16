@@ -214,11 +214,14 @@ binary32 value. This is operation identity and width/operand composition, not
 an independent proof of IEEE conversion, NaN-payload mapping, the production
 evaluator, or either ISA instruction.
 Separately, `lowerF64_eval` closes ordered binary64 FMA over parameters,
-already-rounded `UInt64` literal bits, and straight-line local substitution;
-both readings use `Oak.FloatOps.fma64` in the same three-operand order. It does
-not compose with the widening wrapper or cover other binary64 arithmetic,
-control flow, calls, memory, the Go evaluator, IEEE implementation details, or
-ISA semantics.
+already-rounded `UInt64` literal bits, straight-line local substitution, and
+leaves from the widening family; both readings retain the same ordered
+add → widen → FMA composition: verifier `fadd32`/`fcvt64`, extraction
+`Float32` addition/`.toFloat`, then `Oak.FloatOps.fma64`.
+The widened leaf reads the function's initial binary32 parameter scope, not an
+arbitrary mixed-width local scope. Other binary64 arithmetic, control flow,
+calls, memory, the Go evaluator, IEEE implementation details, and ISA semantics
+remain outside this theorem.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
