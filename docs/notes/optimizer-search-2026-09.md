@@ -865,14 +865,14 @@ Projection rejects missing, duplicated, stale, forged, or mismatched authority
 and treats every global region as live on normal return. The typed artifact DAG
 runs projection, MemorySSA, liveness, combined evidence, and DSE after LICM.
 Changed post-DSE CFGs can enter native search on AArch64 and RV64 when the
-memory vocabulary is one straight-line, call-free, spill-free block of exact
+memory vocabulary is acyclic, call-free, spill-free control flow over exact
 scalar package-global reads and whole nonvolatile writes. Selection
 independently verifies rebuilt MemorySSA and matches every opaque region
 through typechecker authority to an exact global descriptor already authorized
 by the assembler template. Width- and signedness-correct code covers Bool and
 8/16/32/64-bit integers; seam admission and semantic translation validation
 still decide whether the body may ship. Aggregate/partial regions, memory
-control flow and spilling, load GVN, and interprocedural call Mod/Ref summaries
+loops and spilling, load GVN, and interprocedural call Mod/Ref summaries
 remain open.
 
 As the projection broadens, region memory SSA should power:
