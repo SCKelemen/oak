@@ -112,9 +112,6 @@ func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegist
 	if coloringErr == nil {
 		colors, liveOut = coloring.Colors, coloring.LiveOut
 	} else {
-		if memory != nil {
-			return nil, fmt.Errorf("machine: OptIR RV64 region memory refuses register spills: %w", coloringErr)
-		}
 		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
 			return nil, err
 		}
@@ -125,7 +122,7 @@ func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegist
 		if err := optir.VerifyRegisterPlan(cfg, spillRegisters, planFixed, plan); err != nil {
 			return nil, fmt.Errorf("machine: OptIR RV64 spill-plan evidence: %w", err)
 		}
-		if err := validateOptIRRV64SpillCFG(cfg, plan); err != nil {
+		if err := validateOptIRRV64SpillCFGSelection(cfg, plan, memory); err != nil {
 			return nil, err
 		}
 		rematerializations, err = optIRRV64Rematerializations(cfg, spillRegisters, planFixed, plan)
@@ -352,11 +349,26 @@ func (selector *optIRRV64Selector) regionLoad(operation optir.Operation, site op
 	if line <= 0 {
 		line = result.Source.Line
 	}
-	destination := selector.register(result.ID)
+	location, err := selector.valueLocation(result.ID)
+	if err != nil {
+		return err
+	}
+	if location.rematerialized != 0 {
+		return fmt.Errorf("region load result %d is unexpectedly rematerialized", result.ID)
+	}
+	destination := location.register
+	if location.slot != 0 {
+		destination = optIRRV64SpillScratchA
+	}
 	selector.emit("la", line, optIRRV64Register(optIRRV64CopyScratch), asm.Symbol{Name: binding.Symbol})
 	selector.emit(mnemonic, line, optIRRV64Register(destination), asm.Memory{Base: optIRRV64Register(optIRRV64CopyScratch)})
 	selector.written[optIRRV64CopyScratch] = true
 	selector.written[destination] = true
+	if location.slot != 0 {
+		if err := selector.storeSpillSlot(location.slot, destination, result.Type, line); err != nil {
+			return err
+		}
+	}
 	selector.globals[binding.Symbol] = binding.Global
 	return nil
 }

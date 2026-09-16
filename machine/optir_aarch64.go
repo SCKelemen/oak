@@ -100,9 +100,6 @@ func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegis
 	if err != nil {
 		return nil, fmt.Errorf("machine: OptIR AArch64 allocation: %w", err)
 	}
-	if memory != nil && len(allocation.spills) != 0 {
-		return nil, fmt.Errorf("machine: OptIR AArch64 region memory refuses register spills")
-	}
 	hasCalls, err := validateOptIRArm64Calls(cfg, allocation.liveOut, template.Callees)
 	if err != nil {
 		return nil, err

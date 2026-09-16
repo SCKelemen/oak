@@ -21,10 +21,10 @@ type optIRRegionMemorySelection struct {
 }
 
 // validateOptIRRegionMemory closes the first memory-emission subset before a
-// target sees it. It deliberately admits only acyclic, call-free, spill-free
-// control flow over exact scalar package-cell reads and whole, nonvolatile
-// replacements. The independent MemorySSA verifier binds operation sites and
-// merge versions to the exact CFG revision and checked region metadata.
+// target sees it. It deliberately admits only acyclic, call-free control flow
+// over exact scalar package-cell reads and whole, nonvolatile replacements.
+// The independent MemorySSA verifier binds operation sites and merge versions
+// to the exact CFG revision and checked region metadata.
 func validateOptIRRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,

@@ -101,11 +101,19 @@ func composeOptIRRV64Frame(spillFrame int64, hasCalls bool) (frame, raOffset int
 }
 
 func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
+	return validateOptIRRV64SpillCFGSelection(cfg, plan, nil)
+}
+
+func validateOptIRRV64SpillCFGSelection(cfg optir.CFG, plan optir.RegisterPlan, memory *optIRRegionMemorySelection) error {
 	if len(plan.Spills) == 0 {
 		return nil
 	}
 	for _, block := range cfg.Blocks {
-		for _, operation := range block.Operations {
+		for operationIndex, operation := range block.Operations {
+			site := optir.OperationSite{Block: block.ID, Index: operationIndex}
+			if optIRRV64AdmitsSpillEffect(memory, operation.Code, site) {
+				continue
+			}
 			if operation.Code != optir.OpCall && len(operation.Effects) != 0 {
 				return fmt.Errorf("machine: OptIR RV64 spill materialization refuses non-call effects")
 			}
@@ -122,6 +130,22 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 		return validateOptIRRV64SpillLoop(cfg, plan)
 	}
 	return nil
+}
+
+func optIRRV64AdmitsSpillEffect(memory *optIRRegionMemorySelection, code string, site optir.OperationSite) bool {
+	if memory == nil {
+		return false
+	}
+	switch code {
+	case optir.OpLoadRegion:
+		_, admitted := memory.loads[site]
+		return admitted
+	case optir.OpStoreRegion:
+		_, admitted := memory.stores[site]
+		return admitted
+	default:
+		return false
+	}
 }
 
 // optIRCFGAcyclic counts every CFG edge, including two conditional arms with

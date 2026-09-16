@@ -249,45 +249,6 @@ func TestLowerOptIRRegionStoreRequiresTemplateGlobalAuthority(t *testing.T) {
 	}
 }
 
-func TestLowerOptIRRegionStoresRefuseRegisterSpills(t *testing.T) {
-	store := optir.Operation{Code: optir.OpStoreRegion, Operands: []optir.ValueID{1}, Effects: []optir.Effect{optir.EffectWriteMemory}}
-	cfg := optir.CFG{
-		Name: "pressure_store", Entry: 0, Results: []optir.Type{"u32"},
-		Blocks: []optir.Block{{
-			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}},
-			Operations: []optir.Operation{
-				{Code: optir.OpConstInt, Results: []optir.Value{{ID: 2, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "1"}}},
-				store,
-			},
-			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}},
-		}},
-	}
-	metadata := optir.RegionMemoryMetadata{
-		Regions: []optir.RegionID{"global:state"},
-		Operations: []optir.MemoryOperationMetadata{{
-			Site:     optir.OperationSite{Block: 0, Index: 1},
-			Accesses: []optir.MemoryAccessSpec{{Region: "global:state", Kind: optir.MemoryWrite, WholeRegion: true}},
-		}},
-	}
-	memorySSA := optIRAnalyzeRegionMemory(t, cfg, metadata)
-	authorized := map[string]asm.Global{"state": {Type: "u32", Bits: 32}}
-	memory, err := validateOptIRRegionMemory(cfg, &asm.Function{Globals: authorized}, metadata, memorySSA, map[optir.RegionID]OptIRRegionGlobal{
-		"global:state": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	declaration := optIRRV64Declaration(t, `pressure_store: (x: u32): u32 = { state = x; u32(1) }`)
-	armTemplate := &asm.Function{Name: "pressure_store", Arch: asm.ArchArm64, Signature: declaration, Bindings: []asm.Binding{{Register: w(0), Param: "x"}}, Globals: authorized}
-	if _, err := lowerOptIRArm64Selection(cfg, armTemplate, []int{0}, []int{0}, memory); err == nil || !strings.Contains(err.Error(), "register spills") {
-		t.Fatalf("AArch64 memory selector admitted spills: %v", err)
-	}
-	rvTemplate := &asm.Function{Name: "pressure_store", Arch: asm.ArchRV64, Signature: declaration, Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "x"}}, Globals: authorized}
-	if _, err := lowerOptIRRV64Selection(cfg, rvTemplate, []int{10}, []int{5}, memory); err == nil || !strings.Contains(err.Error(), "register spills") {
-		t.Fatalf("RV64 memory selector admitted spills: %v", err)
-	}
-}
-
 func optIRRegionStoreFixture(t *testing.T, name string, typ optir.Type) (optir.CFG, optir.RegionMemoryMetadata, optir.RegionMemorySSA, map[optir.RegionID]OptIRRegionGlobal) {
 	t.Helper()
 	cfg := optir.CFG{
