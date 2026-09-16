@@ -19,13 +19,22 @@ widen: (a: f32, b: f32): f64 = f64(a + b)
 mixed: (a: f32, b: f32, x: f64, y: f64): f64 = fma(f64(a + b), x, y)
 mixed_arithmetic: (a: f32, b: f32, x: f64, y: f64): f64 = f64(a + b) * x + y
 signed: (x: f32, y: f32): f32 = copysign(abs(-x), y)
+signed64: (x: f64, y: f64): f64 = copysign(abs(-x), y)
 eq: (a: f32, b: f32): Bool = a == b
 ne: (a: f32, b: f32): Bool = a != b
 lt: (a: f32, b: f32): Bool = a < b
 le: (a: f32, b: f32): Bool = a <= b
 gt: (a: f32, b: f32): Bool = a > b
 ge: (a: f32, b: f32): Bool = a >= b
+eq64: (a: f64, b: f64): Bool = a == b
+ne64: (a: f64, b: f64): Bool = a != b
 lt64: (a: f64, b: f64): Bool = a < b
+le64: (a: f64, b: f64): Bool = a <= b
+gt64: (a: f64, b: f64): Bool = a > b
+ge64: (a: f64, b: f64): Bool = a >= b
+guard64: (a: f64, b: f64): Bool = !(a < b) || a == b && b != a
+choose64: (a: f64, b: f64): f64 = a < b ? -abs(a) | copysign(b, a)
+nested64: (a: f64, b: f64): f64 = a < b ? (a == b ? -abs(a) | a + b) | copysign(b, a)
 choose: (a: f32, b: f32): f32 = a < b ? a + 1.0 | b * 2.0
 scale: (x: f32, y: f32): f32 = x * y + 1.0
 via_call: (a: f32, b: f32): f32 = scale(a + b, b)
@@ -52,7 +61,7 @@ assigned_pair: (a: f32, b: f32): f32 = {
 main: (): i32 = 0
 `
 	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
-	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "widen", "mixed", "mixed_arithmetic", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
+	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "widen", "mixed", "mixed_arithmetic", "signed", "signed64", "eq", "ne", "lt", "le", "gt", "ge", "eq64", "ne64", "lt64", "le64", "gt64", "ge64", "guard64", "choose64", "nested64", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,13 +74,22 @@ main: (): i32 = 0
 		"(Oak.FloatOps.fma64 ((Oak.FloatOps.add32 a b).toFloat) x y)",
 		"((((Oak.FloatOps.add32 a b).toFloat) * x) + y)",
 		"(Oak.FloatOps.copysign32 (Oak.FloatOps.abs32 (Oak.FloatOps.neg32 x)) y)",
+		"(Oak.FloatOps.copysign64 (Float.abs (-x)) y)",
 		"(Oak.FloatOps.eq32 a b)",
 		"(Oak.FloatOps.ne32 a b)",
 		"(Oak.FloatOps.lt32 a b)",
 		"(Oak.FloatOps.le32 a b)",
 		"(Oak.FloatOps.gt32 a b)",
 		"(Oak.FloatOps.ge32 a b)",
+		"(a == b)",
+		"(a != b)",
 		"(decide (a < b))",
+		"(decide (a <= b))",
+		"(decide (a > b))",
+		"(decide (a >= b))",
+		"((!(decide (a < b))) || ((a == b) && (b != a)))",
+		"(if (decide (a < b)) then (-(Float.abs a)) else (Oak.FloatOps.copysign64 b a))",
+		"(if (decide (a < b)) then (if (a == b) then (-(Float.abs a)) else (a + b)) else (Oak.FloatOps.copysign64 b a))",
 		"(if (Oak.FloatOps.lt32 a b) then (Oak.FloatOps.add32 a (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/)) else (Oak.FloatOps.mul32 b (Float32.ofBits (0x40000000 : UInt32) /- 2.0 -/)))",
 		"def scale",
 		"(Oak.FloatOps.add32 (Oak.FloatOps.mul32 x y) (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
@@ -111,5 +129,35 @@ main: (): i32 = 0
 	if !strings.Contains(plainSigned, "(Oak.FloatOps.copysign32 (Float32.abs (-x)) y)") ||
 		strings.Contains(plainSigned, "FloatOps.neg32") || strings.Contains(plainSigned, "FloatOps.abs32") {
 		t.Fatalf("the default keeps Lean's unary operators:\n%s", plainSigned)
+	}
+	plain64, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain64", []string{"signed64", "eq64", "ne64", "lt64", "le64", "gt64", "ge64", "guard64", "choose64", "nested64"}).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"(Oak.FloatOps.copysign64 (Float.abs (-x)) y)",
+		"(a == b)",
+		"(a != b)",
+		"(decide (a < b))",
+		"(decide (a <= b))",
+		"(decide (a > b))",
+		"(decide (a >= b))",
+		"((!(decide (a < b))) || ((a == b) && (b != a)))",
+		"(if (decide (a < b)) then (-(Float.abs a)) else (Oak.FloatOps.copysign64 b a))",
+		"(if (decide (a < b)) then (if (a == b) then (-(Float.abs a)) else (a + b)) else (Oak.FloatOps.copysign64 b a))",
+	} {
+		if !strings.Contains(plain64, want) {
+			t.Fatalf("default binary64 extraction missing %q in:\n%s", want, plain64)
+		}
+	}
+	if strings.Contains(plain64, "FloatOps.neg32") ||
+		strings.Contains(plain64, "FloatOps.abs32") ||
+		strings.Contains(plain64, "FloatOps.eq32") ||
+		strings.Contains(plain64, "FloatOps.ne32") ||
+		strings.Contains(plain64, "FloatOps.lt32") ||
+		strings.Contains(plain64, "FloatOps.le32") ||
+		strings.Contains(plain64, "FloatOps.gt32") ||
+		strings.Contains(plain64, "FloatOps.ge32") {
+		t.Fatalf("binary64 extraction used a binary32 carrier:\n%s", plain64)
 	}
 }
