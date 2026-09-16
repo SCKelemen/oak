@@ -44,14 +44,15 @@ type sample struct {
 }
 
 type body struct {
-	Backend   string      `json:"backend"`
-	Name      string      `json:"name"`
-	Verdict   string      `json:"verdict"`
-	Frame     int64       `json:"frame_bytes"`
-	CodeBytes int         `json:"code_bytes"`
-	Assembly  string      `json:"assembly"`
-	Message   string      `json:"verdict_message"`
-	Metrics   opt.Metrics `json:"metrics"`
+	Backend   string                  `json:"backend"`
+	Name      string                  `json:"name"`
+	Verdict   string                  `json:"verdict"`
+	Frame     int64                   `json:"frame_bytes"`
+	CodeBytes int                     `json:"code_bytes"`
+	Assembly  string                  `json:"assembly"`
+	Message   string                  `json:"verdict_message"`
+	Metrics   opt.Metrics             `json:"metrics"`
+	Rewrites  []nativegen.RewriteSite `json:"rewrites"`
 }
 
 type report struct {
@@ -113,7 +114,7 @@ func run() error {
 			return err
 		}
 	}
-	backends := []string{"c", "native-identity", "native-no-maps", "native-optimized"}
+	backends := []string{"c", "native-identity", "native-no-maps", "native-one-vector", "native-optimized"}
 	executables := make([]string, len(backends))
 	for index, backend := range backends {
 		dir := filepath.Join(build, backend)
@@ -133,6 +134,8 @@ func run() error {
 				}
 			} else if backend == "native-no-maps" {
 				skipped = []string{nativegen.TransformVectorMaps}
+			} else if backend == "native-one-vector" {
+				skipped = []string{nativegen.TransformUnrollMaps}
 			}
 			if err := os.Setenv("OAK_OPT_SKIP", strings.Join(skipped, ",")); err != nil {
 				return err
@@ -155,11 +158,11 @@ func run() error {
 				if encodeErr != nil {
 					return encodeErr
 				}
-				result.Bodies = append(result.Bodies, body{Backend: backend, Name: function.Name, Verdict: verdict.Kind.String(), Frame: function.Frame, CodeBytes: len(code), Assembly: nativegen.Describe(function), Message: verdict.Message, Metrics: nativegen.Metrics(function)})
+				result.Bodies = append(result.Bodies, body{Backend: backend, Name: function.Name, Verdict: verdict.Kind.String(), Frame: function.Frame, CodeBytes: len(code), Assembly: nativegen.Describe(function), Message: verdict.Message, Metrics: nativegen.Metrics(function), Rewrites: nativegen.RewriteSites(function)})
 				seen++
 			}
 			if seen != 4 {
-				return fmt.Errorf("%s: got %d native dot bodies, want 4", backend, seen)
+				return fmt.Errorf("%s: got %d native %s bodies, want 4", backend, seen, *workload)
 			}
 			native, emitErr := comp.EmitNative(compiler.HostObjectFormat()).Get()
 			if emitErr != nil {

@@ -12,12 +12,13 @@ The output path must not already exist. Defaults are 4,096 elements,
 `-samples`, and `-cc` override these settings within checked bounds.
 
 Every run compares C (`-O3 -ffp-contract=off -fno-fast-math`), native identity,
-native optimized without `vectorize-maps`, and fully optimized native code.
+native optimized without `vectorize-maps`, native with only one vector per map
+trip (`unroll-vector-maps` disabled), and fully optimized native code.
 Each backend has f32/f64 and strict/explicit-FMA variants. Samples interleave
-all sixteen combinations and rotate their starting position. The report keeps
+all twenty combinations and rotate their starting position. The report keeps
 observation order, raw elapsed times, result checksums, compiler revision,
 dirty-worktree status, host/load information, native verdicts, assembly, frame
-sizes, encoded sizes, and structural instruction/loop metrics. Native identity
+sizes, encoded sizes, rewrite licenses, and structural instruction/loop metrics. Native identity
 disables the registry's actual transform names rather than a hard-coded list.
 Temporary builds are removed; the report is retained. Volatile indirect calls
 prevent C from hoisting identical pure calls out of the timed loop.
@@ -63,6 +64,80 @@ and retained proven native verdicts. Both experiments remain reproducible here.
 Core placement and machine contention are uncontrolled; use the raw samples
 and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
+
+## Two-vector map candidate
+
+`unroll-vector-maps` adds a two-vector main loop before the existing
+one-vector cleanup and scalar tail. It instantiates `Oak.Map.grouped_eq`:
+two consecutive blocks map the same elements with the same lane operations.
+`grouped_bounds` proves the extent/next-index inequalities, including the
+no-wrap case with a u32 limit. These are schema proofs; the matcher and
+lowering remain implementation code, and emitted candidates must still pass
+the ordinary seam checker and semantic verifier.
+
+The single-vector cleanup matters: inputs between one and two vectors must
+not become all-scalar. A conditional cleanup was also tried; its joins made
+several maps harder to prove. The retained loop form proves f32/f64 FMA,
+nested/zip expressions, strict arithmetic, and unsigned integer maps without
+changing verifier rules. Sharing the second vector's index in a generated
+local was refused by the existing seam checker and was not retained.
+
+The cost model now recognizes a smaller-stride cleanup, not just a scalar
+remainder. An 8-element main loop followed by 4-element cleanup and a scalar
+tail has cost hints of at most one cleanup trip and three scalar trips.
+`MaxTrips` counts trips, so a bounded loop is no longer divided by its stride
+twice. These are cost hints, not proof evidence. Materialization revision v9
+includes the grouping flag; metric/cost artifacts advance to v2.
+
+Use `native-one-vector` as the control for this increment. Original reports
+below predate this extra control and retain their original four-backend
+protocol. Compare small/tail-heavy inputs separately: wider loop setup and
+code size can cost time even when long maps improve. No automatic float
+contraction or reduction regrouping is introduced.
+
+### Two-vector measurements: 2026-09-17
+
+Clean revision `c3c217b6aa056ba2f6ccd2d607b3233fc6a9fcaf`, M4 Max,
+Apple clang 21.0.0, nine interleaved samples per variant. All selected
+native map bodies remain `proven`; checksums agree across backends and
+forms on the benchmark input family. The host remained heavily loaded:
+one-minute load 68 during the long run, rising to 84 during the short runs.
+These are observed ratios, not a quiet-host CI guarantee.
+
+At 4,096 elements × 4,096 calls, median ns/element:
+
+| Map | C | Native one-vector | Native two-vector | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0608 | 0.1145 | 0.0987 | 13.8% | 1.62× |
+| f32 explicit FMA | 0.0601 | 0.1132 | 0.0989 | 12.6% | 1.65× |
+| f64 strict multiply/add | 0.1469 | 0.2323 | 0.1947 | 16.2% | 1.33× |
+| f64 explicit FMA | 0.1451 | 0.2270 | 0.1945 | 14.3% | 1.34× |
+
+The explicit-FMA body grows from 156 to 244 encoded bytes; its frame stays
+144 bytes. The main loop processes twice as many elements with 17 rather
+than twice nine instructions, followed by at most one single-vector cleanup
+trip and the original scalar tail. Ordinary multiply/add still has its two
+roundings. Native improves but remains slower than C. The
+[long-run report](results/map-two-vectors-m4-max-2026-09-17.json) also keeps
+identity/no-map controls, the rewrite licenses, all timings, metrics and
+assembly.
+
+Short-input checks use 1,048,576 calls per sample. Explicit-FMA medians,
+again ns/element:
+
+| Elements | Width | Native one-vector | Native two-vector | Time change |
+| --- | --- | ---: | ---: | ---: |
+| 7 | f32 | 0.4576 | 0.4623 | +1.0% |
+| 7 | f64 | 0.4407 | 0.4574 | +3.8% |
+| 2 | f32 | 1.6503 | 1.6122 | −2.3% |
+| 2 | f64 | 1.5874 | 1.6222 | +2.2% |
+
+The distributions overlap substantially; no short-input speedup is claimed,
+and the slower medians are retained rather than hidden. Raw
+[seven-element](results/map-two-vectors-n7-m4-max-2026-09-17.json) and
+[two-element](results/map-two-vectors-n2-m4-max-2026-09-17.json) reports keep
+all five controls. A representative-application regression gate and quieter
+multi-host measurements remain future work.
 
 ## Recorded results: M4 Max, 2026-09-17
 

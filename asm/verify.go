@@ -3992,16 +3992,27 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			if int64(1)<<uint(mem.Shift) != stride || size != stride {
 				return fmt.Sprintf("an indexed load through a record argument (%s) whose scale is not the element size", prefix), false
 			}
-			bound, isBounded := state.bounds[mem.Index.Num]
-			if !isBounded || int64(bound) > length {
-				return "an indexed load through a record argument without a dominating constant index guard", false
-			}
 			idx, okIndex := state.read(*mem.Index)
 			if !okIndex {
 				return "unbound register read", false
 			}
 			index := truncate(idx, 32)
-			for k := length - 1; k >= 0; k-- {
+			first, last := int64(0), length-1
+			if index.kind == termConst {
+				// A decided guard (including one in an unrolled counted
+				// loop) records no symbolic bound. The constant itself
+				// selects one leaf, still within this array field.
+				if index.value >= uint64(length) {
+					return "an indexed load through a record argument past the array field", false
+				}
+				first, last = int64(index.value), int64(index.value)
+			} else {
+				bound, isBounded := state.bounds[mem.Index.Num]
+				if !isBounded || bound > uint64(length) {
+					return "an indexed load through a record argument without a dominating constant index guard", false
+				}
+			}
+			for k := last; k >= first; k-- {
 				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
 				if !okLeaf {
 					return "an indexed load through a record argument cutting through a field", false

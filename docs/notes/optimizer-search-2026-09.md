@@ -439,6 +439,16 @@ This is an instance of the existing map theorem, not implicit contraction,
 reassociation, or a new numerical-error license. Measurements and the rejected
 scalar-dot contraction experiment are in `benchmarks/native/exact_fma/README.md`.
 
+`unroll-vector-maps` (2026-09-17) is a separate bounded candidate: two
+consecutive vectors per main trip, then one-vector cleanup and the original
+scalar remainder. `Oak.Map.grouped_eq` composes the two blocks without
+reassociation; `grouped_bounds` supplies the extent/next-index inequalities.
+The existing seam checker and verifier still gate emission. Cleanup stays a
+loop: a conditional cleanup made the joins of several maps harder to verify.
+The cost-only recurrence hints now recognize descending vector strides
+(8 → 4 → 1), and actual `MaxTrips` bounds are not divided by stride twice.
+The one-vector form remains available and is an explicit benchmark control.
+
 ### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
@@ -1463,7 +1473,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     body"), so the form comes back trusted and the proven scalar loop
     keeps winning; the transform stays AArch64 only until the RV64
     verifier takes `vse` in loops), elements at `i ± k`
-    (stencils), and more than one vector a trip;
+    (stencils). Two vectors per trip landed 2026-09-17 as the separate
+    `unroll-vector-maps` candidate under `Oak.Map.grouped_eq`, followed by
+    one-vector cleanup and the scalar remainder; larger grouping factors
+    remain future work;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

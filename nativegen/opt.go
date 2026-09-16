@@ -45,6 +45,7 @@ const (
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
 	TransformVectorMaps  = "vectorize-maps"
+	TransformUnrollMaps  = "unroll-vector-maps"
 	TransformVectorFolds = "vectorize-folds"
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
@@ -318,6 +319,16 @@ func Transforms() []opt.Transform {
 			fired:   VectorizedMaps,
 		},
 		&laneTransform{
+			// Two consecutive blocks under one slack guard. This only changes
+			// a body with VectorMaps enabled; lane-wise semantics license it,
+			// without associativity or numerical relaxation.
+			name: TransformUnrollMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UnrollVectorMaps },
+			apply:   func(l Lane) Lane { l.UnrollVectorMaps = true; return l },
+			fired:   UnrolledMaps,
+		},
+		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
 			// parameters — the dot product — computes one vector of element
@@ -468,6 +479,7 @@ func PlainLane(lane Lane) Lane {
 	lane.FuseExits = false
 	lane.VectorReductions = false
 	lane.VectorMaps = false
+	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
 	lane.NoReductions = true
 	return lane
@@ -558,7 +570,7 @@ func walkNodes(node ast.Node, visit func(ast.Node)) {
 // body and per loop, a loop being the items from a label to a branch back
 // to it (docs/notes/optimizer-search-2026-09.md §9). Each loop's stride is
 // read from the increment of the register its exit compares (an `add
-// wN, wN, #k`), and a stride-one loop right after a strided loop over the
+// wN, wN, #k`), and a smaller-stride loop right after a strided loop over the
 // same register — the remainder loop of an unrolling — is bounded by the
 // stride's trips. Both are the cost model's hints.
 func Metrics(fn *asm.Function) opt.Metrics {
@@ -705,9 +717,9 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				break
 			}
 		}
-		if k > 0 && body.Stride == 1 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from {
-			if prev := m.LoopBodies[k-1]; prev.Stride > 1 {
-				body.MaxTrips = prev.Stride - 1
+		if k > 0 && body.Stride > 0 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from && outer[k-1] == outer[k] {
+			if prev := m.LoopBodies[k-1]; prev.Stride > body.Stride {
+				body.MaxTrips = (prev.Stride - 1) / body.Stride
 			}
 		}
 		for i := loop.from; i <= loop.to; i++ {

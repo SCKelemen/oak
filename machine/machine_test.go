@@ -986,6 +986,29 @@ func TestShapesRemainderBound(t *testing.T) {
 	}
 }
 
+func TestShapesVectorCleanupBound(t *testing.T) {
+	f := fn(
+		ins("mov", w(9), w(31)),
+		label("main_1"),
+		ins("cmp", w(9), w(20)), bcond("hi", "vectors_2"),
+		ins("add", w(9), w(9), imm(8)), ins("b", sym("main_1")),
+		label("vectors_2"),
+		ins("cmp", w(9), w(20)), bcond("hi", "scalar_3"),
+		ins("add", w(9), w(9), imm(4)), ins("b", sym("vectors_2")),
+		label("scalar_3"),
+		ins("cmp", w(9), w(20)), bcond("hs", "done_4"),
+		ins("add", w(9), w(9), imm(1)), ins("b", sym("scalar_3")),
+		label("done_4"), ins("mov", w(0), w(9)), ins("ret"),
+	)
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 3 || shapes[1].Stride != 4 || shapes[1].MaxTrips != 1 || shapes[2].MaxTrips != 3 {
+		t.Fatalf("unexpected vector/scalar cleanup shapes: %+v", shapes)
+	}
+}
+
 func TestShapesRV64(t *testing.T) {
 	f := rvfn(
 		ins("mv", rx(5), rx(0)),
