@@ -999,6 +999,60 @@ enum SystemRegisterWriteTarget = {
   SystemRegisterWriteTarget_HCR_EL2
 }
 
+/* One parsing pass for the eight register tuples in Oak's cold-entry prefix.
+ * As in the per-register projections below, Rt is preserved rather than fixed
+ * here; the bridge separately proves the exact X0 through X7 words. */
+val system_register_cold_entry_target_pure :
+  (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
+    (bool, SystemRegisterWriteTarget, bits(5))
+
+function system_register_cold_entry_target_pure (o0, op1, CRn, CRm, op2, Rt) = {
+    if o0 == 0b1 & op1 == 0b100 & CRn == 0x1 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x2 & CRm == 0x1 &
+        op2 == 0b010 then {
+        (true, SystemRegisterWriteTarget_VTCR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_CNTHCTL_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0xE & CRm == 0x0 &
+        op2 == 0b011 then {
+        (true, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x1 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SP_EL1, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b001 then {
+        (true, SystemRegisterWriteTarget_ELR_EL2, Rt)
+    } else if o0 == 0b1 & op1 == 0b100 & CRn == 0x4 & CRm == 0x0 &
+        op2 == 0b000 then {
+        (true, SystemRegisterWriteTarget_SPSR_EL2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
+val decode64_cold_entry_system_write_pure :
+  bits(32) -> (bool, SystemRegisterWriteTarget, bits(5))
+
+function decode64_cold_entry_system_write_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let op2 : bits(3) = slice(op_code, 5, 3);
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    let CRn : bits(4) = slice(op_code, 12, 4);
+    let op1 : bits(3) = slice(op_code, 16, 3);
+    let o0 : bits(1) = slice(op_code, 19, 1);
+    if (op_code & 0xFFF00000) == 0xD5100000 then {
+        system_register_cold_entry_target_pure(o0, op1, CRn, CRm, op2, Rt)
+    } else {
+        (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
+    }
+}
+
 val system_register_vttbr_el2_target_pure :
   (bits(1), bits(3), bits(4), bits(4), bits(3), bits(5)) ->
     (bool, SystemRegisterWriteTarget, bits(5))
@@ -1329,5 +1383,94 @@ function aarch64_sysregwrite_hcr_el2_pure (at_el1, old_hcr_nv,
         (true, old_value)
     } else {
         (false, val_name)
+    }
+}
+
+/* The selected register-component state and X-register inputs for Oak's
+ * ordered EL2 cold-entry prefix. These are projections, not Arm's full state. */
+struct ColdEntryRegisterState = {
+  hcr_el2 : bits(64),
+  vttbr_el2 : bits(64),
+  vtcr_el2 : bits(32),
+  cnthctl_el2 : bits(32),
+  cntvoff_el2 : bits(64),
+  sp_el1 : bits(64),
+  elr_el2 : bits(64),
+  spsr_el2 : bits(32)
+}
+
+struct ColdEntryRegisterInputs = {
+  hcr_el2 : bits(64),
+  vttbr_el2 : bits(64),
+  vtcr_el2 : bits(64),
+  cnthctl_el2 : bits(64),
+  cntvoff_el2 : bits(64),
+  sp_el1 : bits(64),
+  elr_el2 : bits(64),
+  spsr_el2 : bits(64)
+}
+
+/* The eight fixed-position fields are an ordered log, avoiding any claim that
+ * the final projected record alone witnesses dynamic program order. */
+struct ColdEntryRegisterSequenceResult = {
+  state : ColdEntryRegisterState,
+  write0 : SystemRegisterWriteTarget,
+  write1 : SystemRegisterWriteTarget,
+  write2 : SystemRegisterWriteTarget,
+  write3 : SystemRegisterWriteTarget,
+  write4 : SystemRegisterWriteTarget,
+  write5 : SystemRegisterWriteTarget,
+  write6 : SystemRegisterWriteTarget,
+  write7 : SystemRegisterWriteTarget
+}
+
+val aarch64_cold_entry_register_sequence_at_el2_pure :
+  (ColdEntryRegisterState, ColdEntryRegisterInputs, bool, bool) ->
+    ColdEntryRegisterSequenceResult
+
+function aarch64_cold_entry_register_sequence_at_el2_pure (old_state, inputs, scr_ns, scr_eel2) = {
+    let old_hcr_nv : bool = old_state.hcr_el2[42] == bitone;
+    let old_hcr_nv2 : bool = old_state.hcr_el2[45] == bitone;
+    let old_hcr_tge : bool = old_state.hcr_el2[27] == bitone;
+    let (_, hcr_el2) = aarch64_sysregwrite_hcr_el2_pure(false,
+      old_hcr_nv, old_hcr_nv2, old_hcr_tge, scr_ns, scr_eel2,
+      old_state.hcr_el2, inputs.hcr_el2);
+    let hcr_nv : bool = hcr_el2[42] == bitone;
+    let hcr_nv2 : bool = hcr_el2[45] == bitone;
+    let hcr_tge : bool = hcr_el2[27] == bitone;
+    let (_, vttbr_el2) = aarch64_sysregwrite_vttbr_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.vttbr_el2, inputs.vttbr_el2);
+    let (_, vtcr_el2) = aarch64_sysregwrite_vtcr_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.vtcr_el2, inputs.vtcr_el2);
+    let cnthctl_el2 = aarch64_sysregwrite_cnthctl_el2_pure(inputs.cnthctl_el2);
+    let (_, cntvoff_el2) = aarch64_sysregwrite_cntvoff_el2_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.cntvoff_el2, inputs.cntvoff_el2);
+    let (_, sp_el1) = aarch64_sysregwrite_sp_el1_pure(false,
+      hcr_nv, hcr_nv2, hcr_tge, scr_ns, scr_eel2,
+      old_state.sp_el1, inputs.sp_el1);
+    let elr_el2 = aarch64_sysregwrite_elr_el2_pure(inputs.elr_el2);
+    let spsr_el2 = aarch64_sysregwrite_spsr_el2_pure(inputs.spsr_el2);
+    struct {
+      state = struct {
+        hcr_el2 = hcr_el2,
+        vttbr_el2 = vttbr_el2,
+        vtcr_el2 = vtcr_el2,
+        cnthctl_el2 = cnthctl_el2,
+        cntvoff_el2 = cntvoff_el2,
+        sp_el1 = sp_el1,
+        elr_el2 = elr_el2,
+        spsr_el2 = spsr_el2
+      },
+      write0 = SystemRegisterWriteTarget_HCR_EL2,
+      write1 = SystemRegisterWriteTarget_VTTBR_EL2,
+      write2 = SystemRegisterWriteTarget_VTCR_EL2,
+      write3 = SystemRegisterWriteTarget_CNTHCTL_EL2,
+      write4 = SystemRegisterWriteTarget_CNTVOFF_EL2,
+      write5 = SystemRegisterWriteTarget_SP_EL1,
+      write6 = SystemRegisterWriteTarget_ELR_EL2,
+      write7 = SystemRegisterWriteTarget_SPSR_EL2
     }
 }

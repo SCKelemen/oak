@@ -129,6 +129,16 @@ preservation, SPSR mode/DAIF/instruction-state/reserved/feature validity, legal
 exception return, relation to ELR_EL2, ERET observation or success, ordering,
 synchronization, other state, and dynamic occurrence remain external.
 
+The eight independent seams are also composed. Lean records their exact words,
+X0-through-X7 operands, and source order, then folds their component updates
+over a projected EL2 register state. Generated Lean from Sail is proved equal
+to that fold; its final state is exactly the supplied values, with the official
+32-bit truncation for VTCR_EL2, CNTHCTL_EL2, and SPSR_EL2, and its log retains
+the full order. A drift gate equates this Lean word list with the native object
+test's register prefix. This does not turn the static prefix into a dynamic Arm
+execution or prove access, traps, other-state preservation, ISB effects, or
+memory ordering.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

@@ -996,6 +996,152 @@ theorem hcr_el2_generated_body_el1_old_nv_redirect_preserves_component
       true true false true false oldValue newValue = (true, oldValue) := by
   rfl
 
+/-! ## The composed EL2 cold-entry register prefix
+
+The facts above prove each official component body separately. The definitions
+below retain the common word decoder, ordered target log, and width-sensitive
+projected state so their composition cannot silently reorder or widen a write.
+This remains a pure projected-state theorem: access checks, traps, X-register
+reads, dynamic occurrences, and the rest of Arm's machine state are external. -/
+
+def decodedColdEntrySystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_cold_entry_system_write_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+def requiredWriteTarget : RequiredWrite -> _root_.SystemRegisterWriteTarget
+  | .hcrEl2 => .SystemRegisterWriteTarget_HCR_EL2
+  | .vttbrEl2 => .SystemRegisterWriteTarget_VTTBR_EL2
+  | .vtcrEl2 => .SystemRegisterWriteTarget_VTCR_EL2
+  | .cnthctlEl2 => .SystemRegisterWriteTarget_CNTHCTL_EL2
+  | .cntvoffEl2 => .SystemRegisterWriteTarget_CNTVOFF_EL2
+  | .spEl1 => .SystemRegisterWriteTarget_SP_EL1
+  | .elrEl2 => .SystemRegisterWriteTarget_ELR_EL2
+  | .spsrEl2 => .SystemRegisterWriteTarget_SPSR_EL2
+
+def targetRequiredWrite : _root_.SystemRegisterWriteTarget -> RequiredWrite
+  | .SystemRegisterWriteTarget_HCR_EL2 => .hcrEl2
+  | .SystemRegisterWriteTarget_VTTBR_EL2 => .vttbrEl2
+  | .SystemRegisterWriteTarget_VTCR_EL2 => .vtcrEl2
+  | .SystemRegisterWriteTarget_CNTHCTL_EL2 => .cnthctlEl2
+  | .SystemRegisterWriteTarget_CNTVOFF_EL2 => .cntvoffEl2
+  | .SystemRegisterWriteTarget_SP_EL1 => .spEl1
+  | .SystemRegisterWriteTarget_ELR_EL2 => .elrEl2
+  | .SystemRegisterWriteTarget_SPSR_EL2 => .spsrEl2
+
+theorem cold_entry_register_words_decode_exact :
+    registerWriteWords.map decodedColdEntrySystemRegisterWriteTarget = [
+      some (.SystemRegisterWriteTarget_HCR_EL2, 0#5),
+      some (.SystemRegisterWriteTarget_VTTBR_EL2, 1#5),
+      some (.SystemRegisterWriteTarget_VTCR_EL2, 2#5),
+      some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 3#5),
+      some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 4#5),
+      some (.SystemRegisterWriteTarget_SP_EL1, 5#5),
+      some (.SystemRegisterWriteTarget_ELR_EL2, 6#5),
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 7#5)
+    ] := by rfl
+
+def projectedRegisterStateToSail (state : ProjectedRegisterState) :
+    _root_.ColdEntryRegisterState := {
+  hcr_el2 := state.hcrEl2
+  vttbr_el2 := state.vttbrEl2
+  vtcr_el2 := state.vtcrEl2
+  cnthctl_el2 := state.cnthctlEl2
+  cntvoff_el2 := state.cntvoffEl2
+  sp_el1 := state.spEl1
+  elr_el2 := state.elrEl2
+  spsr_el2 := state.spsrEl2
+}
+
+def registerInputsToSail (inputs : RegisterInputs) :
+    _root_.ColdEntryRegisterInputs := {
+  hcr_el2 := inputs.hcrEl2
+  vttbr_el2 := inputs.vttbrEl2
+  vtcr_el2 := inputs.vtcrEl2
+  cnthctl_el2 := inputs.cnthctlEl2
+  cntvoff_el2 := inputs.cntvoffEl2
+  sp_el1 := inputs.spEl1
+  elr_el2 := inputs.elrEl2
+  spsr_el2 := inputs.spsrEl2
+}
+
+def sailRegisterStateToProjected (state : _root_.ColdEntryRegisterState) :
+    ProjectedRegisterState := {
+  hcrEl2 := state.hcr_el2
+  vttbrEl2 := state.vttbr_el2
+  vtcrEl2 := state.vtcr_el2
+  cnthctlEl2 := state.cnthctl_el2
+  cntvoffEl2 := state.cntvoff_el2
+  spEl1 := state.sp_el1
+  elrEl2 := state.elr_el2
+  spsrEl2 := state.spsr_el2
+}
+
+def sailSequenceResultToProjected
+    (result : _root_.ColdEntryRegisterSequenceResult) : ProjectedSequenceResult := {
+  state := sailRegisterStateToProjected result.state
+  log := [
+    targetRequiredWrite result.write0, targetRequiredWrite result.write1,
+    targetRequiredWrite result.write2, targetRequiredWrite result.write3,
+    targetRequiredWrite result.write4, targetRequiredWrite result.write5,
+    targetRequiredWrite result.write6, targetRequiredWrite result.write7
+  ]
+}
+
+/-- The mechanically generated Sail composition is Oak's ordered EL2 fold for
+    every old projected state, eight input values, and both SCR projections. -/
+theorem cold_entry_register_sequence_generated_bridge
+    (redirect : RedirectInputs) (inputs : RegisterInputs)
+    (initial : ProjectedRegisterState) :
+    sailSequenceResultToProjected
+      (Out.Functions.aarch64_cold_entry_register_sequence_at_el2_pure
+        (projectedRegisterStateToSail initial) (registerInputsToSail inputs)
+        redirect.scrNs redirect.scrEel2) =
+      installColdEntryRegistersAtEL2 redirect inputs initial := by
+  rfl
+
+/-- One theorem exposing the exact object words, generated decoder targets and
+    source registers, generated-to-Oak composition, ordered log, and final
+    width-sensitive projected state. -/
+theorem cold_entry_register_sequence_end_to_end
+    (redirect : RedirectInputs) (inputs : RegisterInputs)
+    (initial : ProjectedRegisterState) :
+    registerWriteWords = [
+        0xd51c1100#32, 0xd51c2101#32, 0xd51c2142#32, 0xd51ce103#32,
+        0xd51ce064#32, 0xd51c4105#32, 0xd51c4026#32, 0xd51c4007#32
+      ] ∧
+    registerWriteWords.map decodedColdEntrySystemRegisterWriteTarget = [
+        some (.SystemRegisterWriteTarget_HCR_EL2, 0#5),
+        some (.SystemRegisterWriteTarget_VTTBR_EL2, 1#5),
+        some (.SystemRegisterWriteTarget_VTCR_EL2, 2#5),
+        some (.SystemRegisterWriteTarget_CNTHCTL_EL2, 3#5),
+        some (.SystemRegisterWriteTarget_CNTVOFF_EL2, 4#5),
+        some (.SystemRegisterWriteTarget_SP_EL1, 5#5),
+        some (.SystemRegisterWriteTarget_ELR_EL2, 6#5),
+        some (.SystemRegisterWriteTarget_SPSR_EL2, 7#5)
+      ] ∧
+    sailSequenceResultToProjected
+      (Out.Functions.aarch64_cold_entry_register_sequence_at_el2_pure
+        (projectedRegisterStateToSail initial) (registerInputsToSail inputs)
+        redirect.scrNs redirect.scrEel2) =
+      installColdEntryRegistersAtEL2 redirect inputs initial ∧
+    installColdEntryRegistersAtEL2 redirect inputs initial = {
+      state := {
+        hcrEl2 := inputs.hcrEl2
+        vttbrEl2 := inputs.vttbrEl2
+        vtcrEl2 := inputs.vtcrEl2.setWidth 32
+        cnthctlEl2 := inputs.cnthctlEl2.setWidth 32
+        cntvoffEl2 := inputs.cntvoffEl2
+        spEl1 := inputs.spEl1
+        elrEl2 := inputs.elrEl2
+        spsrEl2 := inputs.spsrEl2.setWidth 32 }
+      log := registerWriteOrder } := by
+  exact ⟨register_write_words_exact, cold_entry_register_words_decode_exact,
+    cold_entry_register_sequence_generated_bridge redirect inputs initial,
+    install_cold_entry_registers_at_el2_exact redirect inputs initial⟩
+
 end A64Encoding
 
 /-- Our flags record as Arm's `nzcv` bit-vector: N is the top bit. -/

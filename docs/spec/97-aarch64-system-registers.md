@@ -206,6 +206,15 @@ the EL1 alternative as a redirect flag and unchanged HCR_EL2, while the source
 gate separately audits the official NVMem(120) assignment. The proof does not
 connect those separately supplied old-bit Booleans to the old 64-bit component.
 
+`Oak.AArch64ColdEntry.installColdEntryRegistersAtEL2` composes all eight exact
+writes as an ordered projected-state fold. The generated Sail function uses
+the same component bodies and a single general-MSR decoder; the bridge proves
+the generated result equals the Oak fold for every old projected state and
+input value. Its exact result retains all 64 bits for HCR, VTTBR, CNTVOFF, SP,
+and ELR and only bits 31:0 for VTCR, CNTHCTL, and SPSR, together with the exact
+ordered write log. The proof is intentionally limited to those components at
+EL2 and does not establish access/trap admission or full-state preservation.
+
 These are language/catalog properties. They are not a proof that an arbitrary
 sequence of register writes satisfies the Arm Architecture Reference Manual.
 Protocol-specific ordering obligations remain separate specifications and tests.

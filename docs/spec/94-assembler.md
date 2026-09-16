@@ -865,6 +865,15 @@ proves that the official 32-bit component receives X7 bits 31:0. The source
 gate pins the direct S3_4 route and keeps the separate SPSR_EL1/VHE/NV path,
 including NVMem(352), outside the projected theorem.
 
+The composed cold-entry theorem now places those eight seams in the exact
+HCR/X0 through SPSR/X7 source order. One unified generated Sail decoder proves
+the target and Rt of every word. A projected EL2 fold derives HCR predicate
+bits from its current HCR component, applies the eight component bodies, and
+returns both the final state and an ordered log. The final state is the eight
+input values with VTCR, CNTHCTL, and SPSR truncated to 32 bits. A Go drift gate
+requires the Lean numeric list to equal the native object's register prefix.
+This is static/projected composition, not a full Arm-state execution trace.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization

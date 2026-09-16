@@ -314,6 +314,16 @@ occurrence, runtime guest-PSTATE-to-X7 provenance, upper-bit preservation,
 SPSR field and legal exception-return validity, relation to ELR_EL2, ERET
 observation or success, other state, ordering, and synchronization remain open.
 
+These eight leaf proofs now compose through generated code. One Sail decoder
+classifies the complete ordered word list with its X0-through-X7 Rt fields, and
+a generated projected-state function calls the same eight component bodies.
+`Oak.SailBridge.cold_entry_register_sequence_end_to_end` proves that generated
+result equals Oak's EL2 fold, including the three low-32 destinations and the
+ordered log. A Go gate ties the theorem's numeric words to the native object
+oracle. This closes static projected composition only: full Arm state,
+access/traps, runtime value provenance, dynamic occurrence/order, memory
+ordering, ISB effects, and ERET semantics remain outside the theorem.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

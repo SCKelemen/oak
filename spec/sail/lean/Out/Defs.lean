@@ -60,6 +60,40 @@ inductive SystemRegisterWriteTarget where | SystemRegisterWriteTarget_VTTBR_EL2 
   deriving BEq, Inhabited, Repr
   open SystemRegisterWriteTarget
 
+structure ColdEntryRegisterState where
+  hcr_el2 : (BitVec 64)
+  vttbr_el2 : (BitVec 64)
+  vtcr_el2 : (BitVec 32)
+  cnthctl_el2 : (BitVec 32)
+  cntvoff_el2 : (BitVec 64)
+  sp_el1 : (BitVec 64)
+  elr_el2 : (BitVec 64)
+  spsr_el2 : (BitVec 32)
+  deriving BEq, Inhabited, Repr
+
+structure ColdEntryRegisterInputs where
+  hcr_el2 : (BitVec 64)
+  vttbr_el2 : (BitVec 64)
+  vtcr_el2 : (BitVec 64)
+  cnthctl_el2 : (BitVec 64)
+  cntvoff_el2 : (BitVec 64)
+  sp_el1 : (BitVec 64)
+  elr_el2 : (BitVec 64)
+  spsr_el2 : (BitVec 64)
+  deriving BEq, Inhabited, Repr
+
+structure ColdEntryRegisterSequenceResult where
+  state : ColdEntryRegisterState
+  write0 : SystemRegisterWriteTarget
+  write1 : SystemRegisterWriteTarget
+  write2 : SystemRegisterWriteTarget
+  write3 : SystemRegisterWriteTarget
+  write4 : SystemRegisterWriteTarget
+  write5 : SystemRegisterWriteTarget
+  write6 : SystemRegisterWriteTarget
+  write7 : SystemRegisterWriteTarget
+  deriving BEq, Inhabited, Repr
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

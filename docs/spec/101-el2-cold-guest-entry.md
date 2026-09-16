@@ -184,6 +184,15 @@ guest-PSTATE-to-X7 provenance, X7 upper-bit preservation, SPSR field or legal
 exception-return validity, relation to ELR_EL2, ERET observation or success,
 ordering, synchronization, other-state preservation, or occurrence.
 
+The composed register-prefix theorem now connects all eight words at once.
+The unified generated Sail decoder returns the exact HCR/X0 through SPSR/X7
+targets, and its projected EL2 sequence is kernel-proved equal to Oak's ordered
+fold. The result overwrites precisely the eight selected components, truncates
+VTCR/CNTHCTL/SPSR to their official 32-bit widths, and retains the ordered log.
+The Lean word list is drift-checked against the native prefix below. The theorem
+still supplies no dynamic occurrence/program-order witness and says nothing
+about ISB or ERET state semantics, memory order, traps, or unprojected state.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:
