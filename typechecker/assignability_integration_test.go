@@ -59,6 +59,31 @@ bad: (pick_number: Bool): () {
 	}
 }
 
+func TestStatementMatchDiscardsOnlyItsRootJoin(t *testing.T) {
+	errors := checkAssignabilityProgram(`
+number: (): u32 = u32(7)
+statement_match: (pick: Bool): () {
+  pick ? { number() } | { }
+  done: u32 = u32(0)
+}
+`)
+	if len(errors) != 0 {
+		t.Fatalf("statement match required an unused runtime join: %v", errors)
+	}
+
+	errors = checkAssignabilityProgram(`
+consume: (value: u32): () {
+  done: u32 = value
+}
+nested_value_match: (pick: Bool): () {
+  consume(pick ? { u32(1) } | { false })
+}
+`)
+	if len(errors) == 0 || !strings.Contains(strings.Join(errors, "\n"), "match arm: expected type u32, got Bool") {
+		t.Fatalf("nested value match escaped the representation check: %v", errors)
+	}
+}
+
 func TestReturnAssignabilityPreservesRefinementDirection(t *testing.T) {
 	errors := checkAssignabilityProgram(`
 Small: type = u16 where value < u16(10)
