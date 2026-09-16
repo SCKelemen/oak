@@ -23,9 +23,13 @@ part of this theorem. The fourth adds IEEE equality and ordering: NaNs are
 unordered and the two signed zeros are equal. The comparison leaves compose
 through pure Boolean literals, negation, conjunction, and disjunction. The
 fifth increment closes arbitrarily nested value-position conditionals over
-those guards and straight-line float leaves.
-Decimal parsing itself, conversions, spans, control flow, calls, binary64, and
-SIMD remain outside this theorem.
+those guards and straight-line float leaves. The sixth closes pure calls over
+ordered arguments. The seventh closes statement-position conditionals over
+any finite sequence of scalar `f32` bindings: both arms start from the same
+scope, execute assignments in order, and merge every written name.
+Decimal parsing itself, conversions, spans, nested/effectful statement control
+flow, borrowing/recursive/effectful calls, binary64, and SIMD remain outside
+this theorem.
 -/
 
 namespace Oak.FloatLoweringRefinement
@@ -469,8 +473,170 @@ theorem lowerFlow_eval (flow : FlowExpr) (ρ : SourceEnv) :
     (lowerFlow flow).eval ρ = flow.eval ρ := by
   exact lowerFlowWith_eval flow ρ ρ parameterTerms (parameterTerms_agree ρ)
 
-/-- One existing float local assigned once in each arm of a statement-position
-Bool conditional, followed by a straight-line continuation. -/
+/-- A sequence of scalar declarations or assignments. Each right-hand side
+sees the preceding bindings, matching statement order in an Oak block. -/
+abbrev Bindings := List (String × Expr)
+
+def evalBindings : Bindings → SourceEnv → SourceEnv
+  | [], current => current
+  | (name, value) :: rest, current =>
+      evalBindings rest (current.set name (value.eval current))
+
+def lowerBindings : Bindings → TermEnv → TermEnv
+  | [], σ => σ
+  | (name, value) :: rest, σ =>
+      lowerBindings rest (σ.set name (lowerWith value σ))
+
+def bindingNames : Bindings → List String
+  | [] => []
+  | (name, _) :: rest => name :: bindingNames rest
+
+/-- Sequential scalar bindings preserve the environment agreement invariant. -/
+theorem lowerBindings_agree (bindings : Bindings)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    Agree parameters (evalBindings bindings current) (lowerBindings bindings σ) := by
+  induction bindings generalizing current σ with
+  | nil => exact hσ
+  | cons binding rest ih =>
+      rcases binding with ⟨name, value⟩
+      exact ih
+        (current.set name (value.eval current))
+        (σ.set name (lowerWith value σ))
+        (agree_set parameters current σ name (value.eval current)
+          (lowerWith value σ) hσ
+          (lowerWith_eval value parameters current σ hσ))
+
+/-- Rebind exactly the names written by either arm to their selected source
+values. Names outside the write set retain their pre-branch values. -/
+def selectBindings : List String → Bool → SourceEnv → SourceEnv → SourceEnv → SourceEnv
+  | [], _, before, _, _ => before
+  | name :: rest, guard, before, afterTrue, afterFalse =>
+      selectBindings rest guard
+        (before.set name (bif guard then afterTrue name else afterFalse name))
+        afterTrue afterFalse
+
+/-- The verifier counterpart of `selectBindings`, matching `mergeLocals`:
+every written scalar local becomes an `iteTerm` over the two arm outcomes. -/
+def mergeBindings : List String → BoolTerm → TermEnv → TermEnv → TermEnv → TermEnv
+  | [], _, before, _, _ => before
+  | name :: rest, guard, before, afterTrue, afterFalse =>
+      mergeBindings rest guard
+        (before.set name (.ite guard (afterTrue name) (afterFalse name)))
+        afterTrue afterFalse
+
+private theorem mergeBindings_agree (names : List String)
+    (parameters : SourceEnv) (sourceGuard : Bool) (verifierGuard : BoolTerm)
+    (before afterTrue afterFalse : SourceEnv)
+    (beforeTerms afterTrueTerms afterFalseTerms : TermEnv)
+    (hBefore : Agree parameters before beforeTerms)
+    (hTrue : Agree parameters afterTrue afterTrueTerms)
+    (hFalse : Agree parameters afterFalse afterFalseTerms)
+    (hGuard : verifierGuard.eval parameters = sourceGuard) :
+    Agree parameters
+      (selectBindings names sourceGuard before afterTrue afterFalse)
+      (mergeBindings names verifierGuard beforeTerms afterTrueTerms afterFalseTerms) := by
+  induction names generalizing before beforeTerms with
+  | nil => exact hBefore
+  | cons name rest ih =>
+      apply ih
+      exact agree_set parameters before beforeTerms name
+        (bif sourceGuard then afterTrue name else afterFalse name)
+        (.ite verifierGuard (afterTrueTerms name) (afterFalseTerms name)) hBefore (by
+          simp only [Term.eval]
+          rw [hGuard, hTrue name, hFalse name])
+
+/-- A statement-position conditional over any finite number of scalar `f32`
+locals. Initializers and both arms execute sequentially; each arm starts from
+the same initialized scope, then every name written by either arm is merged. -/
+structure ConditionalBlock where
+  initializers : Bindings
+  guard : Condition
+  whenTrue : Bindings
+  whenFalse : Bindings
+  continuation : Expr
+  deriving Repr
+
+def ConditionalBlock.sourceBase (branch : ConditionalBlock)
+    (current : SourceEnv) : SourceEnv :=
+  evalBindings branch.initializers current
+
+def ConditionalBlock.verifierBase (branch : ConditionalBlock)
+    (σ : TermEnv) : TermEnv :=
+  lowerBindings branch.initializers σ
+
+def ConditionalBlock.written (branch : ConditionalBlock) : List String :=
+  bindingNames branch.whenTrue ++ bindingNames branch.whenFalse
+
+def ConditionalBlock.sourceMerged (branch : ConditionalBlock)
+    (current : SourceEnv) : SourceEnv :=
+  let before := branch.sourceBase current
+  selectBindings branch.written (branch.guard.eval before) before
+    (evalBindings branch.whenTrue before)
+    (evalBindings branch.whenFalse before)
+
+def ConditionalBlock.verifierMerged (branch : ConditionalBlock)
+    (σ : TermEnv) : TermEnv :=
+  let before := branch.verifierBase σ
+  mergeBindings branch.written (lowerConditionWith branch.guard before) before
+    (lowerBindings branch.whenTrue before)
+    (lowerBindings branch.whenFalse before)
+
+def ConditionalBlock.eval (branch : ConditionalBlock)
+    (current : SourceEnv) : Float32 :=
+  branch.continuation.eval (branch.sourceMerged current)
+
+def lowerConditionalBlockWith (branch : ConditionalBlock)
+    (σ : TermEnv) : Term :=
+  lowerWith branch.continuation (branch.verifierMerged σ)
+
+private theorem conditionalBlockMerged_agree (branch : ConditionalBlock)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    Agree parameters (branch.sourceMerged current) (branch.verifierMerged σ) := by
+  have hBase : Agree parameters (branch.sourceBase current)
+      (branch.verifierBase σ) :=
+    lowerBindings_agree branch.initializers parameters current σ hσ
+  have hTrue : Agree parameters
+      (evalBindings branch.whenTrue (branch.sourceBase current))
+      (lowerBindings branch.whenTrue (branch.verifierBase σ)) :=
+    lowerBindings_agree branch.whenTrue parameters
+      (branch.sourceBase current) (branch.verifierBase σ) hBase
+  have hFalse : Agree parameters
+      (evalBindings branch.whenFalse (branch.sourceBase current))
+      (lowerBindings branch.whenFalse (branch.verifierBase σ)) :=
+    lowerBindings_agree branch.whenFalse parameters
+      (branch.sourceBase current) (branch.verifierBase σ) hBase
+  exact mergeBindings_agree branch.written parameters
+    (branch.guard.eval (branch.sourceBase current))
+    (lowerConditionWith branch.guard (branch.verifierBase σ))
+    (branch.sourceBase current)
+    (evalBindings branch.whenTrue (branch.sourceBase current))
+    (evalBindings branch.whenFalse (branch.sourceBase current))
+    (branch.verifierBase σ)
+    (lowerBindings branch.whenTrue (branch.verifierBase σ))
+    (lowerBindings branch.whenFalse (branch.verifierBase σ)) hBase hTrue hFalse
+    (lowerConditionWith_eval branch.guard parameters
+      (branch.sourceBase current) (branch.verifierBase σ) hBase)
+
+theorem lowerConditionalBlockWith_eval (branch : ConditionalBlock)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerConditionalBlockWith branch σ).eval parameters = branch.eval current := by
+  exact lowerWith_eval branch.continuation parameters
+    (branch.sourceMerged current) (branch.verifierMerged σ)
+    (conditionalBlockMerged_agree branch parameters current σ hσ)
+
+def lowerConditionalBlock (branch : ConditionalBlock) : Term :=
+  lowerConditionalBlockWith branch parameterTerms
+
+theorem lowerConditionalBlock_eval (branch : ConditionalBlock) (ρ : SourceEnv) :
+    (lowerConditionalBlock branch).eval ρ = branch.eval ρ := by
+  exact lowerConditionalBlockWith_eval branch ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
+
+/-- The original one-local slice, retained as a compact corollary of the
+general finite-binding statement theorem. -/
 structure ConditionalAssignment where
   name : String
   initial : Expr
@@ -480,78 +646,27 @@ structure ConditionalAssignment where
   continuation : Expr
   deriving Repr
 
-def ConditionalAssignment.sourceScope (branch : ConditionalAssignment)
-    (current : SourceEnv) : SourceEnv :=
-  current.set branch.name (branch.initial.eval current)
-
-def ConditionalAssignment.verifierScope (branch : ConditionalAssignment)
-    (σ : TermEnv) : TermEnv :=
-  σ.set branch.name (lowerWith branch.initial σ)
-
-def ConditionalAssignment.sourceSelected (branch : ConditionalAssignment)
-    (current : SourceEnv) : Float32 :=
-  let currentScope := branch.sourceScope current
-  bif branch.guard.eval currentScope then
-    branch.whenTrue.eval currentScope
-  else
-    branch.whenFalse.eval currentScope
-
-def ConditionalAssignment.verifierSelected (branch : ConditionalAssignment)
-    (σ : TermEnv) : Term :=
-  let currentScope := branch.verifierScope σ
-  .ite (lowerConditionWith branch.guard currentScope)
-    (lowerWith branch.whenTrue currentScope)
-    (lowerWith branch.whenFalse currentScope)
+def ConditionalAssignment.asBlock (branch : ConditionalAssignment) : ConditionalBlock := {
+  initializers := [(branch.name, branch.initial)]
+  guard := branch.guard
+  whenTrue := [(branch.name, branch.whenTrue)]
+  whenFalse := [(branch.name, branch.whenFalse)]
+  continuation := branch.continuation
+}
 
 def ConditionalAssignment.eval (branch : ConditionalAssignment)
     (current : SourceEnv) : Float32 :=
-  branch.continuation.eval
-    ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
+  branch.asBlock.eval current
 
-/-- `lowerConditionalStatement` for this one-local slice: both arm values are
-lowered from the same incoming scope, merged under the guard, and substituted
-into the continuation. -/
 def lowerConditionalAssignmentWith (branch : ConditionalAssignment)
     (σ : TermEnv) : Term :=
-  lowerWith branch.continuation
-    ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ))
-
-private theorem conditionalScope_agree (branch : ConditionalAssignment)
-    (parameters current : SourceEnv) (σ : TermEnv)
-    (hσ : Agree parameters current σ) :
-    Agree parameters (branch.sourceScope current) (branch.verifierScope σ) := by
-  exact agree_set parameters current σ branch.name
-    (branch.initial.eval current) (lowerWith branch.initial σ) hσ
-    (lowerWith_eval branch.initial parameters current σ hσ)
-
-private theorem conditionalSelected_eval (branch : ConditionalAssignment)
-    (parameters current : SourceEnv) (σ : TermEnv)
-    (hσ : Agree parameters current σ) :
-    (branch.verifierSelected σ).eval parameters = branch.sourceSelected current := by
-  have hScoped := conditionalScope_agree branch parameters current σ hσ
-  simp only [ConditionalAssignment.verifierSelected,
-    ConditionalAssignment.sourceSelected, Term.eval]
-  rw [lowerConditionWith_eval branch.guard parameters
-        (branch.sourceScope current) (branch.verifierScope σ) hScoped,
-      lowerWith_eval branch.whenTrue parameters
-        (branch.sourceScope current) (branch.verifierScope σ) hScoped,
-      lowerWith_eval branch.whenFalse parameters
-        (branch.sourceScope current) (branch.verifierScope σ) hScoped]
+  lowerConditionalBlockWith branch.asBlock σ
 
 theorem lowerConditionalAssignmentWith_eval (branch : ConditionalAssignment)
     (parameters current : SourceEnv) (σ : TermEnv)
     (hσ : Agree parameters current σ) :
     (lowerConditionalAssignmentWith branch σ).eval parameters = branch.eval current := by
-  have hScoped := conditionalScope_agree branch parameters current σ hσ
-  have hMerged : Agree parameters
-      ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
-      ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ)) :=
-    agree_set parameters (branch.sourceScope current) (branch.verifierScope σ)
-      branch.name (branch.sourceSelected current) (branch.verifierSelected σ)
-      hScoped (conditionalSelected_eval branch parameters current σ hσ)
-  exact lowerWith_eval branch.continuation parameters
-    ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
-    ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ)) hMerged
+  exact lowerConditionalBlockWith_eval branch.asBlock parameters current σ hσ
 
 def lowerConditionalAssignment (branch : ConditionalAssignment) : Term :=
   lowerConditionalAssignmentWith branch parameterTerms
@@ -724,6 +839,25 @@ example : lowerConditionalAssignment {
       (.float .fadd (.param "b") (.literal 0x3F800000))
       (.float .fmul (.param "a") (.literal 0x40000000)))
     (.literal 0x40400000) := rfl
+example : lowerConditionalBlock {
+    initializers := [("x", a), ("y", b)]
+    guard := .compare .lt (.param "x") (.param "y")
+    whenTrue := [
+      ("x", .binary .add (.param "y") (.literal 0x3F800000)),
+      ("y", .binary .mul (.param "x") (.literal 0x40000000))]
+    whenFalse := [
+      ("x", .binary .sub (.param "x") (.literal 0x3F800000)),
+      ("y", .binary .add (.param "y") (.literal 0x40400000))]
+    continuation := .binary .sub (.param "x") (.param "y")
+  } = .float .fsub
+    (.ite (.compare .lt (.param "a") (.param "b"))
+      (.float .fadd (.param "b") (.literal 0x3F800000))
+      (.float .fsub (.param "a") (.literal 0x3F800000)))
+    (.ite (.compare .lt (.param "a") (.param "b"))
+      (.float .fmul
+        (.float .fadd (.param "b") (.literal 0x3F800000))
+        (.literal 0x40000000))
+      (.float .fadd (.param "b") (.literal 0x40400000))) := rfl
 example : lowerCall {
     arguments := [("x", .binary .add a b), ("y", b)]
     body := .binary .add (.binary .mul (.param "x") (.param "y"))
