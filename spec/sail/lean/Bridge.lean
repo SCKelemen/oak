@@ -1,6 +1,8 @@
 import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
+import Oak.AArch64Barrier
+import Oak.AArch64WeakMemory
 import Oak.NeonSemantics
 
 /-!
@@ -85,6 +87,122 @@ theorem isb_decoder :
     barrierDecode (Out.Functions.decode64_barrier_pure isbSy) =
       isbDecode := by
   native_decide
+
+/-! Refinement from the generated decoder tuples into Oak's deliberately
+narrow barrier capability model.  `ofDecode` is fail-closed, so these facts
+also certify that all four decoded fields match one of Oak's six admitted
+source operations. -/
+
+open Oak.AArch64Barrier
+
+theorem dmb_ishld_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbIshld)) =
+      some .dmbIshld := by
+  rw [dmb_ishld_decoder]
+  rfl
+
+theorem dmb_ish_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbIsh)) =
+      some .dmbIsh := by
+  rw [dmb_ish_decoder]
+  rfl
+
+theorem dmb_sy_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dmbSy)) =
+      some .dmbSy := by
+  rw [dmb_sy_decoder]
+  rfl
+
+theorem dsb_ish_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) =
+      some .dsbIsh := by
+  rw [dsb_ish_decoder]
+  rfl
+
+theorem dsb_sy_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) =
+      some .dsbSy := by
+  rw [dsb_sy_decoder]
+  rfl
+
+theorem isb_barrier :
+    ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) =
+      some .isb := by
+  rw [isb_decoder]
+  rfl
+
+theorem dsb_ish_decoder_claims_completion :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) =
+        some barrier ∧
+      (capability barrier).completion = true := by
+  exact ⟨.dsbIsh, dsb_ish_barrier, rfl⟩
+
+theorem dsb_sy_decoder_claims_completion :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) =
+        some barrier ∧
+      (capability barrier).completion = true := by
+  exact ⟨.dsbSy, dsb_sy_barrier, rfl⟩
+
+theorem isb_decoder_claims_instruction_sync :
+    ∃ barrier,
+      ofDecode (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) =
+        some barrier ∧
+      (capability barrier).instructionSync = true := by
+  exact ⟨.isb, isb_barrier, rfl⟩
+
+/-! The decoded DMB tuple is now the index of the assumed barrier occurrence,
+not an untyped "full fence" fact.  These theorems turn that occurrence into
+the exact scalar `bob` edge admitted by the pinned Arm CAT projection. -/
+
+open Oak.AArch64WeakMemory
+
+theorem dmb_ishld_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hLoad : (x.op before).IsReturningLoad)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbIshld)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_ishld_decoder]
+  exact dmb_ishld_decode_orders_before _ |>.2 hLoad
+
+theorem dmb_ish_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbIsh)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_ish_decoder]
+  simp
+
+theorem dmb_sy_decoder_orders {Event : Type}
+    (x : BaseExecution Event) (before after : Event)
+    (hBetween : x.barrierBetween
+      (barrierDecode (Out.Functions.decode64_barrier_pure dmbSy)) before after) :
+    OrderedBefore x before after := by
+  apply OrderedBefore.bobDmb _ _ _ ?_ hBetween
+  rw [dmb_sy_decoder]
+  simp
+
+theorem dsb_ish_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh)) beforeIsLoad := by
+  rw [dsb_ish_decoder]
+  simp
+
+theorem dsb_sy_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure dsbSy)) beforeIsLoad := by
+  rw [dsb_sy_decoder]
+  simp
+
+theorem isb_decoder_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore
+      (barrierDecode (Out.Functions.decode64_barrier_pure isbSy)) beforeIsLoad := by
+  rw [isb_decoder]
+  simp
 
 end A64Encoding
 

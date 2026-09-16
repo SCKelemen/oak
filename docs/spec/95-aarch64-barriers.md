@@ -189,6 +189,15 @@ Lean proves:
 - DMB ISHLD is not classified as a full data barrier;
 - ISB makes no DMB/DSB-style data-order/completion claim.
 
+`Oak.AArch64Encoding` and the generated Sail bridge refine the six literal
+instruction words into these exact capabilities through Arm's decoded
+operation/domain/access tuple. The decoded DMB ISHLD/ISH/SY tuples index the
+restricted weak-memory `bob` rule: ISHLD orders only a returning load before
+following scalar memory, while ISH and SY provide full scalar data ordering.
+The pinned CAT certificate covers `dmb.ld`, `DMB.ISHLD`, `DMB.SY`, and the
+load-DMB arm. DSB and ISB remain on their distinct CAT paths (`DSB-ob` and
+`IFB-ob`) and are not smuggled through DMB ordering.
+
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
 
@@ -207,6 +216,10 @@ The slice is accepted only if all of the following hold:
   additional barrier family;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
+- the generated Sail decoder refines all six words into those capabilities and
+  the three decoded DMB forms into their restricted weak-memory ordering;
+- pinned Herd tests cover DMB SY and both the ordering and non-ordering
+  directions of DMB ISHLD;
 - ordinary Go/race, golden, and AArch64-refinement CI remain green.
 
 ## 10. Relationship to atomics and volatile access

@@ -30,6 +30,7 @@ var errCATLispTooLarge = errors.New("CAT parser output exceeds the configured li
 // restricted projection, not the complete semantics of the Arm CAT model.
 var pinnedAArch64ProjectionHashes = map[string]string{
 	"dmb.full":      "7f0e43f97632346b01cfb634eb6d58a9ceb4a51dabf60aa378f2a0b72ea76555",
+	"dmb.ld":        "9f29bd95706acf92340db7085c5dd409e0d2c4458c416557d2e12cb9290d5f9d",
 	"bob":           "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
 	"lob":           "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
 	"local-hw-reqs": "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
@@ -40,6 +41,7 @@ var pinnedAArch64ProjectionHashes = map[string]string{
 }
 
 var pinnedAArch64BobArmHashes = []string{
+	"83764f28247fa8eab7d6a826595520b8e49ed7b71fc0ccec797f9a1595f887cb",
 	"5139573a29ccf13fd38db712c7055764fc4701fe7aa9fac6ae23c6ea94c96dbe",
 	"51f25b7f9f6a6abbe79fb1d24df6d6fc5449f0c99d60101a0b56a76f46cce625",
 	"58ba1d284d6da0510ee087f3685bccaa88476a313e82cdf676b0b3e2b904401a",
@@ -495,16 +497,24 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 	if !directUnionContainsVariable(definition["dmb.full"], "DMB.ISH") {
 		return errors.New("dmb.full does not directly contain DMB.ISH")
 	}
+	if !directUnionContainsVariable(definition["dmb.full"], "DMB.SY") {
+		return errors.New("dmb.full does not directly contain DMB.SY")
+	}
+	if !directUnionContainsVariable(definition["dmb.ld"], "DMB.ISHLD") {
+		return errors.New("dmb.ld does not directly contain DMB.ISHLD")
+	}
 	bobArms, ok := catOperator(definition["bob"], ":union")
 	if !ok {
 		return errors.New("bob is not a union")
 	}
-	var fullDMB, beforeRelease, afterAcquire, releaseAcquire bool
+	var fullDMB, loadDMB, beforeRelease, afterAcquire, releaseAcquire bool
 	for _, arm := range bobArms {
 		has := func(name string) bool { return containsCATVariable(arm, name) }
 		switch {
 		case has("dmb.full") && has("po") && has("Exp") && has("M") && !has("DC.CVAU"):
 			fullDMB = true
+		case has("dmb.ld") && has("po") && has("Exp") && has("R") && has("NoRet") && has("M"):
+			loadDMB = true
 		case has("L") && has("A") && has("po") && !has("Q") && !has("amo"):
 			releaseAcquire = true
 		case has("A") && has("Q") && has("po") && !has("L"):
@@ -513,9 +523,9 @@ func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
 			beforeRelease = true
 		}
 	}
-	if !fullDMB || !beforeRelease || !afterAcquire || !releaseAcquire {
-		return fmt.Errorf("bob scalar arms: full-dmb=%t before-release=%t after-acquire=%t release-acquire=%t",
-			fullDMB, beforeRelease, afterAcquire, releaseAcquire)
+	if !fullDMB || !loadDMB || !beforeRelease || !afterAcquire || !releaseAcquire {
+		return fmt.Errorf("bob scalar arms: full-dmb=%t load-dmb=%t before-release=%t after-acquire=%t release-acquire=%t",
+			fullDMB, loadDMB, beforeRelease, afterAcquire, releaseAcquire)
 	}
 	chain := []struct{ definition, member string }{
 		{"lob", "bob"},
@@ -571,6 +581,7 @@ func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
 	for _, arm := range bobArms {
 		has := func(name string) bool { return containsCATVariable(arm, name) }
 		if (has("dmb.full") && has("po") && has("Exp") && has("M") && !has("DC.CVAU")) ||
+			(has("dmb.ld") && has("po") && has("Exp") && has("R") && has("NoRet") && has("M")) ||
 			(has("L") && has("A") && has("po") && !has("Q") && !has("amo")) ||
 			(has("A") && has("Q") && has("po") && !has("L")) ||
 			(has("L") && has("po") && !has("A") && !has("Q")) {
@@ -618,7 +629,11 @@ func replaceFirstCATAtom(node *catLispNode, from, to string) bool {
 func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) error {
 	mutations := []struct{ definition, from string }{
 		{"dmb.full", "DMB.ISH"},
+		{"dmb.full", "DMB.SY"},
+		{"dmb.ld", "DMB.ISHLD"},
 		{"bob", "dmb.full"},
+		{"bob", "dmb.ld"},
+		{"bob", "NoRet"},
 		{"lob", "bob"},
 		{"local-hw-reqs", "lob"},
 		{"hw-reqs", "local-hw-reqs"},

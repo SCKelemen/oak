@@ -1,4 +1,8 @@
+import Oak.AArch64Encoding
+
 namespace Oak.AArch64Barrier
+
+open Oak.AArch64Encoding
 
 /-- Shareability/domain classification retained by the Oak source spelling. -/
 inductive Scope where
@@ -13,6 +17,15 @@ inductive DataOrdering where
   | load
   | full
   deriving DecidableEq, Repr
+
+/-- The predecessor class admitted by one data-ordering capability.  A load
+    barrier orders only a preceding load; a full barrier orders either scalar
+    memory operation. -/
+def DataOrdering.ordersBefore (ordering : DataOrdering) (beforeIsLoad : Prop) : Prop :=
+  match ordering with
+  | .none => False
+  | .load => beforeIsLoad
+  | .full => True
 
 /-- The capabilities Oak relies on when selecting a barrier instruction.
 
@@ -41,6 +54,55 @@ def capability : Barrier -> Capability
   | .dsbIsh   => ⟨.full, true, false, some .innerShareable⟩
   | .dsbSy    => ⟨.full, true, false, some .system⟩
   | .isb      => ⟨.none, false, true, none⟩
+
+/-- Refine only the six exact, valid decoder results admitted by Oak.  Every
+    other operation/domain/type tuple fails closed, even if Arm assigns it a
+    meaning outside Oak's current source surface. -/
+def ofDecode : BarrierDecode -> Option Barrier
+  | ⟨true, .dmb, .innerShareable, .reads⟩ => some .dmbIshld
+  | ⟨true, .dmb, .innerShareable, .all⟩ => some .dmbIsh
+  | ⟨true, .dmb, .fullSystem, .all⟩ => some .dmbSy
+  | ⟨true, .dsb, .innerShareable, .all⟩ => some .dsbIsh
+  | ⟨true, .dsb, .fullSystem, .all⟩ => some .dsbSy
+  | ⟨true, .isb, .fullSystem, .all⟩ => some .isb
+  | _ => none
+
+/-- The scalar predecessor condition contributed specifically to CAT's `bob`
+    DMB arms.  Requiring the decoded operation to be DMB keeps DSB completion
+    (`DSB-ob`) and ISB instruction synchronization (`IFB-ob`) out of this
+    relation even when their capability records carry other information. -/
+def decodeDataOrdersBefore (decode : BarrierDecode) (beforeIsLoad : Prop) : Prop :=
+  ∃ barrier,
+    ofDecode decode = some barrier ∧
+    decode.op = .dmb ∧
+    (capability barrier).dataOrdering.ordersBefore beforeIsLoad
+
+@[simp] theorem dmb_ishld_decode_orders_before (beforeIsLoad : Prop) :
+    decodeDataOrdersBefore dmbIshldDecode beforeIsLoad ↔ beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, dmbIshldDecode, capability,
+    DataOrdering.ordersBefore]
+
+@[simp] theorem dmb_ish_decode_orders_before (beforeIsLoad : Prop) :
+    decodeDataOrdersBefore dmbIshDecode beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, dmbIshDecode, capability,
+    DataOrdering.ordersBefore]
+
+@[simp] theorem dmb_sy_decode_orders_before (beforeIsLoad : Prop) :
+    decodeDataOrdersBefore dmbSyDecode beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, dmbSyDecode, capability,
+    DataOrdering.ordersBefore]
+
+@[simp] theorem dsb_ish_decode_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore dsbIshDecode beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, dsbIshDecode]
+
+@[simp] theorem dsb_sy_decode_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore dsbSyDecode beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, dsbSyDecode]
+
+@[simp] theorem isb_decode_not_dmb_ordering (beforeIsLoad : Prop) :
+    ¬ decodeDataOrdersBefore isbDecode beforeIsLoad := by
+  simp [decodeDataOrdersBefore, ofDecode, isbDecode]
 
 /-- DMB is modeled as ordering, never as completion. -/
 theorem dmb_does_not_claim_completion (b : Barrier)

@@ -1,4 +1,5 @@
 import Oak.AArch64Memory
+import Oak.AArch64Barrier
 
 /-!
 # AArch64 weak-memory projection
@@ -26,12 +27,22 @@ namespace Oak.AArch64WeakMemory
 
 open Oak.MemoryOrder
 open Oak.AArch64Memory
+open Oak.AArch64Barrier
+open Oak.AArch64Encoding
 
-/-- The explicit scalar memory events needed by the litmus projection. -/
+/-- The explicit scalar memory events needed by the litmus projection.
+    `load` is a returning load; `noRetLoad` records CAT's `NoRet` class so the
+    DMB LD rule cannot accidentally order a discarded-register load. -/
 inductive Op where
   | load (loc : Nat)
+  | noRetLoad (loc : Nat)
   | store (loc : Nat)
   deriving DecidableEq, Repr
+
+def Op.IsReturningLoad : Op -> Prop
+  | .load _ => True
+  | .noRetLoad _ => False
+  | .store _ => False
 
 /-- Primitive event facts consumed by the restricted CAT projection.
     `releaseWrite` classifies `Exp & W & L`, `acquireRead` classifies the
@@ -43,7 +54,9 @@ structure BaseExecution (Event : Type) where
   op : Event → Op
   releaseWrite : Event → Prop
   acquireRead : Event → Prop
-  dmbFullBetween : Event → Event → Prop
+  /-- A barrier with this exact decoded operation/domain/type tuple occurs in
+      program order between the two explicit memory events. -/
+  barrierBetween : BarrierDecode → Event → Event → Prop
   readsFrom : Event → Event → Prop
   coherenceAfter : Event → Event → Prop
 
@@ -57,8 +70,11 @@ inductive OrderedBefore {Event : Type} (x : BaseExecution Event) : Event → Eve
   /-- `[Exp & W & L]; po; [Exp & R & A]` in `bob`. -/
   | bobReleaseAcquire : ∀ a b,
       x.releaseWrite a → x.acquireRead b → x.po a b → OrderedBefore x a b
-  /-- `[Exp & M]; po; [dmb.full]; po; [Exp & M]` in `bob`. -/
-  | bobFullDmb : ∀ a b, x.dmbFullBetween a b → OrderedBefore x a b
+  /-- The scalar parts of `[Exp & M]; po; [dmb.full]; po; [Exp & M]` and
+      `[Exp & (R \\ NoRet)]; po; [dmb.ld]; po; [Exp & M]` in `bob`. -/
+  | bobDmb : ∀ decode a b,
+      decodeDataOrdersBefore decode (x.op a).IsReturningLoad →
+      x.barrierBetween decode a b → OrderedBefore x a b
   /-- External reads-from is in `Exp-obs`, hence in `obs` and `ob`. -/
   | obsExternalReadsFrom : ∀ store load,
       x.readsFrom store load → x.thread store ≠ x.thread load →
@@ -145,20 +161,37 @@ theorem seqCst_store_buffering_forbidden
     both-initial outcome.  This covers Oak's `atomic_fence_seq_cst` mapping. -/
 theorem full_dmb_store_buffering_forbidden
     (writeX readY writeY readX : Event)
-    (hDmb0 : x.dmbFullBetween writeX readY)
-    (hDmb1 : x.dmbFullBetween writeY readX)
+    (hDmb0 : x.barrierBetween dmbIshDecode writeX readY)
+    (hDmb1 : x.barrierBetween dmbIshDecode writeY readX)
     (hCoherenceY : x.coherenceAfter readY writeY)
     (hCoherenceX : x.coherenceAfter readX writeX)
     (hExternalY : x.thread readY ≠ x.thread writeY)
     (hExternalX : x.thread readX ≠ x.thread writeX) : False := by
-  have h₁ : x.ob writeX readY := .bobFullDmb _ _ hDmb0
+  have h₁ : x.ob writeX readY := .bobDmb _ _ _ (by simp) hDmb0
   have h₂ : x.ob readY writeY :=
     .obsExternalCoherenceAfter _ _ hCoherenceY hExternalY
-  have h₃ : x.ob writeY readX := .bobFullDmb _ _ hDmb1
+  have h₃ : x.ob writeY readX := .bobDmb _ _ _ (by simp) hDmb1
   have h₄ : x.ob readX writeX :=
     .obsExternalCoherenceAfter _ _ hCoherenceX hExternalX
   exact x.obIrrefl writeX
     (.trans _ _ _ h₁ (.trans _ _ _ h₂ (.trans _ _ _ h₃ h₄)))
+
+/-- DMB ISHLD contributes a `bob` edge after a returning explicit load.  It
+    deliberately contributes no corresponding store-before edge. -/
+theorem dmb_ishld_orders_after_load
+    (before after : Event)
+    (hLoad : (x.op before).IsReturningLoad)
+    (hDmb : x.barrierBetween dmbIshldDecode before after) :
+    x.ob before after := by
+  exact .bobDmb _ _ _ (dmb_ishld_decode_orders_before _ |>.2 hLoad) hDmb
+
+theorem dmb_ishld_does_not_order_no_return_load (loc : Nat) :
+    ¬ decodeDataOrdersBefore dmbIshldDecode (Op.noRetLoad loc).IsReturningLoad := by
+  simp [Op.IsReturningLoad]
+
+theorem dmb_ishld_does_not_order_store (loc : Nat) :
+    ¬ decodeDataOrdersBefore dmbIshldDecode (Op.store loc).IsReturningLoad := by
+  simp [Op.IsReturningLoad]
 
 /-- Two seq-cst readers cannot observe two seq-cst writers in contradictory
     orders.  Each first LDAR orders the following LDAR; external reads-from and

@@ -87,6 +87,9 @@ func TestLitmusAArch64OfficialModel(t *testing.T) {
 		{file: "MP-release-acquire.litmus", observation: "Never"},
 		{file: "SB-seq-cst.litmus", observation: "Never"},
 		{file: "SB-full-dmb.litmus", observation: "Never"},
+		{file: "SB-dmb-sy.litmus", observation: "Never"},
+		{file: "LB-dmb-ishld.litmus", observation: "Never"},
+		{file: "SB-dmb-ishld.litmus", observation: "Sometimes"},
 		{file: "IRIW-seq-cst.litmus", observation: "Never"},
 		{file: "LB-seq-cst.litmus", observation: "Sometimes"},
 	}
