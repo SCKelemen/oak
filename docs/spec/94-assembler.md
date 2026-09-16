@@ -742,6 +742,13 @@ proof in this section applies to that word or to the downstream OS sequence
 that currently uses it. The general instruction table remains audited rather
 than proved.
 
+The explicit Oak context-sync slice is pinned independently as the complete
+object body `DSB ISH; VMALLS12E1IS; DSB ISH; ISB; RET`, and the bootstrap C
+lane preserves the same four system-instruction occurrences and order. A Sail
+decorator conjoins the generated DSB, TLBI, and ISB decode/call-target facts
+with the external occurrence witness. It returns that witness unchanged and
+therefore proves neither DSB completion nor ISB context synchronization.
+
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode

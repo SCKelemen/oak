@@ -107,6 +107,11 @@ theorem isb_decoder_execution_target :
       .BarrierExecutionTarget_InstructionSynchronizationBarrier := by
   rfl
 
+theorem dsb_ish_decoder_execution_target :
+    decodedBarrierTarget dsbIsh = some
+      .BarrierExecutionTarget_DataSynchronizationBarrier := by
+  rfl
+
 theorem invalid_barrier_has_no_execution_target :
     decodedBarrierTarget 0#32 = none := by
   rfl
@@ -343,6 +348,49 @@ theorem sail_vmalls12e1is_occurrence_requires_external
     (occurrence : SailVmalls12e1isOccurrence code trace event target) :
     Vmalls12e1isOccurrence code trace event target :=
   occurrence.1
+
+/-- Generated decoder and named call-target facts decorating the externally
+    supplied exact four-instruction occurrence sequence. No execution effects
+    are projected from these constant facts. -/
+def SailVmalls12e1isDsbIsbInstructionSequence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (target : Target)
+    (preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence) : Prop :=
+  Vmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent ∧
+    barrierDecode (Out.Functions.decode64_barrier_pure dsbIsh) = dsbIshDecode ∧
+    decodedBarrierTarget dsbIsh =
+      some .BarrierExecutionTarget_DataSynchronizationBarrier ∧
+    decodedTLBITarget tlbiVmalls12e1is =
+      some .TLBIOperationTarget_VMALLS12E1IS ∧
+    barrierDecode (Out.Functions.decode64_barrier_pure isbSy) = isbDecode ∧
+    decodedBarrierTarget isbSy =
+      some .BarrierExecutionTarget_InstructionSynchronizationBarrier
+
+theorem refineVmalls12e1isDsbIsbSequenceWithSailDispatch
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : Vmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    SailVmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent :=
+  ⟨sequence, dsb_ish_decoder, dsb_ish_decoder_execution_target,
+    tlbi_vmalls12e1is_decoder_execution_target, isb_decoder,
+    isb_decoder_execution_target⟩
+
+theorem sail_vmalls12e1is_dsb_isb_sequence_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : SailVmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    Vmalls12e1isDsbIsbInstructionSequence code trace target preTlbiDsb
+      tlbiEvent postTlbiDsb isbEvent :=
+  sequence.1
 
 end A64Encoding
 

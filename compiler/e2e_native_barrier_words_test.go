@@ -140,6 +140,32 @@ func TestE2ENativeTLBIExactWord(t *testing.T) {
 	})
 }
 
+// The fixed context-sync slice is explicit Oak source, not a compound backend
+// intrinsic. Requiring the whole symbol pins order and rules out a frame, call,
+// dispatch, duplicated barrier, or other hidden instruction.
+func TestE2ENativeStage2VMALLS12E1ISContextSyncExactWords(t *testing.T) {
+	path := filepath.Join("..", "examples", "hypervisor",
+		"stage2_vmalls12e1is_context_sync.oak")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgt := target.Target{OS: target.OSFreestanding, Arch: target.ArchArm64}
+	object, err := New().WithSource(path, string(source)).WithTarget(tgt).
+		EmitNativeObject(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAArch64ObjectWords(t, object,
+		"oak_stage2_vmalls12e1is_context_sync", []uint32{
+			0xd5033b9f, // dsb ish
+			0xd50c83df, // tlbi vmalls12e1is
+			0xd5033b9f, // dsb ish
+			0xd5033fdf, // isb
+			0xd65f03c0, // ret
+		})
+}
+
 var coldEntryRegisterPrefix = []uint32{
 	0xd50342df, // msr DAIFSet, #2
 	0xd51c1100, // msr HCR_EL2, x0

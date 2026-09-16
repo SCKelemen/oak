@@ -159,8 +159,12 @@ the word does not create the trace action. Before a previously active guest
 context can change translation state, Oak still needs a kernel-checked dynamic
 compiler/execution trace supplying that premise and proofs of architectural
 target/scope, descriptor publication, invalidation completion, and final
-context synchronization. The current OS guest-entry and revoke paths use plain
-`VMALLS12E1`, not the IS operation, so this theorem does not refine them. After
-those obligations and the consumer-specific instruction choice are resolved,
-this entry path can become the final transfer step of a reusable vCPU re-entry
-path and can be exercised in the OS QEMU EL2 smoke test.
+context synchronization. Oak now has an exact zero-overhead source/object leaf
+for the fixed `DSB ISH; VMALLS12E1IS; DSB ISH; ISB` slice, but its formal
+completed wrapper still requires those execution-level completion and sync
+facts explicitly. It is not a descriptor BBM protocol. The current OS
+guest-entry and revoke paths use plain `VMALLS12E1`, not the IS operation, and
+revoke omits ISB, so this theorem and leaf do not refine them. After those
+obligations and the consumer-specific instruction choice are resolved, this
+entry path can become the final transfer step of a reusable vCPU re-entry path
+and can be exercised in the OS QEMU EL2 smoke test.

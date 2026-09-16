@@ -45,6 +45,8 @@ inductive Action (Target : Type) where
 structure Trace (Occurrence Target : Type) where
   action : Occurrence → Action Target
   po : Occurrence → Occurrence → Prop
+  po_irrefl : ∀ event, ¬ po event event
+  po_trans : ∀ {a b c}, po a b → po b c → po a c
   coherenceAfter : Occurrence → Occurrence → Prop
   invScope : Occurrence → Occurrence → Prop
 
@@ -95,6 +97,146 @@ theorem plain_vmalls12e1_word_cannot_witness_vmalls12e1is
     Option.some.inj (plainWordAt.symm.trans occurrence.wordIsExact)
   have wordsDiffer : 0xd50c87df#32 ≠ tlbiVmalls12e1is := by native_decide
   exact wordsDiffer wordsEqual
+
+/-- One barrier occurrence with independent instruction-word and abstract
+    action projections. Neither projection is derived from the other. -/
+structure ExactBarrierOccurrence {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (word : BitVec 32) (decode : BarrierDecode) : Prop where
+  wordIsExact : code.wordAt event = some word
+  actionIsBarrier : trace.action event = .barrier decode
+
+/-- The exact instruction occurrences and program-order directions in Oak's
+    fixed DSB ISH; VMALLS12E1IS; DSB ISH; ISB source slice. `po` does not mean
+    immediate adjacency, and this structure contains no completion or context
+    synchronization evidence. -/
+structure Vmalls12e1isDsbIsbInstructionSequence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (target : Target)
+    (preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence) : Prop where
+  preTlbiDsbIsExact : ExactBarrierOccurrence code trace preTlbiDsb
+    dsbIsh dsbIshDecode
+  tlbiIsExact : Vmalls12e1isOccurrence code trace tlbiEvent target
+  postTlbiDsbIsExact : ExactBarrierOccurrence code trace postTlbiDsb
+    dsbIsh dsbIshDecode
+  isbIsExact : ExactBarrierOccurrence code trace isbEvent isbSy isbDecode
+  preTlbiDsbBeforeTlbi : trace.po preTlbiDsb tlbiEvent
+  tlbiBeforePostTlbiDsb : trace.po tlbiEvent postTlbiDsb
+  postTlbiDsbBeforeIsb : trace.po postTlbiDsb isbEvent
+
+/-- Strict, transitive program order makes the four selected occurrences
+    pairwise distinct. This does not assert adjacency or exhaustiveness. -/
+theorem vmalls12e1is_dsb_isb_occurrences_pairwise_distinct
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : Vmalls12e1isDsbIsbInstructionSequence code trace target
+      preTlbiDsb tlbiEvent postTlbiDsb isbEvent) :
+    preTlbiDsb ≠ tlbiEvent ∧
+      preTlbiDsb ≠ postTlbiDsb ∧
+      preTlbiDsb ≠ isbEvent ∧
+      tlbiEvent ≠ postTlbiDsb ∧
+      tlbiEvent ≠ isbEvent ∧
+      postTlbiDsb ≠ isbEvent := by
+  have neOfPo : ∀ {a b}, trace.po a b → a ≠ b := by
+    intro a b hPo hEq
+    subst b
+    exact trace.po_irrefl a hPo
+  have preBeforePost : trace.po preTlbiDsb postTlbiDsb :=
+    trace.po_trans sequence.preTlbiDsbBeforeTlbi
+      sequence.tlbiBeforePostTlbiDsb
+  have tlbiBeforeIsb : trace.po tlbiEvent isbEvent :=
+    trace.po_trans sequence.tlbiBeforePostTlbiDsb
+      sequence.postTlbiDsbBeforeIsb
+  have preBeforeIsb : trace.po preTlbiDsb isbEvent :=
+    trace.po_trans preBeforePost sequence.postTlbiDsbBeforeIsb
+  exact ⟨neOfPo sequence.preTlbiDsbBeforeTlbi, neOfPo preBeforePost,
+    neOfPo preBeforeIsb, neOfPo sequence.tlbiBeforePostTlbiDsb,
+    neOfPo tlbiBeforeIsb, neOfPo sequence.postTlbiDsbBeforeIsb⟩
+
+/-- External execution-level proposition that the selected post-DSB completes
+    the selected TLBI. Decoder identity and the DSB capability Boolean do not
+    construct this relation. -/
+def PostDsbCompletes (Occurrence Target : Type) :=
+  Trace Occurrence Target → Occurrence → Occurrence → Prop
+
+/-- External execution-level context-synchronization proposition for this
+    stage-2 trace. It is separate from the ISB decoder/capability record. -/
+def Stage2ContextSync (Occurrence Target : Type) :=
+  Trace Occurrence Target → Occurrence → Prop
+
+/-- The exact ordered instruction slice plus the two external architectural
+    facts needed to call it completing and context synchronizing. This is not a
+    descriptor break-before-make witness. -/
+structure CompletedVmalls12e1isContextSyncSequence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (postDsbCompletes : PostDsbCompletes Occurrence Target)
+    (contextSync : Stage2ContextSync Occurrence Target)
+    (target : Target)
+    (preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence) : Prop where
+  instructionSequence : Vmalls12e1isDsbIsbInstructionSequence code trace
+    target preTlbiDsb tlbiEvent postTlbiDsb isbEvent
+  architecturalCompletion : postDsbCompletes trace tlbiEvent postTlbiDsb
+  architecturalContextSync : contextSync trace isbEvent
+
+theorem completed_vmalls12e1is_sequence_requires_completion
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {postDsbCompletes : PostDsbCompletes Occurrence Target}
+    {contextSync : Stage2ContextSync Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : CompletedVmalls12e1isContextSyncSequence code trace
+      postDsbCompletes contextSync target preTlbiDsb tlbiEvent postTlbiDsb
+      isbEvent) :
+    postDsbCompletes trace tlbiEvent postTlbiDsb :=
+  sequence.architecturalCompletion
+
+theorem completed_vmalls12e1is_sequence_requires_context_sync
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {postDsbCompletes : PostDsbCompletes Occurrence Target}
+    {contextSync : Stage2ContextSync Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (sequence : CompletedVmalls12e1isContextSyncSequence code trace
+      postDsbCompletes contextSync target preTlbiDsb tlbiEvent postTlbiDsb
+      isbEvent) :
+    contextSync trace isbEvent :=
+  sequence.architecturalContextSync
+
+/-- Exact words, ordering, and decoder records cannot bypass a refuted
+    execution-level TLBI-completion proposition. -/
+theorem no_completed_vmalls12e1is_sequence_when_completion_refuted
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {postDsbCompletes : PostDsbCompletes Occurrence Target}
+    {contextSync : Stage2ContextSync Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (refuted : ¬ postDsbCompletes trace tlbiEvent postTlbiDsb) :
+    ¬ CompletedVmalls12e1isContextSyncSequence code trace postDsbCompletes
+      contextSync target preTlbiDsb tlbiEvent postTlbiDsb isbEvent := by
+  intro sequence
+  exact refuted sequence.architecturalCompletion
+
+/-- Exact words, ordering, and decoder records likewise cannot bypass a
+    refuted execution-level context-synchronization proposition. -/
+theorem no_completed_vmalls12e1is_sequence_when_context_sync_refuted
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {postDsbCompletes : PostDsbCompletes Occurrence Target}
+    {contextSync : Stage2ContextSync Occurrence Target}
+    {target : Target}
+    {preTlbiDsb tlbiEvent postTlbiDsb isbEvent : Occurrence}
+    (refuted : ¬ contextSync trace isbEvent) :
+    ¬ CompletedVmalls12e1isContextSyncSequence code trace postDsbCompletes
+      contextSync target preTlbiDsb tlbiEvent postTlbiDsb isbEvent := by
+  intro sequence
+  exact refuted sequence.architecturalContextSync
 
 /-- A decoded full DSB occurrence between two events in program order. The
     name says ordering only: this structure does not assert architectural

@@ -186,6 +186,15 @@ IPA/VMID target selection, completion, and context synchronization remain
 explicit obligations. Sail's coarse single-model-TLB reset implementation,
 which ignores architectural target granularity, is not used to discharge them.
 
+An adjacent exact-sequence layer records DSB ISH, VMALLS12E1IS, DSB ISH, and
+ISB occurrences and their program-order directions. Its completed form retains
+external predicates relating the exact TLBI/post-DSB pair and the exact ISB
+occurrence. The module does not derive either predicate from decoder identity or
+capability flags; when a supplied predicate is refuted at those events, a
+negative theorem prevents construction of the completed wrapper. Predicate
+adequacy and provenance remain external. This is an instruction
+maintenance/context-sync slice, not a descriptor BBM witness.
+
 The adjacent encoding seam now proves one concrete Inner Shareable instruction
 encoding and named Sail call-target identity without conflating either with
 those obligations or with plain, local-PE `TLBI VMALLS12E1`:
@@ -201,6 +210,15 @@ executable occurrence evidence, not the still-open formal extraction of a
 dynamic execution occurrence. The downstream OS currently emits the plain
 VMALLS12E1 sequence, so this encoding theorem, conditional bridge, and object
 witness are not evidence for that consumer path.
+
+The fixed Oak context-sync example has a bootstrap C system-instruction order
+gate and an independent native zero-overhead gate: the bootstrap C lane retains
+the four system instructions in order, and the native ELF symbol is exactly
+their four words plus `RET`. The Sail bridge decorates the
+external exact-sequence witness with DSB/TLBI/ISB decoder and named-call-target
+facts only. Current OS entry uses the structurally similar plain local TLBI,
+while revoke also omits ISB, so neither consumer is covered by this IS-only
+slice.
 
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s

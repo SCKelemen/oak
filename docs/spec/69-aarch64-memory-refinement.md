@@ -327,6 +327,18 @@ projection theorem preserves that same event and target through the BBM
 projection. Dynamic PC/object trace extraction and the instruction-to-action
 classification remain compiler/execution-refinement premises.
 
+The separate `Vmalls12e1isDsbIsbInstructionSequence` records exact
+DSB-ISH, VMALLS12E1IS, DSB-ISH, and ISB word/action occurrences plus their
+three program-order directions. Its completed wrapper accepts two independent
+execution-level propositions: the exact post-DSB completes the exact TLBI, and
+the exact ISB synchronizes context. The module derives neither proposition from
+words, decoder identities, or capability Booleans; if either supplied
+proposition is refuted at the selected events, the corresponding refutation
+theorem prevents construction of the completed wrapper. Adequacy and provenance
+of both predicates remain external. This four-instruction slice contains no
+descriptor break/make or `inv-scope` evidence and is not by itself a BBM
+protocol.
+
 This is mechanical structural provenance for the restricted projection, not a
 complete formal semantics of CAT. The local mapping, projection theorems, CAT
 certificate, and `Oak.SequentialConsistency` remain separate proof layers so
@@ -371,6 +383,11 @@ externally supplied exact-word/action occurrence to the BBM projection without
 manufacturing that premise. A kernel-checked extraction of the dynamic
 instruction occurrence and its `AArch64Stage2Maintenance.Action` classification
 from the compiler/execution trace remains open.
+The explicit context-sync example independently lowers to exactly
+`DSB ISH; VMALLS12E1IS; DSB ISH; ISB; RET`; its Sail decorator adds only the
+generated decoder and named call-target facts while returning the externally
+supplied bare instruction sequence unchanged. The completed wrapper separately
+retains the external completion and context-sync premises.
 In particular, this result does not verify or refine the downstream OS
 boot/revoke sequence, which currently emits plain `TLBI VMALLS12E1` between DSB
 ISH operations.

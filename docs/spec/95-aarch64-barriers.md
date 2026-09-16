@@ -109,6 +109,28 @@ The source identity deliberately includes `is`: a future plain, local-PE
 `TLBI VMALLS12E1` operation would require a distinct catalog member. Runtime
 instruction or scope operands are not accepted.
 
+### 3.5 Fixed VMALLS12E1IS context-sync slice
+
+The reference leaf
+`examples/hypervisor/stage2_vmalls12e1is_context_sync.oak` spells this fixed
+sequence in Oak source:
+
+```text
+DSB ISH
+TLBI VMALLS12E1IS
+DSB ISH
+ISB
+```
+
+It is an IS-only maintenance/context-synchronization slice, not a compound
+intrinsic or a complete break-before-make protocol. Descriptor break/make,
+target and scope suitability, completion, and context synchronization remain
+protocol proof obligations. The initial DSB ISH is deliberately conservative;
+the existence of this fixed leaf is not a claim that it is cheaper than every
+protocol-specific sequence that can justify a narrower barrier. Callers that
+do not require context synchronization should continue to spell only the
+operations their proof requires rather than pay for an unconditional ISB.
+
 ## 4. Backend lowering
 
 Each source barrier lowers through one `static inline` C helper whose AArch64
@@ -253,6 +275,12 @@ The same object seam separately requires an Oak
 bridge proves the named call target in Oak's pure projection. The object check
 proves neither access admission nor the target's execution effects.
 
+The fixed context-sync leaf is separately required to be exactly
+`DSB ISH; VMALLS12E1IS; DSB ISH; ISB; RET` in the direct-native object. The C
+bootstrap assembly gate requires the same four system instructions in order.
+These gates establish emitted occurrence/order and zero hidden work, not DSB
+completion or ISB architectural context synchronization.
+
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
 
@@ -275,6 +303,8 @@ The slice is accepted only if all of the following hold:
   no prologue, dispatch, or second instruction before `RET`;
 - the exact TLBI leaf is `0xd50c83df; RET`, and compiler scheduling/value
   forwarding cannot cross the TLBI occurrence;
+- the fixed context-sync leaf contains exactly the two DSB words, IS TLBI word,
+  ISB word, and `RET`, while its C lowering preserves the four-operation order;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
 - the generated Sail decoder refines all six words into those capabilities,
