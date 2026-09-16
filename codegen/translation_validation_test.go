@@ -136,8 +136,8 @@ func translationValidationHelpers() []validatedHelper {
 	// The strong compare-exchange helper on a cell reached through a span
 	// element under the index guard: the value observed and the guarded
 	// store (docs/spec/65-machine-memory.md section 7a). clang spells it as
-	// the exclusive loop (armv8.0) or `casal` (LSE); GCC's rv64 `lr.w`/`sc.w`
-	// are not in the rv64 unit language.
+	// the exclusive loop (armv8.0) or `casal` (LSE); GCC spells it as a
+	// semicolon-packed rv64 `lr.w`/`sc.w` loop that the extractor expands.
 	helpers = append(helpers, validatedHelper{
 		name:    "tv_cas_u32",
 		decl:    "tv_cas_u32: (v: [*]Atomic[u32], i: u32, expected, desired: u32) -> u32",
@@ -240,18 +240,13 @@ var (
 
 // assemblyFunctions splits compiler assembly into the instruction lines of
 // each tv_ function: directives dropped, comments stripped, local labels
-// renamed from the assembler's `.L` form to plain identifiers.
+// renamed from the assembler's `.L` form to plain identifiers. RISC-V GCC
+// may place an entire inline-assembly block on one semicolon-delimited line;
+// assemblyStatements expands that line before labels are resolved.
 func assemblyFunctions(assembly string, comment string) map[string][]string {
 	functions := map[string][]string{}
 	var current string
-	for _, raw := range strings.Split(assembly, "\n") {
-		line := raw
-		if comment != "" {
-			if i := strings.Index(line, comment); i >= 0 {
-				line = line[:i]
-			}
-		}
-		line = strings.TrimSpace(line)
+	for _, line := range assemblyStatements(assembly, comment) {
 		if m := tvGlobalLabel.FindStringSubmatch(line); m != nil {
 			current = m[1]
 			continue
@@ -284,9 +279,44 @@ func assemblyFunctions(assembly string, comment string) map[string][]string {
 	return functions
 }
 
+// assemblyStatements returns the logical statements in compiler assembly.
+// GCC renders its RISC-V atomic builtins on physical lines such as
+// `1: lr.w.aq ...; bne ... 1f; sc.w.rl ...; bnez ... 1b; 1:`. Keep both
+// numeric labels as separate statements so dropping a trailing label cannot
+// also drop the atomic operations that precede it.
+func assemblyStatements(assembly, comment string) []string {
+	var statements []string
+	for _, raw := range strings.Split(assembly, "\n") {
+		line := raw
+		if comment != "" {
+			if i := strings.Index(line, comment); i >= 0 {
+				line = line[:i]
+			}
+		}
+		parts := []string{line}
+		if comment == "#" {
+			parts = strings.Split(line, ";")
+		}
+		for _, part := range parts {
+			statement := strings.TrimSpace(part)
+			if comment == "#" {
+				if match := tvNumericLabelHead.FindStringSubmatch(statement); match != nil {
+					statements = append(statements, match[1]+":")
+					statement = strings.TrimSpace(match[2])
+				}
+			}
+			if statement != "" {
+				statements = append(statements, statement)
+			}
+		}
+	}
+	return statements
+}
+
 var (
-	tvNumericLabel = regexp.MustCompile(`^([0-9]+):$`)
-	tvNumericRef   = regexp.MustCompile(`\b([0-9]+)([bf])\b`)
+	tvNumericLabel     = regexp.MustCompile(`^([0-9]+):$`)
+	tvNumericLabelHead = regexp.MustCompile(`^([0-9]+):\s*(.*)$`)
+	tvNumericRef       = regexp.MustCompile(`\b([0-9]+)([bf])\b`)
 )
 
 // resolveNumericLabels gives every numeric local label a unique name and
@@ -319,6 +349,38 @@ func resolveNumericLabels(lines []string) []string {
 		})
 	}
 	return out
+}
+
+func TestAssemblyFunctionsExpandsPackedRV64Atomics(t *testing.T) {
+	assembly := `
+tv_cas_u32:
+	bgeu a2, a1, .Ltrap
+#APP
+	1: lr.w.aq a0, 0(a5); bne a0, a3, 1f; sc.w.rl a6, a4, 0(a5); bnez a6, 1b; 1:
+#NO_APP
+	sext.w a0, a0
+	ret
+.Ltrap:
+	ebreak
+	.size tv_cas_u32, .-tv_cas_u32
+`
+	got := strings.Join(assemblyFunctions(assembly, "#")["tv_cas_u32"], "\n")
+	want := strings.Join([]string{
+		"bgeu a2, a1, Ltrap",
+		"N1_1:",
+		"lr.w.aq a0, 0(a5)",
+		"bne a0, a3, N1_6",
+		"sc.w.rl a6, a4, 0(a5)",
+		"bnez a6, N1_1",
+		"N1_6:",
+		"sext.w a0, a0",
+		"ret",
+		"Ltrap:",
+		"ebreak",
+	}, "\n")
+	if got != want {
+		t.Fatalf("packed RV64 assembly =\n%s\nwant:\n%s", got, want)
+	}
 }
 
 func parseOakSpec(t *testing.T, source string) *ast.FunctionStatement {
