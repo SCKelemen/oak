@@ -94,6 +94,21 @@ trapping operations remain even when their result is known. Input and output
 verify independently; the result feeds later transforms and can affect emitted
 AArch64 or RV64 code only through the verifier-gated OptIR candidate below.
 
+SCCP also recognizes constant-result identities without requiring a concrete
+value for every input: exact-SSA self subtraction/XOR and integer/Bool reflexive
+comparisons, multiplication/AND by zero, and OR with the type's all-ones value.
+These rules cover the closed integer widths (including 128-bit analysis) and
+exclude floats, division, shifts, effects, and unknown attributes. Absorbing
+transfers wait while either input is lattice-unknown, even if the other currently
+looks absorbing; a later phi input may change that apparent constant. This keeps
+the transfer monotone without changing the lattice or convergence bound.
+Tests check all widths, exhaustive byte semantics, representative lattice
+refinements, all block orders of a changing-phi loop, exact evidence rejection,
+and retention of call/load/trap producers. Production ARM64/RV64 tests require
+proven SSA selection, dead-branch/zero-trip-loop removal, retained call effects,
+and no proof when source arithmetic, control, or effects change; host/QEMU
+execution checks the resulting program. This is not a formal OptIR refinement.
+
 The next target-independent cleanup candidate runs on the SCCP-rewritten CFG.
 It first removes unused non-entry block parameters and their exact incoming
 edge positions to a bounded fixed point; operation operands, terminators, edge

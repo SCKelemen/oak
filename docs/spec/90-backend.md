@@ -713,7 +713,14 @@ projections.
 The SCCP analysis validates its operation vocabulary before computing exact
 constants and executable CFG edges. Its folds use Oak's exact fixed-width
 signed/unsigned arithmetic and trap boundaries rather than host or target
-arithmetic. A separate, bounded transform consumes only exact independently
+arithmetic. Closed total operations additionally admit exact-SSA self
+subtraction/XOR and integer/Bool reflexive comparisons, multiplication/AND by
+zero, and OR with width-correct all-ones. Absorbing transfers wait for both
+operands to leave lattice-unknown, preserving monotonicity when a later phi
+input changes an apparent absorber. They do not apply to floating point,
+division, shifts, unknown attributes, or effectful operations. Calls, loads,
+and traps producing now-unused operands still execute on reachable paths.
+A separate, bounded transform consumes only exact independently
 recomputed evidence to replace known closed total-pure results, select known
 branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
 preserves effectful and trapping operations and independently verifies its

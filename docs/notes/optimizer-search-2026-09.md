@@ -459,6 +459,16 @@ remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
 
+The analysis includes closed total constant-result identities: exact-SSA self
+subtraction/XOR, reflexive integer/Bool comparisons, multiplication/AND by zero,
+and OR with width-correct all-ones. Unknown operands defer an absorbing transfer
+until both inputs have lattice information, keeping later phi refinement
+monotone. These rules expose branch/zero-trip-loop removal through the existing
+rewrite and post-memory cleanup; no target-specific pass or new search dimension
+is needed. An unused call/load/trap result never licenses deleting its producer,
+and two calls to the same function are not the same SSA value. Floats, division,
+shifts, and attributed/effectful operations receive no such identity rule.
+
 Before GVN, unused non-entry block parameters and their exact incoming edge
 positions are removed to a bounded fixed point; proof facts count as uses. Then
 trivial phi-like block parameters are removed only when every explicit incoming

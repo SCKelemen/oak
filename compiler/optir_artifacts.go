@@ -11,7 +11,7 @@ import (
 
 const (
 	optIRAnalysisWorkers          = 3
-	optIRSCCPRevision             = "oak.optir.sccp.v1"
+	optIRSCCPRevision             = "oak.optir.sccp.v2"
 	optIRSCCPRewriteRevision      = "oak.optir.sccp-rewrite.v1"
 	optIRSCCPCFGRevision          = "oak.optir.sccp-cfg.v1"
 	optIRLoopStructureRevision    = "oak.optir.loop-structure.v1"
