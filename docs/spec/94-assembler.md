@@ -7443,6 +7443,20 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**A field's address as an aggregate argument (2026-09-16).** A callee
+taking an owned array or record by reference may receive the address of
+a field inside the caller's own record parameter (`state.cv`, an `[8]u32`,
+handed to the compression function) or of a record of another type. The
+call summary bound such an argument as the caller's whole record by name,
+so the callee's leaves were spelled `state[k]` while the caller's own
+reads were `state.cv[k]` — the same words as two symbols — and the
+verifier refuted `hash.blake3_chunk_cv` on a state where the machine and
+the C oracle print the same eight words. The summary now lists the
+parameter type's leaves at their relative offsets and binds each to the
+caller's leaf at the argument's offset plus that, of the same width, under
+the caller leaf's union guards (`aggregateAtOffset`); a gap or a width
+that differs leaves the call trusted.
+
 **Reaching a rotated loop (2026-09-16).** The coupling compares the two
 sides' conditions for reaching each loop before it compares their
 iterations. A bottom-tested machine loop is reached only where its
