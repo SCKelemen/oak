@@ -560,10 +560,15 @@ translation, fault freedom, atomicity or non-tearing, ordering, CAT event,
 visibility, completion, or publication. Ordinary `STP` supplies no release or
 barrier semantics; live PTE publication therefore remains scalar. Any future
 blocked zero fill can reuse `Oak.BlockedFill.blocked_fill_eq` for final-state
-algebraic grouping and its less-than-four tail bound. It still requires bounds
-and trap preservation, provenance and pair-store verifier support, scalar-tail
-lowering, alias/observer exclusion, and private/unpublished ordinary-memory
-authority.
+algebraic grouping and its less-than-four tail bound. The checker refinement's
+`span_element_then_pair64_store` proves that an admitted writable 16-byte
+access covers two adjacent in-span u64 cells; synchronized examples admit
+offsets 0 and 16 of a four-cell region and refuse offset 24 and a read-only
+region. That is only byte bounds and writability metadata. It proves no
+ordinary-memory, privacy, or unpublished custody, so generic and record-span
+pair stores remain refused. A lowering still requires exact record-field
+provenance and trap preservation, verifier support, scalar-tail lowering,
+alias/observer exclusion, and private/unpublished ordinary-memory authority.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

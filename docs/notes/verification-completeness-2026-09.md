@@ -599,6 +599,17 @@ blocked-fill lowering therefore remains conditional on full bounds/provenance
 and verifier support, scalar-tail lowering, and private/unpublished ordinary-
 memory authority.
 
+The checker's existing slack-region decision now has the matching narrow
+writable-pair theorem: `span_element_then_pair64_store` turns an admitted
+16-byte access over eight-byte span elements into bounds for exactly two
+adjacent cells, and the synchronized Go/Lean examples pin the intended
+non-overlapping offsets 0 and 16 of a four-cell region plus overflow and
+read-only refusals. No checker behavior changed. In particular, writability is
+not ordinary-RAM, private, or
+unpublished custody; pair stores through generic and record spans remain
+outside the semantic verifier until that authority and exact record-field
+provenance are explicit.
+
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
 model. Until that lands, RV64 is closer to a formally closed

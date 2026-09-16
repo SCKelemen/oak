@@ -1082,10 +1082,18 @@ two `storePair` operations each, followed by the `n % 4` scalar tail, have the
 same final memory as `n` scalar stores; `blocked_fill_tail_lt_four` proves that
 tail has at most three words. This is final-state equality only, not bounds,
 trap/partial-write preservation, alias or observer exclusion, or authority to
-use STP. A future lowering still needs complete bounds/provenance and verifier
-support, scalar-tail lowering, and ordinary private-memory authority proving
-the storage has not yet been published—never a live descriptor-update
-protocol.
+use STP. `Oak.CheckerRefinement.span_element_then_pair64_store` separately
+proves the existing slack-region decision's narrow arithmetic fact: when an
+admitted writable 16-byte access starts `d` u64 cells into the derived region,
+cells `i+d` and `i+d+1` are inside the span. The Go-to-Lean decision gate pins
+the intended non-overlapping offsets 0 and 16 of a four-cell region and refuses
+the overflowing and read-only cases. This still supplies no memory-type or
+custody fact: a writable span may name published page tables, device memory,
+or externally observed storage. The verifier therefore continues to refuse
+pair stores through spans and record spans. A future lowering still needs exact
+record-field provenance, trap preservation, verifier support, scalar-tail
+lowering, and explicit ordinary private-memory authority proving the storage
+has not yet been published—never a live descriptor-update protocol.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
