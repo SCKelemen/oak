@@ -97,7 +97,7 @@ func TestE2ENativeBoundaryCopies(t *testing.T) {
 }
 
 func TestNativeShapesBoundaryCopies(t *testing.T) {
-	model, err := New().WithSource("copies.oak", nativeBoundaryCopiesProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("copies.oak", nativeBoundaryCopiesProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

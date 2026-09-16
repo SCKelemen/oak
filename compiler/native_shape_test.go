@@ -55,6 +55,14 @@ main: (): i32 {
 }
 `
 
+// nativeShapeModel fixes the target whose machine shape these tests inspect.
+// New defaults to the host, which would turn an AArch64 shape test into an
+// unsupported amd64 compilation on the Linux CI runners.
+func nativeShapeModel(name, text string) (*SemanticModel, error) {
+	tgt := target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}
+	return New().WithSource(name, text).WithTarget(tgt).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+}
+
 // loopBody returns the instructions between the first label starting with
 // "loop" and the next label of the unit.
 func loopBody(fn *asm.Function) []asm.Instruction {
@@ -77,7 +85,7 @@ func loopBody(fn *asm.Function) []asm.Instruction {
 }
 
 func TestNativeShapesRegistersInLoops(t *testing.T) {
-	model, err := New().WithSource("shape.oak", nativeShapeProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("shape.oak", nativeShapeProgram)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +268,7 @@ main: (): i32 {
 `
 
 func TestNativeShapesSearchElidesGuards(t *testing.T) {
-	model, err := New().WithSource("search.oak", nativeSearchProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("search.oak", nativeSearchProgram)
 	if err != nil {
 		t.Fatal(err)
 	}
