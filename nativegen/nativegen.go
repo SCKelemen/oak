@@ -5706,6 +5706,9 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 			if dst.readOnly {
 				return unsupported("an assignment to the read-only array %s", s.Name.Value)
 			}
+			if source, isPermutation := g.selfPermutation(s.Name.Value, arr, s.Value); isPermutation {
+				return g.lowerSelfPermutation(arr, source)
+			}
 			from, err := g.recordValueAs(s.Value, dst.layout)
 			if err != nil {
 				return err

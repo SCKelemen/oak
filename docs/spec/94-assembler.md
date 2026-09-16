@@ -5546,6 +5546,27 @@ records; that summary is the next step for the SHA-256 path, whose
 `sha256_rounds`, `sha256_compress`, `sha256_block`, `sha256_compress_view`,
 `sha256_init`, `sha256_update`, and `sha256_final` this increment moves
 from the C backend to the native lane.
+**In-place array permutations (2026-09-17, AArch64 lane;
+`nativegen/array_permutation.go`).** A whole assignment of an owned frame
+array whose right-hand side is exactly a permutation of that same array no
+longer builds a second array and copies it back. The recognizer accepts a
+direct array literal or the one-expression block aggregate-helper inlining
+produces, and only when every element is a constant in-range read of the
+destination, every source index occurs exactly once, the optional literal
+type is the destination type, and the destination is writable frame storage.
+Any statement, call, repeated or missing index, other source, dynamic index,
+record element, by-reference array, or unsupported element representation
+uses the ordinary value-copy lowering unchanged. For each nontrivial cycle,
+the lowering retains its first value in one scalar register and walks the
+cycle with a second, writing `new[i] = old[source[i]]`; fixed points emit
+nothing. The exact recognition makes all source reads pure and proves that no
+write can destroy a value not retained by its cycle. The checker and semantic
+verifier still judge the resulting ordinary frame loads and stores against the
+unmodified Oak body. BLAKE3's sixteen-word message permutation consists of two
+eight-cycles: its per-round assignment is 32 scalar memory instructions rather
+than 32 literal loads/stores plus an eight-instruction array copy, removes its
+64-byte temporary, and saves 48 dynamic instructions over the six rounds that
+permute.
 **Rotates (2026-09-16, AArch64 lane; `Oak.AssemblerSemantics.ror_spelling`).**
 A rotation spelled with shifts — `(x >> k) | (x << (W - k))` or the
 mirrored `(x << k) | (x >> (W - k))` over an unsigned `x` of 32 or 64

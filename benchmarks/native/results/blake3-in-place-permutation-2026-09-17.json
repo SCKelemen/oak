@@ -1,0 +1,50 @@
+{
+  "schema": "oak-blake3-in-place-permutation-v1",
+  "date": "2026-09-17",
+  "cpu": "Apple M4 Max",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "compiler_base": "2323cc1bc283a6663e1ad56bcadfe29a945d62af",
+  "compiler_after_change": "nativegen in-place lowering of exact whole-array self-permutations",
+  "size": 1048576,
+  "native_only": [
+    "hash__blake3_ucompress"
+  ],
+  "sample_order": "interleaved base and candidate, rotating first implementation each sample",
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+  "selected_compression": {
+    "base": {
+      "frame_bytes": 272,
+      "instructions": 342,
+      "stack_relative_memory_instructions": 152,
+      "verdict": "witnessed"
+    },
+    "candidate": {
+      "frame_bytes": 208,
+      "instructions": 334,
+      "stack_relative_memory_instructions": 144,
+      "verdict": "witnessed"
+    }
+  },
+  "timings": [
+    {
+      "rounds": 20,
+      "samples": 7,
+      "base_ns_per_op": [3595500, 3584650, 3287150, 3371500, 3852950, 3577100, 3261800],
+      "candidate_ns_per_op": [3798100, 3245200, 5862900, 3489750, 3460800, 2976500, 3057400],
+      "base_median_ns_per_op": 3577100,
+      "candidate_median_ns_per_op": 3460800,
+      "candidate_over_base": 0.9674876296441252
+    },
+    {
+      "rounds": 50,
+      "samples": 9,
+      "base_ns_per_op": [3243620, 3914600, 2893220, 3578360, 2943420, 3581800, 3904160, 4456300, 4036580],
+      "candidate_ns_per_op": [3490000, 2885700, 3068700, 2913060, 3491020, 3470580, 2892940, 2774880, 3057320],
+      "base_median_ns_per_op": 3581800,
+      "candidate_median_ns_per_op": 3057320,
+      "candidate_over_base": 0.8535708303087833
+    }
+  ]
+}
