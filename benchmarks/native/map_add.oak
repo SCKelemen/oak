@@ -42,4 +42,14 @@ sum_ab: (dst: [*]u32, a: []u32, b: []u32) -> () {
   } | { }
 }
 
+xor_mask: (dst: [*]u8, a: []u8, m: u8) -> () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] ^ m
+      i = i + u32(1)
+    }
+  } | { }
+}
+
 main: (): u32 = u32(0)

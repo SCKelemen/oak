@@ -406,19 +406,21 @@ or dependency-chain term is what would tell them apart.
 
 The element-wise span maps `vectorize-maps` rewrites
 (`docs/spec/94-assembler.md` §9 "Map vectorization"; `map_add.oak`,
-`bench_map.c`, `run_map.sh`), measured over 2^20 elements, best of seven
-rounds of two hundred calls, the vectorized form as the search selects
-it against the scalar loop the search keeps when the transform is
-withheld (`OAK_OPT_SKIP=vectorize-maps`). Two runs on a host at load
-average 47–71; every row's checksum agrees, and every row is proven at
-the bit level with the span memory it writes.
+`bench_map.c`, `run_map.sh`), measured over 2^20 elements (the byte map
+over 2^22 bytes, the same 4 MB), best of seven rounds of two hundred
+calls, the vectorized form as the search selects it against the scalar
+loop the search keeps when the transform is withheld
+(`OAK_OPT_SKIP=vectorize-maps`). Three runs on a host at load average
+47–71; every row's checksum agrees, and every row is proven at the bit
+level with the span memory it writes.
 
-| Kernel | scalar loop, ns/element | one vector a trip (**selected**) | speedup |
+| Kernel | scalar loop | one vector a trip (**selected**) | speedup |
 | --- | ---: | ---: | ---: |
-| `add_k` — `dst[i] = a[i] + k`, `u32` | 0.394–0.426 | 0.142–0.144 | 2.8–3.0× |
-| `bump` — `v[i] = (v[i] ^ k) + 1` in place, `u32` | 0.407–0.457 | 0.126–0.127 | 3.2–3.6× |
-| `fmadd_k` — `dst[i] = a[i] * k + 0.5`, `f32` | 0.365–0.432 | 0.139–0.155 | 2.6–2.8× |
-| `sum_ab` — `dst[i] = a[i] + b[i]`, a zip, `u32` | 0.483–0.802 | 0.210–0.365 | 2.2–2.3× |
+| `add_k` — `dst[i] = a[i] + k`, `u32`, ns/element | 0.394–0.426 | 0.142–0.157 | 2.7–3.0× |
+| `bump` — `v[i] = (v[i] ^ k) + 1` in place, `u32` | 0.407–0.466 | 0.123–0.127 | 3.2–3.7× |
+| `fmadd_k` — `dst[i] = a[i] * k + 0.5`, `f32` | 0.365–0.432 | 0.139–0.168 | 2.5–2.8× |
+| `sum_ab` — `dst[i] = a[i] + b[i]`, a zip, `u32` | 0.483–0.802 | 0.210–0.365 | 2.2–2.5× |
+| `xor_mask` — `dst[i] = a[i] ^ m`, `u8`, ns/byte | 0.453 | 0.028 | 16× |
 
 What the rows say:
 
@@ -427,9 +429,13 @@ What the rows say:
   nothing across trips, so the four-element trip already runs near the
   store bandwidth the host gives one core under this load, and the gain
   is the 2–3× the lane count and the guard elision predict together.
-- **The zip is the slowest of the four either way** — three streams
-  against two — and the one with the widest spread between runs, which is
-  the memory system, not the code.
+- **The byte map is where the lanes pay most.** Sixteen bytes a trip
+  against one, and the scalar loop's per-element guard and branch are the
+  same cost whatever the width: 0.45 ns a byte becomes 0.028, sixteen
+  times, the whole lane count.
+- **The zip is the slowest of the four word kernels either way** — three
+  streams against two — and the one with the widest spread between runs,
+  which is the memory system, not the code.
 - **The float map vectorizes because nothing reassociates.** `fmul` and
   `fadd` round once per lane as the scalar operators do, so the license
   (`Oak.Map.blocked_eq`) needs no law of `f32` where the reduction's
