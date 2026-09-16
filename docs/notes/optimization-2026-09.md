@@ -251,11 +251,17 @@ through AArch64 and RV64 lowering with proven semantic verdicts. The limit of
 one missing input remains per region phi.
 One scalar cleanup round now follows forwarding: SCCP folds newly exposed
 constants and branches, then phi cleanup/GVN/DCE removes redundant parameters
-and pure operations. Checked memory projection and MemorySSA are rebuilt for
+and pure operations. Fresh checked projection, MemorySSA, and definition
+liveness then drive one more verified DSE pass; pure DCE removes the deleted
+stores' unused producers without deleting effectful calls. Intermediate CFGs
+and both reports remain replayable within the same cleanup artifact.
+Checked memory projection and MemorySSA are rebuilt for
 the final `MemoryCleanup.CFG`, and native selection replays that composition.
 Source-only global declarations remain available to the verifier when an
 unreachable access or call disappears; no removed machine access is restored.
-Both native targets prove the constant-branch and wrapping-arithmetic fixtures,
+Both native targets prove the constant-branch, wrapping-arithmetic, and
+post-forwarding dead-store fixtures (including reachable readers and live-out
+state preservation),
 which also execute on the host and under RV64 QEMU.
 The transform moves the removed canonical load's checked source/access identity
 to that edge block, creates a fresh typed parameter in the phi block, and

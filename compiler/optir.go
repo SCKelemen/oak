@@ -1200,7 +1200,9 @@ func (lowerer *optIRLowerer) checkedTypeFact(tok token.Token, result optir.Value
 func verifyOptIRAnalysisFacts(authority optir.CheckedFactAuthority, analyses optIRAnalysisArtifacts) error {
 	candidates := []optir.CFG{analyses.sccpSimplified, analyses.simplified, analyses.loopInvariant}
 	if analyses.hasMemory {
-		candidates = append(candidates, analyses.deadStores, analyses.regionLoads, analyses.memoryCleanup.SCCPSimplified, analyses.memoryCleanup.CFG)
+		candidates = append(candidates, analyses.deadStores, analyses.regionLoads,
+			analyses.memoryCleanup.SCCPSimplified, analyses.memoryCleanup.ScalarCFG,
+			analyses.memoryCleanup.DeadStores, analyses.memoryCleanup.CFG)
 	}
 	for _, cfg := range candidates {
 		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {

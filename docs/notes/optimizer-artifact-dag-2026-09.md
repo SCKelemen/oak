@@ -263,10 +263,12 @@ Completed:
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
    After the checked memory transforms, one `optir.memory-cleanup` node
-   composes SCCP and phi/GVN/DCE cleanup. Its dependencies are the exact
+   composes SCCP, phi/GVN/DCE cleanup, fresh memory liveness and verified DSE,
+   and final pure DCE. Its dependencies are the exact
    forwarding artifact and checked memory authority, and its revision includes
-   the constituent analysis/rewrite revisions. It rebuilds checked projection
-   and MemorySSA after scalar/CFG rewrites. Native selection replays that
+   the constituent analysis/rewrite revisions, including memory liveness and
+   DSE. It rebuilds checked projection and MemorySSA after scalar/CFG rewrites
+   and after final store/producer deletion. Native selection replays that
    bounded composition and uses the final CFG for bindings, call certificates,
    and materialization identity; intermediate helpers need no separate nodes.
 4. OptIR has closed analysis-aspect declarations and checked preservation

@@ -1079,7 +1079,12 @@ and treats every global region as live on normal return. The typed artifact DAG
 runs projection, MemorySSA, liveness, combined evidence, DSE, and load
 forwarding after LICM; both transforms independently verify their complete
 rewrites before publishing them. One subsequent `optir.memory-cleanup` node
-runs SCCP and phi/GVN/DCE cleanup to consume newly exposed scalar facts.
+runs SCCP and phi/GVN/DCE cleanup to consume newly exposed scalar facts,
+then recomputes checked memory projection, MemorySSA, and liveness to remove
+stores made dead by forwarding or branch pruning. The existing closed DSE
+transform independently verifies its rewrite; a final pure DCE removes unused
+store-value producers while retaining effectful calls. This is a bounded
+composition within the same artifact, not additional global graph plumbing.
 Checked access projection and MemorySSA are rebuilt for `MemoryCleanup.CFG`,
 and native selection independently replays the cleanup before deriving final
 bindings, active call certificates, and materialization identity. The source
