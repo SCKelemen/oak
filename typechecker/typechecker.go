@@ -1949,14 +1949,27 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 	if (arithmetic || bitwise) && expected != nil && (tc.isNumericType(expected) || tc.isFloatType(expected)) {
 		operandExpected = expected
 	}
+	comparison := expr.Operator == "==" || expr.Operator == "!="
 	peerContext := func(typ Type) Type {
 		if typ != nil && (tc.isNumericType(typ) || tc.isFloatType(typ)) {
 			return typ
 		}
+		// A bare variant compared with a typed peer (`s == .Established`)
+		// takes the peer's ADT: a state name several typestates of one
+		// package share is not ambiguous when the other side fixes it.
+		if comparison && typ != nil {
+			if _, _, _, isADT := adtInstantiation(typ); isADT {
+				return typ
+			}
+		}
 		return operandExpected
 	}
+	bareVariant := func(e ast.Expression) bool {
+		v, isVariant := e.(*ast.VariantExpression)
+		return isVariant && v.TypeName == nil
+	}
 	var leftType, rightType Type
-	if IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right) {
+	if (IsLiteralOnlyExpression(expr.Left) && !IsLiteralOnlyExpression(expr.Right)) || (comparison && bareVariant(expr.Left) && !bareVariant(expr.Right)) {
 		rightType = tc.checkExpression(expr.Right, operandExpected)
 		leftType = tc.checkExpression(expr.Left, peerContext(rightType))
 	} else {
