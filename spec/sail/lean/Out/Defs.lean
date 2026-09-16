@@ -137,7 +137,7 @@ structure OrdinaryRETDecode where
   use_key_a : Bool
   deriving BEq, Inhabited, Repr
 
-inductive DirectBranchImmediateExecutionTarget where | DirectBranchImmediateExecutionTarget_DIR
+inductive DirectBranchImmediateExecutionTarget where | DirectBranchImmediateExecutionTarget_DIR | DirectBranchImmediateExecutionTarget_DIRCALL
   deriving BEq, Inhabited, Repr
   open DirectBranchImmediateExecutionTarget
 

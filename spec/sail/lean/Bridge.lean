@@ -3,6 +3,7 @@ import Oak.ArmASL
 import Oak.AArch64Encoding
 import Oak.AArch64ReturnEncoding
 import Oak.AArch64DirectBranchEncoding
+import Oak.AArch64CallBranchEncoding
 import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 import Oak.AArch64Barrier
@@ -1596,6 +1597,79 @@ theorem ordinary_b_positive_endpoint_generated_decode_exact :
 theorem bl_word_rejected_by_ordinary_b_projection :
     (Out.Functions.decode64_ordinary_b_immediate_pure
       0x94000003#32).encoding_valid = false := by
+  rfl
+
+/-! ## Ordinary direct BL-immediate decoder dispatch
+
+This projection covers the static decode of Oak's exact ordinary `BL` words
+through the official `branch_unconditional_immediate_decode` route to
+`BranchType_DIRCALL`. It does not read architectural `PC`, write `X30`, execute
+`PostDecode` or `BranchTo`, validate/map the target, justify source-CFG label
+choice, prove object/link correctness, or observe a transfer.
+-/
+
+/-- Every word packed by Oak's exact ordinary-`BL` row selects the direct-call
+    class and carries precisely its signed, scaled immediate. -/
+theorem ordinary_bl_generated_decode_exact (imm26 : BitVec 26) :
+    Out.Functions.decode64_ordinary_bl_immediate_pure
+      (Oak.AArch64CallBranchEncoding.encodeBLImm26 imm26) = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIRCALL
+        imm26 := imm26
+        op := 1#1
+        offset := (imm26 ++ 0#2).signExtend 64
+      } := by
+  simp only [Out.Functions.decode64_ordinary_bl_immediate_pure,
+    Sail.BitVec.slice]
+  rw [Oak.AArch64CallBranchEncoding.encodeBLImm26_extract]
+  rw [ordinary_b_offset_generated_eq_signExtend]
+  congr 1 <;>
+    simp [Oak.AArch64CallBranchEncoding.encodeBLImm26,
+      Oak.AArch64CallBranchEncoding.bl] <;>
+    bv_decide
+
+/-- The decoded call offset's signed value is the supplied signed word
+    displacement scaled to bytes. -/
+theorem ordinary_bl_generated_offset_toInt (imm26 : BitVec 26) :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      (Oak.AArch64CallBranchEncoding.encodeBLImm26 imm26)).offset.toInt =
+      imm26.toInt * 4 := by
+  rw [ordinary_bl_generated_decode_exact]
+  rw [← ordinary_b_offset_generated_eq_signExtend]
+  exact ordinary_b_offset_generated_toInt imm26
+
+/-- Oak's exact `BL +12` word selects the direct-call class and carries the
+    signed/scaled byte offset twelve. -/
+theorem ordinary_bl_plus12_generated_decode_exact :
+    Out.Functions.decode64_ordinary_bl_immediate_pure
+      Oak.AArch64CallBranchEncoding.blPlus12 = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIRCALL
+        imm26 := 3#26
+        op := 1#1
+        offset := 12#64
+      } := by
+  rw [Oak.AArch64CallBranchEncoding.bl_plus_12_word]
+  rfl
+
+/-- The lower signed endpoint is decoded as exactly `-2^27` in its 64-bit
+    two's-complement carrier. -/
+theorem ordinary_bl_negative_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x96000000#32).offset = 0xfffffffff8000000#64 := by
+  rfl
+
+/-- The upper aligned endpoint is decoded as exactly `2^27 - 4`. -/
+theorem ordinary_bl_positive_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x95ffffff#32).offset = 0x0000000007fffffc#64 := by
+  rfl
+
+/-- `B` shares the immediate shape but is a distinct generated class. The
+    ordinary-`BL` projection rejects its opcode. -/
+theorem b_word_rejected_by_ordinary_bl_projection :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x14000003#32).encoding_valid = false := by
   rfl
 
 /-! ## Plain ERET at EL2

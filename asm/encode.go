@@ -1545,12 +1545,14 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 	if scale <= 0 {
 		scale = 1
 	}
-	// The exact B-immediate proof composes local label encoding with the
+	// The exact B/BL-immediate proofs compose local label encoding with the
 	// object writer's Branch26 model.  Both the instruction place and its
 	// target are instruction addresses, so reject equally misaligned inputs
 	// rather than admitting them merely because their difference is aligned.
-	if fields == "imm26" && e.enc.Mnemonic == "b" && (pc%4 != 0 || target%4 != 0) {
-		return nil, fmt.Errorf("label %s: B place %d and target %d must be four-byte aligned", sym.Name, pc, target)
+	if fields == "imm26" && (e.enc.Mnemonic == "b" || e.enc.Mnemonic == "bl") &&
+		(pc%4 != 0 || target%4 != 0) {
+		return nil, fmt.Errorf("label %s: %s place %d and target %d must be four-byte aligned",
+			sym.Name, strings.ToUpper(e.enc.Mnemonic), pc, target)
 	}
 	if disp%scale != 0 {
 		return nil, fmt.Errorf("label %s: displacement %d is not a multiple of %d", sym.Name, disp, scale)
