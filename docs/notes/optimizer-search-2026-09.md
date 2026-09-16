@@ -887,8 +887,18 @@ runs projection, MemorySSA, liveness, combined evidence, and DSE after LICM;
 DSE independently verifies its complete rewrite before publishing it.
 Changed post-DSE CFGs can enter native search on AArch64 and RV64 when the
 memory vocabulary is acyclic, call-free control flow over exact
-scalar package-global reads and whole nonvolatile writes. Selection reprojects
-immutable checked source-access authority over the exact final CFG,
+scalar package-global reads and whole nonvolatile writes. Both targets also
+admit one exact call-free canonical natural loop with a unique preheader,
+conditional header, straight-line body/latch, backedge, and return exit. Its
+RegionMemorySSA contains the loop-header phi joining the entry memory version
+with the exact body-store definition. Selection independently rechecks that
+evidence, `asm.Check` admits each selected body, and `asm.Verify` proves it
+against the corresponding Oak loop, including its package-global write.
+RV64's verifier requires exact `la`-derived scalar-global address provenance;
+direct positive and negative tests prove the correct loop and refute an
+incorrect store, removing the previous trusted boundary for package-global
+loop-carried state. Arbitrary and nested memory loops remain refused. Selection
+reprojects immutable checked source-access authority over the exact final CFG,
 independently verifies rebuilt MemorySSA, and matches every opaque region
 through typechecker authority to an exact global descriptor already authorized
 by the assembler template. Width- and signedness-correct code covers Bool and
@@ -896,9 +906,8 @@ by the assembler template. Width- and signedness-correct code covers Bool and
 of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
-whether the body may ship. Aggregate/partial regions, memory loops, load GVN,
-and interprocedural call Mod/Ref summaries
-remain open.
+whether the body may ship. Aggregate/partial regions, broader memory loops,
+load GVN, and interprocedural call Mod/Ref summaries remain open.
 
 As the projection broadens, region memory SSA should power:
 
@@ -1110,8 +1119,9 @@ This phase targets the measured UTF-8 call/spill gap directly.
 15. dominators and canonical loops;
 16. explicit loop outputs;
 17. recurrence/trip-count analysis;
-18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate
-    and checked scalar-global projection landed; aggregate regions and call
+18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate,
+    checked scalar-global projection, and one verifier-proved canonical memory
+    loop on both targets landed; broader loops, aggregate regions, and call
     summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;

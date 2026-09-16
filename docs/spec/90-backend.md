@@ -746,18 +746,30 @@ fail closed. Every package-global region is observable at normal return.
 Projection, MemorySSA, liveness, evidence, and DSE are exact typed artifact-DAG
 nodes after LICM; the DSE node independently reruns its complete transform
 verifier before publishing a candidate. Changed post-DSE CFGs now enter AArch64
-or RV64 native search for closed acyclic, call-free control flow containing exact scalar
-package-global reads and whole nonvolatile writes. Each selector
-independently reprojects the immutable checked source-access authority over the
-exact final CFG, verifies rebuilt MemorySSA, resolves opaque regions only through
-typechecker authority, and requires the resulting descriptor to match a global
+or RV64 native search for closed acyclic, call-free control flow containing
+exact scalar package-global reads and whole nonvolatile writes. Both targets also admit
+exactly one call-free canonical natural loop with a unique preheader, conditional
+header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
+must contain the header phi joining entry memory with the exact body-store
+definition, and selection independently rechecks it. The resulting AArch64 and
+RV64 fixtures pass `asm.Check`; `asm.Verify` proves both their returned values
+and the package-global state they write against the corresponding Oak loop
+body. RV64 recognizes a scalar-global address only through exact `la`
+provenance. Direct positive and negative verifier tests prove the correct loop
+and refute a wrong store, closing the former trusted boundary for RV64
+package-global loop-carried state. Arbitrary, nested, multi-latch, and
+multi-exit memory loops refuse. Each selector independently reprojects the
+immutable checked source-access authority over the exact final CFG, verifies
+rebuilt MemorySSA, and resolves opaque regions only through
+typechecker authority. The resulting descriptor must match a global
 already authorized by the assembler template. Bool and signed/unsigned
 8/16/32/64-bit cells use their exact ABI widths and canonical load extensions.
 The target's independently verified register plan, typed aligned spill frame,
 and reserved scratch discipline compose with those accesses. The resulting
-The authority and final projection fingerprints are part of materialization
+authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
-semantic-verifier verdict before selection. Load forwarding, memory loops,
+semantic-verifier verdict before selection. Load forwarding, broader memory
+loops,
 aggregate regions, and interprocedural call Mod/Ref summaries remain open.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
