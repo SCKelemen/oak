@@ -3838,7 +3838,7 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			// the address starts, selected from the field's leaves by the
 			// index — the fold the Oak side builds for `a.at[i]`
 			// (elementUnderIndexTerm), last leaf first.
-			arg := recordSpanArg{leaves: record.leaves}
+			arg := newRecordSpanArg(record.size, record.leaves)
 			prefix, length, stride, isArray := arg.arrayFieldAt(baseOffset + mem.Offset)
 			if !isArray {
 				return "an indexed load through a record argument at an offset that starts no array field", false
@@ -9038,7 +9038,10 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// after the caller's (loopBase), nested under the loop being executed,
 	// their fresh symbols declared for the verdict; the Oak side inlines
 	// the same body and creates the same events, which the coupling pairs
-	// by identity (asm/loops.go).
+	// by identity (asm/loops.go). Their reaching condition is the caller's
+	// path to this call together with the callee's path to the loop. Keeping
+	// both is essential for the induction base: stores before a loop inside
+	// a conditional are equal only on the paths that actually enter it.
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
 		ev.at = x.callAt
@@ -9890,6 +9893,79 @@ func canonical(t *term) *term {
 	return canonicalMemo(t, map[*term]*term{}, map[*term]bool{})
 }
 
+// compareSmallConditional distributes an equality test over a narrow
+// conditional value. Package status cells and u16 counters are commonly
+// updated as a chain of `condition ? update : prior`; testing the final value
+// against zero otherwise leaves the whole decision tree inside one comparison.
+// The machine CFG has already split those decisions into branches, so spelling
+// the source test arm by arm lets the two decision trees meet without one large
+// bit diagram.
+//
+// The rewrite is deliberately limited to at-most-u16 eq/ne tests against a
+// constant. It is pointwise: (c ? x : y) == k is c ? (x == k) : (y == k),
+// and likewise for !=. Memoizing by arm preserves sharing in the input DAG.
+func compareSmallConditional(code string, value, constant *term) (*term, bool) {
+	if (code != "eq" && code != "ne") || value == nil || constant == nil || value.kind != termIte || constant.kind != termConst || value.width > 16 || constant.width != value.width {
+		return nil, false
+	}
+	memo := map[*term]*term{}
+	var compare func(*term) *term
+	compare = func(arm *term) *term {
+		if done, seen := memo[arm]; seen {
+			return done
+		}
+		if arm.kind != termIte {
+			out := cmpTerm(code, arm, constant)
+			memo[arm] = out
+			return out
+		}
+		left, right := compare(arm.left), compare(arm.right)
+		var out *term
+		cond := truncate(arm.cond, 1)
+		asWidth := func(bit *term) *term { return zeroExtend(bit, value.width) }
+		switch {
+		case equalTerms(left, right):
+			out = left
+		case left.kind == termConst && right.kind == termConst && left.value == 1 && right.value == 0:
+			out = asWidth(cond)
+		case left.kind == termConst && right.kind == termConst && left.value == 0 && right.value == 1:
+			out = asWidth(notTerm(cond))
+		case left.kind == termConst && left.value == 0:
+			prior := truncate(right, 1)
+			// A fail-closed update is `c = prior && fail; c ? error :
+			// prior`. Testing it for the non-error value yields
+			// `not (prior && fail) && prior`, i.e. `prior && not fail`.
+			// Keep that linear conjunction instead of nesting the whole
+			// prior predicate under its own negation again.
+			var fail *term
+			if cond.kind == termBinary && cond.op == "and" && cond.width == 1 {
+				switch {
+				case equalTerms(cond.left, prior):
+					fail = cond.right
+				case equalTerms(cond.right, prior):
+					fail = cond.left
+				}
+			}
+			if fail != nil {
+				out = asWidth(binaryTerm("and", prior, notTerm(fail)))
+			} else {
+				out = asWidth(binaryTerm("and", notTerm(cond), prior))
+			}
+		case left.kind == termConst && left.value == 1:
+			out = asWidth(binaryTerm("or", cond, truncate(right, 1)))
+		case right.kind == termConst && right.value == 0:
+			out = asWidth(binaryTerm("and", cond, truncate(left, 1)))
+		case right.kind == termConst && right.value == 1:
+			out = asWidth(binaryTerm("or", notTerm(cond), truncate(left, 1)))
+		default:
+			out = iteTerm(arm.cond, left, right)
+		}
+		memo[arm] = out
+		return out
+	}
+	return compare(value), true
+}
+
 func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term {
 	if t == nil {
 		return nil
@@ -10039,7 +10115,54 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				// two u32 parameters, against the Oak body's `start > n`).
 				left, right = narrow.left, narrow.right
 			}
+			if distributed, ok := compareSmallConditional(t.op, left, right); ok {
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			} else if distributed, ok := compareSmallConditional(t.op, right, left); ok {
+				// Equality and inequality are symmetric; keep the conditional
+				// in the position the helper expects.
+				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			}
+			if out != nil {
+				break
+			}
 			switch {
+			case right.kind == termConst && right.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case left.kind == termConst && left.value > 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				value := uint64(0)
+				if t.op == "ne" {
+					value = 1
+				}
+				out = constTerm(value, t.width)
+			case right.kind == termConst && right.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(left, boolean):
+				// A value already known to be 0/1 compares with one as
+				// itself, or its negation. This commonly follows a cset-like
+				// status test through another comparison at register width.
+				out = left
+				if t.op == "ne" {
+					out = notTerm(left)
+				}
+				out = adaptWidth(out, t.width)
+			case left.kind == termConst && left.value == 1 && (t.op == "eq" || t.op == "ne") && booleanValued(right, boolean):
+				out = right
+				if t.op == "ne" {
+					out = notTerm(right)
+				}
+				out = adaptWidth(out, t.width)
+			case right.kind == termConst && right.value == 0 && (t.op == "eq" || t.op == "ne") && left.kind == termBinary && left.op == "and" && left.right.kind == termConst && left.right.value == mask(left.width) && left.left.width > left.width && significantBits(left.left) <= 1:
+				// A known 0/1 value tests as its low bit even when a narrow
+				// register view wrapped it in a wider full mask. Read only
+				// that bit; re-entering on this small Boolean expression
+				// avoids rebuilding the value's surrounding decision DAG.
+				bit := canonicalMemo(truncate(left.left, 1), memo, boolean)
+				if t.op == "eq" {
+					bit = notTerm(bit)
+				}
+				out = canonicalMemo(adaptWidth(bit, t.width), memo, boolean)
 			case right.kind == termConst && right.value == 0 && t.op == "ne" && booleanValued(left, boolean):
 				// A zero test of a 1/0 value is the value (the machine's
 				// `cset` then `cmp #0`); of its negation, the negation.

@@ -7,6 +7,134 @@ import (
 	"github.com/SCKelemen/oak/ast"
 )
 
+func TestPruneWritesUnderGuardBeforeIndexEquality(t *testing.T) {
+	p := paramTerm("p", 1)
+	original := &spanWrite{index: selectTerm("large", paramTerm("i", 32), 32), value: paramTerm("x", 32), guard: p}
+	log := []*spanWrite{original}
+	widthOf := func(string) int { return 32 }
+
+	if got := pruneWritesUnder(notTerm(p), log, widthOf); len(got) != 0 {
+		t.Fatalf("a refuted write guard must remove the store before its index is compared, got %d writes", len(got))
+	}
+	implied := pruneWritesUnder(p, log, widthOf)
+	if len(implied) != 1 || implied[0].guard != nil {
+		t.Fatalf("an implied write guard must become unconditional, got %#v", implied)
+	}
+	q := paramTerm("q", 1)
+	unknown := pruneWritesUnder(q, log, widthOf)
+	if len(unknown) != 1 || unknown[0].guard == nil {
+		t.Fatalf("an undecided write guard must be retained, got %#v", unknown)
+	}
+	if original.guard != p || log[0] != original {
+		t.Fatal("write-log pruning mutated the shared input log")
+	}
+}
+
+func TestWriteLogsEqualUnderProvesOperationsPointwise(t *testing.T) {
+	r := paramTerm("r", 32)
+	premise := constTerm(1, 1)
+	decide := func(premise, a, b *term) (bool, bool) {
+		return impliesEqual(premise, a, b, func(string) int { return 32 })
+	}
+	value := paramTerm("x", 64)
+	oak := []*spanWrite{
+		{memory: "loop1.v"},
+		{index: binaryTerm("mul", r, constTerm(2048, 32)), value: value},
+	}
+	asm := []*spanWrite{
+		{memory: "loop1.v"},
+		{index: binaryTerm("shl", r, constTerm(11, 32)), value: paramTerm("x", 64)},
+	}
+	if !writeLogsEqualUnder(oak, asm, premise, decide) {
+		t.Fatal("the same marker and algebraically equal store must prove pointwise")
+	}
+	wrongValue := append([]*spanWrite(nil), asm...)
+	wrongValue[1] = &spanWrite{index: asm[1].index, value: constTerm(1, 64)}
+	if writeLogsEqualUnder(oak, wrongValue, premise, decide) {
+		t.Fatal("stores with different values must not prove pointwise")
+	}
+	wrongMarker := append([]*spanWrite(nil), asm...)
+	wrongMarker[0] = &spanWrite{memory: "loop2.v"}
+	if writeLogsEqualUnder(oak, wrongMarker, premise, decide) {
+		t.Fatal("different loop memories must not prove pointwise")
+	}
+	if writeLogsEqualUnder(oak, asm[:1], premise, decide) {
+		t.Fatal("logs with different lengths must not prove pointwise")
+	}
+
+	// The straight-line span shape from unmap_page: the source decrements
+	// at u16, while the machine widens the load/subtract and truncates the
+	// result; its index carries masks around the same narrow leaf.
+	base, page := paramTerm("base", 64), paramTerm("page", 64)
+	leaf := binaryTerm("shr", binaryTerm("sub", page, base), constTerm(14, 64))
+	sourceIndex := binaryTerm("add", paramTerm("prefix", 32), zeroExtend(truncate(leaf, 16), 32))
+	machineIndex := binaryTerm("add", paramTerm("prefix", 32), binaryTerm("and", truncate(binaryTerm("and", leaf, constTerm(0xffff, 64)), 32), constTerm(0xffff, 32)))
+	sourceValue := binaryTerm("sub", selectTerm("s.entry_count", sourceIndex, 16), constTerm(1, 16))
+	loaded := zeroExtend(selectTerm("s.entry_count", machineIndex, 16), 32)
+	machineValue := truncate(binaryTerm("sub", loaded, constTerm(1, 32)), 16)
+	guard := paramTerm("valid", 1)
+	straightOak := []*spanWrite{{index: sourceIndex, value: sourceValue, guard: guard}}
+	straightAsm := []*spanWrite{{index: machineIndex, value: machineValue, guard: zeroExtend(guard, 32)}}
+	if !writeLogsEqualUnder(straightOak, straightAsm, premise, decide) {
+		t.Fatal("masked narrow straight-line updates must prove pointwise")
+	}
+	wrongStraight := []*spanWrite{{index: machineIndex, value: truncate(binaryTerm("sub", loaded, constTerm(2, 32)), 16), guard: zeroExtend(guard, 32)}}
+	if writeLogsEqualUnder(straightOak, wrongStraight, premise, decide) {
+		t.Fatal("a changed straight-line decrement must not prove pointwise")
+	}
+
+	// Conditional writes only observe their index and value where the guard
+	// holds. Reordered and repeated guard factors are the same condition, and
+	// off-path differences therefore do not change the memory operation.
+	p, q := paramTerm("p", 1), paramTerm("q", 1)
+	oakGuard := binaryTerm("and", p, q)
+	asmGuard := binaryTerm("and", q, binaryTerm("and", p, p))
+	oakConditional := []*spanWrite{{index: r, value: value, guard: oakGuard}}
+	asmConditional := []*spanWrite{{
+		index: iteTerm(p, r, binaryTerm("add", r, constTerm(1, 32))),
+		value: iteTerm(q, value, binaryTerm("add", value, constTerm(1, 64))),
+		guard: asmGuard,
+	}}
+	if !writeLogsEqualUnder(oakConditional, asmConditional, premise, decide) {
+		t.Fatal("equivalent conjunction guards and off-path differences must prove pointwise")
+	}
+	asmConditional[0].guard = q
+	if writeLogsEqualUnder(oakConditional, asmConditional, premise, decide) {
+		t.Fatal("different conditional-write guards must not prove pointwise")
+	}
+	asmConditional[0].guard = asmGuard
+	asmConditional[0].value = binaryTerm("add", value, constTerm(1, 64))
+	if writeLogsEqualUnder(oakConditional, asmConditional, premise, decide) {
+		t.Fatal("values that differ on the active write path must not prove pointwise")
+	}
+	unconditional := []*spanWrite{{index: r, value: value}}
+	if !writeLogsEqualUnder(unconditional, unconditional, premise, decide) {
+		t.Fatal("matching nil guards must remain unconditional")
+	}
+	if writeLogsEqualUnder(unconditional, []*spanWrite{{index: r, value: value, guard: p}}, premise, decide) {
+		t.Fatal("an unconditional and a conditional write must not prove pointwise")
+	}
+	contextOakGuard := binaryTerm("and", p, iteTerm(p, q, notTerm(q)))
+	contextAsmGuard := binaryTerm("and", p, q)
+	if !writeLogsEqualUnder(
+		[]*spanWrite{{index: r, value: value, guard: contextOakGuard}},
+		[]*spanWrite{{index: r, value: value, guard: contextAsmGuard}},
+		premise,
+		decide,
+	) {
+		t.Fatal("residual guard factors equal under their common context must prove pointwise")
+	}
+	wrongContextGuard := binaryTerm("and", p, iteTerm(p, notTerm(q), q))
+	if writeLogsEqualUnder(
+		[]*spanWrite{{index: r, value: value, guard: wrongContextGuard}},
+		[]*spanWrite{{index: r, value: value, guard: contextAsmGuard}},
+		premise,
+		decide,
+	) {
+		t.Fatal("residual guard factors that differ on their common context must not prove pointwise")
+	}
+}
+
 // Memory effects through span parameters are verified, not trusted
 // (docs/spec/94-assembler.md §9, the twenty-eighth increment): a store
 // through a span is compared element by element with the Oak body's, a
