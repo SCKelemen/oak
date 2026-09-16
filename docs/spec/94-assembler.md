@@ -5342,6 +5342,35 @@ gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
 result, a conditional store; both lanes), the `fill` case of
 `compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
 
+**Open: unmarking a loop memory twice drops an enclosing loop's marker
+(2026-09-16).** `loopEvent` unmarks a memory the iteration never stores
+to in two places — inside the loop that collects the iteration's stores,
+and again after it. The first consumes the event's entry log, so the
+second reads an absent entry as "nothing was written before the loop"
+and deletes the memory's write log outright. When the loop is nested,
+that deletes the enclosing loop's marker with it, and the enclosing loop
+then reads its own log past the end: the compiler panics
+(`slice bounds out of range`) on any program whose loop over a span of
+records sits inside another. `TestE2ENativeDispatchingFunctionStays\
+WithTheCBackend` is the case in the tree, over the CRC and SHA program.
+
+The two are one code path, so the panic cannot simply be guarded.
+Deleting the log claims the memory equals the parameter's entry memory,
+which discharges the after-loop obligation rather than proving it, and
+two of stage2's proofs currently rest on that: with the second unmark
+made non-destructive, `reset` loses `s.free_stack` and `alloc_table`
+loses `s.free_count` to "the memory after the loops was not proven
+equal" (`TestE2ENativeCellsAroundLoopProven`,
+`TestE2ENativeStage2AllocTableProven`). The fix is to restore the entry
+log — keeping the enclosing marker — and let the after-loop comparison
+discharge it, which is where the work is.
+
+Marking is also not idempotent: two writable parameters rooted at one
+span of records flatten to the same leaf memories, so a memory can be
+marked twice while one name has one recorded position in the write log.
+Making the marked memories unique loses the same two proofs, by the same
+route.
+
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
 forked from (`selectMatch`, `lowerMatchStatement` restore them before
