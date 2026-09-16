@@ -1121,7 +1121,11 @@ This phase targets the measured UTF-8 call/spill gap directly.
     `asm/loops.go`: a loop ran, or each of its symbols is its header
     value, in every premise that can read an earlier sibling's symbols).
     Still to do: integer multiplication (no integer `mul` lane in v1) and
-    shifts, signed lanes, spans bound in the body, elements at `i ± k`
+    shifts, signed lanes, spans bound in the body (tried 2026-09-16: the
+    rewrite is easy, but the seam checker admits no vector access at a
+    variable index through a span bound over a frame array — "memory
+    operands go through the declared sp frame or a bound span base" — so
+    the checker's frame idiom has to learn the element address first), elements at `i ± k`
     (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
