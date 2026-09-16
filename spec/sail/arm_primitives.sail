@@ -1647,3 +1647,42 @@ function decode64_ordinary_ret_pure (op_code) = {
       use_key_a = use_key_a
     }
 }
+
+/* Ordinary B-immediate's pure decoder fields and BranchType_DIR target.
+ * The architectural PC read, PostDecode, BranchTo, target validation, and
+ * observation of a transfer are deliberately not members of this projection.
+ * BL and conditional branches are separate instruction classes. */
+enum DirectBranchImmediateExecutionTarget = {
+  DirectBranchImmediateExecutionTarget_DIR
+}
+
+struct OrdinaryBImmediateDecode = {
+  encoding_valid : bool,
+  target : DirectBranchImmediateExecutionTarget,
+  imm26 : bits(26),
+  op : bits(1),
+  offset : bits(64)
+}
+
+val branch26_offset_pure : bits(26) -> bits(64)
+
+function branch26_offset_pure (imm26) = {
+    let scaled : bits(28) = imm26 @ 0b00;
+    if imm26[25] == bitone then 0xFFFFFFFFF @ scaled
+    else 0x000000000 @ scaled
+}
+
+val decode64_ordinary_b_immediate_pure : bits(32) -> OrdinaryBImmediateDecode
+
+function decode64_ordinary_b_immediate_pure (op_code) = {
+    let imm26 : bits(26) = slice(op_code, 0, 26);
+    let op : bits(1) = slice(op_code, 31, 1);
+    let encoding_valid : bool = (op_code & 0xFC000000) == 0x14000000;
+    struct {
+      encoding_valid = encoding_valid,
+      target = DirectBranchImmediateExecutionTarget_DIR,
+      imm26 = imm26,
+      op = op,
+      offset = branch26_offset_pure(imm26)
+    }
+}
