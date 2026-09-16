@@ -7423,6 +7423,18 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**The coupling search's work meter (2026-09-16).** The search over
+pairings is bounded by the pairings it visits (`couplingSearchBudget`)
+and each valuation refutation by the term visits of its pass
+(`witnessVisitBudget`), but a body whose obligations are large DAGs — a
+callee's reach condition conjoined with the machine's path to the call,
+a summarized call — spent hours in a thousand such passes
+(`TestE2ENativeLiteralsVerdicts` ran past a ninety-minute suite). One
+search now charges every refutation's visits to a shared meter
+(`couplingWorkBudget`, sixteen passes' worth); a spent meter ends the
+search as an exhausted visit budget does, "the coupling search exceeded
+its budget", an evidence verdict rather than a proof that never comes.
+
 **Reaching a rotated loop (2026-09-16).** The coupling compares the two
 sides' conditions for reaching each loop before it compares their
 iterations. A bottom-tested machine loop is reached only where its

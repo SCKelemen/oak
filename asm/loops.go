@@ -3521,6 +3521,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// proof on the prover and the kernels needs 291 nodes (`valid_with`),
 	// and the seven bodies past 512 all end as evidence.
 	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
+	// couplingWork meters the term visits the search's valuation
+	// refutations spend in all (docs/spec/94-assembler.md §9 "Loop
+	// invariants", the coupling search): each pairing visited is bounded
+	// by searchBudget, and each refutation's pass by witnessVisitBudget,
+	// but a body whose obligations are large DAGs (a callee's reach
+	// condition, a summarized call) spent hours in a thousand of them.
+	couplingWork := couplingWorkBudget
 	budget := &nodeBudget{remaining: proofNodes, loop: true}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
@@ -3979,7 +3986,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			if !isResolved {
 				continue
 			}
-			if refutedByCoupling(premise, next, asmNext, widthOfName) {
+			if refutedByCoupling(premise, next, asmNext, widthOfName, &couplingWork) {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n  premise %s\n  oak-next %s\n  asm-next %s\n", fn.Name, c.show(), premise.String(), next.String(), asmNext.String())
 				}
@@ -3992,7 +3999,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		for k := range oakLoops {
 			asmCond := substitute(asmLoops[k].cond, sigma)
-			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName) {
+			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName, &couplingWork) {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n  premise %s\n  oak-cond %s\n  asm-cond %s\n  sigma %v\n", fn.Name, k+1, bodyPremise(k, sigma, false).String(), substitute(oakLoops[k].cond, sigma).String(), asmCond.String(), sigmaShow(sigma))
 				}
@@ -4027,7 +4034,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			premise, next, asmNext, isResolved := preservation(s, c)
 			delete(sigma, asmName)
-			if !isResolved || !refutedByCoupling(premise, next, asmNext, widthOfName) {
+			if !isResolved || !refutedByCoupling(premise, next, asmNext, widthOfName, &couplingWork) {
 				viable = true
 				break
 			}
@@ -4049,6 +4056,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
+		if couplingWork <= 0 {
+			visited = searchBudget + 1
+		}
 		if visited > searchBudget {
 			failure = "the coupling search exceeded its budget"
 			return false, nil
@@ -4137,7 +4147,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
+			if couplingWork <= 0 {
+				visited = searchBudget + 1
+			}
 			if visited > searchBudget {
+				failure = "the coupling search exceeded its budget"
 				return false, nil
 			}
 			if !conflict[i] {
@@ -6231,7 +6245,7 @@ func abbreviate(s string, n int) string {
 
 // refutedByCoupling is refutedByValuation over the symbols the obligation
 // mentions, at their declared widths.
-func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
+func refutedByCoupling(premise, a, b *term, widthOf func(string) int, work *int) bool {
 	width := a.width
 	if b.width > width {
 		width = b.width
@@ -6248,7 +6262,7 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
 		widths[name] = widthOf(name)
 	}
 	sort.Strings(names)
-	return refutedByValuation(premise, a, b, names, widths)
+	return refutedByValuationWithin(premise, a, b, names, widths, work)
 }
 
 // impliesEqualByArms proves premise → (a = b) for two conditionals by
@@ -6646,6 +6660,16 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 // elements stay unbound so that they read the fixed memory, consistently
 // with the select terms over the same span.
 func refutedByValuation(premise, a, b *term, names []string, widths map[string]int) bool {
+	return refutedByValuationWithin(premise, a, b, names, widths, nil)
+}
+
+// refutedByValuationWithin is refutedByValuation charging the pass's term
+// visits to work when one is given; a spent meter refutes nothing (the
+// caller ends its search).
+func refutedByValuationWithin(premise, a, b *term, names []string, widths map[string]int, work *int) bool {
+	if work != nil && *work <= 0 {
+		return false
+	}
 	var free []string
 	for _, name := range names {
 		if _, _, isElement := elementParam(name); isElement && !strings.HasPrefix(name, "loop") {
@@ -6691,6 +6715,9 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 		if rounds < 8 {
 			rounds = 8
 		}
+	}
+	if work != nil {
+		*work -= len(evaluator.terms) * (3*len(targets) + rounds)
 	}
 	// The premise's own bindings: a conjunct comparing a symbol with a
 	// term (`g = (total + 15) >> 4`, an inner loop's exit fact; `off <
@@ -6906,6 +6933,10 @@ const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 1024
+
+// couplingWorkBudget bounds the term visits one coupling search's
+// valuation refutations spend in all: sixteen full passes' worth.
+const couplingWorkBudget = 16 * witnessVisitBudget
 
 // isUncoupledLoopSymbol reports a term that is a loop's fresh symbol
 // itself, at any width, which the substitution does not yet map (an inner
