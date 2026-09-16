@@ -1,0 +1,39 @@
+// Independent elements: explicit FMA may be vectorized without regrouping
+// arithmetic or changing the one-rounding operation named by the source.
+map32_strict: (dst: [*]f32, a: []f32, k: f32, c: f32): () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] * k + c
+      i = i + u32(1)
+    }
+  } | { }
+}
+map32_fused: (dst: [*]f32, a: []f32, k: f32, c: f32): () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = fma(a[i], k, c)
+      i = i + u32(1)
+    }
+  } | { }
+}
+map64_strict: (dst: [*]f64, a: []f64, k: f64, c: f64): () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] * k + c
+      i = i + u32(1)
+    }
+  } | { }
+}
+map64_fused: (dst: [*]f64, a: []f64, k: f64, c: f64): () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = fma(a[i], k, c)
+      i = i + u32(1)
+    }
+  } | { }
+}
+main: (): i32 = i32(0)

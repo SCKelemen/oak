@@ -1,0 +1,51 @@
+// Each byte product is an exact integer <= 65025 in either float format.
+// Only contraction differs; both loops retain the same accumulation order.
+dot32_strict: (a: []u8, b: []u8): f32 {
+  total: f32 = 0.0
+  len(a) == len(b) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      total = f32_round_u8(a[i]) * f32_round_u8(b[i]) + total
+      i = i + u32(1)
+    }
+  } | { }
+  total
+}
+
+dot32_fused: (a: []u8, b: []u8): f32 {
+  total: f32 = 0.0
+  len(a) == len(b) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      total = fma(f32_round_u8(a[i]), f32_round_u8(b[i]), total)
+      i = i + u32(1)
+    }
+  } | { }
+  total
+}
+
+dot64_strict: (a: []u8, b: []u8): f64 {
+  total: f64 = 0.0
+  len(a) == len(b) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      total = f64_round_u8(a[i]) * f64_round_u8(b[i]) + total
+      i = i + u32(1)
+    }
+  } | { }
+  total
+}
+
+dot64_fused: (a: []u8, b: []u8): f64 {
+  total: f64 = 0.0
+  len(a) == len(b) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      total = fma(f64_round_u8(a[i]), f64_round_u8(b[i]), total)
+      i = i + u32(1)
+    }
+  } | { }
+  total
+}
+
+main: (): i32 = i32(0)

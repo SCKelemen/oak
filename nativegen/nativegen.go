@@ -2130,7 +2130,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, vfolds, strength) {
+	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, vfolds, strength) {
 		if stage.body == fn.Body {
 			break
 		}

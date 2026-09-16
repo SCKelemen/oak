@@ -5,6 +5,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // Verified map vectorization (docs/spec/94-assembler.md §9 "Map
@@ -16,7 +17,7 @@ import (
 // — E built from elements at i of span parameters of one element type
 // (a zip reads several), loop-invariant scalars, and constants with the
 // lane-wise operators (+, -, &, |, ^ over u8, u16, u32, or u64 lanes; +,
-// -, *, / over f32 or f64 lanes, each one rounding per lane as the scalar
+// -, *, / and checked explicit fma over f32 or f64 lanes, each one rounding per lane as the scalar
 // operator is); dst a writable span parameter of that type; every span
 // read or written either the loop's own span a or one known to have its
 // length, from an enclosing `len(dst) == len(a) && …` — is rewritten,
@@ -61,6 +62,7 @@ type mapLoop struct {
 	vecType       string // the vector type, `simd.U32x4`, …
 	lanes         int64
 	value         ast.Expression
+	tc            *typechecker.TypeChecker // checked builtin identity/width, nil disables call forms
 	spans         map[string]span
 	sameLength    func(x, y string) bool
 	// scalars are the invariant scalars the value reads, first use first;
@@ -114,7 +116,7 @@ var laneWiseOps = map[string]string{"+": "add", "-": "sub", "&": "and", "|": "or
 
 // vectorizeMaps returns the body with its element-wise span maps
 // vectorized, and whether any was.
-func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker) (ast.Expression, bool) {
 	block, isBlock := body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil {
 		return body, false
@@ -148,7 +150,7 @@ func vectorizeMaps(fn *ast.FunctionStatement, body ast.Expression) (ast.Expressi
 		for _, stmt := range stmts {
 			switch s := stmt.(type) {
 			case *ast.WhileStatement:
-				if m, ok := recognizeMap(s, prev, types, spans, equal, body); ok {
+				if m, ok := recognizeMap(s, prev, types, spans, equal, body, tc); ok {
 					out = append(out, vectorizedMap(m)...)
 					changed = true
 					prev = stmt
@@ -262,7 +264,7 @@ func lengthFactsOf(cond ast.Expression, equal lengthClasses) lengthClasses {
 // recognizeMap reads a while statement as an element-wise map over span
 // parameters; prev is the statement before it, equal the spans known to
 // have the same length where it stands.
-func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string]ast.Expression, spans map[string]span, equal lengthClasses, body ast.Expression) (mapLoop, bool) {
+func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string]ast.Expression, spans map[string]span, equal lengthClasses, body ast.Expression, tc *typechecker.TypeChecker) (mapLoop, bool) {
 	cond, isInfix := loop.Condition.(*ast.InfixExpression)
 	if !isInfix || cond.Operator != "<" || loop.Body == nil || len(loop.Body.Statements) != 2 {
 		return mapLoop{}, false
@@ -313,7 +315,7 @@ func recognizeMap(loop *ast.WhileStatement, prev ast.Statement, types map[string
 	if !ok {
 		return mapLoop{}, false
 	}
-	m := mapLoop{loop: loop, idx: idx.Value, src: src, dst: dst, elem: d.elem, suffix: suffix, vecType: vecType, lanes: lanes, value: store.Value, spans: spans, sameLength: equal.same}
+	m := mapLoop{loop: loop, idx: idx.Value, src: src, dst: dst, elem: d.elem, suffix: suffix, vecType: vecType, lanes: lanes, value: store.Value, spans: spans, sameLength: equal.same, tc: tc}
 	if !m.laneWise(store.Value, types) {
 		return mapLoop{}, false
 	}
@@ -375,6 +377,18 @@ func (m *mapLoop) laneWise(e ast.Expression, types map[string]ast.Expression) bo
 			return false
 		}
 		return m.laneWise(x.Left, types) && m.laneWise(x.Right, types)
+	case *ast.InvocationExpression:
+		// Only the checked builtin, not a same-spelled user function. Every
+		// argument must be independently lane-wise; no calls/effects move.
+		if !m.checkedFMA(x) {
+			break
+		}
+		for _, argument := range x.Arguments {
+			if !m.laneWise(argument, types) {
+				return false
+			}
+		}
+		return true
 	case *ast.FloatLiteral:
 		if !m.elem.isFloat {
 			return false
@@ -393,6 +407,18 @@ func (m *mapLoop) laneWise(e ast.Expression, types map[string]ast.Expression) bo
 	tok := m.loop.Token
 	arg := &ast.InvocationExpression{Token: tok, Function: &ast.Identifier{Token: tok, Value: m.elem.name}, Arguments: []ast.Expression{&ast.IntegerLiteral{Token: tok, Value: v}}}
 	return m.constant("i:"+strconv.FormatInt(v, 10), arg)
+}
+
+func (m mapLoop) checkedFMA(call *ast.InvocationExpression) bool {
+	if m.tc == nil || !m.elem.isFloat || call.ResolvedMethod != "" || len(call.Arguments) != 3 {
+		return false
+	}
+	name, ok := call.Function.(*ast.Identifier)
+	if !ok || name.Value != "fma" {
+		return false
+	}
+	width, checked := m.tc.ArithmeticType(call.Token)
+	return checked && width == m.elem.name
 }
 
 // constant records a constant the value reads, once per key.
@@ -471,6 +497,10 @@ func (m mapLoop) vectorExpr(e ast.Expression, tok token.Token) ast.Expression {
 	case *ast.InfixExpression:
 		op, _ := laneWiseOp(x.Operator, m.elem)
 		return simd(op, m.vectorExpr(x.Left, tok), m.vectorExpr(x.Right, tok))
+	case *ast.InvocationExpression:
+		if m.checkedFMA(x) {
+			return simd("fma", m.vectorExpr(x.Arguments[0], tok), m.vectorExpr(x.Arguments[1], tok), m.vectorExpr(x.Arguments[2], tok))
+		}
 	case *ast.FloatLiteral:
 		return ident(m.constantName(m.constantIndex("f:" + x.Text + "/" + strconv.FormatFloat(x.Value, 'g', -1, 64))))
 	}

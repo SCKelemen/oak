@@ -5258,7 +5258,8 @@ E(…); i = i + u32(1) }`, `E` over elements at `i` of span parameters of
 one element type (a zip reads several: `dst[i] = a[i] + b[i]`),
 loop-invariant scalars of that type, and constants under `+`, `-`, `&`,
 `|`, `^` for `u8`, `u16`, `u32`, or `u64` lanes (sixteen, eight, four,
-or two a trip) and `+`, `-`, `*`, `/` for `f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
+or two a trip) and `+`, `-`, `*`, `/`, or an explicit builtin `fma` for
+`f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
 or written the loop's own span `a` or one known to have its length from
 an enclosing `len(dst) == len(a) && len(b) == len(a) ? { … }` (the
 equalities close transitively), or `dst` itself in place (`v[i] = (v[i]
@@ -5288,6 +5289,20 @@ shifts, and the remainder loop of a map this rewrite made (the loop
 after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
 elements (`benchmarks/native/README.md`, "Map vectorization").
+
+Explicit FMA maps (2026-09-17) keep one fused rounding per lane; they do
+not contract an ordinary multiply/add. The matcher requires the checked
+builtin width at the invocation's source position, exactly three recursively
+lane-wise arguments, and the map's element width. Same-spelled user calls,
+effectful arguments and unsupported intrinsics are not reinterpreted. The
+process-local rewrite cache also keys on checker identity; materialization
+revision v7 records the changed lowering. Nested FMA and zip arguments use
+the same map theorem, with no associativity assumption and the scalar tail
+unchanged. Host tests cover f32/f64, zero and tail lengths, cancellation,
+signed zeros, subnormals, infinities and NaNs (classification, not payload
+identity). Measured map and reduction results are kept separately in
+`benchmarks/native/exact_fma/README.md`: fewer instructions did not make
+the scalar dot-product contraction profitable on the measured host.
 
 **Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
 `spec/lean/Oak/Fold.lean`, the `vectorize-folds` candidate).** A float

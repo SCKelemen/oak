@@ -432,6 +432,13 @@ guard. The increment's cost was in the verifier, not the rewrite: the
 hoisted form's remainder loop proved only once a premise could say that
 a skipped loop leaves its variables at their header values.
 
+Explicit builtin FMA now participates in this lane-wise map vocabulary.
+Checked invocation identity/width is required; every argument must itself be
+lane-wise, and the vector form keeps the scalar intrinsic's single rounding.
+This is an instance of the existing map theorem, not implicit contraction,
+reassociation, or a new numerical-error license. Measurements and the rejected
+scalar-dot contraction experiment are in `benchmarks/native/exact_fma/README.md`.
+
 ### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
