@@ -17,6 +17,7 @@ import Oak.SequentialConsistency
 import Oak.AArch64Memory
 import Oak.AArch64WeakMemory
 import Oak.AArch64Encoding
+import Oak.AArch64ReturnEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance
 import Oak.AArch64Mmio
