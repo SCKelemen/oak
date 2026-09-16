@@ -1163,6 +1163,39 @@ func TestScheduleKeepsMemoryAndCallOrder(t *testing.T) {
 	}
 }
 
+func TestScheduleKeepsTLBIAsMaintenanceBoundary(t *testing.T) {
+	f := fn(
+		ins("str", w(1), mem(x(0), 0)),
+		ins("add", w(9), w(2), imm(1)),
+		ins("tlbi", asm.Option{Name: "vmalls12e1is"}),
+		ins("ldr", w(10), mem(x(0), 4)),
+		ins("add", w(11), w(10), w(9)),
+		ins("ret"),
+	)
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var maintenance *Instr
+	for _, instruction := range lifted.Instrs {
+		if instruction.Asm.Mnemonic == "tlbi" {
+			maintenance = instruction
+			break
+		}
+	}
+	if maintenance == nil || !lifted.t.barrier(maintenance) {
+		t.Fatal("TLBI did not lift as an immovable scheduling boundary")
+	}
+	lifted.Schedule()
+	got := text(lifted.Items())
+	store := strings.Index(got, "str w1")
+	tlbi := strings.Index(got, "tlbi")
+	load := strings.Index(got, "ldr w10")
+	if store < 0 || tlbi < 0 || load < 0 || !(store < tlbi && tlbi < load) {
+		t.Fatalf("store/TLBI/load order changed:\n%s", got)
+	}
+}
+
 func TestScheduleRV64(t *testing.T) {
 	f := rvfn(
 		ins("ld", rx(5), mem(rx(10), 0)),

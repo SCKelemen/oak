@@ -155,8 +155,8 @@ The next correctness increment is live stage-2 maintenance.
 BBM-shaped local ordering skeleton corresponding to CAT around an abstract
 TLBI occurrence. Before
 a previously active guest context can change translation state, Oak still
-needs a concrete source-to-object TLBI operation and architecture-verified
-target/scope, descriptor publication, invalidation completion, and final
-context synchronization. After that, this entry path can become the final
-transfer step of a reusable vCPU re-entry path and can be exercised in the OS
-QEMU EL2 smoke test.
+needs to refine the concrete source-to-object TLBI occurrence into that abstract
+stage-2 trace and verify its architectural target/scope, descriptor publication,
+invalidation completion, and final context synchronization. After that, this
+entry path can become the final transfer step of a reusable vCPU re-entry path
+and can be exercised in the OS QEMU EL2 smoke test.

@@ -9360,10 +9360,10 @@ func (g *generator) instructionValue(member string, e *ast.InvocationExpression,
 }
 
 // instructionEffect lowers an instruction function in statement position:
-// `msr` for a system-register write, the barrier or event-control
-// instruction the catalog names, or an exception return with its carried
-// registers (`eret_x0(v)`: `mov x0, v` then `eret`, which ends the body of a
-// never function).
+// `msr` for a system-register write, the barrier, translation-maintenance, or
+// event-control instruction the catalog names, or an exception return with its
+// carried registers (`eret_x0(v)`: `mov x0, v` then `eret`, which ends the body
+// of a never function).
 func (g *generator) instructionEffect(member string, call *ast.InvocationExpression) error {
 	emitText := func(text string) error {
 		instr, err := asm.ParseInstructionLine(asm.ArchArm64, text, g.line)
@@ -9406,6 +9406,13 @@ func (g *generator) instructionEffect(member string, call *ast.InvocationExpress
 			return emitText("dsb " + barrierScope(spec.Scope))
 		}
 		return unsupported("the barrier arm64.%s", member)
+	}
+	if spec, isTLBI := semir.LookupArm64TLBI(member); isTLBI {
+		if len(call.Arguments) != 0 {
+			return unsupported("arm64.%s takes no argument", member)
+		}
+		g.system = true
+		return emitText(spec.Instruction)
 	}
 	if spec, isEvent := semir.LookupArm64EventControl(member); isEvent {
 		if len(call.Arguments) != 0 {

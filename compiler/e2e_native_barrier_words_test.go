@@ -119,6 +119,27 @@ func TestE2ENativeBarrierExactWords(t *testing.T) {
 	}
 }
 
+const nativeTLBIWordProgram = `
+package maintenance
+
+fn tlbi_vmalls12e1is() -> () { arm64.tlbi_vmalls12e1is() }
+`
+
+// The source-to-object gate witnesses occurrence and absence of hidden work. Arm
+// execution effects remain obligations of the Sail/ASL and memory-model bridge.
+func TestE2ENativeTLBIExactWord(t *testing.T) {
+	tgt := target.Target{OS: target.OSFreestanding, Arch: target.ArchArm64}
+	object, err := New().WithSource("maintenance.oak", nativeTLBIWordProgram).
+		WithTarget(tgt).EmitNativeObject(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireAArch64ObjectWords(t, object, "oak_tlbi_vmalls12e1is", []uint32{
+		0xd50c83df, // tlbi vmalls12e1is
+		0xd65f03c0, // ret
+	})
+}
+
 var coldEntryRegisterPrefix = []uint32{
 	0xd50342df, // msr DAIFSet, #2
 	0xd51c1100, // msr HCR_EL2, x0

@@ -338,7 +338,8 @@ data fence.
 The first translation-maintenance encoding seam is separate from those barrier
 capabilities and covers only the Inner Shareable spelling,
 `TLBI VMALLS12E1IS`. It does not cover plain `TLBI VMALLS12E1`, whose
-invalidation is local to the executing PE and which has a different encoding.
+architectural spelling specifies local-PE invalidation and has a different
+encoding.
 `Oak.AArch64Encoding.tlbiVmalls12e1is` constructs the exact Inner Shareable
 word (`0xd50c83df`) from the generated SYS field layout.
 Generated Lean proves that exact word selects `TLBI_VMALLS12E1IS` in Oak's pure
@@ -351,11 +352,15 @@ This is syntactic call-target classification only. It does not prove EL2 access
 admission, current-VMID selection, inner-shareable broadcast, invalidation of a
 particular translation, absence of stale entries, or completion. The pinned
 Sail target delegates to a coarse reset of its single modeled TLB; that model
-effect is not used as architectural evidence. The word has not yet been
-connected to `AArch64Stage2Maintenance.Action` or to an Oak source/native
-intrinsic. In particular, this result does not verify or refine the downstream
-OS boot/revoke sequence, which currently emits plain `TLBI VMALLS12E1` between
-DSB ISH operations.
+effect is not used as architectural evidence. The closed source operation
+`arm64.tlbi_vmalls12e1is()` now lowers through catalog-owned text, and an
+independent direct-native object gate requires its complete body to be exactly
+`0xd50c83df; RET`. This provides executable source-to-word occurrence evidence
+for this leaf, not the refinement into `AArch64Stage2Maintenance.Action`, which
+remains open.
+In particular, this result does not verify or refine the downstream OS
+boot/revoke sequence, which currently emits plain `TLBI VMALLS12E1` between DSB
+ISH operations.
 
 The completion and instruction-synchronization fields are Oak profile
 capabilities, not consequences of the extracted Sail artifact. Oak's pure Sail
@@ -409,8 +414,9 @@ This chapter does **not** claim:
 - a proof that Oak descriptor values receive CAT's cacheable/uncacheable TTD
   event tags, that a concrete IPA/VMID/regime selects the required TLBI scope,
   or that descriptor publication and invalidation have completed;
-- a complete live stage-2 remapping protocol or a source-to-object TLBI
-  occurrence proof;
+- a complete live stage-2 remapping protocol or a kernel-checked compiler
+  refinement proof for the TLBI occurrence beyond the executable regression
+  witness;
 - exhaustive compiler-version correctness;
 - stochastic execution of weak-memory litmus tests on real AArch64 hardware;
 - cache/coherency/DMA/device-memory correctness;

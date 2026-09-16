@@ -91,7 +91,7 @@ func (g *generator) forgetSlots(base int, off, size int64) {
 func (g *generator) forgetAll() { g.held = nil }
 
 // noRegisterWrite lists the mnemonics that write no general register.
-var noRegisterWrite = map[string]bool{"str": true, "strb": true, "strh": true, "stur": true, "stp": true, "stlr": true, "stlrb": true, "stlrh": true, "cmp": true, "cmn": true, "tst": true, "ccmp": true, "ccmn": true, "b": true, "b.": true, "cbz": true, "cbnz": true, "tbz": true, "tbnz": true, "ret": true, "brk": true, "dmb": true, "dsb": true, "isb": true, "nop": true, "prfm": true, "msr": true, "eret": true}
+var noRegisterWrite = map[string]bool{"str": true, "strb": true, "strh": true, "stur": true, "stp": true, "stlr": true, "stlrb": true, "stlrh": true, "cmp": true, "cmn": true, "tst": true, "ccmp": true, "ccmn": true, "b": true, "b.": true, "cbz": true, "cbnz": true, "tbz": true, "tbnz": true, "ret": true, "brk": true, "dmb": true, "dsb": true, "isb": true, "tlbi": true, "nop": true, "prfm": true, "msr": true, "eret": true}
 
 // forward runs the forwarding over an instruction about to be appended and
 // returns the instruction to append, or false when nothing is appended.
@@ -139,6 +139,12 @@ func (g *generator) forward(ins asm.Instruction) (asm.Instruction, bool) {
 	}
 	switch ins.Mnemonic {
 	case "bl", "blr":
+		g.forgetAll()
+		return ins, true
+	case "tlbi":
+		// Match the C helper's compiler "memory" clobber: no cached memory
+		// value crosses the maintenance occurrence. This is not a DSB or an
+		// architectural completion claim.
 		g.forgetAll()
 		return ins, true
 	}

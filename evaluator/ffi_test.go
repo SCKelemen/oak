@@ -58,6 +58,18 @@ func TestArm64BarriersRequireNativeAArch64Backend(t *testing.T) {
 	}
 }
 
+func TestArm64TLBIRequiresNativeAArch64Backend(t *testing.T) {
+	result := testEval("arm64.tlbi_vmalls12e1is()")
+	err, ok := result.(*object.Error)
+	if !ok {
+		t.Fatalf("expected native-backend error, got %v", result)
+	}
+	if !strings.Contains(err.Message, "translation-maintenance") ||
+		!strings.Contains(err.Message, "native AArch64 backend") {
+		t.Fatalf("TLBI error does not preserve its machine boundary: %q", err.Message)
+	}
+}
+
 // Extern bindings are native-backend only: calling one under interpretation is
 // a diagnosed error, never a silent no-op.
 func TestExternBindingsNotCallableInInterpreter(t *testing.T) {

@@ -89,6 +89,26 @@ substitute for DMB/DSB data ordering or completion.
 Code that changes architectural state and requires an ISB must request
 `arm64.isb()` explicitly.
 
+### 3.4 TLBI is translation maintenance, not a fourth barrier
+
+The adjacent closed operation:
+
+```text
+arm64.tlbi_vmalls12e1is() -> ()
+```
+
+names exactly `TLBI VMALLS12E1IS`. It lives in a separate
+`semir.Arm64TLBISpec` catalog and projects
+`Machine.TranslationMaintenance[tlbi, vmalls12e1, inner-shareable]`, never a
+`Machine.Barrier` capability. It does not insert or imply a preceding or
+following DSB or ISB. Any required surrounding DSB or ISB must be spelled
+separately, and the protocol must discharge its applicable ordering,
+completion, and context-synchronization obligations.
+
+The source identity deliberately includes `is`: a future plain, local-PE
+`TLBI VMALLS12E1` operation would require a distinct catalog member. Runtime
+instruction or scope operands are not accepted.
+
 ## 4. Backend lowering
 
 Each source barrier lowers through one `static inline` C helper whose AArch64
@@ -107,6 +127,11 @@ The inline assembly is `volatile` and carries a C compiler `"memory"` clobber.
 That prevents the bootstrap C compiler from moving ordinary memory operations
 through the explicit machine barrier in ways that would destroy Oak's intended
 ordering boundary.
+
+The TLBI helper uses the same `volatile`/`"memory"` form, and the direct-native
+scheduler and memory-value forwarder keep TLBI as an immovable compiler
+boundary. These are compiler-ordering constraints only. They are not DSB
+ordering, invalidation completion, or evidence about architectural broadcast.
 
 There is no Oak runtime call, heap object, dynamically selected instruction, or
 hidden second barrier.
@@ -222,6 +247,12 @@ functions through their eight context writes, exact ISB, and final `RET` or
 `ERET`. This is executable compiler evidence, not an Arm execution-semantics
 proof and not the source of the word-to-decoder theorem.
 
+The same object seam separately requires an Oak
+`arm64.tlbi_vmalls12e1is()` leaf to contain exactly `0xd50c83df; RET`.
+`Oak.AArch64Encoding` proves the word from the generated fields, and the Sail
+bridge proves the named call target in Oak's pure projection. The object check
+proves neither access admission nor the target's execution effects.
+
 These are Oak profile facts, not a formal proof of every Arm architectural
 behavior.
 
@@ -234,12 +265,16 @@ The slice is accepted only if all of the following hold:
 - typechecker accepts every exact nullary barrier and rejects operands/unknown
   spellings;
 - evaluator diagnoses every barrier as native-AArch64-only;
+- the evaluator likewise diagnoses TLBI as native-AArch64-only rather than a
+  no-op or host fence;
 - Oak-generated C contains no heap primitive in the barrier path;
 - Clang cross-compiles the generated source for freestanding ARMv8-A;
 - each Oak function contains the exact requested DMB/DSB/ISB instruction and no
   additional barrier family;
 - direct-native object bodies contain the independently pinned exact word with
   no prologue, dispatch, or second instruction before `RET`;
+- the exact TLBI leaf is `0xd50c83df; RET`, and compiler scheduling/value
+  forwarding cannot cross the TLBI occurrence;
 - the same source fails closed when compiled by an ordinary host C compiler;
 - Lean kernel-checks the capability model;
 - the generated Sail decoder refines all six words into those capabilities,

@@ -201,7 +201,7 @@ var arm64Target = &target{
 			return true
 		}
 		switch ins.Asm.Mnemonic {
-		case "dmb", "dsb", "isb", "ldar", "ldarb", "ldarh", "stlr", "stlrb", "stlrh", "ldxr", "ldaxr", "stxr", "stlxr", "ldxrb", "ldaxrb", "stxrb", "stlxrb", "ldxrh", "ldaxrh", "stxrh", "stlxrh", "mrs", "msr", "svc", "hint", "yield", "wfe", "wfi", "sev", "sevl":
+		case "dmb", "dsb", "isb", "tlbi", "ldar", "ldarb", "ldarh", "stlr", "stlrb", "stlrh", "ldxr", "ldaxr", "stxr", "stlxr", "ldxrb", "ldaxrb", "stxrb", "stlxrb", "ldxrh", "ldaxrh", "stxrh", "stlxrh", "mrs", "msr", "svc", "hint", "yield", "wfe", "wfi", "sev", "sevl":
 			return true
 		}
 		if len(ins.Asm.Operands) > 0 {
