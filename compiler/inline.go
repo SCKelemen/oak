@@ -469,8 +469,11 @@ func (in *inliner) inlineStatement(stmt ast.Statement, scope *callerScope) []ast
 // with nothing to hold). A match filling the slot has its arms rewritten as
 // slots of their own — in statement position every arm, since the backends
 // lower a statement-position match to branches of statements; in a value
-// position only arms that are already statement-bearing blocks, so no arm
-// acquires statements where the backends expect a bare expression.
+// position no arm is rewritten: even an already statement-bearing outer arm
+// can end in a nested value match, and hoisting into that nested match would
+// put declarations inside the C backend's ternary expression. Keeping the
+// complete arm opaque preserves its conditional evaluation and the C99
+// expression/statement boundary.
 // Anything else is walked for calls in operand position.
 func (in *inliner) rewriteSlot(slot *ast.Expression, scope *callerScope, statement bool) (hoisted []ast.Statement, dropped bool) {
 	switch e := (*slot).(type) {
@@ -498,7 +501,7 @@ func (in *inliner) rewriteSlot(slot *ast.Expression, scope *callerScope, stateme
 				continue
 			}
 			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-				if statement || (block.Block != nil && len(block.Block.Statements) > 1) {
+				if statement {
 					in.inlineBlock(block.Block, scope)
 				}
 				continue
