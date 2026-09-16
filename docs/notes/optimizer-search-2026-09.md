@@ -316,9 +316,11 @@ noncanonical entries, and facts other than the definition-local checked type
 fact pin the operation. The cloned result passes the independent verifier and
 is retained with deterministic movement evidence. A changed final CFG enters
 native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
-liveness/interference coloring precedes a closed AArch64 selector; the direct
-lowering remains the identity, and every selected OptIR body must pass seam
-admission and semantic translation validation.
+liveness/interference coloring precedes closed AArch64 and RV64 selectors. The
+RV64 selector preserves canonical sign-extended 32-bit values and explicitly
+zero-extends unsigned widening. The direct lowering remains the identity, and
+every selected OptIR body must pass seam admission and semantic translation
+validation.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
@@ -982,7 +984,7 @@ This phase targets the measured UTF-8 call/spill gap directly.
     landed; checked memory projection remains**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
-21. LICM (**verifier-gated AArch64 OptIR candidate landed**), loop rotation, address
+21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address
     induction, loop strength reduction.
 
 ### Phase D: vector planning

@@ -123,7 +123,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
-		if comp.options.Target.AsmArch() == asm.ArchArm64 {
+		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
 			lane.OptIR, lane.OptIRChanges, lane.OptIRFingerprint = nativeOptIRCandidate(source, tc)
 		}
 		// The candidate search (compiler/native_search.go, package opt;

@@ -92,7 +92,7 @@ pure operations, selects known branch edges, removes unreachable blocks, and
 performs bounded SSA-aware block and empty-trampoline cleanup. Effectful or
 trapping operations remain even when their result is known. Input and output
 verify independently; the result feeds later transforms and can affect emitted
-AArch64 code only through the verifier-gated OptIR candidate below.
+AArch64 or RV64 code only through the verifier-gated OptIR candidate below.
 
 The next target-independent cleanup candidate runs on the SCCP-rewritten CFG.
 Dominance-scoped GVN assigns deterministic numbers to SSA values and shares
@@ -137,17 +137,20 @@ definition. Nested loops are considered outermost first, allowing a value
 invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
 post-GVN/DCE LICM candidate and a deterministic movement report. Target-neutral
-SSA liveness/interference coloring and the closed AArch64 selector consume that
-final CFG. The selector supports Bool and 8/16/32/64-bit total integer
-operations plus structured CFG edges. Narrow inputs and intermediate results
-are normalized to their signed or unsigned W-register canonical form. It
-refuses effects, traps, calls, memory, stack arguments, unknown operations, and
-excess pressure. Before selection, a target-independent layout analysis gives
-loop continuation/backedges an 8:1 static preference and leaves other branches
+SSA liveness/interference coloring and the closed AArch64/RV64 selectors consume
+that final CFG. Two dead block parameters may share a color; live/dead and
+conditional-edge arguments still interfere. Both selectors support Bool and
+8/16/32/64-bit total integer operations plus structured CFG edges. AArch64
+normalizes narrow values in W registers. RV64 preserves canonical sign-extended
+32-bit values, explicitly zero-extends `u32` when widening to `u64`, and
+canonicalizes Bool/narrow ABI inputs before use. They refuse effects, traps,
+calls, memory, stack arguments, unknown operations, and remaining pressure.
+Before selection, a target-independent layout analysis gives loop
+continuation/backedges an 8:1 static preference and leaves other branches
 neutral. Its fingerprint-bound order is an exact block permutation. AArch64
 uses it to make the preferred copy-free edge fall through and omit redundant
-branches without changing any semantic edge. Its candidate
-always passes the semantic-verifier gate: proven and witnessed verdicts remain
+branches without changing any semantic edge. Every candidate passes the
+semantic-verifier gate: proven and witnessed verdicts remain
 distinct evidence grades, while refusal or a trusted verdict keeps an ungated
 lowering.
 
@@ -282,7 +285,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef analysis has landed, while dead stores wait for checked memory-region projection and a legality transform |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef analysis has landed, while dead stores wait for checked memory-region projection and a legality transform |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

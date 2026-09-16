@@ -178,12 +178,13 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
-	// The rv64 lane has the law-licensed unrolling, check elision, and
-	// layer A's strength reduction (nativegen/rewrite.go, both lanes).
-	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
+	// The rv64 lane also has verifier-gated OptIR emission, the law-licensed
+	// unrolling, check elision, and layer A's strength reduction
+	// (nativegen/rewrite.go, both lanes).
+	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
+		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}
@@ -232,8 +233,10 @@ func TestCompileForRefusesMismatchedOptIRFingerprint(t *testing.T) {
 		Operations: []optir.Operation{{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}}},
 		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
 	}}}
-	lane := Lane{Arch: asm.ArchArm64, OptIR: &cfg, OptIRFingerprint: "not-the-cfg-fingerprint", OptIRChanges: 1, UseOptIR: true}
-	if _, err := CompileFor(lane, nil, nil, nil, nil, nil, nil); err == nil {
-		t.Fatal("mismatched OptIR fingerprint reached materialization")
+	for _, arch := range []string{asm.ArchArm64, asm.ArchRV64} {
+		lane := Lane{Arch: arch, OptIR: &cfg, OptIRFingerprint: "not-the-cfg-fingerprint", OptIRChanges: 1, UseOptIR: true}
+		if _, err := CompileFor(lane, nil, nil, nil, nil, nil, nil); err == nil {
+			t.Fatalf("mismatched OptIR fingerprint reached %s materialization", arch)
+		}
 	}
 }

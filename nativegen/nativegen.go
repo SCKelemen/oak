@@ -1514,8 +1514,8 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
-	// OptIR is the verified optimized SSA candidate available to the
-	// AArch64 selector. UseOptIR is the candidate-search toggle;
+	// OptIR is the verified optimized SSA candidate available to the native
+	// selectors. UseOptIR is the candidate-search toggle;
 	// OptIRFingerprint and OptIRChanges make the materialization recipe and
 	// optimization report exact without treating the pointer as identity.
 	OptIR            *optir.CFG
@@ -1785,7 +1785,32 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		promotedSlots[out] = alloc.Promoted
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		var out *asm.Function
+		var err error
+		if lane.UseOptIR {
+			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
+				return nil, unsupported("an incomplete OptIR emission plan")
+			}
+			fingerprint, fingerprintErr := optir.FingerprintCFG(*lane.OptIR)
+			if fingerprintErr != nil {
+				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
+			}
+			if fingerprint != lane.OptIRFingerprint {
+				return nil, unsupported("an OptIR emission plan whose CFG does not match its fingerprint")
+			}
+			// The ordinary lowering supplies only checked signature/ABI metadata.
+			// Its executable items are discarded by the selector.
+			var template *asm.Function
+			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, nil, false)
+			if err == nil {
+				out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
+			}
+			if err == nil {
+				optIRLowered[out] = lane.OptIRChanges
+			}
+		} else {
+			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
+		}
 		if err != nil {
 			return nil, err
 		}

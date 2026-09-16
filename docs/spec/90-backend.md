@@ -736,18 +736,23 @@ available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to
 the SSA result type. The cloned output is independently verified and carries a
-deterministic movement report. A changed post-LICM CFG is now an AArch64 native
-candidate. Target-neutral SSA liveness/interference analysis assigns abstract
-colors; the selector maps them to caller-saved registers, destroys block
-arguments with edge-local parallel copies, and selects the closed Bool and
-8/16/32/64-bit total-integer vocabulary. Narrow parameters and results are
-normalized in W registers according to signedness. A deterministic
-target-neutral spill planner now partitions high-pressure SSA values between
-colors and typed/aligned abstract stack slots, never spills ABI precolors, and
+deterministic movement report. A changed post-LICM CFG is now an AArch64 or
+RV64 native candidate. Target-neutral SSA liveness/interference analysis assigns
+abstract colors; dead block parameters may share a color only with one another,
+while live and conditional-edge values remain distinct. A deterministic
+target-neutral spill planner partitions high-pressure SSA values between colors
+and typed/aligned abstract stack slots, never spills ABI precolors, and
 independently verifies interference and safe slot reuse. It does not yet insert
-loads/stores, so the selector still refuses excess pressure. Effects, traps,
-calls, memory, stack parameters, or an unfamiliar operation likewise refuse
-only this candidate.
+loads/stores, so both selectors still refuse remaining pressure.
+
+Each selector maps colors to caller-saved registers, destroys block arguments
+with edge-local parallel copies, and selects the closed Bool and
+8/16/32/64-bit total-integer vocabulary. AArch64 narrow values are normalized in
+W registers. RV64 maintains the psABI's canonical sign-extended 32-bit
+representation and explicitly zero-extends `u32` when widening to `u64`; Bool
+and narrow ABI inputs are canonicalized before use. Effects, traps, calls,
+memory, stack parameters, or an unfamiliar operation likewise refuse only this
+candidate.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1
