@@ -26,6 +26,7 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1947,6 +1948,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			spans[TableName(symbol)] = table.Elem
 		}
 	}
+	// The program's writable top-level arrays likewise (declareGlobalArrays
+	// on the Oak side): the array's address binds to the span base `&NAME`
+	// (bindGlobalAddress), and the checker bounds its elements as it
+	// bounds a frame array's.
+	for name, global := range fn.Globals {
+		if elem, _, _, isArray := globalArrayShape(global); isArray {
+			if _, shadowed := spans[name]; !shadowed {
+				spans[name] = elem
+			}
+		}
+	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
 		// A record result of one chunk comes back in x0, of two in x0 and
@@ -3349,6 +3361,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			continue
 		}
+		if handled, reason, ok := x.bindGlobalAddress(instr, state); handled {
+			if !ok {
+				return nil, nil, atInstruction(reason, instr), false
+			}
+			continue
+		}
 		if reason, ok := step(instr, state); !ok {
 			return nil, nil, atInstruction(reason, instr), false
 		}
@@ -4189,6 +4207,37 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 		return constTerm(elementValue(span, index.value&mask(32), width), width)
 	}
 	return selectTerm(span, index, width)
+}
+
+// bindGlobalAddress executes `add xA, xN, :lo12:G` for a top-level array
+// G the executor reads as a span (globalArrayShape): xA is the span base
+// `&G`, which the loads and stores through it read as a span parameter's
+// (step binds every other global's address to `&global:G`).
+func (x *pathExecutor) bindGlobalAddress(instr Instruction, state *symbolicState) (handled bool, reason string, ok bool) {
+	if instr.Mnemonic != "add" || len(instr.Operands) != 3 {
+		return false, "", false
+	}
+	sym, isSym := instr.Operands[2].(Symbol)
+	if !isSym || !sym.Lo12 {
+		return false, "", false
+	}
+	global, known := x.globals[sym.Name]
+	if !known {
+		return false, "", false
+	}
+	if _, _, _, isArray := globalArrayShape(global); !isArray {
+		return false, "", false
+	}
+	if _, isSpan := x.spans[sym.Name]; !isSpan {
+		return false, "", false
+	}
+	dest := instr.Operands[0].(Register)
+	base, bound := operandTerm(state, instr.Operands[1], 64)
+	if !bound || base.kind != termParam || base.name != globalPageName(sym.Name) {
+		return true, "add :lo12: over a register that does not hold the symbol's page", false
+	}
+	state.write(dest, paramTerm(spanBaseName(sym.Name), 64))
+	return true, "", true
 }
 
 // step executes one data-processing instruction on the state.
@@ -7666,6 +7715,66 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 	}
 }
 
+// globalArrayShape reads a writable top-level array's shape from its
+// declared type text (`(u8[64])`, the type printer's spelling of
+// `[64]u8`): the element size in bytes, the element count, and the
+// element's signedness. Only arrays of integer scalars are spans; a
+// record or an array of records stays outside.
+func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok bool) {
+	if !global.Aggregate {
+		return 0, 0, false, false
+	}
+	m := globalArrayType.FindStringSubmatch(global.Type)
+	if m == nil {
+		return 0, 0, false, false
+	}
+	count, err := strconv.ParseInt(m[2], 10, 64)
+	if err != nil || count <= 0 {
+		return 0, 0, false, false
+	}
+	switch m[1] {
+	case "u8", "i8":
+		elem = 1
+	case "u16", "i16":
+		elem = 2
+	case "u32", "i32":
+		elem = 4
+	case "u64", "i64":
+		elem = 8
+	default:
+		return 0, 0, false, false
+	}
+	if elem*count != global.Size {
+		return 0, 0, false, false
+	}
+	return elem, count, m[1][0] == 'i', true
+}
+
+var globalArrayType = regexp.MustCompile(`^\(?([ui](?:8|16|32|64))\[([0-9]+)\]\)?$`)
+
+// declareGlobalArrays makes the program's writable top-level arrays
+// readable and writable as spans named by the global (the machine side
+// binds `adrp`/`add :lo12:` of such a global to the span base `&NAME`,
+// bindGlobalAddress): NAME[k] is the element, len(NAME) the declared
+// count, and the stores through it are compared as a span parameter's
+// are (decideSpans). A parameter or a table of the name shadows it.
+func (lo *oakLowering) declareGlobalArrays(globals map[string]Global) {
+	for name, global := range globals {
+		elem, count, signed, isArray := globalArrayShape(global)
+		if !isArray {
+			continue
+		}
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue
+		}
+		lo.spans[name] = spanContract{elemWidth: int(elem) * 8, signed: signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = count
+	}
+}
+
 // tableLength recognizes len(T) over a constant table, or over a callee's
 // span parameter aliased to one (`sum_view(view(&TABLE))`): the element
 // count.
@@ -8979,6 +9088,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
+	lo.declareGlobalArrays(x.fn.Globals)
 	lo.inlining = map[string]bool{name: true}
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
@@ -9629,6 +9739,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.bindRecordSpans(fn, sig)
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
 	lowering.declareTables(fn.Tables)
+	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()

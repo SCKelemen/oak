@@ -448,6 +448,43 @@ count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
 
+## The chain assignment cap, measured and kept, 2026-09-17
+
+If-conversion rejects a chain of more than four assignments
+(`maxSelectAssigns`, `nativegen/select.go`), so a three-arm chain
+writing two variables branches on its first arm and converts only the
+rest. The stated reason is register pressure, and it looked pessimistic:
+where every right-hand side is a variable already in a register the
+lowering reads it in place and allocates nothing, so the count could
+have been of the values that actually need a scratch register. Counting
+that way converts the chain whole — eight straight-line instructions in
+the loop body against a branch, two moves and four selects — and it is
+proven either way.
+
+It is slower. A three-arm chain writing `small` and `big` over 2^12
+`u32` elements, best of seven over three runs:
+
+| which arm the data takes | capped (first arm branches) | converted whole |
+| --- | ---: | ---: |
+| unpredictable, the arms about even | 1.27–1.43 ns/element | 1.27–1.44 |
+| always the last arm | 0.79–0.83 | 1.21–1.64 |
+| always the first arm | 0.80–0.86 | 1.30–2.29 |
+
+Nothing to gain where the branch is unpredictable, and a factor of 1.6
+to 2.8 to lose where it is not. The cap earns its keep for a reason
+beyond registers: a branch *skips* the arms after it, while the selects
+of a converted chain all execute, and per variable they form a serial
+dependency — `csel` feeding `csel` feeding `csel` — that lengthens the
+loop's critical path. The two increments above won by removing a
+mispredict that cost more than the work they added; this one adds work
+and removes a branch that was already free.
+
+So the cap stays, and the measurement is the argument for it. The
+per-variable serialization is also the thing a port-pressure or
+dependency-chain term in the cost model would have to capture
+(item 26); the static instruction count says converted is cheaper here,
+and the clock says otherwise in two rows out of three.
+
 ## Chain condition operands, 2026-09-16
 
 A three-arm chain whose second condition needs a computed operand,
