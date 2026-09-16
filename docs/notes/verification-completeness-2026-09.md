@@ -318,6 +318,24 @@ found the proof.
 Oak's LRAT, RUP, Tseitin, and self-hosted checker work provides much of the
 architectural precedent for this step.
 
+The first bounded native-equality audit has now landed. A closed scalar
+AArch64/RV64 body with no calls, loops, external memory/effects, traps,
+restricted domains, floats, or aggregates can be rerun through the machine
+executor and Oak lowering to produce an exact result-disequality CNF. The
+formula is regenerated when `prove.CheckNativeEqualityCertificate` checks its
+LRAT proof, and an integration test requires the independent checker written
+in Oak to accept that same formula and certificate. Tests also replay a valid
+certificate against changed Oak and machine bodies and require refusal.
+
+This is deliberately audit-only: it neither authorizes nor upgrades
+`VerdictProven`. It removes the SAT solver from the bounded audit's TCB, but
+not the symbolic executor, Oak lowering, clause generator, or checker
+implementations. `Oak.NativeEqualityCertificate.accepted_implies_equal`
+states the abstract composition and makes its missing implementation
+refinements explicit. The next step remains a concrete term/CNF and checker
+refinement, followed by moving a small checker below compiler selection so
+certificate acceptance can safely become verdict authority.
+
 One narrow slice now follows this shape. Recursive OptIR scalar-call memory
 summaries first pass through one checked CFG-order authority projection whose
 accepted output feeds both summary construction and the deterministic

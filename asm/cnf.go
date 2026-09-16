@@ -259,10 +259,18 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	if undecided != nil {
 		return CNF{}, undecided.Message, false
 	}
-	bl := newCNFBlaster(lowered.names, lowered.widths)
+	return exportTermCNF("oak prove: "+sig.Name.Value, lowered.names, lowered.widths, lowered.claim, lowered.traps)
+}
+
+// exportTermCNF is the one clause authority shared by theorem and native
+// equality certificates. claim is a Boolean-valued term; the emitted formula
+// is satisfiable exactly when a trap fires or claim is false, modulo the
+// explicitly documented abstraction of select/uninterpreted terms.
+func exportTermCNF(label string, names []string, widths map[string]int, claim *term, traps []*term) (CNF, string, bool) {
+	bl := newCNFBlaster(names, widths)
 	var obligation []int
 	trapAlways := false
-	for _, trap := range lowered.traps {
+	for _, trap := range traps {
 		bits := bl.blast(trap)
 		if bits == nil || bl.exceeded() {
 			return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
@@ -276,11 +284,11 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 			obligation = append(obligation, bits[0])
 		}
 	}
-	claim := bl.blast(lowered.claim)
-	if claim == nil || bl.exceeded() {
+	claimBits := bl.blast(claim)
+	if claimBits == nil || bl.exceeded() {
 		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 	}
-	out := CNF{Owners: map[int]VariableOwner{}, Names: lowered.names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: lowered.claim, traps: lowered.traps}
+	out := CNF{Owners: map[int]VariableOwner{}, Names: names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: claim, traps: traps}
 	for v, dimacs := range bl.cnf.inputs {
 		if owner, isParam := bl.owners[v]; isParam {
 			out.Owners[dimacs] = VariableOwner{Param: owner.param, Bit: owner.bit}
@@ -290,11 +298,11 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	case trapAlways:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the body traps on every input"}
 		return out, "", true
-	case claim[0] == bddFalse && len(obligation) == 0:
+	case claimBits[0] == bddFalse && len(obligation) == 0:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the claim is false on every input"}
 		return out, "", true
-	case claim[0] != bddTrue:
-		obligation = append(obligation, claim[0]^1)
+	case claimBits[0] != bddTrue:
+		obligation = append(obligation, claimBits[0]^1)
 	}
 	if len(obligation) == 0 {
 		out.Settled = &Decision{Kind: DecisionProven, Message: "at the bit level (the obligation is constant)"}
@@ -309,7 +317,7 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	out.Variables = bl.cnf.variables
 	out.Clauses = len(clauses)
 	var b strings.Builder
-	fmt.Fprintf(&b, "c oak prove: %s\n", sig.Name.Value)
+	fmt.Fprintf(&b, "c %s\n", label)
 	fmt.Fprintf(&b, "p cnf %d %d\n", out.Variables, out.Clauses)
 	for _, clause := range clauses {
 		for _, lit := range clause {

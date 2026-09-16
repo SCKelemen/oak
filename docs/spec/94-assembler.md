@@ -392,6 +392,40 @@ Oak expression is outside the executable subset (labels, calls, memory,
 system instructions, non-constant shift counts on the Oak side — Oak traps
 where the machine wraps the count).
 
+**Audit-only native equality certificates.** `asm.ExportNativeEqualityCNF`
+independently reruns the machine executor and Oak lowering for a deliberately
+closed slice: AArch64 or RV64, one fixed-integer/Bool result, fixed-scalar
+parameters, local acyclic control flow, and private stack spills. It refuses
+calls, loops, externally visible memory or effects, restricted input domains,
+machine or Oak trap obligations, aggregates, result-relevant or
+register-file-marked float/SIMD semantics, system capability, undeclared or
+unmodeled inputs, and every term operation outside the clause engine. Modeled
+executor-generated fresh bits are universally quantified. The declaration is
+the checked declaration paired with the native unit, and their names must
+match exactly. The reference is the exact body the verifier
+judges—`Function.Body` for a materialized rewrite candidate, otherwise that
+checked declaration's body.
+
+The exporter feeds the same deterministic Tseitin authority as `oak prove`,
+but roots it at result disequality. `prove.CheckNativeEqualityCertificate`
+regenerates that formula on every check and passes the complete DIMACS text to
+the LRAT checker; neither a stored formula, clause counts, a digest, a cached
+verdict, nor a word record carrying its own formula is proof authority. The
+integration test obtains a certificate from the solver written in Oak and
+requires both the Go and Oak LRAT checkers to accept it for nontrivial
+distributivity on AArch64 and RV64. Replaying the same certificate after a
+source or machine-operation change is refused.
+
+This is an **additional audit**, not a compiler admission path: it cannot
+create or promote `VerdictProven`, and the verifier cache cannot stand in for
+regeneration. `Oak.NativeEqualityCertificate.accepted_implies_equal` states
+the abstract composition from an accepted RUP derivation and a complete exact
+disequality encoding to pointwise `BitVec` equality. The concrete term-to-CNF
+encoder, DIMACS and checker implementation correspondence, machine symbolic
+execution, Oak lowering, rewrite-body authority, and later ISA/object/link
+links remain in the TCB. Moving LRAT checking into a leaf package and requiring
+this evidence during selection is a later milestone.
+
 **Conditional bodies (second increment).** `csel` and `cset` join the
 instruction table (`csel wD, wN, wM, cond` / `cset wD, cond`; a condition
 code is an operand; both consume flags under the same dominance rule as

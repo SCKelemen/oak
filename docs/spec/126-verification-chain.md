@@ -175,6 +175,21 @@ closes static symbol-to-Oak-body identity for summarized direct calls, not call
 placement, ABI argument transport, the truth of the callee body summary, or
 callee implementation equivalence.
 
+The first native-equivalence certificate slice is now available as an
+**audit**, not as admission authority. For closed call-free, loop-free,
+trap-free fixed-scalar AArch64/RV64 bodies,
+`asm.ExportNativeEqualityCNF` reruns machine execution and Oak lowering and
+constructs the exact result-disequality clauses.
+`prove.CheckNativeEqualityCertificate` regenerates those clauses before
+checking LRAT; the integration path also requires the checker written in Oak
+to accept the certificate against the same DIMACS formula. Source-body and
+machine-operation replay attacks are tests. `Oak.NativeEqualityCertificate`
+proves the abstract composition from accepted RUP plus exact CNF completeness
+to result equality. This removes the SAT solver from the audit, but it does
+not yet remove symbolic execution, Oak lowering, term-to-CNF generation, or
+the Go/Oak checker implementations from the TCB, and it does not promote a
+compiler verdict.
+
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register
 aggregates, deferred span decisions, and two-half vectors—preserves that
@@ -183,8 +198,9 @@ same list, and its key includes direct machine-call targets as well as source
 and theorem-rewritten reference-body reachability. Thus cold and warm builds
 feed the same dependency graph to the
 verified-profile closure; malformed or legacy records are cache misses. This
-closes metadata preservation, not the larger proof-engine TCB: the cache does
-not yet contain independently checkable native-equivalence certificates.
+closes metadata preservation, not the larger proof-engine TCB: the cache holds
+no certificate authority, and the bounded audit above always regenerates its
+formula instead of trusting a cached verdict.
 
 For the six AArch64 barrier forms, an independent executable regression witness
 now checks the direct-native portion of this seam: six Oak source functions must
