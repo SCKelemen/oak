@@ -1,0 +1,124 @@
+import(std)
+import(testing)
+
+// A Noise-shaped authenticated-channel POC.
+//
+// DH, transcript hashing, signature/MAC verification, KDF and AEAD are
+// intentionally idealized as evidence arriving at the protocol boundary. This
+// model verifies protocol sequencing, evidence plumbing, key liveness and
+// bounded message counters. It does not prove computational secrecy or
+// authentication against an adversary.
+
+NoiseChannel: protocol = {
+  data {
+    local_ephemeral_ready: Bool,
+    remote_ephemeral_valid: Bool,
+    dh_ready: Bool,
+    transcript_bound: Bool,
+    peer_authenticated: Bool,
+    send_chain_live: Bool,
+    recv_chain_live: Bool,
+    send_sequence: u16,
+    recv_sequence: u16
+  }
+  init {
+    local_ephemeral_ready: false,
+    remote_ephemeral_valid: false,
+    dh_ready: false,
+    transcript_bound: false,
+    peer_authenticated: false,
+    send_chain_live: false,
+    recv_chain_live: false,
+    send_sequence: u16(0),
+    recv_sequence: u16(0)
+  }
+  initial New
+
+  start: New -> AwaitingPeer then {
+    data.local_ephemeral_ready = true
+  }
+
+  receive_peer(valid: Bool): AwaitingPeer -> AwaitingAuthentication when valid && data.local_ephemeral_ready then {
+    data.remote_ephemeral_valid = true
+    data.dh_ready = true
+    data.transcript_bound = true
+  }
+  reject_peer(valid: Bool): AwaitingPeer -> Failed when !valid
+
+  authenticate(valid: Bool): AwaitingAuthentication -> Established when valid && data.dh_ready && data.transcript_bound then {
+    data.peer_authenticated = true
+    data.send_chain_live = true
+    data.recv_chain_live = true
+  }
+  reject_auth(valid: Bool): AwaitingAuthentication -> Failed when !valid
+
+  send: Established -> Established when data.peer_authenticated && data.send_chain_live && data.send_sequence < u16(65535) then {
+    data.send_sequence = data.send_sequence + u16(1)
+  }
+  receive: Established -> Established when data.peer_authenticated && data.recv_chain_live && data.recv_sequence < u16(65535) then {
+    data.recv_sequence = data.recv_sequence + u16(1)
+  }
+
+  close: Established -> Closed then {
+    data.send_chain_live = false
+    data.recv_chain_live = false
+  }
+  abort: AwaitingPeer -> Failed
+  abort: AwaitingAuthentication -> Failed
+}
+
+noise_established_has_authenticated_keys: theorem (s: NoiseChannelState, d: NoiseChannelData) {
+  !(s == .Established) ||
+    (d.local_ephemeral_ready && d.remote_ephemeral_valid && d.dh_ready &&
+     d.transcript_bound && d.peer_authenticated && d.send_chain_live &&
+     d.recv_chain_live)
+}
+
+noise_closed_has_no_live_traffic_keys: theorem (s: NoiseChannelState, d: NoiseChannelData) {
+  !(s == .Closed) || (!d.send_chain_live && !d.recv_chain_live)
+}
+
+noise_pre_auth_has_no_traffic_keys: theorem (s: NoiseChannelState, d: NoiseChannelData) {
+  !((s == .New) || (s == .AwaitingPeer) || (s == .AwaitingAuthentication)) ||
+    (!d.send_chain_live && !d.recv_chain_live)
+}
+
+TestNoiseSecurityHappyPath: (): () {
+  store: [1]NoiseChannelData
+  data: [*]NoiseChannelData = span(&store)
+  data[0] = noise_channel_initial_data()
+  s: NoiseChannelState = noise_channel_initial()
+
+  s = noise_channel_next(s, data, .Start)
+  test_check(s == .AwaitingPeer && data[0].local_ephemeral_ready, u32(7250))
+
+  s = noise_channel_next(s, data, .Receive_peer(true))
+  test_check(s == .AwaitingAuthentication, u32(7251))
+  test_check(data[0].remote_ephemeral_valid && data[0].dh_ready && data[0].transcript_bound, u32(7252))
+
+  s = noise_channel_next(s, data, .Authenticate(true))
+  test_check(s == .Established && data[0].peer_authenticated, u32(7253))
+  test_check(data[0].send_chain_live && data[0].recv_chain_live, u32(7254))
+
+  s = noise_channel_next(s, data, .Send)
+  s = noise_channel_next(s, data, .Receive)
+  test_check(data[0].send_sequence == u16(1), u32(7255))
+  test_check(data[0].recv_sequence == u16(1), u32(7256))
+
+  s = noise_channel_next(s, data, .Close)
+  test_check(s == .Closed && !data[0].send_chain_live && !data[0].recv_chain_live, u32(7257))
+}
+
+TestNoiseSecurityRejectsUnauthenticatedPeer: (): () {
+  store: [1]NoiseChannelData
+  data: [*]NoiseChannelData = span(&store)
+  data[0] = noise_channel_initial_data()
+  s: NoiseChannelState = noise_channel_initial()
+
+  s = noise_channel_next(s, data, .Start)
+  test_check(noise_channel_legal(s, data[0], .Reject_peer(false)), u32(7260))
+  test_check(!noise_channel_legal(s, data[0], .Receive_peer(false)), u32(7261))
+  s = noise_channel_next(s, data, .Reject_peer(false))
+  test_check(s == .Failed, u32(7262))
+  test_check(!data[0].send_chain_live && !data[0].recv_chain_live, u32(7263))
+}
