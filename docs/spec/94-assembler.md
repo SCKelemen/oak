@@ -4089,7 +4089,10 @@ induction's base — the two sides' memories at the loop's entry — is
 compared under the machine's condition for reaching the loop: a store
 before a loop inside an arm (`ok ? { s[dom].free_count = …; while … }`)
 is unguarded on the machine's path and guarded by `ok` on the Oak side,
-and the two agree exactly there (the OS pilot's `alloc_table`). Counted loops past the 64-trip
+and the two agree exactly there (the OS pilot's `alloc_table`). A callee's
+loop taken from its Oak body at a call summary is reached where the
+machine's path reached the call and the callee's own arm holds, and the
+premises assume both (`walk_leaf` calling `alloc_table` under `create`). Counted loops past the 64-trip
 unrolling limit use the same per-leaf markers on both sides; the Oak
 lowering treats the record-span root as memory rather than a carried
 local, and an inlined callee's parameter resolves through its alias to

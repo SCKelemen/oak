@@ -2680,7 +2680,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	assignedLocals(loop.Body, assigned)
 	declared := map[string]bool{}
 	declaredLocals(loop.Body, declared)
-	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	// The Oak path condition at the loop (an arm the loop sits in): a call
+	// summary's callee loops carry it as their reaching condition, with the
+	// machine's path at the call (summarizeCall).
+	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: lo.path}
 	if n := len(lo.loopStack); n > 0 {
 		ev.parent = lo.loopStack[n-1]
 	}
