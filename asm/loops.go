@@ -4039,16 +4039,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence(fmt.Sprintf("the memory of the span %s after the loops was not proven equal", name))
 		}
 	}
+	// One note for both kinds of memory, cells before spans: it was built
+	// twice and interpolated twice, so every proven loop verdict said
+	// "and the package state it writes" two times over.
 	memoryNote := ""
 	if len(writtenCells) > 0 {
 		memoryNote += " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
 	}
 	if len(writtenSpans) > 0 {
 		memoryNote += " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
-	}
-	cellNote := ""
-	if len(writtenCells) > 0 {
-		cellNote = " and the package state it writes (" + strings.Join(writtenCells, ", ") + ")"
 	}
 	var notes []string
 	for k, inv := range invariants {
@@ -4075,7 +4074,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if asmTerm == nil {
 		witnessNote = ""
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, cellNote, witnessNote)}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, witnessNote)}
 }
 
 // coupledWrites checks that one iteration of loop k stores alike on both

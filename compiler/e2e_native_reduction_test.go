@@ -160,10 +160,8 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	if !strings.Contains(joined, "asm unit sum: proven equal to its Oak body") {
 		t.Errorf("sum must be proven against its rewritten body; diagnostics:\n%s", joined)
 	}
-	// The 8-bit accumulator: the verifier finds no affine image of a
-	// normalized narrow accumulator in either form (evidence, not proof,
-	// for the loop as written too), so the unrolled form is kept — the
-	// verdict is not weakened — and the wrapping sum agrees with the C
+	// The 8-bit accumulator: the unrolled form is kept — the verdict is
+	// not weakened — and the wrapping sum agrees with the C
 	// backend below.
 	// Byte loads have no pair form: the four stay — or, both forms being
 	// evidence, the cost model keeps the cheaper bottom-tested plain loop
@@ -172,7 +170,10 @@ func TestE2ENativeReductionUnrolling(t *testing.T) {
 	if count, loads, _ := loops("sum8"); !(count == 2 && loads == 4) && !(count == 1 && loads == 1 && nativegen.RotatedLoops(units["sum8"]) == 1) {
 		t.Errorf("sum8 must unroll as sum does or keep its rotated plain loop (both forms are evidence), got %d loop(s), %d load(s)", count, loads)
 	}
-	if !strings.Contains(joined, "asm unit sum8: agrees with its Oak body") {
+	// The 8-bit accumulator is proven since a narrow loop counter couples
+	// with the widened register that holds it: either verdict keeps the
+	// unrolled form, and neither is weaker than the plain loop's.
+	if !strings.Contains(joined, "asm unit sum8: proven equal to its Oak body") && !strings.Contains(joined, "asm unit sum8: agrees with its Oak body") {
 		t.Errorf("sum8 must keep at least the evidence verdict of its plain form; diagnostics:\n%s", joined)
 	}
 	for _, name := range []string{"fsum", "running_max"} {
