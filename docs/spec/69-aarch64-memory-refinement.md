@@ -356,6 +356,16 @@ indices as the ordering witness. The four `po` links make break, pre-DSB,
 TLBI, post-DSB, and make pairwise distinct; the old event is excluded because
 the abstract `coherenceAfter` relation has no irreflexivity premise.
 
+The generated Arm Sail bridge now takes the two exact STR words one step
+further. It proves their SEE-1277 STR64 unsigned-offset field decodes and the
+selected store arm's address/data arguments immediately before `Mem`: with explicit
+register inputs, `STR XZR,[X0]` requests `(X0, 0)` and `STR X2,[X0]` requests
+`(X0, X2)`. The official-source gate pins the unexpectedly named
+`signed_postidx` decoder route, its fixed normal 64-bit store parameters, X31's
+zero behavior, and the final `Mem(address, 8, AccType_NORMAL) = data` call.
+The Sail facts decorate the external descriptor occurrences by conjunction;
+an extraction theorem returns each original word/action premise unchanged.
+
 The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
 incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its
 assertion establishes a nonempty span; those facts do not establish live PTE
@@ -366,8 +376,8 @@ store/system order and no ISB. The two local equalities are recorded in
 `Oak.Forwarding` (`unsigned_lt_one_is_zero`, `zero_index_store`) and their
 lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
 verifier's decided subset: its verdict remains **trusted**, not proven.
-Dynamic PC/object trace extraction, an official ASL memory-write semantics,
-and every instruction-to-action classification remain
+Dynamic PC/object trace extraction, effects after the official ASL pre-`Mem`
+request, and every instruction-to-action classification remain
 compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
 object oracle or a privileged Apple EL2 execution gate.
 

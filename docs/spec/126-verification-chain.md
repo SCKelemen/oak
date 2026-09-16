@@ -396,6 +396,15 @@ IPA/VMID target selection, completion, and context synchronization remain
 explicit obligations. Sail's coarse single-model-TLB reset implementation,
 which ignores architectural target granularity, is not used to discharge them.
 
+For the two STR occurrences, mechanically generated Sail Lean now proves the
+exact STR64 unsigned-offset field decodes and the selected store arm's
+address/data arguments immediately before `Mem`: explicit X0/X2 inputs yield `(X0, 0)` for the break
+word and `(X0, X2)` for the make word. The source audit pins the unique
+SEE-1277 clause, its historically misnamed `signed_postidx` decoder, fixed
+normal eight-byte store parameters, X31-as-zero, and the final official
+`Mem(address, 8, AccType_NORMAL) = data` call. These generated facts decorate,
+but cannot create, each external descriptor occurrence/action witness.
+
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
 `Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly
@@ -451,8 +460,9 @@ lane preserves the same fall-through store/system order. `Oak.Forwarding`
 proves only the local Boolean-branch and zero-index address/value equalities
 used by lowering/cleanup. Because DSB is outside the semantic verifier's
 decided subset, the whole-body verdict is trusted. Neither that verdict nor
-the exact STR encodings derives an official Sail/ASL memory write, PTE
-provenance/alignment beyond the source base fact, CAT `ca`/`inv-scope`
+the pre-`Mem` Sail request proves successful architectural memory execution,
+PTE provenance/alignment beyond the source base fact, virtual-to-physical
+translation, endianness, faults, permissions, tags, exclusives, MMIO, CAT `ca`/`inv-scope`
 membership, TLBI effects, DSB completion, publication, or ISB synchronization.
 There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
 

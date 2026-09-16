@@ -868,9 +868,15 @@ XZR,[X0]`, `DSB ISH`, `TLBI VMALLS12E1IS`, `DSB ISH`, `STR X2,[X0]`, `RET`,
 `BRK`—and Clang independently retains the same fall-through store/system
 order. Generated XML metadata, Oak's encoder, the text assembler, and Lean
 agree on `0xf900001f` and `0xf9000002`. The occurrence wrapper keeps those
-words and abstract descriptor actions as independent fields. It does not
-derive descriptor provenance, ASL memory effects, CAT membership, completion,
-invalidation, publication, or context synchronization. No Darwin/Mach-O
+words and abstract descriptor actions as independent fields. Generated Sail
+Lean additionally proves the exact STR64 field decodes and the selected store
+arm's pre-`Mem` arguments `(X0, 0)` and `(X0, X2)` from explicit register inputs. A
+source gate pins SEE 1277, the official decoder's normal eight-byte store
+parameters, X31-as-zero, and the instruction body's final `Mem` call. The
+decorated occurrence retains the external action premise unchanged. It does
+not derive descriptor provenance, successful ASL `Mem` effects, address
+translation, faults, endianness, tags, physical writes, CAT membership,
+completion, invalidation, publication, or context synchronization. No Darwin/Mach-O
 object oracle or privileged Apple EL2 execution gate exists yet.
 
 The event-control seam also computes `arm64.daifset_irq()` as

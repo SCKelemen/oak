@@ -745,6 +745,48 @@ function vector_arithmetic_unary_diffneg_fp (datasize, elements, esize, operand,
 }
 
 /* ---------------------------------------------------------------------
+ * The A64 STR (unsigned immediate), 64-bit, normal-store request.
+ *
+ * The pinned aarch_decode.sail SEE-1277 clause extracts Rt/Rn/imm12/opc/V/
+ * size and calls the (historically misnamed) signed_postidx decoder.  For
+ * size=11, V=0, opc=00 that decoder fixes wback=false, postindex=false,
+ * scale=3, AccType_NORMAL, MemOp_STORE, regsize=datasize=64, signed=false.
+ * The instruction body then reads Xn (SP only for Rn=31), reads Xt (zero for
+ * Rt=31), and requests Mem(address, 8, AccType_NORMAL) = data.
+ *
+ * These pure functions expose only that decoder result and the request made
+ * immediately before Mem.  They erase __PostDecode admission, syndrome
+ * writes, alignment and endian handling, translation and faults, permissions,
+ * MTE/tag checks, exclusive clearing, MMIO/trickbox paths, physical-memory
+ * writes, CAT events, execution/occurrence, and descriptor classification.
+ */
+
+val decode64_str64_unsigned_pure :
+  bits(32) -> (bool, bits(5), bits(5), bits(12))
+
+function decode64_str64_unsigned_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let imm12 : bits(12) = slice(op_code, 10, 12);
+    if (op_code & 0xFFC00000) == 0xF9000000 then {
+        (true, Rt, Rn, imm12)
+    } else {
+        (false, Rt, Rn, imm12)
+    }
+}
+
+val str64_unsigned_store_request_pure :
+  (bits(5), bits(5), bits(12), bits(64), bits(64), bits(64)) ->
+    (bits(64), bits(64))
+
+function str64_unsigned_store_request_pure (Rt, Rn, imm12, rn_value, rt_value, sp_value) = {
+    let base : bits(64) = if Rn == 0b11111 then sp_value else rn_value;
+    let data : bits(64) = if Rt == 0b11111 then Zeros(64) else rt_value;
+    let offset : bits(64) = sail_shiftleft(sail_zero_extend(imm12, 64), 3);
+    (base + offset, data)
+}
+
+/* ---------------------------------------------------------------------
  * The A64 barrier decoder (docs/spec/94-assembler.md §9).
  *
  * The three word patterns below are the DSB, DMB, and ISB clauses of

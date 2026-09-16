@@ -31,6 +31,141 @@ namespace A64Encoding
 
 open Oak.AArch64Encoding
 
+/-! The pinned STR64 unsigned-offset decoder and the selected store arm's
+address/data arguments immediately before `Mem`.  The generated projection stops before alignment,
+endianness, translation, faults, tags, exclusives, MMIO, physical memory, and
+CAT events.  It also supplies no dynamic occurrence or descriptor meaning. -/
+
+theorem decode64_str64_unsigned_bridge (word : BitVec 32) :
+    Out.Functions.decode64_str64_unsigned_pure word =
+      Oak.ArmASL.decode64Str64Unsigned word := by
+  simp only [Out.Functions.decode64_str64_unsigned_pure,
+    Oak.ArmASL.decode64Str64Unsigned, Sail.BitVec.slice,
+    BitVec.extractLsb']
+  by_cases h : word &&& 0xffc00000#32 = 0xf9000000#32 <;> simp [h]
+
+theorem str64_unsigned_store_request_bridge
+    (rt rn : BitVec 5) (imm12 : BitVec 12)
+    (rnValue rtValue spValue : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure rt rn imm12
+        rnValue rtValue spValue =
+      Oak.ArmASL.str64UnsignedStoreRequest rt rn imm12
+        rnValue rtValue spValue := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Oak.ArmASL.str64UnsignedStoreRequest, Sail.BitVec.zeroExtend,
+    Out.Functions.Zeros]
+
+theorem str_xzr_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_x2_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_xzr_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        0b11111#5 0#5 0#12 x0 x2 sp = (x0, 0#64) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend, Out.Functions.Zeros]
+
+theorem str_x2_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        2#5 0#5 0#12 x0 x2 sp = (x0, x2) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend]
+
+/-- Adjacent load and 32-bit store classes are deliberately rejected. -/
+theorem ldr_x2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xf9400002#32).1 = false := by
+  native_decide
+
+theorem str_w2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xb9000002#32).1 = false := by
+  native_decide
+
+/-- Nearby Rt, Rn, and scaled-immediate changes remain valid STR64 words but
+decode to different fields instead of being conflated with Oak's two words. -/
+theorem nearby_str64_fields_remain_distinct :
+    Out.Functions.decode64_str64_unsigned_pure 0xf9000001#32 =
+        (true, 1#5, 0#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf900003f#32 =
+        (true, 0b11111#5, 1#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf9000402#32 =
+        (true, 2#5, 0#5, 1#12) := by
+  native_decide
+
+open Oak.AArch64Stage2Maintenance
+
+/-- Preserve the externally supplied exact-word/action occurrence while
+decorating it with the generated decoder and pre-`Mem` request facts.  `x0`
+and `discardedRtValue` are explicit inputs, not facts about a machine state. -/
+def SailBreakDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat)
+    (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      0b11111#5 0#5 0#12 x0 discardedRtValue sp = (x0, 0#64)
+
+def SailMakeDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat) (x0 x2 sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable strX2X0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      2#5 0#5 0#12 x0 x2 sp = (x0, x2)
+
+theorem refineBreakDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 discardedRtValue sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorStoreRequestOccurrence code trace event slot
+      x0 discardedRtValue sp :=
+  ⟨occurrence, str_xzr_x0_decoder,
+    str_xzr_x0_store_request x0 discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 x2 sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorStoreRequestOccurrence code trace event slot x0 x2 sp :=
+  ⟨occurrence, str_x2_x0_decoder, str_x2_x0_store_request x0 x2 sp⟩
+
+/-- Generated decoding cannot manufacture the descriptor occurrence/action
+premise; both decorated forms recover it unchanged. -/
+theorem sail_break_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 discardedRtValue sp : BitVec 64}
+    (occurrence : SailBreakDescriptorStoreRequestOccurrence code trace event
+      slot x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 :=
+  occurrence.1
+
+theorem sail_make_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 x2 sp : BitVec 64}
+    (occurrence : SailMakeDescriptorStoreRequestOccurrence code trace event
+      slot x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+      strX2X0 :=
+  occurrence.1
+
 /-- Translate the enums generated by Sail to the names used by Oak's encoding
 specification.  These functions change only the constructors' namespaces. -/
 def barrierOp : _root_.MemBarrierOp -> Oak.AArch64Encoding.MemBarrierOp
