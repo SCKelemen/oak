@@ -70,9 +70,11 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 	// The checker matches a handle's type index against the protocol's
 	// state names, so the facts speak in marker names.
 	facts := typechecker.ResourceProtocolDeclaration{
-		Name:          m.name,
-		ResourceTypes: []string{m.name},
-		Initial:       marker(m.initial),
+		Name:                     m.name,
+		ResourceTypes:            []string{m.name},
+		Initial:                  marker(m.initial),
+		TypestateArity:           1,
+		SealedInitialConstructor: prefix + "_handle",
 	}
 	for _, state := range m.states {
 		facts.States = append(facts.States, marker(state))

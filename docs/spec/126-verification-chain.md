@@ -620,16 +620,23 @@ tests pin both existing pair-store refusals. It therefore proves neither
 architectural occurrence nor component or observer order, and grants no
 verifier or code-generation authority.
 
-The next custody prerequisite is sealed constructor provenance. Current
-typestate rules allow initial-state literals, including for compiler-generated
-static-protocol handles; a state or fact marker cannot by itself certify
-private memory. A proposed first increment would restrict those generated
-handles to their designated initial constructor, carrying the designation
-through resolved resources, SemIR validation, and resource-flow checks. It
-must also reject uninitialized roots and alternate fresh/trusted constructors.
-Explicit-resource protocols keep their existing literal rules. This would
-prove constructor origin only, not distinct backing allocation, ordinary RAM,
-fault-free mapping, or CPU/DMA/external-observer exclusion. Native lowering
+Generated static-protocol handles now have a sealed initial-constructor
+designation carried through resolved resources, SemIR validation, and a
+whole-program construction gate before resource flow. Direct initial literals,
+uninitialized roots (including value aggregates/fixed arrays), and alternate
+fresh/trusted result contracts cannot bypass the designated constructor;
+checked same-resource transitions retain reconstruction permission only for
+tail results, never independently bound local handles. Designated constructors
+must have actual checked Oak bodies, with no foreign or assembly replacement.
+Explicit-resource protocols keep their existing literal rules. The separate
+`Oak.SealedTypestate` calculus proves that derivations retain an externally
+supplied designated-mint premise and that transitions preserve resource/origin
+identity. It is not a Go implementation refinement and establishes no actual
+allocation, ordinary RAM, fault-free mapping, or CPU/DMA/external-observer
+exclusion. Uncontracted/foreign typed return values can still have unknown
+provenance; their origin is not established by this construction gate and no
+fresh authority follows from their type alone. No native or asm admission
+consumes this designation. Native lowering
 currently precedes borrow/resource/effect gates and cannot consume such an
 authority result; check-before-lowering and exact-region certificate transport
 remain separate prerequisites. The explicit `ResourceSemIR` stage also checks

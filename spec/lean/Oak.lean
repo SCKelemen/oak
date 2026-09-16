@@ -191,6 +191,7 @@ import Oak.Stdlib.KeyTree
 import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
 import Oak.Typestate
+import Oak.SealedTypestate
 import Oak.IoPort
 import Oak.ObjectStore
 import Oak.ProtocolQuorum

@@ -251,6 +251,10 @@ type Protocol struct {
 	Name    string
 	States  []State
 	Initial string
+	// SealedInitialConstructor optionally designates the sole checked
+	// fresh-authority constructor for the initial state. This is provenance
+	// metadata only; it carries no storage, memory-kind, or publication claim.
+	SealedInitialConstructor string
 	// TypestateArity is the type-parameter count of a typestate-indexed
 	// resource of this protocol (the state plus one per fact clause); 0 when
 	// the protocol's resources are not typestate-indexed.

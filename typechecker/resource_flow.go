@@ -60,9 +60,14 @@ type ResourceModel struct {
 	// Obligations maps a resource type to its terminal-state obligation,
 	// when its protocol declares one (docs/spec/50-borrowing.md section 9).
 	Obligations map[string]ResourceObligation
-	// Initials maps a resource type to its protocol's initial state, the one
-	// state a typestate-indexed handle may be constructed in anywhere.
+	// Initials maps a resource type to its protocol's initial state. Unsealed
+	// typestate handles may be constructed in that state anywhere.
 	Initials map[string]string
+	// SealedInitialConstructors designates the sole fresh constructor for a
+	// generated typestate resource. This is a construction restriction from
+	// resolved metadata, not a certificate of backing-storage ownership or
+	// private-memory authority.
+	SealedInitialConstructors map[string]string
 	// Typestate maps a typestate-indexed resource template to its arity:
 	// the state plus one type parameter per declared fact. A governed
 	// template absent here is not typestate-indexed (its parameters are
@@ -80,10 +85,11 @@ type ResourceObligation struct {
 
 func NewResourceModel() ResourceModel {
 	return ResourceModel{
-		ResourceTypes: make(map[string]bool),
-		Operations:    make(map[string]ResourceOperation),
-		Obligations:   make(map[string]ResourceObligation),
-		Initials:      make(map[string]string),
+		ResourceTypes:             make(map[string]bool),
+		Operations:                make(map[string]ResourceOperation),
+		Obligations:               make(map[string]ResourceObligation),
+		Initials:                  make(map[string]string),
+		SealedInitialConstructors: make(map[string]string),
 	}
 }
 
@@ -101,6 +107,13 @@ func (m *ResourceModel) MarkInitial(typeName, state string) {
 		m.Initials = make(map[string]string)
 	}
 	m.Initials[typeName] = state
+}
+
+func (m *ResourceModel) MarkSealedInitialConstructor(typeName, callable string) {
+	if m.SealedInitialConstructors == nil {
+		m.SealedInitialConstructors = make(map[string]string)
+	}
+	m.SealedInitialConstructors[typeName] = callable
 }
 
 // MarkObligation records a terminal-state obligation for a resource type.
@@ -145,6 +158,9 @@ func (tc *TypeChecker) CheckProgramWithResources(program *ast.Program, model Res
 // CheckResourceFlow runs path-sensitive authority analysis over an already
 // typed AST. Each function has independent authority; no resource state leaks
 // between function bodies.
+// Callers supplying ResourceModel directly must provide resolved semantic
+// metadata; the normal compiler validates declarations and projects SemIR
+// before calling this entrypoint. Arbitrary maps are not proof certificates.
 func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceModel) {
 	if tc == nil || program == nil {
 		return
@@ -166,6 +182,9 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 		if initial, has := model.Initials[base]; has {
 			normalized.Initials[name] = initial
 		}
+		if constructor, has := model.SealedInitialConstructors[base]; has {
+			normalized.MarkSealedInitialConstructor(name, constructor)
+		}
 		if arity, has := model.Typestate[base]; has {
 			normalized.MarkTypestate(name, arity)
 		}
@@ -185,6 +204,13 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 		normalized.Operations[name] = op
 	}
 	model = normalized
+	// This gate also sees globals, nested aggregates, and closures, which the
+	// function-local authority walk cannot use to authorize construction.
+	before := len(tc.Diagnostics())
+	tc.checkSealedResourceConstruction(program, model)
+	if len(tc.Diagnostics()) != before {
+		return
+	}
 	for _, statement := range program.Statements {
 		fn, ok := statement.(*ast.FunctionStatement)
 		if !ok || fn == nil || fn.ExternSymbol != "" {
@@ -971,6 +997,10 @@ func (a *typedResourceAnalysis) checkTypestateConstruction(literal *ast.RecordLi
 	}
 	template, state, isTypestate := a.typestateOf(a.tc.env.CheckedExpressionType(literal))
 	if !isTypestate {
+		return
+	}
+	if a.model.SealedInitialConstructors[template] != "" {
+		// Checked by the whole-program sealed-construction gate before flow.
 		return
 	}
 	if initial, known := a.model.Initials[template]; known && initial == state {

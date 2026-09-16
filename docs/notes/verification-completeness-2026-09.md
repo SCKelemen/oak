@@ -663,6 +663,18 @@ only—not instruction occurrence, component/observer ordering,
 atomicity/non-tearing, bounds, traps, translation, ASL `Mem`, CAT, visibility,
 completion, or publication authority.
 
+Generated static-protocol handles now carry a checked sealed-initial-constructor
+designation through resolution and SemIR. A whole-program gate rejects direct
+literals and zero-initialized handle values outside its construction rules,
+including nested value aggregates and fixed arrays; alternate fresh/trusted
+result contracts are rejected. Explicit-resource literal compatibility is
+unchanged. `Oak.SealedTypestate` proves origin-premise retention and identity
+preservation in a separate abstract calculus, with mint and transition
+validation as explicit premises. This is neither refinement of the Go gate
+nor storage custody: allocation, memory type, observer exclusion, native
+authority transport, and ordering/publication remain open. STP admission is
+unchanged.
+
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
 model. Until that lands, RV64 is closer to a formally closed
