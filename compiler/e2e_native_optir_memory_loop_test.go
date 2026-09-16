@@ -14,7 +14,6 @@ const nativeOptIRMemoryLoopProgram = `
 state: u32 = u32(0)
 
 loop_store: (n: u32): u32 {
-  initial: u32 = state
   i: u32 = u32(0)
   while i < n {
     dead1: u32 = i + u32(1)
@@ -103,7 +102,7 @@ func assertVerifiedOptIRMemoryLoop(t *testing.T, comp Compilation, diagnostics *
 	if !ok {
 		t.Fatalf("loop_store was not projected: %+v", projected.Refusals)
 	}
-	if loop.RegionLoadForwarding.Changes() != 2 {
+	if loop.RegionLoadForwarding.Changes() != 3 || len(loop.RegionLoadForwarding.Insertions) != 1 {
 		t.Fatalf("loop-carried memory promotion = %+v", loop.RegionLoadForwarding)
 	}
 	if stores, loads := countOptIRMemoryOperations(loop.ForwardedLoads); stores != 1 || loads != 1 {
