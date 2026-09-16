@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -4114,7 +4115,7 @@ func (g *generator) popScope() {
 	for _, name := range names {
 		// The variable's register or slot returns to the pool for the
 		// declarations that follow.
-		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
+		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && b.sa == nil && !b.freed {
 			switch {
 			case b.reg >= vecBase:
 				g.releaseVectorHome(b.reg)
@@ -4124,6 +4125,7 @@ func (g *generator) popScope() {
 				g.freeSlots16 = append(g.freeSlots16, b.offset)
 			case b.offset >= 0:
 				g.freeSlots8 = append(g.freeSlots8, b.offset)
+				traceSlot("pop-scope", name, b.offset, b.reg, g.nslots, len(g.freeSlots8))
 			}
 		}
 		delete(g.slots, name)
@@ -4162,6 +4164,7 @@ func (g *generator) declareArray(name string, elem scalar, length int64) *arrayL
 
 // allocArray reserves an array's frame storage without binding a name.
 func (g *generator) allocArray(elem scalar, length int64) *arrayLocal {
+	traceSlot("alloc-array", elem.name, 8*g.nslots, int(length), g.nslots, len(g.freeSlots8))
 	bytes := length * int64(elem.bits/8)
 	arr := &arrayLocal{offset: 8 * g.nslots, elem: elem, length: length}
 	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (bytes + 7) / 8 * 8})
@@ -4382,6 +4385,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 
 // allocRecord reserves a record's frame storage without binding a name.
 func (g *generator) allocRecord(layout *recordLayout) *recordLocal {
+	traceSlot("alloc-record", layout.name, 8*g.nslots, -1, g.nslots, len(g.freeSlots8))
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (layout.size + 7) / 8 * 8})
 	g.nslots += (layout.size + 7) / 8
@@ -5014,6 +5018,7 @@ func (g *generator) declare(name string, s scalar) int64 {
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
+	traceSlot("declare", name, offset, r, g.nslots, len(g.freeSlots8))
 	g.noteLoopHomes(r)
 	return offset
 }
@@ -9462,4 +9467,14 @@ func barrierScope(scope semir.BarrierScope) string {
 		return "sy"
 	}
 	return "sy"
+}
+
+// traceSlot prints a frame-slot event under OAK_NATIVE_TRACE_SLOTS (a
+// debugging aid): which name took or freed which slot offset, the
+// register it holds, the frame's slot count, and the free pool's depth.
+func traceSlot(event, name string, offset int64, reg int, nslots int64, free int) {
+	if os.Getenv("OAK_NATIVE_TRACE_SLOTS") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "slot %-13s %-24s offset %4d reg %3d nslots %3d free %d\n", event, name, offset, reg, nslots, free)
 }

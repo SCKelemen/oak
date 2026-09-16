@@ -109,6 +109,15 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			result.Fallbacks[fn.Name.Value] = reason
 			continue
 		}
+		// OAK_NATIVE_ONLY (a debugging aid): the functions named, and only
+		// those, lower natively; the rest stay with the C backend, so a
+		// native-against-C disagreement bisects to one function.
+		if only := nativeOnly(); only != nil && !only[fn.Name.Value] && !only[nativeUnitName(fn.Name.Value)] {
+			reason := fmt.Sprintf("OAK_NATIVE_ONLY names other functions; this one is %s", fn.Name.Value)
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
+			result.Fallbacks[fn.Name.Value] = reason
+			continue
+		}
 		// A read of a constant top-level scalar (the OS pilot's N1:
 		// `page_size`, `entries`) reaches the backend and the verifier as
 		// its folded value (constants); the C emitter keeps the body and
@@ -758,4 +767,36 @@ func describeRewrites(sites []nativegen.RewriteSite) string {
 		parts = append(parts, name+" "+strings.Join(kinds, ", "))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// nativeOnly reads OAK_NATIVE_ONLY: nil when unset, else the set of
+// function names (comma-separated, spelled as the source names them or
+// as their native units are) that lower natively.
+func nativeOnly() map[string]bool {
+	raw := os.Getenv("OAK_NATIVE_ONLY")
+	if raw == "" {
+		return nil
+	}
+	only := map[string]bool{}
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			only[name] = true
+		}
+	}
+	return only
+}
+
+// nativeUnitName spells a source function name as its native unit is
+// spelled in the diagnostics: a module's dot becomes two underscores and
+// an underscore in the name becomes `_u`.
+func nativeUnitName(name string) string {
+	module, local := "", name
+	if k := strings.LastIndex(name, "."); k >= 0 {
+		module, local = name[:k], name[k+1:]
+	}
+	local = strings.ReplaceAll(local, "_", "_u")
+	if module == "" {
+		return local
+	}
+	return module + "__" + local
 }
