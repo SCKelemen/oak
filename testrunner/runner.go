@@ -35,6 +35,8 @@ type Config struct {
 	Timeout, BuildTimeout, ShrinkTimeout time.Duration
 	Run, Fuzz, Sim, Replay               string
 	JSON, List, Verbose, Sanitize        bool
+	TraceProcesses                       bool // full compiler/test launch diagnostics on stderr
+	processTrace                         *processTracer
 	// Device replays recorded kernel launches on this machine's GPU and
 	// compares them with the host's run (docs/spec/110-testing.md, "Launch
 	// targets"); off, launches are recorded and counted but not replayed.
@@ -150,6 +152,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&cfg.JSON, "json", false, "emit one JSON result per test")
 	flags.BoolVar(&cfg.List, "list", false, "list matching tests without compilation")
 	flags.BoolVar(&cfg.Verbose, "v", false, "include successful test output")
+	flags.BoolVar(&cfg.TraceProcesses, "trace-processes", false, "trace compiler/test argv, cwd, full environment values and exec/fork mode to stderr")
 	flags.BoolVar(&cfg.Resident, "resident", cfg.Resident, "run cases in resident harness workers, one fresh fork per case; off runs one process per case")
 	flags.BoolVar(&cfg.Device, "device", cfg.Device, "replay recorded kernel launches on this machine's GPU and compare with the host (docs/spec/110-testing.md, \"Launch targets\")")
 	flags.BoolVar(&cfg.Sanitize, "sanitize", false, "enable native address and undefined-behavior sanitizers")
@@ -162,6 +165,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return 2
+	}
+	if cfg.TraceProcesses {
+		cfg.processTrace = &processTracer{out: stderr}
 	}
 	if cfg.Workers < 1 || cfg.Workers > 64 || cfg.Campaign != "" && cfg.Replay != "" || cfg.Runs < 1 || cfg.Runs > 1000000 || cfg.MaxBytes < 0 || cfg.MaxBytes > 1<<20 || cfg.Shrink < 0 || cfg.MaxDiscards < 0 || cfg.Timeout <= 0 || cfg.BuildTimeout <= 0 || cfg.ShrinkTimeout <= 0 || cfg.Fuzz != "" && cfg.Sim != "" || cfg.Replay != "" && (cfg.Fuzz != "" || cfg.Sim != "" || cfg.Run != "" || cfg.List || cfg.Cover != "") {
 		fmt.Fprintln(stderr, "invalid test configuration")

@@ -511,6 +511,14 @@ count, never a byte count, and lengths stay in `u32` on the Oak side
 against `n`, `len` reads `n`, `subslice` derives within it, and it may be
 passed to any Oak function taking `[]T`/`[*]T`.
 
+Constructing a foreign view or span contributes no declared effect of its
+own, so a function using these forms can sit under `forbids`. Calls used
+to obtain the pointer or count, and other calls inside the `unsafe` block,
+retain their effects: a forbidden effect is rejected with `OAK-E0101`,
+and an extern without an effect row remains unknown (`OAK-E0103`). The
+foreign memory contract is still recorded as `OAK-B0110`; `forbids` does
+not establish pointer validity or replace the borrow rules below.
+
 ```oak
 device_buffer: (id: u32): c.Ptr = c.extern("rt_buffer_host_ptr")
 device_len: (id: u32): u32 = c.extern("rt_buffer_len")

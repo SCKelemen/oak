@@ -739,7 +739,9 @@ they splice the embedded library into the program unqualified, exactly as
 before this chapter, and are accepted from any package of a build (loaded once).
 They cannot be bound or sealed (`OAK-M0111`). Their names are not `pub` and
 are not renamed; a user declaration colliding with a bootstrap export is
-rejected as before.
+rejected as before. Contextual codec forms (`from`, `encode`, `decode`,
+`encoded_size`, `decode_located`) are not bootstrap exports and do not
+reserve ordinary declaration names (`71-codecs.md` §12).
 
 **Standard library packages.** The library files are real packages:
 `bytes`, `bitset`, `endian`, `buffer`, `array_list`, `varint`, `strings`, `unicode`, `json`, `filters`, `hash_table`, `bitset_algebra`,

@@ -97,7 +97,7 @@ func TestCheckedGlobalMemoryCleanupEliminatesNewlyDeadStores(t *testing.T) {
 			if err := verifyOptIRMemoryCleanup(function.ForwardedLoads, function.CheckedMemory, cleanup); err != nil {
 				t.Fatal(err)
 			}
-			for _, cfg := range []optir.CFG{cleanup.SCCPSimplified, cleanup.ScalarCFG, cleanup.DeadStores, cleanup.CFG} {
+			for _, cfg := range []optir.CFG{cleanup.SCCPSimplified, cleanup.ScalarCFG, cleanup.DeadStores, cleanup.DCECleaned, cleanup.CFG} {
 				if err := optir.VerifyCFGCheckedFacts(cfg, function.CheckedFacts); err != nil {
 					t.Fatal(err)
 				}

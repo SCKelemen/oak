@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/source"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1914,11 +1915,12 @@ func selectRealization(fn *object.Function) (object.Object, bool) {
 // measuredValue is the value a measured constant runs with in the
 // interpreter: OAK_MEASURED_<NAME> when set (a decimal integer inside the
 // declared range), the pinned initializer otherwise. The name is the Oak
-// name without its package prefix, as the compiled program asks for it.
+// declaration name, decoded only for a canonical package mangling, as the
+// compiled program asks for it. A root name is already a source spelling.
 func measuredValue(vd *ast.VariableDeclaration, pinned object.Object) object.Object {
 	name := vd.Name.Value
-	if i := strings.LastIndex(name, "__"); i >= 0 {
-		name = name[i+2:]
+	if _, declared, ok := modules.Demangle(name); ok {
+		name = declared
 	}
 	text := os.Getenv("OAK_MEASURED_" + name)
 	if text == "" {

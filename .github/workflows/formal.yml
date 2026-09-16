@@ -45,7 +45,7 @@ jobs:
       # rendered as Lean examples and checked against their models in this
       # Lean-equipped lane. Ordinary Go-only jobs skip these optional oracles.
       - name: Check bounded production correspondence
-        run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Settled)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
+        run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v

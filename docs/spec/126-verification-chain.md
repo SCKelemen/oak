@@ -259,6 +259,21 @@ refusal is not an inequality theorem. `TestNativeCNFReplaySettledMatchesLean`
 kernel-pins sixteen production outcomes, including alias/count/memo corruption
 hidden behind false roots. Full Go admission/coverage refinement and compiler
 verdict authority remain separate; this does not add a compiler consumer.
+
+The constructor metadata seam now has `Oak.CNFReplayHeader`: exact ordered
+names, explicit index presence, widths, unique keys/counts, and disabled modes
+yield valid parameters with no extra table keys. The Go check rejects missing
+first indices rather than treating a missing map entry as zero.
+`Oak.CNFMetadataCertificate.metadata_words_equal` uses these checked parameters
+in the existing word-certificate chain; even constant-only projection must
+pass the complete header check. Separately, `Oak.CNFReplayCoverage.finish_exact`
+proves exact memo/input/gate domains and term root vectors from admitted
+recordings against fixed producer contents plus matching completion counts.
+The constructor and numeric `finish` decisions have bounded Go/Lean kernel
+pins. Neither equal counts nor equal scalar snapshots establish content
+integrity or producer immutability; same-size forged state is an explicit
+accepted numeric counterexample. Universal Go trace/map/pointer/key projection,
+full intermediate-root traversal and complete admission remain unrefined.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
@@ -555,9 +570,16 @@ an observer-order relation between them. It proves no execution effect,
 translation, fault freedom, atomicity or non-tearing, ordering, CAT event,
 visibility, completion, or publication. Ordinary `STP` supplies no release or
 barrier semantics; live PTE publication therefore remains scalar. Any future
-blocked zero fill additionally requires its source law, bounds/provenance and
-pair-store verifier support, a scalar tail, and private/unpublished ordinary
-memory authority.
+blocked zero fill can reuse `Oak.BlockedFill.blocked_fill_eq` for final-state
+algebraic grouping and its less-than-four tail bound. The checker refinement's
+`span_element_then_pair64_store` proves that an admitted writable 16-byte
+access covers two adjacent in-span u64 cells; synchronized examples admit
+offsets 0 and 16 of a four-cell region and refuse offset 24 and a read-only
+region. That is only byte bounds and writability metadata. It proves no
+ordinary-memory, privacy, or unpublished custody, so generic and record-span
+pair stores remain refused. A lowering still requires exact record-field
+provenance and trap preservation, verifier support, scalar-tail lowering,
+alias/observer exclusion, and private/unpublished ordinary-memory authority.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

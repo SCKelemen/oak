@@ -13,10 +13,10 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -123,11 +123,12 @@ func (cg *CodeGenerator) emitMeasuredInit(tc *typechecker.TypeChecker) {
 }
 
 // measuredHookName is the name a measured constant is asked for by: its
-// Oak name without the package prefix (TILE_GROUPS, not schedule__TILE_GROUPS),
-// so the environment variable is OAK_MEASURED_TILE_GROUPS.
+// decoded Oak declaration name, so the environment variable is
+// OAK_MEASURED_TILE_GROUPS even for an imported constant. Root names are
+// already source spellings and must not be unescaped.
 func measuredHookName(name string) string {
-	if i := strings.LastIndex(name, "__"); i >= 0 {
-		return name[i+2:]
+	if _, declared, ok := modules.Demangle(name); ok {
+		return declared
 	}
 	return name
 }

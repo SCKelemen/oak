@@ -795,8 +795,14 @@ and runs pure DCE on `MemoryCleanup.DeadStores` to remove unused store-value
 producers. Reachable readers, live-out writes, and effectful calls whose results
 are now unused remain observable. The existing DSE verifier checks the exact
 rewrite; no pre-forwarding liveness is reused. The composition authenticates
-the input before deleting any access or call,
-then reprojects checked authority and rebuilds MemorySSA over the final CFG.
+the input before deleting any access or call. Pure DCE publishes
+`MemoryCleanup.DCECleaned`; fresh loop analysis for that exact snapshot then
+feeds one pure LICM pass. Memory promotion and phi elimination can expose
+invariant scalar chains that the earlier LICM could not move. The existing
+closed, total, pure vocabulary and canonical-preheader rules still apply:
+this pass does not move memory, calls, potentially trapping operations, or
+loop-carried arithmetic. `MemoryCleanup.LoopMotion` records the moves. Checked
+authority is reprojected and MemorySSA rebuilt over the final CFG.
 The compiler exposes the original forwarding result as `ForwardedLoads` and
 the cleaned candidate as `MemoryCleanup.CFG`; `FinalMemoryProjection` and
 `FinalMemorySSA` describe the latter. Native selection independently replays
@@ -816,6 +822,16 @@ of relocations for the removed call/global, and a mismatch when the source
 write is made reachable. Additional regressions require newly exposed store
 removal, deletion of dead multiplication, retention of reachable readers and
 effectful producers, and rejection when only the final global state changes.
+The post-memory LICM fixture composes memory promotion with scalar motion and
+hoists a multiplication. Both target regressions require seam admission,
+semantic proof, and encoding of the SSA candidate, with no multiplication or
+load in its native loop. Normal cost selection remains unchanged: RV64 selects
+the SSA candidate for this fixture; AArch64 can retain its cheaper existing
+bottom-tested form. Host/QEMU execution covers zero/one/multiple iterations,
+changing global state, and wrapping values.
+Changed loop arithmetic must not receive a proof; a variant with an observable
+constant offset must produce a definite mismatch. These tests distinguish a
+proof from finite witness agreement rather than treating them as equivalent.
 This is one cleanup round, not a memory/scalar fixed point; final seam
 admission and semantic translation validation still gate
 emission.

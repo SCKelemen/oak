@@ -548,9 +548,7 @@ are normalized to the named declared widths before comparison.
 
 This covers the nonconstant certificate path, not settled roots or complete
 Go replay admission. Whole children are syntax-checked, but discarded high
-intermediate roots need not be replayed by the projected final bits. Parameter
-tables are checked at parameter leaves, so constant-only projection is not a
-substitute for the Go constructor's complete table checks. The input model's
+intermediate roots need not be replayed by the projected final bits. The input model's
 extra safe-subtraction check can refuse earlier for artificial `maxInt` values
 smaller than a parameter position. Universal Go graph/table/signed-field
 projection, pointer memoization, reachable coverage, machine representation,
@@ -571,6 +569,32 @@ constants, true/pending roots, malformed widths/constants, and allocator/memo
 corruption behind false roots. The native audit's complete header and
 pointer/intermediate-root coverage policy, arbitrary Go-to-model refinement,
 source/ISA closure, and compiler verdict authority remain separate obligations.
+
+`Oak.CNFReplayHeader` now models the constructor's metadata check separately
+from gate/memo validation. It checks disabled abstraction modes, unique
+nonempty ordered parameter names, exact table counts, explicitly present
+indices at their required positions, and widths in 1..64. Acceptance proves
+valid ordered parameters and excludes extra index/width keys. The production
+constructor now rejects a missing first index even when an unrelated key
+preserves the table size: a missing Go map entry must not count as index zero.
+`Oak.CNFMetadataCertificate.projectWords` runs this header check before word
+projection, including for constant-only words whose unused parameter tables
+would otherwise escape leaf checks. `metadata_words_equal` composes those
+exact returned parameters with the existing projection/replay/clause/RUP
+theorem; it adds no assumed input or root semantics.
+
+`Oak.CNFReplayCoverage` models the three replay-map counts and all nine saved
+scalar shape fields checked by `finish`. Its `finish_exact` theorem derives
+exact term keys/root vectors and input/gate key domains only for states
+reached from empty by admitted recordings against a fixed producer. Repeated
+cache hits/writes preserve that state. Numeric completion alone is not content
+validation: same-size foreign keys or changed roots can pass it, and equal
+scalar shapes do not prove producer immutability. `TestNativeCNFReplayHeaderMatchesLean`
+and `TestNativeCNFReplayFinishMatchesLean` kernel-pin bounded actual Go decisions,
+including that limitation. Faithful map/pointer/key projection, a proof that
+the actual Go recording trace is admitted against unchanged producer contents,
+full graph traversal/intermediate-root coverage, and settled admission remain
+open. These bookkeeping laws are distinct from the final-root semantic theorem.
 
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
@@ -1066,11 +1090,25 @@ proves no atomicity, single-copy atomicity, non-tearing, memory ordering,
 translation, fault-free access, architectural or external memory effect, CAT
 event or edge, visibility, completion, or page-table publication. Ordinary
 `STP` is neither a store-release operation nor a barrier. In particular, live
-PTE break/make publication remains on the existing scalar `STR` path. A future
-four-word zero-fill optimization first needs a source-level blocked-fill
-equivalence law, complete bounds/provenance and verifier support, and a scalar
-tail; its authority must be restricted to ordinary private memory that has not
-yet been published, never a live descriptor-update protocol.
+PTE break/make publication remains on the existing scalar `STR` path.
+`Oak.BlockedFill.blocked_fill_eq` discharges one source-level algebraic
+prerequisite: in the total word-memory model, `k` four-word blocks expressed as
+two `storePair` operations each, followed by the `n % 4` scalar tail, have the
+same final memory as `n` scalar stores; `blocked_fill_tail_lt_four` proves that
+tail has at most three words. This is final-state equality only, not bounds,
+trap/partial-write preservation, alias or observer exclusion, or authority to
+use STP. `Oak.CheckerRefinement.span_element_then_pair64_store` separately
+proves the existing slack-region decision's narrow arithmetic fact: when an
+admitted writable 16-byte access starts `d` u64 cells into the derived region,
+cells `i+d` and `i+d+1` are inside the span. The Go-to-Lean decision gate pins
+the intended non-overlapping offsets 0 and 16 of a four-cell region and refuses
+the overflowing and read-only cases. This still supplies no memory-type or
+custody fact: a writable span may name published page tables, device memory,
+or externally observed storage. The verifier therefore continues to refuse
+pair stores through spans and record spans. A future lowering still needs exact
+record-field provenance, trap preservation, verifier support, scalar-tail
+lowering, and explicit ordinary private-memory authority proving the storage
+has not yet been published—never a live descriptor-update protocol.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand

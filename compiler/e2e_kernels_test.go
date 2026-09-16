@@ -75,10 +75,10 @@ func TestKernelsEmitMetal(t *testing.T) {
 		"// oak-kernel axpy: gid grid; a scalar f32 buffer 0; x view f32 buffer 1,2; y span f32 buffer 3,4; tile scalar u32 buffer 5; fault buffer 6; independence tile tile",
 		"#pragma METAL fp math_mode(safe)",
 		"kernel void relu(uint gid [[thread_position_in_grid]], device const float* x [[buffer(0)]], constant uint& x_len [[buffer(1)]], device float* y [[buffer(2)]], constant uint& y_len [[buffer(3)]], device atomic_uint* oak_fault [[buffer(4)]]) {",
-		"static inline float clamp_relu(float x, device atomic_uint* oak_fault) {\n  return ((x < 0.0f) ? 0.0f : x);\n}",
+		"static inline float oak_helper__clamp_urelu(float x, device atomic_uint* oak_fault) {\n  return ((x < 0.0f) ? 0.0f : x);\n}",
 		// The guard `gid < len(y)` discharges the store; x's length is
 		// unknown, so the load stays checked.
-		"y[gid] = clamp_relu(x[oak_check(gid, x_len, oak_fault)], oak_fault);",
+		"y[gid] = oak_helper__clamp_urelu(x[oak_check(gid, x_len, oak_fault)], oak_fault);",
 		"constant float& a [[buffer(0)]]",
 		"y[i] = ((a * x[oak_check(i, x_len, oak_fault)]) + y[i]);",
 		"while (k < tile) {",
@@ -88,7 +88,7 @@ func TestKernelsEmitMetal(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, result.Source)
 		}
 	}
-	if strings.Count(result.Source, "static inline float clamp_relu") != 1 {
+	if strings.Count(result.Source, "static inline float oak_helper__clamp_urelu") != 1 {
 		t.Fatalf("the helper must be emitted once:\n%s", result.Source)
 	}
 	// A program without kernels emits nothing.
@@ -341,21 +341,21 @@ func TestE2EKernelsReduceTree(t *testing.T) {
 	src := result.Source
 	for _, want := range []string{
 		"// oak-kernel tile_sum: gid grid; x view f32 buffer 0,1; partials span f32 buffer 2,3; tile scalar u32 buffer 4; fault buffer 5; independence element",
-		"static inline float add(float a, float b, device atomic_uint* oak_fault) {",
-		"static inline float reduce__tree_f32__add(device const float* xs, uint xs_len, float zero, device atomic_uint* oak_fault) {",
+		"static inline float oak_helper__add(float a, float b, device atomic_uint* oak_fault) {",
+		"static inline float oak_helper__reduce_u_utree_uf32__f__add(device const float* xs, uint xs_len, float zero, device atomic_uint* oak_fault) {",
 		"float stack[64] = { zero, zero,",
 		"uchar levels[64] = {",
-		"stack[oak_check((count - 2u), 64u, oak_fault)] = add(stack[oak_check((count - 2u), 64u, oak_fault)], stack[oak_check((count - 1u), 64u, oak_fault)], oak_fault);",
+		"stack[oak_check((count - 2u), 64u, oak_fault)] = oak_helper__add(stack[oak_check((count - 2u), 64u, oak_fault)], stack[oak_check((count - 1u), 64u, oak_fault)], oak_fault);",
 		"if (count == 0u) {\n    return zero;\n  } else {",
 		"uint part_len = tile;\n    device const float* part = x + oak_subslice(start, part_len, x_len, oak_fault);",
-		"partials[gid] = reduce__tree_f32__add(part, part_len, zero, oak_fault);",
+		"partials[gid] = oak_helper__reduce_u_utree_uf32__f__add(part, part_len, zero, oak_fault);",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("missing %q in:\n%s", want, src)
 		}
 	}
 	// Callee-first: the bound function precedes the helper that calls it.
-	if strings.Index(src, "static inline float add(") > strings.Index(src, "static inline float reduce__tree_f32__add(") {
+	if strings.Index(src, "static inline float oak_helper__add(") > strings.Index(src, "static inline float oak_helper__reduce_u_utree_uf32__f__add(") {
 		t.Fatalf("helpers must be emitted callee-first:\n%s", src)
 	}
 	// The window's loads are proven by the helper's own loop bound.
@@ -444,9 +444,9 @@ func TestE2EKernelsRecordParameters(t *testing.T) {
 		"struct tensor__MutTensor2 {\n  device float* data;\n  uint data_len;",
 		"device const float* x__data [[buffer(0)]], constant uint& x__data_len [[buffer(1)]], constant uint& x__rows [[buffer(2)]]",
 		"  tensor__Tensor2 x = { x__data, x__data_len, x__rows, x__cols, x__row_stride, x__col_stride, x__offset };",
-		"static inline float tensor__tensor_uat(tensor__Tensor2 t, uint i, uint j, device atomic_uint* oak_fault) {",
+		"static inline float oak_helper__tensor_u_utensor_uuat(tensor__Tensor2 t, uint i, uint j, device atomic_uint* oak_fault) {",
 		"if (!((i < rows) && (j < cols))) { oak_raise(oak_fault, 5u); return (uint)0; }",
-		"return t.data[oak_check(tensor__tensor_uindex(t.rows, t.cols, t.row_stride, t.col_stride, t.offset, i, j, oak_fault), t.data_len, oak_fault)];",
+		"return t.data[oak_check(oak_helper__tensor_u_utensor_uuindex(t.rows, t.cols, t.row_stride, t.col_stride, t.offset, i, j, oak_fault), t.data_len, oak_fault)];",
 		"out.data[gid] = ((v < 0.0f) ? 0.0f : v);",
 	} {
 		if !strings.Contains(src, want) {
@@ -547,7 +547,7 @@ func TestE2EKernelsGroupTree(t *testing.T) {
 		"oak_scratch1[oak_lid] = (oak_lid < oak_m1) ? x[oak_lo1 + oak_lid] : oak_gt1;",
 		"threadgroup_barrier(mem_flags::mem_threadgroup);",
 		"for (uint oak_s = 1u; oak_s < 4u; oak_s <<= 1u) {",
-		"if ((oak_lid % (2u * oak_s)) == 0u && oak_lid + oak_s < oak_m1) { oak_scratch1[oak_lid] = add(oak_scratch1[oak_lid], oak_scratch1[oak_lid + oak_s], oak_fault); }",
+		"if ((oak_lid % (2u * oak_s)) == 0u && oak_lid + oak_s < oak_m1) { oak_scratch1[oak_lid] = oak_helper__add(oak_scratch1[oak_lid], oak_scratch1[oak_lid + oak_s], oak_fault); }",
 		"if (oak_m1 > 0u) { oak_gt1 = oak_scratch1[0]; }",
 		"if (oak_lid == 0u) { partials[gid] = oak_gt1; }",
 	} {
@@ -614,10 +614,10 @@ func TestE2EKernelsGroupLanes(t *testing.T) {
 		"if ((ulong)oak_lo1 + (ulong)oak_m1 > (ulong)x_len) { oak_raise(oak_fault, 4u); oak_m1 = 0u; }",
 		"if (oak_run1 == 0u) { oak_raise(oak_fault, 6u); oak_run1 = 1u; }",
 		"for (uint oak_b = oak_lid * oak_run1; oak_b < oak_m1; oak_b += 4u * oak_run1) {",
-		"for (uint oak_r = 0u; oak_r < oak_run1 && oak_b + oak_r < oak_m1; oak_r++) { oak_gl1 = add(oak_gl1, x[oak_lo1 + oak_b + oak_r], oak_fault); }",
+		"for (uint oak_r = 0u; oak_r < oak_run1 && oak_b + oak_r < oak_m1; oak_r++) { oak_gl1 = oak_helper__add(oak_gl1, x[oak_lo1 + oak_b + oak_r], oak_fault); }",
 		"oak_scratch1[oak_lid] = oak_gl1;",
 		"for (uint oak_off = 2u; oak_off >= 1u; oak_off >>= 1u) {",
-		"float oak_pair1 = add(oak_scratch1[oak_lid], oak_scratch1[oak_lid ^ oak_off], oak_fault);",
+		"float oak_pair1 = oak_helper__add(oak_scratch1[oak_lid], oak_scratch1[oak_lid ^ oak_off], oak_fault);",
 		"oak_scratch1[oak_lid] = oak_pair1;",
 		"oak_gl1 = oak_scratch1[0];",
 		"if (oak_lid == 0u) { partials[gid] = oak_gl1; }",
@@ -737,7 +737,7 @@ func TestE2EKernelsTensorMatmul(t *testing.T) {
 	}
 	for _, want := range []string{
 		"out.data span f32 buffer 14,15;",
-		"acc = (acc + (tensor__tensor_uat(a, i, k, oak_fault) * tensor__tensor_uat(b, k, j, oak_fault)));",
+		"acc = (acc + (oak_helper__tensor_u_utensor_uuat(a, i, k, oak_fault) * oak_helper__tensor_u_utensor_uuat(b, k, j, oak_fault)));",
 		"out.data[gid] = acc;",
 	} {
 		if !strings.Contains(result.Source, want) {

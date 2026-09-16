@@ -1202,7 +1202,7 @@ func verifyOptIRAnalysisFacts(authority optir.CheckedFactAuthority, analyses opt
 	if analyses.hasMemory {
 		candidates = append(candidates, analyses.deadStores, analyses.regionLoads,
 			analyses.memoryCleanup.SCCPSimplified, analyses.memoryCleanup.ScalarCFG,
-			analyses.memoryCleanup.DeadStores, analyses.memoryCleanup.CFG)
+			analyses.memoryCleanup.DeadStores, analyses.memoryCleanup.DCECleaned, analyses.memoryCleanup.CFG)
 	}
 	for _, cfg := range candidates {
 		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {

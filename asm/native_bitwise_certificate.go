@@ -175,7 +175,8 @@ func newNativeCNFReplay(bl *blaster) (*nativeCNFReplay, error) {
 	}
 	seen := make(map[string]bool, len(bl.params))
 	for index, name := range bl.params {
-		if name == "" || seen[name] || bl.index[name] != index {
+		position, indexed := bl.index[name]
+		if name == "" || seen[name] || !indexed || position != index {
 			return nil, fmt.Errorf("parameter %d has a missing, duplicate, or mismatched index", index)
 		}
 		width, known := bl.widths[name]

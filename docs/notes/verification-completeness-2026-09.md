@@ -425,6 +425,21 @@ outcomes are kernel-pinned, including malformed allocation hidden by constant
 folds. True and pending roots refuse this checker without implying inequality.
 This does not close arbitrary Go admission/coverage, source-to-machine
 refinement, or verdict authority; native certificate material remains audit-only.
+
+Constructor metadata and completion bookkeeping now have bounded models too.
+`Oak.CNFReplayHeader` proves ordered parameter validity, exact index/width
+witnesses and no extra table keys; it exposed and accompanies a Go fix for a
+missing first index being read as zero when an unrelated extra key preserves
+the count. `Oak.CNFMetadataCertificate.metadata_words_equal` composes header
+admission with the word-certificate theorem, requiring valid metadata even
+for constant-only expressions. `Oak.CNFReplayCoverage.finish_exact` proves
+exact term-root/input/gate coverage for admitted recordings against a fixed
+producer and matching counts. Actual constructor/finish decisions are
+kernel-pinned on bounded fixtures, including intentionally forged same-size
+maps that pass numeric finish. That counterexample is important: scalar
+snapshot equality does not establish content immutability. Faithful Go
+graph/map/key projection and an implementation theorem for the actual admitted
+recording trace remain open; this is not full replay or native-verifier closure.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
@@ -584,9 +599,25 @@ address and zero at that address plus eight. This does not enable codegen or
 verifier support. The tuple proves neither request occurrence nor ordering,
 atomicity/non-tearing, translation or effects, CAT events, visibility,
 completion, or PTE publication; ordinary `STP` is not a release or a barrier.
-Live descriptors stay on scalar stores. A future blocked-fill lowering remains
-conditional on its source law, full bounds/provenance and verifier support, a
-scalar tail, and private/unpublished ordinary-memory authority.
+Live descriptors stay on scalar stores. `Oak.BlockedFill.blocked_fill_eq` now
+proves the algebraic source law: two abstract pair stores per four-word block
+plus the less-than-four scalar tail have the same final total word memory as
+the original scalar fill. That result does not prove bounds, trap or partial-
+write preservation, alias/observer exclusion, or machine effects. A future
+blocked-fill lowering therefore remains conditional on full bounds/provenance
+and verifier support, scalar-tail lowering, and private/unpublished ordinary-
+memory authority.
+
+The checker's existing slack-region decision now has the matching narrow
+writable-pair theorem: `span_element_then_pair64_store` turns an admitted
+16-byte access over eight-byte span elements into bounds for exactly two
+adjacent cells, and the synchronized Go/Lean examples pin the intended
+non-overlapping offsets 0 and 16 of a four-cell region plus overflow and
+read-only refusals. No checker behavior changed. In particular, writability is
+not ordinary-RAM, private, or
+unpublished custody; pair stores through generic and record spans remain
+outside the semantic verifier until that authority and exact record-field
+provenance are explicit.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable

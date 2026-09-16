@@ -551,6 +551,13 @@ func collectBodyFacts(f *effectFacts, params []*ast.FunctionParameter, body ast.
 		if !ok {
 			return
 		}
+		// Generic foreign borrows construct views/spans, not calls through
+		// function values. The walker still visits their pointer and count
+		// arguments, whose calls retain their own effects. The unsafe
+		// memory contract is checked and recorded by the borrow checker.
+		if member, _, borrow := typechecker.ForeignBorrowCall(inv); borrow && (member == "borrow" || member == "borrow_mut") {
+			return
+		}
 		switch callee := inv.Function.(type) {
 		case *ast.Identifier:
 			if valueNames[callee.Value] {

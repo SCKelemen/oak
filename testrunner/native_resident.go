@@ -16,6 +16,7 @@ type residentWorker struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	once   sync.Once
+	launch processContext
 	// reused marks a worker taken from the idle pool: one that served a
 	// case before and may have died in between.
 	reused bool
@@ -56,10 +57,11 @@ func (p *nativeProgram) acquireWorker() (*residentWorker, error) {
 	if err != nil {
 		return nil, err
 	}
+	launch := p.processTrace.command("worker", p.packageDir, cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	w := &residentWorker{cmd: cmd, stdin: stdin, stdout: stdout}
+	w := &residentWorker{cmd: cmd, stdin: stdin, stdout: stdout, launch: launch}
 	p.mu.Lock()
 	p.workers[w] = true
 	p.mu.Unlock()
@@ -123,6 +125,7 @@ func (p *nativeProgram) runResidentOnce(index int, input []byte, reportPath stri
 	binary.LittleEndian.PutUint32(record[4:], uint32(len(reportPath)))
 	binary.LittleEndian.PutUint32(record[8:], uint32(len(input)))
 	record = append(append(record, reportPath...), input...)
+	p.traceCase("fork", w.launch, index, reportPath, len(input), w.cmd.Process.Pid)
 	watchdog := time.AfterFunc(p.timeout, w.kill)
 	var reply [16]byte
 	var out []byte

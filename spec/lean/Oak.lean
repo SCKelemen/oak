@@ -224,6 +224,9 @@ import Oak.CNFWordInput
 import Oak.CNFWordProjection
 import Oak.CNFWordCertificate
 import Oak.CNFWordSettled
+import Oak.CNFReplayHeader
+import Oak.CNFReplayCoverage
+import Oak.CNFMetadataCertificate
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction
@@ -235,6 +238,7 @@ import Oak.SpanForward
 import Oak.ConstantConditions
 import Oak.BoundaryCopies
 import Oak.PairCopies
+import Oak.BlockedFill
 import Oak.FieldPromotion
 import Oak.Forwarding
 import Oak.ArrayValues

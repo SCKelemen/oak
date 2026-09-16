@@ -51,11 +51,11 @@ func TestE2EKernelFusion(t *testing.T) {
 	}
 	src := result.Source
 	for _, want := range []string{
-		"static inline void scale__fused(uint gid, device const float* x, uint x_len, device float* y, uint y_len, device atomic_uint* oak_fault)",
-		"static inline void shift__fused(uint gid, device float* y, uint y_len, device float* out, uint out_len, device atomic_uint* oak_fault)",
+		"static inline void oak_helper__scale(uint gid, device const float* x, uint x_len, device float* y, uint y_len, device atomic_uint* oak_fault)",
+		"static inline void oak_helper__shift(uint gid, device float* y, uint y_len, device float* out, uint out_len, device atomic_uint* oak_fault)",
 		"kernel void scale_shift(",
-		"scale__fused(gid, x, x_len, y, y_len, oak_fault);",
-		"shift__fused(gid, y, y_len, out, out_len, oak_fault);",
+		"oak_helper__scale(gid, x, x_len, y, y_len, oak_fault);",
+		"oak_helper__shift(gid, y, y_len, out, out_len, oak_fault);",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("missing %q in:\n%s", want, src)
@@ -67,6 +67,16 @@ func TestE2EKernelFusion(t *testing.T) {
 		t.Fatalf("descriptor = %+v", k)
 	}
 	kernelNamed(t, result, "scale")
+	// Isolating ordinary helpers from lane state must preserve a kernel
+	// helper's ability to fuse another kernel at the same position.
+	nested := strings.Replace(kernelFusionProgram, "main: (): i32", `kernel wrapped: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+  scale_shift(gid, x, y, out)
+}
+
+main: (): i32`, 1)
+	if _, err := New().WithSource("nested_fusion.oak", nested).EmitMetal().Get(); err != nil {
+		t.Fatalf("nested fusion: %v", err)
+	}
 	for name, c := range map[string][2]string{
 		"another position": {"kernel a: (gid: u32, y: [*]f32): () = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nkernel b: (gid: u32, y: [*]f32): () = {\n  a(gid + 1, y)\n}\n", "pass gid as its first argument"},
 		"mixed shapes":     {"kernel a: (gid: u32, y: [*]f32): () = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nkernel b: (gid: u32, y: [*]f32, z: [*]f32): () = {\n  k: u32 = 0\n  while k < 4 {\n    i: u32 = gid * 4 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  a(gid, y)\n}\nkernel c: (gid: u32, y: [*]f32, z: [*]f32): () = {\n  k: u32 = 0\n  while k < 8 {\n    i: u32 = gid * 8 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  b(gid, y, z)\n}\n", "one shape"},
