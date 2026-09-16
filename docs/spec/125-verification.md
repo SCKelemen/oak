@@ -783,9 +783,10 @@ In order of payoff, each reusing a surface that exists:
   is the only Go left on the prover's path; and the prover is the first
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
-  879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 536 of them proven equal to
-  their Oak bodies — their results, the package cells they write, and,
+  964 of its functions lowered to machine code the seam checker
+  admits and the Oak assembler encodes, 573 of them proven equal to
+  their Oak bodies (193 evidence, 198 trusted, no disagreement, the
+  plain bodies tallied with the optimizer's transforms skipped) — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its
   caller through the call summary since the twenty-ninth (and a record

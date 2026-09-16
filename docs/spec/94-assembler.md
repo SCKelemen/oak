@@ -6903,7 +6903,15 @@ witness input's two sides. The prover tally itself waits: since
 gigabytes in `pruneWritesUnder`/`pruneUnderFacts` (the unit verified in
 5.6 s a candidate on the morning's binary), and a full build's optimizer
 materialization holds ten more at its end on either binary; the last
-complete tally stands at 536 proven, 205 evidence, 216 trusted.
+complete tally with the candidates stood at 536 proven, 205 evidence,
+216 trusted. Tallied on 2026-09-17 with every optimizer transform skipped
+(`OAK_OPT_SKIP` naming all twelve, so each body verifies once as its
+identity candidate; 43 minutes, 9.6 GB peak, where the build with the
+candidates passes twenty gigabytes): 964 bodies, proven 573, evidence
+193, trusted 198, no disagreement — `protocol_line_done` proven in 2 s,
+`ap_certificate_after_proven` evidence in 5 s, `add_bits` and `add_carry`
+evidence in 1.4 s each. The slowest bodies are `le_intern_consts` (162 s,
+proven) and `utf8_valid` (58 s).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
