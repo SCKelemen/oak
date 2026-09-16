@@ -6812,6 +6812,21 @@ small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
 
+**Constant register indices into record arguments (2026-09-17).** A
+record-array load whose register index is a known constant reads that
+element directly, after checking the constant against the selected array
+field's length. A decided bounds branch records no symbolic guard; this
+previously left even an in-range read in an unrolled counted loop outside
+the verifier. Symbolic indices still require the dominating constant
+guard, and neither path may reach a sibling field. The record-index tests
+cover first, last, and offset-field elements, a counted sum, a wrong
+element, and both constant and symbolic indices past the field. The native
+array-value end-to-end test proves a counted sum over an array parameter
+and runs it against C. BLAKE3 compression now reaches witness comparison
+and admits scheduling and reallocation under the existing evidence policy;
+its full bit-level proof still exceeds the node budget. The measured
+effect is recorded in `benchmarks/native/README.md`.
+
 **Indexed loads through record arguments; the Bits family's cost
 (2026-09-16).** Sixteen bodies of the prover's `Bits` family (`not_bits`,
 `rotate_right`, `shift_const`, `count_leading_zeros`, …) stopped at "an

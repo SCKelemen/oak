@@ -364,8 +364,8 @@ Correctness evidence is deliberately scoped. Direct and selected native
 bodies for sequential, loop and branch lifetime fixtures must receive
 `proven` verdicts; native/C execution and allocation-pool regressions also
 pass. This is not a universal implementation-refinement proof of the
-liveness walk. Full BLAKE3 compression still reports its existing
-unguarded indexed-record-load verifier refusal, and its gated scheduling
+liveness walk. In builds with only the lifetime change, BLAKE3 compression
+reports its unguarded indexed-record-load verifier refusal, and its gated scheduling
 and reallocation candidates remain unavailable. No proof gate or source
 arithmetic semantics changed.
 
@@ -375,6 +375,50 @@ and dispatch lost one instruction, but the two timed comparisons were
 8.340 → 8.513 ms and 7.837 → 7.819 ms: no repeatable speedup. The matcher
 change was removed rather than counting the shorter assembly as a runtime
 improvement.
+
+**Constant record indices unblock BLAKE3 optimization (2026-09-17).**
+The rejected read was `cv[i]` in compression's final counted loop. The
+verifier unrolls that loop, decides its bounds branches, and records no
+symbolic guard for the now-constant index. Record loads nevertheless
+required that guard. They now select a known element directly after
+checking its index against the array field's length; symbolic indices
+keep their guard requirement, and reads into a sibling field stay outside.
+
+Compression advances from trusted to witnessed: every verifier witness
+agrees, while the full bit-level proof still exceeds the node budget.
+The existing optimizer policy admits scheduling and register reallocation
+on that evidence. Its emitted body shrinks from 527 to 373 instructions,
+with 169 stack-relative memory instructions instead of 305; the frame
+remains 448 bytes. Native BLAKE3 coverage is unchanged.
+
+This comparison isolates the verifier fix before the scalar-array lifetime
+change above. It rebuilds `fca1c239` with and without the verifier fix,
+using the same runner, seven samples of five rounds over 1 MiB, and all
+five variants interleaved with rotating starts. The restricted builds
+make only `blake3_compress` native. All samples agree, as do checks at 13
+input sizes spanning empty input, block boundaries, and chunk-tree
+boundaries. Raw samples, source hashes, native-unit lists, and instruction
+counts: [`blake3-constant-record-index-2026-09-17.json`](results/blake3-constant-record-index-2026-09-17.json).
+
+| Build | ms per 1 MiB | Relative to C |
+| --- | ---: | ---: |
+| C control | 2.834 | 1.00 |
+| Only compression native, before | 8.479 | 2.99 |
+| Only compression native, after | 4.361 | 1.54 |
+| Full native build, before | 11.991 | 4.23 |
+| Full native build, after | 6.545 | 2.31 |
+
+The full native median falls by 45%, and the restricted build's by 49%.
+The M4 Max had a load average of 95–97 and uncontrolled core placement;
+the raw samples show substantial scatter. This is a loaded-host result.
+The remaining gap includes compression's frame traffic and the surrounding
+native helpers; the full proof and parity with C remain open.
+
+Rebased over the scalar-array lifetime change (`a80fe399`), the selected
+compression body has 342 instructions, 152 stack-relative memory
+instructions, and a 272-byte frame. It retains the witnessed verdict and
+agrees with C at the same 13 boundary sizes plus 1 MiB. The timings above
+measure the verifier change independently of that lifetime improvement.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
