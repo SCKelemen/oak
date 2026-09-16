@@ -695,6 +695,15 @@ logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
 are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
 The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
 (proved) ≡ the Go executor (transliteration, checked against the silicon).
+**Barrier words through Arm's decoder.** `Oak.AArch64Encoding` pins the
+generated table's mask, value, and CRm field for DMB, DSB, and ISB. The pure
+barrier clause in `spec/sail/arm_primitives.sail` is regenerated into Lean from
+Sail, and `spec/sail/lean/Bridge.lean` proves the exact words for DMB
+ISHLD/ISH/SY, DSB ISH/SY, and ISB reach the intended operation, shareability
+domain, and access type (`dmb ishld` is inner-shareable reads). The Go drift
+test ties those constants back to `asm/encodings_gen.go` and the real text
+encoder. This closes encoder-to-Arm-decoder correctness for these six barrier
+forms; the general instruction table remains audited rather than proved.
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per
 encoding class — a 32-bit pattern of fixed bits and fields, and the decode

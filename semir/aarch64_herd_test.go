@@ -67,10 +67,20 @@ func TestLitmusAArch64OfficialModel(t *testing.T) {
 	if actual != revision {
 		t.Fatalf("Herdtools7 checkout is %q, want pinned revision %q", actual, revision)
 	}
+	if err := verifyPinnedCATSourceBytes(modelCheckout, revision); err != nil {
+		t.Fatalf("verify pinned CAT source bytes: %v", err)
+	}
 
 	model := filepath.Join(modelCheckout, "herd", "libdir", "aarch64.cat")
 	if info, err := os.Stat(model); err != nil || !info.Mode().IsRegular() {
 		requireAArch64Herd(t, "official aarch64.cat is absent from the pinned checkout")
+	}
+	cat2lisp := filepath.Join(filepath.Dir(herd), "cat2lisp")
+	if info, err := os.Stat(cat2lisp); err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		requireAArch64Herd(t, "cat2lisp from the pinned Herdtools7 build is absent next to herd7")
+	}
+	if err := verifyPinnedAArch64CATProjection(cat2lisp, model, filepath.Dir(model)); err != nil {
+		t.Fatalf("verify pinned AArch64 CAT projection: %v", err)
 	}
 
 	cases := []aarch64HerdCase{

@@ -378,16 +378,16 @@ Acceptance spans the whole executable stack:
 | strong compare-exchange helper | refinement: `Oak.CompareExchangeRefinement` proves the `__oak_cas_*` body meets §3's value contract over C11's primitive; `codegen/compare_exchange_refinement_test.go` pins the text |
 | checked, saturating, trapping arithmetic and checked shifts | refinement: `Oak.CheckedArithmeticRefinement` proves the helper decisions against 20-types §11.1a over the overflow builtins' contract; `codegen/checked_arithmetic_refinement_test.go` pins the text |
 | explicit integer conversions | refinement: `Oak.ConversionRefinement` proves the `oak_conv_*` bodies to 20-types §11.1 for every admitted pair; pinned by `codegen/conversion_refinement_test.go` and `compiler/e2e_conversion_refinement_test.go` |
-| C/ISA refinement of atomics and ordering | partial: the native AArch64 lowering (§7a) is checked at the seam and differentially tested against the C backend; `Oak.AArch64WeakMemory` proves MP/SB/IRIW/full-DMB outcomes from the official Arm model's projected `bob`/`obs`/`ob` consequences; C/LLVM refinement and a mechanical CAT bridge remain open |
-| AArch64 weak-memory litmus suite | language-level executable cases, matching Lean machine-projection theorems, and MP/SB/LB/IRIW runs against Arm's official CAT model at pinned Herdtools7 commit `76d5bd259d4c4b553a0f52158b9638559b79a5b5` gate CI |
+| C/ISA refinement of atomics and ordering | partial: the native AArch64 lowering (§7a) is checked at the seam and differentially tested against the C backend; `Oak.AArch64WeakMemory` proves MP/SB/IRIW/full-DMB outcomes from an inductive `bob`/`obs`/`ob` subset mechanically certified against the pinned official CAT parser AST; C/LLVM, instruction-event tagging, and complete CAT semantics remain open |
+| AArch64 weak-memory litmus suite | language-level executable cases, matching Lean machine-projection theorems, byte identity for all 156 pinned CAT library sources, an include-expanded AST certificate, and MP/SB/LB/IRIW runs against Arm's official CAT model at Herdtools7 commit `76d5bd259d4c4b553a0f52158b9638559b79a5b5` gate CI |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
 
 The next work is no longer to invent additional language-level memory-order
-semantics. It is to **finish and mechanically validate the projection**:
-generated C, emitted AArch64 instructions, and pinned official-CAT litmus outcomes
-are gated; the remaining closure is the mechanical CAT-to-Lean seam (target lock-free
-admission is in place, §6). Higher-level SPSC/MPSC proofs should consume that demonstrated
-compiler-to-machine contract rather than re-specifying atomics locally.
+semantics. The restricted projection is now mechanically pinned; the remaining
+closure is to formalize complete CAT semantics and connect C/LLVM-emitted
+instructions to Arm event tags, reads-from, and coherence-after (target lock-free
+admission is in place, §6). Higher-level SPSC/MPSC proofs should consume the
+demonstrated subset rather than re-specifying atomics locally.
 
 ## Placement of statics
 

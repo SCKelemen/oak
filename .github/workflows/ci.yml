@@ -188,7 +188,7 @@ jobs:
       run: |
         test -x "$HOME/.opam/herdtools7/bin/herd7"
         echo "$HOME/.opam/herdtools7/bin" >> "$GITHUB_PATH"
-        "$HOME/.opam/herdtools7/bin/herd7" --version
+        "$HOME/.opam/herdtools7/bin/herd7" -version
 
     - name: Verify Clang cross-target support
       run: |

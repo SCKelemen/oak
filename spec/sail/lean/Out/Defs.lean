@@ -32,6 +32,18 @@ inductive VBitOp where | VBitOp_VBIF | VBitOp_VBIT | VBitOp_VBSL | VBitOp_VEOR
   deriving BEq, Inhabited, Repr
   open VBitOp
 
+inductive MemBarrierOp where | MemBarrierOp_DSB | MemBarrierOp_DMB | MemBarrierOp_ISB | MemBarrierOp_SSBB | MemBarrierOp_PSSBB | MemBarrierOp_SB
+  deriving BEq, Inhabited, Repr
+  open MemBarrierOp
+
+inductive MBReqDomain where | MBReqDomain_Nonshareable | MBReqDomain_InnerShareable | MBReqDomain_OuterShareable | MBReqDomain_FullSystem
+  deriving BEq, Inhabited, Repr
+  open MBReqDomain
+
+inductive MBReqTypes where | MBReqTypes_Reads | MBReqTypes_Writes | MBReqTypes_All
+  deriving BEq, Inhabited, Repr
+  open MBReqTypes
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

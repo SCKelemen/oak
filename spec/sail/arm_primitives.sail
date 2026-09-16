@@ -739,3 +739,111 @@ function vector_arithmetic_unary_diffneg_fp (datasize, elements, esize, operand,
     };
     result
 }
+
+/* ---------------------------------------------------------------------
+ * The A64 barrier decoder (docs/spec/94-assembler.md §9).
+ *
+ * The three word patterns below are the DSB, DMB, and ISB clauses of
+ * aarch_decode.sail's decode64.  system_barriers_decode is copied from
+ * aarch64.sail.  This pure projection makes the decoder result explicit:
+ * architectural state updates and the final barrier call are replaced by
+ * the returned valid/op/domain/types tuple.  Invalid opc is recorded by the
+ * first component instead of throwing Error_Undefined.  No decoded value is
+ * otherwise changed.
+ */
+
+enum MemBarrierOp = {
+  MemBarrierOp_DSB,
+  MemBarrierOp_DMB,
+  MemBarrierOp_ISB,
+  MemBarrierOp_SSBB,
+  MemBarrierOp_PSSBB,
+  MemBarrierOp_SB
+}
+
+enum MBReqDomain = {
+  MBReqDomain_Nonshareable,
+  MBReqDomain_InnerShareable,
+  MBReqDomain_OuterShareable,
+  MBReqDomain_FullSystem
+}
+
+enum MBReqTypes = {MBReqTypes_Reads, MBReqTypes_Writes, MBReqTypes_All}
+
+val system_barriers_decode_pure :
+  (bits(2), bits(4)) -> (bool, MemBarrierOp, MBReqDomain, MBReqTypes)
+
+function system_barriers_decode_pure (opc, CRm) = {
+    valid : bool = true;
+    op : MemBarrierOp = MemBarrierOp_DSB;
+    domain : MBReqDomain = MBReqDomain_FullSystem;
+    types : MBReqTypes = MBReqTypes_All;
+    match opc {
+      0b00 => {
+          op = MemBarrierOp_DSB
+      },
+      0b01 => {
+          op = MemBarrierOp_DMB
+      },
+      0b10 => {
+          op = MemBarrierOp_ISB
+      },
+      _ => {
+          valid = false
+      }
+    };
+    match slice(CRm, 2, 2) {
+      0b00 => {
+          domain = MBReqDomain_OuterShareable
+      },
+      0b01 => {
+          domain = MBReqDomain_Nonshareable
+      },
+      0b10 => {
+          domain = MBReqDomain_InnerShareable
+      },
+      0b11 => {
+          domain = MBReqDomain_FullSystem
+      }
+    };
+    match slice(CRm, 0, 2) {
+      0b01 => {
+          types = MBReqTypes_Reads
+      },
+      0b10 => {
+          types = MBReqTypes_Writes
+      },
+      0b11 => {
+          types = MBReqTypes_All
+      },
+      _ => {
+          if slice(CRm, 2, 2) == 0b01 then {
+              op = MemBarrierOp_PSSBB
+          } else {
+              if slice(CRm, 2, 2) == 0b00 & opc == 0b00 then {
+                  op = MemBarrierOp_SSBB
+              } else {
+                  types = MBReqTypes_All;
+                  domain = MBReqDomain_FullSystem
+              }
+          }
+      }
+    };
+    (valid, op, domain, types)
+}
+
+val decode64_barrier_pure :
+  bits(32) -> (bool, MemBarrierOp, MBReqDomain, MBReqTypes)
+
+function decode64_barrier_pure op_code = {
+    let CRm : bits(4) = slice(op_code, 8, 4);
+    if (op_code & 0xFFFFF0FF) == 0xD503309F then {
+        system_barriers_decode_pure(0b00, CRm)
+    } else if (op_code & 0xFFFFF0FF) == 0xD50330BF then {
+        system_barriers_decode_pure(0b01, CRm)
+    } else if (op_code & 0xFFFFF0FF) == 0xD50330DF then {
+        system_barriers_decode_pure(0b10, CRm)
+    } else {
+        (false, MemBarrierOp_DSB, MBReqDomain_FullSystem, MBReqTypes_All)
+    }
+}

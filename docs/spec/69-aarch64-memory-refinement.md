@@ -34,7 +34,13 @@ Lean AArch64 local-order model
         +----> kernel-checked instruction-class capability proofs
         |
 Lean Arm ordered-before projection
-        +----> kernel-checked MP / SB / IRIW / full-DMB outcomes
+        +----> inductive MP / SB / IRIW / full-DMB proofs
+        |
+Pinned CAT sources + cat2lisp AST
+        +----> byte identity + structural projection certificate
+        |
+Oak barrier words -> Arm Sail decoder
+        +----> kernel-checked operation / domain / access type
 ```
 
 These layers make different claims.
@@ -48,6 +54,10 @@ These layers make different claims.
   outcomes.
 - Lean proves the corresponding machine outcomes from the `bob`, `obs`, and
   irreflexive/transitive `ob` consequences of Arm's official A-profile model.
+- Herd's pinned parser structurally certifies that the exact CAT sources contain
+  those restricted consequences and their route into `ob`.
+- Lean generated from the Arm Sail fragment proves Oak's six barrier words
+  decode to their intended DMB, DSB, or ISB operation and option.
 
 No one of these alone is called a complete C/LLVM/Arm axiomatic refinement
 proof.
@@ -247,10 +257,11 @@ Lean proves:
 - `LDAPR` does **not** satisfy that profile requirement;
 - seq-cst load/store/fence select the intended local instruction classes.
 
-`spec/lean/Oak/AArch64WeakMemory.lean` then exposes the exact global consequences
-used from Arm's model: `bob` edges for STLR, LDAR, STLR-followed-by-LDAR, and full
-DMB; external reads-from and coherence-after edges through `obs`; and the
-irreflexive transitive `ob` relation. Lean proves:
+`spec/lean/Oak/AArch64WeakMemory.lean` defines the least transitive relation over
+the exact global consequences used from Arm's model: `bob` edges for STLR,
+LDAR, STLR-followed-by-LDAR, and full DMB; and external reads-from and
+coherence-after edges through `obs`. A valid projected execution supplies only
+Arm's external irreflexivity condition. Lean proves:
 
 - release/acquire message passing orders the payload and forbids a stale
   initial-value observation;
@@ -260,10 +271,26 @@ irreflexive transitive `ob` relation. Lean proves:
 - Oak's selected instruction classes are exactly STLR, LDAR, and DMB ISH for
   the corresponding source operations.
 
-This is an axiomatic projection with each assumption named after its source CAT
-relation, not yet a mechanical translation of the CAT file.  The local mapping,
-the projection theorems, and `Oak.SequentialConsistency` are separate proof
-layers so none is silently substituted for another.
+`semir/aarch64_cat_projection_test.go` mechanically ties that restricted
+relation to the pinned model. It byte-compares all 156 tracked
+`herd/libdir/*.cat` blobs (and rejects untracked CAT inputs), invokes the pinned
+`cat2lisp` beside `herd7`, and checks the include-expanded AST for DMB ISH in
+`dmb.full`, the four required `bob` arms, the
+`bob -> lob -> local-hw-reqs -> hw-reqs -> ob` and
+`rf/ca -> Exp-obs -> obs -> ob` paths, `ob; ob`, and external
+`irreflexive ob`. Exact AST hashes make any pin/model drift a reviewed change;
+mutation checks show each required edge is fail-closed.
+
+This is mechanical structural provenance for the restricted projection, not a
+complete formal semantics of CAT. The local mapping, projection theorems, CAT
+certificate, and `Oak.SequentialConsistency` remain separate proof layers so
+none is silently substituted for another.
+
+`spec/lean/Oak/AArch64Encoding.lean` and the regenerated Arm Sail bridge also
+close the encoding/decoder seam for the barrier subset: the exact words for DMB
+ISHLD/ISH/SY, DSB ISH/SY, and ISB are pinned to the generated encoder table and
+proved to decode to the intended operation, shareability domain, and access
+types. In particular, DMB ISHLD decodes as inner-shareable reads.
 
 ## 9. CI gate
 
@@ -279,7 +306,8 @@ job. It:
 2. runs the Oak source -> C -> AArch64 assembly checks;
 3. runs Oak's language-level memory-model litmus outcomes;
 4. builds pinned Herdtools7 and runs the matching assembly cases against the
-   official Arm CAT model from the same pinned checkout.
+   official Arm CAT model from the same pinned checkout;
+5. requires byte-identical CAT inputs and the parser-AST projection certificate.
 
 The ordinary Go/race, Lean, and golden gates remain in place, so backend
 refinement cannot replace source/compiler/formal regression coverage.
@@ -297,8 +325,10 @@ This chapter does **not** claim:
 
 - a complete formal refinement of C11 through LLVM IR to the official Arm
   axiomatic model;
-- a mechanical proof that every projected `bob`/`obs` premise follows from a
-  pinned revision of Arm's CAT sources;
+- a complete semantics-preserving translation of the CAT language or the full
+  Arm model into Lean;
+- a proof that STLR/LDAR/DMB executions generate the assumed Exp/W/R/L/A event
+  tags, reads-from, and coherence-after relations;
 - exhaustive compiler-version correctness;
 - stochastic execution of weak-memory litmus tests on real AArch64 hardware;
 - cache/coherency/DMA/device-memory correctness;
@@ -312,10 +342,12 @@ than a full verified compiler/ISA stack.
 
 The next machine-memory work should add:
 
-1. a mechanical CAT-to-Lean bridge for the small `bob`/`obs` projection;
+1. extend the mechanically pinned relation subset into a complete CAT semantics
+   and prove the instruction-to-event-tag and `rf`/`ca` generation seams;
 2. retained assembly artifacts/version metadata so failures are diagnosable;
 3. real AArch64 hardware litmus execution when a CI runner is available;
-4. MMIO address spaces and AArch64 `DMB`/`DSB`/`ISB` contracts;
+4. MMIO address spaces and the state/effect contracts beyond the now-proved
+   DMB/DSB/ISB decoder options;
 5. DMA/coherency and interrupt-boundary ordering;
 6. selective implementation-to-Lean refinement where the proof cost is
    justified.
