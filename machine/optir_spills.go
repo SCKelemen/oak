@@ -114,7 +114,7 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 
 	// Distinguish acyclic spill materialization from the one exact natural-loop
 	// form admitted below.
-	acyclic, err := optIRRV64SpillCFGAcyclic(cfg)
+	acyclic, err := optIRCFGAcyclic(cfg)
 	if err != nil {
 		return err
 	}
@@ -124,10 +124,10 @@ func validateOptIRRV64SpillCFG(cfg optir.CFG, plan optir.RegisterPlan) error {
 	return nil
 }
 
-// optIRRV64SpillCFGAcyclic counts every CFG edge, including two conditional
-// arms with the same target. A Kahn traversal therefore rejects irreducible
-// cycles as well as natural loops.
-func optIRRV64SpillCFGAcyclic(cfg optir.CFG) (bool, error) {
+// optIRCFGAcyclic counts every CFG edge, including two conditional arms with
+// the same target. A Kahn traversal therefore rejects irreducible cycles as
+// well as natural loops.
+func optIRCFGAcyclic(cfg optir.CFG) (bool, error) {
 	indegree := make(map[optir.BlockID]int, len(cfg.Blocks))
 	outgoing := make(map[optir.BlockID][]optir.BlockID, len(cfg.Blocks))
 	for _, block := range cfg.Blocks {
@@ -136,7 +136,7 @@ func optIRRV64SpillCFGAcyclic(cfg optir.CFG) (bool, error) {
 	for _, block := range cfg.Blocks {
 		for _, edge := range optIRTerminatorEdges(block.Terminator) {
 			if _, exists := indegree[edge.Target]; !exists {
-				return false, fmt.Errorf("machine: OptIR RV64 spill CFG names missing block %d", edge.Target)
+				return false, fmt.Errorf("machine: OptIR CFG names missing block %d", edge.Target)
 			}
 			outgoing[block.ID] = append(outgoing[block.ID], edge.Target)
 			indegree[edge.Target]++
@@ -200,7 +200,7 @@ func planOptIRSpillsKeepingCanonicalLoopCondition(cfg optir.CFG, pool []int, fix
 
 func optIRRV64Rematerializations(cfg optir.CFG, pool []int, fixed map[optir.ValueID]int, plan optir.RegisterPlan) (map[optir.ValueID]optir.RematerializationDecision, error) {
 	accepted := map[optir.ValueID]optir.RematerializationDecision{}
-	acyclic, err := optIRRV64SpillCFGAcyclic(cfg)
+	acyclic, err := optIRCFGAcyclic(cfg)
 	if err != nil || !acyclic {
 		return accepted, err
 	}

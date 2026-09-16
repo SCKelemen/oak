@@ -21,10 +21,10 @@ type optIRRegionMemorySelection struct {
 }
 
 // validateOptIRRegionMemory closes the first memory-emission subset before a
-// target sees it. It deliberately admits only one straight-line block of
-// exact scalar package-cell reads and whole, nonvolatile replacements. The
-// independent MemorySSA verifier binds the operation sites to the exact CFG
-// revision and exact checked region metadata supplied by the frontend.
+// target sees it. It deliberately admits only acyclic, call-free, spill-free
+// control flow over exact scalar package-cell reads and whole, nonvolatile
+// replacements. The independent MemorySSA verifier binds operation sites and
+// merge versions to the exact CFG revision and checked region metadata.
 func validateOptIRRegionMemory(
 	cfg optir.CFG,
 	template *asm.Function,
@@ -38,8 +38,12 @@ func validateOptIRRegionMemory(
 	if err := optir.VerifyRegionMemorySSA(cfg, metadata, memorySSA); err != nil {
 		return nil, fmt.Errorf("machine: OptIR region memory evidence: %w", err)
 	}
-	if len(cfg.Blocks) != 1 || cfg.Blocks[0].ID != cfg.Entry {
-		return nil, fmt.Errorf("machine: OptIR region memory requires one straight-line entry block")
+	acyclic, err := optIRCFGAcyclic(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("machine: OptIR region memory control flow: %w", err)
+	}
+	if !acyclic {
+		return nil, fmt.Errorf("machine: OptIR region memory requires acyclic control flow")
 	}
 	if len(metadata.Regions) == 0 {
 		return nil, fmt.Errorf("machine: OptIR region memory requires at least one declared region")

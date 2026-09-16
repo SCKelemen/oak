@@ -183,11 +183,8 @@ func TestLowerOptIRRegionStoreEvidenceAndBindingsFailClosed(t *testing.T) {
 		metadata.Operations[0].Accesses[0] = optir.MemoryAccessSpec{Kind: optir.MemoryUnknownClobber}
 		*memorySSA = optIRAnalyzeRegionMemory(t, *cfg, *metadata)
 	})
-	assertRefused("control flow", "one straight-line", func(cfg *optir.CFG, metadata *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA, _ map[optir.RegionID]OptIRRegionGlobal) {
-		unit := cfg.Blocks[0].Operations[1]
-		cfg.Blocks[0].Operations = cfg.Blocks[0].Operations[:1]
-		cfg.Blocks[0].Terminator = optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 1}}
-		cfg.Blocks = append(cfg.Blocks, optir.Block{ID: 1, Operations: []optir.Operation{unit}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{2}}})
+	assertRefused("cyclic control flow", "requires acyclic", func(cfg *optir.CFG, metadata *optir.RegionMemoryMetadata, memorySSA *optir.RegionMemorySSA, _ map[optir.RegionID]OptIRRegionGlobal) {
+		cfg.Blocks[0].Terminator = optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 0, Arguments: []optir.ValueID{1}}}
 		*memorySSA = optIRAnalyzeRegionMemory(t, *cfg, *metadata)
 	})
 
