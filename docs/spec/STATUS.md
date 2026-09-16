@@ -13,10 +13,13 @@ Legend:
 
 Stability of each source surface — frozen, stabilizing, direction — is marked in `STABILITY.md`; this table tracks what exists, that one tracks what will stay.
 
-Latest AArch64 memory seam: generated Sail Lean proves the exact BBM break/make
-STR64 field decodes and the selected store arm's virtual-address/data
-arguments immediately before `Mem`: `(X0, 0)` and `(X0, X2)`. This is not a successful memory effect,
-descriptor classification, physical address, CAT event, or publication proof.
+Latest AArch64 memory seam: Lean mirrors CAT's pinned
+`TTDINV | TTDAF0` and `(TTD & M) \ TLBUncacheableTTD` descriptor classifiers.
+An explicit one-way action-to-tag soundness premise projects the exact
+break/make occurrences and BBM old/break/make fields into those sets; it does
+not construct primitive tags, CAT events, memory effects, physical addresses,
+official BBM membership, or publication. The adjacent generated Sail proof
+still stops at the STR store arm's pre-`Mem` `(X0, 0)`/`(X0, X2)` arguments.
 
 | Feature | S | I | T | M | P | R | Notes |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |

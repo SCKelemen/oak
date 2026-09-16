@@ -366,6 +366,24 @@ zero behavior, and the final `Mem(address, 8, AccType_NORMAL) = data` call.
 The Sail facts decorate the external descriptor occurrences by conjunction;
 an extraction theorem returns each original word/action premise unchanged.
 
+Lean now also spells out the two pinned CAT descriptor-set formulas as
+occurrence predicates: uncacheable is `TTDINV | TTDAF0`, while cacheable is
+`(TTD & M) \ TLBUncacheableTTD`. A one-way
+`DescriptorActionCATTagSoundness` premise maps an already classified Oak
+descriptor action into those projected predicates. Under that premise the
+exact break/make occurrence wrappers and the old/break/make fields of a
+`ProjectedBBMWitness` inhabit the three descriptor filters used by CAT's
+`BBM` expression. The CAT AST/hash gate and a separate exact Lean-source gate
+pin both formulas and reject operator, atom, operand-order, and set-difference
+direction drift.
+
+The primitive `TTD`, `M`, `TTDINV`, and `TTDAF0` tags and the one-way soundness
+map are still external execution-refinement inputs. There is no reverse
+classifier, no STR or descriptor-value derivation of a tag, and no claim that
+an Oak occurrence is an official CAT event. In particular this step does not
+establish address-to-slot/PTE provenance, `ca`, `ob`, `inv-scope`, official
+`BBM` membership, completion, or publication.
+
 The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
 incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its
 assertion establishes a nonempty span; those facts do not establish live PTE
@@ -519,9 +537,10 @@ This chapter does **not** claim:
   tags, decoded barrier-occurrence relation, reads-from, and coherence-after relations;
 - a proof of DSB completion or ISB context synchronization from an Arm
   execution model;
-- a proof that Oak descriptor values receive CAT's cacheable/uncacheable TTD
-  event tags, that a concrete IPA/VMID/regime selects the required TLBI scope,
-  or that descriptor publication and invalidation have completed;
+- a construction of CAT's primitive descriptor tags or the external one-way
+  action-to-tag soundness premise from Oak descriptor values or STR execution,
+  a proof that a concrete IPA/VMID/regime selects the required TLBI scope, or
+  a proof that descriptor publication and invalidation have completed;
 - a complete live stage-2 remapping protocol or a kernel-checked compiler
   refinement proof for the TLBI occurrence beyond the executable regression
   witness;
@@ -539,7 +558,8 @@ than a full verified compiler/ISA stack.
 The next machine-memory work should add:
 
 1. extend the mechanically pinned relation subset into a complete CAT semantics
-   and prove the instruction-to-event-tag and `rf`/`ca` generation seams;
+   and construct the currently external instruction/action-to-event-tag and
+   `rf`/`ca` generation seams;
 2. retained assembly artifacts/version metadata so failures are diagnosable;
 3. real AArch64 hardware litmus execution when a CI runner is available;
 4. add the occurrence-indexed execution bridge needed for DSB completion and

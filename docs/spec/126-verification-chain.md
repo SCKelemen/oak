@@ -389,7 +389,19 @@ claimed here. A conditional wrapper preserves externally supplied exact
 `STR XZR,[X0]`/DSB ISH/VMALLS12E1IS/DSB ISH/`STR X2,[X0]` word/action
 occurrences at the same five indices as the BBM ordering chain and proves the
 five `po`-linked break-through-make events distinct. Its word and action
-fields are independent. The Sail bridge conjoins the TLBI's named call-target theorem without
+fields are independent.
+
+The two pinned descriptor classifiers are now represented directly in Lean as
+the membership formulas `TTDINV | TTDAF0` and
+`(TTD & M) \ TLBUncacheableTTD`. An explicit one-way action-to-tag soundness
+premise lets the exact store wrappers and `ProjectedBBMWitness` expose exactly
+the old/break/make descriptor-filter facts. The source/AST gates reject formula
+and operand-order drift. Primitive CAT tags, soundness of that premise, CAT
+event identity, reverse classification, and STR/value-to-tag derivation remain
+open; the theorem does not add `ca`, `ob`, TLBI membership, `inv-scope`, or
+official `BBM` membership.
+
+The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
 descriptor event classification, coherence-after, invalidation scope, concrete
 IPA/VMID target selection, completion, and context synchronization remain

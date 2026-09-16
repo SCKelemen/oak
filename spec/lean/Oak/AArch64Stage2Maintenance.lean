@@ -50,6 +50,49 @@ structure Trace (Occurrence Target : Type) where
   coherenceAfter : Occurrence → Occurrence → Prop
   invScope : Occurrence → Occurrence → Prop
 
+/- OAK-A64-CAT-TTD-CLASSIFIER-BEGIN -/
+/-- Primitive occurrence tags corresponding to the four operands used by the
+    pinned Arm CAT descriptor classifiers. These tags remain external inputs;
+    this structure does not construct a CAT execution or identify an Oak
+    occurrence with a CAT event. -/
+structure ProjectedCATDescriptorTags (Occurrence : Type) where
+  isTTD : Occurrence → Prop
+  isMemory : Occurrence → Prop
+  isTTDInvalid : Occurrence → Prop
+  isTTDAccessFlagZero : Occurrence → Prop
+
+/-- Set-membership reading of pinned CAT `TTDINV | TTDAF0`. -/
+def ProjectedCATTLBUncacheableTTD {Occurrence : Type}
+    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=
+  tags.isTTDInvalid event ∨ tags.isTTDAccessFlagZero event
+
+/-- Set-membership reading of pinned CAT
+    `(TTD & M) \ TLBUncacheableTTD`. -/
+def ProjectedCATTLBCacheableTTD {Occurrence : Type}
+    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=
+  tags.isTTD event ∧ tags.isMemory event ∧
+    ¬ProjectedCATTLBUncacheableTTD tags event
+/- OAK-A64-CAT-TTD-CLASSIFIER-END -/
+
+/-- Interpret Oak's two abstract descriptor classes through the projected CAT
+    set formulas. This definition does not classify an event by itself. -/
+def ProjectedCATTTDClass {Occurrence : Type}
+    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) :
+    TTDClass → Prop
+  | .tlbCacheable => ProjectedCATTLBCacheableTTD tags event
+  | .tlbUncacheable => ProjectedCATTLBUncacheableTTD tags event
+
+/-- One-way soundness obligation from an externally supplied Oak descriptor
+    action to externally supplied projected CAT tags. No reverse classifier or
+    instruction-to-tag derivation is assumed. -/
+structure DescriptorActionCATTagSoundness {Occurrence Target : Type}
+    (trace : Trace Occurrence Target)
+    (tags : ProjectedCATDescriptorTags Occurrence) : Prop where
+  classifies : ∀ (event : Occurrence) (slot : Nat)
+    (access : DescriptorAccess) (ttdClass : TTDClass),
+    trace.action event = .descriptor slot access ttdClass →
+      ProjectedCATTTDClass tags event ttdClass
+
 /-- External projection from an execution occurrence to the instruction word
     at that occurrence. The static object regression test does not construct
     this projection; a compiler/execution refinement must supply it. -/
@@ -116,6 +159,76 @@ structure ExactDescriptorStoreOccurrence {Occurrence Target : Type}
   wordIsExact : code.wordAt event = some word
   actionIsDescriptor : trace.action event =
     .descriptor slot .explicitWrite ttdClass
+
+/-- An exact store occurrence decorated with its projected CAT class. The
+    original occurrence witness is retained verbatim, and the class remains
+    conditional on an external action-to-tag soundness premise. -/
+structure ProjectedCATTaggedDescriptorStoreOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (tags : ProjectedCATDescriptorTags Occurrence)
+    (event : Occurrence) (slot : Nat) (ttdClass : TTDClass)
+    (word : BitVec 32) : Prop where
+  occurrence : ExactDescriptorStoreOccurrence code trace event slot ttdClass word
+  tagClass : ProjectedCATTTDClass tags event ttdClass
+
+/-- Add projected CAT tags to an exact store without weakening or replacing
+    its independent exact-word/action premise. -/
+theorem exact_descriptor_store_projects_cat_tags
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target}
+    {tags : ProjectedCATDescriptorTags Occurrence}
+    {event : Occurrence} {slot : Nat} {ttdClass : TTDClass}
+    {word : BitVec 32}
+    (soundness : DescriptorActionCATTagSoundness trace tags)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      ttdClass word) :
+    ProjectedCATTaggedDescriptorStoreOccurrence code trace tags event slot
+      ttdClass word :=
+  { occurrence := occurrence
+    tagClass := soundness.classifies event slot .explicitWrite ttdClass
+      occurrence.actionIsDescriptor }
+
+/-- The decorated witness exposes the original external occurrence premise
+    unchanged. -/
+theorem projected_cat_tagged_descriptor_store_requires_external
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target}
+    {tags : ProjectedCATDescriptorTags Occurrence}
+    {event : Occurrence} {slot : Nat} {ttdClass : TTDClass}
+    {word : BitVec 32}
+    (tagged : ProjectedCATTaggedDescriptorStoreOccurrence code trace tags event
+      slot ttdClass word) :
+    ExactDescriptorStoreOccurrence code trace event slot ttdClass word :=
+  tagged.occurrence
+
+/-- Under the explicit soundness premise, the exact break-store occurrence is
+    in the projected `TTDINV | TTDAF0` set. The word alone proves no tag. -/
+theorem str_xzr_x0_projects_tlb_uncacheable_ttd
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target}
+    {tags : ProjectedCATDescriptorTags Occurrence}
+    {event : Occurrence} {slot : Nat}
+    (soundness : DescriptorActionCATTagSoundness trace tags)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    ProjectedCATTLBUncacheableTTD tags event := by
+  simpa [ProjectedCATTTDClass] using
+    (exact_descriptor_store_projects_cat_tags soundness occurrence).tagClass
+
+/-- Under the explicit soundness premise, the exact make-store occurrence is
+    in projected `(TTD & M) \ TLBUncacheableTTD`. The word alone proves no tag. -/
+theorem str_x2_x0_projects_tlb_cacheable_ttd
+    {Occurrence Target : Type} {code : InstructionTrace Occurrence}
+    {trace : Trace Occurrence Target}
+    {tags : ProjectedCATDescriptorTags Occurrence}
+    {event : Occurrence} {slot : Nat}
+    (soundness : DescriptorActionCATTagSoundness trace tags)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    ProjectedCATTLBCacheableTTD tags event := by
+  simpa [ProjectedCATTTDClass] using
+    (exact_descriptor_store_projects_cat_tags soundness occurrence).tagClass
 
 /-- A nearby Rt field cannot stand in for Oak's exact make store. -/
 theorem str_x1_x0_cannot_witness_make
@@ -394,6 +507,32 @@ structure ProjectedBBMWitness {Occurrence Target : Type}
   tlbiInScopeForMake : trace.invScope tlbiEvent make
   makeIsCacheableTTD : trace.action make =
     .descriptor slot .explicitWrite .tlbCacheable
+
+/-- The external action-to-tag soundness premise discharges exactly the three
+    descriptor set filters in the pinned CAT BBM expression. It establishes no
+    CAT event identity, `ca`, `ob`, TLBI membership, or `inv-scope` edge. -/
+theorem projected_bbm_witness_projects_cat_descriptor_tags
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {tags : ProjectedCATDescriptorTags Occurrence}
+    {old make breakEvent tlbiEvent : Occurrence}
+    {slot : Nat} {oldAccess : DescriptorAccess} {target : Target}
+    (soundness : DescriptorActionCATTagSoundness trace tags)
+    (witness : ProjectedBBMWitness trace old make slot oldAccess target
+      breakEvent tlbiEvent) :
+    ProjectedCATTLBCacheableTTD tags old ∧
+      ProjectedCATTLBUncacheableTTD tags breakEvent ∧
+      ProjectedCATTLBCacheableTTD tags make := by
+  constructor
+  · simpa [ProjectedCATTTDClass] using
+      soundness.classifies old slot oldAccess .tlbCacheable
+        witness.oldIsCacheableTTD
+  constructor
+  · simpa [ProjectedCATTTDClass] using
+      soundness.classifies breakEvent slot .explicitWrite .tlbUncacheable
+        witness.breakIsUncacheableTTD
+  · simpa [ProjectedCATTTDClass] using
+      soundness.classifies make slot .explicitWrite .tlbCacheable
+        witness.makeIsCacheableTTD
 
 def ProjectedBBM {Occurrence Target : Type}
     (trace : Trace Occurrence Target) (old make : Occurrence) : Prop :=
