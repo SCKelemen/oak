@@ -1245,10 +1245,17 @@ The existing native optimizations should be migrated into the candidate interfac
   later arm's is evaluated before the chain when it is speculable, so a
   two-comparison chain converts whole instead of branching on its first
   arm and re-recognizing the rest. 1.8 times on an unpredictable
-  three-arm chain in a loop. What is left there is the assignment cap —
-  `maxSelectAssigns` is 4, so a chain assigning two variables across
-  three arms still splits — which is a register-pressure question, not a
-  recognition one;
+  three-arm chain in a loop. The assignment cap that
+  remains — `maxSelectAssigns` is 4, so a chain assigning two variables
+  across three arms still splits — was **measured and kept 2026-09-17**
+  (`benchmarks/native/README.md` "The chain assignment cap"): counting
+  only the right-hand sides that need a scratch register converts such a
+  chain whole and proves it, and it is nothing to gain where the branch
+  is unpredictable and a factor of 1.6 to 2.8 to lose where it is not. A
+  branch skips the arms after it while a converted chain's selects all
+  execute, and per variable they serialize. That is the third measured
+  reminder that this backend's wins are mispredicts, not instructions,
+  and the first case where the instruction count points the wrong way;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
