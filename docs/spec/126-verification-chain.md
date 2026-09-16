@@ -185,11 +185,16 @@ checking LRAT; the integration path also requires the checker written in Oak
 to accept the certificate against the same DIMACS formula. Source-body and
 machine-operation replay attacks are tests. `Oak.NativeEqualityCertificate`
 proves the abstract composition from accepted RUP plus exact CNF completeness
-to result equality. `Oak.TseitinCNF` proves each raw AND/OR/XOR/ITE list,
+to result equality. `Oak.TseitinCNF` proves that each raw AND/OR/XOR/ITE gate
+record's exact clause list characterizes its Boolean equation,
 composes any supplied gate sequence with its supplied non-settled final
 clause, and carries that characterization to the exact 1-based initial RUP
-database. It does not yet prove production provenance, sequential extension,
-or bit-blaster correspondence. The hardened
+database. `WellFormedFrom` and `evalSequence_gateConsistent` show that a
+supplied strictly increasing, backward-reading sequence has an assignment
+modeling every gate clause; adding the final clause remains conditional. It
+does not yet prove production provenance, shared input/output disjointness and
+input preservation, operand-universe coverage, final-root construction, or
+bit-blaster correspondence. The hardened
 Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
@@ -565,11 +570,14 @@ extraction's selected do-block. `lowerConditionalAssignment_eval` is its
 one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
 the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
 the production render retains `fcvt64` over the exact width-32 operand term.
+The separate `lowerF64_eval` family proves ordered `Oak.FloatOps.fma64` over
+binary64 parameters, already-rounded bit literals, and straight-line local
+substitution. It does not yet compose with the widening family.
 This is deliberately still a first slice: decimal parsing into the literal
 bits, all other conversions, spans, effectful conditions, nested or effectful
-statement arms, borrowing/recursive/effectful calls, `f64` arithmetic, and
-vector operations remain related to the extraction by tests rather than this
-theorem. Division here proves operation identity and operand order through
+statement arms, borrowing/recursive/effectful calls, other `f64` arithmetic,
+and vector operations remain related to the extraction by tests rather than
+this theorem. Division here proves operation identity and operand order through
 Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
 division or payload-observing NaN behavior.
 
@@ -655,7 +663,10 @@ for a workload):
    then the pointwise merge of the union write set; the one-local theorem is a
    corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
    that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
-   `(Oak.FloatOps.add32 a b).toFloat`. Decimal parsing, all other conversions,
+   `(Oak.FloatOps.add32 a b).toFloat`. The separate `lowerF64_eval` family
+   closes ordered binary64 FMA over parameters, bit literals, and pure locals,
+   pinned to `fma64` extraction and both native target verifiers. Decimal
+   parsing, all other conversions,
    memory, effectful conditions, nested or effectful statement arms,
    borrowing/recursive/effectful calls, and the rest of the float/vector edge
    stay open.

@@ -213,6 +213,12 @@ Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
 binary32 value. This is operation identity and width/operand composition, not
 an independent proof of IEEE conversion, NaN-payload mapping, the production
 evaluator, or either ISA instruction.
+Separately, `lowerF64_eval` closes ordered binary64 FMA over parameters,
+already-rounded `UInt64` literal bits, and straight-line local substitution;
+both readings use `Oak.FloatOps.fma64` in the same three-operand order. It does
+not compose with the widening wrapper or cover other binary64 arithmetic,
+control flow, calls, memory, the Go evaluator, IEEE implementation details, or
+ISA semantics.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

@@ -264,10 +264,14 @@ non-contraction of multiply-then-add, the literal bits, and both local forms.
 `lowerWiden_eval` also composes explicit `f32`-to-`f64` widening over that
 straight-line slice and pins the production `fcvt64` node and extraction's
 `Float32.toFloat`. Decimal parsing into those bits, all other conversions,
-memory, effectful control flow, borrowing/recursive/effectful calls, `f64`
-arithmetic, and SIMD remain outside the theorem, so the broader gap and score
-above remain. Ordered pure `f32` calls are included by the existing
+memory, effectful control flow, borrowing/recursive/effectful calls, other
+`f64` arithmetic, and SIMD remain outside the theorem, so the broader gap and
+score above remain. Ordered pure `f32` calls are included by the existing
 call-environment refinement.
+The separate `lowerF64_eval` family covers ordered binary64 FMA over
+parameters, already-rounded literal bits, and pure local substitution through
+the shared `Oak.FloatOps.fma64` carrier. It does not compose with widening or
+prove the Go evaluator, IEEE rounding/NaN behavior, or either ISA instruction.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
 rounding or NaN-payload behavior. The FMA case similarly relates both sides to
@@ -343,7 +347,12 @@ states the abstract composition and makes its missing implementation
 refinements explicit. `Oak.TseitinCNF` now proves each raw Boolean gate's exact
 signed-literal clause shape, supplied-list/final-clause composition, and the
 exact 1-based initial RUP database model. The hardened Go checker kernel lives
-in the dependency-leaf `internal/lrat` package. The next step remains
+in the dependency-leaf `internal/lrat` package. For every supplied sequence
+satisfying `WellFormedFrom`, left-to-right evaluation constructs an assignment
+satisfying all gate clauses, with the final-clause model correctly conditional.
+Production trace provenance, shared input/output disjointness and input
+preservation, operand-universe coverage, final-root construction, and bit
+blasting remain open. The next step remains
 production-builder/bit-blaster and checker implementation refinement,
 followed by requiring the leaf checker below compiler selection so certificate
 acceptance can safely become verdict authority.

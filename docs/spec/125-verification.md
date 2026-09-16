@@ -180,13 +180,16 @@ Every theorem is placed on one rung, from the strongest evidence down:
 The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
 keeps the public compatibility and word-encoding surface.  At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
-fresh AND, OR, XOR, and ITE gates characterize those gates. It composes any
+AND, OR, XOR, and ITE gate records characterize those gates. It composes any
 supplied list with a supplied non-settled final clause and proves the same
 model characterization for its exact 1-based initial RUP database. This does
-not yet prove that the Go or Oak builders produced that list or obligation:
-folding, allocation/memoization, freshness and acyclicity, sequential
-extension, bit blasting, DIMACS construction, and implementation
-correspondence remain open links.
+not yet prove that the Go or Oak builders produced that list or obligation.
+For a supplied strictly increasing, backward-reading sequence,
+`evalSequence_gateConsistent` constructs an assignment satisfying every gate
+clause; the final-clause model stays conditional. Shared input/output
+disjointness and input preservation, operand-universe coverage, folding,
+allocation/memoization, bit blasting, final-root construction, DIMACS
+construction, and implementation correspondence remain open links.
 
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
@@ -859,11 +862,14 @@ In order of payoff, each reusing a surface that exists:
   checker proved once in Lean validates it — solving and trust as separate
   artifacts, the `-cross` rule kept so a race never hides a disagreement.
   The trusted base then narrows to the complete clause encoder. Its raw
-  fresh-gate lists, supplied-list concatenation with the non-settled final
+  gate lists, supplied-list concatenation with the non-settled final
   clause, and exact 1-based initial RUP database are connected by
-  `Oak.TseitinCNF`; production provenance, folding, allocation/memoization,
-  freshness and acyclicity, sequential extension, bit blasting, DIMACS
-  construction, and implementation refinement remain open. GPU solving is
+  `Oak.TseitinCNF`; a supplied sequence satisfying `WellFormedFrom`
+  additionally has a constructed gate-clause model. Production provenance,
+  shared input/output disjointness and input preservation,
+  operand-universe coverage, folding/memoization, final-root construction,
+  bit blasting, DIMACS construction, and implementation refinement remain
+  open. GPU solving is
   not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
   obligation here is kilobytes — but the many small independent
