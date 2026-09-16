@@ -74,6 +74,39 @@ def ProjectedCATTLBCacheableTTD {Occurrence : Type}
     ¬ProjectedCATTLBUncacheableTTD tags event
 /- OAK-A64-CAT-TTD-CLASSIFIER-END -/
 
+/- OAK-A64-CAT-BBM-BEGIN -/
+/-- The projected occurrence sets and relations consumed by the pinned CAT
+    `BBM` expression. Every field is supplied by an execution refinement;
+    this record neither constructs official CAT events nor identifies these
+    relations with Oak's local trace relations. -/
+structure ProjectedCATBBMRelations (Occurrence : Type) where
+  descriptorTags : ProjectedCATDescriptorTags Occurrence
+  isTLBI : Occurrence → Prop
+  ca : Occurrence → Occurrence → Prop
+  ob : Occurrence → Occurrence → Prop
+  invScope : Occurrence → Occurrence → Prop
+
+/-- Exact occurrence-level reading of pinned CAT
+
+`[TLBCacheableTTD]; ca; [TLBUncacheableTTD]; ob; [TLBI];
+ (ob & inv-scope); [TLBCacheableTTD]`.
+
+The shared arguments of `ob` and `inv-scope` preserve CAT's relational
+intersection. This definition is a pullback over supplied occurrence
+predicates, not an execution generator or a complete CAT semantics. -/
+def ProjectedCATBBM {Occurrence : Type}
+    (cat : ProjectedCATBBMRelations Occurrence)
+    (old make : Occurrence) : Prop :=
+  ∃ breakEvent tlbiEvent,
+    ProjectedCATTLBCacheableTTD cat.descriptorTags old ∧
+      cat.ca old breakEvent ∧
+      ProjectedCATTLBUncacheableTTD cat.descriptorTags breakEvent ∧
+      cat.ob breakEvent tlbiEvent ∧
+      cat.isTLBI tlbiEvent ∧
+      cat.ob tlbiEvent make ∧ cat.invScope tlbiEvent make ∧
+      ProjectedCATTLBCacheableTTD cat.descriptorTags make
+/- OAK-A64-CAT-BBM-END -/
+
 /-- Interpret Oak's two abstract descriptor classes through the projected CAT
     set formulas. This definition does not classify an event by itself. -/
 def ProjectedCATTTDClass {Occurrence : Type}
@@ -486,6 +519,24 @@ inductive ProjectedOrderedBefore {Occurrence Target : Type}
       (bc : ProjectedOrderedBefore trace b c) :
       ProjectedOrderedBefore trace a c
 
+/-- Factored one-way obligations from Oak's local maintenance trace into the
+    occurrence predicates of `ProjectedCATBBM`. In particular, local
+    `ProjectedOrderedBefore` is not definitionally CAT `ob`, and an abstract
+    TLBI action is not definitionally CAT TLBI membership. -/
+structure TraceToProjectedCATBBMSoundness {Occurrence Target : Type}
+    (trace : Trace Occurrence Target)
+    (cat : ProjectedCATBBMRelations Occurrence) : Prop where
+  descriptorTagsSound :
+    DescriptorActionCATTagSoundness trace cat.descriptorTags
+  coherenceAfterSound : ∀ {before after},
+    trace.coherenceAfter before after → cat.ca before after
+  orderedBeforeSound : ∀ {before after},
+    ProjectedOrderedBefore trace before after → cat.ob before after
+  tlbiMembershipSound : ∀ {event target},
+    trace.action event = .tlbi target → cat.isTLBI event
+  invScopeSound : ∀ {before after},
+    trace.invScope before after → cat.invScope before after
+
 /-- The seven operands of the pinned CAT definition
 
 `[TLBCacheableTTD]; ca; [TLBUncacheableTTD]; ob; [TLBI];
@@ -534,11 +585,47 @@ theorem projected_bbm_witness_projects_cat_descriptor_tags
       soundness.classifies make slot .explicitWrite .tlbCacheable
         witness.makeIsCacheableTTD
 
+/-- Under the five explicit one-way refinement obligations, the existing
+    indexed Oak witness inhabits every operand of the exact projected CAT
+    `BBM` relation. No official event identity or relation is constructed. -/
+theorem projected_bbm_witness_projects_exact_cat_bbm
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {cat : ProjectedCATBBMRelations Occurrence}
+    {old make breakEvent tlbiEvent : Occurrence}
+    {slot : Nat} {oldAccess : DescriptorAccess} {target : Target}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    (witness : ProjectedBBMWitness trace old make slot oldAccess target
+      breakEvent tlbiEvent) :
+    ProjectedCATBBM cat old make := by
+  have descriptorTags := projected_bbm_witness_projects_cat_descriptor_tags
+    soundness.descriptorTagsSound witness
+  exact ⟨breakEvent, tlbiEvent,
+    descriptorTags.1,
+    soundness.coherenceAfterSound witness.oldCoherenceBeforeBreak,
+    descriptorTags.2.1,
+    soundness.orderedBeforeSound witness.breakBeforeTlbi,
+    soundness.tlbiMembershipSound witness.tlbiHasTarget,
+    soundness.orderedBeforeSound witness.tlbiBeforeMake,
+    soundness.invScopeSound witness.tlbiInScopeForMake,
+    descriptorTags.2.2⟩
+
 def ProjectedBBM {Occurrence Target : Type}
     (trace : Trace Occurrence Target) (old make : Occurrence) : Prop :=
   ∃ (slot : Nat) (oldAccess : DescriptorAccess) (target : Target)
     (breakEvent tlbiEvent : Occurrence),
     ProjectedBBMWitness trace old make slot oldAccess target breakEvent tlbiEvent
+
+/-- The existential local projection maps to the exact pulled-back CAT
+    relation without a monolithic `ProjectedBBM → catBBM` premise. -/
+theorem projected_bbm_projects_exact_cat_bbm
+    {Occurrence Target : Type} {trace : Trace Occurrence Target}
+    {cat : ProjectedCATBBMRelations Occurrence} {old make : Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    (witness : ProjectedBBM trace old make) :
+    ProjectedCATBBM cat old make := by
+  rcases witness with
+    ⟨slot, oldAccess, target, breakEvent, tlbiEvent, witness⟩
+  exact projected_bbm_witness_projects_exact_cat_bbm soundness witness
 
 /-- A projected BBM witness retaining the exact instruction projection for the
     same TLBI occurrence and target selected by the abstract witness. -/
@@ -794,5 +881,24 @@ theorem maintained_old_events_exclude_projected_cat_bbm_warning
   apply projectedBBMSound old make
   exact maintains_old_event_covers_projected_bbm
     (maintains old) make (needsProjects old make needsBBM)
+
+/-- Specialized warning exclusion for the exact pulled-back CAT relation.
+    The local requirement is the supplied CAT-needs relation itself, while
+    the factored trace-to-CAT bridge replaces the older monolithic BBM
+    soundness premise. This still says nothing about adequacy of `catNeedsBBM`
+    or whether the supplied predicates came from an official CAT execution. -/
+theorem maintained_old_events_exclude_exact_projected_cat_bbm_warning
+    {Occurrence Target : Type}
+    {catNeedsBBM : Occurrence → Occurrence → Prop}
+    {trace : Trace Occurrence Target}
+    {cat : ProjectedCATBBMRelations Occurrence}
+    (soundness : TraceToProjectedCATBBMSoundness trace cat)
+    (maintains : ∀ old, MaintainsOldEvent catNeedsBBM trace old) :
+    ¬ProjectedCATBBMWarning catNeedsBBM (ProjectedCATBBM cat) := by
+  rintro ⟨old, make, needsBBM, lacksBBM⟩
+  apply lacksBBM
+  apply projected_bbm_projects_exact_cat_bbm soundness
+  exact maintains_old_event_covers_projected_bbm
+    (maintains old) make needsBBM
 
 end Oak.AArch64Stage2Maintenance

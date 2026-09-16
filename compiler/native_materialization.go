@@ -50,6 +50,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 	}{
 		{"vector-reductions", lane.VectorReductions},
 		{"vector-maps", lane.VectorMaps},
+		{"vector-folds", lane.VectorFolds},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
@@ -66,6 +67,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
 		{"schedule", lane.Schedule},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 		{"packed-stack-args", lane.PackedStackArgs},
 	}
 	for _, flag := range flags {

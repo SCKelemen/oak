@@ -327,6 +327,19 @@ supplied by the architecture refinement. A conditional theorem covers every
 make event selected by an external `requiresBBM` predicate. It does not prove
 that those local edges belong to an actual CAT execution.
 
+Lean now also states an exact pulled-back `ProjectedCATBBM` predicate over
+externally supplied occurrence sets and relations. It preserves `ca` from old
+to break, `ob` from break to TLBI, TLBI membership at that same middle event,
+and both `ob` and `inv-scope` from that TLBI to make before applying the final
+cacheable-descriptor filter. `TraceToProjectedCATBBMSoundness` factors the
+local-to-CAT obligation into five one-way fields: descriptor tag soundness,
+`coherenceAfter` to `ca`, local `ProjectedOrderedBefore` to `ob`, abstract TLBI
+action to TLBI membership, and local `invScope` to CAT `inv-scope`. Under those
+fields, `projected_bbm_witness_projects_exact_cat_bbm` proves the existing
+indexed witness inhabits every operand of the exact projected relation. An
+exact Lean-source gate pins the conjunction, event sharing, and edge directions
+beside the already pinned official CAT AST.
+
 The CAT certificate separately pins the complete outer classification seam:
 `TLBUncacheableTTD`, `TLBCacheableTTD`, all six arms of
 `TTD-update-BBM-cand`, and the exact three-operand
@@ -342,6 +355,14 @@ local `requiresBBM` predicate, and every `ProjectedBBM` witness implies
 official `BBM` membership. Those three premises are explicit and remain
 unproved refinement obligations; the theorem does not identify Oak events or
 relations with the CAT execution.
+
+For the exact pulled-back relation,
+`maintained_old_events_exclude_exact_projected_cat_bbm_warning` removes the
+monolithic `ProjectedBBM -> catBBM` premise: local maintenance uses the supplied
+needs relation directly, and the five factored one-way fields construct
+`ProjectedCATBBM`. This is still conditional. It neither proves that the needs
+relation is official `TTD-update-needsBBM` nor that any supplied predicate came
+from an official CAT execution.
 
 The concrete wrapper keeps an external instruction-word projection beside
 that sequence. It requires the break index to carry exact `STR XZR,[X0]` word
@@ -374,6 +395,11 @@ to 56 bits and the post-endian 64-bit data. Consequently the exact break store
 selects `(ZeroExtend(PA), 0)` under either endian, the little-endian make store
 selects `(ZeroExtend(PA), X2)`, and the big-endian make case selects the exact
 eight-byte reversal of X2. A known-byte theorem fixes the reversal direction.
+The next generated pure projection follows the pinned no-device wrappers and
+selects the external `write_ram` arguments
+`(56, 8, defaultRAM, ZeroExtend(PA), data)`, with `defaultRAM` explicit rather
+than inferred from a runtime register state. Break data is still zero and make
+data retains the same endian-dependent result.
 
 The official-source oracle pins complete normalized bodies and exact
 signatures for `BigEndianReverse`, `aset_Mem`,
@@ -381,10 +407,12 @@ signatures for `BigEndianReverse`, `aset_Mem`,
 no-device `__WriteRAM` wrapper. It also pins the 52-bit `FullAddress` field,
 the three overload routes, endian/aligned selection, translation/fault,
 exclusive, MTE, trickbox, counter-register, size-16 split, direct-write, model
-file-selection, and external `write_ram` seams. These checks justify the
-conditional argument projection only. Alignment and route reachability,
-translation correctness, the supplied PA's provenance, normal return, RAM
-mutation, and event creation are not outputs of the pure function.
+file-selection, exact `__defaultRAM : bits(56)` declaration, ordered wrapper
+bodies, and external `write_ram` seam. These checks justify the conditional
+argument projections only. Alignment and route/call reachability, translation
+correctness, the supplied PA's or default-RAM value's provenance, wrapper or
+external return, RAM mutation/byte placement/atomicity, and event creation are
+not outputs of the pure functions.
 The occurrence-level break/make decorators therefore require an opaque
 `AlignedNormalWriteMemoryRoute` premise indexed by the same occurrence,
 virtual address, endian result, physical address, and pre-endian data. Their
@@ -403,11 +431,13 @@ pin both formulas and reject operator, atom, operand-order, and set-difference
 direction drift.
 
 The primitive `TTD`, `M`, `TTDINV`, and `TTDAF0` tags and the one-way soundness
-map are still external execution-refinement inputs. There is no reverse
-classifier, no STR or descriptor-value derivation of a tag, and no claim that
-an Oak occurrence is an official CAT event. In particular this step does not
-establish address-to-slot/PTE provenance, `ca`, `ob`, `inv-scope`, official
-`BBM` membership, completion, or publication.
+map are still external execution-refinement inputs. The new `ca`, `ob`, TLBI,
+and `inv-scope` fields are likewise premises rather than derived relations.
+There is no reverse classifier, no STR or descriptor-value derivation of a tag,
+and no claim that an Oak occurrence is an official CAT event. In particular
+this step does not establish address-to-slot/PTE provenance, adequacy of any
+projected predicate against an official execution, completion, invalidation,
+or publication.
 
 The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
 incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its
@@ -420,7 +450,7 @@ store/system order and no ISB. The two local equalities are recorded in
 lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
 verifier's decided subset: its verdict remains **trusted**, not proven.
 Dynamic PC/object trace extraction, reachability and effects of the official
-ASL call after the selected pre-`__WriteMemory` arguments, and every
+ASL calls after the selected external `write_ram` arguments, and every
 instruction-to-action classification remain
 compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
 object oracle or a privileged Apple EL2 execution gate.

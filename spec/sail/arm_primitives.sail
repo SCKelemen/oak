@@ -825,6 +825,23 @@ function str64_aligned_normal_write_memory_arguments_pure
     (sail_zero_extend(paddress, 56), write_data)
 }
 
+/* The no-device model's next two wrappers preserve these arguments:
+ * __WriteMemory calls __WriteRAM(56, N, __defaultRAM, address, val_name),
+ * and __WriteRAM forwards them to external write_ram.  This pure projection
+ * specializes N to the ordinary STR64 size of eight bytes and makes the
+ * register value an explicit input.  It proves neither that either wrapper
+ * is dynamically invoked nor that external memory changes.
+ */
+
+val str64_no_device_write_ram_call_arguments_pure :
+  (bits(56), bits(56), bits(64)) ->
+    (int, int, bits(56), bits(56), bits(64))
+
+function str64_no_device_write_ram_call_arguments_pure
+  (default_ram, address, data) = {
+    (56, 8, default_ram, address, data)
+}
+
 /* ---------------------------------------------------------------------
  * The A64 barrier decoder (docs/spec/94-assembler.md §9).
  *
@@ -1687,12 +1704,14 @@ function decode64_ordinary_ret_pure (op_code) = {
     }
 }
 
-/* Ordinary B-immediate's pure decoder fields and BranchType_DIR target.
+/* Ordinary B/BL-immediate pure decoder fields and static branch-class target.
  * The architectural PC read, PostDecode, BranchTo, target validation, and
  * observation of a transfer are deliberately not members of this projection.
- * BL and conditional branches are separate instruction classes. */
+ * BL's architectural X30 write is also excluded. Conditional branches are a
+ * separate instruction class. */
 enum DirectBranchImmediateExecutionTarget = {
-  DirectBranchImmediateExecutionTarget_DIR
+  DirectBranchImmediateExecutionTarget_DIR,
+  DirectBranchImmediateExecutionTarget_DIRCALL
 }
 
 struct OrdinaryBImmediateDecode = {
@@ -1720,6 +1739,21 @@ function decode64_ordinary_b_immediate_pure (op_code) = {
     struct {
       encoding_valid = encoding_valid,
       target = DirectBranchImmediateExecutionTarget_DIR,
+      imm26 = imm26,
+      op = op,
+      offset = branch26_offset_pure(imm26)
+    }
+}
+
+val decode64_ordinary_bl_immediate_pure : bits(32) -> OrdinaryBImmediateDecode
+
+function decode64_ordinary_bl_immediate_pure (op_code) = {
+    let imm26 : bits(26) = slice(op_code, 0, 26);
+    let op : bits(1) = slice(op_code, 31, 1);
+    let encoding_valid : bool = (op_code & 0xFC000000) == 0x94000000;
+    struct {
+      encoding_valid = encoding_valid,
+      target = DirectBranchImmediateExecutionTarget_DIRCALL,
       imm26 = imm26,
       op = op,
       offset = branch26_offset_pure(imm26)

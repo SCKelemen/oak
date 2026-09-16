@@ -835,22 +835,40 @@ func substituteWriteLog(log []*spanWrite, sigma map[string]*term) []*spanWrite {
 // pruneWritesUnder removes stores whose guards a postcondition refutes
 // and strips guards it implies. Doing this before memoryAt combines a
 // guard with a symbolic index equality avoids constructing a large,
-// irrelevant lookup branch on paths where the store never happened.
+// irrelevant lookup branch on paths where the store never happened. The
+// log's guards prune in one pass (one fact walk, one small diagram, one
+// canonical memo): a pass per guard walked and canonicalized the guards'
+// shared subgraph once per write, and ap_certificate_after_proven's
+// twenty-six-slot coupling grew past ten gigabytes in the copies.
 func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int) []*spanWrite {
 	if len(log) == 0 {
 		return log
 	}
 	one, zero := constTerm(1, 1), constTerm(0, 1)
+	var selected []*term
+	var guarded []int
+	for k, w := range log {
+		if w != nil && w.guard != nil {
+			selected = append(selected, iteTerm(truncate(w.guard, 1), one, zero))
+			guarded = append(guarded, k)
+		}
+	}
+	if len(selected) == 0 {
+		return log
+	}
+	pruned := pruneUnder(premise, selected, widthOf)
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
 	out := make([]*spanWrite, 0, len(log))
-	for _, w := range log {
-		if w == nil || w.guard == nil {
+	next := 0
+	for k, w := range log {
+		if next >= len(guarded) || guarded[next] != k {
 			out = append(out, w)
 			continue
 		}
-		selected := iteTerm(truncate(w.guard, 1), one, zero)
-		selected = canonical(pruneUnder(premise, []*term{selected}, widthOf)[0])
-		if selected.kind == termConst {
-			if selected.value&1 == 0 {
+		guard := canonicalMemo(pruned[next], cmemo, cbool)
+		next++
+		if guard.kind == termConst {
+			if guard.value&1 == 0 {
 				continue
 			}
 			copy := *w
@@ -859,7 +877,7 @@ func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int)
 			continue
 		}
 		copy := *w
-		copy.guard = selected
+		copy.guard = guard
 		out = append(out, &copy)
 	}
 	return out
@@ -3521,6 +3539,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// proof on the prover and the kernels needs 291 nodes (`valid_with`),
 	// and the seven bodies past 512 all end as evidence.
 	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
+	// couplingWork meters the term visits the search's valuation
+	// refutations spend in all (docs/spec/94-assembler.md §9 "Loop
+	// invariants", the coupling search): each pairing visited is bounded
+	// by searchBudget, and each refutation's pass by witnessVisitBudget,
+	// but a body whose obligations are large DAGs (a callee's reach
+	// condition, a summarized call) spent hours in a thousand of them.
+	couplingWork := couplingWorkBudget
 	budget := &nodeBudget{remaining: proofNodes, loop: true}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
@@ -3979,7 +4004,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			if !isResolved {
 				continue
 			}
-			if refutedByCoupling(premise, next, asmNext, widthOfName) {
+			if refutedByCoupling(premise, next, asmNext, widthOfName, &couplingWork) {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n  premise %s\n  oak-next %s\n  asm-next %s\n", fn.Name, c.show(), premise.String(), next.String(), asmNext.String())
 				}
@@ -3992,7 +4017,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		for k := range oakLoops {
 			asmCond := substitute(asmLoops[k].cond, sigma)
-			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName) {
+			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName, &couplingWork) {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n  premise %s\n  oak-cond %s\n  asm-cond %s\n  sigma %v\n", fn.Name, k+1, bodyPremise(k, sigma, false).String(), substitute(oakLoops[k].cond, sigma).String(), asmCond.String(), sigmaShow(sigma))
 				}
@@ -4027,7 +4052,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			premise, next, asmNext, isResolved := preservation(s, c)
 			delete(sigma, asmName)
-			if !isResolved || !refutedByCoupling(premise, next, asmNext, widthOfName) {
+			if !isResolved || !refutedByCoupling(premise, next, asmNext, widthOfName, &couplingWork) {
 				viable = true
 				break
 			}
@@ -4049,6 +4074,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
+		if couplingWork <= 0 {
+			visited = searchBudget + 1
+		}
 		if visited > searchBudget {
 			failure = "the coupling search exceeded its budget"
 			return false, nil
@@ -4137,7 +4165,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
+			if couplingWork <= 0 {
+				visited = searchBudget + 1
+			}
 			if visited > searchBudget {
+				failure = "the coupling search exceeded its budget"
 				return false, nil
 			}
 			if !conflict[i] {
@@ -5187,7 +5219,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		return t
 	}
 	out := *t
-	out.kbDone = false
+	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
 	memo[t] = &out
 	return &out
@@ -5237,7 +5269,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		return t
 	}
 	out := *t
-	out.kbDone = false
+	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
@@ -5542,9 +5574,10 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		return false, false
 	}
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
-	collectParams(a, mentioned)
-	collectParams(b, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
+	collectParamsVisited(a, mentioned, visited)
+	collectParamsVisited(b, mentioned, visited)
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
 	for name := range mentioned {
@@ -5785,7 +5818,11 @@ func maskedZeroTestRelation(a, b *term) int {
 // of its conjuncts directly settles a guard in the terms. Unknown formulas
 // remain in place, so this pass proves and never guesses.
 func pruneUnderFacts(premise *term, terms []*term) []*term {
-	premise = canonical(truncate(premise, 1))
+	// One canonical memo for the pass: the terms' Boolean nodes share
+	// their subgraph, and a canonicalization from scratch per node copied
+	// it once per node.
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	premise = canonicalMemo(truncate(premise, 1), cmemo, cbool)
 	var facts []*term
 	var collectFacts func(*term)
 	collectFacts = func(t *term) {
@@ -5795,7 +5832,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 			return
 		}
 		if t.kind != termConst {
-			facts = append(facts, canonical(truncate(t, 1)))
+			facts = append(facts, canonicalMemo(truncate(t, 1), cmemo, cbool))
 		}
 	}
 	collectFacts(premise)
@@ -5814,7 +5851,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		// mask. Mark it in progress before normalization so structural descent
 		// through that wrapper stops rather than recursing.
 		truthMemo[t] = knownTruth{}
-		normalized := canonical(truncate(t, 1))
+		normalized := canonicalMemo(truncate(t, 1), cmemo, cbool)
 		result := knownTruth{}
 		if normalized.kind == termConst {
 			result = knownTruth{value: normalized.value != 0, known: true}
@@ -5924,6 +5961,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		cond, left, right := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 		if cond != t.cond || left != t.left || right != t.right {
 			copy := *t
+			copy.kbDone, copy.sigBits = false, 0
 			copy.cond, copy.left, copy.right = cond, left, right
 			out = &copy
 		}
@@ -5948,10 +5986,14 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term {
 	premise = canonical(truncate(premise, 1))
 	terms = pruneUnderFacts(premise, terms)
+	// One visited set for the premise and every term: a log's guards
+	// share their subgraph, and a walk per term was a walk of it per
+	// guard (ap_certificate_after_proven spent half its coupling here).
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
 	for _, t := range terms {
-		collectParams(t, mentioned)
+		collectParamsVisited(t, mentioned, visited)
 	}
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
@@ -5998,6 +6040,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
+					copy.kbDone, copy.sigBits = false, 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -6029,6 +6072,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
+					copy.kbDone, copy.sigBits = false, 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -6037,6 +6081,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 			l, r := rewrite(t.left), rewrite(t.right)
 			if l != t.left || r != t.right {
 				copy := *t
+				copy.kbDone, copy.sigBits = false, 0
 				copy.left, copy.right = l, r
 				out = &copy
 			}
@@ -6231,16 +6276,17 @@ func abbreviate(s string, n int) string {
 
 // refutedByCoupling is refutedByValuation over the symbols the obligation
 // mentions, at their declared widths.
-func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
+func refutedByCoupling(premise, a, b *term, widthOf func(string) int, work *int) bool {
 	width := a.width
 	if b.width > width {
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
 	mentioned := map[string]bool{}
-	collectParams(premise, mentioned)
-	collectParams(a, mentioned)
-	collectParams(b, mentioned)
+	visited := map[*term]bool{}
+	collectParamsVisited(premise, mentioned, visited)
+	collectParamsVisited(a, mentioned, visited)
+	collectParamsVisited(b, mentioned, visited)
 	names := make([]string, 0, len(mentioned))
 	widths := map[string]int{}
 	for name := range mentioned {
@@ -6248,7 +6294,7 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
 		widths[name] = widthOf(name)
 	}
 	sort.Strings(names)
-	return refutedByValuation(premise, a, b, names, widths)
+	return refutedByValuationWithin(premise, a, b, names, widths, work)
 }
 
 // impliesEqualByArms proves premise → (a = b) for two conditionals by
@@ -6646,6 +6692,16 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 // elements stay unbound so that they read the fixed memory, consistently
 // with the select terms over the same span.
 func refutedByValuation(premise, a, b *term, names []string, widths map[string]int) bool {
+	return refutedByValuationWithin(premise, a, b, names, widths, nil)
+}
+
+// refutedByValuationWithin is refutedByValuation charging the pass's term
+// visits to work when one is given; a spent meter refutes nothing (the
+// caller ends its search).
+func refutedByValuationWithin(premise, a, b *term, names []string, widths map[string]int, work *int) bool {
+	if work != nil && *work <= 0 {
+		return false
+	}
 	var free []string
 	for _, name := range names {
 		if _, _, isElement := elementParam(name); isElement && !strings.HasPrefix(name, "loop") {
@@ -6691,6 +6747,9 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 		if rounds < 8 {
 			rounds = 8
 		}
+	}
+	if work != nil {
+		*work -= len(evaluator.terms) * (3*len(targets) + rounds)
 	}
 	// The premise's own bindings: a conjunct comparing a symbol with a
 	// term (`g = (total + 15) >> 4`, an inner loop's exit fact; `off <
@@ -6906,6 +6965,10 @@ const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 1024
+
+// couplingWorkBudget bounds the term visits one coupling search's
+// valuation refutations spend in all: sixteen full passes' worth.
+const couplingWorkBudget = 16 * witnessVisitBudget
 
 // isUncoupledLoopSymbol reports a term that is a loop's fresh symbol
 // itself, at any width, which the substitution does not yet map (an inner

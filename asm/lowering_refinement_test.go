@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
@@ -67,6 +68,12 @@ var loweringRenders = []struct {
 	{"f: (a: f32) -> f32", "-a", "(a xor 2147483648)"},
 	{"f: (a: f32) -> f32", "abs(a)", "(a and 2147483647)"},
 	{"f: (a, b: f32) -> f32", "copysign(-a, b)", "(((a xor 2147483648) and 2147483647) or (b and 2147483648))"},
+	// The binary64 seam retains the same ordered sign transformations at
+	// width 64. Its Lean reading deliberately shares extraction's Float
+	// carriers rather than claiming an independent hardware theorem.
+	{"f: (a: f64) -> f64", "-a", "(a xor 9223372036854775808)"},
+	{"f: (a: f64) -> f64", "abs(a)", "(a and 9223372036854775807)"},
+	{"f: (a, b: f64) -> f64", "copysign(-a, b)", "(((a xor 9223372036854775808) and 9223372036854775807) or (b and 9223372036854775808))"},
 	// IEEE comparisons (FloatLoweringRefinement.lowerCondition): NaNs are
 	// unordered, signed zeros compare equal, and finite nonzero values use
 	// the sign-magnitude order.  The deliberately explicit renders pin the
@@ -122,6 +129,83 @@ var loweringRenders = []struct {
 	// Folding (`Term.binary`, `iteT`): constant operands fold, `x + 0` is `x`.
 	{"f: (a: u32) -> u32", "a + 2 * 3", "(a add 6)"},
 	{"f: (a: u32) -> u32", "a + 0", "a"},
+}
+
+// Binary64 floatCompare has the same syntax tree as the six literal-pinned
+// binary32 renders above, with only the format masks and sign-bit position
+// changed. Comparing the complete lifted string keeps every operation and
+// operand ordered while avoiding a second copy of six multi-kilobyte terms.
+func TestBinary64ComparisonLoweringMatchesLeanTransliteration(t *testing.T) {
+	operators := []string{"==", "!=", "<", "<=", ">", ">="}
+	for _, operator := range operators {
+		body := "a " + operator + " b"
+		var binary32 string
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == body {
+				binary32 = candidate.want
+				break
+			}
+		}
+		if binary32 == "" {
+			t.Fatalf("binary32 comparison %q has no literal render pin", body)
+		}
+		want := binary64ComparisonRender(binary32)
+		spec, err := parseSignatureWithBody("f: (a, b: f64) -> Bool = " + body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lo := newLowering(spec)
+		term, reason, ok := lo.lower(spec.Body, 1)
+		if !ok {
+			t.Fatalf("%s: not lowered (%s)", body, reason)
+		}
+		if got := term.String(); got != want {
+			t.Errorf("%s\n  lowered: %s\n  model:   %s", body, got, want)
+		}
+	}
+
+	comparison := binary64ComparisonRender(func() string {
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == "a < b" {
+				return candidate.want
+			}
+		}
+		return ""
+	}())
+	equality := binary64ComparisonRender(func() string {
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == "a == b" {
+				return candidate.want
+			}
+		}
+		return ""
+	}())
+	spec, err := parseSignatureWithBody(
+		"f: (a, b: f64) -> f64 = a < b ? (a == b ? -abs(a) | a + b) | copysign(b, a)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(spec)
+	term, reason, ok := lo.lower(spec.Body, 64)
+	if !ok {
+		t.Fatalf("binary64 conditional: not lowered (%s)", reason)
+	}
+	want := "(" + comparison + " ? (" + equality +
+		" ? ((a and 9223372036854775807) xor 9223372036854775808)" +
+		" : fadd64(a, b))" +
+		" : ((b and 9223372036854775807) or (a and 9223372036854775808)))"
+	if got := term.String(); got != want {
+		t.Errorf("binary64 conditional\n  lowered: %s\n  model:   %s", got, want)
+	}
+}
+
+func binary64ComparisonRender(binary32 string) string {
+	return strings.NewReplacer(
+		"2139095040", "9218868437227405312",
+		"8388607", "4503599627370495",
+		"2147483647", "9223372036854775807",
+		" shr 31", " shr 63",
+	).Replace(binary32)
 }
 
 // Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local

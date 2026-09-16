@@ -490,3 +490,36 @@ func TestCheckerSpanAccess(t *testing.T) {
 		})
 	}
 }
+
+// Two spans the condition proves to have one length (`cmp wA, wB; b.ne`,
+// lenEqual): the slack guard over one span's length bounds the same lanes
+// of the other, for the element address's region as for the access
+// (Oak.Assembler.index_under_equal_len) — `len(a) == len(b) ? { … }` over
+// vector loads of both spans keeps one slack test.
+func TestCheckerLaneRegionUnderEqualLengths(t *testing.T) {
+	decl := "both: (a: []f32, b: []f32, i: u32) -> u32"
+	body := "  bind x0, w1 = a\n  bind x2, w3 = b\n  bind w4 = i\n  clobber x9, x10, x11, v0, v1\n  cmp w1, w3\n  b.ne trap\n  cmp w1, #4\n  b.lo trap\n  sub w9, w1, #4\n  cmp w4, w9\n  b.hi trap\n  add x10, x0, w4, uxtw #2\n  ldr q0, [x10]\n  add x11, x2, w4, uxtw #2\n  ldr q1, [x11]\n  mov w0, v1.s[1]\n  ret\ntrap:\n  brk #1"
+	// The same through copies of the lengths: the compare reads the
+	// copies (`w12`, `w13`), the slack test the primary — one value each.
+	copies := "  bind x0, w1 = a\n  bind x2, w3 = b\n  bind w4 = i\n  clobber x9, x10, x11, x12, x13, v0, v1\n  mov w12, w1\n  mov w13, w3\n  cmp w12, w13\n  b.ne trap\n  cmp w12, #4\n  b.lo trap\n  sub w9, w1, #4\n  cmp w4, w9\n  b.hi trap\n  add x10, x0, w4, uxtw #2\n  ldr q0, [x10]\n  add x11, x2, w4, uxtw #2\n  ldr q1, [x11]\n  mov w0, v1.s[1]\n  ret\ntrap:\n  brk #1"
+	for name, text := range map[string]string{"direct": body, "through copies": copies} {
+		unit, errs := ParseUnit("equal.oakasm", decl+" = {\n"+text+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, _ := parseSignature(decl)
+		if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+			t.Fatalf("%s: the second span's lanes under the first's slack guard and the length equality must pass: %v", name, findings)
+		}
+	}
+	// Without the equality the second span's lanes are unguarded.
+	unguarded := strings.Replace(body, "  cmp w1, w3\n  b.ne trap\n", "", 1)
+	unit, errs := ParseUnit("equal.oakasm", decl+" = {\n"+unguarded+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature(decl)
+	if findings := Check(unit.Functions[0], sig, nil); len(findings) == 0 {
+		t.Fatalf("without the length equality the second span's load must be refused")
+	}
+}

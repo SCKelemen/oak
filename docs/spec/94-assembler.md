@@ -452,6 +452,67 @@ order are exact, and gate operands refer strictly backward. Acceptance implies
 clause. Adding the final clause remains conditional on that evaluated
 assignment satisfying it.
 
+`Oak.CNFDenseAllocation` closes the next bounded snapshot seam. Its executable
+checker models the production validator's nonnegative `cnfBuilder` projection:
+the shared input/gate namespace is exactly dense and injective, gate outputs
+are ordered and backward-referencing, folded gate shapes are absent, and every
+gate has its exact unique-table key and output. Acceptance proves every
+in-range DIMACS variable has exactly one input-or-gate owner, the decoded gate
+sequence is well formed, and the existing Tseitin database theorem applies.
+`TestValidateCNFAllocationMatchesLean` renders real production snapshots and
+their Go decisions as kernel-checked Lean examples. This remains bounded
+correspondence, not a universal Go-memory/map refinement or a proof of signed
+projection, mutation history, clause emission, DIMACS, solving, LRAT, or
+compiler verdict authority.
+
+`Oak.CNFClauseTrace` extends the accepted allocation snapshot to the actual
+signed builder and emitted clause lists. Its checker requires exact gate,
+clause, and literal order, applies the builder-clause budget, rejects signed
+zero, and preserves repeated or complementary final edges. Acceptance proves
+that decoding the emitted list gives precisely the existing gate clauses plus
+the supplied final obligation, including their exact initial RUP database.
+`TestValidateCNFTraceMatchesLean` checks 72 fixed production decisions and
+replays 71 nonnegative-edge snapshots in the Lean kernel; the remaining
+negative-edge case must refuse projection. Shared builder/export corruptions
+are included, so agreement between those two lists alone cannot pass.
+These small fixtures do not exercise the 50-million-clause budget boundary.
+
+`Oak.CNFClauseCertificate` composes that checked emitted database with RUP
+acceptance. It proves the supplied final obligation is false under every
+evaluation of the checked gate trace and discharges `DirectEncoding`'s
+`cnf_complete` field. Word equality follows **conditional on an explicit
+result-to-root equality premise**. Universal Go/projection refinement, that
+source/root connection, DIMACS bytes, LRAT implementation refinement, and
+compiler verdict authority remain separate obligations.
+
+`Oak.CNFMemoWitness` proves the converse of the accepted gate-to-memo walk:
+every memo hit names an actual decoded gate with that exact key and output.
+`Oak.CNFReplayApply` models the native AND/OR/XOR replay's sorting, fold
+precedence, complement edges, memo lookup, and integer guards.
+`Oak.CNFReplayMemo` derives its Boolean memo-soundness condition from checked
+allocation and gate consistency. Standalone folds deliberately retain the
+production behavior of not rechecking edge allocation; their theorem proves
+Boolean meaning, not input provenance.
+
+`Oak.CNFReplayTerm` separately requires designated inputs to be actual input
+slots and proves gate evaluation preserves them even under interleaved
+allocation. Recursive replay therefore connects constants and pointwise
+AND/OR/XOR expressions to their original-input semantics, including folds and
+memo hits. `Oak.CNFReplayCertificate.replayed_words_equal` composes this with
+the exact singleton final clause and accepted RUP: the words packed from the
+supplied paired Boolean expressions are equal, without an assumed
+result-to-root equality or CNF-completeness premise.
+
+The production apply decisions and a small one-bit term/difference corpus are
+kernel-pinned by `TestNativeCNFReplayApplyMatchesLean` and
+`TestNativeCNFReplayTermMatchesLean`. This does not universally refine Go
+source names/bit bindings, word widths/adaptation, term-pointer memoization,
+reachable coverage, or the complete native admission policy. In particular,
+the model permits the empty mathematical difference, whereas the native
+audit rejects empty result widths. Source lowering, symbolic execution,
+DIMACS bytes, LRAT implementation refinement, and verdict authority remain
+separate seams.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and
@@ -913,12 +974,16 @@ For the conditional ordinary aligned path after that call, generated Sail Lean
 also proves the selected pre-`__WriteMemory` address/data arguments from an
 externally supplied translated 52-bit PA: the call address is its 56-bit zero
 extension; break data remains zero in either endian; make data is X2 in little
-endian and its exact eight-byte reversal in big endian. The official-source
-gate pins complete bodies for endian/alignment selection, translation/fault,
-exclusive and MTE checks, trickbox/counter routing, the direct size-eight call,
-and the selected no-device external-RAM wrapper. It does not prove that this
-route is reached or returns. Descriptor/PA provenance, translation correctness,
-successful ASL memory or external RAM effects, unique writes, tags/device
+endian and its exact eight-byte reversal in big endian. A further pure
+projection selects the pinned no-device external `write_ram` arguments
+`(56, 8, defaultRAM, ZeroExtend(PA), data)` and keeps `defaultRAM` explicit.
+The official-source gate pins complete bodies for endian/alignment selection,
+translation/fault, exclusive and MTE checks, trickbox/counter routing, the
+direct size-eight call, `__defaultRAM`'s width, and both no-device forwarding
+steps. It does not prove that this route or either call is reached or
+returns. Descriptor/PA/default-RAM provenance, translation correctness,
+successful ASL memory or external RAM effects, byte placement/atomicity,
+unique writes, tags/device
 behavior, CAT membership, completion, invalidation, publication, and context
 synchronization remain open. No Darwin/Mach-O object oracle or privileged
 Apple EL2 execution gate exists yet.
@@ -1036,6 +1101,19 @@ alignment before writing the field, with endpoint and near-`uint64` mutation
 tests. This is static encoding, relocation arithmetic, and decode/dispatch
 identity—not an architectural `PC`, `BranchTo`, target mapping/executability,
 source-CFG label correctness, BL/X30, conditional branches, or observation.
+
+Ordinary local `BL <label>` now has the matching call-class seam.
+`Oak.AArch64CallBranchEncoding` pins `BL_only_branch_imm`, proves its fixed
+bits and exact `imm26`, composes its packer with the Branch26 call relocation,
+and proves the decoded displacement reaches the modeled target throughout the
+aligned signed range. Generated Sail Lean selects `BranchType_DIRCALL`,
+recovers the exact sign-extended scaled offset, and rejects `B`; production
+tests pin the generated row, exact bytes, signed endpoints, overflow-safe
+local-label arithmetic, individual alignment, and the pinned official decoder
+route. This is static encoding, relocation arithmetic, and decode/dispatch
+identity only. It does not read architectural PC, write X30, execute
+`PostDecode`/`BranchTo`, establish target or source-label validity, prove
+object/link correctness, or observe a call.
 
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
@@ -4399,6 +4477,19 @@ proof of the direct-branch arithmetic and bits only. Function layout and
 symbol-address authority, ELF headers and sections, every other relocation,
 and the final image as a whole remain trusted.
 
+The executable writer's AArch64 `adrl21` pair is a second word-level slice.
+`Oak.AArch64AddressRelocation` specifies exact `ADRP Xd` plus unshifted
+`ADD Xd, Xd, #lo12` admission, the signed 21-bit page interval, immediate
+placement, fixed/register-field preservation, and reconstruction of the exact
+64-bit target. The production helper avoids signed narrowing, requires the
+complete eight-byte pair to fit the address space, validates one non-SP
+destination/base register, independently decodes the candidate, and writes
+neither word when that pair refuses. Boundary decisions are rendered back to
+Lean for kernel checking. This proves pair arithmetic and bit patching only:
+symbol and section layout, relocation records, file formats, loading, register
+execution, global transactional linking, and the complete image remain
+trusted.
+
 **Constant top-level bindings.** A body's read of a constant integer
 top-level binding (never assigned or addressed, a constant initializer;
 `90-backend.md` §8a's `static const`) reaches the native generator and the
@@ -4962,6 +5053,35 @@ shifts, and the remainder loop of a map this rewrite made (the loop
 after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
 elements (`benchmarks/native/README.md`, "Map vectorization").
+
+**Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
+`spec/lean/Oak/Fold.lean`, the `vectorize-folds` candidate).** A float
+reduction whose element expression is lane-wise over span parameters of
+one length — `total = total + a[i] * b[i]`, the dot product — computes one
+vector of element values a trip (the map vectorization's reading of the
+expression: `simd.load` per span, the lane-wise operation per operator,
+invariant scalars and constants splatted before the loop) and adds the
+vector's lanes to the accumulator one at a time, in element order
+(`simd.extract`), under the slack guard, the remainder loop as written.
+Nothing is reassociated: the accumulator meets the products in the order
+the scalar loop did and rounds the same, which is why a float reduction
+vectorizes here where `vectorize-reductions`' strided accumulators take
+integers only. The license is `Oak.Fold.blocked_eq` — the blocked fold
+equals the sequential fold for any lane function and any accumulation —
+and the verifier proves the assembly against the rewritten body, reading
+the lane moves (`mov sD, vN.s[k]`) as the lanes. A bare element
+(`acc = acc + v[i]`) saves no work as a vector and is left to the scalar
+loop. `bench_dot`'s selected loop is sixteen instructions for four
+elements against the scalar loop's seven for one: two vector loads, one
+`fmul.4s`, four lane moves and four `fadd`, the index step, and one slack
+test — the second span's lanes stand under the first span's test, the
+loop sitting under `len(a) == len(b)`: the lowering carries a
+conditional's length equalities into its vector guards (`equalLens`), and
+the checker reads a bound against a register proven equal to a span's
+length as a bound against the length (§7, `lenEqual`, resolved through
+any register holding the same length — the compare reads a copy where a
+slack fact names the primary), for the proven minimum, the element
+region, and the access alike.
 
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
@@ -6524,6 +6644,30 @@ gigabytes in `pruneWritesUnder`/`pruneUnderFacts` (the unit verified in
 5.6 s a candidate on the morning's binary), and a full build's optimizer
 materialization holds ten more at its end on either binary; the last
 complete tally stands at 536 proven, 205 evidence, 216 trusted.
+
+**Trap guards get their own budget; pruning in one pass (2026-09-16).**
+The OS pilot filed that `reset` — two nested counted loops over module
+constants (24 pages of 2048 entries), a guarded store each iteration —
+regressed from proven at its pin (949ff50c) to "more paths than the
+verifier's budget" since 3ba8b5ae. The cause was the path budget
+counting every trap guard as a path (the set_clear fix of the same
+week): a guard forks nothing, but the unrolled iterations meet one each.
+Guards now draw on `guardBudget`, sixteen paths' worth, since a counted
+loop past `countedTripLimit` trips is inducted rather than unrolled and
+the loops that do unroll meet at most 64 guards a level; `reset` proves
+on both walkers again (stage2 and addr_space: three nested loops
+coupled inductively under `i < 24`, `j < 2048`), and
+`TestE2ENativeNestedZeroingLoopProven` holds the shape at the scale
+that unrolls (four pages of sixty-four). The optimizer's rotated-loop
+candidates of `reset` still exceed the guard budget and are declined,
+which keeps the plain form. Alongside, `pruneWritesUnder` prunes a
+log's guards in one pass with one canonical memo (a pass per guard
+canonicalized the guards' shared subgraph once per write):
+`ap_certificate_after_proven` fits in 2.4 GB where it exceeded ten
+gigabytes; with the significant-bits count memoized on the term (a
+walk per comparison over shared operands was quadratic) and one visited
+set across the parameter walks of a pruning pass and an implication,
+it takes 4.6 s a candidate, under the 5.6 s of the morning's binary.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
@@ -7429,6 +7573,18 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**The coupling search's work meter (2026-09-16).** The search over
+pairings is bounded by the pairings it visits (`couplingSearchBudget`)
+and each valuation refutation by the term visits of its pass
+(`witnessVisitBudget`), but a body whose obligations are large DAGs — a
+callee's reach condition conjoined with the machine's path to the call,
+a summarized call — spent hours in a thousand such passes
+(`TestE2ENativeLiteralsVerdicts` ran past a ninety-minute suite). One
+search now charges every refutation's visits to a shared meter
+(`couplingWorkBudget`, sixteen passes' worth); a spent meter ends the
+search as an exhausted visit budget does, "the coupling search exceeded
+its budget", an evidence verdict rather than a proof that never comes.
 
 **Reaching a rotated loop (2026-09-16).** The coupling compares the two
 sides' conditions for reaching each loop before it compares their

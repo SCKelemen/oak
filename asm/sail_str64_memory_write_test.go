@@ -17,9 +17,80 @@ type pinnedSailFunction struct {
 	bodySHA256 string
 }
 
+// stripSailComments removes lexically inactive comment text while preserving
+// byte offsets and newlines. Exact-source gates must never discover a
+// declaration or brace merely because its spelling survives inside a comment.
+func stripSailComments(source string) (string, error) {
+	code := []byte(source)
+	inString := false
+	inLineComment := false
+	blockDepth := 0
+	for i := 0; i < len(code); i++ {
+		if inLineComment {
+			if code[i] == '\n' || code[i] == '\r' {
+				inLineComment = false
+			} else {
+				code[i] = ' '
+			}
+			continue
+		}
+		if blockDepth > 0 {
+			if i+1 < len(code) && code[i] == '/' && code[i+1] == '*' {
+				code[i], code[i+1] = ' ', ' '
+				blockDepth++
+				i++
+				continue
+			}
+			if i+1 < len(code) && code[i] == '*' && code[i+1] == '/' {
+				code[i], code[i+1] = ' ', ' '
+				blockDepth--
+				i++
+				continue
+			}
+			if code[i] != '\n' && code[i] != '\r' {
+				code[i] = ' '
+			}
+			continue
+		}
+		if inString {
+			if code[i] == '\\' && i+1 < len(code) {
+				i++
+				continue
+			}
+			if code[i] == '"' {
+				inString = false
+			}
+			continue
+		}
+		if code[i] == '"' {
+			inString = true
+			continue
+		}
+		if i+1 < len(code) && code[i] == '/' && code[i+1] == '/' {
+			code[i], code[i+1] = ' ', ' '
+			inLineComment = true
+			i++
+			continue
+		}
+		if i+1 < len(code) && code[i] == '/' && code[i+1] == '*' {
+			code[i], code[i+1] = ' ', ' '
+			blockDepth = 1
+			i++
+		}
+	}
+	if blockDepth != 0 {
+		return "", fmt.Errorf("unterminated Sail block comment")
+	}
+	return string(code), nil
+}
+
 func exactSailFunctionStart(source, name string) (int, error) {
+	active, err := stripSailComments(source)
+	if err != nil {
+		return -1, err
+	}
 	pattern := regexp.MustCompile(`(?m)^function[ \t]+` + regexp.QuoteMeta(name) + `(?:[ \t\r\n]|\()`)
-	starts := pattern.FindAllStringIndex(source, -1)
+	starts := pattern.FindAllStringIndex(active, -1)
 	if len(starts) != 1 {
 		return -1, fmt.Errorf("official %s function header count = %d, want 1", name, len(starts))
 	}
@@ -27,35 +98,43 @@ func exactSailFunctionStart(source, name string) (int, error) {
 }
 
 func sailDeclarationThroughOpen(source, name string) (string, error) {
+	active, err := stripSailComments(source)
+	if err != nil {
+		return "", err
+	}
 	valMarker := "val " + name + " :"
-	if count := strings.Count(source, valMarker); count != 1 {
+	if count := strings.Count(active, valMarker); count != 1 {
 		return "", fmt.Errorf("official %s val declaration count = %d, want 1", name, count)
 	}
-	start := strings.Index(source, valMarker)
-	functionStart, err := exactSailFunctionStart(source, name)
+	start := strings.Index(active, valMarker)
+	functionStart, err := exactSailFunctionStart(active, name)
 	if err != nil {
 		return "", err
 	}
 	if functionStart < start {
 		return "", fmt.Errorf("official %s function header precedes its val declaration", name)
 	}
-	open := strings.IndexByte(source[functionStart:], '{')
+	open := strings.IndexByte(active[functionStart:], '{')
 	if open < 0 {
 		return "", fmt.Errorf("official %s function header has no opening brace", name)
 	}
-	return compactSail(source[start : functionStart+open+1]), nil
+	return compactSail(active[start : functionStart+open+1]), nil
 }
 
 func exactSailFunctionBodyAndClose(source, name string) (string, int, error) {
-	functionStart, err := exactSailFunctionStart(source, name)
+	active, err := stripSailComments(source)
 	if err != nil {
 		return "", 0, err
 	}
-	open := strings.IndexByte(source[functionStart:], '{')
+	functionStart, err := exactSailFunctionStart(active, name)
+	if err != nil {
+		return "", 0, err
+	}
+	open := strings.IndexByte(active[functionStart:], '{')
 	if open < 0 {
 		return "", 0, fmt.Errorf("official %s function header has no opening brace", name)
 	}
-	return sailBalancedBody(source, functionStart+open)
+	return sailBalancedBody(active, functionStart+open)
 }
 
 func exactSailFunctionBody(source, name string) (string, error) {
@@ -97,13 +176,17 @@ func requireCompactSailSlice(t *testing.T, source, description, want string) {
 
 func requireExactSailStruct(t *testing.T, source, name, wantBody string) {
 	t.Helper()
+	active, err := stripSailComments(source)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pattern := regexp.MustCompile(`(?m)^struct[ \t]+` + regexp.QuoteMeta(name) + `[ \t]*=[ \t]*\{`)
-	starts := pattern.FindAllStringIndex(source, -1)
+	starts := pattern.FindAllStringIndex(active, -1)
 	if len(starts) != 1 {
 		t.Fatalf("official %s struct declaration count = %d, want 1", name, len(starts))
 	}
-	open := strings.IndexByte(source[starts[0][0]:starts[0][1]], '{')
-	body, _, err := sailBalancedBody(source, starts[0][0]+open)
+	open := strings.IndexByte(active[starts[0][0]:starts[0][1]], '{')
+	body, _, err := sailBalancedBody(active, starts[0][0]+open)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,13 +196,43 @@ func requireExactSailStruct(t *testing.T, source, name, wantBody string) {
 	}
 }
 
-func requireImmediateSailOverload(t *testing.T, source, setter, overload, function string) {
+func exactSailRegister(source, name string) (string, error) {
+	active, err := stripSailComments(source)
+	if err != nil {
+		return "", err
+	}
+	pattern := regexp.MustCompile(`(?m)^register[ \t]+` + regexp.QuoteMeta(name) +
+		`[ \t]*:[^\r\n]*$`)
+	lines := pattern.FindAllString(active, -1)
+	if len(lines) != 1 {
+		return "", fmt.Errorf("official %s register declaration count = %d, want 1", name, len(lines))
+	}
+	return compactSail(lines[0]), nil
+}
+
+func requireExactSailRegister(t *testing.T, source, name, want string) {
 	t.Helper()
-	_, close, err := exactSailFunctionBodyAndClose(source, setter)
+	got, err := exactSailRegister(source, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tail := strings.TrimLeft(source[close+1:], " \t\r\n")
+	if got != want {
+		t.Fatalf("official %s register declaration changed:\n--- have\n%s\n--- want\n%s",
+			name, got, want)
+	}
+}
+
+func requireImmediateSailOverload(t *testing.T, source, setter, overload, function string) {
+	t.Helper()
+	active, err := stripSailComments(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, close, err := exactSailFunctionBodyAndClose(active, setter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail := strings.TrimLeft(active[close+1:], " \t\r\n")
 	lineEnd := strings.IndexAny(tail, "\r\n")
 	if lineEnd < 0 {
 		lineEnd = len(tail)
@@ -131,19 +244,31 @@ func requireImmediateSailOverload(t *testing.T, source, setter, overload, functi
 	}
 }
 
-func requireExactSailValParagraph(t *testing.T, source, name, want string) {
-	t.Helper()
+func exactSailValParagraph(source, name string) (string, error) {
+	active, err := stripSailComments(source)
+	if err != nil {
+		return "", err
+	}
 	pattern := regexp.MustCompile(`(?m)^val[ \t]+` + regexp.QuoteMeta(name) + `[ \t]*(?::|=)`)
-	starts := pattern.FindAllStringIndex(source, -1)
+	starts := pattern.FindAllStringIndex(active, -1)
 	if len(starts) != 1 {
-		t.Fatalf("official %s val declaration count = %d, want 1", name, len(starts))
+		return "", fmt.Errorf("official %s val declaration count = %d, want 1", name, len(starts))
 	}
 	start := starts[0][0]
-	end := strings.Index(source[start:], "\n\n")
+	end := strings.Index(active[start:], "\n\n")
 	if end < 0 {
-		t.Fatalf("official %s val declaration has no paragraph terminator", name)
+		return "", fmt.Errorf("official %s val declaration has no paragraph terminator", name)
 	}
-	if got := compactSail(source[start : start+end]); got != want {
+	return compactSail(active[start : start+end]), nil
+}
+
+func requireExactSailValParagraph(t *testing.T, source, name, want string) {
+	t.Helper()
+	got, err := exactSailValParagraph(source, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
 		t.Fatalf("official %s val declaration changed:\n--- have\n%s\n--- want\n%s",
 			name, got, want)
 	}
@@ -151,8 +276,12 @@ func requireExactSailValParagraph(t *testing.T, source, name, want string) {
 
 func requireExactSailExpressionFunction(t *testing.T, source, name, want string) {
 	t.Helper()
+	active, err := stripSailComments(source)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pattern := regexp.MustCompile(`(?m)^function[ \t]+` + regexp.QuoteMeta(name) + `[^\r\n]*$`)
-	lines := pattern.FindAllString(source, -1)
+	lines := pattern.FindAllString(active, -1)
 	if len(lines) != 1 {
 		t.Fatalf("official %s expression-function count = %d, want 1", name, len(lines))
 	}
@@ -162,11 +291,45 @@ func requireExactSailExpressionFunction(t *testing.T, source, name, want string)
 	}
 }
 
+func TestSailSourceHelpersRejectCommentedDeclarations(t *testing.T) {
+	commented := `/*
+register __defaultRAM : bits(56)
+
+val ___WriteRAM = "write_ram" : forall 'n 'm.
+  (atom('m), atom('n), bits('m), bits('m), bits(8 * 'n)) -> unit effect {wmem}
+
+function __WriteRAM(addr_length, bytes, hex_ram, addr, data) =
+{
+  ___WriteRAM(addr_length, bytes, hex_ram, addr, data)
+}
+*/`
+	if _, err := exactSailRegister(commented, "__defaultRAM"); err == nil {
+		t.Fatal("commented __defaultRAM register was treated as active Sail")
+	}
+	if _, err := exactSailValParagraph(commented, "___WriteRAM"); err == nil {
+		t.Fatal("commented ___WriteRAM external declaration was treated as active Sail")
+	}
+	if _, err := exactSailFunctionStart(commented, "__WriteRAM"); err == nil {
+		t.Fatal("commented __WriteRAM wrapper was treated as active Sail")
+	}
+	if _, err := stripSailComments("/* unterminated"); err == nil {
+		t.Fatal("unterminated Sail block comment was accepted")
+	}
+	preserved, err := stripSailComments(`val external = "https://host/*not-comment*/" // comment`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preserved, `"https://host/*not-comment*/"`) || strings.Contains(preserved, "// comment") {
+		t.Fatalf("Sail string/comment lexical handling changed: %q", preserved)
+	}
+}
+
 // TestSailArmSTR64WriteMemoryArgumentsSource pins the conditional route from
 // the already-audited STR64 Mem request to the arguments of the ordinary
-// aligned size-eight __WriteMemory call. It does not assert that the route is
-// reached, that __WriteMemory returns, that RAM changes, or that a CAT event is
-// created.
+// aligned size-eight __WriteMemory call and then to the exact arguments of the
+// no-device model's external write_ram boundary. It does not assert that the
+// route or calls occur, that either wrapper returns, that RAM changes, or that
+// a CAT event is created.
 func TestSailArmSTR64WriteMemoryArgumentsSource(t *testing.T) {
 	modelDir := filepath.Dir(sailArmModel)
 	readModel := func(name string) string {
@@ -227,11 +390,17 @@ func TestSailArmSTR64WriteMemoryArgumentsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeRAMBody, err := exactSailFunctionBody(noDevices, "__WriteRAM")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	requireExactSailStruct(t, aarchTypes, "FullAddress",
 		"address:bits(52),NS:bits(1)")
 	requireExactSailStruct(t, aarchTypes, "AddressDescriptor",
 		"fault:FaultRecord,memattrs:MemoryAttributes,paddress:FullAddress,vaddress:bits(64)")
+	requireExactSailRegister(t, aarchMem, "__defaultRAM",
+		"register__defaultRAM:bits(56)")
 	requireImmediateSailOverload(t, aarch64, "aset_Mem", "Mem", "aset_Mem")
 	requireImmediateSailOverload(t, aarch64, "AArch64_aset_MemSingle", "MemSingle",
 		"AArch64_aset_MemSingle")
@@ -290,6 +459,17 @@ func TestSailArmSTR64WriteMemoryArgumentsSource(t *testing.T) {
 		"__WriteMemory(size,ZeroExtend(paddress),value_name)")
 	requireCompactSailSlice(t, writeMemoryBody, "RAM-width write call",
 		"__WriteRAM(56,N,__defaultRAM,address,val_name)")
+	wantWriteMemoryBody := "__WriteRAM(56,N,__defaultRAM,address,val_name);" +
+		"__TraceMemoryWrite(N,address,val_name);return()"
+	if got := compactSail(writeMemoryBody); got != wantWriteMemoryBody {
+		t.Fatalf("official __WriteMemory wrapper changed:\n--- have\n%s\n--- want\n%s",
+			got, wantWriteMemoryBody)
+	}
+	wantWriteRAMBody := "___WriteRAM(addr_length,bytes,hex_ram,addr,data)"
+	if got := compactSail(writeRAMBody); got != wantWriteRAMBody {
+		t.Fatalf("official __WriteRAM forwarding wrapper changed:\n--- have\n%s\n--- want\n%s",
+			got, wantWriteRAMBody)
+	}
 
 	projectionBytes, err := os.ReadFile(filepath.Join("..", "spec", "sail", "arm_primitives.sail"))
 	if err != nil {
@@ -343,5 +523,29 @@ func TestSailArmSTR64WriteMemoryArgumentsSource(t *testing.T) {
 	if got := compactSail(argumentsProjection); got != wantArgumentsProjection {
 		t.Fatalf("local __WriteMemory argument projection changed:\n--- have\n%s\n--- want\n%s",
 			got, wantArgumentsProjection)
+	}
+	writeRAMArgumentsHeader, err := sailDeclarationThroughOpen(projection,
+		"str64_no_device_write_ram_call_arguments_pure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWriteRAMArgumentsHeader := "valstr64_no_device_write_ram_call_arguments_pure:" +
+		"(bits(56),bits(56),bits(64))->" +
+		"(int,int,bits(56),bits(56),bits(64))" +
+		"functionstr64_no_device_write_ram_call_arguments_pure" +
+		"(default_ram,address,data)={"
+	if writeRAMArgumentsHeader != wantWriteRAMArgumentsHeader {
+		t.Fatalf("local write_ram argument projection signature changed:\n--- have\n%s\n--- want\n%s",
+			writeRAMArgumentsHeader, wantWriteRAMArgumentsHeader)
+	}
+	writeRAMArgumentsProjection, err := exactSailFunctionBody(projection,
+		"str64_no_device_write_ram_call_arguments_pure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWriteRAMArgumentsProjection := "(56,8,default_ram,address,data)"
+	if got := compactSail(writeRAMArgumentsProjection); got != wantWriteRAMArgumentsProjection {
+		t.Fatalf("local write_ram argument projection changed:\n--- have\n%s\n--- want\n%s",
+			got, wantWriteRAMArgumentsProjection)
 	}
 }

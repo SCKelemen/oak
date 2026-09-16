@@ -123,7 +123,7 @@ func TestSailArmDirectBDispatchSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, fragment := range []string{
-		"inductive DirectBranchImmediateExecutionTarget where | DirectBranchImmediateExecutionTarget_DIR",
+		"inductive DirectBranchImmediateExecutionTarget where | DirectBranchImmediateExecutionTarget_DIR | DirectBranchImmediateExecutionTarget_DIRCALL",
 		"structure OrdinaryBImmediateDecode where",
 	} {
 		if count := strings.Count(string(defsBytes), fragment); count != 1 {
@@ -139,8 +139,7 @@ func TestSailArmDirectBDispatchSource(t *testing.T) {
 		"def branch26_offset_pure (imm26 : (BitVec 26)) : (BitVec 64) :=",
 		"def decode64_ordinary_b_immediate_pure (op_code : (BitVec 32)) : OrdinaryBImmediateDecode :=",
 		"let encoding_valid : Bool := ((op_code &&& 0xFC000000#32) == 0x14000000#32)",
-		"target := DirectBranchImmediateExecutionTarget_DIR",
-		"offset := (branch26_offset_pure imm26)",
+		"target := DirectBranchImmediateExecutionTarget_DIR\n    imm26 := imm26\n    op := op\n    offset := (branch26_offset_pure imm26)",
 	} {
 		if count := strings.Count(string(leanBytes), fragment); count != 1 {
 			t.Fatalf("generated %s contains %q %d times, want once", leanPath, fragment, count)

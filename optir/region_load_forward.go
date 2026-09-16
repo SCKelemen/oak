@@ -23,11 +23,13 @@ const (
 // load whose checked source identity was moved to the new operation.
 type RegionLoadInsertion struct {
 	Site           OperationSite
+	Predecessor    BlockID
 	Target         BlockID
 	Region         RegionID
 	Memory         MemoryVersionID
 	Result         ValueID
 	TemplateAccess MemoryAccessID
+	Split          bool
 }
 
 // RegionLoadReplacement identifies one removed closed region load and the SSA
@@ -70,9 +72,12 @@ func (report RegionLoadForwardingReport) Changes() int {
 // SSA block parameter and supplies each available value on its exact edge, so
 // it covers closed joins and loop-carried values. At most one unavailable
 // entry-memory input may be materialized by moving the removed load's checked
-// identity to a real predecessor which branches unconditionally to the phi.
-// Conceptual function-entry inputs and critical edges remain unavailable. No
-// load is speculated, and no alias or address fact is inferred.
+// identity to a real predecessor. An unconditional edge receives it directly;
+// one arm of a conditional is split into a dedicated block shared by all
+// promoted regions on that edge. Every phi input follows the final edge,
+// including values that were already available before splitting. Conceptual
+// function-entry inputs and ambiguous edges remain unavailable. No load is
+// speculated, and no alias or address fact is inferred.
 func ForwardRegionLoads(
 	cfg CFG,
 	metadata RegionMemoryMetadata,
@@ -185,12 +190,25 @@ type regionLoadPhiIncoming struct {
 
 type regionLoadInsertionPlan struct {
 	predecessor    BlockID
+	block          BlockID
 	target         BlockID
 	region         RegionID
 	memory         MemoryVersionID
 	value          Value
 	operation      Operation
 	templateAccess MemoryAccessID
+	edgeArguments  []ValueID
+	split          bool
+}
+
+type regionLoadSplitEdge struct {
+	predecessor BlockID
+	target      BlockID
+}
+
+type regionLoadEdgeMaterialization struct {
+	arguments []ValueID
+	split     bool
 }
 
 func forwardRegionLoads(
@@ -208,6 +226,7 @@ func forwardRegionLoads(
 	}
 	dominators := computeDominators(cfg.Entry, reachable, predecessors)
 	nextValue := nextRegionLoadValueID(cfg)
+	nextBlock := nextRegionLoadBlockID(cfg)
 
 	accessesBySite := make(map[OperationSite][]MemoryAccess)
 	accessesByID := make(map[MemoryAccessID]MemoryAccess, len(memorySSA.Accesses))
@@ -238,6 +257,7 @@ func forwardRegionLoads(
 
 	available := map[regionLoadKey][]availableRegionLoad{}
 	phiPlans := map[regionLoadKey]*regionLoadPhiPlan{}
+	splitEdges := map[regionLoadSplitEdge]BlockID{}
 	var plannedPhis []*regionLoadPhiPlan
 	replacements := map[ValueID]ValueID{}
 	removed := map[OperationSite]bool{}
@@ -270,7 +290,8 @@ func forwardRegionLoads(
 				if plan == nil {
 					planned, planErr := planRegionLoadPhi(
 						access.Input, access.Region, result, operation, access.ID, current, blocks, metadata, versions,
-						accessesByID, definitions, dominators, edgeLoads, replacements, &nextValue,
+						accessesByID, definitions, dominators, edgeLoads, replacements,
+						splitEdges, &nextValue, &nextBlock,
 					)
 					if planErr != nil {
 						return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, planErr
@@ -305,6 +326,31 @@ func forwardRegionLoads(
 	for index := range result.Blocks {
 		resultBlocks[result.Blocks[index].ID] = &result.Blocks[index]
 	}
+	var splitBlocks []Block
+	createdSplits := map[BlockID]bool{}
+	for _, plan := range plannedPhis {
+		insertion := plan.insertion
+		if insertion == nil || !insertion.split || createdSplits[insertion.block] {
+			continue
+		}
+		predecessor := resultBlocks[insertion.predecessor]
+		if predecessor == nil || redirectRegionLoadEdge(&predecessor.Terminator, insertion.target, insertion.block) != 1 {
+			return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, fmt.Errorf("optir: region load forwarding cannot split edge %d -> %d", insertion.predecessor, insertion.target)
+		}
+		splitBlocks = append(splitBlocks, Block{
+			ID: insertion.block,
+			Terminator: Terminator{
+				Kind: TerminatorBranch,
+				True: Edge{Target: insertion.target, Arguments: append([]ValueID(nil), insertion.edgeArguments...)},
+			},
+		})
+		createdSplits[insertion.block] = true
+	}
+	result.Blocks = append(result.Blocks, splitBlocks...)
+	resultBlocks = make(map[BlockID]*Block, len(result.Blocks))
+	for index := range result.Blocks {
+		resultBlocks[result.Blocks[index].ID] = &result.Blocks[index]
+	}
 	insertionsByBlock := map[BlockID][]*regionLoadInsertionPlan{}
 	for _, plan := range plannedPhis {
 		block := resultBlocks[plan.block]
@@ -313,14 +359,20 @@ func forwardRegionLoads(
 		}
 		block.Parameters = append(block.Parameters, plan.parameter)
 		for _, incoming := range plan.incoming {
-			predecessor := resultBlocks[incoming.predecessor]
+			// Plans retain original edge identities until every region has been
+			// considered: a later plan may split an earlier phi's incoming edge.
+			predecessorID := incoming.predecessor
+			if split, exists := splitEdges[regionLoadSplitEdge{predecessor: predecessorID, target: plan.block}]; exists {
+				predecessorID = split
+			}
+			predecessor := resultBlocks[predecessorID]
 			value := resolveReplacement(incoming.value, replacements)
 			if predecessor == nil || value == 0 || appendRegionLoadEdgeArgument(&predecessor.Terminator, plan.block, value) == 0 {
 				return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, fmt.Errorf("optir: region load forwarding phi has no edge from block %d to %d", incoming.predecessor, plan.block)
 			}
 		}
 		if plan.insertion != nil {
-			insertionsByBlock[plan.insertion.predecessor] = append(insertionsByBlock[plan.insertion.predecessor], plan.insertion)
+			insertionsByBlock[plan.insertion.block] = append(insertionsByBlock[plan.insertion.block], plan.insertion)
 		}
 	}
 	siteRemap := make(map[OperationSite]OperationSite, len(metadata.operations))
@@ -345,8 +397,9 @@ func forwardRegionLoads(
 				Site: site, Accesses: []MemoryAccessSpec{{Region: insertion.region, Kind: MemoryRead}},
 			})
 			report.Insertions = append(report.Insertions, RegionLoadInsertion{
-				Site: site, Target: insertion.target, Region: insertion.region, Memory: insertion.memory,
-				Result: insertion.value.ID, TemplateAccess: insertion.templateAccess,
+				Site: site, Predecessor: insertion.predecessor, Target: insertion.target,
+				Region: insertion.region, Memory: insertion.memory, Result: insertion.value.ID,
+				TemplateAccess: insertion.templateAccess, Split: insertion.split,
 			})
 		}
 		block.Operations = operations
@@ -491,7 +544,9 @@ func planRegionLoadPhi(
 	dominators map[BlockID]map[BlockID]bool,
 	edgeLoads map[regionLoadKey][]availableRegionLoad,
 	replacements map[ValueID]ValueID,
+	splitEdges map[regionLoadSplitEdge]BlockID,
 	nextValue *ValueID,
+	nextBlock *BlockID,
 ) (*regionLoadPhiPlan, error) {
 	version, exists := versions[memory]
 	if !exists || version.Kind != MemoryVersionPhi || version.Region != region || len(version.Incoming) < 2 ||
@@ -501,6 +556,7 @@ func planRegionLoadPhi(
 	plan := &regionLoadPhiPlan{block: version.Block}
 	seen := map[BlockID]bool{}
 	missing := -1
+	var missingEdge regionLoadEdgeMaterialization
 	for _, incoming := range version.Incoming {
 		if incoming.Entry || seen[incoming.Predecessor] {
 			return nil, nil
@@ -522,11 +578,12 @@ func planRegionLoadPhi(
 		}
 		if value == 0 {
 			incomingVersion, exists := versions[incoming.Version]
-			if missing >= 0 || !exists || incomingVersion.Kind != MemoryVersionEntry ||
-				!canMaterializeRegionLoadOnEdge(predecessor.Terminator, version.Block) {
+			edge, canMaterialize := planRegionLoadEdgeMaterialization(predecessor.Terminator, version.Block)
+			if missing >= 0 || !exists || incomingVersion.Kind != MemoryVersionEntry || !canMaterialize {
 				return nil, nil
 			}
 			missing = len(plan.incoming)
+			missingEdge = edge
 		}
 		seen[incoming.Predecessor] = true
 		plan.incoming = append(plan.incoming, regionLoadPhiIncoming{predecessor: incoming.Predecessor, value: value})
@@ -544,6 +601,25 @@ func planRegionLoadPhi(
 		return value, true
 	}
 	if missing >= 0 {
+		predecessor := plan.incoming[missing].predecessor
+		insertionBlock := predecessor
+		if missingEdge.split {
+			edge := regionLoadSplitEdge{predecessor: predecessor, target: version.Block}
+			if split, exists := splitEdges[edge]; exists {
+				insertionBlock = split
+			} else {
+				if *nextBlock == 0 {
+					return nil, fmt.Errorf("optir: region load forwarding block identity overflow")
+				}
+				insertionBlock = *nextBlock
+				if insertionBlock == ^BlockID(0) {
+					*nextBlock = 0
+				} else {
+					*nextBlock++
+				}
+				splitEdges[edge] = insertionBlock
+			}
+		}
 		valueID, ok := allocate()
 		if !ok {
 			return nil, fmt.Errorf("optir: region load forwarding value identity overflow")
@@ -553,7 +629,8 @@ func planRegionLoadPhi(
 		value.Name = result.Name + ".memory-edge"
 		plan.incoming[missing].value = valueID
 		plan.insertion = &regionLoadInsertionPlan{
-			predecessor: plan.incoming[missing].predecessor,
+			predecessor: predecessor,
+			block:       insertionBlock,
 			target:      version.Block,
 			region:      region,
 			memory:      version.Incoming[missing].Version,
@@ -563,8 +640,14 @@ func planRegionLoadPhi(
 				Source: template.Source, MemoryAccessID: template.MemoryAccessID,
 			},
 			templateAccess: templateAccess,
+			edgeArguments:  append([]ValueID(nil), missingEdge.arguments...),
+			split:          missingEdge.split,
 		}
-		definitions[valueID] = definition{typeOf: value.Type, block: plan.insertion.predecessor, index: len(blocks[plan.insertion.predecessor].Operations)}
+		definitionIndex := 0
+		if !missingEdge.split {
+			definitionIndex = len(blocks[predecessor].Operations)
+		}
+		definitions[valueID] = definition{typeOf: value.Type, block: insertionBlock, index: definitionIndex}
 	}
 	parameterID, ok := allocate()
 	if !ok {
@@ -576,8 +659,24 @@ func planRegionLoadPhi(
 	return plan, nil
 }
 
-func canMaterializeRegionLoadOnEdge(terminator Terminator, target BlockID) bool {
-	return terminator.Kind == TerminatorBranch && terminator.True.Target == target
+func planRegionLoadEdgeMaterialization(terminator Terminator, target BlockID) (regionLoadEdgeMaterialization, bool) {
+	switch terminator.Kind {
+	case TerminatorBranch:
+		if terminator.True.Target == target {
+			return regionLoadEdgeMaterialization{}, true
+		}
+	case TerminatorCondBranch:
+		trueMatch := terminator.True.Target == target
+		falseMatch := terminator.False.Target == target
+		if trueMatch == falseMatch {
+			return regionLoadEdgeMaterialization{}, false
+		}
+		if trueMatch {
+			return regionLoadEdgeMaterialization{arguments: append([]ValueID(nil), terminator.True.Arguments...), split: true}, true
+		}
+		return regionLoadEdgeMaterialization{arguments: append([]ValueID(nil), terminator.False.Arguments...), split: true}, true
+	}
+	return regionLoadEdgeMaterialization{}, false
 }
 
 func availableRegionValueAt(
@@ -625,6 +724,19 @@ func nextRegionLoadValueID(cfg CFG) ValueID {
 	return maximum + 1
 }
 
+func nextRegionLoadBlockID(cfg CFG) BlockID {
+	maximum := BlockID(0)
+	for _, block := range cfg.Blocks {
+		if block.ID > maximum {
+			maximum = block.ID
+		}
+	}
+	if maximum == ^BlockID(0) {
+		return 0
+	}
+	return maximum + 1
+}
+
 func countRegionLoadEdges(terminator Terminator, target BlockID) int {
 	count := 0
 	if terminator.True.Target == target && (terminator.Kind == TerminatorBranch || terminator.Kind == TerminatorCondBranch) {
@@ -644,6 +756,22 @@ func appendRegionLoadEdgeArgument(terminator *Terminator, target BlockID, value 
 	}
 	if terminator.False.Target == target && terminator.Kind == TerminatorCondBranch {
 		terminator.False.Arguments = append(terminator.False.Arguments, value)
+		count++
+	}
+	return count
+}
+
+func redirectRegionLoadEdge(terminator *Terminator, target, split BlockID) int {
+	if terminator.Kind != TerminatorCondBranch {
+		return 0
+	}
+	count := 0
+	if terminator.True.Target == target {
+		terminator.True = Edge{Target: split}
+		count++
+	}
+	if terminator.False.Target == target {
+		terminator.False = Edge{Target: split}
 		count++
 	}
 	return count
@@ -670,7 +798,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v8")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v10")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)
@@ -691,11 +819,13 @@ func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) st
 func fingerprintRegionLoadInsertion(digest hash.Hash, insertion RegionLoadInsertion) {
 	fingerprintUint64(digest, uint64(insertion.Site.Block))
 	fingerprintUint64(digest, uint64(insertion.Site.Index))
+	fingerprintUint64(digest, uint64(insertion.Predecessor))
 	fingerprintUint64(digest, uint64(insertion.Target))
 	fingerprintString(digest, string(insertion.Region))
 	fingerprintUint64(digest, uint64(insertion.Memory))
 	fingerprintUint64(digest, uint64(insertion.Result))
 	fingerprintUint64(digest, uint64(insertion.TemplateAccess))
+	fingerprintBool(digest, insertion.Split)
 }
 
 func fingerprintRegionLoadReplacement(digest hash.Hash, replacement RegionLoadReplacement) {

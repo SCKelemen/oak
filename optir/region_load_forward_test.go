@@ -375,6 +375,26 @@ func TestRegionLoadForwardingMaterializedEdgeRefusesSecondValueIDOverflow(t *tes
 	}
 }
 
+func TestRegionLoadForwardingCriticalEdgeRefusesBlockIDOverflow(t *testing.T) {
+	join := ^BlockID(0)
+	cfg := CFG{
+		Name: "join_block_overflow", Entry: 0, Results: []Type{"u32"},
+		Blocks: []Block{
+			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: join}}},
+			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: join}}},
+			{ID: join, Operations: []Operation{regionLoadOperation(3, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{3}}},
+		},
+	}
+	metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
+		{Site: OperationSite{Block: 1, Index: 0}, Accesses: []MemoryAccessSpec{{Region: "state", Kind: MemoryWrite, WholeRegion: true}}},
+		regionLoadMetadata(join, 0, "state", false),
+	}}
+	memorySSA := mustRegionLoadMemorySSA(t, cfg, metadata)
+	if _, _, _, err := ForwardRegionLoads(cfg, metadata, memorySSA); err == nil || !strings.Contains(err.Error(), "block identity overflow") {
+		t.Fatalf("critical-edge block overflow = %v", err)
+	}
+}
+
 func TestRegionLoadForwardingPromotesLoopHeaderPhi(t *testing.T) {
 	cfg := CFG{
 		Name: "loop_stores", Entry: 0, Results: []Type{"u32"},
@@ -525,7 +545,7 @@ func TestRegionLoadForwardingMaterializesOneSafeJoinInputAndKeepsRefusals(t *tes
 			t.Fatal(err)
 		}
 		wantInsertion := RegionLoadInsertion{
-			Site: OperationSite{Block: 2, Index: 0}, Target: 3, Region: "state", Memory: 1,
+			Site: OperationSite{Block: 2, Index: 0}, Predecessor: 2, Target: 3, Region: "state", Memory: 1,
 			Result: 4, TemplateAccess: 2,
 		}
 		if report.Changes() != 2 || len(report.Replacements) != 1 || report.Replacements[0].Kind != RegionLoadFromPhi ||
@@ -550,13 +570,13 @@ func TestRegionLoadForwardingMaterializesOneSafeJoinInputAndKeepsRefusals(t *tes
 		}
 	})
 
-	t.Run("conditional critical edge", func(t *testing.T) {
+	t.Run("conditional edge split", func(t *testing.T) {
 		cfg := CFG{
 			Name: "join_critical_edge", Entry: 0, Results: []Type{"u32"},
 			Blocks: []Block{
-				{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 3}}},
-				{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
-				{ID: 3, Operations: []Operation{regionLoadOperation(3, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{3}}},
+				{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 3, Arguments: []ValueID{2}}}},
+				{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3, Arguments: []ValueID{2}}}},
+				{ID: 3, Parameters: []Value{{ID: 3, Type: "u32"}}, Operations: []Operation{regionLoadOperation(4, "u32")}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{4}}},
 			},
 		}
 		metadata := RegionMemoryMetadata{Regions: []RegionID{"state"}, Operations: []MemoryOperationMetadata{
@@ -568,8 +588,32 @@ func TestRegionLoadForwardingMaterializesOneSafeJoinInputAndKeepsRefusals(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		if report.Changes() != 0 || !sameDeadStoreCFG(result, cfg) || !sameDeadStoreMetadata(t, cfg, metadata, result, resultMetadata) {
-			t.Fatalf("critical-edge load was materialized: report=%+v CFG=%+v metadata=%+v", report, result, resultMetadata)
+		if err := VerifyRegionLoadForwarding(cfg, metadata, memorySSA, result, resultMetadata, report); err != nil {
+			t.Fatal(err)
+		}
+		wantInsertion := RegionLoadInsertion{
+			Site: OperationSite{Block: 4, Index: 0}, Predecessor: 0, Target: 3, Region: "state", Memory: 1,
+			Result: 5, TemplateAccess: 2, Split: true,
+		}
+		if report.Changes() != 2 || !reflect.DeepEqual(report.Insertions, []RegionLoadInsertion{wantInsertion}) {
+			t.Fatalf("critical-edge report=%+v", report)
+		}
+		if result.Blocks[0].Terminator.False.Target != 4 || len(result.Blocks[0].Terminator.False.Arguments) != 0 ||
+			len(result.Blocks) != 4 || result.Blocks[3].ID != 4 || len(result.Blocks[3].Operations) != 1 ||
+			!reflect.DeepEqual(result.Blocks[3].Terminator.True.Arguments, []ValueID{2, 5}) ||
+			!reflect.DeepEqual(result.Blocks[1].Terminator.True.Arguments, []ValueID{2, 2}) ||
+			len(result.Blocks[2].Parameters) != 2 || result.Blocks[2].Parameters[1].ID != 6 ||
+			!reflect.DeepEqual(result.Blocks[2].Terminator.Values, []ValueID{6}) {
+			t.Fatalf("critical-edge CFG=%+v", result)
+		}
+		outputSSA, err := AnalyzeRegionMemorySSA(result, resultMetadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phi := outputSSA.Versions[1]
+		if phi.Kind != MemoryVersionPhi || phi.Block != 3 || len(phi.Incoming) != 2 ||
+			phi.Incoming[0].Predecessor != 1 || phi.Incoming[1].Predecessor != 4 {
+			t.Fatalf("critical-edge MemorySSA phi=%+v", phi)
 		}
 	})
 
@@ -626,9 +670,8 @@ func TestRegionLoadForwardingMovesCheckedLoadAuthorityToMaterializedEdge(t *test
 	cfg := CFG{
 		Name: "checked_join_edge", Entry: 0, Results: []Type{"u32"},
 		Blocks: []Block{
-			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 2}}},
+			{ID: 0, Parameters: []Value{{ID: 1, Type: TypeBool}, {ID: 2, Type: "u32"}}, Terminator: Terminator{Kind: TerminatorCondBranch, Condition: 1, True: Edge{Target: 1}, False: Edge{Target: 3}}},
 			{ID: 1, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}, Source: write.Source, MemoryAccessID: write.ID}}, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
-			{ID: 2, Terminator: Terminator{Kind: TerminatorBranch, True: Edge{Target: 3}}},
 			{ID: 3, Operations: []Operation{{Code: OpLoadRegion, Results: []Value{{ID: 3, Type: "u32", Source: read.Source}}, Effects: []Effect{EffectReadMemory}, Source: read.Source, MemoryAccessID: read.ID}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{3}}},
 		},
 	}
@@ -654,9 +697,9 @@ func TestRegionLoadForwardingMovesCheckedLoadAuthorityToMaterializedEdge(t *test
 	if !reflect.DeepEqual(finalProjection.Metadata, resultMetadata) {
 		t.Fatalf("checked materialized metadata = %+v, want %+v", finalProjection.Metadata, resultMetadata)
 	}
-	inserted := result.Blocks[2].Operations
+	inserted := result.Blocks[3].Operations
 	if len(inserted) != 1 || inserted[0].MemoryAccessID != read.ID || inserted[0].Source != read.Source ||
-		len(report.Insertions) != 1 || report.Insertions[0].TemplateAccess != 2 {
+		len(report.Insertions) != 1 || report.Insertions[0].TemplateAccess != 2 || !report.Insertions[0].Split {
 		t.Fatalf("checked materialized load = %+v, report %+v", inserted, report)
 	}
 }

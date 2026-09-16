@@ -111,6 +111,93 @@ set_checked: (x: u32): () = {
 	}
 }
 
+func TestLowerOptIRMaterializedCriticalEdgeVerifiesOnBothNativeTargets(t *testing.T) {
+	declaration := optIRRV64Declaration(t, `
+split_load: (set: Bool, x: u32): u32 = {
+  set ? {
+    state = x
+  } | {
+    unused: Bool = set
+  }
+  state
+}
+`)
+	read, err := optir.NewCheckedMemoryAccessRecord(optir.Source{Context: "split.oak", Line: 8, Column: 3}, "checked-state", optir.MemoryRead, "u32", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := optir.NewCheckedMemoryAccessRecord(optir.Source{Context: "split.oak", Line: 4, Column: 5}, "checked-state", optir.MemoryWrite, "u32", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthority([]optir.CheckedMemoryAccessRecord{read, write})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{
+		Name: "split_load", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{
+			{ID: 0, Parameters: []optir.Value{{ID: 1, Type: optir.TypeBool, Name: "set"}, {ID: 2, Type: "u32", Name: "x"}}, Terminator: optir.Terminator{Kind: optir.TerminatorCondBranch, Condition: 1, True: optir.Edge{Target: 1}, False: optir.Edge{Target: 3}}},
+			{ID: 1, Operations: []optir.Operation{{Code: optir.OpStoreRegion, Operands: []optir.ValueID{2}, Effects: []optir.Effect{optir.EffectWriteMemory}, Source: write.Source, MemoryAccessID: write.ID}}, Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 3}}},
+			{ID: 3, Operations: []optir.Operation{{Code: optir.OpLoadRegion, Results: []optir.Value{{ID: 3, Type: "u32", Source: read.Source}}, Effects: []optir.Effect{optir.EffectReadMemory}, Source: read.Source, MemoryAccessID: read.ID}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}}},
+		},
+	}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputSSA := optIRAnalyzeRegionMemory(t, cfg, projection.Metadata)
+	optimized, metadata, report, err := optir.ForwardRegionLoads(cfg, projection.Metadata, inputSSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyRegionLoadForwarding(cfg, projection.Metadata, inputSSA, optimized, metadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Changes() != 2 || len(report.Insertions) != 1 || !report.Insertions[0].Split {
+		t.Fatalf("critical-edge optimization report = %+v", report)
+	}
+	finalProjection, err := optir.ProjectCheckedMemory(optimized, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(finalProjection.Metadata, metadata) {
+		t.Fatalf("final checked metadata = %+v, want %+v", finalProjection.Metadata, metadata)
+	}
+	finalSSA := optIRAnalyzeRegionMemory(t, optimized, finalProjection.Metadata)
+	bindings := map[optir.RegionID]OptIRRegionGlobal{
+		"checked-state": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
+	}
+	tests := []struct {
+		name     string
+		arch     string
+		bindings []asm.Binding
+		lower    func(optir.CFG, *asm.Function, optir.CheckedMemoryAuthority, optir.CheckedMemoryProjection, optir.RegionMemorySSA, map[optir.RegionID]OptIRRegionGlobal) (*asm.Function, error)
+	}{
+		{name: "aarch64", arch: asm.ArchArm64, bindings: []asm.Binding{{Register: w(0), Param: "set"}, {Register: w(1), Param: "x"}}, lower: LowerOptIRArm64WithCheckedRegionMemory},
+		{name: "rv64", arch: asm.ArchRV64, bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "set"}, {Register: optIRRV64Register(11), Param: "x"}}, lower: LowerOptIRRV64WithCheckedRegionMemory},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			template := &asm.Function{
+				Name: "split_load", Arch: test.arch, Signature: declaration, Fallback: true,
+				Bindings: test.bindings, Globals: map[string]asm.Global{"state": {Type: "u32", Bits: 32}},
+			}
+			lowered, err := test.lower(optimized, template, authority, finalProjection, finalSSA, bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := text(lowered.Items)
+			if findings := asm.Check(lowered, declaration, map[string]bool{"split_load": true}); len(findings) != 0 {
+				t.Fatalf("critical-edge body fails seam check: %v\n%s", findings, body)
+			}
+			if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+				t.Fatalf("critical-edge body verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, body)
+			}
+		})
+	}
+}
+
 func TestLowerOptIRBoolRegionStoreUsesCanonicalPackageCell(t *testing.T) {
 	declaration := optIRRV64Declaration(t, `
 set_flag: (x: Bool): () = {
