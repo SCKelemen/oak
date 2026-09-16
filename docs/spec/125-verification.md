@@ -177,6 +177,14 @@ Every theorem is placed on one rung, from the strongest evidence down:
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
 
+The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
+keeps the public compatibility and word-encoding surface.  At the clause
+boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists emitted
+for raw fresh AND, OR, XOR, and ITE gates characterize those gates.  This does
+not yet refine the complete Go or Oak clause builders: folding, allocation and
+memoization, dependent gate sequences, the final obligation, bit blasting,
+and DIMACS construction remain open links.
+
 Statuses never mix: a theorem is not "verified"; it is `decided` by the
 exhaustive decider, or `proved` by Lean, or `open`. Properties run by
 `oak test` (`110-testing.md`) remain `tested`, a fifth and weaker status,
@@ -847,9 +855,12 @@ In order of payoff, each reusing a surface that exists:
   did, while native LRAT checks faster than it solves), and a small
   checker proved once in Lean validates it — solving and trust as separate
   artifacts, the `-cross` rule kept so a race never hides a disagreement.
-  The trusted base then narrows to the clause encoder, which today is
-  cross-checked against the Go blaster node for node and not proved: the
-  finding to close first. GPU solving is not this shape — ParaFROST's
+  The trusted base then narrows to the complete clause encoder.  Its raw
+  fresh AND/OR/XOR/ITE signed-literal lists are connected to the RUP clause
+  semantics by `Oak.TseitinCNF`; folding, allocation and memoization,
+  dependent gate sequences, the final obligation, bit blasting, DIMACS
+  construction, and implementation refinement remain open. GPU solving is
+  not this shape — ParaFROST's
   device-side inprocessing pays above megabytes of clauses, and an
   obligation here is kilobytes — but the many small independent
   evaluations (the witness pass, exhaustive enumeration, reachable-state

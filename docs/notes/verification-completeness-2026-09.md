@@ -253,18 +253,23 @@ This is the largest remaining formal-composition gap inside the
 source-to-native proof chain. Extending a verifier feature and extending the
 shared refinement are separate completion conditions.
 
-The first two burn-down increments landed with this assessment:
+The current burn-down increments landed with this assessment:
 `Oak.FloatLoweringRefinement.lowerF_eval` covers straight-line `f32` `+`, `-`,
-`*`, and `/` over parameters, post-rounding bit-pattern literals, and local
+`*`, `/`, and ordered ternary `fma` over parameters, post-rounding bit-pattern
+literals, and local
 declarations and rebindings. `lowerWith_eval` maintains an explicit agreement
 invariant between the extraction scope and the verifier's substituted terms.
-Production render tests pin the four operations, non-contraction of
-multiply-then-add, the literal bits, and both local forms. Decimal parsing into
-those bits, conversions, memory, effectful control flow and calls, `f64`, and
-SIMD remain outside the theorem, so the broader gap and the score above remain.
+Production render tests pin the five operations, FMA operand order,
+non-contraction of multiply-then-add, the literal bits, and both local forms.
+Decimal parsing into those bits, conversions, memory, effectful control flow,
+borrowing/recursive/effectful calls, `f64`, and SIMD remain outside the
+theorem, so the broader gap and the score above remain. Ordered pure `f32`
+calls are included by the existing call-environment refinement.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
-rounding or NaN-payload behavior.
+rounding or NaN-payload behavior. The FMA case similarly relates both sides to
+the existing `Oak.FloatOps.fma32` carrier; it does not independently prove that
+carrier or hardware rounding.
 
 ### 3.3 The native verifier remains materially inside the TCB
 
@@ -332,9 +337,12 @@ This is deliberately audit-only: it neither authorizes nor upgrades
 not the symbolic executor, Oak lowering, clause generator, or checker
 implementations. `Oak.NativeEqualityCertificate.accepted_implies_equal`
 states the abstract composition and makes its missing implementation
-refinements explicit. The next step remains a concrete term/CNF and checker
-refinement, followed by moving a small checker below compiler selection so
-certificate acceptance can safely become verdict authority.
+refinements explicit. `Oak.TseitinCNF` now proves the exact signed-literal
+clause shapes for each raw Boolean gate, and the hardened Go checker kernel now
+lives in the dependency-leaf `internal/lrat` package. The next step remains the
+whole-builder/bit-blaster and checker implementation refinement, followed by
+requiring the leaf checker below compiler selection so certificate acceptance
+can safely become verdict authority.
 
 One narrow slice now follows this shape. Recursive OptIR scalar-call memory
 summaries first pass through one checked CFG-order authority projection whose

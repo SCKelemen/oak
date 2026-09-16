@@ -185,10 +185,14 @@ checking LRAT; the integration path also requires the checker written in Oak
 to accept the certificate against the same DIMACS formula. Source-body and
 machine-operation replay attacks are tests. `Oak.NativeEqualityCertificate`
 proves the abstract composition from accepted RUP plus exact CNF completeness
-to result equality. This removes the SAT solver from the audit, but it does
-not yet remove symbolic execution, Oak lowering, term-to-CNF generation, or
-the Go/Oak checker implementations from the TCB, and it does not promote a
-compiler verdict.
+to result equality. `Oak.TseitinCNF` proves that the concrete signed-literal
+lists for each raw AND/OR/XOR/ITE gate have the corresponding Boolean meaning;
+the remaining builder and bit-blaster composition is still open. The hardened
+Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
+package, below `prove`'s compatibility wrappers and word codec. This removes
+the SAT solver from the audit, but it does not yet remove symbolic execution,
+Oak lowering, the remaining term-to-CNF generation, or the Go/Oak checker
+implementations from the TCB, and it does not promote a compiler verdict.
 
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register
@@ -512,7 +516,8 @@ iteration's values.
 The first float seam is `Oak.FloatLoweringRefinement` (2026-09-15). Its
 `lowerF_eval` proves, for every straight-line expression over `f32` parameters,
 post-rounding bit-pattern literals, and local declarations or rebindings using
-`+`, `-`, `*`, and `/`, plus unary negation, `abs`, and `copysign`, that the
+`+`, `-`, `*`, `/`, and ordered ternary `fma`, plus unary negation, `abs`, and
+`copysign`, that the
 extraction's operation reading equals the verifier term's matching
 arithmetic or sign-bit reading. The generalized `lowerWith_eval` maintains
 the agreement invariant while the verifier substitutes a local's lowered
@@ -612,7 +617,8 @@ for a workload):
    machine behavior" from a statement about expressions into one about
    functions on arm64. **First float slice (2026-09-15):**
    `Oak.FloatLoweringRefinement.lowerF_eval` connects exact `f32` `+`, `-`,
-   `*`, `/`, unary negation, `abs`, and `copysign` over parameters, post-rounding
+   `*`, `/`, ordered ternary `fma`, unary negation, `abs`, and `copysign` over
+   parameters, post-rounding
    literal bits, and straight-line local declaration/rebinding to the verifier's
    width-32 operation/sign-bit terms and local substitution; the production
    render pins cover those shapes and a multiply followed by an add.

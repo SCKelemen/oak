@@ -150,13 +150,16 @@ literature; cuda-cic does not check proof terms.
 
 **Assessment**, recorded as `125-verification.md` §7 "A certificate rung"
 (items 1 and the checkers of item 2 landed on 2026-09-13: `asm/cnf.go`,
-`prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
+`internal/lrat/lrat.go` (with compatibility wrappers in `prove/lrat.go`),
+`prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
 written in Oak landed the same day as the rung's default,
 `prove/solver/sat.oak`, then clause-database reduction with deletion lines,
 two watched literals, learned-clause minimization, Luby restarts,
 activity-based reduction, and bounded variable elimination at load; the
-encoder's laws are stated in `Oak.Tseitin` and its code checked against
-them by truth table; the clause engine written in Oak (`cnf.oak`) now
+encoder's laws are stated in `Oak.Tseitin`; `Oak.TseitinCNF` connects the
+exact raw fresh-gate signed-literal lists to RUP clause semantics, while
+the complete builder remains open; the clause engine written in Oak
+(`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
 written in Oak too (`certify.oak`), the solver recording its steps as
@@ -213,9 +216,11 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
 
 1. Add a SAT rung with LRAT rather than a bigger BDD budget; keep the BDD
    for canonical equivalence and counterexamples.
-2. The trusted base then narrows to the clause encoder, which is
-   cross-checked against Go node for node and not proved — the finding to
-   close first (`performance.md` §13 "Trusted base of the checker stated").
+2. The trusted base then narrows to the complete clause encoder.  The raw
+   fresh-gate lists are proved by `Oak.TseitinCNF`; folds, allocation,
+   memoization, sequencing, the final obligation, bit blasting, DIMACS, and
+   implementation refinement remain open (`performance.md` §13 "Trusted base
+   of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the
    witness pass, exhaustive enumeration, reachable-state exploration — a

@@ -409,12 +409,23 @@ checked declaration's body.
 The exporter feeds the same deterministic Tseitin authority as `oak prove`,
 but roots it at result disequality. `prove.CheckNativeEqualityCertificate`
 regenerates that formula on every check and passes the complete DIMACS text to
-the LRAT checker; neither a stored formula, clause counts, a digest, a cached
-verdict, nor a word record carrying its own formula is proof authority. The
-integration test obtains a certificate from the solver written in Oak and
+the LRAT checker. The Go acceptance kernel now lives in the standard-library-
+only `internal/lrat` leaf package; `prove` retains compatibility wrappers and
+the producer-side word codec. Neither a stored formula, clause counts, a
+digest, a cached verdict, nor a word record carrying its own formula is proof
+authority. The integration test obtains a certificate from the solver written in Oak and
 requires both the Go and Oak LRAT checkers to accept it for nontrivial
 distributivity on AArch64 and RV64. Replaying the same certificate after a
 source or machine-operation change is refused.
+
+`Oak.TseitinCNF` connects the first concrete encoder representation to RUP:
+the exact signed-literal clause lists emitted by the raw fresh-gate branches
+for AND, OR, XOR, and ITE (three, three, four, and six clauses) characterize
+their Boolean outputs, including complemented edges. Go regression tables pin
+those clause shapes and polarities. This is a representation bridge, not yet a
+proof of the whole builder: folds, allocation and memoization, dependent gate
+sequences, bit blasting, the final obligation, DIMACS parsing, and Go/Lean
+correspondence remain separate obligations.
 
 This is an **additional audit**, not a compiler admission path: it cannot
 create or promote `VerdictProven`, and the verifier cache cannot stand in for
@@ -423,8 +434,8 @@ the abstract composition from an accepted RUP derivation and a complete exact
 disequality encoding to pointwise `BitVec` equality. The concrete term-to-CNF
 encoder, DIMACS and checker implementation correspondence, machine symbolic
 execution, Oak lowering, rewrite-body authority, and later ISA/object/link
-links remain in the TCB. Moving LRAT checking into a leaf package and requiring
-this evidence during selection is a later milestone.
+links remain in the TCB. The leaf placement is complete; requiring freshly
+regenerated certificate evidence during selection remains a later milestone.
 
 **Conditional bodies (second increment).** `csel` and `cset` join the
 instruction table (`csel wD, wN, wM, cond` / `cset wD, cond`; a condition
