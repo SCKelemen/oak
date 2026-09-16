@@ -5383,34 +5383,30 @@ gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
 result, a conditional store; both lanes), the `fill` case of
 `compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
 
-**Open: unmarking a loop memory twice drops an enclosing loop's marker
-(2026-09-16).** `loopEvent` unmarks a memory the iteration never stores
-to in two places — inside the loop that collects the iteration's stores,
-and again after it. The first consumes the event's entry log, so the
-second reads an absent entry as "nothing was written before the loop"
-and deletes the memory's write log outright. When the loop is nested,
-that deletes the enclosing loop's marker with it, and the enclosing loop
-then reads its own log past the end: the compiler panics
-(`slice bounds out of range`) on any program whose loop over a span of
-records sits inside another. `TestE2ENativeDispatchingFunctionStays\
-WithTheCBackend` is the case in the tree, over the CRC and SHA program.
+**Unmarking a loop memory twice dropped an enclosing loop's marker
+(2026-09-16, fixed).** `loopEvent` unmarked a memory the iteration never
+stores to in two places — inside the loop that collects the iteration's
+stores, and again after it. The first consumed the event's entry log, so
+the second read an absent entry as "nothing was written before the
+loop" and deleted the memory's write log outright. When the loop was
+nested, that deleted the enclosing loop's marker with it, and the
+enclosing loop then read its own log past the end: the compiler panicked
+(`slice bounds out of range`) on any program whose loop over a span sat
+inside another — `id_pool_allocate`'s bit scan, in
+`TestE2ENativeDispatchingFunctionStaysWithTheCBackend` over the CRC and
+SHA program. The first unmark now leaves the restore to the second,
+which puts the entry log back and keeps the enclosing marker
+(`TestE2ENativeNestedLoopKeepsTheOuterMemoryMarker`); the after-loop
+obligations that rested on the deleted log still discharge —
+`reset` keeps `s.free_stack` and `alloc_table` keeps `s.free_count`
+(`TestE2ENativeCellsAroundLoopProven`,
+`TestE2ENativeStage2AllocTableProven`).
 
-The two are one code path, so the panic cannot simply be guarded.
-Deleting the log claims the memory equals the parameter's entry memory,
-which discharges the after-loop obligation rather than proving it, and
-two of stage2's proofs currently rest on that: with the second unmark
-made non-destructive, `reset` loses `s.free_stack` and `alloc_table`
-loses `s.free_count` to "the memory after the loops was not proven
-equal" (`TestE2ENativeCellsAroundLoopProven`,
-`TestE2ENativeStage2AllocTableProven`). The fix is to restore the entry
-log — keeping the enclosing marker — and let the after-loop comparison
-discharge it, which is where the work is.
-
-Marking is also not idempotent: two writable parameters rooted at one
+Marking is still not idempotent: two writable parameters rooted at one
 span of records flatten to the same leaf memories, so a memory can be
 marked twice while one name has one recorded position in the write log.
-Making the marked memories unique loses the same two proofs, by the same
-route.
+Making the marked memories unique loses those two proofs to "the memory
+after the loops was not proven equal".
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
@@ -5915,7 +5911,10 @@ and case-split depth) and costs no call: the congruence rule descends
 both sides by operand pairs, and the sides are DAGs whose tree unfolding
 may be exponential, so a shared pair recurred once per parent —
 `crc32c_chunk`'s decision made half a million implications in 150 s
-without finishing, and is proven in 6 s decided once each. `add_bits`
+without finishing, and is proven in 7 s decided once each, under a loop
+proof's allowance of nodes (a body's decision is one, where a loop
+proof spreads the allowance over a coupling's implications; under one
+implication's allowance it is witness-checked after 16 s). `add_bits`
 is evidence in two minutes a candidate. The native prover's shell on `adts.oak`, which ran three
 hours and three quarters without finishing in the root suite, agrees on
 7 of 7 rows once its build completes. Prover build per body: proven

@@ -4731,9 +4731,14 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// rule recurse over the operands of both sides, each pair pruned
 		// and blasted anew, and over a hash block's term that walk ran
 		// for hours (docs/spec/94-assembler.md §9 "Loop invariants", the
-		// implication budget). One decision's allowance bounds it; past
-		// the allowance the implication is undecided, not unending.
-		budget = &nodeBudget{remaining: blastNodeBudget}
+		// implication budget). A loop proof's allowance bounds it — the
+		// body's decision is one, where a loop proof spreads its
+		// allowance over a coupling's many implications — and past the
+		// allowance the implication is undecided, not unending.
+		// crc32c_chunk proves within it in seven seconds; under one
+		// implication's allowance it was witness-checked after sixteen,
+		// the rules and splits tried and failed.
+		budget = &nodeBudget{remaining: loopProofNodeBudget}
 	}
 	key := decisionKey{premise, a, b, depth}
 	if r, seen := budget.decided[key]; seen {
