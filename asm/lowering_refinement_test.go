@@ -43,6 +43,8 @@ var loweringRenders = []struct {
 	{"f: (a, b: f32) -> f32", "a / b", "fdiv32(a, b)"},
 	{"f: (a, b, c: f32) -> f32", "fma(a, b, c)", "fma32(a, b, c)"},
 	{"f: (a, b, c: f32) -> f32", "a * b + c", "fadd32(fmul32(a, b), c)"},
+	// The separate bounded binary64 family retains one ordered FMA node.
+	{"f: (a, b, c: f64) -> f64", "fma(a, b, c)", "fma64(a, b, c)"},
 	// Exact f32-to-f64 widening retains the source's width-32 operation
 	// beneath one ordered width-changing fcvt node.
 	{"f: (a, b: f32) -> f64", "f64(a + b)", "fcvt64(fadd32(a, b))"},
@@ -117,6 +119,8 @@ var loweringRenders = []struct {
 var loweringProgramRenders = []struct {
 	program, want string
 }{
+	// Binary64 FMA locals substitute their ordered ternary term exactly once.
+	{"f: (a, b, c: f64) -> f64 = {\n  t: f64 = fma(a, b, c)\n  fma(t, b, c)\n}\n", "fma64(fma64(a, b, c), b, c)"},
 	// A pure f32 call (FloatLoweringRefinement.lowerCall): arguments lower in
 	// the caller scope, bind to the callee parameters, and its body inlines.
 	{"g: (x, y: f32) -> f32 = x * y + 1.0\n\nf: (a, b: f32) -> f32 = g(a + b, b)\n", "fadd32(fmul32(fadd32(a, b), b), 1065353216)"},

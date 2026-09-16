@@ -41,9 +41,16 @@ expression already covered: the extraction and verifier models both apply
 `Float32.toFloat` to the same binary32 value, and the verifier shape retains
 the width-changing `fcvt` node. This is operation identity and operand
 composition, not an independent proof of IEEE widening, the Go evaluator, or
-an ISA instruction. Decimal parsing itself, all other conversions, spans,
-nested/effectful statement control flow, borrowing/recursive/effectful calls,
-binary64 arithmetic, and SIMD remain outside this theorem.
+an ISA instruction. The eleventh adds a deliberately separate binary64 FMA
+family with already-rounded literal bits and straight-line locals. Extraction
+and verifier terms both retain one ordered `Oak.FloatOps.fma64` application.
+This is carrier identity, operation identity, and operand order; it is not an
+independent proof of the FMA implementation, IEEE rounding, exception modes,
+NaN payloads, Go evaluation, or an ISA instruction. It also does not compose
+the widening family with binary64 FMA. Decimal parsing itself, all other
+conversions, spans, nested/effectful statement control flow,
+borrowing/recursive/effectful calls, other binary64 arithmetic, and SIMD
+remain outside this theorem.
 -/
 
 namespace Oak.FloatLoweringRefinement
@@ -392,6 +399,119 @@ theorem lowerWiden_eval (widen : WidenExpr) (ρ : SourceEnv) :
     (lowerWiden widen).eval ρ = widen.eval ρ := by
   exact lowerWidenWith_eval widen ρ ρ parameterTerms
     (parameterTerms_agree ρ)
+
+/-! ## A bounded binary64 FMA family -/
+
+/-- The extraction-side binary64 FMA slice. Literals enter only after the
+frontend has rounded them to binary64 bits; locals are pure substitutions. -/
+inductive F64Expr
+  | param (name : String)
+  | literal (bits : UInt64)
+  | fma (multiplicand multiplier addend : F64Expr)
+  | letIn (name : String) (value body : F64Expr)
+  deriving Repr
+
+abbrev F64SourceEnv := String → Float
+
+def F64SourceEnv.set (ρ : F64SourceEnv) (name : String)
+    (value : Float) : F64SourceEnv :=
+  fun candidate => if candidate = name then value else ρ candidate
+
+/-- Extraction reading. The ordered ternary operation is exactly the carrier
+emitted by `codegen/lean`; this definition does not independently verify that
+carrier's implementation. -/
+def F64Expr.eval : F64Expr → F64SourceEnv → Float
+  | .param name, ρ => ρ name
+  | .literal bits, _ => Float.ofBits bits
+  | .fma multiplicand multiplier addend, ρ =>
+      Oak.FloatOps.fma64
+        (multiplicand.eval ρ) (multiplier.eval ρ) (addend.eval ρ)
+  | .letIn name value body, ρ =>
+      body.eval (ρ.set name (value.eval ρ))
+
+/-- The verifier-term fragment corresponding to the bounded source family. -/
+inductive F64Term
+  | param (name : String)
+  | literal (bits : UInt64)
+  | fma (multiplicand multiplier addend : F64Term)
+  deriving Repr
+
+abbrev F64TermEnv := String → F64Term
+
+def F64TermEnv.set (σ : F64TermEnv) (name : String)
+    (value : F64Term) : F64TermEnv :=
+  fun candidate => if candidate = name then value else σ candidate
+
+/-- Verifier-model reading of the same ordered `fma64` application. This is
+an operation-identity model, not a proof of the Go evaluator or an ISA FMA. -/
+def F64Term.eval : F64Term → F64SourceEnv → Float
+  | .param name, ρ => ρ name
+  | .literal bits, _ => Float.ofBits bits
+  | .fma multiplicand multiplier addend, ρ =>
+      Oak.FloatOps.fma64
+        (multiplicand.eval ρ) (multiplier.eval ρ) (addend.eval ρ)
+
+/-- Preserve one ordered ternary node and substitute pure local bindings. -/
+def lowerF64With : F64Expr → F64TermEnv → F64Term
+  | .param name, σ => σ name
+  | .literal bits, _ => .literal bits
+  | .fma multiplicand multiplier addend, σ =>
+      .fma (lowerF64With multiplicand σ) (lowerF64With multiplier σ)
+        (lowerF64With addend σ)
+  | .letIn name value body, σ =>
+      lowerF64With body (σ.set name (lowerF64With value σ))
+
+def F64Agree (parameters current : F64SourceEnv) (σ : F64TermEnv) : Prop :=
+  ∀ name, (σ name).eval parameters = current name
+
+private theorem f64Agree_set (parameters current : F64SourceEnv)
+    (σ : F64TermEnv) (name : String) (value : Float) (lowered : F64Term)
+    (hσ : F64Agree parameters current σ)
+    (hv : lowered.eval parameters = value) :
+    F64Agree parameters (current.set name value) (σ.set name lowered) := by
+  intro candidate
+  by_cases h : candidate = name
+  · simp [F64SourceEnv.set, F64TermEnv.set, h, hv]
+  · simp [F64SourceEnv.set, F64TermEnv.set, h, hσ candidate]
+
+/-- The generalized local-substitution refinement. Both readings apply the
+same binary64 carrier in the same operand order. -/
+theorem lowerF64With_eval (e : F64Expr)
+    (parameters current : F64SourceEnv) (σ : F64TermEnv)
+    (hσ : F64Agree parameters current σ) :
+    (lowerF64With e σ).eval parameters = e.eval current := by
+  induction e generalizing current σ with
+  | param name => exact hσ name
+  | literal => rfl
+  | fma multiplicand multiplier addend ihMultiplicand ihMultiplier ihAddend =>
+      simp only [lowerF64With, F64Term.eval, F64Expr.eval]
+      rw [ihMultiplicand current σ hσ, ihMultiplier current σ hσ,
+          ihAddend current σ hσ]
+  | letIn name value body ihValue ihBody =>
+      simp only [lowerF64With, F64Expr.eval]
+      exact ihBody
+        (current.set name (value.eval current))
+        (σ.set name (lowerF64With value σ))
+        (f64Agree_set parameters current σ name (value.eval current)
+          (lowerF64With value σ) hσ (ihValue current σ hσ))
+
+def f64ParameterTerms : F64TermEnv := F64Term.param
+
+@[simp] theorem f64ParameterTerms_agree (ρ : F64SourceEnv) :
+    F64Agree ρ ρ f64ParameterTerms := by
+  intro name
+  rfl
+
+def lowerF64 (e : F64Expr) : F64Term :=
+  lowerF64With e f64ParameterTerms
+
+/-- Closed carrier-level source-to-verifier seam for the bounded binary64 FMA
+family. It proves operation identity and order, not IEEE implementation
+correctness or machine-instruction semantics. -/
+theorem lowerF64_eval (e : F64Expr) (ρ : F64SourceEnv) :
+    (lowerF64 e).eval ρ = e.eval ρ := by
+  exact lowerF64With_eval e ρ ρ f64ParameterTerms
+    (f64ParameterTerms_agree ρ)
 
 /-- A Boolean condition over two float expressions. -/
 inductive Condition
@@ -856,6 +976,9 @@ theorem lowerCall_eval (call : Call) (ρ : SourceEnv) :
 private def a : Expr := .param "a"
 private def b : Expr := .param "b"
 private def c : Expr := .param "c"
+private def a64 : F64Expr := .param "a"
+private def b64 : F64Expr := .param "b"
+private def c64 : F64Expr := .param "c"
 
 /-- Render pins mirrored by `asm/lowering_refinement_test.go`. -/
 example : lowerF (.binary .add a b) = .float .fadd (.param "a") (.param "b") := rfl
@@ -866,6 +989,13 @@ example : lowerF (.fma a b c) =
     .fma (.param "a") (.param "b") (.param "c") := rfl
 example : lowerWiden (.fromF32 (.binary .add a b)) =
     .fcvt (.float .fadd (.param "a") (.param "b")) := rfl
+example : lowerF64 (.fma a64 b64 c64) =
+    .fma (.param "a") (.param "b") (.param "c") := rfl
+example : lowerF64
+    (.letIn "t" (.fma a64 b64 c64)
+      (.fma (.param "t") b64 c64)) =
+    .fma (.fma (.param "a") (.param "b") (.param "c"))
+      (.param "b") (.param "c") := rfl
 example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
 example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
 example : lowerF (.copysign (.unary .neg a) b) =

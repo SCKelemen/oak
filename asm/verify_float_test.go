@@ -17,6 +17,10 @@ func TestVerifyFloatScalar(t *testing.T) {
 	if fused.Kind != VerdictProven {
 		t.Fatalf("fma against fmadd must be proven, got %s: %s", fused.Kind, fused.Message)
 	}
+	permuted64 := verifyCase(t, decl, "fma(a, x, y)", bind+"  fmadd d0, d0, d2, d1\n  ret")
+	if permuted64.Kind != VerdictMismatch {
+		t.Fatalf("f64 fma with a permuted addend must be a mismatch, got %s: %s", permuted64.Kind, permuted64.Message)
+	}
 	fused32 := verifyCase(t, "axpy32: (a, b, c: f32) -> f32", "fma(a, b, c)",
 		"  bind s0 = a\n  bind s1 = b\n  bind s2 = c\n  fmadd s0, s0, s1, s2\n  ret")
 	if fused32.Kind != VerdictProven {
