@@ -509,9 +509,9 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: aggregate/partial memory-region projection, critical-edge splitting,
-multiple unavailable phi inputs, partial/call-written versions,
-conceptual-entry loop phis, non-affine and symbolic trip-count proofs,
+Not yet: aggregate/partial memory-region projection, multiple unavailable phi
+inputs, broader load placement, partial/call-written versions, conceptual-entry
+loop phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -1000,19 +1000,24 @@ dominating load or whole-region store. A closed join or loop memory phi is
 promoted when each real predecessor already has the exact typed value, either
 from the direct whole-region nonvolatile store defining its incoming version or
 from a canonical load of that version dominating the predecessor terminator.
-Exactly one unavailable entry-memory input may instead be materialized on a
-real predecessor whose only successor is the phi. The transform moves the
-removed canonical load's checked source/access identity to a fresh load before
-that unconditional edge; it does not synthesize authority or speculate the
-load onto another path. A fresh typed parameter in the phi block receives the
-edge values, and loads in the phi block and dominated blocks can share it.
-Conceptual function-entry inputs, conditional/critical edges, multiple missing
-inputs, partial/call definitions, type mismatches, missing edges, and value-ID
-exhaustion fail closed. The evidence records insertions as well as removed-load
+Exactly one unavailable entry-memory input may instead be materialized on its
+real incoming edge. An unconditional predecessor receives the load directly.
+If exactly one conditional arm targets the phi, a new block receives only that
+arm and branches onward with the arm's existing SSA arguments plus the loaded
+value. The transform moves the removed canonical load's checked source/access
+identity into the edge block; it does not synthesize authority or execute the
+load on another arm. A fresh typed parameter in the phi block receives the edge
+values, and loads in the phi block and dominated blocks can share it.
+Conceptual function-entry inputs, ambiguous two-arm edges, multiple missing
+inputs, partial/call definitions, type mismatches, missing edges, and value- or
+block-ID exhaustion fail closed. The evidence records the original predecessor,
+the insertion site, and whether the edge was split as well as removed-load
 replacements. Values from loads removed later in the same transform are
 resolved before edge materialization. The transform drops facts bound to
 removed SSA identities, remaps every use and operation site, and rebuilds
-MemorySSA. Checked Oak
+MemorySSA. A composed regression then reprojects the checked authority and
+requires both AArch64 and RV64 lowering of the split CFG to pass seam admission
+with a proven semantic verdict. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a
@@ -1057,9 +1062,9 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-critical-edge splitting, multiple unavailable phi inputs, conceptual-entry
-loop phis, partial/call-written versions, definite-write summaries, and calls
-in memory loops remain open;
+multiple unavailable phi inputs, broader load placement, conceptual-entry loop
+phis, partial/call-written versions, definite-write summaries, and calls in
+memory loops remain open;
 exact recursive
 `NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
 checker, and composed Lean structural models of active-authority projection
@@ -1069,7 +1074,7 @@ work.
 
 As the projection broadens, region memory SSA should power:
 
-- critical-edge splitting and broader load placement;
+- multiple-missing-input and broader load placement;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;

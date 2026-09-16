@@ -756,19 +756,26 @@ predecessor has the exact typed value: either the operand of a direct
 whole-region nonvolatile store defining that incoming version or a canonical
 load of that version which dominates the predecessor terminator. It may instead
 materialize exactly one unavailable input when that input is the entry-memory
-version and its real predecessor branches unconditionally to the phi. The
-transform moves the removed canonical load's checked source/access identity to
-a fresh load immediately before that edge; it neither synthesizes authority nor
-speculates onto another path. It creates one fresh typed parameter in the phi
-block and appends the corresponding value to each edge. Loads in that block and
-blocks it dominates can share the parameter, allowing one preheader load and a
-latch store to carry a value through a loop body and its exit. Conceptual
-function-entry inputs, conditional/critical edges, multiple unavailable inputs,
-partial stores, call definitions, missing edges, type mismatches, and exhausted
-value identities fail closed. The report records both removals and insertions.
+version. An unconditional predecessor receives the load directly. When exactly
+one arm of a conditional targets the phi, the transform creates a dedicated
+block, redirects only that arm, and carries the arm's existing SSA arguments
+unchanged from the split block to the phi. The transform moves the removed
+canonical load's checked source/access identity to the edge block; it neither
+synthesizes authority nor executes the load on another arm. It creates one
+fresh typed parameter in the phi block and appends the corresponding value to
+each edge. Loads in that block and blocks it dominates can share the parameter,
+allowing one preheader load and a latch store to carry a value through a loop
+body and its exit. Conceptual function-entry inputs, ambiguous two-arm edges,
+multiple unavailable inputs, partial stores, call definitions, missing edges,
+type mismatches, and exhausted value or block identities fail closed. The
+report records both removals and insertions, including the original predecessor
+and whether the insertion required a split.
 The transform resolves later-removed predecessor loads before materializing
 edges, drops facts bound to removed SSA values, rewrites all uses and metadata
-sites, and rebuilds MemorySSA. The
+sites, and rebuilds MemorySSA. A composed backend regression reprojects the
+moved checked authority over a split CFG, rebuilds MemorySSA, lowers it on both
+AArch64 and RV64, and requires clean seam admission plus a proven semantic
+verdict. The
 scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access
@@ -863,7 +870,7 @@ and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
 semantic-verifier verdict before selection. Broader memory loops, aggregate
-regions, critical-edge splitting, multiple unavailable phi inputs,
+regions, multiple unavailable phi inputs, broader load placement,
 conceptual-entry loop phis, partial/call-written versions, definite-write
 summaries, and calls in memory loops remain open; exact
 recursive `NoModRef`, `Ref`, `Mod`,
