@@ -354,74 +354,15 @@ func nativeReplayOneBitBinary(operation string, left, right *term) *term {
 	return &term{kind: termBinary, width: 1, op: operation, left: left, right: right}
 }
 
-// renderNativeCNFReplayOneBitTerm projects syntax and designated input slots;
-// all Boolean evaluation remains in replayTerm. The depth bound makes refusal
-// explicit if this fixed tree-shaped corpus is accidentally widened to a
-// cyclic or unbounded production graph.
+// Keep the original one-bit corpus under its original result-width guard;
+// the shared projector also covers whole words and operand width adaptation.
 func renderNativeCNFReplayOneBitTerm(bl *blaster, root *term) (string, error) {
-	if bl == nil || bl.cnf == nil {
-		return "", fmt.Errorf("the CNF blaster is missing")
+	if root == nil || root.width != 1 {
+		return "", fmt.Errorf("result is outside the one-bit projection")
 	}
-	var render func(*term, int) (string, error)
-	render = func(current *term, depth int) (string, error) {
-		if current == nil || depth > 64 {
-			return "", fmt.Errorf("term is nil or exceeds the bounded projection")
-		}
-		if current.width != 1 {
-			return "", fmt.Errorf("term width %d is outside the one-bit projection", current.width)
-		}
-		switch current.kind {
-		case termConst:
-			if current.name != "" || current.op != "" || current.left != nil || current.right != nil ||
-				current.cond != nil || current.declared != 0 || current.value > 1 {
-				return "", fmt.Errorf("constant term is malformed")
-			}
-			return fmt.Sprintf(".constant %t", current.value == 1), nil
-		case termParam:
-			if current.name == "" || current.op != "" || current.left != nil || current.right != nil ||
-				current.cond != nil || current.value != 0 || current.declaredWidth() != 1 {
-				return "", fmt.Errorf("parameter term is malformed")
-			}
-			position, indexed := bl.index[current.name]
-			declared, known := bl.widths[current.name]
-			stride := bl.stride()
-			if !indexed || !known || declared != 1 || stride <= 0 || position < 0 || position >= len(bl.params) {
-				return "", fmt.Errorf("parameter is absent from the ordered input projection")
-			}
-			source := position
-			output, allocated := bl.cnf.inputs[source]
-			if !allocated || output < 1 || output > bl.cnf.variables {
-				return "", fmt.Errorf("parameter has no valid allocated input output")
-			}
-			return fmt.Sprintf(".input %d", output), nil
-		case termBinary:
-			if current.name != "" || current.value != 0 || current.declared != 0 || current.cond != nil ||
-				current.left == nil || current.right == nil {
-				return "", fmt.Errorf("binary term is malformed")
-			}
-			operation := -1
-			switch current.op {
-			case "and":
-				operation = opAnd
-			case "or":
-				operation = opOr
-			case "xor":
-				operation = opXor
-			default:
-				return "", fmt.Errorf("operation %q is outside the one-bit projection", current.op)
-			}
-			left, err := render(current.left, depth+1)
-			if err != nil {
-				return "", err
-			}
-			right, err := render(current.right, depth+1)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf(".binary %d (%s) (%s)", operation, left, right), nil
-		default:
-			return "", fmt.Errorf("term kind %d is outside the one-bit projection", current.kind)
-		}
+	bits, err := renderNativeCNFReplayWord(bl, root)
+	if err != nil {
+		return "", err
 	}
-	return render(root, 0)
+	return bits[0], nil
 }

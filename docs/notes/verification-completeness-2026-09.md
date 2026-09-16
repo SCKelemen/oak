@@ -393,11 +393,16 @@ semantics. `Oak.CNFReplayTerm` establishes input-slot stability and recursive
 original-input semantics. `Oak.CNFReplayCertificate.replayed_words_equal`
 therefore obtains equality of words packed from supplied paired bit
 expressions using accepted RUP, without a separate root-equality or
-CNF-completeness assumption. Apply decisions and a small one-bit production
-term/difference corpus are kernel-pinned. This does not prove arbitrary Go
-source-name/bit/word projection, width adaptation, term-pointer memoization,
-reachable coverage, or the full native admission policy; the model theorem
-must not be promoted to a whole-source/compiler verification claim.
+CNF-completeness assumption. Apply decisions, the original one-bit corpus, and
+twelve whole-word fixtures are kernel-pinned. The word checks cover
+1/8/16/32/64-bit roots, parameter/operand truncation and zero extension,
+truncation followed by extension, shared subterms, interleaved allocations,
+and both equal and unequal words. Concrete values pin source-name/bit mapping
+and result packing; malformed projections and cyclic or excessive syntax
+expansion refuse. This advances bounded Go word/root correspondence, not
+universal refinement of source-name/bit/word projection, width adaptation,
+term-pointer memoization, reachable coverage, or the full native admission
+policy. Native certificates remain audit-only; verdict authority is open.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and

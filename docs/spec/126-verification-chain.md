@@ -224,10 +224,17 @@ connects recursive replay to the original-input semantics.
 `Oak.CNFReplayCertificate.replayed_words_equal` then proves equality of the
 words packed from supplied bit-expression pairs using accepted RUP and the
 exact singleton obligation, without assumed root equality or CNF completeness.
-Production apply decisions and a bounded one-bit term/difference corpus are
-kernel-pinned. The arbitrary Go name/bit/word projection, width adaptation,
-term-pointer memo/reachability machinery, full admission policy, and remaining
-source/serialization/verdict seams are not covered by that model theorem.
+Production apply decisions, the original one-bit corpus, and twelve word
+fixtures are kernel-pinned. `TestNativeCNFReplayWordPairsMatchesLean` checks
+1/8/16/32/64-bit roots, parameter and operand width adaptation (including
+truncation followed by extension), shared subterms, interleaved input/gate
+allocation, and exact direct-disequality roots. Concrete input/output pins
+also check source-name/bit mapping and least-significant-bit-first packing.
+The test-only syntax projector rejects malformed inputs, cycles, and excessive
+depth/text expansion. These are bounded correspondence checks; arbitrary Go
+name/bit/word projection, width adaptation, term-pointer memo/reachability
+machinery, full admission policy, and remaining source/serialization/verdict
+seams are not universally refined by that model theorem.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`

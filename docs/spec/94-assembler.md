@@ -496,11 +496,20 @@ the exact singleton final clause and accepted RUP: the words packed from the
 supplied paired Boolean expressions are equal, without an assumed
 result-to-root equality or CNF-completeness premise.
 
-The production apply decisions and a small one-bit term/difference corpus are
-kernel-pinned by `TestNativeCNFReplayApplyMatchesLean` and
-`TestNativeCNFReplayTermMatchesLean`. This does not universally refine Go
-source names/bit bindings, word widths/adaptation, term-pointer memoization,
-reachable coverage, or the complete native admission policy. In particular,
+The production apply decisions and the original one-bit term/difference corpus
+are kernel-pinned by `TestNativeCNFReplayApplyMatchesLean` and
+`TestNativeCNFReplayTermMatchesLean`. `TestNativeCNFReplayWordPairsMatchesLean` adds
+twelve word fixtures: 1/8/16/32/64-bit roots, parameter and operand truncation
+and zero extension (including truncation followed by extension), shared
+subterms, and interleaved input/gate allocation. Every bit root and the exact
+direct-disequality root are checked against Lean. Concrete source input/output
+values also pin designated input mapping and least-significant-bit-first
+`resultWord` packing, including unequal words and bit 63. The shared test-only
+syntax projector reads no producer term-memo roots; malformed tables/terms,
+missing input bits, cycles, excessive depth, and excessive tree expansion
+refuse. This does not universally refine Go source names/bit bindings, word
+widths/adaptation, term-pointer memoization, reachable coverage, or the complete
+native admission policy. In particular,
 the model permits the empty mathematical difference, whereas the native
 audit rejects empty result widths. Source lowering, symbolic execution,
 DIMACS bytes, LRAT implementation refinement, and verdict authority remain
