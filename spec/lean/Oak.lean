@@ -204,6 +204,7 @@ import Oak.Tseitin
 import Oak.TseitinCNF
 import Oak.CNFBuilderTrace
 import Oak.CNFFinalObligation
+import Oak.CNFTermRoot
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction
