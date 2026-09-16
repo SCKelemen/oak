@@ -42,11 +42,31 @@ func LowerOptIRRV64(cfg optir.CFG, template *asm.Function) (*asm.Function, error
 	return lowerOptIRRV64(cfg, template, optIRRV64Registers, optIRRV64SpillRegisters)
 }
 
+// LowerOptIRRV64WithRegionMemory selects the closed scalar-global memory
+// subset after independently checking exact RegionMemorySSA evidence.
+func LowerOptIRRV64WithRegionMemory(
+	cfg optir.CFG,
+	template *asm.Function,
+	metadata optir.RegionMemoryMetadata,
+	memorySSA optir.RegionMemorySSA,
+	bindings map[optir.RegionID]OptIRRegionGlobal,
+) (*asm.Function, error) {
+	memory, err := validateOptIRRegionStores(cfg, template, metadata, memorySSA, bindings)
+	if err != nil {
+		return nil, err
+	}
+	return lowerOptIRRV64Selection(cfg, template, optIRRV64Registers, optIRRV64SpillRegisters, memory)
+}
+
 func lowerOptIRRV64WithRegisters(cfg optir.CFG, template *asm.Function, registers []int) (*asm.Function, error) {
 	return lowerOptIRRV64(cfg, template, registers, registers)
 }
 
 func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int) (*asm.Function, error) {
+	return lowerOptIRRV64Selection(cfg, template, strictRegisters, spillRegisters, nil)
+}
+
+func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegisters, spillRegisters []int, memory *optIRRegionStoreSelection) (*asm.Function, error) {
 	if template == nil || template.Signature == nil || template.Signature.Name == nil {
 		return nil, fmt.Errorf("machine: OptIR lowering needs an assembler function template")
 	}
@@ -92,6 +112,9 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	if coloringErr == nil {
 		colors, liveOut = coloring.Colors, coloring.LiveOut
 	} else {
+		if memory != nil {
+			return nil, fmt.Errorf("machine: OptIR RV64 region stores refuse register spills: %w", coloringErr)
+		}
 		if err := validateOptIRRV64SpillScratches(spillRegisters, []int{optIRRV64SpillScratchA, optIRRV64CopyScratch}); err != nil {
 			return nil, err
 		}
@@ -119,6 +142,9 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	if err != nil {
 		return nil, err
 	}
+	if memory != nil && len(calls) != 0 {
+		return nil, fmt.Errorf("machine: OptIR RV64 region stores refuse calls")
+	}
 	spillFrame := spillLayout.Frame
 	frame, raOffset, err := composeOptIRRV64Frame(spillFrame, len(calls) != 0)
 	if err != nil {
@@ -137,6 +163,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 		rematerializations: rematerializations, definitions: optIRRV64Definitions(cfg),
 		frame: frame, raOffset: raOffset,
 		labels: map[optir.BlockID]string{}, written: map[int]bool{}, calls: calls, order: layout.Order,
+		memory: memory, globals: map[string]asm.Global{},
 	}
 	for _, block := range cfg.Blocks {
 		selector.labels[block.ID] = "optir_b" + strconv.FormatUint(uint64(block.ID), 10)
@@ -152,7 +179,7 @@ func lowerOptIRRV64(cfg optir.CFG, template *asm.Function, strictRegisters, spil
 	out.Clobbers = nil
 	out.Frame = selector.frame
 	out.System = false
-	out.Globals = nil
+	out.Globals = cloneOptIRSelectedGlobals(selector.globals)
 	out.StackArgs = 0
 	out.Body = nil
 	bound := map[int]bool{}
@@ -191,6 +218,8 @@ type optIRRV64Selector struct {
 	calls              map[optir.ValueID]string
 	edges              int
 	order              []optir.BlockID
+	memory             *optIRRegionStoreSelection
+	globals            map[string]asm.Global
 }
 
 func (selector *optIRRV64Selector) lower() error {
@@ -217,8 +246,9 @@ func (selector *optIRRV64Selector) lower() error {
 				selector.normalize(selector.register(parameter.ID), parameter.Type, line)
 			}
 		}
-		for _, operation := range block.Operations {
-			if err := selector.operation(operation); err != nil {
+		for operationIndex, operation := range block.Operations {
+			site := optir.OperationSite{Block: block.ID, Index: operationIndex}
+			if err := selector.operation(operation, site); err != nil {
 				return fmt.Errorf("machine: OptIR block %d operation %s: %w", block.ID, operation.Code, err)
 			}
 		}
@@ -233,7 +263,10 @@ func (selector *optIRRV64Selector) lower() error {
 	return nil
 }
 
-func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
+func (selector *optIRRV64Selector) operation(operation optir.Operation, site optir.OperationSite) error {
+	if operation.Code == optir.OpStoreRegion {
+		return selector.regionStore(operation, site)
+	}
 	if len(operation.Results) == 1 {
 		if decision, rematerialized := selector.rematerializations[operation.Results[0].ID]; rematerialized {
 			if decision.Code != operation.Code {
@@ -294,6 +327,27 @@ func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 		delete(selector.colors, value)
 	}
 	return err
+}
+
+func (selector *optIRRV64Selector) regionStore(operation optir.Operation, site optir.OperationSite) error {
+	if selector.memory == nil {
+		return fmt.Errorf("effectful operation %s", operation.Code)
+	}
+	binding, admitted := selector.memory.stores[site]
+	if !admitted {
+		return fmt.Errorf("region store at %d:%d has no admitted global binding", site.Block, site.Index)
+	}
+	line := operation.Source.Line
+	source, err := selector.readValue(operation.Operands[0], optIRRV64SpillScratchA, line)
+	if err != nil {
+		return err
+	}
+	selector.emit("la", line, optIRRV64Register(optIRRV64CopyScratch), asm.Symbol{Name: binding.Symbol})
+	mnemonic := map[int]string{8: "sb", 16: "sh", 32: "sw", 64: "sd"}[binding.Global.Bits]
+	selector.emit(mnemonic, line, optIRRV64Register(source), asm.Memory{Base: optIRRV64Register(optIRRV64CopyScratch)})
+	selector.written[optIRRV64CopyScratch] = true
+	selector.globals[binding.Symbol] = binding.Global
+	return nil
 }
 
 func (selector *optIRRV64Selector) registerOperation(operation optir.Operation) error {
