@@ -274,6 +274,16 @@ pins. Neither equal counts nor equal scalar snapshots establish content
 integrity or producer immutability; same-size forged state is an explicit
 accepted numeric counterexample. Universal Go trace/map/pointer/key projection,
 full intermediate-root traversal and complete admission remain unrefined.
+The production checked stores are now isolated as `recordTerm`, `inputEdge`
+and `gateEdge`, with their original lookup/root/range checks and no trace
+storage. `Oak.CNFReplayRecording` models their repeated-key updates and proves
+an accepted event run from empty establishes the admitted-state invariant.
+`Oak.CNFReplayRecordedCoverage.check_exact` derives exact term-root/input/gate
+coverage from that executable run plus checked counts/finish, without assuming
+reachability. Bounded actual helper sequences are kernel-pinned, and a source
+structure regression confines replay-map writes to the checked helper sites.
+This does not universally prove the Go walker's control flow, aliases, trace
+projection or producer immutability; bookkeeping is not root semantics.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`

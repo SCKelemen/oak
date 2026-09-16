@@ -596,6 +596,29 @@ the actual Go recording trace is admitted against unchanged producer contents,
 full graph traversal/intermediate-root coverage, and settled admission remain
 open. These bookkeeping laws are distinct from the final-root semantic theorem.
 
+The three production recording sites now live in private checked helpers:
+`recordTerm` compares exact producer roots before updating the replay memo,
+and `inputEdge`/`gateEdge` require present, in-range, safely doubled outputs
+before recording their keys. The recursive walker and binary replay use these
+helpers; the refactor adds no trace storage or extra whole-graph pass.
+`Oak.CNFReplayRecording` models those guarded updates, including repeated
+keys, and proves that every accepted step preserves admitted coverage against
+a fixed producer. Its executable event run starts from empty and establishes
+the invariant. `Oak.CNFReplayRecordedCoverage.check_exact` composes that run
+with the actual projected counts and numeric completion check to derive exact
+domains/root lookups without a caller-supplied reachability premise.
+
+`TestNativeCNFReplayRecordingMatchesLean` kernel-pins bounded sequences of
+actual helper calls, their returned edges and projected map contents, including
+repeated writes and refused steps. Refusing a step leaves its input state
+unchanged; it does not roll back earlier successful writes. A separate source
+structure regression keeps replay-map writes at the checked helper sites.
+Neither test is a universal Go control-flow or aliasing proof. Faithful
+pointer/key/signed-field projection, the whole walker's trace correspondence,
+producer immutability and all semantic/serialization/verdict seams above
+remain separate. In particular, these helpers do not authorize arbitrary
+producer roots merely because their bookkeeping agrees.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and

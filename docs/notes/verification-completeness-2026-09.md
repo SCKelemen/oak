@@ -440,6 +440,17 @@ maps that pass numeric finish. That counterexample is important: scalar
 snapshot equality does not establish content immutability. Faithful Go
 graph/map/key projection and an implementation theorem for the actual admitted
 recording trace remain open; this is not full replay or native-verifier closure.
+The next executable-model slice isolates the actual checked recording stores
+in private Go helpers, retaining their checks and adding no trace buffer.
+`Oak.CNFReplayRecording` proves their accepted updates preserve the admitted
+invariant and that a checked event run from empty establishes it.
+`Oak.CNFReplayRecordedCoverage.check_exact` then derives exact coverage from
+the run and checked completion counts instead of assuming reachability.
+Actual helper sequences, returned edges and projected states are kernel-pinned;
+a syntactic write-site regression guards the helper boundary. The modeled
+recording invariant is now derived, while universal Go helper/walker
+correspondence, projection, aliasing and immutability remain unproved.
+This is not a universal Go execution theorem or root-semantics proof.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and

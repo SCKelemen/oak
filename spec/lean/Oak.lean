@@ -226,6 +226,8 @@ import Oak.CNFWordCertificate
 import Oak.CNFWordSettled
 import Oak.CNFReplayHeader
 import Oak.CNFReplayCoverage
+import Oak.CNFReplayRecording
+import Oak.CNFReplayRecordedCoverage
 import Oak.CNFMetadataCertificate
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
