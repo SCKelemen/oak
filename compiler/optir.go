@@ -16,17 +16,19 @@ import (
 // verified CFG/SSA view, and optimization results. The native candidate search
 // may select LoopInvariant through its fail-closed AArch64 selector.
 type OptIRFunction struct {
-	Name           string
-	Structured     optir.Function
-	CFG            optir.CFG
-	Constants      optir.SCCPResult
-	SCCPSimplified optir.CFG
-	SCCPRewrite    optir.SCCPRewriteReport
-	Loops          optir.LoopAnalysis
-	Simplified     optir.CFG
-	Simplification optir.GVNDCEReport
-	LoopInvariant  optir.CFG
-	LoopMotion     optir.LICMReport
+	Name             string
+	Structured       optir.Function
+	CheckedFacts     optir.CheckedFactAuthority
+	CheckedFactsHash string
+	CFG              optir.CFG
+	Constants        optir.SCCPResult
+	SCCPSimplified   optir.CFG
+	SCCPRewrite      optir.SCCPRewriteReport
+	Loops            optir.LoopAnalysis
+	Simplified       optir.CFG
+	Simplification   optir.GVNDCEReport
+	LoopInvariant    optir.CFG
+	LoopMotion       optir.LICMReport
 }
 
 // OptIRRefusal is an ordinary unsupported-subset result. The function remains
@@ -68,7 +70,7 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if !isFunction || function.Name == nil || function.Body == nil || function.ExternSymbol != "" || function.AsmBacked || len(function.TypeParams) != 0 {
 			continue
 		}
-		structured, err := lowerCheckedOptIRFunction(function, model.TypeChecker)
+		structured, authority, err := lowerCheckedOptIRFunction(function, model.TypeChecker)
 		if err != nil {
 			var unsupported *optIRUnsupported
 			if errors.As(err, &unsupported) {
@@ -81,22 +83,30 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR projection of %s failed verification: %w", function.Name.Value, err)
 		}
+		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after projection: %w", function.Name.Value, err)
+		}
 		analyses, err := runOptIRAnalysisGraph(cfg)
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR analysis graph for %s failed: %w", function.Name.Value, err)
 		}
+		if err := verifyOptIRAnalysisFacts(authority, analyses); err != nil {
+			return OptIRModule{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after optimization: %w", function.Name.Value, err)
+		}
 		module.Functions = append(module.Functions, OptIRFunction{
-			Name:           function.Name.Value,
-			Structured:     structured,
-			CFG:            cfg,
-			Constants:      analyses.constants,
-			SCCPSimplified: analyses.sccpSimplified,
-			SCCPRewrite:    analyses.sccpSimplification,
-			Loops:          analyses.loops,
-			Simplified:     analyses.simplified,
-			Simplification: analyses.simplification,
-			LoopInvariant:  analyses.loopInvariant,
-			LoopMotion:     analyses.loopMotion,
+			Name:             function.Name.Value,
+			Structured:       structured,
+			CheckedFacts:     authority,
+			CheckedFactsHash: authority.Fingerprint(),
+			CFG:              cfg,
+			Constants:        analyses.constants,
+			SCCPSimplified:   analyses.sccpSimplified,
+			SCCPRewrite:      analyses.sccpSimplification,
+			Loops:            analyses.loops,
+			Simplified:       analyses.simplified,
+			Simplification:   analyses.simplification,
+			LoopInvariant:    analyses.loopInvariant,
+			LoopMotion:       analyses.loopMotion,
 		})
 	}
 	return module, nil
@@ -111,39 +121,49 @@ func (ids *optIRIDs) value(typ optir.Type, name string, source optir.Source) opt
 }
 
 type optIRLowerer struct {
-	tc  *typechecker.TypeChecker
-	ids *optIRIDs
-	env map[string]optir.Value
+	tc    *typechecker.TypeChecker
+	ids   *optIRIDs
+	env   map[string]optir.Value
+	facts *optIRFactBuilder
 }
 
-func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (optir.Function, error) {
+type optIRFactBuilder struct {
+	records map[string]optir.CheckedFactRecord
+	values  map[string]optir.ValueID
+	err     error
+}
+
+func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (optir.Function, optir.CheckedFactAuthority, error) {
 	if function.Receiver != nil {
-		return optir.Function{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
+		return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
 	}
 	if function.Kernel {
-		return optir.Function{}, refuseOptIR(function.Token, "kernels retain their dedicated checked representation")
+		return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(function.Token, "kernels retain their dedicated checked representation")
 	}
 	if function.Lowering != nil {
-		return optir.Function{}, refuseOptIR(function.Token, "compiler-projected protocol functions retain their table lowering")
+		return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(function.Token, "compiler-projected protocol functions retain their table lowering")
 	}
 	signatureType, exists := tc.Env().GetType(function.Name.Value)
 	signature, isFunction := signatureType.(*typechecker.FunctionType)
 	if !exists || !isFunction || len(signature.Parameters) != len(function.Parameters) {
-		return optir.Function{}, fmt.Errorf("compiler: checked signature for OptIR function %s is unavailable", function.Name.Value)
+		return optir.Function{}, optir.CheckedFactAuthority{}, fmt.Errorf("compiler: checked signature for OptIR function %s is unavailable", function.Name.Value)
 	}
 	resultType, supported := checkedOptIRType(tc, signature.ReturnType)
 	if !supported {
-		return optir.Function{}, refuseOptIR(function.Token, "return type %s is outside the scalar OptIR subset", signature.ReturnType)
+		return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(function.Token, "return type %s is outside the scalar OptIR subset", signature.ReturnType)
 	}
-	lowerer := &optIRLowerer{tc: tc, ids: &optIRIDs{next: 1}, env: map[string]optir.Value{}}
+	lowerer := &optIRLowerer{
+		tc: tc, ids: &optIRIDs{next: 1}, env: map[string]optir.Value{},
+		facts: &optIRFactBuilder{records: map[string]optir.CheckedFactRecord{}, values: map[string]optir.ValueID{}},
+	}
 	structured := optir.Function{Name: function.Name.Value, Results: []optir.Type{resultType}}
 	for index, parameter := range function.Parameters {
 		if parameter == nil || parameter.Name == nil || parameter.Variadic {
-			return optir.Function{}, refuseOptIR(function.Token, "variadic or unnamed parameters are outside the scalar OptIR subset")
+			return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(function.Token, "variadic or unnamed parameters are outside the scalar OptIR subset")
 		}
 		typ, ok := checkedOptIRType(tc, signature.Parameters[index])
 		if !ok {
-			return optir.Function{}, refuseOptIR(parameter.Token, "parameter %s has unsupported type %s", parameter.Name.Value, signature.Parameters[index])
+			return optir.Function{}, optir.CheckedFactAuthority{}, refuseOptIR(parameter.Token, "parameter %s has unsupported type %s", parameter.Name.Value, signature.Parameters[index])
 		}
 		value := lowerer.ids.value(typ, parameter.Name.Value, optIRSource(parameter.Token))
 		structured.Parameters = append(structured.Parameters, value)
@@ -159,13 +179,27 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 		returned, err = lowerer.lowerExpression(body, &structured.Body)
 	}
 	if err != nil {
-		return optir.Function{}, err
+		return optir.Function{}, optir.CheckedFactAuthority{}, err
 	}
 	if returned.Type != resultType {
-		return optir.Function{}, fmt.Errorf("compiler: OptIR function %s produced %s, checked return is %s", function.Name.Value, returned.Type, resultType)
+		return optir.Function{}, optir.CheckedFactAuthority{}, fmt.Errorf("compiler: OptIR function %s produced %s, checked return is %s", function.Name.Value, returned.Type, resultType)
 	}
 	structured.Body.Yield = []optir.ValueID{returned.ID}
-	return structured, nil
+	if lowerer.facts.err != nil {
+		return optir.Function{}, optir.CheckedFactAuthority{}, lowerer.facts.err
+	}
+	records := make([]optir.CheckedFactRecord, 0, len(lowerer.facts.records))
+	for _, record := range lowerer.facts.records {
+		records = append(records, record)
+	}
+	authority, err := optir.NewCheckedFactAuthority(records)
+	if err != nil {
+		return optir.Function{}, optir.CheckedFactAuthority{}, fmt.Errorf("compiler: OptIR checked fact authority for %s: %w", function.Name.Value, err)
+	}
+	if err := optir.VerifyFunctionCheckedFacts(structured, authority); err != nil {
+		return optir.Function{}, optir.CheckedFactAuthority{}, fmt.Errorf("compiler: OptIR checked facts for %s: %w", function.Name.Value, err)
+	}
+	return structured, authority, nil
 }
 
 func checkedOptIRType(tc *typechecker.TypeChecker, typ typechecker.Type) (optir.Type, bool) {
@@ -190,7 +224,7 @@ func (lowerer *optIRLowerer) clone() *optIRLowerer {
 	for name, value := range lowerer.env {
 		environment[name] = value
 	}
-	return &optIRLowerer{tc: lowerer.tc, ids: lowerer.ids, env: environment}
+	return &optIRLowerer{tc: lowerer.tc, ids: lowerer.ids, env: environment, facts: lowerer.facts}
 }
 
 func (lowerer *optIRLowerer) lowerBlock(block *ast.BlockStatement, region *optir.Region, wantResult, scoped bool) (optir.Value, error) {
@@ -718,17 +752,63 @@ func assignedOuterNames(block *ast.BlockStatement, environment map[string]optir.
 
 func (lowerer *optIRLowerer) emit(region *optir.Region, code string, typ optir.Type, name string, tok token.Token, operands []optir.ValueID, effects []optir.Effect, attributes []optir.Attribute) optir.Value {
 	result := lowerer.ids.value(typ, name, optIRSource(tok))
+	facts := lowerer.checkedTypeFact(tok, result)
 	operation := &optir.Operation{
 		Code:       code,
 		Results:    []optir.Value{result},
 		Operands:   append([]optir.ValueID(nil), operands...),
 		Effects:    append([]optir.Effect(nil), effects...),
 		Attributes: append([]optir.Attribute(nil), attributes...),
-		Facts:      []optir.Fact{{Name: "checked.type", Values: []optir.ValueID{result.ID}, Provenance: "checked", Witness: string(typ)}},
+		Facts:      facts,
 		Source:     optIRSource(tok),
 	}
 	region.Nodes = append(region.Nodes, optir.Node{Operation: operation})
 	return result
+}
+
+func (lowerer *optIRLowerer) checkedTypeFact(tok token.Token, result optir.Value) []optir.Fact {
+	if lowerer.tc == nil || lowerer.facts == nil || lowerer.facts.err != nil {
+		return nil
+	}
+	proof, exists := lowerer.tc.ExpressionTypeProof(tok)
+	if !exists {
+		return nil
+	}
+	checked, exists := lowerer.tc.ExpressionTypeAt(tok)
+	if !exists || checked == nil {
+		lowerer.facts.err = fmt.Errorf("compiler: checked type proof %s has no expression type authority", proof.ID)
+		return nil
+	}
+	canonical, supported := checkedOptIRType(lowerer.tc, checked)
+	if !supported || canonical != result.Type {
+		lowerer.facts.err = fmt.Errorf("compiler: checked type proof %s has type %s, OptIR value %d has type %s", proof.ID, checked, result.ID, result.Type)
+		return nil
+	}
+	record := optir.CheckedFactRecord{
+		ID: proof.ID, Name: proof.Proposition, ValueType: canonical,
+		Provenance: proof.Provenance, Witness: proof.Witness, Scope: proof.Scope,
+		Dependencies: append([]string(nil), proof.Dependencies...),
+	}
+	if prior, duplicate := lowerer.facts.values[proof.ID]; duplicate && prior != result.ID {
+		lowerer.facts.err = fmt.Errorf("compiler: checked type proof %s is bound to both OptIR values %d and %d", proof.ID, prior, result.ID)
+		return nil
+	}
+	lowerer.facts.values[proof.ID] = result.ID
+	lowerer.facts.records[proof.ID] = record
+	return []optir.Fact{{
+		ID: proof.ID, Name: proof.Proposition, Values: []optir.ValueID{result.ID},
+		Provenance: proof.Provenance, Witness: proof.Witness, Scope: proof.Scope,
+		Dependencies: append([]string(nil), proof.Dependencies...),
+	}}
+}
+
+func verifyOptIRAnalysisFacts(authority optir.CheckedFactAuthority, analyses optIRAnalysisArtifacts) error {
+	for _, cfg := range []optir.CFG{analyses.sccpSimplified, analyses.simplified, analyses.loopInvariant} {
+		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (lowerer *optIRLowerer) emitBool(region *optir.Region, value bool, tok token.Token) optir.Value {

@@ -707,11 +707,13 @@ arithmetic. A separate, bounded transform consumes only exact independently
 recomputed evidence to replace known closed total-pure results, select known
 branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
 preserves effectful and trapping operations and independently verifies its
-output. Before GVN, a bounded cleanup removes a phi-like block parameter only
-when every explicit incoming edge supplies the same dominating SSA value (or
-the parameter itself on a loop backedge). Entry parameters are excluded because
-their ABI inputs are implicit CFG predecessors. It removes corresponding edge
-arguments and remaps operands and facts, then verifies the CFG. Dominance-scoped
+output. Before GVN, bounded fixed-point cleanup first removes unused non-entry
+block parameters and their exact incoming edge positions, then removes a
+phi-like block parameter only when every explicit incoming edge supplies the
+same dominating SSA value (or the parameter itself on a loop backedge). Entry
+parameters are excluded because their ABI inputs are implicit CFG predecessors.
+Operations, terminators, edge arguments, and proof facts are all uses. Each
+cleanup independently verifies the rewritten CFG. Dominance-scoped
 GVN and fixed-point DCE produce another verified CFG from a closed vocabulary
 of total pure scalar operations. Plain
 copies share a value number; exact commutative integer/equality operations and
@@ -727,9 +729,13 @@ its independently recomputed evidence to exact CFG and metadata fingerprints.
 Missing or inconsistent Mod/Ref information fails closed. A second analysis,
 under an explicit list of regions observable at normal return, propagates live
 definitions through reads and join/loop phis and reports overwritten exact
-writes as dead candidates. Opaque clobbers preserve both input and output.
-Neither analysis deletes code: DSE and load forwarding still wait for memory
-projection from checked Oak plus their own legality transforms. `Compilation.OptIR()` returns
+writes as dead candidates. Partial writes keep their predecessor live; volatile
+accesses are roots. A separately verified DSE transform can now remove a dead
+operation only when it is the closed `store.region` form and metadata certifies
+one whole-region, nonvolatile write. It rewrites operation sites and metadata,
+then rebuilds MemorySSA. Checked Oak memory projection has not landed, so this
+candidate cannot yet enter production emission; load forwarding is also open.
+`Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
 loop analysis reports dominators,
@@ -743,7 +749,10 @@ GVN/DCE and moves only closed total-pure operations whose operands are
 available at a canonical preheader. It does not speculate division, remainder,
 shifts, calls, memory, effects, unknown operations, or relational/path-local
 facts; a result-local `checked.type` fact may move because it is identical to
-the SSA result type. The cloned output is independently verified and carries a
+the SSA result type. That fact is no longer self-authorizing metadata: its
+opaque ID, scope, witness, dependencies, and type must match immutable
+authority exported by the specializing typechecker after projection and after
+every SSA rewrite. The cloned output is independently verified and carries a
 deterministic movement report. A changed post-LICM CFG is now an AArch64 or
 RV64 native candidate. Target-neutral SSA liveness/interference analysis assigns
 abstract colors; dead block parameters may share a color only with one another,
@@ -753,14 +762,18 @@ and typed/aligned abstract stack slots, never spills ABI precolors, and
 independently verifies interference and safe slot reuse. AArch64 materializes
 the plan in an overflow-checked, 16-byte-aligned frame bounded to 4080 bytes,
 using width- and signedness-correct traffic plus register/slot parallel copies.
-RV64's consumer is narrower: only an acyclic, call- and effect-free CFG may
-materialize. It verifies the same plan again, checks canonical slot widths and
-alignments, lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses
-reserved `t5`/`t6` scratches for at most two spilled operands. Loads preserve
-the target's canonical signed/narrow representation, each spilled result is
-stored immediately, spilled conditions reload explicitly, and simultaneous
-register/slot copies materialize SSA edges. RV64 loop and call spill traffic
-still refuses.
+For AArch64, a fingerprint-bound target-independent analysis may replace a
+spilled constant or a bounded copy chain rooted in one with reconstruction at
+each use. A target cost check keeps expensive literals in their slots; accepted
+recipes remove the corresponding frame storage and traffic and are checked
+again during selection. RV64's consumer is narrower: only an acyclic, call-
+and effect-free CFG may materialize. It verifies the same plan again, checks
+canonical slot widths and alignments, lays out a 16-byte-aligned frame bounded
+to 2032 bytes, and uses reserved `t5`/`t6` scratches for at most two spilled
+operands. Loads preserve the target's canonical signed/narrow representation,
+each spilled result is stored immediately, spilled conditions reload
+explicitly, and simultaneous register/slot copies materialize SSA edges. RV64
+loop/call spill traffic and rematerialization still refuse.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and

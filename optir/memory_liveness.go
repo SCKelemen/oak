@@ -207,6 +207,18 @@ func buildMemoryDefinitionLiveness(cfg CFG, memorySSA RegionMemorySSA, observabi
 		return nil
 	}
 	for _, access := range memorySSA.Accesses {
+		if access.Volatile {
+			liveAccesses[access.ID] = true
+			if err := markVersion(access.Input); err != nil {
+				return MemoryDefinitionLiveness{}, err
+			}
+			if access.Output != 0 {
+				if err := markVersion(access.Output); err != nil {
+					return MemoryDefinitionLiveness{}, err
+				}
+			}
+			continue
+		}
 		switch access.Kind {
 		case MemoryRead, MemoryReadWrite:
 			liveAccesses[access.ID] = true
@@ -260,7 +272,7 @@ func buildMemoryDefinitionLiveness(cfg CFG, memorySSA RegionMemorySSA, observabi
 		case MemoryVersionDefinition:
 			access := accesses[version.Definition]
 			liveAccesses[access.ID] = true
-			if access.Kind == MemoryReadWrite || access.Kind == MemoryUnknownClobber {
+			if access.Kind == MemoryReadWrite || access.Kind == MemoryUnknownClobber || !access.WholeRegion {
 				if err := markVersion(access.Input); err != nil {
 					return MemoryDefinitionLiveness{}, err
 				}
@@ -393,7 +405,7 @@ func fingerprintRegionMemoryObservability(observability RegionMemoryObservabilit
 
 func fingerprintMemoryDefinitionLiveness(analysis MemoryDefinitionLiveness) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.memory-definition-liveness.v1")
+	fingerprintString(digest, "oak.optir.memory-definition-liveness.v2")
 	fingerprintString(digest, analysis.inputFingerprint)
 	fingerprintString(digest, analysis.metadataFingerprint)
 	fingerprintString(digest, analysis.memorySSAFingerprint)

@@ -192,6 +192,7 @@ func cloneFacts(facts []Fact) []Fact {
 	for i, fact := range facts {
 		out[i] = fact
 		out[i].Values = append([]ValueID(nil), fact.Values...)
+		out[i].Dependencies = append([]string(nil), fact.Dependencies...)
 	}
 	return out
 }

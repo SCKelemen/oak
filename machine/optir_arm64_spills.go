@@ -20,11 +20,12 @@ type optIRArm64FrameSlot struct {
 }
 
 type optIRArm64Allocation struct {
-	colors  map[optir.ValueID]int
-	spills  map[optir.ValueID]optir.SpillSlotID
-	slots   map[optir.SpillSlotID]optIRArm64FrameSlot
-	frame   int64
-	liveOut map[optir.BlockID][]optir.ValueID
+	colors             map[optir.ValueID]int
+	spills             map[optir.ValueID]optir.SpillSlotID
+	slots              map[optir.SpillSlotID]optIRArm64FrameSlot
+	rematerializations map[optir.ValueID]optir.RematerializationDecision
+	frame              int64
+	liveOut            map[optir.BlockID][]optir.ValueID
 }
 
 // optIRArm64Allocate preserves the strict coloring path byte-for-byte. Only a
@@ -43,7 +44,38 @@ func optIRArm64Allocate(cfg optir.CFG, types map[optir.ValueID]optir.Type, fixed
 	if err := optir.VerifyRegisterPlan(cfg, optIRArm64SpillRegisters, fixed, plan); err != nil {
 		return optIRArm64Allocation{}, fmt.Errorf("spill plan evidence: %w", err)
 	}
-	slots, frame, err := optIRArm64LayoutSpills(plan.Slots)
+	rematerialization, err := optir.AnalyzeRematerialization(cfg, optIRArm64SpillRegisters, fixed, plan)
+	if err != nil {
+		return optIRArm64Allocation{}, fmt.Errorf("rematerialization analysis: %w", err)
+	}
+	if err := optir.VerifyRematerializationPlan(cfg, optIRArm64SpillRegisters, fixed, plan, rematerialization); err != nil {
+		return optIRArm64Allocation{}, fmt.Errorf("rematerialization evidence: %w", err)
+	}
+	definitions := optIRArm64Definitions(cfg)
+	rematerializations := make(map[optir.ValueID]optir.RematerializationDecision, len(rematerialization.Decisions))
+	for _, decision := range rematerialization.Decisions {
+		cost, ok := optIRArm64RematerializationCost(decision.Value, definitions, map[optir.ValueID]bool{}, 0)
+		if !ok || decision.Uses == 0 || cost > math.MaxUint64/decision.Uses || decision.Uses == math.MaxUint64 {
+			continue
+		}
+		if cost*decision.Uses <= decision.Uses+1 {
+			rematerializations[decision.Value] = decision
+		}
+	}
+	physicalSlots := make([]optir.SpillSlot, 0, len(plan.Slots))
+	for _, slot := range plan.Slots {
+		physical := slot
+		physical.Values = make([]optir.ValueID, 0, len(slot.Values))
+		for _, value := range slot.Values {
+			if _, rematerialized := rematerializations[value]; !rematerialized {
+				physical.Values = append(physical.Values, value)
+			}
+		}
+		if len(physical.Values) != 0 {
+			physicalSlots = append(physicalSlots, physical)
+		}
+	}
+	slots, frame, err := optIRArm64LayoutSpills(physicalSlots)
 	if err != nil {
 		return optIRArm64Allocation{}, err
 	}
@@ -61,7 +93,8 @@ func optIRArm64Allocate(cfg optir.CFG, types map[optir.ValueID]optir.Type, fixed
 			return fmt.Errorf("value %d does not have exactly one materialized location", value)
 		}
 		if spilled {
-			if _, exists := slots[slot]; !exists {
+			_, rematerialized := rematerializations[value]
+			if _, exists := slots[slot]; !exists && !rematerialized {
 				return fmt.Errorf("value %d names missing materialized spill slot %d", value, slot)
 			}
 		}
@@ -81,7 +114,10 @@ func optIRArm64Allocate(cfg optir.CFG, types map[optir.ValueID]optir.Type, fixed
 			}
 		}
 	}
-	return optIRArm64Allocation{colors: plan.Colors, spills: plan.Spills, slots: slots, frame: frame, liveOut: plan.LiveOut}, nil
+	return optIRArm64Allocation{
+		colors: plan.Colors, spills: plan.Spills, slots: slots, rematerializations: rematerializations,
+		frame: frame, liveOut: plan.LiveOut,
+	}, nil
 }
 
 func optIRArm64LayoutSpills(abstract []optir.SpillSlot) (map[optir.SpillSlotID]optIRArm64FrameSlot, int64, error) {
@@ -134,6 +170,9 @@ func (selector *optIRArm64Selector) valueLocation(value optir.ValueID) (optIRVal
 		}
 		return optIRValueLocation{register: register}, nil
 	}
+	if _, rematerialized := selector.rematerializations[value]; rematerialized {
+		return optIRValueLocation{rematerialized: value}, nil
+	}
 	if slot, spilled := selector.spills[value]; spilled && slot != 0 {
 		if _, exists := selector.slots[slot]; !exists {
 			return optIRValueLocation{}, fmt.Errorf("value %d names missing spill slot %d", value, slot)
@@ -149,6 +188,12 @@ func (selector *optIRArm64Selector) readValue(value optir.ValueID, scratch, line
 		return 0, err
 	}
 	if location.slot == 0 {
+		if location.rematerialized != 0 {
+			if err := selector.emitRematerialized(location.rematerialized, scratch, line, map[optir.ValueID]bool{}, 0); err != nil {
+				return 0, err
+			}
+			return scratch, nil
+		}
 		return location.register, nil
 	}
 	if err := selector.loadSpill(location.slot, scratch, selector.types[value], line); err != nil {
@@ -165,6 +210,9 @@ func (selector *optIRArm64Selector) writeValue(value optir.ValueID, scratch int)
 	if location.slot != 0 {
 		return scratch, nil
 	}
+	if location.rematerialized != 0 {
+		return scratch, nil
+	}
 	return location.register, nil
 }
 
@@ -174,6 +222,9 @@ func (selector *optIRArm64Selector) commitValue(value optir.ValueID, register, l
 		return err
 	}
 	if location.slot == 0 {
+		if location.rematerialized != 0 {
+			return nil
+		}
 		if location.register != register {
 			return fmt.Errorf("value %d was produced in x%d, want allocated x%d", value, register, location.register)
 		}
@@ -183,6 +234,9 @@ func (selector *optIRArm64Selector) commitValue(value optir.ValueID, register, l
 }
 
 func (selector *optIRArm64Selector) readLocation(location optIRValueLocation, destination int, typ optir.Type, line int) error {
+	if location.rematerialized != 0 {
+		return selector.emitRematerialized(location.rematerialized, destination, line, map[optir.ValueID]bool{}, 0)
+	}
 	if location.slot != 0 {
 		return selector.loadSpill(location.slot, destination, typ, line)
 	}
@@ -195,13 +249,65 @@ func (selector *optIRArm64Selector) emitLocationMove(move optIRLocationMove, lin
 		return selector.readLocation(move.source, move.destination.register, move.typ, line)
 	}
 	source := move.source.register
-	if move.source.slot != 0 {
+	if move.source.slot != 0 || move.source.rematerialized != 0 {
 		source = optIRSpillOperand1
-		if err := selector.loadSpill(move.source.slot, source, move.typ, line); err != nil {
+		if err := selector.readLocation(move.source, source, move.typ, line); err != nil {
 			return err
 		}
 	}
 	return selector.storeSpill(move.destination.slot, source, move.typ, line)
+}
+
+func (selector *optIRArm64Selector) emitRematerialized(value optir.ValueID, destination, line int, visiting map[optir.ValueID]bool, depth int) error {
+	if depth >= 64 {
+		return fmt.Errorf("rematerialization of value %d exceeds dependency limit", value)
+	}
+	if visiting[value] {
+		return fmt.Errorf("rematerialization dependency cycle at value %d", value)
+	}
+	operation, exists := selector.definitions[value]
+	if !exists || len(operation.Results) != 1 || operation.Results[0].ID != value || len(operation.Effects) != 0 || len(operation.Facts) != 0 {
+		return fmt.Errorf("value %d has no closed rematerialization definition", value)
+	}
+	visiting[value] = true
+	defer delete(visiting, value)
+	switch operation.Code {
+	case optir.OpConstBool:
+		if operation.Results[0].Type != optir.TypeBool || len(operation.Operands) != 0 {
+			return fmt.Errorf("malformed rematerialized Bool constant %d", value)
+		}
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok || spelling != "true" && spelling != "false" {
+			return fmt.Errorf("invalid rematerialized Bool constant %d", value)
+		}
+		bits := uint64(0)
+		if spelling == "true" {
+			bits = 1
+		}
+		selector.constant(destination, bits, 32, line)
+		return nil
+	case optir.OpConstInt:
+		if len(operation.Operands) != 0 {
+			return fmt.Errorf("malformed rematerialized integer constant %d", value)
+		}
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok {
+			return fmt.Errorf("rematerialized integer constant %d has no value", value)
+		}
+		bits, err := optIRIntegerConstant(spelling, operation.Results[0].Type)
+		if err != nil {
+			return fmt.Errorf("invalid rematerialized %s constant %d", operation.Results[0].Type, value)
+		}
+		selector.constant(destination, bits, optIRBits(operation.Results[0].Type), line)
+		return nil
+	case optir.OpCopy:
+		if len(operation.Operands) != 1 || len(operation.Attributes) != 0 || selector.types[operation.Operands[0]] != operation.Results[0].Type {
+			return fmt.Errorf("malformed rematerialized copy %d", value)
+		}
+		return selector.emitRematerialized(operation.Operands[0], destination, line, visiting, depth+1)
+	default:
+		return fmt.Errorf("value %d uses forbidden rematerialization operation %s", value, operation.Code)
+	}
 }
 
 func (selector *optIRArm64Selector) loadSpill(slotID optir.SpillSlotID, register int, typ optir.Type, line int) error {
@@ -257,4 +363,62 @@ func optIRArm64SpillWidth(typ optir.Type) (uint8, bool) {
 		return 0, false
 	}
 	return uint8(bits / 8), true
+}
+
+func optIRArm64Definitions(cfg optir.CFG) map[optir.ValueID]optir.Operation {
+	definitions := map[optir.ValueID]optir.Operation{}
+	for _, block := range cfg.Blocks {
+		for _, operation := range block.Operations {
+			for _, result := range operation.Results {
+				definitions[result.ID] = operation
+			}
+		}
+	}
+	return definitions
+}
+
+func optIRArm64RematerializationCost(value optir.ValueID, definitions map[optir.ValueID]optir.Operation, visiting map[optir.ValueID]bool, depth int) (uint64, bool) {
+	if depth >= 64 || visiting[value] {
+		return 0, false
+	}
+	operation, exists := definitions[value]
+	if !exists || len(operation.Results) != 1 || operation.Results[0].ID != value || len(operation.Effects) != 0 || len(operation.Facts) != 0 {
+		return 0, false
+	}
+	visiting[value] = true
+	defer delete(visiting, value)
+	switch operation.Code {
+	case optir.OpConstBool:
+		return 1, true
+	case optir.OpConstInt:
+		spelling, ok := optIRAttribute(operation, optir.AttributeValue)
+		if !ok {
+			return 0, false
+		}
+		value, err := optIRIntegerConstant(spelling, operation.Results[0].Type)
+		if err != nil {
+			return 0, false
+		}
+		bits := optIRBits(operation.Results[0].Type)
+		if bits == 32 {
+			value &= 0xffffffff
+		}
+		cost := uint64(0)
+		for shift := 0; shift < bits; shift += 16 {
+			if value>>uint(shift)&0xffff != 0 {
+				cost++
+			}
+		}
+		if cost == 0 {
+			cost = 1
+		}
+		return cost, true
+	case optir.OpCopy:
+		if len(operation.Operands) != 1 || len(operation.Attributes) != 0 {
+			return 0, false
+		}
+		return optIRArm64RematerializationCost(operation.Operands[0], definitions, visiting, depth+1)
+	default:
+		return 0, false
+	}
 }

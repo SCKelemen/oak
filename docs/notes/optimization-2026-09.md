@@ -95,7 +95,10 @@ verify independently; the result feeds later transforms and can affect emitted
 AArch64 or RV64 code only through the verifier-gated OptIR candidate below.
 
 The next target-independent cleanup candidate runs on the SCCP-rewritten CFG.
-It first removes a phi-like block parameter only when every explicit incoming
+It first removes unused non-entry block parameters and their exact incoming
+edge positions to a bounded fixed point; operation operands, terminators, edge
+arguments, and proof facts all keep a parameter live. It then removes a
+phi-like block parameter only when every explicit incoming
 edge supplies one identical dominating SSA value, allowing a self-reference on
 a loop backedge but never inferring an entry parameter from backedges alone.
 The matching edge positions and all uses/facts are remapped, one parameter per
@@ -138,7 +141,10 @@ vocabulary as GVN/DCE. Division, remainder, shifts, calls, memory, effects,
 unknown operations, and loops without a canonical preheader remain unchanged.
 Relational or path-derived facts pin an operation; the one exception is the
 result-local `checked.type` fact, which merely restates the typed SSA
-definition. Nested loops are considered outermost first, allowing a value
+definition. Its opaque ID, scope, witness, dependencies, and value type must
+match immutable authority exported by the specializing typechecker after
+projection and every SSA rewrite; transformed metadata cannot authorize itself.
+Nested loops are considered outermost first, allowing a value
 invariant across both loops to move directly to the outer preheader. Input and
 output are independently verified, and `Compilation.OptIR()` exposes the
 post-GVN/DCE LICM candidate and a deterministic movement report. Target-neutral
@@ -192,6 +198,14 @@ conditions reload explicitly. Machine tests prove production-pressure `u32`
 diamonds, wrapping `i8` edge traffic, spilled conditions, and spilled returns.
 Loops, calls, and call-frame composition remain RV64 refusals.
 
+Spilled constants and bounded copy chains rooted in constants now have a
+fingerprint-bound target-independent rematerialization analysis. It refuses
+parameters, arithmetic, calls, memory, traps, cycles, and values used by proof
+facts. AArch64 independently verifies the recipe and register plan, applies a
+target instruction-cost filter, removes accepted values from the physical
+spill frame, and reconstructs them at uses and edge copies. Expensive literals
+remain spilled. Rematerialization changes no emission gate.
+
 Region-aware MemorySSA has its first explicit analysis substrate as well.
 Checked metadata names regions and exact read/write/read-write behavior beside
 the operation's effect set; opaque calls conservatively clobber every declared
@@ -199,10 +213,13 @@ region. The deterministic graph has entry, definition, join, and loop versions
 and is independently recomputed against exact CFG/metadata fingerprints. A
 separate liveness analysis takes an explicit normal-return observability set,
 makes reads and live-out terminal versions roots, propagates through loop/join
-phis, and reports only unused exact writes as dead candidates. Nothing deletes
-them or performs load GVN until checked Oak memory operations and region
-identities project into OptIR and a separately gated transform consumes the
-evidence.
+phis, and reports only unused exact writes as dead candidates. Partial writes
+keep the reaching definition live and volatile accesses are observable roots.
+A separately verified transform now deletes only the closed `store.region`
+operation when it is one nonvolatile whole-region write and its exact output is
+dead. It renumbers metadata and rebuilds MemorySSA. This is still an
+analysis-only candidate until checked Oak memory operations and region
+identities project into OptIR; load GVN remains open.
 
 The compiler deliberately uses a hybrid pipeline/artifact architecture: source
 stages and private local cleanup remain linear, while reusable, branching,
@@ -318,12 +335,12 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef plus dead-definition liveness have landed, while deletion waits for checked memory-region projection and a legality transform |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed, while production DSE waits for checked memory-region projection |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |
 | Static analysis | alias, array-access, control-flow, data-flow, dependence, escape, pointer, shape, and value-range analysis | reusable proof domains feeding legality, representation choice, and costs |
-| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; AArch64 first, the same contracts reused by RV64 |
+| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; verified constant/copy rematerialization is consumed by AArch64 spill lowering, with the same analysis contract available to later targets |
 
 ## The program, in measured order
 

@@ -366,6 +366,13 @@ func validateSCCPOperation(operation Operation, types map[ValueID]Type) error {
 				return fmt.Errorf("compares unsupported type %s", operandType)
 			}
 		}
+	case OpStoreRegion:
+		if err := require(0, 1); err != nil {
+			return err
+		}
+		if len(operation.Effects) != 1 || operation.Effects[0] != EffectWriteMemory {
+			return fmt.Errorf("has effects %v, want exactly one memory-write effect", operation.Effects)
+		}
 	case OpCall:
 		if len(operation.Results) != 1 {
 			return fmt.Errorf("has %d results, want exactly one", len(operation.Results))

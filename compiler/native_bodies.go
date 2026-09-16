@@ -260,7 +260,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // search never pays to validate an alternate spelling with no generic
 // optimization in it.
 func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeChecker) (*optir.CFG, int, string) {
-	structured, err := lowerCheckedOptIRFunction(function, tc)
+	structured, authority, err := lowerCheckedOptIRFunction(function, tc)
 	if err != nil {
 		return nil, 0, ""
 	}
@@ -268,8 +268,14 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, tc *typechecker.TypeC
 	if err != nil {
 		return nil, 0, ""
 	}
+	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
+		return nil, 0, ""
+	}
 	analyses, err := runOptIRAnalysisGraph(cfg)
 	if err != nil {
+		return nil, 0, ""
+	}
+	if err := verifyOptIRAnalysisFacts(authority, analyses); err != nil {
 		return nil, 0, ""
 	}
 	changes := analyses.sccpSimplification.Changes() + analyses.simplification.Changes() + analyses.loopMotion.HoistedOperations

@@ -50,10 +50,15 @@ type Attribute struct {
 // proposition permission to transform them. Provenance is the stable proof
 // vocabulary used by the semantic layer.
 type Fact struct {
+	ID         string
 	Name       string
 	Values     []ValueID
 	Provenance string
 	Witness    string
+	Scope      string
+	// Dependencies are stable checked proposition identities or normalized
+	// premises. Their order is part of fact identity.
+	Dependencies []string
 }
 
 // Value is one typed SSA definition.
