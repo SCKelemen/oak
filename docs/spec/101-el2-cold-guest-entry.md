@@ -177,6 +177,13 @@ runtime guest-PC-to-X6 provenance, target alignment/canonicality/mapping/
 executability/PAC, SPSR consistency, ERET observation or success, ordering,
 synchronization, other-state preservation, or occurrence.
 
+The guest-PSTATE theorem computes static `MSR SPSR_EL2, X7` word `0xd51c4007`.
+Generated Lean proves the exact S3_4 target and low-32 update and rejects the
+adjacent SPSR_EL1/VHE/NV route. It proves no access/trap admission, runtime
+guest-PSTATE-to-X7 provenance, X7 upper-bit preservation, SPSR field or legal
+exception-return validity, relation to ELR_EL2, ERET observation or success,
+ordering, synchronization, other-state preservation, or occurrence.
+
 ## Executable refinement test
 
 The AArch64 freestanding test compiles the actual Oak example and requires this ordered assembly pattern:

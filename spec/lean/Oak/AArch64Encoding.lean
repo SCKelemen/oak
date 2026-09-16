@@ -160,6 +160,12 @@ def msrElrEl2X6 : BitVec 32 :=
 theorem msr_elr_el2_x6_word : msrElrEl2X6 = 0xd51c4026#32 := by native_decide
 -- OAK-A64-ELR-EL2-WORD-END
 
+-- OAK-A64-SPSR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrSpsrEl2X7 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b000#3 0b00111#5
+theorem msr_spsr_el2_x7_word : msrSpsrEl2X7 = 0xd51c4007#32 := by native_decide
+-- OAK-A64-SPSR-EL2-WORD-END
+
 def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
 def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩
 def dmbSyDecode : BarrierDecode := ⟨true, .dmb, .fullSystem, .all⟩

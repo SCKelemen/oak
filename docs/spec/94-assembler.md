@@ -854,13 +854,19 @@ full-width direct component update. The source gate follows the complete
 op2=001/op1=100 route and counts the model's second ELR_EL2 assignment without
 merging the distinct ELR_EL1/VHE path into this theorem.
 
-These seams prove neither access admission nor runtime X0/X1/X2/X3/X4/X5/X6
-value provenance, HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR field validity, desired
-virtualization or exception-routing configuration, publication, BBM, TLBI
-effects, predicate-state consistency, NVMem contents/effects, stack validity or
-use, target-address alignment/canonicality/mapping/executability/PAC, relation
-to SPSR or ERET, timer behavior, completion, context synchronization, or a CAT
-edge.
+`MSR SPSR_EL2, X7` is `0xd51c4007`. Generated Lean selects the exact target and
+proves that the official 32-bit component receives X7 bits 31:0. The source
+gate pins the direct S3_4 route and keeps the separate SPSR_EL1/VHE/NV path,
+including NVMem(352), outside the projected theorem.
+
+These seams prove neither access admission nor runtime
+X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
+HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization
+or exception-routing configuration, publication, BBM, TLBI effects,
+predicate-state consistency, NVMem contents/effects, stack validity or use,
+target-address alignment/canonicality/mapping/executability/PAC, relation
+between ELR and SPSR, legal exception return or ERET observation, timer
+behavior, completion, context synchronization, or a CAT edge.
 
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

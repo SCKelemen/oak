@@ -121,6 +121,14 @@ alignment/canonicality/mapping/executability/PAC, SPSR consistency, ERET
 observation or success, ordering, synchronization, other state, and dynamic
 occurrence remain external.
 
+The SPSR_EL2 seam computes `MSR SPSR_EL2, X7` as `0xd51c4007` and proves the
+official admitted S3_4 body stores exactly guest-PSTATE bits 31:0 in the 32-bit
+component. It rejects the distinct SPSR_EL1/VHE/NV route and does not project
+NVMem(352). Access/traps, runtime guest-PSTATE-to-X7 provenance, upper-bit
+preservation, SPSR mode/DAIF/instruction-state/reserved/feature validity, legal
+exception return, relation to ELR_EL2, ERET observation or success, ordering,
+synchronization, other state, and dynamic occurrence remain external.
+
 ## 6. Next protocol layers
 
 1. refine concrete TLBI/DSB primitives and architectural completion into the

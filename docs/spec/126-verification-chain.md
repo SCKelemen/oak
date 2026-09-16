@@ -301,6 +301,14 @@ occurrence, runtime guest-PC-to-X6 provenance, target alignment/canonicality/
 mapping/executability/PAC, relation to SPSR, ERET observation or success, other
 state, ordering, and synchronization remain open.
 
+The following `MSR SPSR_EL2, X7` word is `0xd51c4007`. Generated Lean proves
+the exact S3_4 target, Rt preservation, and the official admitted body's
+low-32 assignment to the 32-bit register. The source gate keeps the distinct
+S3_0 SPSR_EL1/VHE/NV/NVMem(352) path outside the theorem. Access/traps,
+occurrence, runtime guest-PSTATE-to-X7 provenance, upper-bit preservation,
+SPSR field and legal exception-return validity, relation to ELR_EL2, ERET
+observation or success, other state, ordering, and synchronization remain open.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

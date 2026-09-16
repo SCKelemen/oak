@@ -873,6 +873,62 @@ theorem elr_el2_generated_body_is_direct (newValue : BitVec 64) :
     Out.Functions.aarch64_sysregwrite_elr_el2_pure newValue = newValue := by
   rfl
 
+/-! SPSR_EL2/X7 follows the exact S3_4_C4_C0_0 route and stores bits 31:0.
+The distinct S3_0 SPSR_EL1 route and its VHE/NV alternatives are rejected by
+this projection. PSTATE validity, ELR consistency, and ERET behavior remain
+outside these facts. -/
+
+def decodedSpsrEl2SystemRegisterWriteTarget (word : BitVec 32) :
+    Option (_root_.SystemRegisterWriteTarget × BitVec 5) :=
+  let result := Out.Functions.decode64_system_write_spsr_el2_pure word
+  match result.1 with
+  | false => none
+  | true => some (result.2.1, result.2.2)
+
+theorem spsr_el2_x7_decoder_execution_target :
+    decodedSpsrEl2SystemRegisterWriteTarget msrSpsrEl2X7 =
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 0b00111#5) := by
+  rfl
+
+theorem spsr_el2_x8_decoder_rt_is_preserved :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51c4008#32 =
+      some (.SystemRegisterWriteTarget_SPSR_EL2, 0b01000#5) := by
+  rfl
+
+theorem invalid_system_register_write_has_no_spsr_el2_target :
+    decodedSpsrEl2SystemRegisterWriteTarget 0#32 = none := by
+  rfl
+
+theorem mrs_spsr_el2_x7_not_projected_to_write :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd53c4007#32 = none := by
+  rfl
+
+theorem msr_spsr_el1_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd5184007#32 = none := by
+  rfl
+
+theorem msr_spsr_el12_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51d4007#32 = none := by
+  rfl
+
+theorem msr_spsr_el3_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51e4007#32 = none := by
+  rfl
+
+theorem msr_elr_el2_x7_not_projected_to_spsr_el2 :
+    decodedSpsrEl2SystemRegisterWriteTarget 0xd51c4027#32 = none := by
+  rfl
+
+theorem spsr_el2_component_body_bridge (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_spsr_el2_pure newValue =
+      (writeSpsrEl2Component newValue).value := by
+  rfl
+
+theorem spsr_el2_generated_body_is_direct_low32 (newValue : BitVec 64) :
+    Out.Functions.aarch64_sysregwrite_spsr_el2_pure newValue =
+      newValue.setWidth 32 := by
+  rfl
+
 /-! The adjacent general-MSR projection for the HCR_EL2/X0 cold-entry word.
 The redirect predicate reads separately supplied projections of old HCR_EL2;
 no theorem below relates them to `oldValue`, derives them from the incoming

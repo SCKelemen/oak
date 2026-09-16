@@ -191,6 +191,12 @@ declaration, and the existence of a second textual ELR_EL2 assignment. A
 negative theorem keeps that separate S3_0 ELR_EL1/VHE/NV route outside this
 component theorem.
 
+The guest-PSTATE write is a direct low-word update after admission. Lean
+computes `MSR SPSR_EL2, X7` as `0xd51c4007`, selects SPSR_EL2/X7, and proves the
+official 32-bit component receives exactly X7 bits 31:0. The source gate pins
+the exact S3_4 route and declaration while the local decoder rejects the S3_0
+SPSR_EL1/VHE/NV route that can separately assign SPSR_EL2 or NVMem(352).
+
 The preceding HCR write has the parallel exact seam. Lean computes
 `MSR HCR_EL2, X0` as `0xd51c1100`, selects HCR_EL2/X0, and proves the projected
 component body directly installs the supplied value at EL2. The redirect
@@ -251,6 +257,14 @@ relation to SPSR_EL2; and no ERET observation, success, or transfer. It proves
 no ordering, completion, context synchronization, or preservation of other
 architectural state.
 
+The SPSR_EL2 theorem proves no access/minimum-EL admission, trap absence,
+dynamic occurrence, runtime guest-PSTATE-to-X7 provenance, or preservation of
+X7 bits 63:32. It validates no mode, DAIF, instruction-state, reserved, or
+feature-dependent field; no legal exception-return state or current-EL
+transition; no relation to ELR_EL2; and no ERET observation, success, or
+target. It proves no SPSR_EL1 VHE/NV/NVMem(352) behavior, ordering, completion,
+context synchronization, or preservation of other architectural state.
+
 ## 7. Verification status
 
 | Layer | Status |
@@ -269,6 +283,7 @@ architectural state.
 | exact CNTVOFF_EL2/X4 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
 | exact SP_EL1/X5 word and conditional full-width component update | Lean/Sail proved; official source drift-pinned |
 | exact ELR_EL2/X6 word and direct full-width component update | Lean/Sail proved; official source drift-pinned |
+| exact SPSR_EL2/X7 word and direct low-32 component update | Lean/Sail proved; official source drift-pinned |
 | hidden hardware barriers | absence assembly-tested + Lean capability theorem |
 | runtime allocation/dispatch | absent by construction |
 | protocol-specific register sequencing | not globally proved |

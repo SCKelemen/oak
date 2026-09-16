@@ -184,6 +184,20 @@ theorem write_elr_el2_is_direct (newValue : BitVec 64) :
     writeElrEl2Component newValue = ⟨newValue⟩ := by
   rfl
 
+/-- The successful official SPSR_EL2 write body's complete 32-bit component.
+    The source X register is 64-bit, but the exact S3_4 tuple stores only its
+    low word. PSTATE validity, ERET behavior, and access/trap effects are omitted. -/
+structure SPSRWriteComponent where
+  value : BitVec 32
+  deriving DecidableEq, Repr
+
+def writeSpsrEl2Component (newValue : BitVec 64) : SPSRWriteComponent :=
+  ⟨newValue.setWidth 32⟩
+
+theorem write_spsr_el2_is_direct_low32 (newValue : BitVec 64) :
+    writeSpsrEl2Component newValue = ⟨newValue.setWidth 32⟩ := by
+  rfl
+
 /-- The pinned model tests these old HCR_EL2 control-bit projections before
     writing HCR_EL2. They must not be derived from the incoming new value.
     Their consistency with `oldValue` remains a separate refinement premise. -/
