@@ -475,6 +475,42 @@ func TestCheckedMemoryAuthorityRejectsForgedStaleAndAmbiguousOperations(t *testi
 	}
 }
 
+func TestCheckedMemoryAuthorityRejectsUntaggedClosedMemoryOpcodesWithoutEffects(t *testing.T) {
+	authority, err := NewCheckedMemoryAuthority(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		effects []Effect
+		cfg     CFG
+	}{
+		{name: "load without effects", cfg: CFG{Name: "load", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+			ID: 0, Operations: []Operation{{Code: OpLoadRegion, Results: []Value{{ID: 1, Type: "u32"}}}},
+			Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+		}}}},
+		{name: "load with trap only", effects: []Effect{EffectTrap}, cfg: CFG{Name: "load", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+			ID: 0, Operations: []Operation{{Code: OpLoadRegion, Results: []Value{{ID: 1, Type: "u32"}}}},
+			Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+		}}}},
+		{name: "store without effects", cfg: CFG{Name: "store", Entry: 0, Blocks: []Block{{
+			ID: 0, Parameters: []Value{{ID: 1, Type: "u32"}}, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{1}}},
+			Terminator: Terminator{Kind: TerminatorReturn},
+		}}}},
+		{name: "store with trap only", effects: []Effect{EffectTrap}, cfg: CFG{Name: "store", Entry: 0, Blocks: []Block{{
+			ID: 0, Parameters: []Value{{ID: 1, Type: "u32"}}, Operations: []Operation{{Code: OpStoreRegion, Operands: []ValueID{1}}},
+			Terminator: Terminator{Kind: TerminatorReturn},
+		}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.cfg.Blocks[0].Operations[0].Effects = test.effects
+			if _, err := ProjectCheckedMemory(test.cfg, authority); err == nil || !strings.Contains(err.Error(), "no checked access ID") {
+				t.Fatalf("ProjectCheckedMemory error = %v", err)
+			}
+		})
+	}
+}
+
 func TestCheckedMemoryProjectionRejectsMutationAndStaleCFG(t *testing.T) {
 	read := checkedMemoryRecord(t, Source{Line: 2, Column: 3}, "global:g", MemoryRead, TypeBool, false)
 	authority, err := NewCheckedMemoryAuthority([]CheckedMemoryAccessRecord{read})

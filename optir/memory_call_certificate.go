@@ -207,13 +207,14 @@ func FingerprintCertifiedRegionMemoryInput(
 	return fmt.Sprintf("%x", digest.Sum(nil)), nil
 }
 
-func deriveCheckedMemoryCallSummary(cfg CFG, authority CheckedMemoryAuthority, requireExact bool) (CheckedMemoryCallSummary, []CheckedMemoryCallRecord, error) {
-	if _, err := ProjectCheckedMemory(cfg, authority); err != nil {
-		return CheckedMemoryCallSummary{}, nil, err
+func deriveCheckedMemoryCallSummary(cfg CFG, authority CheckedMemoryAuthority, requireExact bool) (CheckedMemoryCallSummary, checkedMemoryAuthorityProjection, error) {
+	coverage := checkedMemoryAuthorityUpperBound
+	if requireExact {
+		coverage = checkedMemoryAuthorityExact
 	}
-	activeAccesses, activeCalls := activeCheckedMemoryAuthority(cfg, authority)
-	if requireExact && (len(activeAccesses) != len(authority.records) || len(activeCalls) != len(authority.callRecords)) {
-		return CheckedMemoryCallSummary{}, nil, fmt.Errorf("optir: checked memory call summary requires exact active authority coverage")
+	active, err := projectActiveCheckedMemoryAuthority(cfg, authority, coverage)
+	if err != nil {
+		return CheckedMemoryCallSummary{}, checkedMemoryAuthorityProjection{}, err
 	}
 
 	byRegion := make(map[RegionID]CheckedMemoryCallAccess)
@@ -230,18 +231,18 @@ func deriveCheckedMemoryCallSummary(cfg CFG, authority CheckedMemoryAuthority, r
 		byRegion[access.Region] = access
 		return nil
 	}
-	for _, record := range activeAccesses {
+	for _, record := range active.direct {
 		if err := add(CheckedMemoryCallAccess{
 			Region: record.Region, Kind: record.Kind, ValueType: record.ValueType,
 			WholeRegion: false, Volatile: false,
 		}); err != nil {
-			return CheckedMemoryCallSummary{}, nil, err
+			return CheckedMemoryCallSummary{}, checkedMemoryAuthorityProjection{}, err
 		}
 	}
-	for _, call := range activeCalls {
+	for _, call := range active.calls {
 		for _, access := range call.Accesses {
 			if err := add(access); err != nil {
-				return CheckedMemoryCallSummary{}, nil, err
+				return CheckedMemoryCallSummary{}, checkedMemoryAuthorityProjection{}, err
 			}
 		}
 	}
@@ -251,26 +252,8 @@ func deriveCheckedMemoryCallSummary(cfg CFG, authority CheckedMemoryAuthority, r
 	}
 	sort.Slice(accesses, func(i, j int) bool { return accesses[i].Region < accesses[j].Region })
 	summary := CheckedMemoryCallSummary{accesses: accesses}
-	summary.fingerprint = fingerprintCheckedMemoryCallSummary(cfg, activeCalls, accesses)
-	return summary, activeCalls, nil
-}
-
-func activeCheckedMemoryAuthority(cfg CFG, authority CheckedMemoryAuthority) ([]CheckedMemoryAccessRecord, []CheckedMemoryCallRecord) {
-	accesses := make([]CheckedMemoryAccessRecord, 0, len(authority.records))
-	calls := make([]CheckedMemoryCallRecord, 0, len(authority.callRecords))
-	for _, block := range cfg.Blocks {
-		for _, operation := range block.Operations {
-			if operation.MemoryAccessID != "" {
-				accesses = append(accesses, authority.records[operation.MemoryAccessID])
-			}
-			if operation.MemoryCallID != "" {
-				record := authority.callRecords[operation.MemoryCallID]
-				record.Accesses = append([]CheckedMemoryCallAccess(nil), record.Accesses...)
-				calls = append(calls, record)
-			}
-		}
-	}
-	return accesses, calls
+	summary.fingerprint = fingerprintCheckedMemoryCallSummary(cfg, active.calls, accesses)
+	return summary, active, nil
 }
 
 func verifyCheckedMemoryCallCertificateGraph(root string, nodes map[string]checkedMemoryCallCertificateNode) (map[string]CheckedMemoryCallSummary, []checkedMemoryCallProofStep, error) {
@@ -290,21 +273,20 @@ func verifyCheckedMemoryCallCertificateGraph(root string, nodes map[string]check
 			return CheckedMemoryCallSummary{}, fmt.Errorf("optir: checked memory call certificate is missing callee %q", name)
 		}
 		states[name] = 1
-		summary, calls, err := deriveCheckedMemoryCallSummary(node.cfg, node.authority, name != root)
+		summary, active, err := deriveCheckedMemoryCallSummary(node.cfg, node.authority, name != root)
 		if err != nil {
 			return CheckedMemoryCallSummary{}, fmt.Errorf("optir: checked memory call certificate node %q: %w", name, err)
 		}
-		activeAccesses, _ := activeCheckedMemoryAuthority(node.cfg, node.authority)
 		step := checkedMemoryCallProofStep{
-			name: name, direct: make([]CheckedMemoryCallAccess, 0, len(activeAccesses)),
-			children: make([]checkedMemoryCallProofChild, 0, len(calls)), summary: summary.Accesses(),
+			name: name, direct: make([]CheckedMemoryCallAccess, 0, len(active.direct)),
+			children: make([]checkedMemoryCallProofChild, 0, len(active.calls)), summary: summary.Accesses(),
 		}
-		for _, access := range activeAccesses {
+		for _, access := range active.direct {
 			step.direct = append(step.direct, CheckedMemoryCallAccess{
 				Region: access.Region, Kind: access.Kind, ValueType: access.ValueType,
 			})
 		}
-		for _, call := range calls {
+		for _, call := range active.calls {
 			child, err := visit(call.Callee)
 			if err != nil {
 				return CheckedMemoryCallSummary{}, err

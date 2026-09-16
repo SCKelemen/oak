@@ -53,6 +53,20 @@ func TestCheckedMemoryCallCertificateAcceptsNoModRefLeaf(t *testing.T) {
 	}
 }
 
+func TestCheckedMemoryCallCertificateRejectsStrippedRootMemoryAuthority(t *testing.T) {
+	for _, effects := range [][]Effect{nil, {EffectTrap}} {
+		root := checkedMemoryCertificateDirectNode(t, "root", []CheckedMemoryCallAccess{{
+			Region: "global:state", Kind: MemoryRead, ValueType: "u32",
+		}})
+		root.CFG.Blocks[0].Operations[0].MemoryAccessID = ""
+		root.CFG.Blocks[0].Operations[0].Effects = effects
+		if _, err := NewCheckedMemoryCallCertificate("root", []CheckedMemoryCallCertificateNode{root}); err == nil ||
+			!strings.Contains(err.Error(), "no checked memory access ID") {
+			t.Fatalf("stripped root authority with effects %v: %v", effects, err)
+		}
+	}
+}
+
 func TestCheckedMemoryCallCertificateAuthenticatesTransitiveSummaries(t *testing.T) {
 	leaf := checkedMemoryCertificateDirectNode(t, "leaf", []CheckedMemoryCallAccess{
 		{Region: "global:state", Kind: MemoryRead, ValueType: "u32"},

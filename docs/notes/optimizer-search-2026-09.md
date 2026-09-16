@@ -878,8 +878,11 @@ because a callee may execute an assignment conditionally. Every child call has
 the same evidence, and the summary fingerprint binds the exact callee CFG,
 sorted child summaries, and canonical effect set. Foreign, bodyless, and
 recursive graphs fail closed; absence of authority never implies an effect.
-Production does not rely on those sealed records alone. A standalone OptIR
-checker consumes a closed certificate graph: the exact final optimized root
+Production does not rely on those sealed records alone. One fail-closed
+CFG-order projection resolves every active operation against separate
+authority and supplies the same accepted records to summary construction and
+the proof trace. A standalone OptIR checker then consumes a closed certificate
+graph: the exact final optimized root
 and the original checked CFG/authority for every reachable callee. It
 reprojects every node, requires exact non-root authority coverage, recursively
 recomputes the canonical Mod/Ref joins, and rejects cycles, missing, duplicate,
@@ -889,11 +892,14 @@ fingerprint also binds a deterministic child-before-parent proof trace. A small
 consumer checks that trace without reading CFGs or hashes: every child must
 already be accepted with the exact claimed access set, every typed region effect
 is joined exactly, names are unique, the root is final, and every non-root is
-referenced. `Oak.OptIRCallSummaryCertificate` proves the structural model over
-well-formed projected accesses sound for exact reachable read/write bits,
-closure, and topological acyclicity; bounded production decisions are pinned
-to executable Lean examples. CFG-to-trace refinement and universal Go-to-Lean
-correspondence remain open. The graph
+referenced. `Oak.OptIRMemoryAuthorityProjection` proves the preceding
+structural operation/authority model has exact active membership, exact-mode
+coverage, and composes with the exact summary fold.
+`Oak.OptIRCallSummaryCertificate` proves the trace model over well-formed
+projected accesses sound for exact reachable read/write bits, closure, and
+topological acyclicity; bounded production decisions at both seams are pinned
+to executable Lean examples. Concrete CFG/validator refinement and universal
+Go-to-Lean correspondence remain open. The graph
 fingerprint binds the whole accepted graph, and AArch64/RV64 production
 region-memory selection requires and reruns that certificate exactly when an
 active final call summary is interpreted by MemorySSA. A call-only `NoModRef`
@@ -959,9 +965,10 @@ whether the body may ship. Aggregate/partial regions, broader memory loops,
 load PRE from entry/read/call-produced versions or loop phis, definite-write
 summaries, and calls in memory loops remain open; exact recursive
 `NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
-checker, and a Lean-proved model of its small postorder effect core have landed.
-CFG-to-trace refinement and universal implementation correspondence remain
-TCB-closure work.
+checker, and composed Lean structural models of active-authority projection
+and the small postorder effect core have landed. Concrete CFG/validator
+refinement and universal implementation correspondence remain TCB-closure
+work.
 
 As the projection broadens, region memory SSA should power:
 
@@ -1185,10 +1192,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     checked scalar-global projection, and one verifier-proved canonical memory
     loop on both targets landed; exact recursive
     `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries plus a standalone closed-DAG
-    certificate checker and a Lean-proved model of its small postorder effect
-    core also landed, while CFG-to-trace refinement, universal implementation
-    correspondence, broader loops, aggregate regions, and definite-write
-    summaries remain**);
+    certificate checker and composed Lean structural models of active-authority
+    projection and its small postorder effect core also landed, while concrete
+    CFG/validator refinement, universal implementation correspondence, broader
+    loops, aggregate regions, and definite-write summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
 21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address

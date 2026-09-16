@@ -324,6 +324,9 @@ func projectCheckedMemory(cfg CFG, authority CheckedMemoryAuthority) (CheckedMem
 				continue
 			}
 			if operation.MemoryAccessID == "" {
+				if operation.Code == OpLoadRegion || operation.Code == OpStoreRegion {
+					return CheckedMemoryProjection{}, fmt.Errorf("optir: memory operation %d:%d has no checked access ID", block.ID, index)
+				}
 				if hasMemoryEffect {
 					return CheckedMemoryProjection{}, fmt.Errorf("optir: memory operation %d:%d has no checked access ID", block.ID, index)
 				}

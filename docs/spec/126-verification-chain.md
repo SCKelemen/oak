@@ -127,21 +127,29 @@ labeled. Then the assembler encodes the words itself (§9) and writes the
 companion object; the object format and lane are those of `Oak.Target`.
 
 The OptIR scalar-call memory path has the first deliberately small
-proof-certificate core beneath its larger graph producer. The production Go
-consumer checks a child-before-parent trace using only exact typed region
-effects and graph names; `Oak.OptIRCallSummaryCertificate` proves the matching
-structural model yields exact reachable read/write bits and a closed acyclic
-graph. Selected Go decisions are pinned to kernel-checked examples. This is a
-**proved model with bounded correspondence**, not full implementation
-refinement: CFG-to-trace projection, SHA identity, source re-lowering, and
-machine-callee identity remain outside the theorem.
+proof-certificate core beneath its larger graph producer. One fail-closed
+CFG-order checker resolves active opaque IDs against separate authority, and
+its accepted projection feeds both summary construction and the
+child-before-parent trace. `Oak.OptIRMemoryAuthorityProjection` proves the
+matching structural operation/authority model has exact active direct and call
+membership, exact non-root coverage, and composes with the exact typed summary
+fold. The production Go trace consumer then checks only exact typed region
+effects and graph names; `Oak.OptIRCallSummaryCertificate` proves that model
+yields exact reachable read/write bits and a closed acyclic graph. Selected Go
+decisions at both seams are pinned to kernel-checked examples. This is a
+**proved structural model with bounded correspondence**, not full
+implementation refinement: concrete CFG extraction and SSA verification,
+source and opcode/type validators, authority construction, SHA identity,
+callee-summary truth, source re-lowering, and machine-callee identity remain
+outside the theorems.
 
 Native verifier verdicts carry the Oak callees whose summaries they used.
 Every successful result shape—including unit effects, multi-register
 aggregates, deferred span decisions, and two-half vectors—preserves that
 dependency union. The versioned on-disk verdict cache stores and validates the
 same list, and its key includes direct machine-call targets as well as source
-reachability. Thus cold and warm builds feed the same dependency graph to the
+and theorem-rewritten reference-body reachability. Thus cold and warm builds
+feed the same dependency graph to the
 verified-profile closure; malformed or legacy records are cache misses. This
 closes metadata preservation, not the larger proof-engine TCB: the cache does
 not yet contain independently checkable native-equivalence certificates.

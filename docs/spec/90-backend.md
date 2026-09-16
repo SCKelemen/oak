@@ -782,14 +782,23 @@ root alone may retain unused upper-bound records after verified rewrites. Its
 deterministic child-before-parent proof trace is also checked by a smaller
 consumer which reads no CFG or hash: it admits unique names, exact summaries
 of already accepted children, exact typed per-region effect joins, a final
-root, and no unrelated nodes. `Oak.OptIRCallSummaryCertificate` models that
-structural core over already well-formed projected accesses and proves exact
-reachable read/write bits, closure, and topological acyclicity. Bounded Go
-tests pin the live three-by-three effect join and representative graph
-decisions to Lean examples. The Go boundary additionally rejects empty names,
-regions and types, unsupported effects, volatile accesses, and whole-region
-claims before the modeled core; the pins are not a universal implementation
-refinement. Its
+root, and no unrelated nodes. A single checked CFG-order projection now feeds
+both summary derivation and the proof trace; there is no second unchecked ID
+scan. It rejects missing, unknown, duplicated, or simultaneous access/call
+IDs, moved sources, mismatched direct shapes or callees, and every untagged
+closed memory opcode or opaque effect. Exact mode proves every non-root
+authority record remains active; upper-bound mode permits only removed root
+records. `Oak.OptIRMemoryAuthorityProjection` models this structural
+operation-to-authority seam and proves exact active membership, exact-mode
+coverage, source/shape/callee inversion, and composition with the exact
+summary fold. `Oak.OptIRCallSummaryCertificate` models the following trace
+consumer and proves exact reachable read/write bits, closure, and topological
+acyclicity. Bounded Go tests pin representative projection, effect-join, and
+graph decisions to Lean examples. The Go boundary additionally checks the
+concrete CFG/SSA, source representation, opcode/effect/arity and value types,
+authority construction, fingerprints, and callee-summary claims. Those
+details remain outside the structural models, so the pins are not a universal
+implementation refinement. Its
 length-delimited certificate fingerprint binds the exact final root CFG,
 root authority, every reachable callee CFG/authority, and every derived
 summary. Both production region-memory selectors rerun the checker; a final
@@ -840,8 +849,8 @@ regions, load PRE from entry/read/call-produced versions or loop phis,
 definite-write summaries, and calls in memory loops remain open; exact
 recursive `NoModRef`, `Ref`, `Mod`,
 and `ModRef` may-effect summaries and their standalone graph checker are
-implemented. CFG-to-trace refinement, universal Go-to-Lean correspondence,
-source re-lowering, and exact machine-callee identity remain TCB-closure work.
+implemented. Universal concrete CFG/validator-to-Lean refinement, source
+re-lowering, and exact machine-callee identity remain TCB-closure work.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its

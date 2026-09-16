@@ -312,13 +312,19 @@ Oak's LRAT, RUP, Tseitin, and self-hosted checker work provides much of the
 architectural precedent for this step.
 
 One narrow slice now follows this shape. Recursive OptIR scalar-call memory
-summaries carry a deterministic postorder trace; a small hash-free Go consumer
-checks exact child access claims, typed effect joins, closure, and root order.
+summaries first pass through one checked CFG-order authority projection whose
+accepted output feeds both summary construction and the deterministic
+postorder trace. `Oak.OptIRMemoryAuthorityProjection` proves exact active
+direct/call membership, exact non-root coverage, identity/shape inversion, and
+composition with the exact summary fold. A small hash-free Go consumer then
+checks exact child access claims, typed effect joins, closure, and root order;
 `Oak.OptIRCallSummaryCertificate` proves those properties for the structural
-model over well-formed projected accesses, with selected production decisions
-pinned to Lean examples. This does not yet remove the surrounding TCB:
-CFG-to-trace projection, universal Go-to-Lean correspondence, source lowering,
-and machine-callee identity remain open.
+trace model. Selected production decisions at both seams are pinned to Lean
+examples. This does not yet remove the surrounding TCB: the models abstract
+concrete CFG extraction and SSA verification, source and operation/type
+validation, authority construction, SHA identity, callee-summary truth,
+source lowering, and machine-callee identity; universal Go-to-Lean
+correspondence remains open.
 
 ### 3.4 Object, executable, relocation, and linking are not formally closed
 
@@ -478,9 +484,11 @@ of the algorithms that discovered them.
 The checker itself should be implemented twice or refined to Lean, following
 the LRAT checker's pattern.
 
-The OptIR call-summary postorder checker is the first scoped model/proof slice;
-its CFG-to-trace and universal implementation-refinement seams remain before it
-can count as a fully independently verified certificate checker.
+The OptIR authority projection and call-summary postorder checker are the first
+composed model/proof slice. Their structural seam is closed and bounded Go
+decisions are pinned, but the concrete CFG/validator implementation and
+universal implementation-refinement seams remain before this can count as a
+fully independently verified certificate checker.
 
 ### 3. Finish frontend and resource implementation refinements
 
