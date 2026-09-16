@@ -1021,6 +1021,17 @@ A practical order is:
 
 Where a transform depends on a source theorem, establish that theorem/license before machine candidate validation.
 
+Step 5 spends the validation budget one *shape* at a time (2026-09-16,
+`opt/search.go`): a candidate's shape is its transforms without the
+verifier-gated ones (`reallocate`, `schedule`), which move and rename but
+change nothing the verifier reads. Once a shape has been validated without
+a proof, the next validation goes to the cheapest candidate of a shape not
+yet judged, and only when every shape has been judged does the budget
+return to cost order. The case that forced it: the vectorized map's three
+cheapest forms were one hoisted shape under different gated transforms,
+each witnessed on the same remainder-loop obligation, and the plain
+vectorized shape, which proves, never got a validation.
+
 The optimizer should cache verdicts using the same dependency-aware mechanism already used for native verdicts so candidate search does not make incremental builds re-prove unchanged implementations.
 
 ## 16. Roadmap

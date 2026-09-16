@@ -499,3 +499,29 @@ func TestSearchTrustedVerdictNeedsUngatedForm(t *testing.T) {
 		t.Fatalf("selected %s", sel.Candidate.Name())
 	}
 }
+
+func TestSearchValidationsSpanShapes(t *testing.T) {
+	// The cheapest form is a hoisted shape under a gated transform and is
+	// witnessed; the hoisted shape alone would be witnessed too. The
+	// second validation goes to a shape not yet judged — the gated
+	// transform alone, whose shape is the identity's — and it proves.
+	report := &Report{}
+	s := &Search{Registry: NewRegistry(&toggle{name: "hoist", phase: PhaseLoop, fires: true}, &gatedToggle{toggle{name: "sched", phase: PhaseMachine, fires: true}}), Costs: AArch64Costs, Validations: 3, Report: report}
+	d := &fakeDriver{
+		metrics:  map[string]Metrics{"hoist+sched": {Instructions: 4}, "hoist": {Instructions: 5}, "sched": {Instructions: 6}, "": {Instructions: 7}},
+		verdicts: map[string]Outcome{"hoist+sched": Witnessed, "hoist": Witnessed, "sched": Proven, "": Proven},
+	}
+	sel, err := s.Run("f", Identity(config{}), NewFacts(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Candidate.Name() != "sched" || sel.Verdict.Outcome != Proven {
+		t.Fatalf("selected %s (%s); validated %v\n%s", sel.Candidate.Name(), sel.Verdict.Outcome, d.validated, report.String())
+	}
+	if len(d.validated) != 2 || d.validated[0] != "hoist+sched" || d.validated[1] != "sched" {
+		t.Fatalf("validated %v: want the hoisted shape once, then the other shape", d.validated)
+	}
+	if !strings.Contains(report.String(), "its shape under other gated transforms, was judged witnessed") {
+		t.Errorf("report:\n%s", report.String())
+	}
+}
