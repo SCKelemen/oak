@@ -195,7 +195,12 @@ strict verifier conjunction/disjunction and Oak's short circuit have the same
 value. A value-position Bool conditional over these expressions keeps the same
 carriers in its guard and arms and renders as Lean `if`;
 `Oak.FloatLoweringRefinement.lowerFlow_eval` closes every finite nesting of
-such value conditionals. This is not yet a claim about statement branches.
+such value conditionals. `lowerConditionalAssignment_eval` closes the first
+statement-position case too: one existing `f32` local is initialized, both
+arms assign it once from the same incoming scope, the verifier merges the arm
+terms with `iteTerm`, and the extraction's do-block continues with the selected
+value. Multiple assigned locals, nested statement arms, and effectful arms
+remain outside this slice.
 Pure `f32` calls compose too:
 arguments are evaluated in the caller scope, bound by the callee's ordered
 parameter list, and the straight-line callee body uses the same bit-level

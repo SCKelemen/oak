@@ -118,6 +118,9 @@ var loweringProgramRenders = []struct {
 	// rebinding substitute the initializer term into the remaining body.
 	{"f: (a: f32) -> f32 = {\n  y: f32 = a + 1.5\n  y * y\n}\n", "fmul32(fadd32(a, 1069547520), fadd32(a, 1069547520))"},
 	{"f: (a: f32) -> f32 = {\n  y: f32 = a\n  y = y + 1.0\n  y * 2.0\n}\n", "fmul32(fadd32(a, 1065353216), 1073741824)"},
+	// A statement conditional assigns one existing f32 local in each arm;
+	// the verifier merges those values with iteTerm before the continuation.
+	{"f: (a, b: f32) -> f32 = {\n  y: f32 = a\n  a < b ? { y = b + 1.0 } | { y = a * 2.0 }\n  y - 3.0\n}\n", "fsub32((((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fadd32(b, 1065353216) : fmul32(a, 1073741824)), 1077936128)"},
 	{"f: (a, b: u32) -> u32 = {\n  y: u32 = a + b\n  y * y\n}\n", "((a add b) mul (a add b))"},
 	{"f: (a: u32) -> u32 = {\n  y: u32 = a\n  y = y + 1\n  y * 2\n}\n", "((a add 1) mul 2)"},
 	{"f: (a: u32) -> u32 = {\n  y: u8 = u8_trunc_u32(a)\n  u32(y)\n}\n", "(a and 255)"},

@@ -181,14 +181,27 @@ def Expr.eval : Expr → SourceEnv → Float32
       Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
   | .letIn name value body, ρ => body.eval (ρ.set name (value.eval ρ))
 
-/-- The verifier term subset reached by `lowerF`. -/
-inductive Term
-  | param (name : String)
-  | literal (bits : UInt32)
-  | float (op : VerifierOp) (left right : Term)
-  | unary (op : VerifierUnaryOp) (operand : Term)
-  | copysign (magnitude sign : Term)
-  deriving Repr
+/- The mutually recursive verifier value and Boolean terms. `Term.ite` is
+the merge produced for a float local assigned in both arms of a statement
+conditional; comparison leaves in its guard refer back to float terms. -/
+mutual
+  inductive Term
+    | param (name : String)
+    | literal (bits : UInt32)
+    | float (op : VerifierOp) (left right : Term)
+    | unary (op : VerifierUnaryOp) (operand : Term)
+    | copysign (magnitude sign : Term)
+    | ite (guard : BoolTerm) (whenTrue whenFalse : Term)
+    deriving Repr
+
+  inductive BoolTerm
+    | compare (op : VerifierCompareOp) (left right : Term)
+    | literal (value : Bool)
+    | negate (condition : BoolTerm)
+    | conjunction (left right : BoolTerm)
+    | disjunction (left right : BoolTerm)
+    deriving Repr
+end
 
 /-- The verifier's symbolic bindings.  A local maps directly to the term of
 its initializer, which is how `declareLocal` and `assignLocal` substitute
@@ -199,14 +212,26 @@ abbrev TermEnv := String → Term
 def TermEnv.set (σ : TermEnv) (name : String) (value : Term) : TermEnv :=
   fun candidate => if candidate = name then value else σ candidate
 
-/-- The verifier-side interpretation under the same source parameters. -/
-def Term.eval : Term → SourceEnv → Float32
-  | .param name, ρ => ρ name
-  | .literal bits, _ => Float32.ofBits bits
-  | .float op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
-  | .unary op operand, ρ => op.eval (operand.eval ρ)
-  | .copysign magnitude sign, ρ =>
-      Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
+/- The mutually recursive verifier-side interpretation under the same source
+parameters. -/
+mutual
+  def Term.eval : Term → SourceEnv → Float32
+    | .param name, ρ => ρ name
+    | .literal bits, _ => Float32.ofBits bits
+    | .float op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+    | .unary op operand, ρ => op.eval (operand.eval ρ)
+    | .copysign magnitude sign, ρ =>
+        Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
+    | .ite guard whenTrue whenFalse, ρ =>
+        bif guard.eval ρ then whenTrue.eval ρ else whenFalse.eval ρ
+
+  def BoolTerm.eval : BoolTerm → SourceEnv → Bool
+    | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+    | .literal value, _ => value
+    | .negate condition, ρ => !condition.eval ρ
+    | .conjunction left right, ρ => left.eval ρ && right.eval ρ
+    | .disjunction left right, ρ => left.eval ρ || right.eval ρ
+end
 
 /-- The float branch of `oakLowering.lower`: operands keep their source order,
 each source operation becomes one width-32 `termFloat`, and a local is
@@ -292,23 +317,7 @@ inductive Condition
   | disjunction (left right : Condition)
   deriving Repr
 
-/-- The verifier-side Boolean term produced by `floatCompare`. -/
-inductive BoolTerm
-  | compare (op : VerifierCompareOp) (left right : Term)
-  | literal (value : Bool)
-  | negate (condition : BoolTerm)
-  | conjunction (left right : BoolTerm)
-  | disjunction (left right : BoolTerm)
-  deriving Repr
-
 def Condition.eval : Condition → SourceEnv → Bool
-  | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
-  | .literal value, _ => value
-  | .negate condition, ρ => !condition.eval ρ
-  | .conjunction left right, ρ => left.eval ρ && right.eval ρ
-  | .disjunction left right, ρ => left.eval ρ || right.eval ρ
-
-def BoolTerm.eval : BoolTerm → SourceEnv → Bool
   | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
   | .literal value, _ => value
   | .negate condition, ρ => !condition.eval ρ
@@ -460,6 +469,99 @@ theorem lowerFlow_eval (flow : FlowExpr) (ρ : SourceEnv) :
     (lowerFlow flow).eval ρ = flow.eval ρ := by
   exact lowerFlowWith_eval flow ρ ρ parameterTerms (parameterTerms_agree ρ)
 
+/-- One existing float local assigned once in each arm of a statement-position
+Bool conditional, followed by a straight-line continuation. -/
+structure ConditionalAssignment where
+  name : String
+  initial : Expr
+  guard : Condition
+  whenTrue : Expr
+  whenFalse : Expr
+  continuation : Expr
+  deriving Repr
+
+def ConditionalAssignment.sourceScope (branch : ConditionalAssignment)
+    (current : SourceEnv) : SourceEnv :=
+  current.set branch.name (branch.initial.eval current)
+
+def ConditionalAssignment.verifierScope (branch : ConditionalAssignment)
+    (σ : TermEnv) : TermEnv :=
+  σ.set branch.name (lowerWith branch.initial σ)
+
+def ConditionalAssignment.sourceSelected (branch : ConditionalAssignment)
+    (current : SourceEnv) : Float32 :=
+  let currentScope := branch.sourceScope current
+  bif branch.guard.eval currentScope then
+    branch.whenTrue.eval currentScope
+  else
+    branch.whenFalse.eval currentScope
+
+def ConditionalAssignment.verifierSelected (branch : ConditionalAssignment)
+    (σ : TermEnv) : Term :=
+  let currentScope := branch.verifierScope σ
+  .ite (lowerConditionWith branch.guard currentScope)
+    (lowerWith branch.whenTrue currentScope)
+    (lowerWith branch.whenFalse currentScope)
+
+def ConditionalAssignment.eval (branch : ConditionalAssignment)
+    (current : SourceEnv) : Float32 :=
+  branch.continuation.eval
+    ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
+
+/-- `lowerConditionalStatement` for this one-local slice: both arm values are
+lowered from the same incoming scope, merged under the guard, and substituted
+into the continuation. -/
+def lowerConditionalAssignmentWith (branch : ConditionalAssignment)
+    (σ : TermEnv) : Term :=
+  lowerWith branch.continuation
+    ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ))
+
+private theorem conditionalScope_agree (branch : ConditionalAssignment)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    Agree parameters (branch.sourceScope current) (branch.verifierScope σ) := by
+  exact agree_set parameters current σ branch.name
+    (branch.initial.eval current) (lowerWith branch.initial σ) hσ
+    (lowerWith_eval branch.initial parameters current σ hσ)
+
+private theorem conditionalSelected_eval (branch : ConditionalAssignment)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (branch.verifierSelected σ).eval parameters = branch.sourceSelected current := by
+  have hScoped := conditionalScope_agree branch parameters current σ hσ
+  simp only [ConditionalAssignment.verifierSelected,
+    ConditionalAssignment.sourceSelected, Term.eval]
+  rw [lowerConditionWith_eval branch.guard parameters
+        (branch.sourceScope current) (branch.verifierScope σ) hScoped,
+      lowerWith_eval branch.whenTrue parameters
+        (branch.sourceScope current) (branch.verifierScope σ) hScoped,
+      lowerWith_eval branch.whenFalse parameters
+        (branch.sourceScope current) (branch.verifierScope σ) hScoped]
+
+theorem lowerConditionalAssignmentWith_eval (branch : ConditionalAssignment)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerConditionalAssignmentWith branch σ).eval parameters = branch.eval current := by
+  have hScoped := conditionalScope_agree branch parameters current σ hσ
+  have hMerged : Agree parameters
+      ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
+      ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ)) :=
+    agree_set parameters (branch.sourceScope current) (branch.verifierScope σ)
+      branch.name (branch.sourceSelected current) (branch.verifierSelected σ)
+      hScoped (conditionalSelected_eval branch parameters current σ hσ)
+  exact lowerWith_eval branch.continuation parameters
+    ((branch.sourceScope current).set branch.name (branch.sourceSelected current))
+    ((branch.verifierScope σ).set branch.name (branch.verifierSelected σ)) hMerged
+
+def lowerConditionalAssignment (branch : ConditionalAssignment) : Term :=
+  lowerConditionalAssignmentWith branch parameterTerms
+
+theorem lowerConditionalAssignment_eval (branch : ConditionalAssignment)
+    (ρ : SourceEnv) :
+    (lowerConditionalAssignment branch).eval ρ = branch.eval ρ := by
+  exact lowerConditionalAssignmentWith_eval branch ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
+
 /-- A pure call in this slice: ordered callee parameter names paired with
 argument expressions evaluated in the caller, and a straight-line callee body.
 Parameter uniqueness is a frontend invariant. -/
@@ -610,6 +712,18 @@ example : lowerFlow
         (.leaf (.float .fadd (.param "a") (.literal 0x3F800000)))
         (.leaf (.float .fsub (.param "b") (.literal 0x3F800000))))
       (.leaf (.float .fmul (.param "b") (.literal 0x40000000))) := rfl
+example : lowerConditionalAssignment {
+    name := "y"
+    initial := a
+    guard := .compare .lt a b
+    whenTrue := .binary .add b (.literal 0x3F800000)
+    whenFalse := .binary .mul a (.literal 0x40000000)
+    continuation := .binary .sub (.param "y") (.literal 0x40400000)
+  } = .float .fsub
+    (.ite (.compare .lt (.param "a") (.param "b"))
+      (.float .fadd (.param "b") (.literal 0x3F800000))
+      (.float .fmul (.param "a") (.literal 0x40000000)))
+    (.literal 0x40400000) := rfl
 example : lowerCall {
     arguments := [("x", .binary .add a b), ("y", b)]
     body := .binary .add (.binary .mul (.param "x") (.param "y"))
