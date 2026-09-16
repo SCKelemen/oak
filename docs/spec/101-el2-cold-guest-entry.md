@@ -276,10 +276,12 @@ supplied translated 52-bit PA is zero-extended to 56 bits, break data stays
 zero in either endian, and make data is X2 in little endian or its exact byte
 reversal in big endian. Full-body source hashes pin the alignment,
 translation/fault, exclusive/MTE, trickbox/counter, and direct-write route plus
-the no-device external-RAM boundary. Neither projection proves route
-reachability, PA/descriptor provenance, successful RAM mutation, a unique
-write, or a CAT event, and the Sail-decorated occurrences still require their
-external descriptor actions. There is no Darwin/Mach-O oracle or privileged
+the no-device external-RAM boundary. The next pure projection makes the exact
+selected tuple `(56, 8, defaultRAM, ZeroExtend(PA), data)` explicit at that
+boundary. These projections prove neither route/call reachability,
+PA/descriptor/default-RAM provenance, successful RAM mutation, byte placement
+or atomicity, a unique write, nor a CAT event, and the Sail-decorated
+occurrences still require their external descriptor actions. There is no Darwin/Mach-O oracle or privileged
 Apple EL2 execution gate yet. Oak separately has an exact zero-overhead source/object leaf
 for the fixed `DSB ISH; VMALLS12E1IS; DSB ISH; ISB` slice, but its formal
 completed wrapper still requires those execution-level completion and sync

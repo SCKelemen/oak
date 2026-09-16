@@ -825,6 +825,23 @@ function str64_aligned_normal_write_memory_arguments_pure
     (sail_zero_extend(paddress, 56), write_data)
 }
 
+/* The no-device model's next two wrappers preserve these arguments:
+ * __WriteMemory calls __WriteRAM(56, N, __defaultRAM, address, val_name),
+ * and __WriteRAM forwards them to external write_ram.  This pure projection
+ * specializes N to the ordinary STR64 size of eight bytes and makes the
+ * register value an explicit input.  It proves neither that either wrapper
+ * is dynamically invoked nor that external memory changes.
+ */
+
+val str64_no_device_write_ram_call_arguments_pure :
+  (bits(56), bits(56), bits(64)) ->
+    (int, int, bits(56), bits(56), bits(64))
+
+function str64_no_device_write_ram_call_arguments_pure
+  (default_ram, address, data) = {
+    (56, 8, default_ram, address, data)
+}
+
 /* ---------------------------------------------------------------------
  * The A64 barrier decoder (docs/spec/94-assembler.md §9).
  *

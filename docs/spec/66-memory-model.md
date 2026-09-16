@@ -34,8 +34,10 @@ inhabits it under separate one-way `ca`, `ob`, TLBI-membership, and `inv-scope`
 obligations. Construction of those primitive predicates, a complete formal
 semantics of CAT, and the occurrence-indexed instruction-to-event bridge remain
 open. The adjacent Sail proof conditionally projects aligned ordinary STR64
-data to the selected pre-`__WriteMemory` PA/data arguments, but does not prove
-route reachability, memory mutation, or event generation.
+data through the pre-`__WriteMemory` pair to the no-device model's selected
+external `write_ram` arguments `(56, 8, defaultRAM, PA, data)`. The default-RAM
+register value remains an explicit input, and the projection proves neither
+route/call reachability nor memory mutation or event generation.
 
 ## 1. Execution events
 

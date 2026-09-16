@@ -480,13 +480,17 @@ and post-endian data: break is zero under either endian, little-endian make is
 X2, and big-endian make is X2 with its eight bytes reversed. The drift gate
 pins complete official bodies from endian/alignment selection through
 translation, fault, exclusive, MTE, trickbox/counter routing, `aset__Mem`, and
-`__WriteMemory`, plus the selected no-device model and its external
-`write_ram` boundary. This is not route-reachability or memory-effect evidence.
+`__WriteMemory`, plus the exact `__defaultRAM : bits(56)` register declaration
+and selected no-device forwarding wrapper. A further generated pure projection
+selects `(56, 8, defaultRAM, ZeroExtend(PA), data)` at the external `write_ram`
+boundary, retaining zero for break and the same endian-dependent make data.
+This is not route/call-reachability or memory-effect evidence.
 Occurrence-level decorators retain an external route predicate indexed by the
 same event, virtual address, endian result, PA, and data; extraction returns it
 and the original descriptor occurrence unchanged.
-Alignment, normal fault-free translation and PA provenance, special-route
-exclusion, RAM mutation/return, unique writes, CAT event/tag identity,
+Alignment, normal fault-free translation and PA/default-RAM provenance,
+special-route exclusion, wrapper/external return, RAM mutation, byte placement,
+atomicity/non-tearing, unique writes, CAT event/tag identity,
 visibility, completion, and publication remain open.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned

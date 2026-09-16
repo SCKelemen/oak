@@ -447,6 +447,15 @@ def str64AlignedNormalWriteMemoryArguments (bigEndian : Bool)
   (paddress.zeroExtend 56,
     if bigEndian then bigEndianReverse64 preMemData else preMemData)
 
+/-- Selected arguments at the external `write_ram` boundary of the pinned
+    no-device wrappers, specialized to one ordinary 64-bit store. The default
+    RAM register value is explicit. This function does not invoke the external
+    primitive or describe any memory effect. -/
+def str64NoDeviceWriteRAMCallArguments (defaultRAM address : BitVec 56)
+    (data : BitVec 64) :
+    Int × Int × BitVec 56 × BitVec 56 × BitVec 64 :=
+  (56, 8, defaultRAM, address, data)
+
 /-- Arm's `HighestSetBit`, `CountLeadingZeroBits`, `CountLeadingSignBits`:
 ```
 function HighestSetBit x = { foreach (i from ('N - 1) to 0 by 1 in dec)

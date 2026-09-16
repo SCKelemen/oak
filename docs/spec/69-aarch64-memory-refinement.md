@@ -395,6 +395,11 @@ to 56 bits and the post-endian 64-bit data. Consequently the exact break store
 selects `(ZeroExtend(PA), 0)` under either endian, the little-endian make store
 selects `(ZeroExtend(PA), X2)`, and the big-endian make case selects the exact
 eight-byte reversal of X2. A known-byte theorem fixes the reversal direction.
+The next generated pure projection follows the pinned no-device wrappers and
+selects the external `write_ram` arguments
+`(56, 8, defaultRAM, ZeroExtend(PA), data)`, with `defaultRAM` explicit rather
+than inferred from a runtime register state. Break data is still zero and make
+data retains the same endian-dependent result.
 
 The official-source oracle pins complete normalized bodies and exact
 signatures for `BigEndianReverse`, `aset_Mem`,
@@ -402,10 +407,12 @@ signatures for `BigEndianReverse`, `aset_Mem`,
 no-device `__WriteRAM` wrapper. It also pins the 52-bit `FullAddress` field,
 the three overload routes, endian/aligned selection, translation/fault,
 exclusive, MTE, trickbox, counter-register, size-16 split, direct-write, model
-file-selection, and external `write_ram` seams. These checks justify the
-conditional argument projection only. Alignment and route reachability,
-translation correctness, the supplied PA's provenance, normal return, RAM
-mutation, and event creation are not outputs of the pure function.
+file-selection, exact `__defaultRAM : bits(56)` declaration, ordered wrapper
+bodies, and external `write_ram` seam. These checks justify the conditional
+argument projections only. Alignment and route/call reachability, translation
+correctness, the supplied PA's or default-RAM value's provenance, wrapper or
+external return, RAM mutation/byte placement/atomicity, and event creation are
+not outputs of the pure functions.
 The occurrence-level break/make decorators therefore require an opaque
 `AlignedNormalWriteMemoryRoute` premise indexed by the same occurrence,
 virtual address, endian result, physical address, and pre-endian data. Their
@@ -443,7 +450,7 @@ store/system order and no ISB. The two local equalities are recorded in
 lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
 verifier's decided subset: its verdict remains **trusted**, not proven.
 Dynamic PC/object trace extraction, reachability and effects of the official
-ASL call after the selected pre-`__WriteMemory` arguments, and every
+ASL calls after the selected external `write_ram` arguments, and every
 instruction-to-action classification remain
 compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
 object oracle or a privileged Apple EL2 execution gate.

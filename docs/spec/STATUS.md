@@ -22,13 +22,14 @@ predicates and proves the local witness inhabits it under factored one-way
 `ca`, `ob`, TLBI-membership, and `inv-scope` premises. It does not construct
 those predicates, official CAT events, memory effects, physical addresses,
 completion, invalidation, or publication. The adjacent generated Sail proof
-now conditionally reaches the selected ordinary aligned pre-`__WriteMemory`
-arguments: an external translated 52-bit PA is zero-extended to 56 bits;
-break data is zero under either endian; make data is X2 in little endian and
-byte-reversed in big endian. The occurrence decorator retains an external
-route predicate indexed by event, VA, endian, PA, and data. It does not prove
-that route is reached, PA/slot
-provenance, translation correctness, RAM mutation/return, a unique write, or
+now conditionally projects the selected ordinary aligned pre-`__WriteMemory`
+arguments through the no-device wrappers to the external `write_ram` tuple
+`(56, 8, defaultRAM, ZeroExtend(PA), data)`: break data is zero under either
+endian; make data is X2 in little endian and byte-reversed in big endian. The
+default-RAM register value remains an explicit input. The occurrence decorator
+retains an external route predicate indexed by event, VA, endian, PA, and data. It does not prove
+that route or call is reached, PA/slot/default-RAM provenance, translation
+correctness, RAM mutation/return/byte placement/atomicity, a unique write, or
 CAT event generation.
 
 | Feature | S | I | T | M | P | R | Notes |

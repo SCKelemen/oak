@@ -919,12 +919,16 @@ For the conditional ordinary aligned path after that call, generated Sail Lean
 also proves the selected pre-`__WriteMemory` address/data arguments from an
 externally supplied translated 52-bit PA: the call address is its 56-bit zero
 extension; break data remains zero in either endian; make data is X2 in little
-endian and its exact eight-byte reversal in big endian. The official-source
-gate pins complete bodies for endian/alignment selection, translation/fault,
-exclusive and MTE checks, trickbox/counter routing, the direct size-eight call,
-and the selected no-device external-RAM wrapper. It does not prove that this
-route is reached or returns. Descriptor/PA provenance, translation correctness,
-successful ASL memory or external RAM effects, unique writes, tags/device
+endian and its exact eight-byte reversal in big endian. A further pure
+projection selects the pinned no-device external `write_ram` arguments
+`(56, 8, defaultRAM, ZeroExtend(PA), data)` and keeps `defaultRAM` explicit.
+The official-source gate pins complete bodies for endian/alignment selection,
+translation/fault, exclusive and MTE checks, trickbox/counter routing, the
+direct size-eight call, `__defaultRAM`'s width, and both no-device forwarding
+steps. It does not prove that this route or either call is reached or
+returns. Descriptor/PA/default-RAM provenance, translation correctness,
+successful ASL memory or external RAM effects, byte placement/atomicity,
+unique writes, tags/device
 behavior, CAT membership, completion, invalidation, publication, and context
 synchronization remain open. No Darwin/Mach-O object oracle or privileged
 Apple EL2 execution gate exists yet.
