@@ -161,9 +161,12 @@ or the verifier, not in the program:
    now proved against the ISA's `encdec` for the decided RV64 mnemonics.
    **First ordinary AArch64 class (2026-09-16):** operandless `RET X30` has
    exact fixed-bit/Rn encoding theorems and a generated Sail projection to the
-   source-audited ordinary RET/`BranchType_RET` decoder route. The remaining
-   AArch64 instruction forms remain generated/audited rather than universally
-   decoder-proved.
+   source-audited ordinary RET/`BranchType_RET` decoder route. **Second
+   ordinary class:** local `B <label>` has exact fixed-bit/imm26 and Branch26
+   relocation theorems, a generated Sail projection to `BranchType_DIR` with
+   its signed scaled offset, and an overflow-safe/alignment-checked production
+   encoder. The remaining AArch64 instruction forms remain generated/audited
+   rather than universally decoder-proved.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the

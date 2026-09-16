@@ -212,6 +212,17 @@ helpers; shape identity and whole assignability remain outside that theorem.
 Other features have models and proofs but no complete correspondence from the
 production traversal and bookkeeping code to the model.
 
+The type-lattice atom premise is now explicit rather than hidden behind the
+broader compatibility relation. `Oak.TypeLatticeAtomIdentity` projects the 25
+current in-package, pointer-receiver type constructors to canonical finite
+keys and proves that its decision is reflexive, symmetric, and transitive;
+the free-lattice soundness and completeness theorems are specialized to those
+keys. A Go drift gate enumerates the complete current `Type` implementation
+set, fields, and comparator cases and pins production decisions to Lean. This
+is still an audited correspondence, not a theorem about arbitrary Go heap
+graphs: cycles, implementations outside the package, and a universal
+Go-to-key extraction remain open.
+
 Resource checking illustrates the boundary:
 
 - callable contracts and result identities have formal laws;
@@ -264,16 +275,17 @@ non-contraction of multiply-then-add, the literal bits, and both local forms.
 `lowerWiden_eval` also composes explicit `f32`-to-`f64` widening over that
 straight-line slice and pins the production `fcvt64` node and extraction's
 `Float32.toFloat`. Decimal parsing into those bits, all other conversions,
-memory, effectful control flow, borrowing/recursive/effectful calls, other
-`f64` arithmetic, and SIMD remain outside the theorem, so the broader gap and
-score above remain. Ordered pure `f32` calls are included by the existing
-call-environment refinement.
-The separate `lowerF64_eval` family covers ordered binary64 FMA over
-parameters, already-rounded literal bits, pure local substitution, and leaves
-from the widening family through the shared `Oak.FloatOps.fma64` carrier. The
-production pin `fma(f64(a + b), x, y)` retains the `fadd32`/`fcvt64`/`fma64`
-order. It does not prove arbitrary mixed-width sequencing, the Go evaluator,
-IEEE rounding/NaN behavior, or either ISA instruction.
+memory, effectful control flow, borrowing/recursive/effectful calls, binary64
+unary operations/comparisons, and SIMD remain outside the theorem, so the
+broader gap and score above remain. Ordered pure `f32` calls are included by
+the existing call-environment refinement.
+The separate `lowerF64_eval` family covers binary64 `+`, `-`, `*`, `/`, and
+ordered FMA over parameters, already-rounded literal bits, pure local
+substitution, and leaves from the widening family. Production pins preserve
+operation identity and order for explicit source trees, including separate
+multiply/add and `fadd32`/`fcvt64` beneath binary64 arithmetic. It does not prove arbitrary
+mixed-width sequencing, the Go evaluator, IEEE rounding/NaN behavior, or
+either ISA instruction.
 The division case relates the extraction and verifier to the same
 `Float32.div` operation and operand order; it is not a separate proof of IEEE
 rounding or NaN-payload behavior. The FMA case similarly relates both sides to
@@ -361,10 +373,21 @@ encoding. The production exporter now memo-replays the
 supplied trap terms in slice order and the claim, and independently checks
 every outcome and the exact gate-record/unique-table-memo bijection before
 performing the streaming audit of its actual shared allocation, raw-gate
-clause sequence, and final edge conversion. Actual Go satisfaction of the
-term/root relation, bit-blaster operation and fold selection, term-memo
-semantics, trap/claim term-list provenance and source ordering, DIMACS, and
-formal Go-to-Lean implementation refinement remain open. The next step remains
+clause sequence, and final edge conversion. The opaque bitwise-word audit now
+independently replays actual Go term roots, input allocation, folds, exact gate
+memo entries, complete reachable coverage, and the final OR-of-XOR
+disequality root for parameters/constants/width adaptation and pointwise
+AND/OR/XOR. `Oak.CNFBitwiseWordRoot` proves that root means word inequality.
+`prove.CheckNativeBitwiseEqualityCertificate` regenerates that narrow audit
+from the exact function and declaration and checks LRAT only against the
+resulting DIMACS. Fresh certificates from Oak's solver are accepted by both
+the Go and Oak LRAT checkers on AArch64 and RV64; replay after source or
+machine changes, truncated or malformed proofs, and settled obligations are
+refused. The API remains disconnected from compiler verdicts and caches.
+This closes operation/fold selection only for that narrow grammar; general Go
+satisfaction of the term/root relation, all other bit-blaster operations,
+trap/claim provenance and source ordering, DIMACS, and formal Go-to-Lean
+implementation refinement remain open. The next step remains expanding
 bit-blaster and checker implementation refinement,
 followed by requiring the leaf checker below compiler selection so certificate
 acceptance can safely become verdict authority.
@@ -467,6 +490,14 @@ fixed bits and Rn round-trip are proved, and generated Sail Lean establishes
 the exact ordinary RET/`BranchType_RET` decode for `0xd65f03c0`. This is static instruction
 identity, not a proof of LR provenance, target validity, or dynamic return.
 
+Ordinary local `B <label>` is a second exact class. The Lean packer proves the
+fixed bits, `imm26` extraction, signed endpoints, and equality with the proved
+Branch26 relocation operation. Generated Sail Lean identifies ordinary DIR
+decode and its sign-extended scaled offset; production tests pin local bytes,
+overflow-safe displacement calculation, individual alignment, and refusal
+without mutation at address extremes. This remains static encoding/relocation
+arithmetic, not architectural PC/BranchTo or target-validity correctness.
+
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
 model. Until that lands, RV64 is closer to a formally closed
@@ -557,8 +588,9 @@ The following milestones would materially change what Oak can claim.
 
 ### 1. Extend the shared lowering refinement
 
-Extend the `f32` arithmetic slice through decimal-to-bit parsing, comparisons,
-conversions, memory, control flow, and calls; then add `f64`, SIMD carriers,
+Extend the float slice through decimal-to-bit parsing, remaining conversions,
+memory/effectful control flow and calls, binary64 unary/comparison forms, SIMD
+carriers,
 `u128`, and every remaining native language shape to the source/verifier shared
 semantics. Each addition needs:
 

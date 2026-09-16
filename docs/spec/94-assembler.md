@@ -418,6 +418,17 @@ requires both the Go and Oak LRAT checkers to accept it for nontrivial
 distributivity on AArch64 and RV64. Replaying the same certificate after a
 source or machine-operation change is refused.
 
+The narrower `asm.ExportNativeBitwiseEqualityAudit` result now has an equally
+bounded consumer: `prove.CheckNativeBitwiseEqualityCertificate` regenerates
+the strict parameter/constant/width-adaptation/AND/OR/XOR audit from the exact
+function and checked declaration, refuses constant-settled obligations, and
+passes only its regenerated DIMACS to the LRAT leaf checker. The integration
+test obtains a fresh certificate from the solver written in Oak and requires
+both LRAT checkers to accept it on AArch64 and RV64; changed source, changed
+machine code, truncated proofs, and malformed proofs refuse. This remains an
+audit API. It has no conversion to `VerdictProven`, compiler consumer, cache
+authority, or stored-formula input.
+
 `Oak.TseitinCNF` connects a formal raw-gate clause representation to the
 abstract RUP database semantics. The exact signed-literal lists for raw AND,
 OR, XOR, and ITE gate records
@@ -452,6 +463,19 @@ accepted `CNFBuilderTrace` supplies the needed gate-consistent assignment.
 This is conditional term/root evidence, not a proof that the Go blaster
 constructs `Encodes`.
 
+The narrower `asm.ExportNativeBitwiseEqualityAudit` now checks that connection
+for one closed word grammar: scalar parameters, constants, width adaptation,
+and pointwise AND/OR/XOR only. It independently walks the actual machine and
+Oak term DAGs without calling `blaster.blast`, reconstructs interleaved input
+indices and every constant/identity/complement fold, looks up each non-folded
+gate through the already-audited exact memo, and requires complete reachable
+term/input/gate coverage. It then reconstructs the final root as the
+low-to-high OR of corresponding-result-bit XORs. Any fresh executor symbol,
+unsupported term, malformed width, missing or extra memo/input/gate, changed
+root, or polarity mismatch refuses the audit. `Oak.CNFBitwiseWordRoot` proves
+that this direct root is true exactly when the two fixed-width results differ
+and composes that fact with the existing accepted-RUP contract.
+
 At the concrete export boundary, `validateCNFObligation` independently replays
 the supplied trap terms in slice order and the claim term through the
 completed blaster's memo. It requires exactly one bit per root and no change to
@@ -466,20 +490,23 @@ key and output. It rejects binary/ITE shapes the production builder should
 have folded, reconstructs and streams the exact 3/3/4/6 raw clauses against
 both the builder and emitted lists without sorting or deduplication, and
 independently converts the checked obligation edges into the one final clause.
-Settled outcomes run the same gate/memo audit without requiring an emitted
-clause. Violations or mismatches within those representations refuse export.
+Settled outcomes run the same dense, injective, input/gate-disjoint allocation
+and exact gate-memo audit without requiring an emitted clause. Violations or
+mismatches within those representations refuse export.
 The pending check adds no gate pass for the memo audit; its success-path
 workspace is one byte per allocated variable plus fixed-size gate-clause
 storage. The standalone gate/memo scan allocates no auxiliary storage; root
 replay is memo-only and linear in the number of roots.
 
-This still is not a Go-to-Lean refinement. It does not prove that recorded
-gates correspond to the operations the bit blaster should have selected.
-The concrete gate/unique-table snapshot is now checked bijectively, but fold
-selection, term-memo correctness, and actual Go satisfaction of
-`CNFTermRoot.Encodes` remain open. The obligation audit establishes assembly
-from memo-replayed roots, not the correctness of term-to-root blasting.
-Settled paths run the root and gate/memo audits but have no emitted formula
+This still is not a universal Go-to-Lean refinement. The new direct replay
+checks operation, fold, term-memo, input, and final-root selection only for its
+closed AND/OR/XOR word grammar. Comparisons, arithmetic, shifts, ITE/selects,
+fresh symbols, traps, calls, loops, domains, memory/effects, aggregates,
+floating point, and SIMD remain on the broader audited path, where actual Go
+satisfaction of `CNFTermRoot.Encodes` is still open. The general obligation
+audit establishes assembly from memo-replayed roots, not the correctness of
+all term-to-root blasting.
+Settled paths run the root and allocator/gate-memo audits but have no emitted formula
 for the clause-trace audit. Bit-blaster semantics, trap/claim term-list
 provenance and source ordering, DIMACS serialization and parsing, and formal
 implementation correspondence remain separate obligations.
@@ -978,6 +1005,20 @@ bit. Go gates pin the generated encoding-table row, encoder bytes, official
 decode class and dispatch, and the local projection. This does not prove the
 value or provenance of X30, frame/ABI restoration, target alignment or mapping, PAC,
 dynamic `BranchTo`, linking, or an observed return.
+
+Ordinary local `B <label>` is the next exact class.
+`Oak.AArch64DirectBranchEncoding` pins the generated `B_only_branch_imm` row,
+proves fixed-mask preservation and exact `imm26` extraction, and composes its
+packing with the proved Branch26 relocation model. The admitted byte delta is
+four-byte aligned in `[-2^27, 2^27)`; the exact `B +12` word is `0x14000003`,
+and the signed endpoints decode and reach their modeled targets. Generated
+Sail Lean selects the ordinary `BranchType_DIR` class and recovers the exact
+signed, scaled offset; the BL opcode is rejected. Production local-label
+encoding now checks signed-subtraction overflow and individual place/target
+alignment before writing the field, with endpoint and near-`uint64` mutation
+tests. This is static encoding, relocation arithmetic, and decode/dispatch
+identity—not an architectural `PC`, `BranchTo`, target mapping/executability,
+source-CFG label correctness, BL/X30, conditional branches, or observation.
 
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,

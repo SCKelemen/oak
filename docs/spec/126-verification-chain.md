@@ -30,7 +30,10 @@ weakest hop below it is worth, and that hop differs by target.
 
 The type checker, borrow and resource checker, protocol projection, and
 discipline analyzers decide what the program means and whether it is
-admitted. **Refined**: the type lattice (`Oak.TypeLatticeRefinement`),
+admitted. **Refined**: the type lattice (`Oak.TypeLatticeRefinement`), whose
+formal opaque-atom premise is discharged for the current closed in-package
+type universe by `Oak.TypeLatticeAtomIdentity`; a production
+drift/correspondence gate holds the Go comparator to that model,
 pattern analysis and reachability (`Oak.PatternAnalysisRefinement`),
 generic constraints, record shape and layout, borrow states and
 reborrows, modules, literal ranges (`Oak.LiteralFitRefinement`),
@@ -197,19 +200,33 @@ the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
 proves evaluation preservation and pending counterexample semantics for a
 supplied normalized one-bit Boolean term/root encoding under those gate
-equations. Independently, the concrete exporter memo-replays the supplied trap
+equations. `Oak.CNFBitwiseWordRoot` additionally proves that a low-to-high OR
+of corresponding-result-bit XORs is true exactly when two fixed-width words
+differ, and composes that exact obligation with accepted RUP. Independently,
+the concrete exporter memo-replays the supplied trap
 terms in slice order and the claim term, and checks the producer's root
 filtering, order, polarity, and outcome before every successful return. A
 pending snapshot additionally passes through
 `validateCNFTrace` before serialization, checking the exact
 gate-record/unique-table-memo bijection, allocator coverage/disjointness, exact
 raw-clause order and multiplicity, and exact final-edge conversion; settled
-outcomes run the gate/memo audit separately. Any mismatch among those checked
-representations refuses export. It does not yet prove the Go checkers refine
-the Lean checkers, actual Go terms satisfy `CNFTermRoot.Encodes`, or the
-bit-blaster selects the right operations and folds. Term-memo semantics,
-trap/claim term-list provenance or source ordering, and DIMACS correspondence
-also remain open.
+outcomes run the dense, injective, input/gate-disjoint allocator and gate-memo
+audit separately. Any mismatch among those checked
+representations refuses export. A separate opaque
+`ExportNativeBitwiseEqualityAudit` closes more of that concrete seam for the
+strict parameter/constant/width-adaptation/AND/OR/XOR word grammar: an
+independent walker reconstructs actual term roots, input allocations, exact
+folds, gate-memo lookups, complete reachable coverage, and the direct final
+disequality root. `prove.CheckNativeBitwiseEqualityCertificate` regenerates
+that exact narrow audit and checks LRAT only against its DIMACS; both the Go
+and Oak checkers accept fresh AArch64 and RV64 certificates, while changed
+source, changed machine code, truncated proofs, malformed proofs, and
+constant-settled obligations refuse. Mutated or broader terms refuse, and the
+result has no conversion to `VerdictProven`, compiler consumer, or cache
+authority. The Go checkers are not universally refined to
+the Lean checkers; all other term operations, trap/claim provenance and source
+ordering, DIMACS correspondence, symbolic execution, and Oak lowering remain
+open.
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
@@ -371,6 +388,20 @@ and dispatch, and the local Sail projection. This proves static
 encode/decode/dispatch identity only—not X30 provenance, ABI/frame restoration,
 target validity or mapping,
 PAC behavior, `BranchTo` execution, object/link correctness, or observation.
+
+Ordinary local `B <label>` now has the corresponding immediate-class seam.
+`Oak.AArch64DirectBranchEncoding` pins `B_only_branch_imm`, proves exact fixed
+bits and `imm26`, and proves its packer equals the existing Branch26 relocation
+patch. Under the relocation model's individual four-byte alignment and signed
+`[-2^27, 2^27)` byte range, decoding the emitted field reaches the modeled
+target; `B +12` is exactly `0x14000003`. Generated Sail Lean selects
+`BranchType_DIR` and the exact sign-extended scaled offset, while rejecting BL.
+The production local-label encoder now refuses signed subtraction overflow and
+jointly-but-not-individually-aligned addresses before mutation. This closes
+static packing, bounded relocation arithmetic, and decode/dispatch identity,
+not architectural PC/BranchTo execution, target validity, source-CFG label
+selection, BL/X30, conditional branches, object/link correctness, or
+observation.
 
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
@@ -691,19 +722,20 @@ extraction's selected do-block. `lowerConditionalAssignment_eval` is its
 one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
 the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
 the production render retains `fcvt64` over the exact width-32 operand term.
-The separate `lowerF64_eval` family proves ordered `Oak.FloatOps.fma64` over
-binary64 parameters, already-rounded bit literals, straight-line local
-substitution, and leaves from the proved widening family. Thus
-`fma(f64(a + b), x, y)` retains and composes the exact `fadd32`, `fcvt64`, and
-ordered `fma64` nodes. The widened leaf starts in its own initial binary32
+The separate `lowerF64_eval` family proves binary64 `+`, `-`, `*`, `/`, and
+ordered `Oak.FloatOps.fma64` over binary64 parameters, already-rounded bit
+literals, straight-line local substitution, and leaves from the proved
+widening family. Thus `f64(a + b) * x + y` retains and composes the exact
+`fadd32`, `fcvt64`, `fmul64`, and `fadd64` nodes, while explicit FMA remains a
+single ordered `fma64` node. The widened leaf starts in its own initial binary32
 parameter scope; this is not arbitrary mixed-width local sequencing.
 This is deliberately still a first slice: decimal parsing into the literal
 bits, all other conversions, spans, effectful conditions, nested or effectful
-statement arms, borrowing/recursive/effectful calls, other `f64` arithmetic,
-and vector operations remain related to the extraction by tests rather than
-this theorem. Division here proves operation identity and operand order through
-Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
-division or payload-observing NaN behavior.
+statement arms, borrowing/recursive/effectful calls, binary64 unary operations
+and comparisons, and vector operations remain related to the extraction by
+tests rather than this theorem. Division here proves operation identity and
+operand order through the shared Lean carriers; it does not independently
+prove correctly-rounded IEEE division or payload-observing NaN behavior.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -788,9 +820,9 @@ for a workload):
    corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
    that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
    `(Oak.FloatOps.add32 a b).toFloat`. The separate `lowerF64_eval` family
-   closes ordered binary64 FMA over parameters, bit literals, and pure locals,
-   pinned to `fma64` extraction and both native target verifiers. Decimal
-   parsing, all other conversions,
+   closes binary64 `+`, `-`, `*`, `/`, and ordered FMA over parameters, bit
+   literals, widened leaves, and pure locals, pinned to exact verifier renders
+   and default/bits-mode extraction. Decimal parsing, all other conversions,
    memory, effectful conditions, nested or effectful statement arms,
    borrowing/recursive/effectful calls, and the rest of the float/vector edge
    stay open.
