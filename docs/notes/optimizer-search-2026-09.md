@@ -373,8 +373,13 @@ operands use reserved `t5`/`t6` scratches, and simultaneous register/slot copies
 cover SSA edges and call arguments. Its `ra` save area sits above the spill
 slots in the same frame. Width-correct stores, signed/narrow reloads,
 production-pressure diamonds, spilled returns, a composed spill/call frame,
-and a loop-carried `u32` spill are machine-proven; broader RV64 loops and calls
-and rematerialization still refuse. The direct lowering remains the identity,
+and a loop-carried `u32` spill are machine-proven. On acyclic CFGs, RV64 also
+independently verifies constant-rematerialization evidence, admits only exact
+Bool/integer constants whose encoded-word cost beats their store/load traffic,
+compacts fully reconstructed slots, and rebuilds uses including call arguments;
+wide expensive constants remain physical. Broader RV64 loops and calls,
+copy-chain rematerialization, and cyclic rematerialization still refuse. The
+direct lowering remains the identity,
 and every selected OptIR body must pass seam admission and semantic translation
 validation; refusal or a trusted verdict falls back.
 
@@ -1029,8 +1034,9 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 9. global scalar and vector liveness;
 10. register allocation with splitting/spilling (**deterministic abstract spill
     plan, verifier-gated AArch64 scalar insertion, and the first closed RV64
-    loop-carried insertion landed; splitting, broader MachineIR/RV64 loops, and
-    RV64 splitting remain**);
+    loop-carried insertion landed; RV64 acyclic constant rematerialization also
+    landed; splitting, broader MachineIR/RV64 loops, copy-chain
+    rematerialization, and RV64 splitting remain**);
 11. call-aware vector allocation;
 12. late copy and branch cleanup (**target-independent loop-biased block layout
     and AArch64/RV64 fallthrough cleanup landed; edge-copy cleanup remains**);

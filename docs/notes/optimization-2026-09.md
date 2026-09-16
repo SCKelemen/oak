@@ -210,7 +210,13 @@ parameters, arithmetic, calls, memory, traps, cycles, and values used by proof
 facts. AArch64 independently verifies the recipe and register plan, applies a
 target instruction-cost filter, removes accepted values from the physical
 spill frame, and reconstructs them at uses and edge copies. Expensive literals
-remain spilled. Rematerialization changes no emission gate.
+remain spilled. RV64 consumes the same independently verified evidence for
+Bool/integer constants on acyclic CFGs only. Its filter counts the exact words
+used by `li` expansion, keeps copy chains and wide expensive literals physical,
+compacts only fully reconstructed slots, and can reconstruct through operands,
+returns, branches, SSA edges, and call arguments while retaining a call's
+disjoint `ra` save area. Cyclic rematerialization remains refused.
+Rematerialization changes no emission gate.
 
 Region-aware MemorySSA has its first explicit analysis substrate as well.
 Checked metadata names regions and exact read/write/read-write behavior beside

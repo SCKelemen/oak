@@ -778,7 +778,12 @@ lays out a 16-byte-aligned frame bounded to 2032 bytes, and uses reserved
 the target's canonical signed/narrow representation, each spilled result is
 stored immediately, spilled conditions reload explicitly outside the loop
 slice, and simultaneous register/slot copies materialize SSA edges and call
-arguments. Broader RV64 loop spill traffic and rematerialization still refuse.
+arguments. On acyclic CFGs, independently verified spilled Bool/integer
+constants are reconstructed when their exact RV64 encoded-word cost is no
+greater than one definition store plus their use loads; fully reconstructed
+slots leave the compacted physical frame, while a shared slot remains if any
+resident value needs it. Copy-chain and cyclic rematerialization, and broader
+RV64 loop spill traffic, still refuse.
 
 Each selector maps colors to caller-saved registers, destroys block arguments
 with edge-local parallel copies, and selects the closed Bool and
