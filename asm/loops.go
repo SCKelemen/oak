@@ -4650,10 +4650,14 @@ type decisionResult struct{ holds, decided bool }
 // the per-decision budget is not about to succeed, and each such failure
 // is four orders of two million nodes raced — a minute or more — so the
 // eight of before let a body with sixty-four-way selects (`count_leading_
-// zeros`) spend seven minutes a candidate deciding nothing.
+// zeros`) spend seven minutes a candidate deciding nothing. Each of a
+// loop proof's implications gets a quarter of the straight-line
+// decision's nodes: the implications that hold do so in tens of
+// thousands, and a failing one at two million nodes cost half a minute
+// per order under load (`protocol_line_done`, seven minutes a candidate).
 const (
-	loopProofNodeBudget    = 3 * blastNodeBudget
-	loopDecisionNodeBudget = blastNodeBudget
+	loopDecisionNodeBudget = blastNodeBudget / 4
+	loopProofNodeBudget    = 3 * loopDecisionNodeBudget
 )
 
 // impliesEqual decides premise → (a = b) at the terms' common width:
@@ -4793,11 +4797,17 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
-		if budget != nil && budget.remaining < bl.bdd.budget {
+		if budget != nil {
 			// One implication spends no more than the proof has left: the
 			// shared budget bounds the diagrams as they grow, not only the
-			// number of implications tried.
-			bl.bdd.budget = budget.remaining
+			// number of implications tried — and no more than a loop
+			// proof's per-implication cap (loopDecisionNodeBudget).
+			if bl.bdd.budget > loopDecisionNodeBudget {
+				bl.bdd.budget = loopDecisionNodeBudget
+			}
+			if budget.remaining < bl.bdd.budget {
+				bl.bdd.budget = budget.remaining
+			}
 		}
 		go func(bl *blaster) {
 			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
