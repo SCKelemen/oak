@@ -69,6 +69,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},
 		{"schedule", lane.Schedule},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 		{"packed-stack-args", lane.PackedStackArgs},
 	}
 	for _, flag := range flags {

@@ -262,6 +262,13 @@ Completed:
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
+   After the checked memory transforms, one `optir.memory-cleanup` node
+   composes SCCP and phi/GVN/DCE cleanup. Its dependencies are the exact
+   forwarding artifact and checked memory authority, and its revision includes
+   the constituent analysis/rewrite revisions. It rebuilds checked projection
+   and MemorySSA after scalar/CFG rewrites. Native selection replays that
+   bounded composition and uses the final CFG for bindings, call certificates,
+   and materialization identity; intermediate helpers need no separate nodes.
 4. OptIR has closed analysis-aspect declarations and checked preservation
    certificates. GVN/DCE's certificate is an admission artifact over exact CFG
    v1/v2 identities. The loop-structure artifact declares only `CFGTopology`,

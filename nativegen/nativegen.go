@@ -1829,6 +1829,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -1892,6 +1893,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -3743,16 +3745,24 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 }
 
 // reachableGlobals is the package state a unit's verification ranges
-// over: the globals this body addressed (usedGlobals), and every global a
-// callee's body names, transitively — the verifier summarizes a callee at
+// over: the globals this body addressed (usedGlobals), and every global the
+// source body or a callee names, transitively — the verifier summarizes a callee at
 // its Oak body over the package cells (docs/spec/94-assembler.md §9), so
 // a cell only the callee touches (`st = u8(1)` in alloc_table, reached
 // from walk_leaf) must be declared to the caller's unit too. Declaring a
 // global the body never addresses admits nothing at the checker: a fact
 // arises only from an `adrp` of the name. Nil when there are none.
 func (g *generator) reachableGlobals() map[string]asm.Global {
+	return verificationGlobals(g.fn, g.functions, g.globals, g.usedGlobals)
+}
+
+// verificationGlobals retains declarations needed to interpret the original
+// Oak body even when optimization removes its accesses or calls. These are
+// arbitrary entry-state cells, not facts that their initializers still hold.
+// Unreferenced declarations add no instructions or memory access authority.
+func verificationGlobals(root *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, globals, addressed map[string]asm.Global) map[string]asm.Global {
 	out := map[string]asm.Global{}
-	for name, global := range g.usedGlobals {
+	for name, global := range addressed {
 		out[name] = global
 	}
 	seen := map[string]bool{}
@@ -3761,14 +3771,14 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 		walk(fn.Body, func(n ast.Node) {
 			switch e := n.(type) {
 			case *ast.Identifier:
-				if global, isGlobal := g.globals[e.Value]; isGlobal {
+				if global, isGlobal := globals[e.Value]; isGlobal {
 					if _, has := out[e.Value]; !has {
 						out[e.Value] = global
 					}
 				}
 			case *ast.AssignmentStatement:
 				if e.Name != nil {
-					if global, isGlobal := g.globals[e.Name.Value]; isGlobal {
+					if global, isGlobal := globals[e.Name.Value]; isGlobal {
 						if _, has := out[e.Name.Value]; !has {
 							out[e.Name.Value] = global
 						}
@@ -3776,7 +3786,7 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 				}
 			case *ast.InvocationExpression:
 				if ident, isIdent := e.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
-					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
+					if callee, declared := functions[ident.Value]; declared && callee != nil && callee.Body != nil {
 						seen[ident.Value] = true
 						visit(callee)
 					}
@@ -3784,18 +3794,11 @@ func (g *generator) reachableGlobals() map[string]asm.Global {
 			}
 		})
 	}
-	if g.fn != nil {
-		seen[g.fn.Name.Value] = true
-		walk(g.fn.Body, func(n ast.Node) {
-			if call, isCall := n.(*ast.InvocationExpression); isCall {
-				if ident, isIdent := call.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
-					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
-						seen[ident.Value] = true
-						visit(callee)
-					}
-				}
-			}
-		})
+	if root != nil && root.Body != nil {
+		if root.Name != nil {
+			seen[root.Name.Value] = true
+		}
+		visit(root)
 	}
 	if len(out) == 0 {
 		return nil

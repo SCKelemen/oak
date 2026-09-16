@@ -114,6 +114,33 @@ theorem decodeGate_output {record : EncodedGate} {gate : RawGate}
       subst gate
       exact result.output
 
+/-- Public binary decoding characterization.  Clients can recover both
+operand decodings and the exact raw constructor without depending on the
+private proof-carrying decoder representation. -/
+theorem decodeGate_binary {record : EncodedGate} {gate : RawGate}
+    (admitted : record.op < 3) (decoded : record.decode? = some gate) :
+    ∃ left right, literalOfEdge? record.x = some left ∧
+      literalOfEdge? record.y = some right ∧
+      gate = match record.op with
+        | 0 => .andGate record.out left right
+        | 1 => .orGate record.out left right
+        | _ => .xorGate record.out left right := by
+  have operations : record.op = 0 ∨ record.op = 1 ∨ record.op = 2 := by omega
+  rcases operations with operation | operation | operation
+  all_goals
+    unfold EncodedGate.decode? at decoded
+    simp only [EncodedGate.decodeWithProof?, operation] at decoded
+    split at decoded
+    · cases leftDecoded : literalOfEdge? record.x with
+      | none => simp [leftDecoded] at decoded
+      | some left =>
+          cases rightDecoded : literalOfEdge? record.y with
+          | none => simp [leftDecoded, rightDecoded] at decoded
+          | some right =>
+              refine ⟨left, right, rfl, rfl, ?_⟩
+              simpa [leftDecoded, rightDecoded, operation] using decoded.symm
+    · simp at decoded
+
 /-- Every raw operand has a nonzero DIMACS index below the next allocation ID. -/
 def OperandsBefore (next : Nat) (gate : RawGate) : Prop :=
   ∀ operand ∈ gate.operands, 0 < operand.index ∧ operand.index < next

@@ -76,6 +76,9 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 		}
 	}
 	write(verdictCacheNamespace, asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
+	// The decider's budget setting: a verdict under the escalated budget
+	// (OAK_VERIFY_BUDGET) is not a verdict under the base one.
+	write("verify-budget", os.Getenv("OAK_VERIFY_BUDGET"))
 	if asmFn.Body != nil {
 		write("lowered-body", asmFn.Body.String()) // a verified rewrite: the body the verdict judged
 	}

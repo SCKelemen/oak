@@ -311,6 +311,17 @@ hw-reqs -> ob` and
 `irreflexive ob`. Exact AST hashes make any pin/model drift a reviewed change;
 mutation checks show each required edge is fail-closed.
 
+The full-DSB selector is now exact rather than name-based. It checks and
+mutation-tests all five ordered operands of the unconditional arm:
+
+```text
+[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;
+[~(Imp & TTD & M | Imp & Instr & R)]
+```
+
+The ETS2/ETS3 conditional arm and the `dsb.ld`/`dsb.st` arms are deliberately
+not folded into this projection.
+
 The same certificate now pins CAT's exact `BBM` definition:
 
 ```text
@@ -323,22 +334,31 @@ occurrence-indexed Lean projection. It proves that an explicit descriptor
 break, DSB ISH, TLBI, DSB ISH, and explicit descriptor make construct two
 local projected edges corresponding to CAT's `ob` operands for one old
 cacheable TTD event, provided assumed projections of `ca` and `inv-scope` are
-supplied by the architecture refinement. A conditional theorem covers every
-make event selected by an external `requiresBBM` predicate. It does not prove
-that those local edges belong to an actual CAT execution.
+supplied by the architecture refinement. Those local edges now project through
+the exact unconditional full-DSB arm: local `po`, decoded `dsb.full`, explicit
+descriptor-write `M`, TLBI membership, and the complete destination filter are
+separate one-way premises; exact-arm inclusion and CAT-`ob` transitivity finish
+the recursive projection. A conditional theorem covers every make event
+selected by an external `requiresBBM` predicate. It does not construct those
+CAT predicates or an actual CAT execution.
 
 Lean now also states an exact pulled-back `ProjectedCATBBM` predicate over
 externally supplied occurrence sets and relations. It preserves `ca` from old
 to break, `ob` from break to TLBI, TLBI membership at that same middle event,
 and both `ob` and `inv-scope` from that TLBI to make before applying the final
-cacheable-descriptor filter. `TraceToProjectedCATBBMSoundness` factors the
-local-to-CAT obligation into five one-way fields: descriptor tag soundness,
-`coherenceAfter` to `ca`, local `ProjectedOrderedBefore` to `ob`, abstract TLBI
-action to TLBI membership, and local `invScope` to CAT `inv-scope`. Under those
-fields, `projected_bbm_witness_projects_exact_cat_bbm` proves the existing
-indexed witness inhabits every operand of the exact projected relation. An
-exact Lean-source gate pins the conjunction, event sharing, and edge directions
-beside the already pinned official CAT AST.
+cacheable-descriptor filter. `TraceToProjectedCATBBMSoundness` no longer takes
+a monolithic local-`ProjectedOrderedBefore`-to-`ob` premise. It factors the
+local-to-CAT obligation into descriptor and TLBI set membership, local-to-CAT
+`po`, decoded full-DSB membership, destination exclusion, exact-arm inclusion,
+CAT-`ob` transitivity, `coherenceAfter` to `ca`, and local `invScope` to CAT
+`inv-scope`. Under those fields, `projected_bbm_witness_projects_exact_cat_bbm` proves the existing
+indexed witness inhabits every operand of the exact projected relation. Three
+`Iff.rfl` lemmas kernel-check the fully expanded DSB source, destination, and
+shared-event arm formulas. A separate lexically aware Lean source-drift guard
+pins the three projected definitions' spelling beside the already pinned
+official CAT AST; it rejects
+comments and literal/identifier hiding, but does not claim to decide Lean
+command quotations, macros, conditional commands, or elaboration.
 
 The CAT certificate separately pins the complete outer classification seam:
 `TLBUncacheableTTD`, `TLBCacheableTTD`, all six arms of
@@ -359,7 +379,7 @@ relations with the CAT execution.
 For the exact pulled-back relation,
 `maintained_old_events_exclude_exact_projected_cat_bbm_warning` removes the
 monolithic `ProjectedBBM -> catBBM` premise: local maintenance uses the supplied
-needs relation directly, and the five factored one-way fields construct
+needs relation directly, and the factored one-way fields construct
 `ProjectedCATBBM`. This is still conditional. It neither proves that the needs
 relation is official `TTD-update-needsBBM` nor that any supplied predicate came
 from an official CAT execution.
@@ -426,13 +446,15 @@ occurrence predicates: uncacheable is `TTDINV | TTDAF0`, while cacheable is
 descriptor action into those projected predicates. Under that premise the
 exact break/make occurrence wrappers and the old/break/make fields of a
 `ProjectedBBMWitness` inhabit the three descriptor filters used by CAT's
-`BBM` expression. The CAT AST/hash gate and a separate exact Lean-source gate
-pin both formulas and reject operator, atom, operand-order, and set-difference
-direction drift.
+`BBM` expression. The CAT AST/hash gate and a separate lexically aware Lean
+source-drift guard pin both formulas and reject operator, atom, operand-order,
+and set-difference direction drift. This source guard checks spelling and
+lexical visibility, not command elaboration.
 
 The primitive `TTD`, `M`, `TTDINV`, and `TTDAF0` tags and the one-way soundness
-map are still external execution-refinement inputs. The new `ca`, `ob`, TLBI,
-and `inv-scope` fields are likewise premises rather than derived relations.
+map are still external execution-refinement inputs. CAT `po`, full-DSB and
+source/destination membership, exact-arm inclusion in `ob`, `ob` transitivity,
+`ca`, TLBI, and `inv-scope` are likewise premises rather than derived relations.
 There is no reverse classifier, no STR or descriptor-value derivation of a tag,
 and no claim that an Oak occurrence is an official CAT event. In particular
 this step does not establish address-to-slot/PTE provenance, adequacy of any

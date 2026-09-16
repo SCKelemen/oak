@@ -1078,7 +1078,17 @@ Projection rejects missing, duplicated, stale, forged, or mismatched authority
 and treats every global region as live on normal return. The typed artifact DAG
 runs projection, MemorySSA, liveness, combined evidence, DSE, and load
 forwarding after LICM; both transforms independently verify their complete
-rewrites before publishing them. Changed final CFGs can enter native search on
+rewrites before publishing them. One subsequent `optir.memory-cleanup` node
+runs SCCP and phi/GVN/DCE cleanup to consume newly exposed scalar facts.
+Checked access projection and MemorySSA are rebuilt for `MemoryCleanup.CFG`,
+and native selection independently replays the cleanup before deriving final
+bindings, active call certificates, and materialization identity. The source
+global declarations needed to verify removed paths survive as arbitrary
+entry-state declarations, without added machine accesses. Constant branches,
+removed calls, wrapping arithmetic, and the final source-state comparison are
+covered by proven AArch64/RV64 candidates and host/QEMU execution. There is no
+unbounded iteration between memory and scalar passes.
+Changed final CFGs can enter native search on
 AArch64 and RV64 when the memory vocabulary is acyclic control flow over exact
 scalar package-global reads and whole nonvolatile writes, optionally composed
 with authenticated exact `NoModRef`/`Ref`/`Mod`/`ModRef` scalar calls. A `Ref`
