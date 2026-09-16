@@ -33,11 +33,23 @@ assigned: (a: f32, b: f32): f32 = {
   a < b ? { y = b + 1.0 } | { y = a * 2.0 }
   y - 3.0
 }
+assigned_pair: (a: f32, b: f32): f32 = {
+  x: f32 = a
+  y: f32 = b
+  x < y ? {
+    x = y + 1.0
+    y = x * 2.0
+  } | {
+    x = x - 1.0
+    y = y + 3.0
+  }
+  x - y
+}
 
 main: (): i32 = 0
 `
 	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
-	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested", "assigned"}).Get()
+	bits, err := New().WithPackageDir(root).WithLeanFloats("bits").EmitLeanRoots("Oak.Bits", []string{"axpy", "diff", "ratio", "signed", "eq", "ne", "lt", "le", "gt", "ge", "lt64", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +76,18 @@ main: (): i32 = 0
 		"let y := (Oak.FloatOps.add32 b (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
 		"let y := (Oak.FloatOps.mul32 a (Float32.ofBits (0x40000000 : UInt32) /- 2.0 -/))",
 		"pure (Oak.FloatOps.sub32 y (Float32.ofBits (0x40400000 : UInt32) /- 3.0 -/))",
+		"let (x, y) ← (if (Oak.FloatOps.lt32 x y) then (do",
+		"let x := (Oak.FloatOps.add32 y (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
+		"let y := (Oak.FloatOps.mul32 x (Float32.ofBits (0x40000000 : UInt32) /- 2.0 -/))",
+		"let x := (Oak.FloatOps.sub32 x (Float32.ofBits (0x3F800000 : UInt32) /- 1.0 -/))",
+		"let y := (Oak.FloatOps.add32 y (Float32.ofBits (0x40400000 : UInt32) /- 3.0 -/))",
+		"pure (Oak.FloatOps.sub32 x y)",
 	} {
 		if !strings.Contains(bits, want) {
 			t.Fatalf("missing %q in:\n%s", want, bits)
 		}
 	}
-	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose", "via_call", "guard", "nested", "assigned"}).Get()
+	plain, err := New().WithPackageDir(root).EmitLeanRoots("Oak.Plain", []string{"axpy", "eq", "choose", "via_call", "guard", "nested", "assigned", "assigned_pair"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
