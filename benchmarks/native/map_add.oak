@@ -1,0 +1,45 @@
+// Element-wise maps over spans, the shapes `vectorize-maps` rewrites
+// (docs/spec/94-assembler.md §9 "Map vectorization"): a two-span map
+// under the equal-length guard, an in-place map, a float map, and a zip.
+// bench_map.c times them; run_map.sh builds the vectorized and the
+// scalar forms (OAK_OPT_SKIP=vectorize-maps) side by side.
+
+add_k: (dst: [*]u32, a: []u32, k: u32) -> () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] + k
+      i = i + u32(1)
+    }
+  } | { }
+}
+
+bump: (v: [*]u32, k: u32) -> () {
+  i: u32 = u32(0)
+  while i < len(v) {
+    v[i] = (v[i] ^ k) + u32(1)
+    i = i + u32(1)
+  }
+}
+
+fmadd_k: (dst: [*]f32, a: []f32, k: f32) -> () {
+  len(dst) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] * k + 0.5
+      i = i + u32(1)
+    }
+  } | { }
+}
+
+sum_ab: (dst: [*]u32, a: []u32, b: []u32) -> () {
+  len(dst) == len(a) && len(b) == len(a) ? {
+    i: u32 = u32(0)
+    while i < len(a) {
+      dst[i] = a[i] + b[i]
+      i = i + u32(1)
+    }
+  } | { }
+}
+
+main: (): u32 = u32(0)

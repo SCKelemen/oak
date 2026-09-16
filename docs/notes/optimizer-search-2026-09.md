@@ -1057,7 +1057,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     scalar remainder as written, licensed by `Oak.Map.blocked_eq`
     (lane-wise semantics alone: no law of the element type, so no fact of
     the body is required and floats vectorize where a reduction's cannot),
-    and proven by the verifier with the span memory it writes. Two
+    and proven by the verifier with the span memory it writes. Measured
+    over 2^20 elements (`benchmarks/native/README.md`, "Map
+    vectorization"): 2.8–3.0× on a `u32` map, 3.2–3.6× in place, 2.6–2.8×
+    on an `f32` multiply-add map, 2.2–2.3× on a zip. Two
     verifier increments made it provable: the store-loop split (§0,
     "loops that never ran keep the entry memory") proved the hand-written
     shape that the 2026-09-16 survey found *witnessed*; and the hoisted
