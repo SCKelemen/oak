@@ -5986,6 +5986,44 @@ not typechecked since the lattice-assignability integration (a04754b8:
 `match expression has branches with incompatible runtime types (semantic
 join () | u32 ...)` in `prove/solver/syntax.oak` and `tree.oak`), so the
 tally waits on that.
+
+**Stores past conditionals: the write logs align (2026-09-16).** The
+prover's `protocol_line_done` — seven guarded pushes through an
+accumulator whose stack pointer lives in the same span, then an
+unconditional and a conditional store — was evidence after minutes. On
+its own it takes seconds, and the cost had four layers. The machine
+side, folding every path to its end, logs a store past a conditional
+once per path (`mergeWrites` guards each path's own writes by the fork's
+condition), so the log doubles at every conditional: nine writes to the
+Oak side's five after one push, twenty-seven to eight after two, and
+the aligned fast path (`alignedWrites`, write for write) does not apply;
+the whole memory at a symbolic index then goes to the diagrams, which a
+handful of symbolic-index reads over 32-bit address sums exhaust even
+for one push. Now (1) `mergeWrites` keeps one copy of a store both paths
+make afresh after they meet (the common suffix, `sameWrite`); (2) when
+the logs still differ in length, `decideSpans` defers the memory
+decision (`deferMemory`, `deferredSpans`) and `verifyChunk` runs the body
+again merging the paths at their joins (`executeBodyChunkJoining`, the
+mode that was the retry past the path budget), whose log has one
+guarded store per conditional arm and later stores once over the merged
+memory, as the Oak side's has; the deferred decision runs only when the
+joined run proves nothing more; (3) a pair whose operands read the span
+through the log — the stack pointer read back after each push — decides
+by its structure: each side notes its reads by node, span, log depth and
+index (`noteRead`, `spanRead`), and before a pair is decided the
+machine's reads over prefixes already proven equal become the Oak
+side's nodes (`alignReads`); an index the linear forms cannot relate is
+paired for decision rather than refused, and once a guard pair is
+proven the Oak guard stands on both sides of the write's index and value
+pairs; (4) the join's tautologies (`c or not c` from the two sides of a
+fork meeting, `x == 0 or x != 0`) and a duplicate conjunct (`(ge and
+eq0) and ge`: the path condition conjoined onto a guard that carries it)
+fold in `conjoin`/`disjoin` (complementary conditions, constants,
+absorption) — the term builder's own folds stay as the Lean
+transliteration pins them. `protocol_line_done` with all seven pushes
+proves in 3 s (`TestE2ENativeGuardedWrites` carries the body verbatim);
+the pushes from one to seven prove in one to three seconds each, where
+the seventh was evidence after five.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.

@@ -2035,10 +2035,18 @@ type pathExecutor struct {
 	// carries the words past the first, and runAll folds each word along
 	// the same fork tree into moreResults.
 	resultChunks int
-	moreResults  []*term           // the area's words past the first, folded over the paths (runAll)
-	spans        map[string]int64  // span parameter -> element size in bytes
-	declared     map[string]int    // parameter -> declared width
-	globals      map[string]Global // the globals the body addresses (fn.Globals)
+	moreResults  []*term // the area's words past the first, folded over the paths (runAll)
+	// reads are the body's reads of span memory through the write log, by
+	// node (spanRead), for the aligned fast path's alignReads.
+	reads map[*term]spanRead
+	// deferMemory asks decideSpans to leave the memory decision of a span
+	// whose logs differ in length to deferredSpans (verifyChunk runs the
+	// body again merging at the joins first, whose logs align).
+	deferMemory   bool
+	deferredSpans func() Verdict
+	spans         map[string]int64  // span parameter -> element size in bytes
+	declared      map[string]int    // parameter -> declared width
+	globals       map[string]Global // the globals the body addresses (fn.Globals)
 	// recordSpans: span parameters whose elements are records, by name —
 	// the element size and the record's scalar leaves (relative to the
 	// element), so a field read through an element address is the leaf's
@@ -3348,14 +3356,91 @@ func (e *pathEnd) word(k int) *term {
 }
 
 // conjoin is the conjunction of two 1-bit conditions, either nil for true.
+// A constant decides or drops out, and a condition against its complement
+// (`c and not c`) is false: the paths' conditions meet their negations at
+// the joins (mergeStates) and in the guards past them, and left standing
+// the clutter grows every decision after the join.
 func conjoin(a, b *term) *term {
-	switch {
-	case a == nil:
+	if a == nil {
 		return b
-	case b == nil:
+	}
+	if b == nil {
 		return a
 	}
+	a, b = truncate(a, 1), truncate(b, 1)
+	if a.kind == termConst {
+		if a.value&1 == 0 {
+			return a
+		}
+		return b
+	}
+	if b.kind == termConst {
+		if b.value&1 == 0 {
+			return b
+		}
+		return a
+	}
+	if complementary(a, b) {
+		return constTerm(0, 1)
+	}
+	// Absorption: a conjunct the other side already holds adds nothing
+	// (`(c and d) and c`: a path condition conjoined onto a guard that
+	// carries it, guardWrites), and the duplicate is what told the two
+	// sides' guards apart in the aligned fast path.
+	if hasOperand(a, "and", b) {
+		return a
+	}
+	if hasOperand(b, "and", a) {
+		return b
+	}
 	return binaryTerm("and", a, b)
+}
+
+// hasOperand reports b among the operands of a's tree of op nodes, to a
+// small depth: the same node, or the same term (sameTerm).
+func hasOperand(a *term, op string, b *term) bool {
+	budget := sameTermBudget
+	var walk func(t *term, depth int) bool
+	walk = func(t *term, depth int) bool {
+		if t == b || sameTerm(t, b, &budget) {
+			return true
+		}
+		if depth == 0 || t.kind != termBinary || t.op != op {
+			return false
+		}
+		return walk(t.left, depth-1) || walk(t.right, depth-1)
+	}
+	return walk(a, 8)
+}
+
+// disjoin is the disjunction of two 1-bit conditions (neither nil), with
+// conjoin's folds: a constant decides or drops out, and a condition
+// against its complement (`c or not c`, the two sides of a fork meeting at
+// their join) is true.
+func disjoin(a, b *term) *term {
+	a, b = truncate(a, 1), truncate(b, 1)
+	if a.kind == termConst {
+		if a.value&1 == 1 {
+			return a
+		}
+		return b
+	}
+	if b.kind == termConst {
+		if b.value&1 == 1 {
+			return b
+		}
+		return a
+	}
+	if complementary(a, b) {
+		return constTerm(1, 1)
+	}
+	if hasOperand(a, "or", b) {
+		return a
+	}
+	if hasOperand(b, "or", a) {
+		return b
+	}
+	return binaryTerm("or", a, b)
 }
 
 // runAll executes the body from its first item and folds the paths' ends
@@ -3495,7 +3580,7 @@ func (x *pathExecutor) mergeStates(parent *pathNode, parked []*symbolicState) (*
 		}
 		acc = merged
 		if below := s.path.conditionBelow(parent); below != nil && rel != nil {
-			rel = binaryTerm("or", below, rel)
+			rel = disjoin(below, rel)
 		} else {
 			rel = nil
 		}
@@ -4591,6 +4676,9 @@ type oakLowering struct {
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
+	// reads are the body's reads of span memory through the write log, by
+	// node (spanRead), for the aligned fast path's alignReads.
+	reads map[*term]spanRead
 	// globals are the mutable top-level scalars the body addresses
 	// (Function.Globals): a read of one is the parameter `global:NAME` of
 	// the proof, the value the cell holds on entry; a write leaves the body
@@ -6808,7 +6896,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 				return nil, contract, fmt.Sprintf("an index past len(%s) on this input", span), false
 			}
 		}
-		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
+		return lo.noteRead(span, len(lo.writes[span]), constTerm(k, 32), memoryAt(lo.writes[span], constTerm(k, 32), entry)), contract, "", true
 	}
 	ident, isIdent := index.Left.(*ast.Identifier)
 	if !isIdent || index.Dot {
@@ -6834,7 +6922,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	idx = lo.spanIndex(ident.Value, idx) // a derived span: start + i in the root
 	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
-		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
+		return lo.noteRead(span, len(lo.writes[span]), idx, memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth))), contract, "", true
 	}
 	entry := selectTerm(span, idx, contract.elemWidth)
 	if !lo.trapsTracked {
@@ -6843,7 +6931,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		// decider keeps the read whole, as its Oak twin builds it.
 		entry = selectSplit(span, idx, contract.elemWidth, 0)
 	}
-	return memoryAt(lo.writes[span], idx, entry), contract, "", true
+	return lo.noteRead(span, len(lo.writes[span]), idx, memoryAt(lo.writes[span], idx, entry)), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -8381,7 +8469,58 @@ func describeEnvSorted(env map[string]uint64) string {
 // verifyChunk is Verify for one result chunk (0 for a scalar or a
 // one-chunk record).
 func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
-	asmTerm, exec, reason, ok := executeBodyChunk(fn, sig, nil, 0, chunk)
+	verdict, exec := verifyChunkJoining(fn, sig, oakBody, chunk, false)
+	if verdict.Kind == VerdictWitnessed && strings.Contains(verdict.Message, "(the span ") {
+		// The span memories were not proven equal with every path run to
+		// its end: a store past a conditional is then logged once per path
+		// (mergeWrites keeps one copy of a store both paths make afresh,
+		// but not of one whose value reads the memory each path left), the
+		// log doubles at every conditional, and the two logs do not align
+		// (alignedWrites) — the whole memory at a symbolic index goes to
+		// the diagrams, which a handful of symbolic-index reads exhaust.
+		// Merging the paths at their joins shapes the log as the Oak side
+		// shapes its own — one guarded store per conditional arm, later
+		// stores once over the merged memory — and the logs align write by
+		// write: the prover's protocol_line_done proves in a tenth of a
+		// second where the memory decision spent seconds and failed. The
+		// first run stands when the second proves nothing more.
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: the span memories were not proven; running again merging at the joins\n", fn.Name)
+		}
+		if joined, _ := verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
+			return joined
+		}
+		if exec != nil && exec.deferredSpans != nil {
+			// The first run left its memory decision (the logs differed
+			// in length) for after the joined run: decided now.
+			return exec.deferredSpans()
+		}
+	}
+	return verdict
+}
+
+// verifyChunkJoining is verifyChunk with the paths run to their ends
+// (joins false: the fold along the fork tree, executeBodyChunk) or merged
+// at their joins (executeBodyChunkJoining).
+func verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, joins bool) (Verdict, *pathExecutor) {
+	var asmTerm *term
+	var exec *pathExecutor
+	var reason string
+	var ok bool
+	if joins {
+		asmTerm, exec, reason, ok = executeBodyChunkJoining(fn, sig, nil, 0, chunk, true)
+	} else {
+		asmTerm, exec, reason, ok = executeBodyChunk(fn, sig, nil, 0, chunk)
+	}
+	if ok && exec != nil && exec.joins == nil {
+		exec.deferMemory = true
+	}
+	verdict := verifyExecution(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok)
+	return verdict, exec
+}
+
+// verifyExecution decides one execution of the body against the Oak body.
+func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok bool) Verdict {
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -9480,7 +9619,7 @@ func (lo *oakLowering) recordSpanField(e *ast.IndexExpression) (t *term, width i
 		return nil, 0, handled, reason, false
 	}
 	entry := recordFieldTerm(place.span, place.index, place.leafName, place.width, lo.concrete != nil)
-	return memoryAt(lo.writes[place.memory], place.index, entry), place.width, true, "", true
+	return lo.noteRead(place.memory, len(lo.writes[place.memory]), place.index, memoryAt(lo.writes[place.memory], place.index, entry)), place.width, true, "", true
 }
 
 // memoryContract is the element contract of a memory a body stores
