@@ -309,12 +309,15 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 		out.Settled = &Decision{Kind: DecisionProven, Message: "at the bit level (the obligation is constant)"}
 		return out, "", true
 	}
-	out.obligation = obligation
 	final := make([]int, len(obligation))
 	for i, edge := range obligation {
 		final[i] = cnfLit(edge)
 	}
 	clauses := append(bl.cnf.clauses, final)
+	if err := validateCNFTrace(bl.cnf, obligation, clauses); err != nil {
+		return CNF{}, fmt.Sprintf("internal CNF trace check failed: %v", err), false
+	}
+	out.obligation = obligation
 	out.Variables = bl.cnf.variables
 	out.Clauses = len(clauses)
 	var b strings.Builder
