@@ -398,6 +398,20 @@ term/difference corpus are kernel-pinned. This does not prove arbitrary Go
 source-name/bit/word projection, width adaptation, term-pointer memoization,
 reachable coverage, or the full native admission policy; the model theorem
 must not be promoted to a whole-source/compiler verification claim.
+The next word-model layer is now explicit: `Oak.CNFWordInput` derives named
+input bits through the `parameter-count + 8` stride and inverse checked
+allocation; `Oak.CNFWordProjection` checks 1..64-bit parameter/constant/AND/OR/XOR
+syntax and proves its bit projection, including declared-width masking and
+zero-extension/truncation. `Oak.CNFWordCertificate.projected_words_equal`
+derives equal model-word widths and values from accepted projection, replay,
+exact singleton clauses, and RUP without assuming input-binding or word/root
+semantics. It rejects empty or unequal result pairing. This remains the
+bounded production-correspondence layer: `TestNativeCNFReplayWordMatchesLean`
+pins raw Go word syntax, replayed roots, and typed-normalized sampled values
+across 1/8/16/32/64-bit fixtures. The theorem remains the
+nonconstant certificate path over supplied model syntax, not universal Go
+graph/table projection, pointer-memo or intermediate-root/reachability
+refinement, complete admission/settled policy, or source-to-machine closure.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and

@@ -228,6 +228,20 @@ Production apply decisions and a bounded one-bit term/difference corpus are
 kernel-pinned. The arbitrary Go name/bit/word projection, width adaptation,
 term-pointer memo/reachability machinery, full admission policy, and remaining
 source/serialization/verdict seams are not covered by that model theorem.
+`Oak.CNFWordInput` now derives named input-bit binding through the exact
+`parameter-count + 8` source stride and inverse checked allocation.
+`Oak.CNFWordProjection` checks a supplied 1..64-bit parameter/constant/AND/OR/XOR
+word grammar and proves its projection preserves independent bit semantics,
+including declared-width masking, truncation, and zero extension.
+`Oak.CNFWordCertificate.projected_words_equal` rejects incomplete/unequal result
+pairing and derives equal widths and values using checked projection, replay,
+singleton clauses, and RUP, without assumed model input-binding or word/root
+equality. `TestNativeCNFReplayWordMatchesLean` kernel-pins raw Go word syntax,
+complete replay roots, and typed-normalized sampled values over a bounded
+1/8/16/32/64-bit corpus. This is the nonconstant certificate path. Arbitrary Go graph/table
+projection, pointer memoization, full intermediate-root/reachability checks,
+complete admission and settled-outcome policy, and the remaining
+source/serialization/verdict seams are still outside the theorem.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`

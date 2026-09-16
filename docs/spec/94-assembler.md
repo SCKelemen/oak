@@ -513,6 +513,41 @@ audit rejects empty result widths. Source lowering, symbolic execution,
 DIMACS bytes, LRAT implementation refinement, and verdict authority remain
 separate seams.
 
+The next layer, `Oak.CNFWordInput`, checks named parameter bits using the
+actual interleaving stride `parameters.length + 8`. It derives the inverse
+DIMACS-output/source-key mapping from checked allocation and constructs the
+initial assignment, rather than assuming input-slot meanings.
+`Oak.CNFWordProjection` checks the supplied 1..64-bit word grammar: normalized
+constants, named parameters with raw declared-width override/fallback, and
+AND/OR/XOR. Projection preserves an independently defined bit semantics,
+including truncation and zero extension at every node. Input carriers are
+interpreted at their declared widths; this does not claim equality with Go's
+witness evaluator on an unnormalized, out-of-domain `uint64` environment.
+
+`Oak.CNFWordCertificate.projected_words_equal` checks complete nonempty result
+pairing, derives equal widths, and composes word projection with root replay,
+the exact singleton final clause, and accepted RUP. The independently
+interpreted model words then have equal values without assumed input-binding,
+word-to-bit, root-equality, or CNF-completeness premises.
+
+`TestNativeCNFReplayWordMatchesLean` projects actual Go word syntax and
+parameter/allocation tables, then kernel-checks complete replayed root vectors
+and sampled word values. The bounded corpus spans 1/8/16/32/64-bit terms,
+declared-width override/fallback, adaptation, high-bit constants, and
+interleaved allocation including nonzero bit positions. Go witness values
+are normalized to the named declared widths before comparison.
+
+This covers the nonconstant certificate path, not settled roots or complete
+Go replay admission. Whole children are syntax-checked, but discarded high
+intermediate roots need not be replayed by the projected final bits. Parameter
+tables are checked at parameter leaves, so constant-only projection is not a
+substitute for the Go constructor's complete table checks. The input model's
+extra safe-subtraction check can refuse earlier for artificial `maxInt` values
+smaller than a parameter position. Universal Go graph/table/signed-field
+projection, pointer memoization, reachable coverage, machine representation,
+source lowering, symbolic execution, DIMACS/LRAT implementation refinement,
+and compiler verdict authority remain separate obligations.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and
