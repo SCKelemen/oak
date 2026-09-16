@@ -133,8 +133,8 @@ func validateSettledCNFObligation(bl *blaster, traps []*term, claim *term,
 	if err := validateCNFObligation(bl, traps, claim, outcome, obligation); err != nil {
 		return err
 	}
-	if err := validateCNFGateMemo(bl.cnf); err != nil {
-		return fmt.Errorf("gate memo: %w", err)
+	if _, err := validateCNFAllocation(bl.cnf); err != nil {
+		return fmt.Errorf("allocator and gate memo: %w", err)
 	}
 	return nil
 }

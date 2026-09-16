@@ -213,15 +213,24 @@ Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
 binary32 value. This is operation identity and width/operand composition, not
 an independent proof of IEEE conversion, NaN-payload mapping, the production
 evaluator, or either ISA instruction.
-Separately, `lowerF64_eval` closes ordered binary64 FMA over parameters,
-already-rounded `UInt64` literal bits, straight-line local substitution, and
-leaves from the widening family; both readings retain the same ordered
-add → widen → FMA composition: verifier `fadd32`/`fcvt64`, extraction
-`Float32` addition/`.toFloat`, then `Oak.FloatOps.fma64`.
+Separately, `lowerF64_eval` closes binary64 `+`, `-`, `*`, `/`, ordered FMA,
+negation, `abs`, and `copysign` over parameters, already-rounded `UInt64`
+literal bits, straight-line local substitution, and leaves from the widening
+family. `lowerF64Condition_eval` adds all six comparisons plus recursively
+composed pure Boolean guards, and `lowerF64Flow_eval` closes every finite tree
+of value-position conditionals. Both readings retain the same operation
+identity, carrier, and operand order for explicit source trees:
+`a * b + c` remains a
+multiply followed by an add, while the explicit `fma` remains one ordered
+`Oak.FloatOps.fma64` application. The mixed production pin
+`f64(a + b) * x + y` retains verifier `fadd32`/`fcvt64`/`fmul64`/`fadd64`
+and extraction `Float32` addition/`.toFloat` followed by binary64 multiply/add.
 The widened leaf reads the function's initial binary32 parameter scope, not an
-arbitrary mixed-width local scope. Other binary64 arithmetic, control flow,
-calls, memory, the Go evaluator, IEEE implementation details, and ISA semantics
-remain outside this theorem.
+arbitrary mixed-width local scope. Binary64 effectful/statement control flow,
+calls, memory, the Go evaluator, IEEE implementation details, NaN payloads,
+and ISA semantics remain outside this theorem. Locals are modeled by pure
+substitution, so reuse may duplicate a term tree; the theorem does not claim
+runtime evaluation count or sharing.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)

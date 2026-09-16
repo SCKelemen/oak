@@ -645,6 +645,11 @@ type term struct {
 	kbDone  bool
 	kbValue uint64
 	kbKnown uint64
+	// sigBits is the significant-bits memo (significantBits): the count
+	// plus one, zero before it is computed. Canonicalization asks for it
+	// at every comparison, and the operands of a body's comparisons share
+	// their subgraph; a walk per comparison was quadratic.
+	sigBits int32
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags
@@ -787,6 +792,9 @@ func significantBits(t *term) int {
 }
 
 func significantBitsMemo(t *term, memo map[*term]int) int {
+	if t.sigBits > 0 {
+		return int(t.sigBits) - 1
+	}
 	if n, seen := memo[t]; seen {
 		return n
 	}
@@ -813,6 +821,7 @@ func significantBitsMemo(t *term, memo map[*term]int) int {
 		}
 	}
 	memo[t] = n
+	t.sigBits = int32(n) + 1
 	return n
 }
 
@@ -2026,6 +2035,18 @@ func spanElemName(param string, k int64) string { return fmt.Sprintf("%s[%d]", p
 const (
 	pathBudget = 256
 	stepBudget = 1 << 16
+	// guardBudget bounds the trap guards a body may meet across its
+	// paths. A guard forks nothing — its trapping side is an end, the path
+	// continues under the bound — but every store of an unrolled counted
+	// loop meets one, and counting them as paths refused the OS pilot's
+	// `reset` (two nested counted loops over module constants, a guarded
+	// store each iteration: "more paths than the verifier's budget" at
+	// 3ba8b5ae, proven at the pilot's pin). The counting had stopped
+	// set_clear from unrolling 2048 guarded iterations to the step
+	// budget; a counted loop past countedTripLimit trips is inducted now
+	// rather than unrolled, so the guards of the loops that do unroll
+	// (at most 64 trips a level) get sixteen paths' worth.
+	guardBudget = 16 * pathBudget
 )
 
 // pathExecutor unfolds a body into its paths: a conditional branch forks
@@ -2104,6 +2125,7 @@ type pathExecutor struct {
 	outgoingMemo    *int64      // outgoingArea, once computed
 	bodyJoinsMemo   map[int]int // bodyJoins, once computed
 	paths           int
+	guards          int // trap guards met across the paths (guardBudget)
 	steps           int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
@@ -3190,13 +3212,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// bound the guard establishes, no fork recorded.
 				x.ends = append(x.ends, pathEnd{result: trapPath, cond: conjoin(state.pathCondition(), truncate(cond, 1)), path: state.path})
 				state.noteTrapGuard(instr)
-				// The trapping side counts as the path it was: a counted
-				// loop guarding every iteration meets the path budget as
-				// it did, rather than unrolling to the step budget with a
-				// write log the decision cannot afford.
-				x.paths++
-				if x.paths > pathBudget {
-					return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
+				// The trapping side is an end, counted against the guards'
+				// own budget (guardBudget), not the paths': the path goes
+				// on alone.
+				x.guards++
+				if x.guards > guardBudget {
+					return nil, nil, "more trap guards than the verifier's budget (a loop whose trip count depends on the inputs, or too many guarded stores)", false
 				}
 				continue
 			}

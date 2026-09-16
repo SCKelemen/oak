@@ -219,6 +219,13 @@ func armFacts(match *ast.MatchExpression, arm *ast.MatchArm, equal lengthClasses
 	if !isBool || !b.Value {
 		return equal
 	}
+	return lengthFactsOf(match.Scrutinee, equal)
+}
+
+// lengthFactsOf extends the equal-length facts with those a condition's
+// true path holds: a conjunction whose length equalities are read, the
+// other conjuncts adding nothing and taking nothing away.
+func lengthFactsOf(cond ast.Expression, equal lengthClasses) lengthClasses {
 	var conjuncts []ast.Expression
 	var flatten func(e ast.Expression)
 	flatten = func(e ast.Expression) {
@@ -229,7 +236,7 @@ func armFacts(match *ast.MatchExpression, arm *ast.MatchArm, equal lengthClasses
 		}
 		conjuncts = append(conjuncts, e)
 	}
-	flatten(match.Scrutinee)
+	flatten(cond)
 	out := lengthClasses{}
 	for k, v := range equal {
 		out[k] = v
@@ -431,22 +438,6 @@ func vectorizedMap(m mapLoop) []ast.Statement {
 	length := func() ast.Expression {
 		return &ast.InvocationExpression{Token: tok, Function: ident("len"), Arguments: []ast.Expression{ident(m.src)}}
 	}
-	var vector func(e ast.Expression) ast.Expression
-	vector = func(e ast.Expression) ast.Expression {
-		switch x := e.(type) {
-		case *ast.IndexExpression:
-			return simd("load", ident(x.Left.(*ast.Identifier).Value), ident(m.idx))
-		case *ast.Identifier:
-			return ident(x.Value + "_v")
-		case *ast.InfixExpression:
-			op, _ := laneWiseOp(x.Operator, m.elem)
-			return simd(op, vector(x.Left), vector(x.Right))
-		case *ast.FloatLiteral:
-			return ident(m.constantName(m.constantIndex("f:" + x.Text + "/" + strconv.FormatFloat(x.Value, 'g', -1, 64))))
-		}
-		v, _ := constantValue(e)
-		return ident(m.constantName(m.constantIndex("i:" + strconv.FormatInt(v, 10))))
-	}
 	var out []ast.Statement
 	for _, s := range m.scalars {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(s + "_v"), Type: vecType(), Value: simd("splat", ident(s))})
@@ -457,8 +448,32 @@ func vectorizedMap(m mapLoop) []ast.Statement {
 	guard := infix(infix(length(), ">=", u32(m.lanes)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(m.lanes))))
 	main := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}
 	main.Body.Statements = append(main.Body.Statements,
-		&ast.ExpressionStatement{Token: tok, Expression: simd("store", ident(m.dst), ident(m.idx), vector(m.value))},
+		&ast.ExpressionStatement{Token: tok, Expression: simd("store", ident(m.dst), ident(m.idx), m.vectorExpr(m.value, tok))},
 		&ast.AssignmentStatement{Token: tok, Name: ident(m.idx), Value: infix(ident(m.idx), "+", u32(m.lanes))},
 	)
 	return append(out, main, m.loop)
+}
+
+// vectorExpr spells a lane-wise expression over the vectors: each element
+// read a vector load at the loop's index, each invariant scalar and
+// constant its splat, each operator its lane-wise simd operation.
+func (m mapLoop) vectorExpr(e ast.Expression, tok token.Token) ast.Expression {
+	ident := func(name string) *ast.Identifier { return &ast.Identifier{Token: tok, Value: name} }
+	simd := func(member string, args ...ast.Expression) ast.Expression {
+		callee := &ast.IndexExpression{Token: tok, Left: ident("simd"), Index: ident(member + "_" + m.suffix), Dot: true}
+		return &ast.InvocationExpression{Token: tok, Function: callee, Arguments: args}
+	}
+	switch x := e.(type) {
+	case *ast.IndexExpression:
+		return simd("load", ident(x.Left.(*ast.Identifier).Value), ident(m.idx))
+	case *ast.Identifier:
+		return ident(x.Value + "_v")
+	case *ast.InfixExpression:
+		op, _ := laneWiseOp(x.Operator, m.elem)
+		return simd(op, m.vectorExpr(x.Left, tok), m.vectorExpr(x.Right, tok))
+	case *ast.FloatLiteral:
+		return ident(m.constantName(m.constantIndex("f:" + x.Text + "/" + strconv.FormatFloat(x.Value, 'g', -1, 64))))
+	}
+	v, _ := constantValue(e)
+	return ident(m.constantName(m.constantIndex("i:" + strconv.FormatInt(v, 10))))
 }

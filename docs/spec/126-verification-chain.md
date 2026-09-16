@@ -30,7 +30,10 @@ weakest hop below it is worth, and that hop differs by target.
 
 The type checker, borrow and resource checker, protocol projection, and
 discipline analyzers decide what the program means and whether it is
-admitted. **Refined**: the type lattice (`Oak.TypeLatticeRefinement`),
+admitted. **Refined**: the type lattice (`Oak.TypeLatticeRefinement`), whose
+formal opaque-atom premise is discharged for the current closed in-package
+type universe by `Oak.TypeLatticeAtomIdentity`; a production
+drift/correspondence gate holds the Go comparator to that model,
 pattern analysis and reachability (`Oak.PatternAnalysisRefinement`),
 generic constraints, record shape and layout, borrow states and
 reborrows, modules, literal ranges (`Oak.LiteralFitRefinement`),
@@ -192,24 +195,58 @@ clause, and carries that characterization to the exact 1-based initial RUP
 database. `Oak.CNFBuilderTrace` checks a supplied production-shaped
 input/gate allocation stream and proves that acceptance gives contiguous
 unique shared allocations, exact complement-edge and operation-tag decoding,
-backward operands, and `WellFormedSequence`. `Oak.CNFFinalObligation` proves
+backward operands, and `WellFormedSequence`. `Oak.CNFDenseAllocation` then
+checks a production-shaped nonnegative snapshot with explicit input and
+memo-map projections: exact dense/injective ownership of `1..variables`,
+ordered backward gates, no recorded folded shapes, and an exact unique-table
+lookup for every gate. Acceptance supplies the same well-formed sequence and
+proves each in-range variable has exactly one owner. Representative production
+accept/refuse decisions are rendered as kernel-checked Lean examples;
+arbitrary Go memory/map projection, signed conversion, builder history,
+clauses, DIMACS, and verdict authority remain outside this bounded
+correspondence. `Oak.CNFClauseTrace` now checks the actual signed builder and
+emitted lists against those decoded gates and the supplied final edges. It
+proves exact clause/literal order, positive-index signed decoding, and equality
+with the initial RUP database, not just equisatisfiability. The production test
+checks 72 fixed decisions and kernel-replays 71 projectable snapshots,
+including shared builder/export corruption; this is bounded correspondence,
+not a universal Go refinement or a test of the 50-million-clause limit.
+`Oak.CNFClauseCertificate` discharges the native direct-word contract's
+`cnf_complete` field at this checked trace boundary. Accepted RUP then implies
+word equality under an explicit result-to-root equality premise. Source/root
+provenance, DIMACS bytes, LRAT implementation refinement, and verdict authority
+are still open. `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
 proves evaluation preservation and pending counterexample semantics for a
 supplied normalized one-bit Boolean term/root encoding under those gate
-equations. Independently, the concrete exporter memo-replays the supplied trap
+equations. `Oak.CNFBitwiseWordRoot` additionally proves that a low-to-high OR
+of corresponding-result-bit XORs is true exactly when two fixed-width words
+differ, and composes that exact obligation with accepted RUP. Independently,
+the concrete exporter memo-replays the supplied trap
 terms in slice order and the claim term, and checks the producer's root
 filtering, order, polarity, and outcome before every successful return. A
 pending snapshot additionally passes through
 `validateCNFTrace` before serialization, checking the exact
 gate-record/unique-table-memo bijection, allocator coverage/disjointness, exact
 raw-clause order and multiplicity, and exact final-edge conversion; settled
-outcomes run the gate/memo audit separately. Any mismatch among those checked
-representations refuses export. It does not yet prove the Go checkers refine
-the Lean checkers, actual Go terms satisfy `CNFTermRoot.Encodes`, or the
-bit-blaster selects the right operations and folds. Term-memo semantics,
-trap/claim term-list provenance or source ordering, and DIMACS correspondence
-also remain open.
+outcomes run the dense, injective, input/gate-disjoint allocator and gate-memo
+audit separately. Any mismatch among those checked
+representations refuses export. A separate opaque
+`ExportNativeBitwiseEqualityAudit` closes more of that concrete seam for the
+strict parameter/constant/width-adaptation/AND/OR/XOR word grammar: an
+independent walker reconstructs actual term roots, input allocations, exact
+folds, gate-memo lookups, complete reachable coverage, and the direct final
+disequality root. `prove.CheckNativeBitwiseEqualityCertificate` regenerates
+that exact narrow audit and checks LRAT only against its DIMACS; both the Go
+and Oak checkers accept fresh AArch64 and RV64 certificates, while changed
+source, changed machine code, truncated proofs, malformed proofs, and
+constant-settled obligations refuse. Mutated or broader terms refuse, and the
+result has no conversion to `VerdictProven`, compiler consumer, or cache
+authority. The Go checkers are not universally refined to
+the Lean checkers; all other term operations, trap/claim provenance and source
+ordering, DIMACS correspondence, symbolic execution, and Oak lowering remain
+open.
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
@@ -372,6 +409,30 @@ encode/decode/dispatch identity only—not X30 provenance, ABI/frame restoration
 target validity or mapping,
 PAC behavior, `BranchTo` execution, object/link correctness, or observation.
 
+Ordinary local `B <label>` now has the corresponding immediate-class seam.
+`Oak.AArch64DirectBranchEncoding` pins `B_only_branch_imm`, proves exact fixed
+bits and `imm26`, and proves its packer equals the existing Branch26 relocation
+patch. Under the relocation model's individual four-byte alignment and signed
+`[-2^27, 2^27)` byte range, decoding the emitted field reaches the modeled
+target; `B +12` is exactly `0x14000003`. Generated Sail Lean selects
+`BranchType_DIR` and the exact sign-extended scaled offset, while rejecting BL.
+The production local-label encoder now refuses signed subtraction overflow and
+jointly-but-not-individually-aligned addresses before mutation. This closes
+static packing, bounded relocation arithmetic, and decode/dispatch identity,
+not architectural PC/BranchTo execution, target validity, source-CFG label
+selection, BL/X30, conditional branches, object/link correctness, or
+observation.
+
+Ordinary local `BL <label>` has the parallel call-class seam.
+`Oak.AArch64CallBranchEncoding` pins `BL_only_branch_imm`, proves fixed bits,
+exact `imm26`, equality with the Branch26 call patch, signed endpoints, and
+target reachability. Generated Sail Lean selects `BranchType_DIRCALL` with the
+exact sign-extended scaled offset and rejects `B`; Go gates pin the generated
+row, local encoder, official decoder/dispatch route, overflow-safe subtraction,
+and individual alignment. It does not prove architectural PC, the X30 write,
+`PostDecode`, `BranchTo`, target mapping, source-CFG labels, object/link
+correctness, or observation.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
@@ -389,12 +450,59 @@ claimed here. A conditional wrapper preserves externally supplied exact
 `STR XZR,[X0]`/DSB ISH/VMALLS12E1IS/DSB ISH/`STR X2,[X0]` word/action
 occurrences at the same five indices as the BBM ordering chain and proves the
 five `po`-linked break-through-make events distinct. Its word and action
-fields are independent. The Sail bridge conjoins the TLBI's named call-target theorem without
+fields are independent.
+
+The two pinned descriptor classifiers are now represented directly in Lean as
+the membership formulas `TTDINV | TTDAF0` and
+`(TTD & M) \ TLBUncacheableTTD`. An explicit one-way action-to-tag soundness
+premise lets the exact store wrappers and `ProjectedBBMWitness` expose exactly
+the old/break/make descriptor-filter facts. The source/AST gates reject formula
+and operand-order drift. Lean also states the complete seven-operand
+`ProjectedCATBBM` predicate over supplied occurrence relations. A factored
+one-way bridge separately maps descriptor tags, `coherenceAfter` to `ca`, local
+ordering to `ob`, abstract TLBI action to TLBI membership, and local
+`invScope` to `inv-scope`; under it the existing witness inhabits the exact
+projected relation. The specialized warning theorem no longer needs a
+monolithic `ProjectedBBM -> catBBM` premise. Primitive CAT predicates,
+soundness of every bridge field, CAT event identity, reverse classification,
+STR/value-to-tag derivation, and adequacy against an official execution remain
+open; no completion, invalidation, or publication follows.
+
+The Sail bridge conjoins the TLBI's named call-target theorem without
 replacing that external premise. Dynamic instruction-trace extraction,
 descriptor event classification, coherence-after, invalidation scope, concrete
 IPA/VMID target selection, completion, and context synchronization remain
 explicit obligations. Sail's coarse single-model-TLB reset implementation,
 which ignores architectural target granularity, is not used to discharge them.
+
+For the two STR occurrences, mechanically generated Sail Lean now proves the
+exact STR64 unsigned-offset field decodes and the selected store arm's
+address/data arguments immediately before `Mem`: explicit X0/X2 inputs yield `(X0, 0)` for the break
+word and `(X0, X2)` for the make word. The source audit pins the unique
+SEE-1277 clause, its historically misnamed `signed_postidx` decoder, fixed
+normal eight-byte store parameters, X31-as-zero, and the final official
+`Mem(address, 8, AccType_NORMAL) = data` call. These generated facts decorate,
+but cannot create, each external descriptor occurrence/action witness.
+
+The next conditional Sail projection stops at the selected arguments of the
+ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied
+translated 52-bit PA, generated Lean proves a 56-bit zero-extended call address
+and post-endian data: break is zero under either endian, little-endian make is
+X2, and big-endian make is X2 with its eight bytes reversed. The drift gate
+pins complete official bodies from endian/alignment selection through
+translation, fault, exclusive, MTE, trickbox/counter routing, `aset__Mem`, and
+`__WriteMemory`, plus the exact `__defaultRAM : bits(56)` register declaration
+and selected no-device forwarding wrapper. A further generated pure projection
+selects `(56, 8, defaultRAM, ZeroExtend(PA), data)` at the external `write_ram`
+boundary, retaining zero for break and the same endian-dependent make data.
+This is not route/call-reachability or memory-effect evidence.
+Occurrence-level decorators retain an external route predicate indexed by the
+same event, virtual address, endian result, PA, and data; extraction returns it
+and the original descriptor occurrence unchanged.
+Alignment, normal fault-free translation and PA/default-RAM provenance,
+special-route exclusion, wrapper/external return, RAM mutation, byte placement,
+atomicity/non-tearing, unique writes, CAT event/tag identity,
+visibility, completion, and publication remain open.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
@@ -451,8 +559,9 @@ lane preserves the same fall-through store/system order. `Oak.Forwarding`
 proves only the local Boolean-branch and zero-index address/value equalities
 used by lowering/cleanup. Because DSB is outside the semantic verifier's
 decided subset, the whole-body verdict is trusted. Neither that verdict nor
-the exact STR encodings derives an official Sail/ASL memory write, PTE
-provenance/alignment beyond the source base fact, CAT `ca`/`inv-scope`
+the pre-`Mem` Sail request proves successful architectural memory execution,
+PTE provenance/alignment beyond the source base fact, virtual-to-physical
+translation, endianness, faults, permissions, tags, exclusives, MMIO, CAT `ca`/`inv-scope`
 membership, TLBI effects, DSB completion, publication, or ISB synchronization.
 There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
 
@@ -495,6 +604,17 @@ stub's linked call word is checked in the written ELF. The pins are not a
 universal implementation-refinement theorem for Go. This closes only the
 model's word-level arithmetic. Symbol/layout authority, other relocations, ELF
 structure, and the complete output bytes remain trusted.
+
+`Oak.AArch64AddressRelocation` closes one additional two-word arithmetic seam
+for the executable resolver's `adrl21`. It admits exactly an `ADRP` and
+unshifted 64-bit `ADD` using one non-SP destination/base register, proves the
+signed 21-bit page patch and low-12 patch preserve all fixed/register fields,
+and proves decoding reaches the exact target. The production helper uses
+uint64-safe directional arithmetic, requires the whole eight-byte pair to fit,
+round-trips before mutation, and its boundary decisions are kernel-pinned.
+This is not symbol/layout authority, relocation-record or file-format
+correctness, loading, register execution, whole-resolver transactionality, or
+a whole-link theorem.
 
 ### 2.6 Object → binary
 
@@ -669,19 +789,25 @@ extraction's selected do-block. `lowerConditionalAssignment_eval` is its
 one-local corollary. `lowerWiden_eval` covers explicit `f64(e)` when `e` is in
 the proved straight-line `f32` slice: both sides apply `Float32.toFloat`, and
 the production render retains `fcvt64` over the exact width-32 operand term.
-The separate `lowerF64_eval` family proves ordered `Oak.FloatOps.fma64` over
-binary64 parameters, already-rounded bit literals, straight-line local
-substitution, and leaves from the proved widening family. Thus
-`fma(f64(a + b), x, y)` retains and composes the exact `fadd32`, `fcvt64`, and
-ordered `fma64` nodes. The widened leaf starts in its own initial binary32
+The separate `lowerF64_eval` family proves binary64 `+`, `-`, `*`, `/`,
+ordered `Oak.FloatOps.fma64`, negation, `abs`, and `copysign` over binary64
+parameters, already-rounded bit literals, straight-line local substitution,
+and leaves from the proved widening family. `lowerF64Condition_eval` adds all
+six comparisons and recursive pure Boolean guards; `lowerF64Flow_eval` adds
+arbitrary finite value-position condition trees. Thus
+`f64(a + b) * x + y` retains and composes the exact
+`fadd32`, `fcvt64`, `fmul64`, and `fadd64` nodes, while explicit FMA remains a
+single ordered `fma64` node. The widened leaf starts in its own initial binary32
 parameter scope; this is not arbitrary mixed-width local sequencing.
 This is deliberately still a first slice: decimal parsing into the literal
-bits, all other conversions, spans, effectful conditions, nested or effectful
-statement arms, borrowing/recursive/effectful calls, other `f64` arithmetic,
-and vector operations remain related to the extraction by tests rather than
-this theorem. Division here proves operation identity and operand order through
-Lean's `Float32.div`; it does not independently prove correctly-rounded IEEE
-division or payload-observing NaN behavior.
+bits, all other conversions, spans, effectful/statement conditions and arms,
+borrowing/recursive/effectful calls, and vector operations remain related to
+the extraction by tests rather than this theorem. The binary64 sign and
+comparison results are carrier/shape refinements: they do not prove that the
+verifier's xor/and/comparison expansion implements Lean Float, IEEE behavior,
+hardware, or NaN-payload behavior. Division likewise proves operation identity
+and operand order through the shared Lean carriers, not independently
+correct-rounded IEEE division.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -766,10 +892,14 @@ for a workload):
    corollary. `lowerWiden_eval` closes explicit `f32`-to-`f64` widening over
    that straight-line operand slice, pinned as `fcvt64(fadd32(a, b))` and
    `(Oak.FloatOps.add32 a b).toFloat`. The separate `lowerF64_eval` family
-   closes ordered binary64 FMA over parameters, bit literals, and pure locals,
-   pinned to `fma64` extraction and both native target verifiers. Decimal
-   parsing, all other conversions,
-   memory, effectful conditions, nested or effectful statement arms,
+   closes binary64 `+`, `-`, `*`, `/`, ordered FMA, negation, `abs`, and
+   `copysign` over parameters, bit literals, widened leaves, and pure locals.
+   Its condition/flow theorems add all six comparisons, pure Boolean guards,
+   and arbitrary finite value-condition trees, pinned to exact verifier
+   renders and default/bits-mode extraction. These are carrier/shape
+   refinements, not proofs that verifier bit expansions implement Lean Float,
+   IEEE behavior, NaN payloads, or hardware. Decimal parsing, all other
+   conversions, memory, effectful or statement conditions/arms,
    borrowing/recursive/effectful calls, and the rest of the float/vector edge
    stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
@@ -789,9 +919,11 @@ for a workload):
    (armv8.1-a, a second arm64 lane) — once the verifier's memory model
    reached the atomics under the sequential model (`65-machine-memory.md`
    §7a, `asm/atomics.go`: the exclusive store succeeds, so the retry is
-   decided). GCC's rv64 `lr.w`/`sc.w` loop is outside the rv64 unit
-   language and is reported so. **Item complete** for the helpers the
-   prelude has.
+   decided). GCC's rv64 `lr.w`/`sc.w` loop is likewise parsed, checked, and
+   proved. GCC 13 prints that RTL template as semicolon-separated statements
+   between two numeric labels on one physical line; the translation validator
+   splits those statements and resolves both local-label directions before it
+   builds the proof unit. **Item complete** for the helpers the prelude has.
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): **landed
    2026-09-14** for the integer instructions. With Sail built from git
    (every package of the rems-project/sail checkout pinned in one opam

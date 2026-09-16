@@ -136,8 +136,8 @@ func translationValidationHelpers() []validatedHelper {
 	// The strong compare-exchange helper on a cell reached through a span
 	// element under the index guard: the value observed and the guarded
 	// store (docs/spec/65-machine-memory.md section 7a). clang spells it as
-	// the exclusive loop (armv8.0) or `casal` (LSE); GCC spells it as a
-	// semicolon-packed rv64 `lr.w`/`sc.w` loop that the extractor expands.
+	// the exclusive loop (armv8.0) or `casal` (LSE); GCC spells it as the
+	// RV64 `lr.w`/`sc.w` loop the unit language verifies below.
 	helpers = append(helpers, validatedHelper{
 		name:    "tv_cas_u32",
 		decl:    "tv_cas_u32: (v: [*]Atomic[u32], i: u32, expected, desired: u32) -> u32",
@@ -231,47 +231,61 @@ func translationValidationC(helpers []validatedHelper) string {
 }
 
 var (
-	tvGlobalLabel = regexp.MustCompile(`^(tv_[A-Za-z0-9_]+):`)
-	tvLocalLabel  = regexp.MustCompile(`^\.L([A-Za-z0-9_]+):$`)
-	tvLocalRef    = regexp.MustCompile(`\.L([A-Za-z0-9_]+)`)
-	tvArm64Reg    = regexp.MustCompile(`\b([wx](?:[12]?[0-9]|30)|wzr|xzr)\b`)
-	tvRV64Reg     = regexp.MustCompile(`\b(a[0-7]|t[0-6]|s(?:[0-9]|1[01])|ra|gp|tp)\b`)
+	tvGlobalLabel                 = regexp.MustCompile(`^(tv_[A-Za-z0-9_]+):`)
+	tvLocalLabel                  = regexp.MustCompile(`^\.L([A-Za-z0-9_]+):$`)
+	tvLocalRef                    = regexp.MustCompile(`\.L([A-Za-z0-9_]+)`)
+	tvNumericLabelWithInstruction = regexp.MustCompile(`^([0-9]+):[ \t]*(.+)$`)
+	tvArm64Reg                    = regexp.MustCompile(`\b([wx](?:[12]?[0-9]|30)|wzr|xzr)\b`)
+	tvRV64Reg                     = regexp.MustCompile(`\b(a[0-7]|t[0-6]|s(?:[0-9]|1[01])|ra|gp|tp)\b`)
 )
 
 // assemblyFunctions splits compiler assembly into the instruction lines of
 // each tv_ function: directives dropped, comments stripped, local labels
-// renamed from the assembler's `.L` form to plain identifiers. RISC-V GCC
-// may place an entire inline-assembly block on one semicolon-delimited line;
-// assemblyStatements expands that line before labels are resolved.
+// renamed from the assembler's `.L` form to plain identifiers. GCC 13 emits
+// an RV64 compare-exchange template as semicolon-separated statements on one
+// physical line, so statements are split before labels are classified.
 func assemblyFunctions(assembly string, comment string) map[string][]string {
 	functions := map[string][]string{}
 	var current string
-	for _, line := range assemblyStatements(assembly, comment) {
-		if m := tvGlobalLabel.FindStringSubmatch(line); m != nil {
-			current = m[1]
-			continue
+	for _, raw := range strings.Split(assembly, "\n") {
+		physicalLine := raw
+		if comment != "" {
+			if i := strings.Index(physicalLine, comment); i >= 0 {
+				physicalLine = physicalLine[:i]
+			}
 		}
-		if current == "" || line == "" {
-			continue
+		for _, statement := range strings.Split(physicalLine, ";") {
+			line := strings.TrimSpace(statement)
+			if m := tvGlobalLabel.FindStringSubmatch(line); m != nil {
+				current = m[1]
+				continue
+			}
+			if current == "" || line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, ".Lfunc_end") || strings.HasPrefix(line, ".size") || strings.HasPrefix(line, ".cfi_endproc") {
+				current = ""
+				continue
+			}
+			if m := tvLocalLabel.FindStringSubmatch(line); m != nil {
+				functions[current] = append(functions[current], "L"+m[1]+":")
+				continue
+			}
+			if m := tvNumericLabelWithInstruction.FindStringSubmatch(line); m != nil {
+				functions[current] = append(functions[current], "N"+m[1]+":")
+				line = strings.TrimSpace(m[2])
+			}
+			if m := tvNumericLabel.FindStringSubmatch(line); m != nil {
+				// GCC's numeric local labels (`1:`, referenced as `1b`/`1f`):
+				// kept as markers, resolved below.
+				functions[current] = append(functions[current], "N"+m[1]+":")
+				continue
+			}
+			if strings.HasPrefix(line, ".") || strings.HasSuffix(line, ":") {
+				continue
+			}
+			functions[current] = append(functions[current], tvLocalRef.ReplaceAllString(line, "L$1"))
 		}
-		if strings.HasPrefix(line, ".Lfunc_end") || strings.HasPrefix(line, ".size") || strings.HasPrefix(line, ".cfi_endproc") {
-			current = ""
-			continue
-		}
-		if m := tvLocalLabel.FindStringSubmatch(line); m != nil {
-			functions[current] = append(functions[current], "L"+m[1]+":")
-			continue
-		}
-		if m := tvNumericLabel.FindStringSubmatch(line); m != nil {
-			// GCC's numeric local labels (`1:`, referenced as `1b`/`1f`):
-			// kept as markers, resolved below.
-			functions[current] = append(functions[current], "N"+m[1]+":")
-			continue
-		}
-		if strings.HasPrefix(line, ".") || strings.HasSuffix(line, ":") {
-			continue
-		}
-		functions[current] = append(functions[current], tvLocalRef.ReplaceAllString(line, "L$1"))
 	}
 	for name, lines := range functions {
 		functions[name] = resolveNumericLabels(lines)
@@ -279,44 +293,9 @@ func assemblyFunctions(assembly string, comment string) map[string][]string {
 	return functions
 }
 
-// assemblyStatements returns the logical statements in compiler assembly.
-// GCC renders its RISC-V atomic builtins on physical lines such as
-// `1: lr.w.aq ...; bne ... 1f; sc.w.rl ...; bnez ... 1b; 1:`. Keep both
-// numeric labels as separate statements so dropping a trailing label cannot
-// also drop the atomic operations that precede it.
-func assemblyStatements(assembly, comment string) []string {
-	var statements []string
-	for _, raw := range strings.Split(assembly, "\n") {
-		line := raw
-		if comment != "" {
-			if i := strings.Index(line, comment); i >= 0 {
-				line = line[:i]
-			}
-		}
-		parts := []string{line}
-		if comment == "#" {
-			parts = strings.Split(line, ";")
-		}
-		for _, part := range parts {
-			statement := strings.TrimSpace(part)
-			if comment == "#" {
-				if match := tvNumericLabelHead.FindStringSubmatch(statement); match != nil {
-					statements = append(statements, match[1]+":")
-					statement = strings.TrimSpace(match[2])
-				}
-			}
-			if statement != "" {
-				statements = append(statements, statement)
-			}
-		}
-	}
-	return statements
-}
-
 var (
-	tvNumericLabel     = regexp.MustCompile(`^([0-9]+):$`)
-	tvNumericLabelHead = regexp.MustCompile(`^([0-9]+):\s*(.*)$`)
-	tvNumericRef       = regexp.MustCompile(`\b([0-9]+)([bf])\b`)
+	tvNumericLabel = regexp.MustCompile(`^([0-9]+):$`)
+	tvNumericRef   = regexp.MustCompile(`\b([0-9]+)([bf])\b`)
 )
 
 // resolveNumericLabels gives every numeric local label a unique name and
@@ -351,35 +330,70 @@ func resolveNumericLabels(lines []string) []string {
 	return out
 }
 
-func TestAssemblyFunctionsExpandsPackedRV64Atomics(t *testing.T) {
-	assembly := `
+func TestAssemblyFunctionsKeepsGCC13PackedRV64CAS(t *testing.T) {
+	assembly := `.text
+.globl tv_cas_u32
 tv_cas_u32:
-	bgeu a2, a1, .Ltrap
-#APP
-	1: lr.w.aq a0, 0(a5); bne a0, a3, 1f; sc.w.rl a6, a4, 0(a5); bnez a6, 1b; 1:
-#NO_APP
-	sext.w a0, a0
-	ret
+  bgeu a2,a1,.Ltrap
+  slli a5,a2,32
+  srli a2,a5,30
+  add a5,a0,a2
+  .option push; .option norvc
+  1: lr.w.aqrl a0,0(a5); bne a0,a3,1f; sc.w.rl a2,a4,0(a5); bnez a2,1b; 1: # atomic template
+  .option pop
+  sext.w a0,a0
+  ret
 .Ltrap:
-	ebreak
-	.size tv_cas_u32, .-tv_cas_u32
+  ebreak
+.size tv_cas_u32, .-tv_cas_u32
+  addi a0,a0,99
 `
-	got := strings.Join(assemblyFunctions(assembly, "#")["tv_cas_u32"], "\n")
-	want := strings.Join([]string{
-		"bgeu a2, a1, Ltrap",
-		"N1_1:",
-		"lr.w.aq a0, 0(a5)",
-		"bne a0, a3, N1_6",
-		"sc.w.rl a6, a4, 0(a5)",
-		"bnez a6, N1_1",
-		"N1_6:",
-		"sext.w a0, a0",
+	want := []string{
+		"bgeu a2,a1,Ltrap",
+		"slli a5,a2,32",
+		"srli a2,a5,30",
+		"add a5,a0,a2",
+		"N1_4:",
+		"lr.w.aqrl a0,0(a5)",
+		"bne a0,a3,N1_9",
+		"sc.w.rl a2,a4,0(a5)",
+		"bnez a2,N1_4",
+		"N1_9:",
+		"sext.w a0,a0",
 		"ret",
 		"Ltrap:",
 		"ebreak",
-	}, "\n")
-	if got != want {
-		t.Fatalf("packed RV64 assembly =\n%s\nwant:\n%s", got, want)
+	}
+	got := assemblyFunctions(assembly, "#")["tv_cas_u32"]
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("GCC 13 packed RV64 CAS extraction:\n--- have\n%s\n--- want\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	var helper validatedHelper
+	found := false
+	for _, candidate := range translationValidationHelpers() {
+		if candidate.name == "tv_cas_u32" {
+			helper, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("translation-validation catalogue does not contain tv_cas_u32")
+	}
+	signature := parseOakSpec(t, helper.decl)
+	specification := parseOakSpec(t, helper.decl+" = "+helper.spec)
+	unitText := unitFor(asm.ArchRV64, helper, signature, got)
+	unit, errs := asm.ParseUnit("gcc13.rv64.oakasm", unitText)
+	if len(errs) != 0 {
+		t.Fatalf("extracted GCC 13 CAS does not parse: %v\n%s", errs, unitText)
+	}
+	if findings := asm.Check(unit.Functions[0], signature, nil); len(findings) != 0 {
+		t.Fatalf("extracted GCC 13 CAS checker findings: %v\n%s", findings, unitText)
+	}
+	verdict := asm.Verify(unit.Functions[0], signature, specification.Body)
+	if verdict.Kind != asm.VerdictProven {
+		t.Fatalf("extracted GCC 13 CAS verdict = %s: %s\n%s",
+			verdict.Kind, verdict.Message, unitText)
 	}
 }
 

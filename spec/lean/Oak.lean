@@ -18,6 +18,9 @@ import Oak.AArch64Memory
 import Oak.AArch64WeakMemory
 import Oak.AArch64Encoding
 import Oak.AArch64ReturnEncoding
+import Oak.AArch64DirectBranchEncoding
+import Oak.AArch64AddressRelocation
+import Oak.AArch64CallBranchEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance
 import Oak.AArch64Mmio
@@ -54,6 +57,7 @@ import Oak.ClosureCapture
 import Oak.BoundedLoop
 import Oak.BorrowStateRefinement
 import Oak.TypeLatticeRefinement
+import Oak.TypeLatticeAtomIdentity
 import Oak.ADTSemantics
 import Oak.SemanticRecord
 import Oak.Variadic
@@ -205,12 +209,17 @@ import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF
 import Oak.CNFBuilderTrace
+import Oak.CNFDenseAllocation
+import Oak.CNFClauseTrace
+import Oak.CNFClauseCertificate
 import Oak.CNFFinalObligation
 import Oak.CNFTermRoot
+import Oak.CNFBitwiseWordRoot
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction
 import Oak.Map
+import Oak.Fold
 import Oak.ReadOnlyBorrow
 import Oak.Inlining
 import Oak.SpanForward

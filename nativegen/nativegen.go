@@ -1417,6 +1417,11 @@ type generator struct {
 	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
 	// i + N <= len(v) until i is assigned.
 	loopFacts []loopFact
+	// equalLens: the spans the enclosing conditionals prove to have one
+	// length (`len(a) == len(b) ? { … }`, vector_map.go armFacts): a loop
+	// condition's slack fact over one of them holds for the others, which
+	// the checker reads off the conditional's own compare (lenEqual).
+	equalLens lengthClasses
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1555,6 +1560,11 @@ type Lane struct {
 	// vector main loop and the scalar remainder (nativegen/vector_map.go);
 	// the verifier judges the lowering against the rewritten body.
 	VectorMaps bool
+	// VectorFolds rewrites the lane-wise float reductions over span
+	// parameters into a vector main loop whose lanes are added in order
+	// and the scalar remainder (nativegen/vector_fold.go); the verifier
+	// judges the lowering against the rewritten body.
+	VectorFolds bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1799,7 +1809,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1822,7 +1832,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds)
 		}
 		if err != nil {
 			return out, err
@@ -1965,7 +1975,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2111,14 +2121,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, strength) {
+	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, vfolds, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -3048,6 +3058,27 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 // caller's position (statement, value, or result). A wildcard or bare
 // binding ends the chain; without one, falling off every arm reaches the
 // trap block (the checker proved exhaustiveness, so it never runs).
+// underArmFacts lowers one arm's body with the length equalities its
+// condition proves in force (equalLens), restoring the enclosing ones after.
+func (g *generator) underArmFacts(match *ast.MatchExpression, matchArm *ast.MatchArm, arm func(body ast.Expression) error) error {
+	saved := g.equalLens
+	g.equalLens = armFacts(match, matchArm, saved)
+	err := arm(matchArm.Body)
+	g.equalLens = saved
+	return err
+}
+
+// underCondition lowers a conditional's true path with the length
+// equalities its condition proves in force (equalLens), restoring the
+// enclosing ones after.
+func (g *generator) underCondition(cond ast.Expression, whenTrue func() error) error {
+	saved := g.equalLens
+	g.equalLens = lengthFactsOf(cond, saved)
+	err := whenTrue()
+	g.equalLens = saved
+	return err
+}
+
 func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Expression) error) error {
 	end := g.newLabel("match_end")
 	if layout, err := g.recordLayoutOfExpr(match.Scrutinee); err == nil {
@@ -3105,7 +3136,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 				g.popScope()
 				return unsupported("the pattern %s over %s", matchArm.Pattern.String(), layout.name)
 			}
-			err := arm(matchArm.Body)
+			err := g.underArmFacts(match, matchArm, arm)
 			g.popScope()
 			if err != nil {
 				return err
@@ -3170,7 +3201,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 			closed = true
 		}
 		g.pushScope()
-		err := arm(matchArm.Body)
+		err := g.underArmFacts(match, matchArm, arm)
 		g.popScope()
 		if err != nil {
 			return err
@@ -3417,7 +3448,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordExpr(whenTrue); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordExpr(whenTrue) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -3489,7 +3520,7 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordInto(whenTrue, outs) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -5826,7 +5857,7 @@ func (g *generator) lowerIf(s *ast.IfStatement) error {
 	}
 	if s.Consequence != nil {
 		g.pushScope()
-		err := g.lowerStatements(s.Consequence.Statements, false, "")
+		err := g.underCondition(s.Condition, func() error { return g.lowerStatements(s.Consequence.Statements, false, "") })
 		g.popScope()
 		if err != nil {
 			return err
@@ -5878,7 +5909,7 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
 		return err
 	}
-	if err := g.lowerArm(whenTrue); err != nil {
+	if err := g.underCondition(match.Scrutinee, func() error { return g.lowerArm(whenTrue) }); err != nil {
 		return err
 	}
 	if whenFalse == nil {
@@ -6313,8 +6344,8 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		t, err := g.expr(whenTrue, &typ)
-		if err != nil {
+		var t int
+		if err := g.underCondition(e.Scrutinee, func() error { t, err = g.expr(whenTrue, &typ); return err }); err != nil {
 			return 0, err
 		}
 		g.emit(moveOf(typ), reg(out, typ), reg(t, typ))

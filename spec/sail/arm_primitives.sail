@@ -745,6 +745,104 @@ function vector_arithmetic_unary_diffneg_fp (datasize, elements, esize, operand,
 }
 
 /* ---------------------------------------------------------------------
+ * The A64 STR (unsigned immediate), 64-bit, normal-store request.
+ *
+ * The pinned aarch_decode.sail SEE-1277 clause extracts Rt/Rn/imm12/opc/V/
+ * size and calls the (historically misnamed) signed_postidx decoder.  For
+ * size=11, V=0, opc=00 that decoder fixes wback=false, postindex=false,
+ * scale=3, AccType_NORMAL, MemOp_STORE, regsize=datasize=64, signed=false.
+ * The instruction body then reads Xn (SP only for Rn=31), reads Xt (zero for
+ * Rt=31), and requests Mem(address, 8, AccType_NORMAL) = data.
+ *
+ * These pure functions expose only that decoder result and the request made
+ * immediately before Mem.  They erase __PostDecode admission, syndrome
+ * writes, alignment and endian handling, translation and faults, permissions,
+ * MTE/tag checks, exclusive clearing, MMIO/trickbox paths, physical-memory
+ * writes, CAT events, execution/occurrence, and descriptor classification.
+ */
+
+val decode64_str64_unsigned_pure :
+  bits(32) -> (bool, bits(5), bits(5), bits(12))
+
+function decode64_str64_unsigned_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let imm12 : bits(12) = slice(op_code, 10, 12);
+    if (op_code & 0xFFC00000) == 0xF9000000 then {
+        (true, Rt, Rn, imm12)
+    } else {
+        (false, Rt, Rn, imm12)
+    }
+}
+
+val str64_unsigned_store_request_pure :
+  (bits(5), bits(5), bits(12), bits(64), bits(64), bits(64)) ->
+    (bits(64), bits(64))
+
+function str64_unsigned_store_request_pure (Rt, Rn, imm12, rn_value, rt_value, sp_value) = {
+    let base : bits(64) = if Rn == 0b11111 then sp_value else rn_value;
+    let data : bits(64) = if Rt == 0b11111 then Zeros(64) else rt_value;
+    let offset : bits(64) = sail_shiftleft(sail_zero_extend(imm12, 64), 3);
+    (base + offset, data)
+}
+
+/* The next conditional projection covers only the arguments selected by the
+ * ordinary aligned size-8 route after Mem.  In the pinned model, aset_Mem
+ * performs BigEndianReverse before AArch64_aset_MemSingle; successful
+ * translation supplies a 52-bit desc.paddress.address; and aset__Mem's
+ * non-trickbox, non-counter, non-size-16 arm calls
+ * __WriteMemory(8, ZeroExtend(paddress), value_name).
+ *
+ * Reachability of that route is deliberately not represented by a caller-
+ * supplied Boolean.  It remains an external premise covering alignment,
+ * normally returning fault-free translation, exclusive clearing, access-
+ * descriptor construction, MTE/tag continuation, and special-route
+ * exclusion.  The result is not a RAM write or a CAT event.
+ */
+
+val big_endian_reverse64_pure : bits(64) -> bits(64)
+
+function big_endian_reverse64_pure (value_name) = {
+    slice(value_name, 0, 8) @
+    slice(value_name, 8, 8) @
+    slice(value_name, 16, 8) @
+    slice(value_name, 24, 8) @
+    slice(value_name, 32, 8) @
+    slice(value_name, 40, 8) @
+    slice(value_name, 48, 8) @
+    slice(value_name, 56, 8)
+}
+
+val str64_aligned_normal_write_memory_arguments_pure :
+  (bool, bits(52), bits(64)) -> (bits(56), bits(64))
+
+function str64_aligned_normal_write_memory_arguments_pure
+  (big_endian, paddress, pre_mem_data) = {
+    let write_data : bits(64) = if big_endian then
+        big_endian_reverse64_pure(pre_mem_data)
+      else
+        pre_mem_data;
+    (sail_zero_extend(paddress, 56), write_data)
+}
+
+/* The no-device model's next two wrappers preserve these arguments:
+ * __WriteMemory calls __WriteRAM(56, N, __defaultRAM, address, val_name),
+ * and __WriteRAM forwards them to external write_ram.  This pure projection
+ * specializes N to the ordinary STR64 size of eight bytes and makes the
+ * register value an explicit input.  It proves neither that either wrapper
+ * is dynamically invoked nor that external memory changes.
+ */
+
+val str64_no_device_write_ram_call_arguments_pure :
+  (bits(56), bits(56), bits(64)) ->
+    (int, int, bits(56), bits(56), bits(64))
+
+function str64_no_device_write_ram_call_arguments_pure
+  (default_ram, address, data) = {
+    (56, 8, default_ram, address, data)
+}
+
+/* ---------------------------------------------------------------------
  * The A64 barrier decoder (docs/spec/94-assembler.md §9).
  *
  * The three word patterns below are the DSB, DMB, and ISB clauses of
@@ -1603,5 +1701,61 @@ function decode64_ordinary_ret_pure (op_code) = {
       pac = pac,
       source_is_sp = source_is_sp,
       use_key_a = use_key_a
+    }
+}
+
+/* Ordinary B/BL-immediate pure decoder fields and static branch-class target.
+ * The architectural PC read, PostDecode, BranchTo, target validation, and
+ * observation of a transfer are deliberately not members of this projection.
+ * BL's architectural X30 write is also excluded. Conditional branches are a
+ * separate instruction class. */
+enum DirectBranchImmediateExecutionTarget = {
+  DirectBranchImmediateExecutionTarget_DIR,
+  DirectBranchImmediateExecutionTarget_DIRCALL
+}
+
+struct OrdinaryBImmediateDecode = {
+  encoding_valid : bool,
+  target : DirectBranchImmediateExecutionTarget,
+  imm26 : bits(26),
+  op : bits(1),
+  offset : bits(64)
+}
+
+val branch26_offset_pure : bits(26) -> bits(64)
+
+function branch26_offset_pure (imm26) = {
+    let scaled : bits(28) = imm26 @ 0b00;
+    if imm26[25] == bitone then 0xFFFFFFFFF @ scaled
+    else 0x000000000 @ scaled
+}
+
+val decode64_ordinary_b_immediate_pure : bits(32) -> OrdinaryBImmediateDecode
+
+function decode64_ordinary_b_immediate_pure (op_code) = {
+    let imm26 : bits(26) = slice(op_code, 0, 26);
+    let op : bits(1) = slice(op_code, 31, 1);
+    let encoding_valid : bool = (op_code & 0xFC000000) == 0x14000000;
+    struct {
+      encoding_valid = encoding_valid,
+      target = DirectBranchImmediateExecutionTarget_DIR,
+      imm26 = imm26,
+      op = op,
+      offset = branch26_offset_pure(imm26)
+    }
+}
+
+val decode64_ordinary_bl_immediate_pure : bits(32) -> OrdinaryBImmediateDecode
+
+function decode64_ordinary_bl_immediate_pure (op_code) = {
+    let imm26 : bits(26) = slice(op_code, 0, 26);
+    let op : bits(1) = slice(op_code, 31, 1);
+    let encoding_valid : bool = (op_code & 0xFC000000) == 0x94000000;
+    struct {
+      encoding_valid = encoding_valid,
+      target = DirectBranchImmediateExecutionTarget_DIRCALL,
+      imm26 = imm26,
+      op = op,
+      offset = branch26_offset_pure(imm26)
     }
 }

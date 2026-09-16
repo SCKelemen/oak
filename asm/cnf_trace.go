@@ -12,6 +12,59 @@ type cnfTraceGateClauses struct {
 	length  int
 }
 
+// validateCNFAllocation checks that inputs and gates form one injective,
+// disjoint, dense allocation of 1..variables.  It is separate from clause
+// replay because settled obligations emit no final clause trace but still
+// depend on the producer's input and gate roots being distinct.
+func validateCNFAllocation(builder *cnfBuilder) ([]byte, error) {
+	if err := validateCNFGateMemoHeader(builder); err != nil {
+		return nil, err
+	}
+	// Check the allocation count before adding lengths or allocating storage.
+	// Once this equality holds, occupied is proportional to collections the
+	// completed builder already owns.
+	if len(builder.inputs) > builder.variables ||
+		len(builder.gates) != builder.variables-len(builder.inputs) {
+		return nil, fmt.Errorf("allocator records %d inputs and %d gates for %d variables",
+			len(builder.inputs), len(builder.gates), builder.variables)
+	}
+	for source := range builder.inputs {
+		if source < 0 {
+			return nil, fmt.Errorf("an input source index is negative")
+		}
+	}
+	for _, variable := range builder.inputs {
+		if variable < 1 || variable > builder.variables {
+			return nil, fmt.Errorf("an input variable is outside the allocated range")
+		}
+	}
+
+	occupied := make([]byte, builder.variables)
+	for _, variable := range builder.inputs {
+		if occupied[variable-1] != 0 {
+			return nil, fmt.Errorf("two input sources share one allocated variable")
+		}
+		occupied[variable-1] = 1
+	}
+	lastOutput := 0
+	for index, gate := range builder.gates {
+		if err := validateCNFGateMemoEntry(builder, index, gate, lastOutput); err != nil {
+			return nil, err
+		}
+		if occupied[gate.out-1] != 0 {
+			return nil, fmt.Errorf("gate %d output %d is already allocated", index, gate.out)
+		}
+		occupied[gate.out-1] = 2
+		lastOutput = gate.out
+	}
+	for variable, kind := range occupied {
+		if kind == 0 {
+			return nil, fmt.Errorf("allocated variable %d is unaccounted for", variable+1)
+		}
+	}
+	return occupied, nil
+}
+
 // validateCNFTrace independently reconstructs the concrete clauses described
 // by a completed builder trace. It deliberately does not call the builder's
 // gate or clause helpers: a drift between the recorded gates and emitted CNF
@@ -24,52 +77,12 @@ func validateCNFTrace(builder *cnfBuilder, obligation []int, emitted [][]int) er
 		return fmt.Errorf("builder has %d clauses above its budget of %d",
 			len(builder.clauses), cnfClauseBudget)
 	}
-	if builder.variables < 0 {
-		return fmt.Errorf("negative variable count %d", builder.variables)
-	}
-	// Check the allocation count without adding two untrusted lengths. Only
-	// then allocate storage proportional to collections the builder already owns.
-	if len(builder.inputs) > builder.variables ||
-		len(builder.gates) != builder.variables-len(builder.inputs) {
-		return fmt.Errorf("allocator records %d inputs and %d gates for %d variables",
-			len(builder.inputs), len(builder.gates), builder.variables)
-	}
 	if len(emitted) == 0 || len(emitted)-1 != len(builder.clauses) {
 		return fmt.Errorf("emitted clauses do not contain exactly the gate clauses and one final clause")
 	}
-
-	// Map iteration order must not affect diagnostics. Staged scans return the
-	// same generic error for every malformed member of each class.
-	for source := range builder.inputs {
-		if source < 0 {
-			return fmt.Errorf("an input source index is negative")
-		}
-	}
-	for _, variable := range builder.inputs {
-		if variable < 1 || variable > builder.variables {
-			return fmt.Errorf("an input variable is outside the allocated range")
-		}
-	}
-
-	// Inputs and gate outputs share one dense, one-based allocator. One byte per
-	// allocated variable is enough to detect duplicates and cross-kind collisions.
-	occupied := make([]byte, builder.variables)
-	for _, variable := range builder.inputs {
-		if occupied[variable-1] != 0 {
-			return fmt.Errorf("two input sources share one allocated variable")
-		}
-		occupied[variable-1] = 1
-	}
-	lastOutput := 0
-	for index, gate := range builder.gates {
-		if err := validateCNFGateMemoEntry(builder, index, gate, lastOutput); err != nil {
-			return err
-		}
-		if occupied[gate.out-1] != 0 {
-			return fmt.Errorf("gate %d output %d is already allocated", index, gate.out)
-		}
-		occupied[gate.out-1] = 2
-		lastOutput = gate.out
+	occupied, err := validateCNFAllocation(builder)
+	if err != nil {
+		return err
 	}
 
 	// Compare each fixed-size reconstruction as it is produced. This keeps the

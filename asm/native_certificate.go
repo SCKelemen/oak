@@ -26,8 +26,32 @@ import (
 // only this regenerated term-level obligation; machine execution, Oak lowering,
 // clause generation, and their formal correspondence remain separate links.
 func ExportNativeEqualityCNF(fn *Function, decl *ast.FunctionStatement) (CNF, string, bool) {
-	refuse := func(format string, args ...interface{}) (CNF, string, bool) {
-		return CNF{}, fmt.Sprintf(format, args...), false
+	prepared, reason, ok := prepareNativeEqualityTerms(fn, decl)
+	if !ok {
+		return CNF{}, reason, false
+	}
+	claim := truncate(cmpTerm("eq", prepared.asm, prepared.oak), 1)
+	return exportTermCNF(prepared.label, prepared.names, prepared.widths, claim, nil)
+}
+
+// nativeEqualityTerms is the shared, immutable input to the broad certificate
+// audit above and narrower independently replayed audits. Keeping preparation
+// in one place makes both paths judge the same symbolic machine result, Oak
+// result, parameter order, and width without changing the broad audit's
+// accepted language.
+type nativeEqualityTerms struct {
+	label  string
+	names  []string
+	widths map[string]int
+	asm    *term
+	oak    *term
+	width  int
+	fresh  int
+}
+
+func prepareNativeEqualityTerms(fn *Function, decl *ast.FunctionStatement) (nativeEqualityTerms, string, bool) {
+	refuse := func(format string, args ...interface{}) (nativeEqualityTerms, string, bool) {
+		return nativeEqualityTerms{}, fmt.Sprintf(format, args...), false
 	}
 	if fn == nil || decl == nil {
 		return refuse("the native function or Oak declaration is missing")
@@ -163,8 +187,15 @@ func ExportNativeEqualityCNF(fn *Function, decl *ast.FunctionStatement) (CNF, st
 		return refuse("Oak result uses %s", reason)
 	}
 
-	claim := truncate(cmpTerm("eq", asmTerm, oakTerm), 1)
-	return exportTermCNF("oak native equality: "+fn.Arch+":"+fn.Name, names, widths, claim, nil)
+	return nativeEqualityTerms{
+		label:  "oak native equality: " + fn.Arch + ":" + fn.Name,
+		names:  names,
+		widths: widths,
+		asm:    asmTerm,
+		oak:    oakTerm,
+		width:  width,
+		fresh:  len(exec.freshSyms),
+	}, "", true
 }
 
 func nativeCertificateScalar(expr ast.Expression) bool {

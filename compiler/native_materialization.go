@@ -50,6 +50,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 	}{
 		{"vector-reductions", lane.VectorReductions},
 		{"vector-maps", lane.VectorMaps},
+		{"vector-folds", lane.VectorFolds},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},

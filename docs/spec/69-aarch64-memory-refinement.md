@@ -327,6 +327,19 @@ supplied by the architecture refinement. A conditional theorem covers every
 make event selected by an external `requiresBBM` predicate. It does not prove
 that those local edges belong to an actual CAT execution.
 
+Lean now also states an exact pulled-back `ProjectedCATBBM` predicate over
+externally supplied occurrence sets and relations. It preserves `ca` from old
+to break, `ob` from break to TLBI, TLBI membership at that same middle event,
+and both `ob` and `inv-scope` from that TLBI to make before applying the final
+cacheable-descriptor filter. `TraceToProjectedCATBBMSoundness` factors the
+local-to-CAT obligation into five one-way fields: descriptor tag soundness,
+`coherenceAfter` to `ca`, local `ProjectedOrderedBefore` to `ob`, abstract TLBI
+action to TLBI membership, and local `invScope` to CAT `inv-scope`. Under those
+fields, `projected_bbm_witness_projects_exact_cat_bbm` proves the existing
+indexed witness inhabits every operand of the exact projected relation. An
+exact Lean-source gate pins the conjunction, event sharing, and edge directions
+beside the already pinned official CAT AST.
+
 The CAT certificate separately pins the complete outer classification seam:
 `TLBUncacheableTTD`, `TLBCacheableTTD`, all six arms of
 `TTD-update-BBM-cand`, and the exact three-operand
@@ -343,6 +356,14 @@ official `BBM` membership. Those three premises are explicit and remain
 unproved refinement obligations; the theorem does not identify Oak events or
 relations with the CAT execution.
 
+For the exact pulled-back relation,
+`maintained_old_events_exclude_exact_projected_cat_bbm_warning` removes the
+monolithic `ProjectedBBM -> catBBM` premise: local maintenance uses the supplied
+needs relation directly, and the five factored one-way fields construct
+`ProjectedCATBBM`. This is still conditional. It neither proves that the needs
+relation is official `TTD-update-needsBBM` nor that any supplied predicate came
+from an official CAT execution.
+
 The concrete wrapper keeps an external instruction-word projection beside
 that sequence. It requires the break index to carry exact `STR XZR,[X0]` word
 `0xf900001f` and abstract uncacheable-descriptor action, both DSB ISH indices
@@ -356,6 +377,68 @@ indices as the ordering witness. The four `po` links make break, pre-DSB,
 TLBI, post-DSB, and make pairwise distinct; the old event is excluded because
 the abstract `coherenceAfter` relation has no irreflexivity premise.
 
+The generated Arm Sail bridge now takes the two exact STR words one step
+further. It proves their SEE-1277 STR64 unsigned-offset field decodes and the
+selected store arm's address/data arguments immediately before `Mem`: with explicit
+register inputs, `STR XZR,[X0]` requests `(X0, 0)` and `STR X2,[X0]` requests
+`(X0, X2)`. The official-source gate pins the unexpectedly named
+`signed_postidx` decoder route, its fixed normal 64-bit store parameters, X31's
+zero behavior, and the final `Mem(address, 8, AccType_NORMAL) = data` call.
+The Sail facts decorate the external descriptor occurrences by conjunction;
+an extraction theorem returns each original word/action premise unchanged.
+
+A second generated projection follows only the conditional argument flow of
+the ordinary aligned size-eight route. Given an externally supplied 52-bit
+physical address from a normally returning, nonfaulting translation, it proves
+that the selected pre-`__WriteMemory` arguments are the address zero-extended
+to 56 bits and the post-endian 64-bit data. Consequently the exact break store
+selects `(ZeroExtend(PA), 0)` under either endian, the little-endian make store
+selects `(ZeroExtend(PA), X2)`, and the big-endian make case selects the exact
+eight-byte reversal of X2. A known-byte theorem fixes the reversal direction.
+The next generated pure projection follows the pinned no-device wrappers and
+selects the external `write_ram` arguments
+`(56, 8, defaultRAM, ZeroExtend(PA), data)`, with `defaultRAM` explicit rather
+than inferred from a runtime register state. Break data is still zero and make
+data retains the same endian-dependent result.
+
+The official-source oracle pins complete normalized bodies and exact
+signatures for `BigEndianReverse`, `aset_Mem`,
+`AArch64_aset_MemSingle`, `IsFault`, `aset__Mem`, `__WriteMemory`, and the
+no-device `__WriteRAM` wrapper. It also pins the 52-bit `FullAddress` field,
+the three overload routes, endian/aligned selection, translation/fault,
+exclusive, MTE, trickbox, counter-register, size-16 split, direct-write, model
+file-selection, exact `__defaultRAM : bits(56)` declaration, ordered wrapper
+bodies, and external `write_ram` seam. These checks justify the conditional
+argument projections only. Alignment and route/call reachability, translation
+correctness, the supplied PA's or default-RAM value's provenance, wrapper or
+external return, RAM mutation/byte placement/atomicity, and event creation are
+not outputs of the pure functions.
+The occurrence-level break/make decorators therefore require an opaque
+`AlignedNormalWriteMemoryRoute` premise indexed by the same occurrence,
+virtual address, endian result, physical address, and pre-endian data. Their
+extraction theorems return that premise and the original descriptor occurrence
+unchanged; adequacy of the route predicate against Arm execution remains open.
+
+Lean now also spells out the two pinned CAT descriptor-set formulas as
+occurrence predicates: uncacheable is `TTDINV | TTDAF0`, while cacheable is
+`(TTD & M) \ TLBUncacheableTTD`. A one-way
+`DescriptorActionCATTagSoundness` premise maps an already classified Oak
+descriptor action into those projected predicates. Under that premise the
+exact break/make occurrence wrappers and the old/break/make fields of a
+`ProjectedBBMWitness` inhabit the three descriptor filters used by CAT's
+`BBM` expression. The CAT AST/hash gate and a separate exact Lean-source gate
+pin both formulas and reject operator, atom, operand-order, and set-difference
+direction drift.
+
+The primitive `TTD`, `M`, `TTDINV`, and `TTDAF0` tags and the one-way soundness
+map are still external execution-refinement inputs. The new `ca`, `ob`, TLBI,
+and `inv-scope` fields are likewise premises rather than derived relations.
+There is no reverse classifier, no STR or descriptor-value derivation of a tag,
+and no claim that an Oak occurrence is an official CAT event. In particular
+this step does not establish address-to-slot/PTE provenance, adequacy of any
+projected predicate against an official execution, completion, invalidation,
+or publication.
+
 The checked-in `stage2_bbm_ordering_slice` gives that shape a deliberately
 incomplete Oak source witness. Its parameter carries `[* align 8]u64` and its
 assertion establishes a nonempty span; those facts do not establish live PTE
@@ -366,8 +449,9 @@ store/system order and no ISB. The two local equalities are recorded in
 `Oak.Forwarding` (`unsigned_lt_one_is_zero`, `zero_index_store`) and their
 lowering/matcher cases are fail-closed tests, but DSB places this whole function outside the semantic
 verifier's decided subset: its verdict remains **trusted**, not proven.
-Dynamic PC/object trace extraction, an official ASL memory-write semantics,
-and every instruction-to-action classification remain
+Dynamic PC/object trace extraction, reachability and effects of the official
+ASL calls after the selected external `write_ram` arguments, and every
+instruction-to-action classification remain
 compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
 object oracle or a privileged Apple EL2 execution gate.
 
@@ -509,9 +593,14 @@ This chapter does **not** claim:
   tags, decoded barrier-occurrence relation, reads-from, and coherence-after relations;
 - a proof of DSB completion or ISB context synchronization from an Arm
   execution model;
-- a proof that Oak descriptor values receive CAT's cacheable/uncacheable TTD
-  event tags, that a concrete IPA/VMID/regime selects the required TLBI scope,
-  or that descriptor publication and invalidation have completed;
+- a construction of CAT's primitive descriptor tags or the external one-way
+  action-to-tag soundness premise from Oak descriptor values or STR execution,
+  a proof that a concrete IPA/VMID/regime selects the required TLBI scope, or
+  a proof that descriptor publication and invalidation have completed;
+- a proof that the aligned, fault-free, tag-safe, non-trickbox/non-counter
+  route is reached, that the supplied physical address is the translation of
+  X0 or the descriptor slot, or that `__WriteMemory`/external `write_ram`
+  returns and changes RAM;
 - a complete live stage-2 remapping protocol or a kernel-checked compiler
   refinement proof for the TLBI occurrence beyond the executable regression
   witness;
@@ -529,7 +618,8 @@ than a full verified compiler/ISA stack.
 The next machine-memory work should add:
 
 1. extend the mechanically pinned relation subset into a complete CAT semantics
-   and prove the instruction-to-event-tag and `rf`/`ca` generation seams;
+   and construct the currently external instruction/action-to-event-tag and
+   `rf`/`ca` generation seams;
 2. retained assembly artifacts/version metadata so failures are diagnosable;
 3. real AArch64 hardware litmus execution when a CI runner is available;
 4. add the occurrence-indexed execution bridge needed for DSB completion and

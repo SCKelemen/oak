@@ -1225,6 +1225,205 @@ func TestAArch64BBMNeedsAndWarningShapesAndHashes(t *testing.T) {
 	}
 }
 
+func TestAArch64DescriptorClassifierShapesHashesAndMutations(t *testing.T) {
+	definitions := []struct {
+		name      string
+		ast       string
+		hash      string
+		shape     func(*catLispNode) bool
+		mutations []string
+	}{
+		{
+			name: "TLBUncacheableTTD",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTDINV") (:e_var nil "TTDAF0")))`,
+			hash:      pinnedAArch64ProjectionHashes["TLBUncacheableTTD"],
+			shape:     isAArch64TLBUncacheableTTD,
+			mutations: []string{":union", "TTDINV", "TTDAF0"},
+		},
+		{
+			name: "TLBCacheableTTD",
+			ast: `(:e_op nil :diff (` +
+				`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))) ` +
+				`(:e_var nil "TLBUncacheableTTD")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBCacheableTTD"],
+			shape: isAArch64TLBCacheableTTD,
+			mutations: []string{
+				":diff", ":inter", "TTD", "M", "TLBUncacheableTTD",
+			},
+		},
+	}
+	for _, definition := range definitions {
+		t.Run(definition.name, func(t *testing.T) {
+			node, err := parseCATLisp([]byte(definition.ast))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !definition.shape(node) {
+				t.Fatalf("exact %s AST was not recognized: %s", definition.name, node.canonical())
+			}
+			if got := expressionHash(node); got != definition.hash {
+				t.Fatalf("%s AST hash %s, want %s", definition.name, got, definition.hash)
+			}
+			for _, atom := range definition.mutations {
+				mutated := node.clone()
+				if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+					t.Fatalf("mutation fixture lacks %s", atom)
+				}
+				if definition.shape(mutated) {
+					t.Fatalf("%s classifier without %s was accepted", definition.name, atom)
+				}
+				if got := expressionHash(mutated); got == definition.hash {
+					t.Fatalf("%s mutation of %s retained pinned hash", definition.name, atom)
+				}
+			}
+		})
+	}
+
+	uncacheable, err := parseCATLisp([]byte(definitions[0].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncacheableOperands, ok := catOperator(uncacheable, ":union")
+	if !ok || len(uncacheableOperands) != 2 {
+		t.Fatal("uncacheable operand-order fixture lost its union")
+	}
+	uncacheableOperands[0], uncacheableOperands[1] =
+		uncacheableOperands[1], uncacheableOperands[0]
+	if isAArch64TLBUncacheableTTD(uncacheable) {
+		t.Fatal("uncacheable classifier accepted swapped TTDINV/TTDAF0 operands")
+	}
+
+	cacheable, err := parseCATLisp([]byte(definitions[1].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheableOperands, ok := catOperator(cacheable, ":diff")
+	if !ok || len(cacheableOperands) != 2 {
+		t.Fatal("cacheable operand-order fixture lost its difference")
+	}
+	intersectionOperands, ok := catOperator(cacheableOperands[0], ":inter")
+	if !ok || len(intersectionOperands) != 2 {
+		t.Fatal("cacheable operand-order fixture lost its intersection")
+	}
+	intersectionOperands[0], intersectionOperands[1] =
+		intersectionOperands[1], intersectionOperands[0]
+	if isAArch64TLBCacheableTTD(cacheable) {
+		t.Fatal("cacheable classifier accepted swapped TTD/M operands")
+	}
+
+	cacheable, err = parseCATLisp([]byte(definitions[1].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheableOperands, ok = catOperator(cacheable, ":diff")
+	if !ok || len(cacheableOperands) != 2 {
+		t.Fatal("cacheable difference-direction fixture lost its operands")
+	}
+	cacheableOperands[0], cacheableOperands[1] = cacheableOperands[1], cacheableOperands[0]
+	if isAArch64TLBCacheableTTD(cacheable) {
+		t.Fatal("cacheable classifier accepted reversed set difference")
+	}
+}
+
+func TestAArch64DescriptorClassifierLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-END -/")
+	if count := bytes.Count(source, beginMarker); count != 1 {
+		t.Fatalf("Lean classifier source has %d begin markers, want 1", count)
+	}
+	if count := bytes.Count(source, endMarker); count != 1 {
+		t.Fatalf("Lean classifier source has %d end markers, want 1", count)
+	}
+	begin := bytes.Index(source, beginMarker) + len(beginMarker)
+	end := bytes.Index(source, endMarker)
+	if begin > end {
+		t.Fatal("Lean classifier source markers are reversed")
+	}
+	got := strings.Join(strings.Fields(string(source[begin:end])), " ")
+	wantSource :=
+		"/-- Primitive occurrence tags corresponding to the four operands used by the\n" +
+			"    pinned Arm CAT descriptor classifiers. These tags remain external inputs;\n" +
+			"    this structure does not construct a CAT execution or identify an Oak\n" +
+			"    occurrence with a CAT event. -/\n" +
+			"structure ProjectedCATDescriptorTags (Occurrence : Type) where\n" +
+			"  isTTD : Occurrence → Prop\n" +
+			"  isMemory : Occurrence → Prop\n" +
+			"  isTTDInvalid : Occurrence → Prop\n" +
+			"  isTTDAccessFlagZero : Occurrence → Prop\n\n" +
+			"/-- Set-membership reading of pinned CAT `TTDINV | TTDAF0`. -/\n" +
+			"def ProjectedCATTLBUncacheableTTD {Occurrence : Type}\n" +
+			"    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=\n" +
+			"  tags.isTTDInvalid event ∨ tags.isTTDAccessFlagZero event\n\n" +
+			"/-- Set-membership reading of pinned CAT\n" +
+			"    `(TTD & M) \\ TLBUncacheableTTD`. -/\n" +
+			"def ProjectedCATTLBCacheableTTD {Occurrence : Type}\n" +
+			"    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=\n" +
+			"  tags.isTTD event ∧ tags.isMemory event ∧\n" +
+			"    ¬ProjectedCATTLBUncacheableTTD tags event\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean projected CAT descriptor classifier drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAArch64ExactBBMLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-BBM-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-BBM-END -/")
+	if count := bytes.Count(source, beginMarker); count != 1 {
+		t.Fatalf("Lean BBM source has %d begin markers, want 1", count)
+	}
+	if count := bytes.Count(source, endMarker); count != 1 {
+		t.Fatalf("Lean BBM source has %d end markers, want 1", count)
+	}
+	begin := bytes.Index(source, beginMarker) + len(beginMarker)
+	end := bytes.Index(source, endMarker)
+	if begin > end {
+		t.Fatal("Lean BBM source markers are reversed")
+	}
+	got := strings.Join(strings.Fields(string(source[begin:end])), " ")
+	wantSource :=
+		"/-- The projected occurrence sets and relations consumed by the pinned CAT\n" +
+			"    `BBM` expression. Every field is supplied by an execution refinement;\n" +
+			"    this record neither constructs official CAT events nor identifies these\n" +
+			"    relations with Oak's local trace relations. -/\n" +
+			"structure ProjectedCATBBMRelations (Occurrence : Type) where\n" +
+			"  descriptorTags : ProjectedCATDescriptorTags Occurrence\n" +
+			"  isTLBI : Occurrence → Prop\n" +
+			"  ca : Occurrence → Occurrence → Prop\n" +
+			"  ob : Occurrence → Occurrence → Prop\n" +
+			"  invScope : Occurrence → Occurrence → Prop\n\n" +
+			"/-- Exact occurrence-level reading of pinned CAT\n\n" +
+			"`[TLBCacheableTTD]; ca; [TLBUncacheableTTD]; ob; [TLBI];\n" +
+			" (ob & inv-scope); [TLBCacheableTTD]`.\n\n" +
+			"The shared arguments of `ob` and `inv-scope` preserve CAT's relational\n" +
+			"intersection. This definition is a pullback over supplied occurrence\n" +
+			"predicates, not an execution generator or a complete CAT semantics. -/\n" +
+			"def ProjectedCATBBM {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (old make : Occurrence) : Prop :=\n" +
+			"  ∃ breakEvent tlbiEvent,\n" +
+			"    ProjectedCATTLBCacheableTTD cat.descriptorTags old ∧\n" +
+			"      cat.ca old breakEvent ∧\n" +
+			"      ProjectedCATTLBUncacheableTTD cat.descriptorTags breakEvent ∧\n" +
+			"      cat.ob breakEvent tlbiEvent ∧\n" +
+			"      cat.isTLBI tlbiEvent ∧\n" +
+			"      cat.ob tlbiEvent make ∧ cat.invScope tlbiEvent make ∧\n" +
+			"      ProjectedCATTLBCacheableTTD cat.descriptorTags make\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean exact projected CAT BBM drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
 func TestCATSourceBytesDetectChanges(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "model.cat")
 	original := []byte("let ob = obs\n")

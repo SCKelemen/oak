@@ -2,6 +2,8 @@ import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
 import Oak.AArch64ReturnEncoding
+import Oak.AArch64DirectBranchEncoding
+import Oak.AArch64CallBranchEncoding
 import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 import Oak.AArch64Barrier
@@ -30,6 +32,472 @@ open Oak.ArmASL
 namespace A64Encoding
 
 open Oak.AArch64Encoding
+
+/-! The pinned STR64 unsigned-offset decoder and the selected store arm's
+address/data arguments immediately before `Mem`.  The generated projection stops before alignment,
+endianness, translation, faults, tags, exclusives, MMIO, physical memory, and
+CAT events.  It also supplies no dynamic occurrence or descriptor meaning. -/
+
+theorem decode64_str64_unsigned_bridge (word : BitVec 32) :
+    Out.Functions.decode64_str64_unsigned_pure word =
+      Oak.ArmASL.decode64Str64Unsigned word := by
+  simp only [Out.Functions.decode64_str64_unsigned_pure,
+    Oak.ArmASL.decode64Str64Unsigned, Sail.BitVec.slice,
+    BitVec.extractLsb']
+  by_cases h : word &&& 0xffc00000#32 = 0xf9000000#32 <;> simp [h]
+
+theorem str64_unsigned_store_request_bridge
+    (rt rn : BitVec 5) (imm12 : BitVec 12)
+    (rnValue rtValue spValue : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure rt rn imm12
+        rnValue rtValue spValue =
+      Oak.ArmASL.str64UnsignedStoreRequest rt rn imm12
+        rnValue rtValue spValue := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Oak.ArmASL.str64UnsignedStoreRequest, Sail.BitVec.zeroExtend,
+    Out.Functions.Zeros]
+
+theorem big_endian_reverse64_bridge (value : BitVec 64) :
+    Out.Functions.big_endian_reverse64_pure value =
+      Oak.ArmASL.bigEndianReverse64 value := by
+  simp only [Out.Functions.big_endian_reverse64_pure,
+    Oak.ArmASL.bigEndianReverse64, Sail.BitVec.slice, BitVec.extractLsb']
+
+theorem str64_aligned_normal_write_memory_arguments_bridge
+    (bigEndian : Bool) (paddress : BitVec 52) (preMemData : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress preMemData =
+      Oak.ArmASL.str64AlignedNormalWriteMemoryArguments
+        bigEndian paddress preMemData := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Oak.ArmASL.str64AlignedNormalWriteMemoryArguments,
+    big_endian_reverse64_bridge, Sail.BitVec.zeroExtend]
+
+theorem str64_no_device_write_ram_call_arguments_bridge
+    (defaultRAM address : BitVec 56) (data : BitVec 64) :
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM address data =
+      Oak.ArmASL.str64NoDeviceWriteRAMCallArguments
+        defaultRAM address data := by
+  rfl
+
+/-- The next pure projection preserves the selected ordinary STR64 address and
+data while making the no-device wrapper's width, byte count, and default-RAM
+register value explicit. It does not establish a dynamic call or memory effect. -/
+theorem str64_aligned_normal_write_ram_call_arguments
+    (defaultRAM : BitVec 56) (bigEndian : Bool)
+    (paddress : BitVec 52) (preMemData : BitVec 64) :
+    let writeArguments :=
+      Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress preMemData
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM writeArguments.1 writeArguments.2 =
+      (56, 8, defaultRAM, paddress.zeroExtend 56,
+        if bigEndian then Oak.ArmASL.bigEndianReverse64 preMemData
+        else preMemData) := by
+  cases bigEndian <;>
+    simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+      Out.Functions.str64_no_device_write_ram_call_arguments_pure,
+      big_endian_reverse64_bridge, Sail.BitVec.zeroExtend]
+
+theorem str_xzr_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_x2_x0_decoder :
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) := by
+  native_decide
+
+theorem str_xzr_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        0b11111#5 0#5 0#12 x0 x2 sp = (x0, 0#64) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend, Out.Functions.Zeros]
+
+theorem str_x2_x0_store_request (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_unsigned_store_request_pure
+        2#5 0#5 0#12 x0 x2 sp = (x0, x2) := by
+  simp [Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend]
+
+/-- Conditional selected pre-`__WriteMemory` arguments for the exact break
+store. The translated physical address is an explicit input, and reaching the
+ordinary aligned route remains an external premise. Zero is endian-invariant. -/
+theorem str_xzr_x0_write_memory_arguments
+    (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 discardedRtValue sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2 =
+      (paddress.zeroExtend 56, 0#64) := by
+  cases bigEndian <;>
+    simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+      Out.Functions.str64_unsigned_store_request_pure,
+      Out.Functions.big_endian_reverse64_pure, Out.Functions.Zeros,
+      Sail.BitVec.zeroExtend, Sail.BitVec.slice]
+
+/-- Conditional selected pre-`__WriteMemory` arguments for the exact make
+store under the explicit `bigEndian = false` input. -/
+theorem str_x2_x0_little_endian_write_memory_arguments
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        false paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56, x2) := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Out.Functions.str64_unsigned_store_request_pure,
+    Sail.BitVec.zeroExtend]
+
+/-- The same conditional make projection records the official big-endian byte
+reversal rather than silently treating the pre-`Mem` value as unchanged. -/
+theorem str_x2_x0_big_endian_write_memory_arguments
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) :
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        true paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56, Oak.ArmASL.bigEndianReverse64 x2) := by
+  simp [Out.Functions.str64_aligned_normal_write_memory_arguments_pure,
+    Out.Functions.str64_unsigned_store_request_pure,
+    big_endian_reverse64_bridge, Sail.BitVec.zeroExtend]
+
+/-- The exact break store's selected external-RAM arguments. The
+`defaultRAM` value is an input, not a claim about the runtime register. -/
+theorem str_xzr_x0_write_ram_call_arguments
+    (defaultRAM : BitVec 56) (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 discardedRtValue sp : BitVec 64) :
+    let writeArguments :=
+      Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM writeArguments.1 writeArguments.2 =
+      (56, 8, defaultRAM, paddress.zeroExtend 56, 0#64) := by
+  rw [str_xzr_x0_write_memory_arguments]
+  rfl
+
+/-- The exact make store's selected external-RAM arguments retain the official
+endian choice without asserting that the external primitive is invoked. -/
+theorem str_x2_x0_write_ram_call_arguments
+    (defaultRAM : BitVec 56) (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 x2 sp : BitVec 64) :
+    let writeArguments :=
+      Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM writeArguments.1 writeArguments.2 =
+      (56, 8, defaultRAM, paddress.zeroExtend 56,
+        if bigEndian then Oak.ArmASL.bigEndianReverse64 x2 else x2) := by
+  cases bigEndian
+  · rw [str_x2_x0_little_endian_write_memory_arguments]
+    rfl
+  · rw [str_x2_x0_big_endian_write_memory_arguments]
+    rfl
+
+/-- A known-byte witness fixes the byte-reversal direction. -/
+theorem big_endian_reverse64_known_bytes :
+    Out.Functions.big_endian_reverse64_pure 0x0001020304050607#64 =
+      0x0706050403020100#64 := by
+  native_decide
+
+/-- Adjacent load and 32-bit store classes are deliberately rejected. -/
+theorem ldr_x2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xf9400002#32).1 = false := by
+  native_decide
+
+theorem str_w2_x0_not_str64 :
+    (Out.Functions.decode64_str64_unsigned_pure 0xb9000002#32).1 = false := by
+  native_decide
+
+/-- Nearby Rt, Rn, and scaled-immediate changes remain valid STR64 words but
+decode to different fields instead of being conflated with Oak's two words. -/
+theorem nearby_str64_fields_remain_distinct :
+    Out.Functions.decode64_str64_unsigned_pure 0xf9000001#32 =
+        (true, 1#5, 0#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf900003f#32 =
+        (true, 0b11111#5, 1#5, 0#12) ∧
+      Out.Functions.decode64_str64_unsigned_pure 0xf9000402#32 =
+        (true, 2#5, 0#5, 1#12) := by
+  native_decide
+
+open Oak.AArch64Stage2Maintenance
+
+/-- Preserve the externally supplied exact-word/action occurrence while
+decorating it with the generated decoder and pre-`Mem` request facts.  `x0`
+and `discardedRtValue` are explicit inputs, not facts about a machine state. -/
+def SailBreakDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat)
+    (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strXzrX0 =
+      (true, 0b11111#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      0b11111#5 0#5 0#12 x0 discardedRtValue sp = (x0, 0#64)
+
+def SailMakeDescriptorStoreRequestOccurrence
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (event : Occurrence) (slot : Nat) (x0 x2 sp : BitVec 64) : Prop :=
+  ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable strX2X0 ∧
+    Out.Functions.decode64_str64_unsigned_pure strX2X0 =
+      (true, 2#5, 0#5, 0#12) ∧
+    Out.Functions.str64_unsigned_store_request_pure
+      2#5 0#5 0#12 x0 x2 sp = (x0, x2)
+
+theorem refineBreakDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 discardedRtValue sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorStoreRequestOccurrence code trace event slot
+      x0 discardedRtValue sp :=
+  ⟨occurrence, str_xzr_x0_decoder,
+    str_xzr_x0_store_request x0 discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailRequest
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} (x0 x2 sp : BitVec 64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorStoreRequestOccurrence code trace event slot x0 x2 sp :=
+  ⟨occurrence, str_x2_x0_decoder, str_x2_x0_store_request x0 x2 sp⟩
+
+/-- Generated decoding cannot manufacture the descriptor occurrence/action
+premise; both decorated forms recover it unchanged. -/
+theorem sail_break_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 discardedRtValue sp : BitVec 64}
+    (occurrence : SailBreakDescriptorStoreRequestOccurrence code trace event
+      slot x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+      strXzrX0 :=
+  occurrence.1
+
+theorem sail_make_store_request_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {event : Occurrence} {slot : Nat} {x0 x2 sp : BitVec 64}
+    (occurrence : SailMakeDescriptorStoreRequestOccurrence code trace event
+      slot x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+      strX2X0 :=
+  occurrence.1
+
+/-- External occurrence-indexed premise that the pinned aligned ordinary route
+    is reached for a virtual address, endian choice, and translated physical
+    address. Adequacy of this predicate against a dynamic Arm execution remains
+    an open refinement obligation. -/
+def AlignedNormalWriteMemoryRoute (Occurrence : Type) :=
+  Occurrence → BitVec 64 → Bool → BitVec 52 → BitVec 64 → Prop
+
+/-- Retain the break occurrence, external route premise, and pre-`Mem` request
+    while adding only the conditional `__WriteMemory` argument equation. -/
+def SailBreakDescriptorWriteArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  SailBreakDescriptorStoreRequestOccurrence code trace event slot
+      x0 discardedRtValue sp ∧
+    route event x0 bigEndian paddress 0#64 ∧
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2 =
+      (paddress.zeroExtend 56, 0#64)
+
+/-- The make projection records both endian cases without assuming that the
+    selected physical address is X0 or the descriptor slot. -/
+def SailMakeDescriptorWriteArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64) : Prop :=
+  SailMakeDescriptorStoreRequestOccurrence code trace event slot x0 x2 sp ∧
+    route event x0 bigEndian paddress x2 ∧
+    Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2 =
+      (paddress.zeroExtend 56,
+        if bigEndian then Oak.ArmASL.bigEndianReverse64 x2 else x2)
+
+theorem refineBreakDescriptorStoreWithSailWriteArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 discardedRtValue sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress 0#64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 discardedRtValue sp :=
+  ⟨refineBreakDescriptorStoreWithSailRequest x0 discardedRtValue sp occurrence,
+    routeReached,
+    str_xzr_x0_write_memory_arguments bigEndian paddress x0 discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailWriteArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (bigEndian : Bool)
+    (paddress : BitVec 52) (x0 x2 sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress x2)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 x2 sp := by
+  refine ⟨refineMakeDescriptorStoreWithSailRequest x0 x2 sp occurrence,
+    routeReached, ?_⟩
+  cases bigEndian
+  · exact str_x2_x0_little_endian_write_memory_arguments paddress x0 x2 sp
+  · exact str_x2_x0_big_endian_write_memory_arguments paddress x0 x2 sp
+
+/-- Conditional write-argument decoration still cannot manufacture either
+    descriptor occurrence/action premise. -/
+theorem sail_break_write_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {bigEndian : Bool}
+    {paddress : BitVec 52} {x0 discardedRtValue sp : BitVec 64}
+    (projection : SailBreakDescriptorWriteArgumentsProjection code trace route
+      event slot bigEndian paddress x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+        strXzrX0 ∧
+      route event x0 bigEndian paddress 0#64 :=
+  ⟨sail_break_store_request_requires_external projection.1, projection.2.1⟩
+
+theorem sail_make_write_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {bigEndian : Bool}
+    {paddress : BitVec 52} {x0 x2 sp : BitVec 64}
+    (projection : SailMakeDescriptorWriteArgumentsProjection code trace route
+      event slot bigEndian paddress x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+        strX2X0 ∧
+      route event x0 bigEndian paddress x2 :=
+  ⟨sail_make_store_request_requires_external projection.1, projection.2.1⟩
+
+/-- Extend the break argument-flow decoration to the exact five arguments
+selected at the external `write_ram` boundary of the pinned no-device model.
+This remains a pure projection: it asserts no call, return, or RAM update. -/
+def SailBreakDescriptorWriteRAMArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (defaultRAM : BitVec 56)
+    (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 discardedRtValue sp : BitVec 64) : Prop :=
+  SailBreakDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 discardedRtValue sp ∧
+    let writeArguments :=
+      Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          0b11111#5 0#5 0#12 x0 discardedRtValue sp).2
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM writeArguments.1 writeArguments.2 =
+      (56, 8, defaultRAM, paddress.zeroExtend 56, 0#64)
+
+/-- The corresponding make projection preserves the conditional endian
+transformation in the external-call data argument. -/
+def SailMakeDescriptorWriteRAMArgumentsProjection
+    {Occurrence Target : Type}
+    (code : InstructionTrace Occurrence) (trace : Trace Occurrence Target)
+    (route : AlignedNormalWriteMemoryRoute Occurrence)
+    (event : Occurrence) (slot : Nat) (defaultRAM : BitVec 56)
+    (bigEndian : Bool) (paddress : BitVec 52) (x0 x2 sp : BitVec 64) : Prop :=
+  SailMakeDescriptorWriteArgumentsProjection code trace route event slot
+      bigEndian paddress x0 x2 sp ∧
+    let writeArguments :=
+      Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+        bigEndian paddress
+        (Out.Functions.str64_unsigned_store_request_pure
+          2#5 0#5 0#12 x0 x2 sp).2
+    Out.Functions.str64_no_device_write_ram_call_arguments_pure
+        defaultRAM writeArguments.1 writeArguments.2 =
+      (56, 8, defaultRAM, paddress.zeroExtend 56,
+        if bigEndian then Oak.ArmASL.bigEndianReverse64 x2 else x2)
+
+theorem refineBreakDescriptorStoreWithSailWriteRAMArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (defaultRAM : BitVec 56)
+    (bigEndian : Bool) (paddress : BitVec 52)
+    (x0 discardedRtValue sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress 0#64)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbUncacheable strXzrX0) :
+    SailBreakDescriptorWriteRAMArgumentsProjection code trace route event slot
+      defaultRAM bigEndian paddress x0 discardedRtValue sp :=
+  ⟨refineBreakDescriptorStoreWithSailWriteArguments bigEndian paddress x0
+      discardedRtValue sp routeReached occurrence,
+    str_xzr_x0_write_ram_call_arguments defaultRAM bigEndian paddress x0
+      discardedRtValue sp⟩
+
+theorem refineMakeDescriptorStoreWithSailWriteRAMArguments
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} (defaultRAM : BitVec 56)
+    (bigEndian : Bool) (paddress : BitVec 52) (x0 x2 sp : BitVec 64)
+    (routeReached : route event x0 bigEndian paddress x2)
+    (occurrence : ExactDescriptorStoreOccurrence code trace event slot
+      .tlbCacheable strX2X0) :
+    SailMakeDescriptorWriteRAMArgumentsProjection code trace route event slot
+      defaultRAM bigEndian paddress x0 x2 sp :=
+  ⟨refineMakeDescriptorStoreWithSailWriteArguments bigEndian paddress x0 x2 sp
+      routeReached occurrence,
+    str_x2_x0_write_ram_call_arguments defaultRAM bigEndian paddress x0 x2 sp⟩
+
+/-- External-call argument projection preserves, but cannot create, the
+descriptor occurrence/action and ordinary-route premises. -/
+theorem sail_break_write_ram_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {defaultRAM : BitVec 56}
+    {bigEndian : Bool} {paddress : BitVec 52}
+    {x0 discardedRtValue sp : BitVec 64}
+    (projection : SailBreakDescriptorWriteRAMArgumentsProjection code trace
+      route event slot defaultRAM bigEndian paddress x0 discardedRtValue sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbUncacheable
+        strXzrX0 ∧
+      route event x0 bigEndian paddress 0#64 :=
+  sail_break_write_arguments_requires_external projection.1
+
+theorem sail_make_write_ram_arguments_requires_external
+    {Occurrence Target : Type}
+    {code : InstructionTrace Occurrence} {trace : Trace Occurrence Target}
+    {route : AlignedNormalWriteMemoryRoute Occurrence}
+    {event : Occurrence} {slot : Nat} {defaultRAM : BitVec 56}
+    {bigEndian : Bool} {paddress : BitVec 52} {x0 x2 sp : BitVec 64}
+    (projection : SailMakeDescriptorWriteRAMArgumentsProjection code trace
+      route event slot defaultRAM bigEndian paddress x0 x2 sp) :
+    ExactDescriptorStoreOccurrence code trace event slot .tlbCacheable
+        strX2X0 ∧
+      route event x0 bigEndian paddress x2 :=
+  sail_make_write_arguments_requires_external projection.1
 
 /-- Translate the enums generated by Sail to the names used by Oak's encoding
 specification.  These functions change only the constructors' namespaces. -/
@@ -1212,6 +1680,162 @@ theorem corrupted_ordinary_ret_fixed_bit_rejected :
     (Out.Functions.decode64_ordinary_ret_pure
       0xd65f03c1#32).pre_postdecode_checks_pass = false := by
   exact ⟨rfl, rfl⟩
+
+/-! ## Ordinary direct B-immediate decoder dispatch
+
+This projection covers the static decode of Oak's exact ordinary `B` words
+through the official `branch_unconditional_immediate_decode` route to
+`BranchType_DIR`. It does not read architectural `PC`, execute `PostDecode` or
+`BranchTo`, validate/map the target, justify source-CFG label choice, or cover
+`BL`, X30, and conditional branch behavior.
+-/
+
+/-- The generated offset helper is exactly sign extension of the encoded
+    26-bit word displacement after appending its two fixed zero bits. -/
+theorem ordinary_b_offset_generated_eq_signExtend (imm26 : BitVec 26) :
+    Out.Functions.branch26_offset_pure imm26 =
+      (imm26 ++ 0#2).signExtend 64 := by
+  simp only [Out.Functions.branch26_offset_pure, Sail.BitVec.access,
+    getElem!_pos imm26 25 (by omega)]
+  bv_decide
+
+/-- Therefore the generated offset's signed value is the signed word
+    displacement scaled to bytes. -/
+theorem ordinary_b_offset_generated_toInt (imm26 : BitVec 26) :
+    (Out.Functions.branch26_offset_pure imm26).toInt = imm26.toInt * 4 := by
+  rw [ordinary_b_offset_generated_eq_signExtend,
+    BitVec.toInt_signExtend_of_le (by omega)]
+  rw [BitVec.toInt_append]
+  simp
+  omega
+
+/-- Every word packed by Oak's exact ordinary-`B` row selects the direct,
+    non-call class and carries precisely its signed, scaled immediate. -/
+theorem ordinary_b_generated_decode_exact (imm26 : BitVec 26) :
+    Out.Functions.decode64_ordinary_b_immediate_pure
+      (Oak.AArch64DirectBranchEncoding.encodeBImm26 imm26) = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIR
+        imm26 := imm26
+        op := 0#1
+        offset := (imm26 ++ 0#2).signExtend 64
+      } := by
+  simp only [Out.Functions.decode64_ordinary_b_immediate_pure,
+    Sail.BitVec.slice]
+  rw [Oak.AArch64DirectBranchEncoding.encodeBImm26_extract]
+  rw [ordinary_b_offset_generated_eq_signExtend]
+  congr 1 <;>
+    simp [Oak.AArch64DirectBranchEncoding.encodeBImm26,
+      Oak.AArch64DirectBranchEncoding.b] <;>
+    bv_decide
+
+/-- Oak's exact `B +12` word selects the direct, non-call class and carries the
+    signed/scaled byte offset twelve. -/
+theorem ordinary_b_plus12_generated_decode_exact :
+    Out.Functions.decode64_ordinary_b_immediate_pure
+      Oak.AArch64DirectBranchEncoding.bPlus12 = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIR
+        imm26 := 3#26
+        op := 0#1
+        offset := 12#64
+      } := by
+  rw [Oak.AArch64DirectBranchEncoding.b_plus_12_word]
+  rfl
+
+/-- The lower signed endpoint is decoded as exactly `-2^27` in its 64-bit
+    two's-complement carrier. -/
+theorem ordinary_b_negative_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x16000000#32).offset = 0xfffffffff8000000#64 := by
+  rfl
+
+/-- The upper aligned endpoint is decoded as exactly `2^27 - 4`. -/
+theorem ordinary_b_positive_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x15ffffff#32).offset = 0x0000000007fffffc#64 := by
+  rfl
+
+/-- `BL` shares the immediate shape but is a distinct generated class.  The
+    ordinary-`B` projection therefore rejects its opcode rather than silently
+    treating it as a non-call branch. -/
+theorem bl_word_rejected_by_ordinary_b_projection :
+    (Out.Functions.decode64_ordinary_b_immediate_pure
+      0x94000003#32).encoding_valid = false := by
+  rfl
+
+/-! ## Ordinary direct BL-immediate decoder dispatch
+
+This projection covers the static decode of Oak's exact ordinary `BL` words
+through the official `branch_unconditional_immediate_decode` route to
+`BranchType_DIRCALL`. It does not read architectural `PC`, write `X30`, execute
+`PostDecode` or `BranchTo`, validate/map the target, justify source-CFG label
+choice, prove object/link correctness, or observe a transfer.
+-/
+
+/-- Every word packed by Oak's exact ordinary-`BL` row selects the direct-call
+    class and carries precisely its signed, scaled immediate. -/
+theorem ordinary_bl_generated_decode_exact (imm26 : BitVec 26) :
+    Out.Functions.decode64_ordinary_bl_immediate_pure
+      (Oak.AArch64CallBranchEncoding.encodeBLImm26 imm26) = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIRCALL
+        imm26 := imm26
+        op := 1#1
+        offset := (imm26 ++ 0#2).signExtend 64
+      } := by
+  simp only [Out.Functions.decode64_ordinary_bl_immediate_pure,
+    Sail.BitVec.slice]
+  rw [Oak.AArch64CallBranchEncoding.encodeBLImm26_extract]
+  rw [ordinary_b_offset_generated_eq_signExtend]
+  congr 1 <;>
+    simp [Oak.AArch64CallBranchEncoding.encodeBLImm26,
+      Oak.AArch64CallBranchEncoding.bl] <;>
+    bv_decide
+
+/-- The decoded call offset's signed value is the supplied signed word
+    displacement scaled to bytes. -/
+theorem ordinary_bl_generated_offset_toInt (imm26 : BitVec 26) :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      (Oak.AArch64CallBranchEncoding.encodeBLImm26 imm26)).offset.toInt =
+      imm26.toInt * 4 := by
+  rw [ordinary_bl_generated_decode_exact]
+  rw [← ordinary_b_offset_generated_eq_signExtend]
+  exact ordinary_b_offset_generated_toInt imm26
+
+/-- Oak's exact `BL +12` word selects the direct-call class and carries the
+    signed/scaled byte offset twelve. -/
+theorem ordinary_bl_plus12_generated_decode_exact :
+    Out.Functions.decode64_ordinary_bl_immediate_pure
+      Oak.AArch64CallBranchEncoding.blPlus12 = {
+        encoding_valid := true
+        target := .DirectBranchImmediateExecutionTarget_DIRCALL
+        imm26 := 3#26
+        op := 1#1
+        offset := 12#64
+      } := by
+  rw [Oak.AArch64CallBranchEncoding.bl_plus_12_word]
+  rfl
+
+/-- The lower signed endpoint is decoded as exactly `-2^27` in its 64-bit
+    two's-complement carrier. -/
+theorem ordinary_bl_negative_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x96000000#32).offset = 0xfffffffff8000000#64 := by
+  rfl
+
+/-- The upper aligned endpoint is decoded as exactly `2^27 - 4`. -/
+theorem ordinary_bl_positive_endpoint_generated_decode_exact :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x95ffffff#32).offset = 0x0000000007fffffc#64 := by
+  rfl
+
+/-- `B` shares the immediate shape but is a distinct generated class. The
+    ordinary-`BL` projection rejects its opcode. -/
+theorem b_word_rejected_by_ordinary_bl_projection :
+    (Out.Functions.decode64_ordinary_bl_immediate_pure
+      0x14000003#32).encoding_valid = false := by
+  rfl
 
 /-! ## Plain ERET at EL2
 

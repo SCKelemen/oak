@@ -51,6 +51,10 @@ func Vectorized(fn *asm.Function) int { return countSites(fn, "reduction vectori
 // vectorized under Lane.VectorMaps (nativegen/vector_map.go).
 func VectorizedMaps(fn *asm.Function) int { return countSites(fn, "map vectorization", false) }
 
+// VectorizedFolds reports how many bodies' lane-wise float reductions a
+// lowering vectorized under Lane.VectorFolds (nativegen/vector_fold.go).
+func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectorization", false) }
+
 // StrengthReduced reports how many sites layer A strength-reduced in a
 // body, each decided at the bit level (the strength transform's count,
 // beside the emitter's own).
@@ -70,8 +74,8 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                        *ast.FunctionStatement
-	expand, unroll, vectorize, maps, strength bool
+	fn                                               *ast.FunctionStatement
+	expand, unroll, vectorize, maps, folds, strength bool
 }
 
 var (
@@ -92,22 +96,22 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, strength bool) []rewriteStage {
-	key := stageKey{fn: fn, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, strength: strength}
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
+	key := stageKey{fn: fn, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, folds: folds, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, expand, unroll, vectorize, maps, strength)
+	stages := computeStages(fn, functions, expand, unroll, vectorize, maps, folds, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
 	return stages
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
@@ -140,6 +144,17 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	if maps {
 		if vectorized, changed := vectorizeMaps(fn, body); changed {
 			sites = append(sites, RewriteSite{Rewrite: "map vectorization", Law: "Oak.Map.blocked_eq", Detail: "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map", Line: fn.Token.Line})
+			body = vectorized
+			judged = true
+			push()
+		}
+	}
+	// The lane-wise float reductions as one vector of element values a
+	// trip, the lanes added in order (nativegen/vector_fold.go): lane-wise
+	// semantics and the kept order license it.
+	if folds {
+		if vectorized, changed := vectorizeFolds(fn, body); changed {
+			sites = append(sites, RewriteSite{Rewrite: "fold vectorization", Law: "Oak.Fold.blocked_eq", Detail: "each block of a vector's lanes computed as one vector load per span and the lane-wise operations, its lanes added to the accumulator in element order, the remainder one element at a time; the simd operations are lane-wise by their specification and the additions keep their order, so the blocked fold is the sequential fold", Line: fn.Token.Line})
 			body = vectorized
 			judged = true
 			push()

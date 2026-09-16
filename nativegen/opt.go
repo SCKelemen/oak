@@ -45,6 +45,7 @@ const (
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
 	TransformVectorMaps  = "vectorize-maps"
+	TransformVectorFolds = "vectorize-folds"
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
 	TransformValueSelect = "value-select"
@@ -317,6 +318,20 @@ func Transforms() []opt.Transform {
 			fired:   VectorizedMaps,
 		},
 		&laneTransform{
+			// Fold vectorization (nativegen/vector_fold.go): a float
+			// reduction whose element expression is lane-wise over span
+			// parameters — the dot product — computes one vector of element
+			// values a trip and adds its lanes in element order, licensed by
+			// Oak.Fold.blocked_eq: lane-wise semantics and the kept order, no
+			// law of the element type, so no fact of the body is required and
+			// the float accumulator rounds as the scalar loop's did.
+			name: TransformVectorFolds, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorFolds },
+			apply:   func(l Lane) Lane { l.VectorFolds = true; return l },
+			fired:   VectorizedFolds,
+		},
+		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
 			// peeling (nativegen/licm.go; §9 "Loop invariants"): machine
 			// shape only, judged by the checker and the verifier.
@@ -453,6 +468,7 @@ func PlainLane(lane Lane) Lane {
 	lane.FuseExits = false
 	lane.VectorReductions = false
 	lane.VectorMaps = false
+	lane.VectorFolds = false
 	lane.NoReductions = true
 	return lane
 }

@@ -25,8 +25,19 @@ The matching litmus programs execute in CI against Arm's official CAT model at
 pinned Herdtools7 commit `76d5bd259d4c4b553a0f52158b9638559b79a5b5`.
 That gate byte-checks the pinned CAT source and certifies the restricted full-
 and load-DMB `bob`, full-DSB `DSB-ob`, structural `IFB-ob`, and `obs` inclusion
-chains from Herd's include-expanded parser AST. A complete formal semantics of
-CAT and the occurrence-indexed instruction-to-event bridge remain open.
+chains from Herd's include-expanded parser AST. Lean now mirrors the pinned
+`TTDINV | TTDAF0` and `(TTD & M) \ TLBUncacheableTTD` membership formulas and
+projects already classified descriptor actions through an explicit one-way
+soundness premise. It also spells the complete seven-operand `BBM` relation
+over supplied occurrence predicates and proves the local maintenance witness
+inhabits it under separate one-way `ca`, `ob`, TLBI-membership, and `inv-scope`
+obligations. Construction of those primitive predicates, a complete formal
+semantics of CAT, and the occurrence-indexed instruction-to-event bridge remain
+open. The adjacent Sail proof conditionally projects aligned ordinary STR64
+data through the pre-`__WriteMemory` pair to the no-device model's selected
+external `write_ram` arguments `(56, 8, defaultRAM, PA, data)`. The default-RAM
+register value remains an explicit input, and the projection proves neither
+route/call reachability nor memory mutation or event generation.
 
 ## 1. Execution events
 
@@ -280,8 +291,8 @@ The full repository Go/race suite and Lean build remain CI acceptance gates.
 | fence-mediated synchronization | specified + implemented + Lean-modeled in chapter 67 |
 | seq-cst global order and read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | Go-to-Lean refinement | not yet proved |
-| compiler/C refinement | instruction families checked; decoded DMB/DSB records index the restricted Lean ordering relations; C/LLVM, trace extraction, DSB completion, ISB context synchronization, and complete CAT semantics remain open |
-| AArch64 weak-memory litmus suite | eleven scalar language/machine cases + two byte-pinned official BBM/VMSA catalogue cases + inductive Lean `ob` projection for full/load DMB and full DSB + pinned official-CAT AST certificate and Herd execution gated |
+| compiler/C refinement | instruction families checked; decoded DMB/DSB records index the restricted Lean ordering relations; descriptor action-to-projected-CAT-tag soundness is an explicit premise; C/LLVM, trace/tag extraction, DSB completion, ISB context synchronization, and complete CAT semantics remain open |
+| AArch64 weak-memory litmus suite | eleven scalar language/machine cases + two byte-pinned official BBM/VMSA catalogue cases + inductive Lean `ob` projection for full/load DMB and full DSB + pinned descriptor classifier formulas + official-CAT AST certificate and Herd execution gated |
 
 ## 12. Next closure steps
 
@@ -291,8 +302,8 @@ structures depend on it end to end, Oak should verify refinement through:
 1. keep the generated-C memory-order/assembly tests tied to the selected
    instruction classes;
 2. extend the mechanically pinned `Oak.AArch64WeakMemory` subset into a formal
-   CAT semantics and connect emitted instructions to Arm event tags, `rf`, and
-   `ca`;
+   CAT semantics and discharge the current one-way descriptor-tag premise by
+   connecting emitted instructions to Arm event tags, `rf`, and `ca`;
 3. target lock-free admission — in place for the C backend as a per-carrier
    static assertion (65-machine-memory.md §6); a realtime profile may still
    want it to refuse `OAK_ATOMIC_ACCEPT_LOCKED`;

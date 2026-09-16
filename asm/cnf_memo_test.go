@@ -205,7 +205,7 @@ func TestValidateCNFGateMemoRefusesNonFreshShapes(t *testing.T) {
 	}
 }
 
-func TestValidateCNFGateMemoRunsOnEverySettledOutcome(t *testing.T) {
+func TestValidateCNFAllocationRunsOnEverySettledOutcome(t *testing.T) {
 	tests := []struct {
 		name    string
 		traps   []*term
@@ -228,6 +228,14 @@ func TestValidateCNFGateMemoRunsOnEverySettledOutcome(t *testing.T) {
 				test.outcome, nil); err != nil {
 				t.Fatalf("valid settled audit refused: %v", err)
 			}
+
+			rightInput := bl.cnf.inputs[101]
+			bl.cnf.inputs[101] = bl.cnf.inputs[100]
+			if err := validateSettledCNFObligation(bl, test.traps, test.claim,
+				test.outcome, nil); err == nil {
+				t.Fatal("settled outcome accepted aliased input allocations")
+			}
+			bl.cnf.inputs[101] = rightInput
 
 			bl.cnf.memo[key]++
 			if err := validateSettledCNFObligation(bl, test.traps, test.claim,

@@ -736,7 +736,8 @@ func (g *generator) killLoopFacts(name string) {
 // provenLanes is how many elements past the index expression the loop
 // conditions prove inside the span: the fact's slack for the index
 // variable itself, less a literal offset added to it; zero when nothing
-// is proven.
+// is proven. A fact over a span the enclosing conditionals prove to have
+// this span's length (equalLens) is this span's fact.
 func (g *generator) provenLanes(spanName string, index ast.Expression) int64 {
 	name, offset := "", int64(0)
 	switch e := index.(type) {
@@ -753,7 +754,7 @@ func (g *generator) provenLanes(spanName string, index ast.Expression) int64 {
 		return 0
 	}
 	for _, fact := range g.loopFacts {
-		if fact.span == spanName && fact.index == name && fact.slack > offset {
+		if g.equalLens.same(fact.span, spanName) && fact.index == name && fact.slack > offset {
 			return fact.slack - offset
 		}
 	}

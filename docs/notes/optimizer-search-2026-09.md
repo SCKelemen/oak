@@ -350,6 +350,51 @@ the operand — the same lemma, one instruction. With that the search
 selects the fused forms for both kernels (`search`'s loop 10 instructions
 from 12 with the guard, cost 3732 against 4116).
 
+### Phase D, second increment: order-preserving fold vectorization
+
+The kernel table's `dot` at 1.31× was the last gap in proven code with a
+transform behind it: clang vectorizes the products (`fmul.4s` over four
+elements, sixteen a trip) and keeps the additions in source order, one
+`fadd` per element, where the native loop ran scalar — two loads, a
+multiply, an add, and the loop's three instructions per element. Float
+addition does not reassociate, so `vectorize-reductions`' four strided
+accumulators are out; but the element work vectorizes without touching
+the order. `vectorize-folds` (`nativegen/vector_fold.go`) rewrites a
+reduction whose element expression is lane-wise over span parameters of
+one length — the map vectorization's reading of the expression, spans at
+the loop's index, invariant scalars, constants, and the lane-wise
+operators — into a main loop that computes one vector of element values
+and adds its lanes to the accumulator in element order through
+`simd.extract`, under the slack guard, with the remainder loop as written.
+The license is `Oak.Fold.blocked_eq` (`spec/lean/Oak/Fold.lean`): the
+blocked fold equals the sequential fold for any lane function and any
+accumulation, so no law of the element type is used and the float
+accumulator rounds as before. The verifier already read every instruction
+the form needs (vector loads at wider lanes, `fmul` over an arrangement,
+the lane move `mov sD, vN.s[k]`), so the dot products prove
+(`compiler/e2e_native_vector_fold_test.go`: `f32` and `f64` dot products
+and a scaled sum; a bare float sum is left scalar, a vector saving it
+nothing). The first form of `bench_dot`'s loop was twenty instructions for four
+elements — two vector loads, the multiply, four lane moves, four adds,
+and six instructions of tests it did not need. The second span's slack
+test stood although the loop sits under `len(a) == len(b)`: the vector
+load decides its own guard from the enclosing loop conditions
+(`provenLanes`), which name the first span only, so the lowering now
+carries the conditionals' length equalities (`equalLens`, read as the
+map recognizer reads an arm) and a slack fact over one span is the
+fact over its equals. The checker then had to agree, in three places
+where it read a length register literally: the minimum a `cmp wL, #K;
+b.lo` proves (`measuresLen`), the element region an `add xE, xB, wI,
+uxtw #s` derives (the bound's register substituted for the span's own
+before the Lean-mirrored decision, Oak.Assembler.index_under_equal_len),
+and `lenLike` — each resolving the equality through any register that
+holds the same length, since the compare reads the copy (`w20`) where
+the slack fact names the primary (`w1`). And with no guard left to peel,
+the invariant pass hoists the condition's invariant half instead of
+leaving it in the header for the rotation to copy into the tail. The
+loop is sixteen instructions for four elements, one compare a trip,
+priced 1789 against the identity's 5537, proven.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until
@@ -509,9 +554,9 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: aggregate/partial memory-region projection, critical-edge splitting,
-multiple unavailable phi inputs, partial/call-written versions,
-conceptual-entry loop phis, non-affine and symbolic trip-count proofs,
+Not yet: aggregate/partial memory-region projection, multiple unavailable phi
+inputs, broader load placement, partial/call-written versions, conceptual-entry
+loop phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -1000,19 +1045,30 @@ dominating load or whole-region store. A closed join or loop memory phi is
 promoted when each real predecessor already has the exact typed value, either
 from the direct whole-region nonvolatile store defining its incoming version or
 from a canonical load of that version dominating the predecessor terminator.
-Exactly one unavailable entry-memory input may instead be materialized on a
-real predecessor whose only successor is the phi. The transform moves the
-removed canonical load's checked source/access identity to a fresh load before
-that unconditional edge; it does not synthesize authority or speculate the
-load onto another path. A fresh typed parameter in the phi block receives the
-edge values, and loads in the phi block and dominated blocks can share it.
-Conceptual function-entry inputs, conditional/critical edges, multiple missing
-inputs, partial/call definitions, type mismatches, missing edges, and value-ID
-exhaustion fail closed. The evidence records insertions as well as removed-load
+Exactly one unavailable entry-memory input may instead be materialized on its
+real incoming edge. An unconditional predecessor receives the load directly.
+If exactly one conditional arm targets the phi, a new block receives only that
+arm and branches onward with the arm's existing SSA arguments plus the loaded
+value. The transform moves the removed canonical load's checked source/access
+identity into the edge block; it does not synthesize authority or execute the
+load on another arm. A fresh typed parameter in the phi block receives the edge
+values, and loads in the phi block and dominated blocks can share it.
+Conceptual function-entry inputs, ambiguous two-arm edges, multiple missing
+inputs, partial/call definitions, type mismatches, missing edges, and value- or
+block-ID exhaustion fail closed. The evidence records the original predecessor,
+the insertion site, and whether the edge was split as well as removed-load
 replacements. Values from loads removed later in the same transform are
 resolved before edge materialization. The transform drops facts bound to
 removed SSA identities, remaps every use and operation site, and rebuilds
-MemorySSA. Checked Oak
+MemorySSA. A composed regression then reprojects the checked authority and
+requires both AArch64 and RV64 lowering of the split CFG to pass seam admission
+with a proven semantic verdict. Multiple region phis now share the same split
+block for an exact original predecessor/target pair. Every promoted input
+follows that final edge, including an already-available value from a phi
+planned before another region requested the split. Distinct targets stay
+separate. Regressions remove both join loads and prove the resulting two-region
+CFGs on AArch64 and RV64, including mixtures of moved and available inputs;
+the one-missing-input limit remains per region phi. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a
@@ -1057,9 +1113,9 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-critical-edge splitting, multiple unavailable phi inputs, conceptual-entry
-loop phis, partial/call-written versions, definite-write summaries, and calls
-in memory loops remain open;
+multiple unavailable phi inputs, broader load placement, conceptual-entry loop
+phis, partial/call-written versions, definite-write summaries, and calls in
+memory loops remain open;
 exact recursive
 `NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
 checker, and composed Lean structural models of active-authority projection
@@ -1069,7 +1125,7 @@ work.
 
 As the projection broadens, region memory SSA should power:
 
-- critical-edge splitting and broader load placement;
+- multiple-missing-input and broader load placement;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;

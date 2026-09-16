@@ -266,8 +266,23 @@ incomplete source slice whose freestanding ELF/AAPCS64 object is exactly `CBZ`, 
 five words, `RET`, and trap `BRK`; its C lane preserves the same fall-through
 order. The whole native body is verifier-trusted because of DSB, not proven,
 and the store words do not establish descriptor provenance or ASL memory
-effects. There is no Darwin/Mach-O oracle or privileged Apple EL2 execution
-gate yet. Oak separately has an exact zero-overhead source/object leaf
+effects. Generated Sail Lean now proves their exact STR64 field decodes and,
+from explicit X0/X2 inputs, the selected store arm's pre-`Mem` arguments
+`(X0, 0)` and `(X0, X2)`;
+the official-source gate pins SEE 1277 through X31-as-zero and the normal
+eight-byte `Mem` call. A separate conditional projection follows the ordinary
+aligned branch to the selected pre-`__WriteMemory` arguments: an externally
+supplied translated 52-bit PA is zero-extended to 56 bits, break data stays
+zero in either endian, and make data is X2 in little endian or its exact byte
+reversal in big endian. Full-body source hashes pin the alignment,
+translation/fault, exclusive/MTE, trickbox/counter, and direct-write route plus
+the no-device external-RAM boundary. The next pure projection makes the exact
+selected tuple `(56, 8, defaultRAM, ZeroExtend(PA), data)` explicit at that
+boundary. These projections prove neither route/call reachability,
+PA/descriptor/default-RAM provenance, successful RAM mutation, byte placement
+or atomicity, a unique write, nor a CAT event, and the Sail-decorated
+occurrences still require their external descriptor actions. There is no Darwin/Mach-O oracle or privileged
+Apple EL2 execution gate yet. Oak separately has an exact zero-overhead source/object leaf
 for the fixed `DSB ISH; VMALLS12E1IS; DSB ISH; ISB` slice, but its formal
 completed wrapper still requires those execution-level completion and sync
 facts explicitly. Neither slice is a complete descriptor BBM protocol. The current OS

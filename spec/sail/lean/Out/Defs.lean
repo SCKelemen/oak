@@ -137,6 +137,18 @@ structure OrdinaryRETDecode where
   use_key_a : Bool
   deriving BEq, Inhabited, Repr
 
+inductive DirectBranchImmediateExecutionTarget where | DirectBranchImmediateExecutionTarget_DIR | DirectBranchImmediateExecutionTarget_DIRCALL
+  deriving BEq, Inhabited, Repr
+  open DirectBranchImmediateExecutionTarget
+
+structure OrdinaryBImmediateDecode where
+  encoding_valid : Bool
+  target : DirectBranchImmediateExecutionTarget
+  imm26 : (BitVec 26)
+  op : (BitVec 1)
+  offset : (BitVec 64)
+  deriving BEq, Inhabited, Repr
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 
