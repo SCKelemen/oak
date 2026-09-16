@@ -259,9 +259,14 @@ func (selector *optIRRV64Selector) operation(operation optir.Operation) error {
 		if !admitted {
 			return fmt.Errorf("call is outside the admitted direct-call set")
 		}
-		if len(operation.Operands) == 1 {
-			selector.move(10, selector.register(operation.Operands[0]), line)
+		moves := make([]optIRRV64Move, 0, len(operation.Operands))
+		for index, operand := range operation.Operands {
+			destination, source := 10+index, selector.register(operand)
+			if destination != source {
+				moves = append(moves, optIRRV64Move{destination: destination, source: source})
+			}
 		}
+		selector.parallelCopies(moves, line)
 		selector.emit("call", line, asm.Symbol{Name: callee})
 		selector.move(destination, 10, line)
 		selector.normalize(destination, result.Type, line)
@@ -429,6 +434,11 @@ func (selector *optIRRV64Selector) edgeCopies(edge optir.Edge, line int) error {
 			moves = append(moves, optIRRV64Move{destination: destination, source: source})
 		}
 	}
+	selector.parallelCopies(moves, line)
+	return nil
+}
+
+func (selector *optIRRV64Selector) parallelCopies(moves []optIRRV64Move, line int) {
 	for len(moves) > 0 {
 		progress := false
 		for index, move := range moves {
@@ -455,7 +465,6 @@ func (selector *optIRRV64Selector) edgeCopies(edge optir.Edge, line int) error {
 			}
 		}
 	}
-	return nil
 }
 
 func (selector *optIRRV64Selector) constant(destination int, value int64, line int) {
@@ -593,8 +602,8 @@ func optIRRV64Call(operation optir.Operation, template *asm.Function, types map[
 	if callee == nil || callee.Name == nil || callee.Name.Value != calleeName || callee.Body == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
 		return "", optir.Value{}, fmt.Errorf("call to %s is not a known direct Oak function", calleeName)
 	}
-	if len(operation.Operands) > 1 || len(callee.Parameters) > 1 {
-		return "", optir.Value{}, fmt.Errorf("call to %s has more than one scalar argument", calleeName)
+	if len(operation.Operands) > 8 || len(callee.Parameters) > 8 {
+		return "", optir.Value{}, fmt.Errorf("call to %s has more than eight scalar register arguments", calleeName)
 	}
 	if len(operation.Operands) != len(callee.Parameters) {
 		return "", optir.Value{}, fmt.Errorf("call to %s has %d arguments, want %d", calleeName, len(operation.Operands), len(callee.Parameters))

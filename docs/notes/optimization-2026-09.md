@@ -146,16 +146,17 @@ normalizes narrow values in W registers. RV64 preserves canonical sign-extended
 canonicalizes Bool/narrow ABI inputs before use. They refuse effects, traps,
 memory, stack arguments, unknown operations, and remaining pressure. The first
 direct-call slice is deliberately smaller than the projected call vocabulary:
-it admits only a known direct Oak callee with zero or one matching
-Bool/8/16/32/64-bit scalar argument and exactly one matching scalar result. The
-operation must have exactly the `EffectCall` effect and exactly one nonempty
-`callee` attribute, and no other non-unit value may be live across it because
-the color pools are caller-saved. Calling bodies reserve sixteen bytes to
-save/restore `x30` on AArch64 or `ra` on RV64, pass the optional argument and
-result through the ABI register, and normalize Bool/narrow results after
-return. Other calls refuse the OptIR candidate and retain the ordinary
-lowering. The abstract spill plan does not yet emit traffic or compose its
-future frame with this call frame.
+it admits only a known direct Oak callee with zero through eight matching
+Bool/8/16/32/64-bit scalar arguments and exactly one matching scalar result.
+The operation must have exactly the `EffectCall` effect and exactly one
+nonempty `callee` attribute, and no other non-unit value may be live across it
+because the color pools are caller-saved. Calling bodies reserve sixteen bytes
+to save/restore `x30` on AArch64 or `ra` on RV64, place the register arguments
+simultaneously with the selector's reserved parallel-copy scratch so cycles do
+not overwrite a source, and normalize the ABI result after return. A ninth or
+stack argument and every broader call form refuse the OptIR candidate and retain
+the ordinary lowering. The abstract spill plan does not yet emit traffic or
+compose its future frame with this call frame.
 Before selection, a target-independent layout analysis gives loop
 continuation/backedges an 8:1 static preference and leaves other branches
 neutral. Its fingerprint-bound order is an exact block permutation. AArch64

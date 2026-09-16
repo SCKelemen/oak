@@ -279,10 +279,14 @@ func (selector *optIRArm64Selector) call(operation optir.Operation) error {
 	if line <= 0 {
 		line = operation.Results[0].Source.Line
 	}
-	if len(operation.Operands) == 1 {
-		operand := operation.Operands[0]
-		selector.move(0, selector.register(operand), optIRBits(selector.types[operand]), line)
+	var moves []optIRRegisterMove
+	for index, operand := range operation.Operands {
+		destination, source := index, selector.register(operand)
+		if destination != source {
+			moves = append(moves, optIRRegisterMove{destination: destination, source: source, bits: optIRBits(selector.types[operand])})
+		}
 	}
+	selector.emitEdgeCopies(moves, line)
 	selector.emit("bl", line, asm.Symbol{Name: callee})
 	result := operation.Results[0]
 	destination := selector.register(result.ID)
@@ -624,8 +628,8 @@ func validateOptIRArm64Call(operation optir.Operation, types map[optir.ValueID]o
 	if len(operation.Results) != 1 {
 		return fmt.Errorf("call has %d results, want one scalar result", len(operation.Results))
 	}
-	if len(operation.Operands) > 1 {
-		return fmt.Errorf("call has %d arguments, want at most one scalar argument", len(operation.Operands))
+	if len(operation.Operands) > 8 {
+		return fmt.Errorf("call has %d arguments, want at most eight scalar register arguments", len(operation.Operands))
 	}
 	if len(operation.Effects) != 1 || operation.Effects[0] != optir.EffectCall {
 		return fmt.Errorf("call must carry exactly the %s effect", optir.EffectCall)

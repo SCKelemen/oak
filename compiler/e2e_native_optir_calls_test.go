@@ -10,16 +10,16 @@ import (
 )
 
 const nativeOptIRCallProgram = `
-pub inc: (a: u32): u32 = a + u32(1)
+pub add: (a: u32, b: u32): u32 = a + b
 
-pub optimized_call: (a: u32): u32 {
+pub optimized_call: (a: u32, b: u32): u32 {
   left: u32 = a + u32(1)
   right: u32 = a + u32(1)
   dead: u32 = a * u32(2)
-  inc(left + right)
+  add(right, b)
 }
 
-main: (): i32 = i32_bits_u32(optimized_call(u32(19)) + u32(1))
+main: (): i32 = i32_bits_u32(optimized_call(u32(19), u32(21)) + u32(1))
 `
 
 func TestE2ENativeOptIRSelectsVerifiedScalarCall(t *testing.T) {

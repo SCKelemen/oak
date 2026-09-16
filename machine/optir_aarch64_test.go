@@ -258,6 +258,89 @@ call_inc8: (x: u8): u8 = inc8(x)
 	}
 }
 
+func TestLowerOptIRArm64VerifiesDirectCallArgumentSwap(t *testing.T) {
+	functions := parseOptIRArm64CallFunctions(t, `
+subtract: (left: u32, right: u32): u32 = left - right
+call_swapped: (x: u32, y: u32): u32 = subtract(y, x)
+`)
+	callee, caller := functions["subtract"], functions["call_swapped"]
+	template := &asm.Function{
+		Name: "call_swapped", Arch: asm.ArchArm64, Signature: caller, Fallback: true,
+		Bindings: []asm.Binding{{Register: w(0), Param: "x"}, {Register: w(1), Param: "y"}},
+		Callees:  map[string]*ast.FunctionStatement{"subtract": callee},
+	}
+	cfg := optir.CFG{
+		Name: "call_swapped", Entry: 0, Results: []optir.Type{"u32"},
+		Blocks: []optir.Block{{
+			ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}, {ID: 2, Type: "u32", Name: "y"}},
+			Operations: []optir.Operation{{
+				Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{2, 1},
+				Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "subtract"}},
+			}},
+			Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+		}},
+	}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, caller, map[string]bool{"subtract": true}); len(findings) != 0 {
+		t.Fatalf("selected swapped call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, caller, caller.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected swapped call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	body := text(lowered.Items)
+	for _, instruction := range []string{"mov x17, x0", "mov w0, w1", "mov w1, w17", "bl subtract"} {
+		if !strings.Contains(body, instruction) {
+			t.Fatalf("swapped call lacks cycle-safe move %q:\n%s", instruction, body)
+		}
+	}
+	scratchClobbered := false
+	for _, register := range lowered.Clobbers {
+		scratchClobbered = scratchClobbered || register.Num == optIRCopyScratch
+	}
+	if !scratchClobbered {
+		t.Fatalf("swapped call did not declare x17 scratch: %v", lowered.Clobbers)
+	}
+}
+
+func TestLowerOptIRArm64CallsWithEightScalarRegisterArgumentsAndVerifies(t *testing.T) {
+	functions := parseOptIRArm64CallFunctions(t, `
+eighth: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32): u32 = h
+call_eighth: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32): u32 = eighth(a, b, c, d, e, f, g, h)
+`)
+	caller := functions["call_eighth"]
+	template := &asm.Function{
+		Name: "call_eighth", Arch: asm.ArchArm64, Signature: caller, Fallback: true,
+		Callees: map[string]*ast.FunctionStatement{"eighth": functions["eighth"]},
+	}
+	parameters := make([]optir.Value, 8)
+	operands := make([]optir.ValueID, 8)
+	for index, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		id := optir.ValueID(index + 1)
+		parameters[index] = optir.Value{ID: id, Type: "u32", Name: name}
+		operands[index] = id
+		template.Bindings = append(template.Bindings, asm.Binding{Register: w(index), Param: name})
+	}
+	cfg := optir.CFG{Name: "call_eighth", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: parameters, Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 9, Type: "u32"}}, Operands: operands, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "eighth"}},
+		}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{9}},
+	}}}
+	lowered, err := LowerOptIRArm64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, caller, map[string]bool{"eighth": true}); len(findings) != 0 {
+		t.Fatalf("selected eight-argument call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, caller, caller.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected eight-argument call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+}
+
 func TestLowerOptIRArm64VerifiesZeroArgumentBoolCall(t *testing.T) {
 	functions := parseOptIRArm64CallFunctions(t, `
 truth: (): Bool = true
@@ -299,9 +382,9 @@ func TestLowerOptIRArm64RefusesCallsOutsideClosedSlice(t *testing.T) {
 	functions := parseOptIRArm64CallFunctions(t, `
 inc8: (x: u8): u8 = x + u8(1)
 inc32: (x: u32): u32 = x + u32(1)
-add8: (x: u8, y: u8): u8 = x + y
+nine: (a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8, i: u8): u8 = a
 call_inc8: (x: u8): u8 = inc8(x)
-call_add8: (x: u8, y: u8): u8 = add8(x, y)
+call_nine: (): u8 = nine(u8(0), u8(1), u8(2), u8(3), u8(4), u8(5), u8(6), u8(7), u8(8))
 `)
 	baseCall := func() optir.Operation {
 		return optir.Operation{
@@ -333,15 +416,23 @@ call_add8: (x: u8, y: u8): u8 = add8(x, y)
 			t.Fatalf("mismatched callee error = %v", err)
 		}
 	})
-	t.Run("two arguments", func(t *testing.T) {
-		call := baseCall()
-		call.Operands = []optir.ValueID{1, 2}
-		call.Results[0].ID = 3
-		call.Attributes[0].Value = "add8"
-		parameters := []optir.Value{{ID: 1, Type: "u8", Name: "x"}, {ID: 2, Type: "u8", Name: "y"}}
-		bindings := []asm.Binding{{Register: w(0), Param: "x"}, {Register: w(1), Param: "y"}}
-		if err := lower("call_add8", functions["call_add8"], parameters, bindings, []optir.Operation{call}, 3, map[string]*ast.FunctionStatement{"add8": functions["add8"]}); err == nil || !strings.Contains(err.Error(), "at most one") {
-			t.Fatalf("multi-argument call error = %v", err)
+	t.Run("nine arguments", func(t *testing.T) {
+		operations := make([]optir.Operation, 0, 10)
+		operands := make([]optir.ValueID, 0, 9)
+		for index := 0; index < 9; index++ {
+			id := optir.ValueID(index + 1)
+			operands = append(operands, id)
+			operations = append(operations, optir.Operation{
+				Code: optir.OpConstInt, Results: []optir.Value{{ID: id, Type: "u8"}},
+				Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: string(rune('0' + index))}},
+			})
+		}
+		operations = append(operations, optir.Operation{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 10, Type: "u8"}}, Operands: operands,
+			Effects: []optir.Effect{optir.EffectCall}, Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "nine"}},
+		})
+		if err := lower("call_nine", functions["call_nine"], nil, nil, operations, 10, map[string]*ast.FunctionStatement{"nine": functions["nine"]}); err == nil || !strings.Contains(err.Error(), "at most eight") {
+			t.Fatalf("nine-argument call error = %v", err)
 		}
 	})
 	t.Run("malformed effect", func(t *testing.T) {

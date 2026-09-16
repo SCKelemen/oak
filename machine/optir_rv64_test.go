@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -295,6 +296,82 @@ twice: (x: u32): u32 = inc(inc(x))
 	}
 }
 
+func TestLowerOptIRRV64UsesParallelCopiesForCallArguments(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+subtract: (left: u32, right: u32): u32 = left - right
+swapped: (x: u32, y: u32): u32 = subtract(y, x)
+`)
+	declaration := declarations["swapped"]
+	template := &asm.Function{
+		Name: "swapped", Arch: asm.ArchRV64, Signature: declaration, Fallback: true,
+		Bindings: []asm.Binding{{Register: optIRRV64Register(10), Param: "x"}, {Register: optIRRV64Register(11), Param: "y"}},
+		Callees:  map[string]*ast.FunctionStatement{"subtract": declarations["subtract"]},
+	}
+	cfg := optir.CFG{Name: "swapped", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: []optir.Value{{ID: 1, Type: "u32", Name: "x"}, {ID: 2, Type: "u32", Name: "y"}},
+		Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 3, Type: "u32"}}, Operands: []optir.ValueID{2, 1}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "subtract"}},
+		}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+	}}}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"subtract": true}); len(findings) != 0 {
+		t.Fatalf("selected swapped call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected swapped call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+	body := text(lowered.Items)
+	for _, move := range []string{"mv t6, a0", "mv a0, a1", "mv a1, t6"} {
+		if !strings.Contains(body, move) {
+			t.Errorf("call argument swap lacks %q:\n%s", move, body)
+		}
+	}
+	scratchClobbered := false
+	for _, register := range lowered.Clobbers {
+		scratchClobbered = scratchClobbered || register.Num == optIRRV64CopyScratch
+	}
+	if !scratchClobbered {
+		t.Errorf("call argument cycle did not declare t6 scratch: %v", lowered.Clobbers)
+	}
+}
+
+func TestLowerOptIRRV64CallsWithEightScalarRegisterArgumentsAndVerifies(t *testing.T) {
+	declarations := optIRRV64Declarations(t, `
+eighth: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32): u32 = h
+call_eighth: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32): u32 = eighth(a, b, c, d, e, f, g, h)
+`)
+	declaration := declarations["call_eighth"]
+	template := &asm.Function{Name: "call_eighth", Arch: asm.ArchRV64, Signature: declaration, Fallback: true, Callees: map[string]*ast.FunctionStatement{"eighth": declarations["eighth"]}}
+	parameters := make([]optir.Value, 8)
+	operands := make([]optir.ValueID, 8)
+	for index, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		id := optir.ValueID(index + 1)
+		parameters[index] = optir.Value{ID: id, Type: "u32", Name: name}
+		operands[index] = id
+		template.Bindings = append(template.Bindings, asm.Binding{Register: optIRRV64Register(10 + index), Param: name})
+	}
+	cfg := optir.CFG{Name: "call_eighth", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Parameters: parameters, Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 9, Type: "u32"}}, Operands: operands, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "eighth"}},
+		}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{9}},
+	}}}
+	lowered, err := LowerOptIRRV64(cfg, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := asm.Check(lowered, declaration, map[string]bool{"eighth": true}); len(findings) != 0 {
+		t.Fatalf("selected eight-argument call fails seam check: %v\n%s", findings, text(lowered.Items))
+	}
+	if verdict := asm.Verify(lowered, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("selected eight-argument call verdict = %s (%s)\n%s", verdict.Kind, verdict.Message, text(lowered.Items))
+	}
+}
+
 func TestLowerOptIRRV64RefusesCallsOutsideClosedScalarSubset(t *testing.T) {
 	declarations := optIRRV64Declarations(t, `
 inc: (x: u32): u32 = x + u32(1)
@@ -326,7 +403,6 @@ caller: (x: u32, y: u32): u32 = inc(x) + y
 		want string
 	}{
 		"unknown callee": {cfg: base(call("missing", []optir.ValueID{1})), edit: func(*asm.Function) {}, want: "not a known direct Oak function"},
-		"two arguments":  {cfg: base(call("add", []optir.ValueID{1, 2})), edit: func(*asm.Function) {}, want: "more than one scalar argument"},
 		"opaque callee": {
 			cfg: base(call("inc", []optir.ValueID{1})), edit: func(template *asm.Function) {
 				opaque := *template.Callees["inc"]
@@ -357,6 +433,35 @@ caller: (x: u32, y: u32): u32 = inc(x) + y
 	malformedEffect.Blocks[0].Operations[0].Effects = nil
 	if _, err := LowerOptIRRV64(malformedEffect, template()); err == nil || !strings.Contains(err.Error(), "effect evidence") {
 		t.Fatalf("malformed call-effect refusal = %v", err)
+	}
+
+	tooManyDeclarations := optIRRV64Declarations(t, `
+nine: (a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32, i: u32): u32 = i
+too_many: (): u32 = nine(u32(1), u32(2), u32(3), u32(4), u32(5), u32(6), u32(7), u32(8), u32(9))
+`)
+	var operations []optir.Operation
+	var operands []optir.ValueID
+	for index := 0; index < 9; index++ {
+		id := optir.ValueID(index + 1)
+		operands = append(operands, id)
+		operations = append(operations, optir.Operation{
+			Code: optir.OpConstInt, Results: []optir.Value{{ID: id, Type: "u32"}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: strconv.Itoa(index + 1)}},
+		})
+	}
+	operations = append(operations, optir.Operation{
+		Code: optir.OpCall, Results: []optir.Value{{ID: 10, Type: "u32"}}, Operands: operands, Effects: []optir.Effect{optir.EffectCall},
+		Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "nine"}},
+	})
+	tooManyCFG := optir.CFG{Name: "too_many", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0, Operations: operations, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{10}},
+	}}}
+	tooManyTemplate := &asm.Function{
+		Name: "too_many", Arch: asm.ArchRV64, Signature: tooManyDeclarations["too_many"],
+		Callees: map[string]*ast.FunctionStatement{"nine": tooManyDeclarations["nine"]},
+	}
+	if _, err := LowerOptIRRV64(tooManyCFG, tooManyTemplate); err == nil || !strings.Contains(err.Error(), "more than eight") {
+		t.Fatalf("nine-argument call refusal = %v", err)
 	}
 }
 

@@ -752,18 +752,19 @@ W registers. RV64 maintains the psABI's canonical sign-extended 32-bit
 representation and explicitly zero-extends `u32` when widening to `u64`; Bool
 and narrow ABI inputs are canonicalized before use. Both selectors also admit a
 first closed call slice: the target must be a known direct Oak function, with
-zero or one matching Bool or 8/16/32/64-bit scalar argument and exactly one
-matching scalar result. Its OptIR operation must carry exactly `EffectCall` and
-one nonempty `callee` attribute, with no other effect or attribute metadata.
+zero through eight matching Bool or 8/16/32/64-bit scalar arguments and exactly
+one matching scalar result. Its OptIR operation must carry exactly `EffectCall`
+and one nonempty `callee` attribute, with no other effect or attribute metadata.
 Because every allocatable color is caller-saved, every other non-unit value
 must be dead across the call. An admitted calling body uses a sixteen-byte
-frame to save and restore AArch64 `x30` or RV64 `ra`, moves the optional
-argument and result through the target ABI register, and reapplies the target's
-Bool/narrow normalization to the returned value. Unknown, indirect, method,
-generic, external, multi-argument, or multi-result calls refuse the candidate,
-as do other effects, traps, memory, stack parameters, unfamiliar operations,
-or remaining pressure. The abstract spill plan still emits no loads, stores,
-or frame layout, so it is not composed with this call frame yet.
+frame to save and restore AArch64 `x30` or RV64 `ra`, places all arguments in
+the eight integer ABI registers with one cycle-safe simultaneous parallel-copy
+step using the selector's reserved scratch, moves the result from the ABI result
+register, and reapplies the target's Bool/narrow normalization. A ninth or stack
+argument refuses, as do unknown, indirect, method, generic, external, or
+multi-result calls, other effects, traps, memory, stack parameters, unfamiliar
+operations, or remaining pressure. The abstract spill plan still emits no
+loads, stores, or frame layout, so it is not composed with this call frame yet.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1
