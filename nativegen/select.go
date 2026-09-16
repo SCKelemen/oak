@@ -307,6 +307,45 @@ func (g *generator) recognizeSelectChain(arms []chainArm, final []ast.Statement)
 	if chain.assigns == 0 || chain.assigns > maxSelectAssigns {
 		return nil, false
 	}
+	// Across groups a variable falls through. The groups are applied
+	// outward, the earliest last, so a variable takes its value from the
+	// earliest group whose taken arm assigns it — but a group whose taken
+	// arm does not assign it leaves whatever the later groups computed,
+	// where the source leaves the value it held before the chain. So a
+	// variable a later group assigns must be assigned by every arm of
+	// every earlier group that can be taken. An outcome no arm of a group
+	// covers is a real fall-through and is not in question.
+	//
+	// Without this, `a < b ? { m = a } | c < d ? { n = c } | { n = 9 }`
+	// set n from the second comparison even where the first arm matched,
+	// which the verifier refuses — the native build of such a program
+	// failed rather than miscompiling.
+	assignsName := func(arm *selectArm, name string) bool {
+		for k := range arm.assigns {
+			if arm.assigns[k].name == name {
+				return true
+			}
+		}
+		return false
+	}
+	for k := range chain.groups {
+		for later := k + 1; later < len(chain.groups); later++ {
+			for _, arm := range chain.groups[later].arms {
+				if arm.mask == 0 {
+					continue
+				}
+				for ai := range arm.assigns {
+					name := arm.assigns[ai].name
+					for e := range chain.groups[k].arms {
+						earlier := &chain.groups[k].arms[e]
+						if earlier.mask != 0 && !assignsName(earlier, name) {
+							return nil, false
+						}
+					}
+				}
+			}
+		}
+	}
 	// An arm taken whenever its group is reached assigns its value as a
 	// value: the increment forms are conditional instructions.
 	for gi := range chain.groups {

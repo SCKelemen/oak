@@ -5063,6 +5063,21 @@ csel w10, w2, w7, hs                 csel w7,  w6, w11, lo
 csel w6,  w3, w10, lo
 ```
 
+Widening it exposed a fall-through the chain's representation had always
+had, and the fix comes with it. The groups are applied outward, the
+earliest last, so a variable takes its value from the earliest group
+whose taken arm assigns it — but a group whose taken arm does *not*
+assign it leaves whatever the later groups computed, where the source
+leaves the value it held before the chain. In
+`a < b ? { m = a } | c < d ? { n = c } | { n = 9 }` the second
+comparison set `n` even where the first arm matched. The verifier
+refused such a body, so the native build failed rather than
+miscompiling, and it failed on `specification` before this change too —
+the widening only made the shape reachable more often. A variable a
+later group assigns must now be assigned by every arm of every earlier
+group that can be taken; an outcome no arm of a group covers is a real
+fall-through and is not in question.
+
 Every group's computed operands are now evaluated, and a later arm's
 operand is admitted when it is `speculable` — the condition for it is
 the arms' own: the first arm's condition is where the source evaluates

@@ -69,12 +69,33 @@ buckets: (v: []u32, lo: u32, hi: u32): u32 {
   total
 }
 
+// A later group assigns a variable the first group's arm does not. The
+// groups are applied outward, so without a guard the second comparison
+// set n even where the first arm matched — a fall-through the source
+// does not have, which the verifier refuses.
+fall_through: (a: u32, b: u32, c: u32, d: u32): u32 {
+  m: u32 = 1
+  n: u32 = 2
+  a < b ? {
+    m = a
+  } | c < d ? {
+    n = c
+  } | {
+    n = 9
+  }
+  m * u32(1000) + n
+}
+
+reach: (v: []u32): u32 = len(v) > u32(3) ? fall_through(v[0], v[1], v[2], v[3]) | u32(0)
+
 main: (): i32 {
   xs: [4]u32 = [4]u32{ 1, 50, 200, 9 }
+  ys: [4]u32 = [4]u32{ 5, 9, 1, 0 }
   // computed(7,3,4,9) = 4 (5 < 9), called(7,3,1) = 3 (side(1) = 2 < 3),
-  // buckets = 1 + 100 + 10 + 9 = 120; 4 + 3 + 120 = 127.
-  i32_bits_u32((computed(u32(7), u32(3), u32(4), u32(9)) + called(u32(7), u32(3), u32(1)) +
-    buckets(view(&xs), u32(10), u32(100))) & u32(255))
+  // buckets = 1 + 100 + 10 + 9 = 120, reach(5,9,1,0) = 5 * 1000 + 2 = 5002;
+  // 4 + 3 + 120 + 5002 = 5129, 9 modulo 256, plus 118 is 127.
+  i32_bits_u32(((computed(u32(7), u32(3), u32(4), u32(9)) + called(u32(7), u32(3), u32(1)) +
+    buckets(view(&xs), u32(10), u32(100)) + reach(view(&ys))) & u32(255)) + u32(118))
 }
 `
 
@@ -132,6 +153,14 @@ func TestE2ENativeChainComputedOperands(t *testing.T) {
 	}
 	if selects < 2 || branches > 1 {
 		t.Errorf("buckets' loop body must select and keep at most the loop's own branch, got %d select(s) and %d branch(es):\n%s", selects, branches, nativegen.Describe(units["buckets"]))
+	}
+	// The fall-through shape builds and is proven: before the guard the
+	// verifier refused it, which fails the native build.
+	if !strings.Contains(joined, "asm unit reach: proven equal to its Oak body") {
+		t.Errorf("reach must be proven: a later group must not assign past an earlier arm; diagnostics:\n%s", joined)
+	}
+	if strings.Contains(joined, "disagrees") {
+		t.Errorf("a refused body:\n%s", joined)
 	}
 	_, code, abnormal := buildAndRunFrom(t, "native_chain_operand", comp)
 	if abnormal || code != 127 {
