@@ -204,7 +204,11 @@ frontend.
 
 The distinction is visible in `STATUS.md`. Type lattices, pattern analysis,
 literal fitting, record layout, selected borrow transitions, view/span rules,
-modules, arithmetic, and other decisions carry implementation refinements.
+alignment-fact normalization/flow/join, modules, arithmetic, and other
+decisions carry implementation refinements. The alignment result is scoped:
+the Lean model proves the production numeric order and weakest-fact join sound
+for canonical power-of-two facts, while bounded executable examples pin the Go
+helpers; shape identity and whole assignability remain outside that theorem.
 Other features have models and proofs but no complete correspondence from the
 production traversal and bookkeeping code to the model.
 

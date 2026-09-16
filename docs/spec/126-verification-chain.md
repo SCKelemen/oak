@@ -35,8 +35,9 @@ pattern analysis and reachability (`Oak.PatternAnalysisRefinement`),
 generic constraints, record shape and layout, borrow states and
 reborrows, modules, literal ranges (`Oak.LiteralFitRefinement`),
 integer conversions, wrapping/checked arithmetic, the view and span
-helpers, the atomic order tables and the CAS helper — each row carries R in
-`STATUS.md`. **Proved**: typestate (`Oak.Typestate`), protocol
+helpers, the alignment-fact normalization/flow/join decisions
+(`Oak.AlignmentFactRefinement`), the atomic order tables and the CAS helper —
+each row carries R in `STATUS.md`. **Proved**: typestate (`Oak.Typestate`), protocol
 conformance (`Oak.ProtocolConformance`), quorums (`Oak.ProtocolQuorum`),
 closure capture, effect rows, UTF-8 validity, the self-hosted laws
 (`125-verification.md` §6, decided in Oak and proved in Lean).

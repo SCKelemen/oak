@@ -2296,6 +2296,24 @@ func alignmentFact(align uint32) uint32 {
 	return align
 }
 
+// alignmentFactFlows is the directional order on normalized alignment facts.
+// Zero is the plain fact (semantic alignment one), so every value flows to a
+// plain target. Nonzero facts are powers of two at checked-program boundaries;
+// numeric order is therefore exactly the divisibility order.
+func alignmentFactFlows(value, target uint32) bool {
+	return target == 0 || value >= target
+}
+
+// joinAlignmentFacts returns the weakest fact carried by both alternatives.
+// On normalized power-of-two facts this is their greatest common weakening;
+// the zero sentinel is correctly the least fact under alignmentFactFlows.
+func joinAlignmentFacts(left, right uint32) uint32 {
+	if right < left {
+		return right
+	}
+	return left
+}
+
 // borrowAlignment is the alignment fact of a borrow of an owned array
 // (docs/spec/50-borrowing.md section 2a): the element's natural alignment,
 // raised to the owning record's declared alignment when the array is the
@@ -4833,7 +4851,7 @@ func (tc *TypeChecker) representationPreservingAssignable(valueType, targetType 
 			value.Length == target.Length && value.IsSlice == target.IsSlice &&
 			value.IsSpan == target.IsSpan &&
 			latticeAtomIdentical(value.ElementType, target.ElementType) &&
-			(target.Align == 0 || value.Align >= target.Align)
+			alignmentFactFlows(value.Align, target.Align)
 	}
 
 	if value, ok := valueType.(*FunctionType); ok {
@@ -6071,7 +6089,7 @@ func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
 		if !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
 			return true
 		}
-		return target.Align == 0 || value.Align >= target.Align
+		return alignmentFactFlows(value.Align, target.Align)
 	case *FunctionType:
 		// A function value stands where a function type is required when
 		// each argument the target supplies flows into the value's
@@ -6100,7 +6118,7 @@ func (t *ArrayType) alignedInto(target *ArrayType) bool {
 	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !latticeAtomIdentical(t.ElementType, target.ElementType) {
 		return false
 	}
-	return target.Align == 0 || t.Align >= target.Align
+	return alignmentFactFlows(t.Align, target.Align)
 }
 
 // GenericType represents a generic type application: Option[T], Result[T, E], etc.

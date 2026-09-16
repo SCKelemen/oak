@@ -9,6 +9,7 @@ import Oak.ObjectLayout
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact
+import Oak.AlignmentFactRefinement
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency

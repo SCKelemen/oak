@@ -168,8 +168,8 @@ func weakestAlignment(types []Type) Type {
 	}
 	align := first.Align
 	for _, t := range types[1:] {
-		if other, isOther := t.(*ArrayType); isOther && other.Align < align {
-			align = other.Align
+		if other, isOther := t.(*ArrayType); isOther {
+			align = joinAlignmentFacts(align, other.Align)
 		}
 	}
 	if align == first.Align {
