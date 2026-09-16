@@ -66,11 +66,13 @@ the match `try` lowers to, under the generated `oak_try_err_N` binder.
 | `a & b`, `a \| b`, `a ^ b`, `a << n`, `a >> n` | `a &&& b`, `a \|\|\| b`, `a ^^^ b`, `a <<< n`, `a >>> n` (see section 3 for the count) |
 | `u8_checked_u32(x)` | `if x > 255 then Result_u8_Overflow.Err Overflow.Overflow else Result_u8_Overflow.Ok x.toUInt8` — the range test per signedness pair, then the wrapping conversion |
 | `f[T]: (items: [*]T): ()` called as `f[u32](s)` | the checker's specialization `f_u32` (typechecker/genericfn.go), extracted like any function; the template itself is never emitted |
+| `reduce.lanes(xs, zero, plus, count, run)` with a named function argument | a separate definition for the checked callee and each ordered set of function bindings; function parameters become direct calls and leave the value parameter list. Forwarded function parameters retain their bindings, and the callbacks' span and package-state writes join the caller's write sets |
 | `NAME: u32 = 16` at top level | `def NAME : UInt32 := (16 : UInt32)`, emitted when a function reads it; an initializer that calls a function fails closed |
 | `TABLE: [256]u8 = [256]u8{ ... }` at top level, `[16]u32{ m[2], ... }` anywhere | `def TABLE : Array UInt8 := (#[...] : Array UInt8)`; an array literal is the Lean array literal, split into `++`-joined chunks of 128 beyond that length so a 2048-entry table elaborates |
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
-| `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
+| `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` |
 | `arr[i].field = v` | `let arr := arr.setIfInBounds i.toNat { (arr.getD i.toNat zero) with field := v }` — the element record read, one field replaced, stored back at the same index (the text cursors of `strings`) |
+| `views[id].shape[d] = v`, nested field/element stores | rebuild the target path from its leaf to the named owner: update `shape` with `setIfInBounds`, replace the record's field, then store the record back into `views`. Other fields and elements are preserved; loops, branches, span windows and package state thread the owner as for a direct store |
 | `is_valid_utf8(v)` | `Oak.Utf8Exec.valid v` — the same Table 3-7 decision procedure over the carrier (section 3), imported only when used |
 | `^x` | `~~~x`, the complement over the operand's width |
 | `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
@@ -113,7 +115,9 @@ every fixed array field at its declared length; with Lean's derived
 `Inhabited` the fields would be empty arrays and every element store into
 an uninitialized record would be dropped as out of range — SHA-256 hashed
 an empty block until this was made explicit. Both were found by the
-faithfulness check of section 5, not by the drift test.
+faithfulness check of section 5, not by the drift test. The same explicit
+record default initializes global records and arrays of records, so a
+zero-initialized arena retains the declared lengths of every array field.
 
 **Floats are the host's.** `f32` and `f64` extract to Lean's `Float32` and
 `Float`, whose operations are the compiled runtime's binary32 and binary64
@@ -285,9 +289,9 @@ integer conversion rows, the bitwise operators and the complement,
 `assert`, `subslice`; `f32` and `f64` with their literals, arithmetic,
 comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
 them and the integers, and the intrinsics of the table above (`fma`,
-`copysign`, and `round_even` through `Oak.FloatOps`); field
-assignment and element assignment into a record's array field, one level
-deep, and field assignment through an element of a span (`arr[i].field`);
+`copysign`, and `round_even` through `Oak.FloatOps`); assignments through
+nested record fields and array/span elements rooted in a named owner
+(`views[id].shape[d]`, `arr[i].meta.field`);
 array literals; top-level constants, including constant tables read
 through `view`, target constants (`c.const`, as opaque constants of
 their `c.*` scalar type), and measured constants (opaque within their
@@ -298,7 +302,14 @@ the receiver as the first parameter (`def Handle.peek (h : Handle) ...`)
 and called through the identity the checker resolved, so a plain function
 `Handle_peek` never collides. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
-functions it reaches. Everything else — strings in encodings other than
+functions it reaches. Calls with function-typed parameters specialize at
+named Oak function arguments, including forwarded bindings and direct
+self-recursion. The extractor preserves the checked expression nodes and
+resolves each instance's calls before state analysis, so separate callback
+bindings retain their own reads and writes. A root with an unbound function
+parameter, a computed function argument, or reassignment of a bound function
+parameter fails closed; this does not introduce general function values into
+the Lean model. Everything else — strings in encodings other than
 UTF-8, generic templates
 themselves, mutual recursion, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`

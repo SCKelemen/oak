@@ -367,7 +367,9 @@ value.
 **The load.** The compiled program declares one weak hook,
 `int64_t oak_measured_value(const char *name, int64_t pinned)`, and an
 initializer that asks it for each constant by its Oak name without the
-package prefix, checks the answer against the declared range, and stops
+package prefix or internal escaping (`TILE_GROUPS`, including when imported;
+an underscore in the source remains an underscore in the hook name),
+checks the answer against the declared range, and stops
 the program — the constant's name and the range on stderr where there is
 one, a trap otherwise — when it lies outside: a knob outside its range
 never reaches code proved for the range. Hosted builds define the hook

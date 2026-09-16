@@ -120,8 +120,8 @@ Inside the subset:
 | `fma sqrt abs copysign floor ceil trunc round round_even min max min_num max_num is_nan is_finite is_infinite is_normal` | `fma`, `precise::sqrt`, `fabs`, `copysign`, `floor`, `ceil`, `trunc`, `round`, `rint`, `oak_fmin`/`oak_fmax` (NaN-propagating, IEEE 754-2019 `minimum`/`maximum`), `fmin`/`fmax`, `isnan`, `isfinite`, `isinf`, `isnormal` |
 | `cond ? a \| b` | `if`/`else` in statement position (an empty else is dropped), `cond ? a : b` in value position with expression arms |
 | `while cond { }`, `break` | the same |
-| a call to a helper | a call to the emitted `static inline` function, buffers passed as pointer and length, the fault word last |
-| a helper with function-valued parameters, called with named functions (`r.tree(part, zero, add)`) | the helper is emitted once **per binding** — `reduce__tree_f32__add` — with calls through the parameter replaced by calls to the bound function; the argument must name a function of the program (no function pointers reach the GPU) |
+| a call to a helper | a call to the emitted `static inline` function under a private compiler name, buffers passed as pointer and length, the fault word last; `plus` cannot collide with `metal::plus` (F30) |
+| a helper with function-valued parameters, called with named functions (`r.tree(part, zero, add)`) | the helper is emitted once **per binding**, under a distinct private name, with calls through the parameter replaced by calls to the bound function; the argument must name a function of the program (no function pointers reach the GPU) |
 | `w: []T = subslice(buf, start, n)`, `v: []T = buf` | a **window**: `device const T* w = buf + oak_subslice(start, n, buf_len, fault); uint w_len = n;` — `start + n <= len` is checked in 64-bit and a miss raises fault 4; a bare name aliases the buffer whole; a span window needs a span source |
 | `a: [N]T = [ ... ]`, `a: [N]T` | a thread-private fixed array, `T a[N] = { ... };` (zeroed when uninitialized), indexed with the check against `N` unless proven |
 | `cond ? a \| { stmts; v }` in result position | `if`/`else` whose arms return, the block's statements emitted in place |
@@ -159,8 +159,23 @@ kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
   it is a **group kernel**: its position is a threadgroup of `G` threads,
   and every lane runs the body. A span store whose index depends on
   `lane()` — directly or through a local — is **each lane's own slot** and
-  is emitted for every lane; a store that does not is the group's one
-  value and stays with lane 0, as before.
+  is emitted for every lane, subject to the independence rule below.
+  A store whose index does not depend on the lane stays with lane 0 only
+  when its enclosing control flow and its value are proven uniform across
+  the group, or an enclosing condition explicitly selects lane 0. Otherwise
+  it is rejected with **`OAK-K0101`**, including in a build that requests
+  only C output (F32). In particular, `lane(G) == 1 ? { out[gid] = value }`
+  is rejected; `lane(G) == 0 && gid < len(out) ? { out[gid] = value }`
+  remains valid even when `value` differs between lanes.
+  The uniformity check follows local initializers, reassignments, aggregate
+  state, branch conditions, loop back edges, and lane-dependent breaks.
+  It is conservative: mutable span and local-array reads do not establish
+  uniformity, and assigning a local under a varying guard makes it varying.
+  Explicit lane-0 tests include reversed equality, negation, and Boolean
+  combinations that imply the selection; a disjunction with an unrelated
+  condition does not imply it. A rejected group-wide output can be written
+  under an explicit lane-0 guard; outputs that need one slot per lane use
+  the checked lane-indexed footprint instead.
 - **Independence** (section 6): `gid * G + lane(G)` is the tile shape with
   `T = G` — `lane(G)` is a counter bounded by `G` — so positions stay
   disjoint (`Oak.Kernel.lane_disjoint`); the descriptor records `tile G`.
@@ -226,8 +241,8 @@ kernel scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
   cooperative reduction) may call another ordinary kernel with **its own
   grid position as the first argument** and its buffers passed through.
   The Metal emitter inlines the callee as a helper — `static inline void
-  scale__fused(uint gid, device const float* x, uint x_len, …, device
-  atomic_uint* oak_fault)`, beside the kernel entry of the same name — and
+  oak_helper__scale(uint gid, device const float* x, uint x_len, …, device
+  atomic_uint* oak_fault)`, beside the kernel entry `scale` — and
   the fused kernel is one launch; the callee stays a
   kernel of its own, launchable alone. On the host and in the interpreter
   a kernel is a function, so the fused body is the two calls.

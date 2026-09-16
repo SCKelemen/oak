@@ -27,9 +27,9 @@ int oak_probe_out_ok(void) {
 		t.Fatal(err)
 	}
 	src := `
-table_ptr: (): c.Ptr = c.extern("oak_probe_table")
-out_ptr: (): c.Ptr = c.extern("oak_probe_out")
-out_ok: (): c.Int = c.extern("oak_probe_out_ok")
+table_ptr: (): c.Ptr effects { } = c.extern("oak_probe_table")
+out_ptr: (): c.Ptr effects { } = c.extern("oak_probe_out")
+out_ok: (): c.Int effects { } = c.extern("oak_probe_out_ok")
 
 sum_table: (): u32 {
   total: u32 = 0
@@ -47,7 +47,7 @@ sum_table: (): u32 {
   total
 }
 
-fill_out: (): () {
+fill_out: (): () forbids { Memory.Allocate, Device.Readback } {
   q: c.Ptr = out_ptr()
   unsafe {
     s: [*]f32 = c.borrow_mut[f32](q, u32(4))
@@ -59,7 +59,7 @@ fill_out: (): () {
   }
 }
 
-main: (): i32 {
+main: (): i32 forbids { Memory.Allocate, Device.Readback } {
   assert(sum_table() == u32(336))
   fill_out()
   assert(i32(out_ok()) == 1)

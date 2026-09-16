@@ -75,9 +75,10 @@ func loadStandardLibrary(tree *SyntaxTree) error {
 	}
 	exports := map[string]bool{}
 	if imported {
-		for _, name := range []string{"text_literal", "encode", "decode", "encoded_size", "from"} {
-			exports[name] = true
-		}
+		// Codec entry points are contextual syntax: lowerDerivedCodecs
+		// leaves ordinary declarations alone. They are not library exports
+		// and must not reserve names in an importing package (ml F23).
+		exports["text_literal"] = true
 	}
 	for _, stmt := range lib.Root.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.ExternSymbol != "" && testingImported {

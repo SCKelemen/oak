@@ -553,6 +553,10 @@ func (em *emitter) needsDo(body ast.Expression) bool {
 				needs = true
 			}
 		case *ast.InvocationExpression:
+			if _, routed := em.routes[em.fnKey][x]; routed {
+				needs = true
+				return
+			}
 			if callee, ok := x.Function.(*ast.Identifier); ok {
 				if _, user := em.functions[callee.Value]; user {
 					needs = true

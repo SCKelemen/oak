@@ -314,6 +314,133 @@ its state; rows move to **Landed** with the PR that carries them.
 
 **What ml changes on this list (2026-09-14).** Ask 1: `order bounded { }` around the training step's matmuls, `laws { associative, commutative, identity(0.0) }` on `canon`'s add, and `ml_order_default` becomes a scope form. Ask 2: `canon.canonical_sum` becomes `reduce.lanes(values, 0.0, add, lanes, run)` and the kernels' hand-spelled lane loops and butterflies become `reduce.group_lanes` where a threadgroup reduces; the canonical-order theorems of `spec/lean/Ml/Canonical.lean` are then statements about `Oak.Reduce.lanes`. Ask 3: `TILE_GROUPS: u32 (measured: 16, 1024) = 128` and `SPLIT_THREADS` likewise; `ml_tune_set` becomes the `oak_measured_value` hook (or `OAK_MEASURED_TILE_GROUPS` from the bench), `matmul_splits_with`'s parameters go, and its cases theorem is stated once over the range. Ask 5: the capture API's callers become `Step` values whose `run` carries `{ Device.Launch }`. Ask 6: `ml_linear_t`'s weight is a `RowMajor2` and the `[K, N]` matvec row is refused by type. Ask 7: nothing on Oak's side. Ask 8: the `view` package and every flat-arena package extract as they are; `encode`/`from` keep their names. Ask 9: literal spellings assemble with `+`.
 
+## F23 follow-up (2026-09-16): bootstrap codec names
+
+**Fixed** (`71-codecs.md` §12, `83-modules.md` §9). The bootstrap loader
+no longer lists `from`, `encode`, `decode`, or `encoded_size` as synthetic
+exports. `from: u32 = 3` and ordinary codec-named functions now compile
+after either `import(std)` or `import("std")`; generic functions with
+explicit type arguments also keep their ordinary meaning. Actual library
+export collisions are still rejected. `compiler/e2e_codec_names_test.go`
+checks compiled C and interpreter results and the real-export rejection;
+the existing JSON and Binary codec tests retain coverage of the contextual
+codec forms.
+
+## F32 follow-up (2026-09-16): group stores
+
+**Fixed by rejection in the kernel subset** (`56-kernels.md` §2a).
+A lane-independent span store used to receive a Metal-only lane-0 guard
+even when its Oak guard selected another lane. The host executed the store
+and the device dropped it. The compiler now requires uniform control and
+values, or an explicit enclosing lane-0 selection, before it permits that
+lowering; otherwise ordinary compilation rejects it with `OAK-K0101`.
+The dependency analysis follows assignments and loop back edges as well as
+branch conditions, including lane-dependent breaks. Local aggregate and
+mutable-buffer reads are conservative. Existing lane-indexed outputs,
+cooperative reductions, and explicitly selected lane-0 shuffle outputs
+retain their behavior.
+
+`compiler/e2e_kernel_uniformity_test.go` covers direct and indirect guards,
+control-dependent values, loops, aggregates, helper-state isolation, and
+accepted uniform/lane-0 forms. `compiler/e2e_kernels_gpu_test.go` compares
+the accepted forms on the device with the host tests' expected values.
+
+## F29 follow-up (2026-09-16): imported measured names
+
+**Fixed** (`60-effects-allocation.md` §10b). The C backend and interpreter
+now decode imported measured constants with the module system's canonical
+name decoder before calling the hook or looking up the environment key.
+`TILE_GROUPS` in an imported package is supplied by
+`OAK_MEASURED_TILE_GROUPS`; it is no longer asked for as `TILE_uGROUPS`.
+Root names keep their source spelling, including a literal `_u`, and the
+internal C symbols retain their package mangling. Range checks and malformed
+integer rejection still run before `main`, including for custom hooks.
+`compiler/e2e_measured_imports_test.go` covers imported and root spellings,
+ignored escaped aliases, invalid overrides, and custom hooks in addition
+to interpreter/C agreement.
+
+## F30 follow-up (2026-09-16): Metal helper names
+
+**Fixed** (`56-kernels.md` §2). Metal helpers now occupy a private compiler
+namespace. Each function name and specialization binding is escaped as a
+separate component, so `plus` and `minus` cannot collide with Metal's
+standard library, `thread` and `thread_` remain distinct, and separate
+function-parameter bindings get separate symbols. Fused kernels and
+cooperative reduction combiners use the same naming rule. Kernel entries
+and launch descriptors retain their existing names.
+`compiler/e2e_kernel_helper_names_test.go` checks the C and interpreter
+results, the emitted symbols, and compilation and execution on Metal;
+the device regression reproduced both the library ambiguity and the
+keyword-suffix collision before the fix.
+
+## F33 follow-up (2026-09-16): effects of foreign borrows
+
+**Fixed** (`92-ffi.md` §2.7.1). The effect checker recognizes
+`c.borrow[T]` and `c.borrow_mut[T]` as compiler intrinsics constructing a
+view or span, so they no longer make a caller's effects unknown. Calls
+that provide the pointer or count retain their effects, as do other calls
+inside `unsafe`. Foreign borrow placement, lifetime, bounds checks, and
+the recorded `OAK-B0110` contract still apply. The tests cover direct and
+transitive `forbids`, default and strict profiles, C-backed reads and
+writes, and rejection of forbidden or unknown operand effects.
+
+## F31 follow-up (2026-09-16): test child diagnostics
+
+**Requested diagnostics implemented; failure reproduced in resident mode.**
+`oak test -trace-processes` records compiler and harness launch argv,
+working directory, full environment, and exec/fork mode on stderr
+(`110-testing.md`, "Process diagnostics"). Every case names its test and,
+for resident execution, the worker PID and inherited launch context.
+The default resident path forks cases; `-resident=false` supplies a fresh
+exec. The diagnostics are opt-in, separate from result JSON
+and test output, and do not alter process setup or verdicts. Tests verify
+the observed child context and both modes, including concurrent cases and
+passing/failing tests in the same run.
+
+An isolated copy of ml's sources and linked runtime reproduces the report
+with host Metal access: `TestCheck10` passes and `TestCheck39` cannot reach
+`MTLCompilerService` in resident mode; both pass with `-resident=false`.
+The case traces show identical working directories and launch environments.
+The copy restores `TestCheck39` and adds the explicit lane-0 store guard
+that F32 now requires for `matvec32`'s handwritten shuffle reduction;
+ml's checkout is unchanged. Fresh exec passes on a second run as well, but
+the repeated resident run also passes: the failure is intermittent in this
+probe. `-resident=false` is a tested comparison option, not an established
+fix for the underlying service failure, whose cause remains open.
+
+## F27 follow-up (2026-09-16): nested stores in the extraction
+
+**Fixed** (`95-extraction.md` §2). Assignments such as
+`views[id].shape[d] = value` rebuild every enclosing record and array back
+to the named owner. Loops, conditionals, span calls and span windows carry
+that updated owner. Global records and arrays of records now use the same
+zero defaults as local records, preserving fixed-size array fields.
+`compiler/e2e_lean_nested_assignment_test.go` compares C and interpreter
+execution and checks the extracted result in Lean's kernel, including
+neighboring elements, nested fields, package state, exhausted fuel and
+the existing out-of-bounds totalization. The actual ml `view` and `graph`
+packages now emit extractions that pass Lean without source changes. This
+also required escaping the Lean keyword `matches` used as an ml local name.
+
+## F28 follow-up (2026-09-16): named function arguments in the extraction
+
+**Fixed for named function arguments** (`95-extraction.md` §2, §4).
+`reduce.lanes(values, zero, plus, lanes, run)` extracts by specializing the
+checked callee at `plus`. Distinct callback bindings produce distinct
+definitions, and forwarding a function parameter preserves the binding.
+Callback span writes and package-state reads/writes propagate through
+loops, conditionals and self-recursive calls. The checked AST is unchanged.
+Computed function values, unbound function parameters at extraction roots,
+and reassignment of a bound function parameter remain outside the subset.
+
+`compiler/e2e_lean_function_arguments_test.go` compares C, interpreter and
+Lean execution for `reduce.lanes` with sum and maximum callbacks at 1, 4,
+32 and 256 lanes. Lean's kernel also checks a stateful callback program
+with forwarding, multiple function slots, recursion and span writes inside
+a loop; unsupported dynamic bindings fail closed. A temporary copy of ml's
+`canon` package replaces the handwritten `canonical_sum` body with
+`reduce.lanes`; its extraction passes Lean. ml's checkout is unchanged.
+
 ## Roadmap disposition (2026-09-11, night)
 
 ml's `docs/notes/oak-roadmap.md` (stages A–E) against the Oak tree, after the
@@ -353,4 +480,3 @@ Stage B branch `sam/roadmap-stage-b`:
     lowers fine, so a small helper function avoids it (met in
     `compiler/e2e_time_interval_test.go`, 2026-09-12). The interpreter
     handles both positions.
-

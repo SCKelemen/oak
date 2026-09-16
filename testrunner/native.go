@@ -52,6 +52,9 @@ type nativeProgram struct {
 	bin, dir, build string
 	maxBytes        int
 	timeout         time.Duration
+	packageDir      string
+	testNames       []string
+	processTrace    *processTracer
 	// emulator runs a foreign target's binary: the emulator's argv prefix
 	// (`oak run -target`'s user-mode QEMU or OAK_EMULATOR), empty on the
 	// host. Under `qemu-aarch64 -cpu max` the probe finds every feature the
@@ -232,6 +235,7 @@ int main(int argc, char **argv) {
 	version.Dir = dir // any stray output a driver writes lands in the build directory
 	var versionOutput limitedBuffer
 	version.Stdout, version.Stderr = &versionOutput, &versionOutput
+	cfg.processTrace.command("compiler-identity", pkg.Dir, version)
 	if err := version.Run(); err != nil {
 		return nil, fmt.Errorf("C compiler identity: %w", err)
 	}
@@ -256,6 +260,7 @@ int main(int argc, char **argv) {
 		cmd := exec.CommandContext(ctx, cc, args...)
 		cmd.Dir = dir
 		cmd.Stdout, cmd.Stderr = &output, &output
+		cfg.processTrace.command("compile", pkg.Dir, cmd)
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("C compilation: %w\n%s", err, output.text())
 		}
@@ -268,7 +273,11 @@ int main(int argc, char **argv) {
 	// everywhere but Windows; a cross-built harness runs one process per
 	// case as before.
 	resident := cfg.Resident && residentSupported && (pkg.Target.OS == "" || pkg.Target.IsHost())
-	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: inputLimit, timeout: cfg.Timeout, metal: kernels, resident: resident, workers: map[*residentWorker]bool{}}, nil
+	names := make([]string, len(pkg.Registry))
+	for i, test := range pkg.Registry {
+		names[i] = test.Name
+	}
+	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: inputLimit, timeout: cfg.Timeout, metal: kernels, resident: resident, workers: map[*residentWorker]bool{}, packageDir: pkg.Dir, testNames: names, processTrace: cfg.processTrace}, nil
 }
 
 // linkArguments spells the manifests' native inputs as C compiler arguments
@@ -518,6 +527,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 		cmd.Stdout, cmd.Stderr = &output, &output
 		// Bound pipe draining too: a descendant must not keep the runner waiting.
 		cmd.WaitDelay = 100 * time.Millisecond
+		p.traceCase("exec", p.processTrace.context(cmd), index, reportPath, len(input), 0)
 		status = statusOf(cmd.Run())
 		result.output = output.text()
 		timedOut = ctx.Err() != nil
