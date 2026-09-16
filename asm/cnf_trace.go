@@ -17,11 +17,8 @@ type cnfTraceGateClauses struct {
 // gate or clause helpers: a drift between the recorded gates and emitted CNF
 // must refuse the export before any counts or DIMACS text become authoritative.
 func validateCNFTrace(builder *cnfBuilder, obligation []int, emitted [][]int) error {
-	if builder == nil {
-		return fmt.Errorf("builder is nil")
-	}
-	if builder.exceeded {
-		return fmt.Errorf("builder exceeded its clause budget")
+	if err := validateCNFGateMemoHeader(builder); err != nil {
+		return err
 	}
 	if len(builder.clauses) > cnfClauseBudget {
 		return fmt.Errorf("builder has %d clauses above its budget of %d",
@@ -65,13 +62,8 @@ func validateCNFTrace(builder *cnfBuilder, obligation []int, emitted [][]int) er
 	}
 	lastOutput := 0
 	for index, gate := range builder.gates {
-		if gate.out < 1 || gate.out > builder.variables {
-			return fmt.Errorf("gate %d output %d is outside 1..%d",
-				index, gate.out, builder.variables)
-		}
-		if gate.out <= lastOutput {
-			return fmt.Errorf("gate %d output %d does not follow output %d",
-				index, gate.out, lastOutput)
+		if err := validateCNFGateMemoEntry(builder, index, gate, lastOutput); err != nil {
+			return err
 		}
 		if occupied[gate.out-1] != 0 {
 			return fmt.Errorf("gate %d output %d is already allocated", index, gate.out)

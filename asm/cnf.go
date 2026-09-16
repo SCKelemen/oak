@@ -304,13 +304,13 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 	switch {
 	case trapAlways:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the body traps on every input"}
-		if err := validateCNFObligation(bl, traps, claim, cnfObligationTrapAlways, obligation); err != nil {
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationTrapAlways, obligation); err != nil {
 			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
 		}
 		return out, "", true
 	case claimBits[0] == bddFalse:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the claim is false on every input"}
-		if err := validateCNFObligation(bl, traps, claim, cnfObligationClaimFalse, obligation); err != nil {
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationClaimFalse, obligation); err != nil {
 			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
 		}
 		return out, "", true
@@ -319,7 +319,7 @@ func exportTermCNF(label string, names []string, widths map[string]int, claim *t
 	}
 	if len(obligation) == 0 {
 		out.Settled = &Decision{Kind: DecisionProven, Message: "at the bit level (the obligation is constant)"}
-		if err := validateCNFObligation(bl, traps, claim, cnfObligationConstantProven, obligation); err != nil {
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationConstantProven, obligation); err != nil {
 			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
 		}
 		return out, "", true

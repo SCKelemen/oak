@@ -246,7 +246,7 @@ func TestCNFSequentialGateClausesMatchLeanBridge(t *testing.T) {
 	}
 }
 
-// The nonconstant final obligation is traps in source order followed by the
+// The nonconstant final obligation is traps in supplied order followed by the
 // negated claim. No Boolean constant may reach cnfLit: zero is DIMACS syntax,
 // not a literal.
 func TestExportTermCNFFinalClauseOrderAndPolarity(t *testing.T) {
