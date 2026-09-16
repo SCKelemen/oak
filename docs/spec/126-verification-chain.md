@@ -249,6 +249,20 @@ complete replay roots, and typed-normalized sampled values over a bounded
 projection, pointer memoization, full intermediate-root/reachability checks,
 complete admission and settled-outcome policy, and the remaining
 source/serialization/verdict seams are still outside the theorem.
+The constructor metadata seam now has `Oak.CNFReplayHeader`: exact ordered
+names, explicit index presence, widths, unique keys/counts, and disabled modes
+yield valid parameters with no extra table keys. The Go check rejects missing
+first indices rather than treating a missing map entry as zero.
+`Oak.CNFMetadataCertificate.metadata_words_equal` uses these checked parameters
+in the existing word-certificate chain; even constant-only projection must
+pass the complete header check. Separately, `Oak.CNFReplayCoverage.finish_exact`
+proves exact memo/input/gate domains and term root vectors from admitted
+recordings against fixed producer contents plus matching completion counts.
+The constructor and numeric `finish` decisions have bounded Go/Lean kernel
+pins. Neither equal counts nor equal scalar snapshots establish content
+integrity or producer immutability; same-size forged state is an explicit
+accepted numeric counterexample. Universal Go trace/map/pointer/key projection,
+full intermediate-root traversal and complete admission remain unrefined.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`

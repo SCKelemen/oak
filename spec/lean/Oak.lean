@@ -223,6 +223,9 @@ import Oak.CNFReplayCertificate
 import Oak.CNFWordInput
 import Oak.CNFWordProjection
 import Oak.CNFWordCertificate
+import Oak.CNFReplayHeader
+import Oak.CNFReplayCoverage
+import Oak.CNFMetadataCertificate
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction

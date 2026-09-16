@@ -417,6 +417,20 @@ across 1/8/16/32/64-bit fixtures. The theorem remains the
 nonconstant certificate path over supplied model syntax, not universal Go
 graph/table projection, pointer-memo or intermediate-root/reachability
 refinement, complete admission/settled policy, or source-to-machine closure.
+Constructor metadata and completion bookkeeping now have bounded models too.
+`Oak.CNFReplayHeader` proves ordered parameter validity, exact index/width
+witnesses and no extra table keys; it exposed and accompanies a Go fix for a
+missing first index being read as zero when an unrelated extra key preserves
+the count. `Oak.CNFMetadataCertificate.metadata_words_equal` composes header
+admission with the word-certificate theorem, requiring valid metadata even
+for constant-only expressions. `Oak.CNFReplayCoverage.finish_exact` proves
+exact term-root/input/gate coverage for admitted recordings against a fixed
+producer and matching counts. Actual constructor/finish decisions are
+kernel-pinned on bounded fixtures, including intentionally forged same-size
+maps that pass numeric finish. That counterexample is important: scalar
+snapshot equality does not establish content immutability. Faithful Go
+graph/map/key projection and an implementation theorem for the actual admitted
+recording trace remain open; this is not full replay or native-verifier closure.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and

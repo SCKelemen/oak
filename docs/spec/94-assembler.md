@@ -548,14 +548,38 @@ are normalized to the named declared widths before comparison.
 
 This covers the nonconstant certificate path, not settled roots or complete
 Go replay admission. Whole children are syntax-checked, but discarded high
-intermediate roots need not be replayed by the projected final bits. Parameter
-tables are checked at parameter leaves, so constant-only projection is not a
-substitute for the Go constructor's complete table checks. The input model's
+intermediate roots need not be replayed by the projected final bits. The input model's
 extra safe-subtraction check can refuse earlier for artificial `maxInt` values
 smaller than a parameter position. Universal Go graph/table/signed-field
 projection, pointer memoization, reachable coverage, machine representation,
 source lowering, symbolic execution, DIMACS/LRAT implementation refinement,
 and compiler verdict authority remain separate obligations.
+
+`Oak.CNFReplayHeader` now models the constructor's metadata check separately
+from gate/memo validation. It checks disabled abstraction modes, unique
+nonempty ordered parameter names, exact table counts, explicitly present
+indices at their required positions, and widths in 1..64. Acceptance proves
+valid ordered parameters and excludes extra index/width keys. The production
+constructor now rejects a missing first index even when an unrelated key
+preserves the table size: a missing Go map entry must not count as index zero.
+`Oak.CNFMetadataCertificate.projectWords` runs this header check before word
+projection, including for constant-only words whose unused parameter tables
+would otherwise escape leaf checks. `metadata_words_equal` composes those
+exact returned parameters with the existing projection/replay/clause/RUP
+theorem; it adds no assumed input or root semantics.
+
+`Oak.CNFReplayCoverage` models the three replay-map counts and all nine saved
+scalar shape fields checked by `finish`. Its `finish_exact` theorem derives
+exact term keys/root vectors and input/gate key domains only for states
+reached from empty by admitted recordings against a fixed producer. Repeated
+cache hits/writes preserve that state. Numeric completion alone is not content
+validation: same-size foreign keys or changed roots can pass it, and equal
+scalar shapes do not prove producer immutability. `TestNativeCNFReplayHeaderMatchesLean`
+and `TestNativeCNFReplayFinishMatchesLean` kernel-pin bounded actual Go decisions,
+including that limitation. Faithful map/pointer/key projection, a proof that
+the actual Go recording trace is admitted against unchanged producer contents,
+full graph traversal/intermediate-root coverage, and settled admission remain
+open. These bookkeeping laws are distinct from the final-root semantic theorem.
 
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
