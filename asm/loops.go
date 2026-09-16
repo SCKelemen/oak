@@ -4510,11 +4510,27 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 // nodeBudget is the diagram nodes one loop proof may spend across all of
 // its implications (loopProofNodeBudget): a coupling search that keeps
 // failing candidates near the per-decision budget ends as evidence rather
-// than running for minutes.
+// than running for minutes. It also carries the proof's decisions so far
+// (decided), by the terms' identity: the sides are DAGs whose tree
+// unfolding may be exponential, and the congruence rule descends them by
+// operand pairs, so a shared pair is met once per parent and decided
+// once. An undecided result stays: the decision is deterministic and the
+// budget only shrinks.
 type nodeBudget struct {
 	remaining int // diagram nodes the proof may still spend
 	calls     int // implications tried so far (implicationCallLimit)
+	decided   map[decisionKey]decisionResult
 }
+
+// decisionKey identifies one implication within a proof: its premise and
+// sides by identity, at its case-split depth (the depth bounds the splits
+// a decision may still make).
+type decisionKey struct {
+	premise, a, b *term
+	depth         int
+}
+
+type decisionResult struct{ holds, decided bool }
 
 // loopProofNodeBudget bounds one loop proof's diagram nodes in all;
 // loopDecisionNodeBudget bounds each of its implications.
@@ -4542,7 +4558,8 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // impliesEqualDepth is impliesEqualWithin at a case-split depth: when every
 // variable order exceeds its budget, the decision splits on the condition
 // of the largest branch in the terms and decides both cases under it
-// (splitDecide), up to splitDepth deep.
+// (splitDecide), up to splitDepth deep. Each decision is made once per
+// proof (nodeBudget.decided).
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	if budget == nil {
 		// A decision that arrives without a budget (decideEqual on a
@@ -4554,22 +4571,33 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// the allowance the implication is undecided, not unending.
 		budget = &nodeBudget{remaining: loopDecisionNodeBudget}
 	}
-	if budget != nil {
-		// Each implication costs a call from the proof's allowance, and
-		// terms too large to blast cost a failed diagram's nodes, before
-		// they are canonicalized, pruned, or substituted: those walks are
-		// linear, and a body whose write coupling tries thousands of
-		// implications over a memory's selects (`add_bits`) would spend
-		// hours in them alone.
-		budget.calls++
-		if budget.calls > implicationCallLimit {
-			return false, false
-		}
-		if dagNodesExceed(implicationNodeLimit, premise, a, b) {
-			budget.remaining -= blastNodeBudget
-			return false, false
-		}
+	key := decisionKey{premise, a, b, depth}
+	if r, seen := budget.decided[key]; seen {
+		return r.holds, r.decided // met before, under another parent
 	}
+	// Each implication costs a call from the proof's allowance, and
+	// terms too large to blast cost a failed diagram's nodes, before
+	// they are canonicalized, pruned, or substituted: those walks are
+	// linear, and a body whose write coupling tries thousands of
+	// implications over a memory's selects (`add_bits`) would spend
+	// hours in them alone.
+	budget.calls++
+	if budget.calls > implicationCallLimit {
+		return false, false
+	}
+	if dagNodesExceed(implicationNodeLimit, premise, a, b) {
+		budget.remaining -= blastNodeBudget
+		return false, false
+	}
+	holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
+	if budget.decided == nil {
+		budget.decided = map[decisionKey]decisionResult{}
+	}
+	budget.decided[key] = decisionResult{holds, decided}
+	return holds, decided
+}
+
+func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	if depth == 0 {
 		premise, a, b = canonical(premise), canonical(a), canonical(b)
 	}
