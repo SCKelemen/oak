@@ -95,6 +95,50 @@ protocol. Compare small/tail-heavy inputs separately: wider loop setup and
 code size can cost time even when long maps improve. No automatic float
 contraction or reduction regrouping is introduced.
 
+### Two-vector measurements: 2026-09-17
+
+Clean revision `c3c217b6aa056ba2f6ccd2d607b3233fc6a9fcaf`, M4 Max,
+Apple clang 21.0.0, nine interleaved samples per variant. All selected
+native map bodies remain `proven`; checksums agree across backends and
+forms on the benchmark input family. The host remained heavily loaded:
+one-minute load 68 during the long run, rising to 84 during the short runs.
+These are observed ratios, not a quiet-host CI guarantee.
+
+At 4,096 elements × 4,096 calls, median ns/element:
+
+| Map | C | Native one-vector | Native two-vector | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0608 | 0.1145 | 0.0987 | 13.8% | 1.62× |
+| f32 explicit FMA | 0.0601 | 0.1132 | 0.0989 | 12.6% | 1.65× |
+| f64 strict multiply/add | 0.1469 | 0.2323 | 0.1947 | 16.2% | 1.33× |
+| f64 explicit FMA | 0.1451 | 0.2270 | 0.1945 | 14.3% | 1.34× |
+
+The explicit-FMA body grows from 156 to 244 encoded bytes; its frame stays
+144 bytes. The main loop processes twice as many elements with 17 rather
+than twice nine instructions, followed by at most one single-vector cleanup
+trip and the original scalar tail. Ordinary multiply/add still has its two
+roundings. Native improves but remains slower than C. The
+[long-run report](results/map-two-vectors-m4-max-2026-09-17.json) also keeps
+identity/no-map controls, the rewrite licenses, all timings, metrics and
+assembly.
+
+Short-input checks use 1,048,576 calls per sample. Explicit-FMA medians,
+again ns/element:
+
+| Elements | Width | Native one-vector | Native two-vector | Time change |
+| --- | --- | ---: | ---: | ---: |
+| 7 | f32 | 0.4576 | 0.4623 | +1.0% |
+| 7 | f64 | 0.4407 | 0.4574 | +3.8% |
+| 2 | f32 | 1.6503 | 1.6122 | −2.3% |
+| 2 | f64 | 1.5874 | 1.6222 | +2.2% |
+
+The distributions overlap substantially; no short-input speedup is claimed,
+and the slower medians are retained rather than hidden. Raw
+[seven-element](results/map-two-vectors-n7-m4-max-2026-09-17.json) and
+[two-element](results/map-two-vectors-n2-m4-max-2026-09-17.json) reports keep
+all five controls. A representative-application regression gate and quieter
+multi-host measurements remain future work.
+
 ## Recorded results: M4 Max, 2026-09-17
 
 Clean revision `1ef944b1537ec1dbad9653ff42f7068f7415c669`, Apple clang

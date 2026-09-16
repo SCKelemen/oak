@@ -18,6 +18,16 @@ with proven verdicts. Native still trails C. Sequential byte-dot FMA was
 slower, so automatic contraction was not enabled. These loaded-host
 microbenchmarks do not replace a representative-suite performance gate.
 
+The next increment at `c3c217b6` groups two vectors per map trip, retaining
+one-vector cleanup and the scalar tail under `Oak.Map.grouped_eq`. Against
+the previous one-vector control, 4,096-element explicit-FMA maps take 12.6%
+less time for f32 and 14.3% less for f64 (nine interleaved samples, M4 Max).
+Strict multiply/add maps also improve without contraction. Encoded FMA
+bodies grow from 156 to 244 bytes, and short-input measurements do not show
+a reliable gain. [Raw results and tradeoffs](exact_fma/README.md#two-vector-measurements-2026-09-17)
+retain the C comparison, which native still trails, and all selected map
+bodies' proven verdicts.
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
