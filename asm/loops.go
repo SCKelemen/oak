@@ -3463,12 +3463,46 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for k, ev := range oakLoops {
 		children[ev.parent-1] = append(children[ev.parent-1], k)
 	}
-	// exitPremise of event k: its invariant and negated guard, and its
-	// children's exit premises.
+	// notRunPins of event k: a loop that never ran leaves its variables at
+	// their header values — the scalar counterpart of "loops that never
+	// ran keep the entry memory" (spanEqualSplitting). The loop runs where
+	// its guard holds at the header and the machine's path reached it;
+	// otherwise each loop symbol is its header value. Without the fact, a
+	// machine that skips a loop under a hoisted guard (`len(a) < 4` around
+	// a vector main loop) carries the header value into the next loop
+	// where the Oak side carries the loop symbol, and the two are not
+	// provably one.
+	notRunPins := func(k int, sigma map[string]*term) *term {
+		ev := oakLoops[k]
+		headerSigma := map[string]*term{}
+		for v, fresh := range ev.fresh {
+			if header, ok := ev.header[v]; ok {
+				headerSigma[fresh.name] = header
+			}
+		}
+		runs := truncate(substitute(ev.cond, headerSigma), 1)
+		if k < len(asmLoops) && asmLoops[k] != nil {
+			if reached := asmLoops[k].reached; reached != nil {
+				runs = binaryTerm("and", runs, truncate(substitute(reached, sigma), 1))
+			}
+		}
+		pins := constTerm(1, 1)
+		for _, v := range ev.vars {
+			fresh, header := ev.fresh[v], ev.header[v]
+			if fresh == nil || header == nil || fresh.width != header.width {
+				continue
+			}
+			pins = binaryTerm("and", pins, truncate(cmpTerm("eq", fresh, header), 1))
+		}
+		return binaryTerm("or", runs, pins)
+	}
+	// exitPremise of event k: its invariant and negated guard, its symbols
+	// pinned where it never ran, and its children's exit premises.
 	var exitPremise func(k int, sigma map[string]*term) *term
 	exitPremise = func(k int, sigma map[string]*term) *term {
 		ev := oakLoops[k]
 		premise := binaryTerm("and", substitute(invariants[k], sigma), binaryTerm("xor", truncate(substitute(ev.cond, sigma), 1), constTerm(1, 1)))
+		premise = binaryTerm("and", premise, notRunPins(k, sigma))
 		for _, child := range children[k] {
 			premise = binaryTerm("and", premise, exitPremise(child, sigma))
 		}
@@ -3487,6 +3521,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if reached := asmLoops[k].reached; reached != nil {
 			// The machine's summary holds where the path reached the loop.
 			premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+		}
+		// The loops before this one at the same level ran or left their
+		// symbols at their header values: this loop's header may read them.
+		for _, earlier := range earlierSiblings(k, oakLoops) {
+			premise = binaryTerm("and", premise, notRunPins(earlier, sigma))
 		}
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
