@@ -7004,6 +7004,19 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**Reaching a rotated loop (2026-09-16).** The coupling compares the two
+sides' conditions for reaching each loop before it compares their
+iterations. A bottom-tested machine loop is reached only where its
+first test passes (`0 < n`), while the Oak loop is reached on every path
+and runs no iteration where that test fails, so the direct comparison
+(`1` against `0 < n`) closed as unequal and the hoisted, rotated
+`zero_page` fell back to witnessed. The two select the same iterations
+when one side's reach condition equals the other's conjoined with its
+own entry condition (`entryCondition`: the continue test at the header
+values): a loop that does not run leaves every variable and memory at
+its header, as the unreached loop does. The rule is tried in both
+directions after the direct comparison fails, under the same premise.
+
 **Loops that never ran keep their variables (2026-09-16).** The scalar
 counterpart: the Oak side's summary of a loop leaves each variable at
 the loop's symbol (`loop1.i`) whether the loop ran or not, and the
