@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/target"
 )
 
@@ -55,6 +56,14 @@ main: (): i32 {
 }
 `
 
+// nativeShapeModel fixes the target whose machine shape these tests inspect.
+// New defaults to the host, which would turn an AArch64 shape test into an
+// unsupported amd64 compilation on the Linux CI runners.
+func nativeShapeModel(name, text string) (*SemanticModel, error) {
+	tgt := target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}
+	return New().WithSource(name, text).WithTarget(tgt).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+}
+
 // loopBody returns the instructions between the first label starting with
 // "loop" and the next label of the unit.
 func loopBody(fn *asm.Function) []asm.Instruction {
@@ -77,7 +86,7 @@ func loopBody(fn *asm.Function) []asm.Instruction {
 }
 
 func TestNativeShapesRegistersInLoops(t *testing.T) {
-	model, err := New().WithSource("shape.oak", nativeShapeProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("shape.oak", nativeShapeProgram)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,24 +99,33 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 		t.Fatal("dot was not lowered natively")
 	}
 	fadds := 0
+	previous := ""
 	for _, ins := range loopBody(dot) {
 		if ins.Mnemonic == "fmov" {
 			t.Errorf("dot's loop copies through a scratch register: %s", fmt.Sprint(ins))
 		}
 		if ins.Mnemonic == "fadd" {
 			fadds++
-			// The accumulator lives in one register across the loop: the
-			// fadd writes the register it reads (the candidate search may
-			// recolor which one; compiler/native_search.go).
+			// The accumulator lives in registers across the loop: the fadd
+			// writes the register it reads (the candidate search may
+			// recolor which one; compiler/native_search.go) — or, the fold
+			// vectorized (nativegen/vector_fold.go), each lane's fadd reads
+			// the one before it, a chain through registers.
 			dst, isReg := ins.Operands[0].(asm.Register)
 			src, isSrc := ins.Operands[1].(asm.Register)
-			if !isReg || !isSrc || dst.Class != asm.ClassV || dst.Text != src.Text {
-				t.Errorf("dot's fadd must accumulate in place in a register: %s", fmt.Sprint(ins))
+			if !isReg || !isSrc || dst.Class != asm.ClassV || (dst.Text != src.Text && src.Text != previous && previous != "") {
+				t.Errorf("dot's fadd must accumulate in a register, in place or along the lanes' chain: %s", fmt.Sprint(ins))
 			}
+			previous = dst.Text
 		}
 	}
-	if fadds != 1 {
+	if want := 1; nativegen.VectorizedFolds(dot) > 0 {
+		want = 4
+	} else if fadds != want {
 		t.Errorf("dot's loop must hold one fadd, got %d", fadds)
+	}
+	if nativegen.VectorizedFolds(dot) > 0 && fadds != 4 {
+		t.Errorf("dot's vectorized loop must hold one fadd a lane, got %d", fadds)
 	}
 	tiled, ok := units["tiled"]
 	if !ok {
@@ -260,7 +278,7 @@ main: (): i32 {
 `
 
 func TestNativeShapesSearchElidesGuards(t *testing.T) {
-	model, err := New().WithSource("search.oak", nativeSearchProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("search.oak", nativeSearchProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

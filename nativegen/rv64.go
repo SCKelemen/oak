@@ -50,8 +50,10 @@ package nativegen
 // immediate) and once before `ret`.
 
 import (
+	"fmt"
 	"math"
 	"math/bits"
+	"os"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -189,7 +191,7 @@ func (g *rvGenerator) zextRelease(mark int) {
 	}
 }
 
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, vmaps bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -199,13 +201,15 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// most rewritten shape tried first, the source last. The RV64 lane
 	// expands no helpers; it unrolls and strength-reduces as the AArch64
 	// lane does.
-	for _, stage := range rewriteStages(fn, functions, false, unroll, false, strength) {
+	// The element-wise maps vectorize where the lane has V (nativegen/vector_map.go):
+	// the RVV lowering of the simd operations is the AArch64 lane's law.
+	for _, stage := range rewriteStages(fn, functions, false, unroll, false, vmaps && vector, false, strength) {
 		if stage.body == fn.Body {
 			break
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, false); err == nil {
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, false, elide, guardLines, false); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -213,6 +217,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
+		} else if os.Getenv("OAK_NATIVE_DUMP") != "" {
+			// A debugging aid: the rewritten shape the lane could not lower.
+			fmt.Fprintf(os.Stderr, "// rv64 stage of %s (%d rewrite site(s)) did not lower: %v\n", fn.Name.Value, len(stage.sites), err)
 		}
 	}
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
@@ -448,9 +455,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	}
 	out := &asm.Function{Name: NativeSymbolFor(asm.ArchRV64, fn), Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
-	if len(g.usedGlobals) > 0 {
-		out.Globals = g.usedGlobals
-	}
+	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {

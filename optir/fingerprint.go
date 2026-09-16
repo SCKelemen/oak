@@ -18,9 +18,39 @@ func FingerprintCFG(cfg CFG) (string, error) {
 	return fingerprintCFG(cfg), nil
 }
 
+// FingerprintRegionMemoryInput returns a canonical digest of an exact CFG and
+// its checked region-memory boundary. Declaration order is not significant for
+// regions, memory-operation metadata, distinct-region accesses, or live-out
+// regions. The digest identifies analysis inputs; it contains no memory-SSA,
+// liveness, or transformation evidence and is not an authorization to emit.
+func FingerprintRegionMemoryInput(
+	cfg CFG,
+	metadata RegionMemoryMetadata,
+	observability RegionMemoryObservability,
+) (string, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return "", err
+	}
+	normalizedMetadata, err := normalizeMemoryMetadata(cfg, metadata)
+	if err != nil {
+		return "", err
+	}
+	normalizedObservability, err := normalizeRegionMemoryObservability(normalizedMetadata.regions, observability)
+	if err != nil {
+		return "", err
+	}
+
+	digest := sha256.New()
+	fingerprintString(digest, "oak.optir.region-memory-input.v4")
+	fingerprintString(digest, fingerprintCFG(cfg))
+	fingerprintString(digest, fingerprintNormalizedMemoryMetadata(normalizedMetadata))
+	fingerprintString(digest, fingerprintRegionMemoryObservability(normalizedObservability))
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
 func fingerprintCFG(cfg CFG) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.cfg.v1")
+	fingerprintString(digest, "oak.optir.cfg.v2")
 	fingerprintString(digest, cfg.Name)
 	fingerprintUint64(digest, uint64(cfg.Entry))
 	fingerprintUint64(digest, uint64(len(cfg.Results)))
@@ -145,6 +175,8 @@ func fingerprintBlock(digest hash.Hash, block Block) {
 
 func fingerprintOperation(digest hash.Hash, operation Operation) {
 	fingerprintString(digest, operation.Code)
+	fingerprintString(digest, operation.MemoryAccessID)
+	fingerprintString(digest, operation.MemoryCallID)
 	fingerprintValues(digest, operation.Results)
 	fingerprintValueIDs(digest, operation.Operands)
 	fingerprintUint64(digest, uint64(len(operation.Effects)))
@@ -186,10 +218,16 @@ func fingerprintValues(digest hash.Hash, values []Value) {
 func fingerprintFacts(digest hash.Hash, facts []Fact) {
 	fingerprintUint64(digest, uint64(len(facts)))
 	for _, fact := range facts {
+		fingerprintString(digest, fact.ID)
 		fingerprintString(digest, fact.Name)
 		fingerprintValueIDs(digest, fact.Values)
 		fingerprintString(digest, fact.Provenance)
 		fingerprintString(digest, fact.Witness)
+		fingerprintString(digest, fact.Scope)
+		fingerprintUint64(digest, uint64(len(fact.Dependencies)))
+		for _, dependency := range fact.Dependencies {
+			fingerprintString(digest, dependency)
+		}
 	}
 }
 

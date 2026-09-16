@@ -640,6 +640,88 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## The exit-test fusion on the binary searches, 2026-09-16 (evening)
+
+`search` and `page_probe` with the head tree against the same tree
+withholding the exit fusion (`OAK_OPT_SKIP=fuse-exits`; the pair
+fusions in both), three alternated runs of three rounds of five samples,
+1 MiB, load average about 10. The fused `search` loop is ten
+instructions and one branch a trip where the pair-fused one is ten and
+two; `page_probe`'s loop fuses the same way.
+
+| Kernel | oak-native, fused | oak-native, unfused | native / C, fused | native / C, unfused |
+| --- | ---: | ---: | ---: | ---: |
+| search | 7.72 / 7.69 / 7.63 ms | 8.43 / 8.31 / 9.36 ms | 1.18 / 1.22 / 1.19 (median 1.19×) | 1.32 / 1.45 / 1.01 (median 1.32×) |
+| page_probe | 7.16 / 7.88 / 6.57 ms | 7.01 / 7.70 / 9.48 ms | 1.17 / 1.24 / 1.17 (median 1.17×) | 1.16 / 1.15 / 1.23 (median 1.16×) |
+
+`search`'s native time fell about eight percent in the two quiet rounds
+(the third's C side slowed under load, which is the 1.01×), the first
+fusion of the day that moved the clock — the loop is one branch to
+resolve a trip, and the pair fusions' instruction count was not what
+bound it. `page_probe` is within the noise both ways; its four compares a
+trip leave two branches after the fusion, and the remaining gap to clang
+is the loop's compare-select chain. The pair fusions alone were neutral
+(1.11× against 1.12× and 1.20× against 1.22×, above).
+
+## The ten kernels after the scheduler, the maps, and a miscompile found, 2026-09-16 (night)
+
+The ten kernels through both backends at the head of the day
+(`beeca0b6` plus the fix below) on the M4 Max at load average 15–27, the
+quietest the host has been; three alternated rounds of five samples,
+1 MiB per kernel. Every row's checksums agree.
+
+| Kernel | C backend | oak-native | native / C | Rust | native / Rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dispatch | 8,911 µs | 7,075 µs | 0.79× | 8,921 µs | 0.79× |
+| sum | 144.7 µs | 140.0 µs | 0.97× | 143.6 µs | 0.97× |
+| bitmap | 184.7 µs | 184.3 µs | 1.00× (C on both sides) | 170.8 µs | 1.08× |
+| crc32c | 142.0 µs | 152.3 µs | 1.07× | — | — |
+| tiled | 159.7 µs | 171.0 µs | 1.07× | 195.1 µs | 0.88× |
+| sha256 | 668.3 µs | 739.0 µs | 1.11× | — | — |
+| dot | 872.7 µs | 1,140.7 µs | 1.31× | 984.8 µs | 1.16× |
+| search | 12,071 µs | 15,832 µs | 1.31× | 13,182 µs | 1.20× |
+| page_probe | 12,843 µs | 17,472 µs | 1.36× | 11,044 µs | 1.58× |
+| blake3 | 2,132 µs | 7,135 µs | 3.35× | — | — |
+
+(The Rust `crc32c` and `sha256` rows use software fallbacks on this
+toolchain and are not comparable.)
+
+- **`sum` went from 1.70× to 0.97×**: the reduction now vectorizes
+  (`vectorize-reductions`, four `simd.U32x4` accumulators), and the
+  strided header's invariants hoist.
+- **`blake3` disagreed with the C backend** when this table was first
+  run — the harness refuses timings until every implementation's checksum
+  agrees, and the previous table's rows had agreed. A bisect over the 161
+  commits since put the first bad commit at the boundary-copies increment
+  (`c64c6a22`); withholding every transform (`OAK_OPT_SKIP`) changed
+  nothing, so the plain lowering was wrong. Lowering one function at a
+  time (`OAK_NATIVE_ONLY`, added for this) put it in `blake3_compress`;
+  the reference compression function arbitrated for the C backend;
+  cutting the body down showed the third quarter round's `a1` temporary
+  spilled to the first frame slot — state word zero — and the slot trace
+  (`OAK_NATIVE_TRACE_SLOTS`, also added) showed why: a scalar-replaced
+  array's binding (`g0`, its elements scalars of their own) carries a zero
+  offset and no `arr`/`rec`/`sp` marker, so the liveness release at its
+  last use returned offset 0 to the slot pool as if it were the array's
+  slot, and the next spilled scalar took `v[0]`. The verifier could not
+  have caught it in the kernel: `compress` is trusted (an indexed load
+  through a record argument), and its callers are trusted for calling
+  it. It did catch it on a loop-free cut of the same body, which is how
+  the search's mismatch became a compile error there. The fix excludes
+  scalar-replaced bindings from both release paths
+  (`compiler/e2e_native_scalar_array_release_test.go` pins the shape).
+- **`blake3` at 3.35×** is the same frame traffic as before, and it is
+  now structural: every hash body is trusted (tables, aggregate-returning
+  calls), and the reallocator and the frame-slot promotion ship only on a
+  verifier verdict, so the bodies that spill most are the ones the
+  machine transforms may not touch.
+- **`dot`, `search`, `page_probe` at 1.3×** are the remaining gaps in
+  proven or witnessed code. `dot` is a float reduction (no
+  reassociation, so no unrolling or vectorization; the C backend's clang
+  contracts the multiply-add). `search` and `page_probe` are branchy
+  binary searches whose `csel` forms the search keeps; their loops carry
+  two and four compares a trip.
+
 ## The native backend after the day's increments, 2026-09-16 (evening)
 
 The ten kernels through both backends at revision `a449cf2a` (every

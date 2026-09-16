@@ -5,6 +5,88 @@ import (
 	"testing"
 )
 
+// A record span's layout is indexed once even when an array field has the
+// OS stage2 arena's full size. Machine and Oak field accesses then use exact
+// offset/name lookups; the per-memory metadata stays proportional to fields,
+// not to the array's enumerated scalar leaves.
+func TestRecordSpanIndexesLargeArray(t *testing.T) {
+	const pages int64 = 49152
+	const pagesBytes = pages * 8
+	composites := map[string]Composite{"Regime": {
+		Size: pagesBytes + 8,
+		Fields: []CompositeField{
+			{Name: "pages", Offset: 0, Size: pagesBytes, Elem: "u64", Length: pages},
+			{Name: "ready", Offset: pagesBytes, Size: 4, Scalar: "Bool"},
+			{Name: "count", Offset: pagesBytes + 4, Size: 4, Scalar: "u32"},
+		},
+	}}
+	sig, err := parseSignature("indexed: (s: [*]Regime) -> ()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arg, reason, isRecord, ok := recordSpanOf(composites, sig.Parameters[0].Type)
+	if !isRecord || !ok {
+		t.Fatalf("record span: isRecord=%v ok=%v reason=%q", isRecord, ok, reason)
+	}
+	if got, want := len(arg.leaves), int(pages+2); got != want {
+		t.Fatalf("enumerated leaves = %d, want %d", got, want)
+	}
+	if got := len(arg.memoryFields); got != 3 {
+		t.Fatalf("indexed memories = %d, want 3 (one per field, not one per array element)", got)
+	}
+
+	prefix, length, stride, found := arg.arrayFieldAt(0)
+	if !found || prefix != ".pages" || length != pages || stride != 8 {
+		t.Fatalf("pages array = (%q, %d, %d, %v), want (.pages, %d, 8, true)", prefix, length, stride, found, pages)
+	}
+	if _, _, _, found := arg.arrayFieldAt(8); found {
+		t.Fatal("an interior array offset must not be accepted as the field's start")
+	}
+	field, found := arg.arrayNamed(".pages")
+	if !found || field.length != pages || field.first.name != ".pages[0]" {
+		t.Fatalf("pages field index = %+v, found=%v", field, found)
+	}
+	if _, found := arg.arrayNamed(".missing"); found {
+		t.Fatal("an unknown array field must not resolve")
+	}
+
+	last, found := arg.leafAt((pages-1)*8, 8)
+	if !found || last.name != ".pages[49151]" {
+		t.Fatalf("last page leaf = %+v, found=%v", last, found)
+	}
+	if prefix, k, length, found := arg.arrayElementLeaf(last); !found || prefix != ".pages" || k != pages-1 || length != pages {
+		t.Fatalf("last page element = (%q, %d, %d, %v)", prefix, k, length, found)
+	}
+	ready, found := arg.leafAt(pagesBytes, 4)
+	if !found || ready.name != ".ready" || ready.width != 1 {
+		t.Fatalf("Bool cell = %+v, found=%v", ready, found)
+	}
+	if _, found := arg.leafAt(pagesBytes, 1); found {
+		t.Fatal("a Bool leaf must retain its four-byte storage contract")
+	}
+	if _, found := arg.leafNamed(".missing"); found {
+		t.Fatal("an unknown scalar leaf must not resolve")
+	}
+
+	memories := arg.memories("s")
+	wantMemories := []string{"s.pages", "s.ready", "s.count"}
+	if len(memories) != len(wantMemories) {
+		t.Fatalf("memories = %v, want %v", memories, wantMemories)
+	}
+	for i := range memories {
+		if memories[i] != wantMemories[i] {
+			t.Fatalf("memories = %v, want %v", memories, wantMemories)
+		}
+	}
+	widths := arg.memoryWidths("s")
+	if widths["s.pages"] != 64 || widths["s.ready"] != 1 || widths["s.count"] != 32 {
+		t.Fatalf("memory widths = %v", widths)
+	}
+	if _, found := arg.memoryWidth(".missing"); found {
+		t.Fatal("an unknown leaf memory must not resolve")
+	}
+}
+
 // Spans of records are verified (docs/spec/94-assembler.md §9): a field
 // read through an element address is the leaf's select term on both
 // sides, so a reader is proven — and a lowering that reads the wrong

@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/machine"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1414,6 +1417,11 @@ type generator struct {
 	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
 	// i + N <= len(v) until i is assigned.
 	loopFacts []loopFact
+	// equalLens: the spans the enclosing conditionals prove to have one
+	// length (`len(a) == len(b) ? { … }`, vector_map.go armFacts): a loop
+	// condition's slack fact over one of them holds for the others, which
+	// the checker reads off the conditional's own compare (lenEqual).
+	equalLens lengthClasses
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1459,6 +1467,14 @@ type generator struct {
 	bottomTested int
 	// elided counts the guards left out under elide (reported).
 	elided int
+	// fuseMultiplies lowers `a + b * c` and its kin as madd/msub/mneg
+	// (nativegen/multiply_add.go); fusedMultiplies counts the sites.
+	fuseMultiplies  bool
+	fusedMultiplies int
+	// valueSelect lowers a value-position conditional as one conditional
+	// select (nativegen/value_select.go); valueSelects counts the sites.
+	valueSelect  bool
+	valueSelects int
 	// strength lowers constant multiplications, divisions, and remainders
 	// to shifts, masks, and untested divisions (Lane.Strength); reduced
 	// counts them (reported, and the compiler's cue to fall back).
@@ -1509,12 +1525,46 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Lane names the assembler lane a body is lowered on and the target facts
 // the lowering depends on beyond the architecture.
 type Lane struct {
+	// OptIR is the verified optimized SSA candidate available to the native
+	// selectors. UseOptIR is the candidate-search toggle;
+	// OptIRFingerprint and OptIRChanges make the materialization recipe and
+	// optimization report exact without treating the pointer as identity.
+	OptIR            *optir.CFG
+	OptIRFingerprint string
+	OptIRChanges     int
+	UseOptIR         bool
+	// OptIRMemory, its independently verified SSA evidence, observability,
+	// and region bindings form one exact memory-aware emission plan. A nil
+	// OptIRMemory selects the ordinary pure OptIR path.
+	OptIRMemory    *optir.RegionMemoryMetadata
+	OptIRMemorySSA *optir.RegionMemorySSA
+	// OptIRMemoryAuthority and OptIRMemoryProjection retain checked source
+	// authority across optimization. RegionMemorySSA alone proves consistency
+	// with metadata; it cannot authorize self-authored metadata.
+	OptIRMemoryAuthority  *optir.CheckedMemoryAuthority
+	OptIRMemoryProjection *optir.CheckedMemoryProjection
+	// OptIRMemoryCallCertificate independently checks every recursive call
+	// summary interpreted by the final region-memory CFG. It is required when
+	// that path still has an active checked call ID and is included in candidate
+	// identity. A call-only NoModRef CFG does not consume memory-summary facts.
+	OptIRMemoryCallCertificate *optir.CheckedMemoryCallCertificate
+	OptIRMemoryObservability   optir.RegionMemoryObservability
+	OptIRRegionGlobals         map[optir.RegionID]OptIRRegionGlobal
 	// VectorReductions rewrites the plain u64 and u32 reductions into
 	// vector-accumulator loops (nativegen/vector_reduction.go) instead of
 	// the scalar unrolling; the verifier judges the lowering against the
 	// rewritten body, the search keeps the scalar forms where it does not
 	// prove.
 	VectorReductions bool
+	// VectorMaps rewrites the element-wise maps over span parameters into a
+	// vector main loop and the scalar remainder (nativegen/vector_map.go);
+	// the verifier judges the lowering against the rewritten body.
+	VectorMaps bool
+	// VectorFolds rewrites the lane-wise float reductions over span
+	// parameters into a vector main loop whose lanes are added in order
+	// and the scalar remainder (nativegen/vector_fold.go); the verifier
+	// judges the lowering against the rewritten body.
+	VectorFolds bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1567,6 +1617,15 @@ type Lane struct {
 	// use (docs/spec/94-assembler.md §9.ad); the checker and the verifier
 	// decide, and the compiler falls back to slots on refusal.
 	VectorHomes bool
+	// MultiplyAdd lowers an integer product and its addend in one
+	// instruction (nativegen/multiply_add.go): madd, msub, mneg where the
+	// lowering emitted a mul and an add, a sub, or a zero and a sub.
+	MultiplyAdd bool
+	// ValueSelect lowers a value-position conditional over integers as a
+	// compare and one conditional select (nativegen/value_select.go):
+	// csel, or csinc/csneg/csinv when the arms share an operand, where the
+	// lowering emitted a branch over two moves.
+	ValueSelect bool
 	// VectorBlocks reads the vector loads of one basic block off a single
 	// element address at immediate offsets (nativegen/vector_blocks.go)
 	// instead of an address register per load; the checker and the
@@ -1602,10 +1661,29 @@ type Lane struct {
 	// emitted. A body the lift refuses does not lower under the flag, so
 	// the candidate search keeps the body as emitted.
 	Reallocate bool
+	// Fuse folds instruction pairs into the one instruction that does both
+	// (machine.Fuse: a shift into an add's shifted operand, an increment
+	// into a csinc); the candidate search turns it on, the verifier judges.
+	Fuse bool
+	// FuseExits folds a loop tail's two exit tests into a conditional
+	// compare and one branch (machine.FuseExits); gated like Fuse.
+	FuseExits bool
+	// Schedule reorders each block's instructions between barriers so a
+	// value's consumer follows its producer by its latency where the
+	// block has independent work (machine.Schedule); the candidate search
+	// keeps the body as emitted where the lift refuses.
+	Schedule bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
 	PackedStackArgs bool
+}
+
+// OptIRRegionGlobal carries checked region identity to an already-authorized
+// assembler-template global. Machine selection rechecks the exact descriptor.
+type OptIRRegionGlobal struct {
+	Symbol string
+	Global asm.Global
 }
 
 // GlobalStorage is the addressed storage of a top-level scalar of the
@@ -1715,7 +1793,48 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.VectorReductions)
+		var out *asm.Function
+		var err error
+		if lane.UseOptIR {
+			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
+				return nil, unsupported("an incomplete OptIR emission plan")
+			}
+			fingerprint, fingerprintErr := lane.optIRFingerprint()
+			if fingerprintErr != nil {
+				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
+			}
+			if fingerprint != lane.OptIRFingerprint {
+				return nil, unsupported("an OptIR emission plan whose CFG does not match its fingerprint")
+			}
+			// The ordinary lowering supplies only checked signature/ABI metadata.
+			// Its executable items are discarded by the selector.
+			var template *asm.Function
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false)
+			if err == nil {
+				template.Callees = functions
+				if lane.OptIRMemory == nil {
+					out, err = machine.LowerOptIRArm64(*lane.OptIR, template)
+				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+					err = unsupported("an OptIR region-memory plan without complete checked evidence")
+				} else if optIRHasActiveMemoryCalls(*lane.OptIR) {
+					if lane.OptIRMemoryCallCertificate == nil {
+						err = unsupported("an OptIR region-memory call plan without a checked call certificate")
+					} else {
+						out, err = machine.LowerOptIRArm64WithCertifiedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, *lane.OptIRMemoryCallCertificate, lane.machineOptIRRegionGlobals())
+					}
+				} else if lane.OptIRMemoryCallCertificate != nil {
+					err = unsupported("an OptIR region-memory plan with an unexpected call certificate")
+				} else {
+					out, err = machine.LowerOptIRArm64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+				}
+			}
+			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				optIRLowered[out] = lane.OptIRChanges
+			}
+		} else {
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds)
+		}
 		if err != nil {
 			return out, err
 		}
@@ -1724,7 +1843,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
 		}
 		if !lane.Reallocate {
-			return out, nil
+			return scheduleLane(lane, out)
 		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
@@ -1736,11 +1855,55 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		out.Items, out.Clobbers = re.Items, re.Clobbers
 		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
-		return out, nil
+		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		out, err := compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
-		if err != nil || !lane.Reallocate {
-			return out, err
+		var out *asm.Function
+		var err error
+		if lane.UseOptIR {
+			if lane.OptIR == nil || lane.OptIRChanges <= 0 || lane.OptIRFingerprint == "" {
+				return nil, unsupported("an incomplete OptIR emission plan")
+			}
+			fingerprint, fingerprintErr := lane.optIRFingerprint()
+			if fingerprintErr != nil {
+				return nil, unsupported("an invalid OptIR emission plan: %v", fingerprintErr)
+			}
+			if fingerprint != lane.OptIRFingerprint {
+				return nil, unsupported("an OptIR emission plan whose CFG does not match its fingerprint")
+			}
+			// The ordinary lowering supplies only checked signature/ABI metadata.
+			// Its executable items are discarded by the selector.
+			var template *asm.Function
+			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, false, nil, false)
+			if err == nil {
+				template.Callees = functions
+				if lane.OptIRMemory == nil {
+					out, err = machine.LowerOptIRRV64(*lane.OptIR, template)
+				} else if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+					err = unsupported("an OptIR region-memory plan without complete checked evidence")
+				} else if optIRHasActiveMemoryCalls(*lane.OptIR) {
+					if lane.OptIRMemoryCallCertificate == nil {
+						err = unsupported("an OptIR region-memory call plan without a checked call certificate")
+					} else {
+						out, err = machine.LowerOptIRRV64WithCertifiedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, *lane.OptIRMemoryCallCertificate, lane.machineOptIRRegionGlobals())
+					}
+				} else if lane.OptIRMemoryCallCertificate != nil {
+					err = unsupported("an OptIR region-memory plan with an unexpected call certificate")
+				} else {
+					out, err = machine.LowerOptIRRV64WithCheckedRegionMemory(*lane.OptIR, template, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection, *lane.OptIRMemorySSA, lane.machineOptIRRegionGlobals())
+				}
+			}
+			if err == nil {
+				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				optIRLowered[out] = lane.OptIRChanges
+			}
+		} else {
+			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.VectorMaps, lane.ElideProven, lane.GuardLines, lane.Strength)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !lane.Reallocate {
+			return scheduleLane(lane, out)
 		}
 		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
 		if rerr != nil {
@@ -1749,9 +1912,63 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		out.Items, out.Clobbers = re.Items, re.Clobbers
 		reallocated[out] = alloc.Sites()
 		promotedSlots[out] = alloc.Promoted
-		return out, nil
+		return scheduleLane(lane, out)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
+}
+
+func (lane Lane) optIRFingerprint() (string, error) {
+	if lane.OptIR == nil {
+		return "", fmt.Errorf("missing OptIR CFG")
+	}
+	if lane.OptIRMemory == nil {
+		if lane.OptIRMemorySSA != nil || lane.OptIRMemoryAuthority != nil || lane.OptIRMemoryProjection != nil || lane.OptIRMemoryCallCertificate != nil || len(lane.OptIRRegionGlobals) != 0 || len(lane.OptIRMemoryObservability.LiveOut) != 0 {
+			return "", fmt.Errorf("memory evidence or bindings without region metadata")
+		}
+		return optir.FingerprintCFG(*lane.OptIR)
+	}
+	if lane.OptIRMemorySSA == nil || lane.OptIRMemoryAuthority == nil || lane.OptIRMemoryProjection == nil {
+		return "", fmt.Errorf("region metadata without complete checked evidence")
+	}
+	if err := optir.VerifyCheckedMemoryProjection(*lane.OptIR, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryProjection); err != nil {
+		return "", err
+	}
+	if !reflect.DeepEqual(lane.OptIRMemoryProjection.Metadata, *lane.OptIRMemory) ||
+		!reflect.DeepEqual(lane.OptIRMemoryProjection.Observability, lane.OptIRMemoryObservability) {
+		return "", fmt.Errorf("checked memory projection disagrees with the emission plan")
+	}
+	if optIRHasActiveMemoryCalls(*lane.OptIR) {
+		if lane.OptIRMemoryCallCertificate == nil {
+			return "", fmt.Errorf("checked memory call authority without a call certificate")
+		}
+		return optir.FingerprintCertifiedRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability, lane.OptIR.Name, *lane.OptIRMemoryAuthority, *lane.OptIRMemoryCallCertificate)
+	}
+	if lane.OptIRMemoryCallCertificate != nil {
+		return "", fmt.Errorf("call certificate without checked memory call authority")
+	}
+	return optir.FingerprintRegionMemoryInput(*lane.OptIR, *lane.OptIRMemory, lane.OptIRMemoryObservability)
+}
+
+// optIRHasActiveMemoryCalls consults the exact final CFG rather than the
+// source authority's upper bound: verified transformations may remove a call,
+// and an unused call record cannot affect machine selection.
+func optIRHasActiveMemoryCalls(cfg optir.CFG) bool {
+	for _, block := range cfg.Blocks {
+		for _, operation := range block.Operations {
+			if operation.MemoryCallID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRRegionGlobal {
+	out := make(map[optir.RegionID]machine.OptIRRegionGlobal, len(lane.OptIRRegionGlobals))
+	for region, binding := range lane.OptIRRegionGlobals {
+		out[region] = machine.OptIRRegionGlobal{Symbol: binding.Symbol, Global: binding.Global}
+	}
+	return out
 }
 
 // Compile lowers one Oak function on the AArch64 lane. functions maps every
@@ -1760,12 +1977,71 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false)
 }
+
+// scheduleLane applies the machine scheduler under Lane.Schedule; a lift
+// the machine package refuses leaves the configuration without a
+// lowering, so the candidate search keeps the body as emitted.
+func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
+	if lane.Fuse {
+		// Peephole fusion first (machine.Fuse): the scheduler then orders
+		// the fused instructions.
+		fused, n, err := machine.Fuse(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		out.Items = fused.Items
+		fusedOf[out] = n
+	}
+	if lane.FuseExits {
+		fused, n, err := machine.FuseExits(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		out.Items = fused.Items
+		fusedExitsOf[out] = n
+	}
+	if !lane.Schedule {
+		return out, nil
+	}
+	scheduled, moved, err := machine.Schedule(out)
+	if err != nil {
+		return nil, unsupported("%v", err)
+	}
+	out.Items = scheduled.Items
+	scheduledOf[out] = moved
+	return out, nil
+}
+
+// Scheduled reports how many instructions a lowering moved under
+// Lane.Schedule.
+func Scheduled(fn *asm.Function) int { return scheduledOf[fn] }
+
+var scheduledOf = map[*asm.Function]int{}
+
+// Fused reports how many instruction pairs a lowering fused under
+// Lane.Fuse.
+func Fused(fn *asm.Function) int { return fusedOf[fn] }
+
+var fusedOf = map[*asm.Function]int{}
+
+// FusedExits reports how many loop tails a lowering fused under
+// Lane.FuseExits.
+func FusedExits(fn *asm.Function) int { return fusedExitsOf[fn] }
+
+var fusedExitsOf = map[*asm.Function]int{}
 
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+// OptIRLowered reports the generic SSA operations eliminated or hoisted by
+// the optimized CFG selected into fn. Zero means the body came from the
+// existing direct lowering.
+func OptIRLowered(fn *asm.Function) int { return optIRLowered[fn] }
+
+var optIRLowered = map[*asm.Function]int{}
 
 // FrameObjects reports the aggregates a lowering placed in its frame, by
 // sp-relative offset and size, for the machine package's slot promotion.
@@ -1847,20 +2123,20 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, vectorize bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, strength) {
+	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, vfolds, strength) {
 		if stage.body == fn.Body {
 			break
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -1870,7 +2146,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1881,8 +2157,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool) (*asm.Function, error) {
-	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, 0, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool) (*asm.Function, error) {
+	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1897,7 +2173,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare == 0 && reserve == 0 {
 		return first, nil
 	}
-	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, spare, reserve)
+	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, spare, reserve)
 	if err != nil {
 		return first, nil
 	}
@@ -1908,8 +2184,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, spare int, reserve int) (*asm.Function, int, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, spare int, reserve int) (*asm.Function, int, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, fuseMultiplies: fuse, valueSelect: selects, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -2187,9 +2463,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
-	if len(g.usedGlobals) > 0 {
-		out.Globals = g.usedGlobals
-	}
+	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -2470,6 +2744,12 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.reduced > 0 {
 		reducedOps[out] = g.reduced
+	}
+	if g.fusedMultiplies > 0 {
+		fusedMultiplies[out] = g.fusedMultiplies
+	}
+	if g.valueSelects > 0 {
+		valueSelects[out] = g.valueSelects
 	}
 	if g.vecHomes > 0 {
 		vectorHomesOf[out] = g.vecHomes
@@ -2780,6 +3060,27 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 // caller's position (statement, value, or result). A wildcard or bare
 // binding ends the chain; without one, falling off every arm reaches the
 // trap block (the checker proved exhaustiveness, so it never runs).
+// underArmFacts lowers one arm's body with the length equalities its
+// condition proves in force (equalLens), restoring the enclosing ones after.
+func (g *generator) underArmFacts(match *ast.MatchExpression, matchArm *ast.MatchArm, arm func(body ast.Expression) error) error {
+	saved := g.equalLens
+	g.equalLens = armFacts(match, matchArm, saved)
+	err := arm(matchArm.Body)
+	g.equalLens = saved
+	return err
+}
+
+// underCondition lowers a conditional's true path with the length
+// equalities its condition proves in force (equalLens), restoring the
+// enclosing ones after.
+func (g *generator) underCondition(cond ast.Expression, whenTrue func() error) error {
+	saved := g.equalLens
+	g.equalLens = lengthFactsOf(cond, saved)
+	err := whenTrue()
+	g.equalLens = saved
+	return err
+}
+
 func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Expression) error) error {
 	end := g.newLabel("match_end")
 	if layout, err := g.recordLayoutOfExpr(match.Scrutinee); err == nil {
@@ -2837,7 +3138,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 				g.popScope()
 				return unsupported("the pattern %s over %s", matchArm.Pattern.String(), layout.name)
 			}
-			err := arm(matchArm.Body)
+			err := g.underArmFacts(match, matchArm, arm)
 			g.popScope()
 			if err != nil {
 				return err
@@ -2902,7 +3203,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 			closed = true
 		}
 		g.pushScope()
-		err := arm(matchArm.Body)
+		err := g.underArmFacts(match, matchArm, arm)
 		g.popScope()
 		if err != nil {
 			return err
@@ -3149,7 +3450,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordExpr(whenTrue); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordExpr(whenTrue) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -3221,7 +3522,7 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 				return err
 			}
-			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+			if err := g.underCondition(e.Scrutinee, func() error { return g.resultRecordInto(whenTrue, outs) }); err != nil {
 				return err
 			}
 			g.emit("b", asm.Symbol{Name: end})
@@ -3274,6 +3575,13 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 // frameSize is the frame in bytes: the [x29, x30] pair when the body
 // calls, the slots, rounded up to 16.
 func (g *generator) frameSize() int64 {
+	// saveArea is provisioned conservatively before lowering when a function
+	// has scalar parameters. A leaf whose values all remain in their argument
+	// registers consumes none of that reservation and needs no stack movement.
+	if !g.hasCalls && g.usedCallee == 0 && g.usedCalleeV == 0 && g.nslots == 0 &&
+		len(g.stackParams) == 0 && len(g.frameObjects) == 0 {
+		return 0
+	}
 	return (g.saveBase() + g.saveArea + g.saveAreaV + 8*g.nslots + 15) / 16 * 16
 }
 
@@ -3436,6 +3744,68 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 	return fn.ReturnType != nil && fn.ReturnType.String() != "()"
 }
 
+// reachableGlobals is the package state a unit's verification ranges
+// over: the globals this body addressed (usedGlobals), and every global the
+// source body or a callee names, transitively — the verifier summarizes a callee at
+// its Oak body over the package cells (docs/spec/94-assembler.md §9), so
+// a cell only the callee touches (`st = u8(1)` in alloc_table, reached
+// from walk_leaf) must be declared to the caller's unit too. Declaring a
+// global the body never addresses admits nothing at the checker: a fact
+// arises only from an `adrp` of the name. Nil when there are none.
+func (g *generator) reachableGlobals() map[string]asm.Global {
+	return verificationGlobals(g.fn, g.functions, g.globals, g.usedGlobals)
+}
+
+// verificationGlobals retains declarations needed to interpret the original
+// Oak body even when optimization removes its accesses or calls. These are
+// arbitrary entry-state cells, not facts that their initializers still hold.
+// Unreferenced declarations add no instructions or memory access authority.
+func verificationGlobals(root *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, globals, addressed map[string]asm.Global) map[string]asm.Global {
+	out := map[string]asm.Global{}
+	for name, global := range addressed {
+		out[name] = global
+	}
+	seen := map[string]bool{}
+	var visit func(fn *ast.FunctionStatement)
+	visit = func(fn *ast.FunctionStatement) {
+		walk(fn.Body, func(n ast.Node) {
+			switch e := n.(type) {
+			case *ast.Identifier:
+				if global, isGlobal := globals[e.Value]; isGlobal {
+					if _, has := out[e.Value]; !has {
+						out[e.Value] = global
+					}
+				}
+			case *ast.AssignmentStatement:
+				if e.Name != nil {
+					if global, isGlobal := globals[e.Name.Value]; isGlobal {
+						if _, has := out[e.Name.Value]; !has {
+							out[e.Name.Value] = global
+						}
+					}
+				}
+			case *ast.InvocationExpression:
+				if ident, isIdent := e.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
+					if callee, declared := functions[ident.Value]; declared && callee != nil && callee.Body != nil {
+						seen[ident.Value] = true
+						visit(callee)
+					}
+				}
+			}
+		})
+	}
+	if root != nil && root.Body != nil {
+		if root.Name != nil {
+			seen[root.Name.Value] = true
+		}
+		visit(root)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // globalOf resolves a name to an addressable global (Lane.Globals) when no
 // local of any kind shadows it, with the scalar type its reads and writes
 // take.
@@ -3552,22 +3922,51 @@ func (g *generator) constantOf(name string) (asm.Constant, bool) {
 }
 
 func (g *generator) emit(mnemonic string, operands ...asm.Operand) {
+	g.emitInstruction(g.ins(mnemonic, operands...))
+}
+
+// emitCheckedIndex attaches the exact typechecker proof consumed by an
+// unguarded indexed memory operation. The reference identifies the memory
+// operand, not its current register spelling, so MachineIR rewrites carry it
+// with the use they rewrite. A missing proof or non-indexed operand emits the
+// ordinary instruction; the seam checker therefore still fails closed.
+func (g *generator) emitCheckedIndex(tok *token.Token, extent int64, mnemonic string, operands ...asm.Operand) {
+	ins := g.ins(mnemonic, operands...)
+	if tok != nil && extent > 0 && g.tc != nil {
+		if proof, ok := g.tc.IndexProof(*tok); ok && proof.Proposition == FactIndexInExtent {
+			for position, operand := range operands {
+				memory, isMemory := operand.(asm.Memory)
+				if !isMemory || memory.Index == nil {
+					continue
+				}
+				ins.CheckedFacts = append(ins.CheckedFacts, asm.CheckedFactRef{
+					ID: proof.ID, Kind: proof.Proposition, Container: proof.Container,
+					Operand: position, Extent: extent,
+				})
+				break
+			}
+		}
+	}
+	g.emitInstruction(ins)
+}
+
+func (g *generator) emitInstruction(ins asm.Instruction) {
 	if g.terminated {
 		return
 	}
 	g.liveFlags = ""
-	if ins, keep := g.forward(g.ins(mnemonic, operands...)); keep {
-		g.items = append(g.items, ins)
+	if forwarded, keep := g.forward(ins); keep {
+		g.items = append(g.items, forwarded)
 	}
-	switch mnemonic {
+	switch ins.Mnemonic {
 	case "b", "cbz", "cbnz", "tbz", "tbnz":
 		// A transfer that is not a compare's branch: the target's flags
 		// are not one compare's.
-		if sym, isSym := operands[len(operands)-1].(asm.Symbol); isSym {
+		if sym, isSym := ins.Operands[len(ins.Operands)-1].(asm.Symbol); isSym {
 			g.flagsTo[sym.Name] = ""
 		}
 	}
-	if mnemonic == "b" || mnemonic == "ret" || mnemonic == "brk" {
+	if ins.Mnemonic == "b" || ins.Mnemonic == "ret" || ins.Mnemonic == "brk" {
 		g.terminated = true
 	}
 }
@@ -3787,7 +4186,7 @@ func (g *generator) popScope() {
 	for _, name := range names {
 		// The variable's register or slot returns to the pool for the
 		// declarations that follow.
-		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
+		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && b.sa == nil && !b.freed {
 			switch {
 			case b.reg >= vecBase:
 				g.releaseVectorHome(b.reg)
@@ -3797,6 +4196,7 @@ func (g *generator) popScope() {
 				g.freeSlots16 = append(g.freeSlots16, b.offset)
 			case b.offset >= 0:
 				g.freeSlots8 = append(g.freeSlots8, b.offset)
+				traceSlot("pop-scope", name, b.offset, b.reg, g.nslots, len(g.freeSlots8))
 			}
 		}
 		delete(g.slots, name)
@@ -3835,6 +4235,7 @@ func (g *generator) declareArray(name string, elem scalar, length int64) *arrayL
 
 // allocArray reserves an array's frame storage without binding a name.
 func (g *generator) allocArray(elem scalar, length int64) *arrayLocal {
+	traceSlot("alloc-array", elem.name, 8*g.nslots, int(length), g.nslots, len(g.freeSlots8))
 	bytes := length * int64(elem.bits/8)
 	arr := &arrayLocal{offset: 8 * g.nslots, elem: elem, length: length}
 	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (bytes + 7) / 8 * 8})
@@ -4055,6 +4456,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 
 // allocRecord reserves a record's frame storage without binding a name.
 func (g *generator) allocRecord(layout *recordLayout) *recordLocal {
+	traceSlot("alloc-record", layout.name, 8*g.nslots, -1, g.nslots, len(g.freeSlots8))
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: 8 * g.nslots, Size: (layout.size + 7) / 8 * 8})
 	g.nslots += (layout.size + 7) / 8
@@ -4687,6 +5089,7 @@ func (g *generator) declare(name string, s scalar) int64 {
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
+	traceSlot("declare", name, offset, r, g.nslots, len(g.freeSlots8))
 	g.noteLoopHomes(r)
 	return offset
 }
@@ -5394,15 +5797,8 @@ func (g *generator) effect(expr ast.Expression) error {
 		return unsupported("a call through a value")
 	}
 	if ident.Value == "assert" && len(call.Arguments) == 1 {
-		b := scalars["Bool"]
-		r, err := g.expr(call.Arguments[0], &b)
-		if err != nil {
-			return err
-		}
 		g.usedTrap = true
-		g.emit("cbz", wr(r), asm.Symbol{Name: g.trap})
-		g.release(r)
-		return nil
+		return g.conditionBranch(call.Arguments[0], g.trap, true)
 	}
 	if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
 		// A store, a fence, or a read-modify-write whose result is dropped.
@@ -5464,7 +5860,7 @@ func (g *generator) lowerIf(s *ast.IfStatement) error {
 	}
 	if s.Consequence != nil {
 		g.pushScope()
-		err := g.lowerStatements(s.Consequence.Statements, false, "")
+		err := g.underCondition(s.Condition, func() error { return g.lowerStatements(s.Consequence.Statements, false, "") })
 		g.popScope()
 		if err != nil {
 			return err
@@ -5516,7 +5912,7 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
 		return err
 	}
-	if err := g.lowerArm(whenTrue); err != nil {
+	if err := g.underCondition(match.Scrutinee, func() error { return g.lowerArm(whenTrue) }); err != nil {
 		return err
 	}
 	if whenFalse == nil {
@@ -5560,6 +5956,28 @@ func (g *generator) condition(expr ast.Expression, target string) error {
 }
 
 var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs": "lo", "ls": "hi", "hi": "ls", "lt": "ge", "ge": "lt", "le": "gt", "gt": "le"}
+
+// unsignedOneBranch recognizes the exact unsigned comparison against one
+// whose branch is a zero/nonzero test. Oak.Forwarding.unsigned_lt_one_is_zero
+// is the local arithmetic equality; signed conditions and every other
+// immediate retain CMP so the transformation fails closed.
+func unsignedOneBranch(left, right asm.Operand, code string) (string, asm.Register, bool) {
+	r, isRegister := left.(asm.Register)
+	one, isImmediate := right.(asm.Immediate)
+	if !isRegister || (r.Class != asm.ClassW && r.Class != asm.ClassX) ||
+		r.Num < 0 || r.Num > 30 || r.ZeroRegister() || !isImmediate ||
+		one.Value != 1 || one.Shift != 0 || one.MSL {
+		return "", asm.Register{}, false
+	}
+	switch code {
+	case "lo":
+		return "cbz", r, true
+	case "hs":
+		return "cbnz", r, true
+	default:
+		return "", asm.Register{}, false
+	}
+}
 
 // conditionBranch evaluates a Bool expression and branches to target when
 // it is false (jumpIfFalse) or true. A comparison of simple operands —
@@ -5673,6 +6091,16 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					}
 					if jumpIfFalse {
 						code = inverseCondition[code]
+					}
+					if mnemonic, tested, zeroTest := unsignedOneBranch(left, right, code); zeroTest {
+						g.emit(mnemonic, tested, asm.Symbol{Name: target})
+						if computed >= 0 {
+							g.release(computed)
+						}
+						if computedLeft >= 0 {
+							g.release(computedLeft)
+						}
+						return nil
 					}
 					// The compare a conditional chain's guard made stands at
 					// the else label: the same operands (variables in their
@@ -5884,6 +6312,13 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if arm, isConstant := constantArm(e); isConstant && arm != nil {
 			return g.expr(arm, &typ)
 		}
+		if g.valueSelect {
+			// One compare and one conditional select, no branch
+			// (nativegen/value_select.go).
+			if out, selected, err := g.valueSelectForm(e, typ); selected || err != nil {
+				return out, err
+			}
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			out, err := g.alloc(typ)
@@ -5912,8 +6347,8 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		t, err := g.expr(whenTrue, &typ)
-		if err != nil {
+		var t int
+		if err := g.underCondition(e.Scrutinee, func() error { t, err = g.expr(whenTrue, &typ); return err }); err != nil {
 			return 0, err
 		}
 		g.emit(moveOf(typ), reg(out, typ), reg(t, typ))
@@ -6165,6 +6600,13 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.emit("ror", reg(out, typ), reg(l, typ), imm(count))
 		g.rotated++
 		return out, nil
+	}
+	if g.fuseMultiplies && (e.Operator == "+" || e.Operator == "-") {
+		// A product and its addend in one instruction
+		// (nativegen/multiply_add.go).
+		if out, fused, err := g.multiplyAddForm(e, typ); fused || err != nil {
+			return out, err
+		}
 	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec && !g.reducesMultiply(e, typ) {
 		return g.directInfix(e, typ, mnemonic)
@@ -8236,7 +8678,7 @@ func (g *generator) arrayElementReg(arr *arrayLocal, index ast.Expression, r int
 			return 0, err
 		}
 	}
-	g.emit(loadOf(arr.elem), reg(out, arr.elem), address)
+	g.emitCheckedIndex(tok, arr.length, loadOf(arr.elem), reg(out, arr.elem), address)
 	if base >= 0 {
 		g.release(base)
 	}
@@ -8384,10 +8826,10 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 			return 0, err
 		}
 		if sp.elem.isFloat {
-			g.emit("ldr", reg(out, sp.elem), address)
+			g.emitCheckedIndex(&e.Token, sp.frameLen, "ldr", reg(out, sp.elem), address)
 			return out, nil
 		}
-		g.emit(loadOf(sp.elem), reg(out, sp.elem), address)
+		g.emitCheckedIndex(&e.Token, sp.frameLen, loadOf(sp.elem), reg(out, sp.elem), address)
 		return out, nil
 	}
 	index := wr(r)
@@ -8397,7 +8839,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("ldr", reg(f, sp.elem), address)
+		g.emitCheckedIndex(&e.Token, sp.frameLen, "ldr", reg(f, sp.elem), address)
 		g.release(r)
 		return f, nil
 	}
@@ -8415,7 +8857,7 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		load = "ldrb"
 	}
 	// The element lands in the index register: the index is spent.
-	g.emit(load, reg(r, sp.elem), address)
+	g.emitCheckedIndex(&e.Token, sp.frameLen, load, reg(r, sp.elem), address)
 	return r, nil
 }
 
@@ -8598,7 +9040,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if err != nil {
 			return err
 		}
-		g.emit(storeOf(arr.elem), reg(value, arr.elem), address)
+		g.emitCheckedIndex(&s.Target.Token, arr.length, storeOf(arr.elem), reg(value, arr.elem), address)
 		for _, r := range []int{value, idx, base} {
 			if r >= 0 {
 				g.release(r)
@@ -8635,7 +9077,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	case 8:
 		store = "strb"
 	}
-	g.emit(store, reg(value, sp.elem), address)
+	g.emitCheckedIndex(&s.Target.Token, sp.frameLen, store, reg(value, sp.elem), address)
 	if !fixed {
 		g.release(r)
 	}
@@ -8656,6 +9098,19 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
+		if g.valueSelect && g.result != nil && !g.result.isFloat {
+			// One compare and one conditional select, no branch and no
+			// join (nativegen/value_select.go).
+			out, selected, err := g.valueSelectForm(e, *g.result)
+			if err != nil {
+				return err
+			}
+			if selected {
+				g.moveResult(out, *g.result)
+				g.release(out)
+				return nil
+			}
+		}
 		if g.result != nil && !g.result.isFloat && g.valueOnly(e) {
 			// Every arm yields a value: they meet in one scratch register
 			// and the result register is written once, at the join. The
@@ -9001,10 +9456,10 @@ func (g *generator) instructionValue(member string, e *ast.InvocationExpression,
 }
 
 // instructionEffect lowers an instruction function in statement position:
-// `msr` for a system-register write, the barrier or event-control
-// instruction the catalog names, or an exception return with its carried
-// registers (`eret_x0(v)`: `mov x0, v` then `eret`, which ends the body of a
-// never function).
+// `msr` for a system-register write, the barrier, translation-maintenance, or
+// event-control instruction the catalog names, or an exception return with its
+// carried registers (`eret_x0(v)`: `mov x0, v` then `eret`, which ends the body
+// of a never function).
 func (g *generator) instructionEffect(member string, call *ast.InvocationExpression) error {
 	emitText := func(text string) error {
 		instr, err := asm.ParseInstructionLine(asm.ArchArm64, text, g.line)
@@ -9047,6 +9502,13 @@ func (g *generator) instructionEffect(member string, call *ast.InvocationExpress
 			return emitText("dsb " + barrierScope(spec.Scope))
 		}
 		return unsupported("the barrier arm64.%s", member)
+	}
+	if spec, isTLBI := semir.LookupArm64TLBI(member); isTLBI {
+		if len(call.Arguments) != 0 {
+			return unsupported("arm64.%s takes no argument", member)
+		}
+		g.system = true
+		return emitText(spec.Instruction)
 	}
 	if spec, isEvent := semir.LookupArm64EventControl(member); isEvent {
 		if len(call.Arguments) != 0 {
@@ -9108,4 +9570,14 @@ func barrierScope(scope semir.BarrierScope) string {
 		return "sy"
 	}
 	return "sy"
+}
+
+// traceSlot prints a frame-slot event under OAK_NATIVE_TRACE_SLOTS (a
+// debugging aid): which name took or freed which slot offset, the
+// register it holds, the frame's slot count, and the free pool's depth.
+func traceSlot(event, name string, offset int64, reg int, nslots int64, free int) {
+	if os.Getenv("OAK_NATIVE_TRACE_SLOTS") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "slot %-13s %-24s offset %4d reg %3d nslots %3d free %d\n", event, name, offset, reg, nslots, free)
 }

@@ -1,0 +1,253 @@
+import Std.Tactic.BVDecide
+
+/-!
+# AArch64 encodings
+
+The A64 store, barrier, TLBI, and PSTATE-immediate words emitted by Oak, with
+fields generated from Arm's ISA XML. `spec/sail/lean/Bridge.lean` proves the
+projected system words reach the corresponding clauses of Arm's Sail `decode64`
+and projects successful decoder results into Oak's narrow local semantics.
+-/
+
+namespace Oak.AArch64Encoding
+
+structure Field where
+  name : String
+  hi : Nat
+  width : Nat
+  deriving DecidableEq, Repr
+
+structure Encoding where
+  name : String
+  mnemonic : String
+  value : BitVec 32
+  mask : BitVec 32
+  fields : List Field
+  deriving DecidableEq, Repr
+
+-- OAK-A64-BARRIER-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def dmb : Encoding := ⟨"DMB_BO_barriers", "dmb", 0xd50330bf#32, 0xfffff0ff#32, [⟨"CRm", 11, 4⟩]⟩
+def dsb : Encoding := ⟨"DSB_BO_barriers", "dsb", 0xd503309f#32, 0xfffff0ff#32, [⟨"CRm", 11, 4⟩]⟩
+def isb : Encoding := ⟨"ISB_BI_barriers", "isb", 0xd50330df#32, 0xfffff0ff#32, [⟨"CRm", 11, 4⟩]⟩
+-- OAK-A64-BARRIER-ENC-END
+
+-- OAK-A64-TLBI-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def tlbi : Encoding := ⟨"TLBI_SYS_CR_systeminstrs", "tlbi", 0xd5088000#32, 0xfff8e000#32, [⟨"L", 21, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-TLBI-ENC-END
+
+-- OAK-A64-PSTATE-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def msrPstate : Encoding := ⟨"MSR_SI_pstate", "msr", 0xd500401f#32, 0xfff8f01f#32, [⟨"op1", 18, 3⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-PSTATE-ENC-END
+
+-- OAK-A64-SYSREG-WRITE-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def msrSystem : Encoding := ⟨"MSR_SR_systemmove", "msr", 0xd5100000#32, 0xfff00000#32, [⟨"L", 21, 1⟩, ⟨"o0", 19, 1⟩, ⟨"op1", 18, 3⟩, ⟨"CRn", 15, 4⟩, ⟨"CRm", 11, 4⟩, ⟨"op2", 7, 3⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-SYSREG-WRITE-ENC-END
+
+-- OAK-A64-ERET-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def eret : Encoding := ⟨"ERET_64E_branch_reg", "eret", 0xd69f03e0#32, 0xffffffff#32, [⟨"opc", 24, 4⟩, ⟨"op2", 20, 5⟩, ⟨"A", 11, 1⟩, ⟨"M", 10, 1⟩, ⟨"Rn", 9, 5⟩, ⟨"op4", 4, 5⟩]⟩
+-- OAK-A64-ERET-ENC-END
+
+-- OAK-A64-STR64-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def str64UnsignedOffset : Encoding := ⟨"STR_64_ldst_pos", "str", 0xf9000000#32, 0xffc00000#32, [⟨"size", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"opc", 23, 2⟩, ⟨"imm12", 21, 12⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-STR64-ENC-END
+
+-- OAK-A64-STP64-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def stp64Offset : Encoding := ⟨"STP_64_ldstpair_off", "stp", 0xa9000000#32, 0xffc00000#32, [⟨"opc", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"L", 22, 1⟩, ⟨"imm7", 21, 7⟩, ⟨"Rt2", 14, 5⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-STP64-ENC-END
+
+inductive MemBarrierOp where
+  | dsb | dmb | isb | ssbb | pssbb | sb
+  deriving DecidableEq, Repr
+
+inductive MBReqDomain where
+  | nonshareable | innerShareable | outerShareable | fullSystem
+  deriving DecidableEq, Repr
+
+inductive MBReqTypes where
+  | reads | writes | all
+  deriving DecidableEq, Repr
+
+structure BarrierDecode where
+  valid : Bool
+  op : MemBarrierOp
+  domain : MBReqDomain
+  types : MBReqTypes
+  deriving DecidableEq, Repr
+
+/-- Write the four-bit barrier option into Arm's `CRm[11:8]` field. -/
+def encodeCRm (encoding : Encoding) (crm : BitVec 4) : BitVec 32 :=
+  (encoding.value &&& 0xfffff0ff#32) ||| (crm.setWidth 32 <<< 8)
+
+/-- Fill the generated TLBI SYS encoding's table-selected fields. The caller
+    must choose a tuple admitted by the generated Arm XML operand table. -/
+def encodeTlbiSys (op1 : BitVec 3) (crn crm : BitVec 4)
+    (op2 : BitVec 3) (rt : BitVec 5) : BitVec 32 :=
+  (tlbi.value &&& tlbi.mask) |||
+    (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
+    (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+/-- Fill the generated PSTATE-immediate MSR encoding's table-selected fields.
+    The caller must choose a tuple admitted by the generated Arm XML table. -/
+def encodePstateImmediate (op1 : BitVec 3) (crm : BitVec 4)
+    (op2 : BitVec 3) : BitVec 32 :=
+  (msrPstate.value &&& msrPstate.mask) |||
+    (op1.setWidth 32 <<< 16) ||| (crm.setWidth 32 <<< 8) |||
+    (op2.setWidth 32 <<< 5)
+
+/-- Fill the generated general system-register MSR encoding's fields. The
+    caller must supply a writable tuple from the generated SysReg XML table. -/
+def encodeSystemMsr (o0 : BitVec 1) (op1 : BitVec 3)
+    (crn crm : BitVec 4) (op2 : BitVec 3) (rt : BitVec 5) : BitVec 32 :=
+  (msrSystem.value &&& msrSystem.mask) ||| (o0.setWidth 32 <<< 19) |||
+    (op1.setWidth 32 <<< 16) ||| (crn.setWidth 32 <<< 12) |||
+    (crm.setWidth 32 <<< 8) ||| (op2.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+/-- Fill the generated unsigned-offset STR (64-bit) encoding fields. The
+    immediate is stored in scaled units, as in Arm's `imm12` field. -/
+def encodeStr64UnsignedOffset (imm12 : BitVec 12) (rn rt : BitVec 5) :
+    BitVec 32 :=
+  (str64UnsignedOffset.value &&& str64UnsignedOffset.mask) |||
+    (imm12.setWidth 32 <<< 10) ||| (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+/-- Fill the generated offset STP (64-bit) encoding fields. The immediate is
+    the signed, scaled `imm7` field; one encoded unit is eight bytes. -/
+def encodeStp64Offset (imm7 : BitVec 7) (rn rt rt2 : BitVec 5) :
+    BitVec 32 :=
+  (stp64Offset.value &&& stp64Offset.mask) |||
+    (imm7.setWidth 32 <<< 15) ||| (rt2.setWidth 32 <<< 10) |||
+    (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
+def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
+def dmbSy : BitVec 32 := encodeCRm dmb 0xf#4
+def dsbIsh : BitVec 32 := encodeCRm dsb 0xb#4
+def dsbSy : BitVec 32 := encodeCRm dsb 0xf#4
+def isbSy : BitVec 32 := encodeCRm isb 0xf#4
+
+-- OAK-A64-BARRIER-WORD-BEGIN (checked against asm/encode.go; do not edit)
+theorem dmb_ishld_word : dmbIshld = 0xd50339bf#32 := by native_decide
+theorem dmb_ish_word : dmbIsh = 0xd5033bbf#32 := by native_decide
+theorem dmb_sy_word : dmbSy = 0xd5033fbf#32 := by native_decide
+theorem dsb_ish_word : dsbIsh = 0xd5033b9f#32 := by native_decide
+theorem dsb_sy_word : dsbSy = 0xd5033f9f#32 := by native_decide
+theorem isb_word : isbSy = 0xd5033fdf#32 := by native_decide
+-- OAK-A64-BARRIER-WORD-END
+
+-- OAK-A64-TLBI-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def tlbiVmalls12e1is : BitVec 32 :=
+  encodeTlbiSys 0b100#3 0b1000#4 0b0011#4 0b110#3 0b11111#5
+theorem tlbi_vmalls12e1is_word : tlbiVmalls12e1is = 0xd50c83df#32 := by native_decide
+-- OAK-A64-TLBI-WORD-END
+
+-- OAK-A64-DAIFSET-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrDaifSetIrq : BitVec 32 :=
+  encodePstateImmediate 0b011#3 0b0010#4 0b110#3
+theorem msr_daifset_irq_word : msrDaifSetIrq = 0xd50342df#32 := by native_decide
+-- OAK-A64-DAIFSET-WORD-END
+
+-- OAK-A64-HCR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrHcrEl2X0 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0001#4 0b0001#4 0b000#3 0b00000#5
+theorem msr_hcr_el2_x0_word : msrHcrEl2X0 = 0xd51c1100#32 := by native_decide
+-- OAK-A64-HCR-EL2-WORD-END
+
+-- OAK-A64-VTTBR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrVttbrEl2X1 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b000#3 0b00001#5
+theorem msr_vttbr_el2_x1_word : msrVttbrEl2X1 = 0xd51c2101#32 := by native_decide
+-- OAK-A64-VTTBR-EL2-WORD-END
+
+-- OAK-A64-VTCR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrVtcrEl2X2 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0010#4 0b0001#4 0b010#3 0b00010#5
+theorem msr_vtcr_el2_x2_word : msrVtcrEl2X2 = 0xd51c2142#32 := by native_decide
+-- OAK-A64-VTCR-EL2-WORD-END
+
+-- OAK-A64-CNTHCTL-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrCnthctlEl2X3 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b1110#4 0b0001#4 0b000#3 0b00011#5
+theorem msr_cnthctl_el2_x3_word : msrCnthctlEl2X3 = 0xd51ce103#32 := by native_decide
+-- OAK-A64-CNTHCTL-EL2-WORD-END
+
+-- OAK-A64-CNTVOFF-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrCntvoffEl2X4 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b1110#4 0b0000#4 0b011#3 0b00100#5
+theorem msr_cntvoff_el2_x4_word : msrCntvoffEl2X4 = 0xd51ce064#32 := by native_decide
+-- OAK-A64-CNTVOFF-EL2-WORD-END
+
+-- OAK-A64-SP-EL1-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrSpEl1X5 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0001#4 0b000#3 0b00101#5
+theorem msr_sp_el1_x5_word : msrSpEl1X5 = 0xd51c4105#32 := by native_decide
+-- OAK-A64-SP-EL1-WORD-END
+
+-- OAK-A64-ELR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrElrEl2X6 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b001#3 0b00110#5
+theorem msr_elr_el2_x6_word : msrElrEl2X6 = 0xd51c4026#32 := by native_decide
+-- OAK-A64-ELR-EL2-WORD-END
+
+-- OAK-A64-SPSR-EL2-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def msrSpsrEl2X7 : BitVec 32 :=
+  encodeSystemMsr 0b1#1 0b100#3 0b0100#4 0b0000#4 0b000#3 0b00111#5
+theorem msr_spsr_el2_x7_word : msrSpsrEl2X7 = 0xd51c4007#32 := by native_decide
+-- OAK-A64-SPSR-EL2-WORD-END
+
+-- OAK-A64-ERET-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def eretWord : BitVec 32 := eret.value
+theorem eret_word : eretWord = 0xd69f03e0#32 := by native_decide
+-- OAK-A64-ERET-WORD-END
+
+-- OAK-A64-DESCRIPTOR-STORE-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def strXzrX0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 0b11111#5
+def strX2X0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 2#5
+theorem str_xzr_x0_word : strXzrX0 = 0xf900001f#32 := by native_decide
+theorem str_x2_x0_word : strX2X0 = 0xf9000002#32 := by native_decide
+-- OAK-A64-DESCRIPTOR-STORE-WORD-END
+
+-- OAK-A64-ZERO-PAIR-STORE-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def stpXzrXzrX0 : BitVec 32 :=
+  encodeStp64Offset 0#7 0#5 0b11111#5 0b11111#5
+def stpXzrXzrX0Plus16 : BitVec 32 :=
+  encodeStp64Offset 2#7 0#5 0b11111#5 0b11111#5
+theorem stp_xzr_xzr_x0_word : stpXzrXzrX0 = 0xa9007c1f#32 := by native_decide
+theorem stp_xzr_xzr_x0_plus_16_word :
+    stpXzrXzrX0Plus16 = 0xa9017c1f#32 := by native_decide
+-- OAK-A64-ZERO-PAIR-STORE-WORD-END
+
+/-- The adjacent 32-bit pair-store class cannot be the first zero-pair word. -/
+theorem stp_wzr_wzr_x0_cannot_equal_zero_pair :
+    (0x29007c1f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- The adjacent pair-load class cannot be the first zero-pair word. -/
+theorem ldp_xzr_xzr_x0_cannot_equal_zero_pair :
+    (0xa9407c1f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- Changing either source register or the base produces a different word. -/
+theorem nearby_stp64_register_fields_remain_distinct :
+    (0xa9007c1e#32 : BitVec 32) ≠ stpXzrXzrX0 ∧
+      (0xa900781f#32 : BitVec 32) ≠ stpXzrXzrX0 ∧
+      (0xa9007c3f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- The zero, eight-byte, and sixteen-byte offsets remain distinct. -/
+theorem nearby_stp64_offsets_remain_distinct :
+    stpXzrXzrX0 ≠ (0xa900fc1f#32 : BitVec 32) ∧
+      (0xa900fc1f#32 : BitVec 32) ≠ stpXzrXzrX0Plus16 ∧
+      stpXzrXzrX0 ≠ stpXzrXzrX0Plus16 := by native_decide
+
+/-- A make from X1 is a different exact word; this only detects Rt drift. -/
+theorem str_x1_x0_cannot_equal_make :
+    (0xf9000001#32 : BitVec 32) ≠ strX2X0 := by native_decide
+
+/-- A break through X1 is a different exact word; this only detects Rn drift. -/
+theorem str_xzr_x1_cannot_equal_break :
+    (0xf900003f#32 : BitVec 32) ≠ strXzrX0 := by native_decide
+
+def dmbIshldDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .reads⟩
+def dmbIshDecode : BarrierDecode := ⟨true, .dmb, .innerShareable, .all⟩
+def dmbSyDecode : BarrierDecode := ⟨true, .dmb, .fullSystem, .all⟩
+def dsbIshDecode : BarrierDecode := ⟨true, .dsb, .innerShareable, .all⟩
+def dsbSyDecode : BarrierDecode := ⟨true, .dsb, .fullSystem, .all⟩
+def isbDecode : BarrierDecode := ⟨true, .isb, .fullSystem, .all⟩
+
+end Oak.AArch64Encoding

@@ -158,8 +158,22 @@ or the verifier, not in the program:
    nest of `hi - lo + 1` sums); and the six branch theorems were false as
    stated — the model encodes a branch only for an even offset and errors
    otherwise, so they carry the evenness as a hypothesis. The encoder is
-   now proved against the ISA's `encdec` for the decided RV64 mnemonics;
-   AArch64's remains tested.
+   now proved against the ISA's `encdec` for the decided RV64 mnemonics.
+   **First ordinary AArch64 class (2026-09-16):** operandless `RET X30` has
+   exact fixed-bit/Rn encoding theorems and a generated Sail projection to the
+   source-audited ordinary RET/`BranchType_RET` decoder route. **Second
+   ordinary class:** local `B <label>` has exact fixed-bit/imm26 and Branch26
+   relocation theorems, a generated Sail projection to `BranchType_DIR` with
+   its signed scaled offset, and an overflow-safe/alignment-checked production
+   encoder. **Bounded pair-store class:** offset STP64 now has the exact
+   XML-generated layout and two XZR/X0 words proved in Lean, plus a
+   source-audited official-Sail projection of the two pre-`Mem` address/data
+   argument pairs. It remains formal-only for blocked fills: no blocked-fill
+   code generation or new span/record pair-store verification is enabled, and
+   the projection proves no
+   request occurrence or order, atomicity/non-tearing, memory effect, CAT
+   event, or publication. The remaining AArch64 instruction forms remain
+   generated/audited rather than universally decoder-proved.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the
@@ -219,10 +233,14 @@ or the verifier, not in the program:
    program now builds natively on both lanes with no refusal. Base
    facts through spills and spans copied across labels remain outside
    the label state.
-7. **The object and executable writers have no laws.** Their arithmetic
-   (section offsets, relocation ranges, program-header extents) is
-   checked at run time and tested against llvm-objdump and QEMU; the
-   `Oak.Assembler` frame laws are the model for stating them in Lean.
+7. **The object and executable writers are mostly without laws.**
+   `Oak.ObjectLayout` closes relocation-footprint admission, and
+   `Oak.ObjectRelocation` proves the opcode/range/patch/decode arithmetic model
+   for the AArch64 executable resolver's direct `B`/`BL` word, with production
+   held to a kernel-checked boundary table rather than a universal Go theorem.
+   Section offsets, symbol authority, other relocations, program-header
+   extents, and the whole image remain run-time checked and tested against
+   llvm-objdump and QEMU.
 8. **amd64.** Only through a lane. Until then, amd64 binaries are the C
    compiler's, checked by the differential corpus alone.
 9. **A real program all the way down.** `oak build -link oak` links a

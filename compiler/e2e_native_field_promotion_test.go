@@ -100,7 +100,7 @@ func TestE2ENativeFieldPromotion(t *testing.T) {
 }
 
 func TestNativeShapesFieldPromotion(t *testing.T) {
-	model, err := New().WithSource("fields.oak", nativeFieldPromotionProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("fields.oak", nativeFieldPromotionProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

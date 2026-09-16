@@ -60,11 +60,12 @@ bounds traps cannot terminate the host runner. `-timeout` bounds each execution;
 **Resident workers.** The fresh process is a fork, not an exec: the runner
 starts one harness process per concurrent case slot in serve mode, sends each
 case to it as a length-checked record (test index, control-report path, input
-bytes), and the worker runs the case in a `fork()` of itself — the child sees
-exactly the state a new process would, so isolation, determinism, timeouts,
-shrinking and replay are unchanged, while the process start-up (and, under
+bytes), and the worker runs the case in a `fork()` of itself. Each case
+starts from the worker's initial application state, while process start-up (and, under
 `-sanitize`, the sanitizer runtime's initialization) is paid once per worker
-rather than once per case. The worker relays the child's wait status and its
+rather than once per case. Process-bound native services can distinguish a
+fork from a fresh exec; use `-resident=false` when a test needs the latter.
+The worker relays the child's wait status and its
 bounded output; a timed-out case kills the worker's process group and the pool
 replaces the worker. `-resident=false` runs one process per case, as Windows
 and cross-built harnesses do. Measured on a trivial property: 62 cases a
@@ -73,6 +74,34 @@ second per process, 1,080 a second resident
 report are independently bounded to 64 KiB. Excess user output is truncated;
 control-report overflow fails the case. The control report is separate from
 stdout, so ordinary test output cannot corrupt `-json` results.
+
+**Process diagnostics.** `-trace-processes` writes one JSON record per
+compiler or harness launch attempt and resident case request to stderr.
+Each `oak-test-process` record includes the executable, exact argv array,
+effective working directory, and full launch environment (`NAME=value`
+entries). Case records also identify the package, test, registry index,
+report path and input byte count. `mode: "exec"` names a new invocation;
+`mode: "fork"` names a request to a resident worker, includes its PID, and
+uses the worker's inherited launch argv/environment. It does not invent
+per-case command-line arguments for the resident protocol. These describe
+the launch context, before application code can change it.
+
+Test harnesses inherit the runner's working directory and environment;
+the C compiler runs in the temporary build directory. A fresh exec reads
+case bytes from a pipe on stdin, and the runner captures stdout and stderr
+through pipes, allowing at most 100 ms to drain them after process exit or
+cancellation. A resident child receives case bytes in memory from the
+worker protocol, has stdin connected to `/dev/null`, and writes stdout and
+stderr to the worker's capture pipe. Resident workers have their own
+process group so a timeout can kill the worker and its active child.
+
+The flag explicitly includes environment values, so its output should be
+reviewed before sharing. It is separate from `-v`, which includes successful
+test output. Process records stay out of stdout's `-json` results, captured
+test output, and replay artifacts; concurrent records do not interleave.
+To compare a service failure under the two isolation modes, run the same
+selection with `-trace-processes` and then with
+`-trace-processes -resident=false`.
 
 This is process isolation for trusted development tests, not a security sandbox.
 Tests may use the host permissions available to them. Sanitizers are opt-in via

@@ -47,6 +47,103 @@ func TestPushMask(t *testing.T) {
 	}
 }
 
+// A caller normalizes a summarized u16 result before using it as an index.
+// The machine result still contains the ABI's unconstrained high fragment,
+// but an identical final low mask makes that fragment irrelevant. Congruence
+// must compare only the bits the mask retains, rather than demand equality of
+// the unmasked operands.
+func TestImpliesEqualCongruentUnderLowMask(t *testing.T) {
+	base, page := paramTerm("base", 64), paramTerm("page", 64)
+	index := binaryTerm("shr", binaryTerm("sub", page, base), constTerm(14, 64))
+	source16 := truncate(index, 16)
+	source := binaryTerm("and", zeroExtend(source16, 32), constTerm(0xffff, 32))
+
+	high := paramTerm("call#hi", 64)
+	returned := binaryTerm("or",
+		binaryTerm("and", index, constTerm(0xffff, 64)),
+		binaryTerm("shl", high, constTerm(16, 64)),
+	)
+	machine32 := truncate(returned, 32)
+	machine := binaryTerm("and", machine32, constTerm(0xffff, 32))
+	widthOf := func(string) int { return 64 }
+	budget := &nodeBudget{remaining: loopDecisionNodeBudget}
+	if holds, decided := impliesEqualCongruent(constTerm(1, 1), source, machine, widthOf, budget, 0); !decided || !holds {
+		t.Fatalf("masked call result must be congruent: holds=%v decided=%v\nsource: %s\nmachine: %s", holds, decided, source, machine)
+	}
+
+	// Without the caller's final mask, the high fragment is observable and
+	// the values are not equal.
+	if holds, decided := impliesEqual(constTerm(1, 1), zeroExtend(source16, 32), machine32, widthOf); !decided || holds {
+		t.Fatalf("unmasked call result must differ: holds=%v decided=%v", holds, decided)
+	}
+}
+
+func TestImpliesEqualPeelsRedundantDeclaredWidthMasks(t *testing.T) {
+	dom := paramTerm("dom", 32)
+	machine := truncate(binaryTerm("and", zeroExtend(dom, 64), constTerm(0xffffffff, 64)), 32)
+	widthOf := func(string) int { return 64 }
+	if holds, decided := impliesEqual(constTerm(1, 1), dom, machine, widthOf); !decided || !holds {
+		t.Fatalf("nested masks retaining every declared u32 bit must prove equal: holds=%v decided=%v\nsource: %s\nmachine: %s", holds, decided, dom, machine)
+	}
+
+	wide := paramTerm("wide", 64)
+	maskedWide := binaryTerm("and", wide, constTerm(0xffffffff, 64))
+	if holds, decided := impliesEqual(constTerm(1, 1), wide, maskedWide, widthOf); !decided || holds {
+		t.Fatalf("a mask that can discard high u64 bits must not prove equal: holds=%v decided=%v", holds, decided)
+	}
+
+	shifted := binaryTerm("shr", wide, constTerm(14, 64))
+	left16 := binaryTerm("and", zeroExtend(truncate(shifted, 16), 32), constTerm(0xffff, 32))
+	right16 := binaryTerm("and", truncate(binaryTerm("and", shifted, constTerm(0xffffffff, 64)), 32), constTerm(0xffff, 32))
+	if holds, decided := impliesEqual(constTerm(1, 1), left16, right16, widthOf); !decided || !holds {
+		t.Fatalf("differently nested low-16 mask chains must prove equal: holds=%v decided=%v\nleft: %s\nright: %s", holds, decided, left16, right16)
+	}
+	right15 := binaryTerm("and", truncate(binaryTerm("and", shifted, constTerm(0xffffffff, 64)), 32), constTerm(0x7fff, 32))
+	if holds, decided := impliesEqual(constTerm(1, 1), left16, right15, widthOf); !decided || holds {
+		t.Fatalf("mask chains retaining different bits must not prove equal: holds=%v decided=%v", holds, decided)
+	}
+}
+
+// A u16 span update may be emitted as a wider load/add followed by a u16
+// truncation. Pushing that truncation into the addition exposes the same
+// modular update, after which the masked call-result index also meets.
+func TestImpliesEqualNarrowArithmeticAtMaskedIndex(t *testing.T) {
+	base, page := paramTerm("base", 64), paramTerm("page", 64)
+	dom := paramTerm("dom", 32)
+	leafWide := binaryTerm("shr", binaryTerm("sub", page, base), constTerm(14, 64))
+	leaf16 := truncate(leafWide, 16)
+	prefix := binaryTerm("mul", constTerm(24, 32), dom)
+	sourceIndex := binaryTerm("add", prefix, zeroExtend(leaf16, 32))
+	source := binaryTerm("add", selectTerm("s.entry_count", sourceIndex, 16), constTerm(1, 16))
+
+	high := paramTerm("call#hi", 64)
+	returned := binaryTerm("or",
+		binaryTerm("and", leafWide, constTerm(0xffff, 64)),
+		binaryTerm("shl", high, constTerm(16, 64)),
+	)
+	machineLeaf := binaryTerm("and", truncate(returned, 32), constTerm(0xffff, 32))
+	machineIndex := binaryTerm("add", prefix, machineLeaf)
+	loaded := zeroExtend(selectTerm("s.entry_count", machineIndex, 16), 64)
+	machine := truncate(binaryTerm("add", loaded, constTerm(1, 64)), 16)
+	widthOf := func(string) int { return 64 }
+
+	if holds, decided := impliesEqual(constTerm(1, 1), source, machine, widthOf); !decided || !holds {
+		t.Fatalf("narrow span update must prove: holds=%v decided=%v\nsource: %s\nmachine: %s", holds, decided, source, machine)
+	}
+	changed := truncate(binaryTerm("add", loaded, constTerm(2, 64)), 16)
+	if holds, decided := impliesEqual(constTerm(1, 1), source, changed, widthOf); !decided || holds {
+		t.Fatalf("changed increment must differ: holds=%v decided=%v", holds, decided)
+	}
+	for _, env := range []map[string]uint64{
+		{"base": 0, "page": 0, "dom": 0, "call#hi": 0},
+		{"base": 0x4000, "page": 0x1234_0000, "dom": 3, "call#hi": 0xffff},
+	} {
+		if got, want := machine.eval(env), source.eval(env); got != want {
+			t.Fatalf("equivalent update differs at %v: got %d, want %d", env, got, want)
+		}
+	}
+}
+
 // Two conditionals spelled differently — the condition negated twice, the
 // arm masked at the width it was computed at — are proven equal by their
 // parts, and the decision is charged to the proof's budget.
@@ -160,6 +257,402 @@ func TestCanonicalBooleanValued(t *testing.T) {
 	}
 }
 
+// A comparison result is already 0/1. Comparing it with one preserves it
+// for equality and negates it for inequality, in either operand order; a
+// general integer expression must not enter the rule.
+func TestCanonicalBooleanComparedWithOne(t *testing.T) {
+	x, y := paramTerm("x", 32), paramTerm("y", 32)
+	bit := cmpTerm("eq", x, y)
+	for _, op := range []string{"eq", "ne"} {
+		want := canonical(bit)
+		if op == "ne" {
+			want = canonical(adaptWidth(notTerm(bit), 32))
+		}
+		for _, comparison := range []*term{
+			cmpTerm(op, bit, constTerm(1, 32)),
+			cmpTerm(op, constTerm(1, 32), bit),
+		} {
+			got := canonical(comparison)
+			if !equalTerms(got, want) {
+				t.Fatalf("%s canonicalized to %s, want %s", comparison, got, want)
+			}
+			for xv := uint64(0); xv < 3; xv++ {
+				for yv := uint64(0); yv < 3; yv++ {
+					env := map[string]uint64{"x": xv, "y": yv}
+					if got.eval(env) != comparison.eval(env) {
+						t.Fatalf("%s changed at %v", comparison, env)
+					}
+				}
+			}
+		}
+	}
+	for _, constant := range []uint64{2, 4, 5} {
+		for _, op := range []string{"eq", "ne"} {
+			want := uint64(0)
+			if op == "ne" {
+				want = 1
+			}
+			for _, comparison := range []*term{
+				cmpTerm(op, bit, constTerm(constant, 32)),
+				cmpTerm(op, constTerm(constant, 32), bit),
+			} {
+				got := canonical(comparison)
+				if got.kind != termConst || got.value != want {
+					t.Fatalf("%s canonicalized to %s, want %d", comparison, got, want)
+				}
+				for xv := uint64(0); xv < 3; xv++ {
+					for yv := uint64(0); yv < 3; yv++ {
+						env := map[string]uint64{"x": xv, "y": yv}
+						if got.eval(env) != comparison.eval(env) {
+							t.Fatalf("%s changed at %v", comparison, env)
+						}
+					}
+				}
+			}
+		}
+	}
+	sum := binaryTerm("add", x, y)
+	if got := canonical(cmpTerm("eq", sum, constTerm(1, 32))); got.kind != termCmp {
+		t.Fatalf("non-Boolean comparison was rewritten: %s", got)
+	}
+}
+
+// A byte-sized status assembled by conditional assignments is tested arm by
+// arm. This is the source shape of `st == 0` after several fail-closed checks;
+// leaving the complete status tree under one comparison makes a caller's
+// post-loop result need a much larger diagram than the equivalent machine CFG.
+func TestCanonicalSmallConditionalComparison(t *testing.T) {
+	c, d := paramTerm("c", 1), paramTerm("d", 1)
+	status := iteTerm(c, constTerm(4, 8), iteTerm(d, constTerm(5, 8), constTerm(0, 8)))
+	for _, code := range []string{"eq", "ne"} {
+		for _, want := range []uint64{0, 4, 5, 7} {
+			original := cmpTerm(code, status, constTerm(want, 8))
+			normalized := canonical(original)
+			narrowed := canonical(truncate(original, 1))
+			if narrowed.width != 1 {
+				t.Fatalf("%s %d after one-bit truncation has width %d: %s", code, want, narrowed.width, narrowed)
+			}
+			for cv := uint64(0); cv < 2; cv++ {
+				for dv := uint64(0); dv < 2; dv++ {
+					inputs := map[string]uint64{"c": cv, "d": dv}
+					if got, expected := normalized.eval(inputs), original.eval(inputs); got != expected {
+						t.Fatalf("%s %d at c=%d d=%d: got %d, want %d (%s)", code, want, cv, dv, got, expected, normalized)
+					}
+					if got, expected := narrowed.eval(inputs), original.eval(inputs)&1; got != expected {
+						t.Fatalf("narrowed %s %d at c=%d d=%d: got %d, want %d (%s)", code, want, cv, dv, got, expected, narrowed)
+					}
+				}
+			}
+			var comparisonStillWrapsConditional func(*term) bool
+			comparisonStillWrapsConditional = func(term *term) bool {
+				if term == nil {
+					return false
+				}
+				if term.kind == termCmp && (term.left.kind == termIte || term.right.kind == termIte) {
+					return true
+				}
+				return comparisonStillWrapsConditional(term.cond) || comparisonStillWrapsConditional(term.left) || comparisonStillWrapsConditional(term.right)
+			}
+			if comparisonStillWrapsConditional(normalized) {
+				t.Fatalf("%s %d still wraps a conditional: %s", code, want, normalized)
+			}
+			var hasConditional func(*term) bool
+			hasConditional = func(term *term) bool {
+				return term != nil && (term.kind == termIte || hasConditional(term.cond) || hasConditional(term.left) || hasConditional(term.right))
+			}
+			if hasConditional(normalized) {
+				t.Fatalf("%s %d retained a boolean conditional: %s", code, want, normalized)
+			}
+		}
+	}
+	count := paramTerm("count", 16)
+	updated := iteTerm(c, binaryTerm("sub", count, constTerm(1, 16)), count)
+	var comparisonStillWrapsConditional func(*term) bool
+	comparisonStillWrapsConditional = func(term *term) bool {
+		if term == nil {
+			return false
+		}
+		if term.kind == termCmp && (term.left.kind == termIte || term.right.kind == termIte) {
+			return true
+		}
+		return comparisonStillWrapsConditional(term.cond) || comparisonStillWrapsConditional(term.left) || comparisonStillWrapsConditional(term.right)
+	}
+	for _, code := range []string{"eq", "ne"} {
+		original := cmpTerm(code, updated, constTerm(0, 16))
+		normalized := canonical(original)
+		for cv := uint64(0); cv < 2; cv++ {
+			for _, value := range []uint64{0, 1, 2, 0xffff} {
+				inputs := map[string]uint64{"c": cv, "count": value}
+				if got, expected := normalized.eval(inputs), original.eval(inputs); got != expected {
+					t.Fatalf("u16 %s at c=%d count=%d: got %d, want %d (%s)", code, cv, value, got, expected, normalized)
+				}
+			}
+		}
+		if comparisonStillWrapsConditional(normalized) {
+			t.Fatalf("u16 %s still wraps a conditional: %s", code, normalized)
+		}
+	}
+	if got := canonical(cmpTerm("lo", status, constTerm(4, 8))); got.kind != termCmp {
+		t.Fatalf("ordered conditional comparison was distributed: %s", got)
+	}
+}
+
+// Ordered fail-closed updates repeatedly test the prior status for zero. Once
+// comparisons distribute over the status tree, the new Boolean formula must
+// itself canonicalize: the final status is zero exactly when no check fired.
+func TestCanonicalOrderedStatusZero(t *testing.T) {
+	fail4, fail5a, fail5b := paramTerm("fail4", 1), paramTerm("fail5a", 1), paramTerm("fail5b", 1)
+	status := iteTerm(fail4, constTerm(4, 8), constTerm(0, 8))
+	status = iteTerm(binaryTerm("and", truncate(cmpTerm("eq", status, constTerm(0, 8)), 1), fail5a), constTerm(5, 8), status)
+	status = iteTerm(binaryTerm("and", truncate(cmpTerm("eq", status, constTerm(0, 8)), 1), fail5b), constTerm(5, 8), status)
+	zero := canonical(truncate(cmpTerm("eq", status, constTerm(0, 8)), 1))
+	want := canonical(binaryTerm("and", notTerm(fail4), binaryTerm("and", notTerm(fail5a), notTerm(fail5b))))
+	parts := logicalConjuncts(zero)
+	wantParts := []*term{notTerm(fail4), notTerm(fail5a), notTerm(fail5b)}
+	if zero.width != 1 || len(parts) != len(wantParts) {
+		t.Fatalf("ordered status zero has %d factors: %s", len(parts), zero)
+	}
+	for i := range parts {
+		if !equalTerms(parts[i], wantParts[i]) {
+			t.Fatalf("ordered status factor %d: %s, want %s (whole %s)", i, parts[i], wantParts[i], zero)
+		}
+	}
+	for f4 := uint64(0); f4 < 2; f4++ {
+		for f5a := uint64(0); f5a < 2; f5a++ {
+			for f5b := uint64(0); f5b < 2; f5b++ {
+				inputs := map[string]uint64{"fail4": f4, "fail5a": f5a, "fail5b": f5b}
+				if got, expected := zero.eval(inputs), want.eval(inputs); got != expected {
+					t.Fatalf("at %v: got %d, want %d", inputs, got, expected)
+				}
+			}
+		}
+	}
+}
+
+// Constant-valued decision trees need not make their choices in the same
+// order. Equality follows when the predicate selecting each possible result is
+// equivalent; a changed leaf is still refuted, and non-finite shapes do not
+// enter this theorem.
+func TestImpliesFiniteConditionalEqual(t *testing.T) {
+	c, d := paramTerm("c", 1), paramTerm("d", 1)
+	left := iteTerm(c, constTerm(4, 8), iteTerm(d, constTerm(5, 8), constTerm(0, 8)))
+	right := iteTerm(d, iteTerm(c, constTerm(4, 8), constTerm(5, 8)), iteTerm(c, constTerm(4, 8), constTerm(0, 8)))
+	widthOf := func(string) int { return 1 }
+	if holds, decided, applicable := impliesFiniteConditionalEqual(constTerm(1, 1), left, right, widthOf, nil); !applicable || !decided || !holds {
+		t.Fatalf("reordered decision trees: applicable=%v decided=%v holds=%v", applicable, decided, holds)
+	}
+	different := iteTerm(d, iteTerm(c, constTerm(3, 8), constTerm(5, 8)), iteTerm(c, constTerm(4, 8), constTerm(0, 8)))
+	if holds, decided, applicable := impliesFiniteConditionalEqual(constTerm(1, 1), left, different, widthOf, nil); !applicable || !decided || holds {
+		t.Fatalf("changed leaf: applicable=%v decided=%v holds=%v", applicable, decided, holds)
+	}
+	x := paramTerm("x", 8)
+	booleanLeaf := iteTerm(c, cmpTerm("eq", x, constTerm(0, 8)), constTerm(5, 8))
+	if holds, decided, applicable := impliesFiniteConditionalEqual(constTerm(1, 1), booleanLeaf, booleanLeaf, widthOf, nil); !applicable || !decided || !holds {
+		t.Fatalf("symbolic Boolean leaf: applicable=%v decided=%v holds=%v", applicable, decided, holds)
+	}
+	withParameter := iteTerm(c, paramTerm("value", 8), constTerm(0, 8))
+	if _, _, applicable := impliesFiniteConditionalEqual(constTerm(1, 1), left, withParameter, widthOf, nil); applicable {
+		t.Fatal("a nonconstant leaf entered the finite-result theorem")
+	}
+	wide := iteTerm(c, constTerm(1, 16), constTerm(0, 16))
+	if _, _, applicable := impliesFiniteConditionalEqual(constTerm(1, 1), wide, wide, widthOf, nil); applicable {
+		t.Fatal("a wide result entered the finite-result theorem")
+	}
+}
+
+// Conjuncts of a case premise settle matching and complementary branch
+// conditions structurally before the pruning BDD is needed. Compound Boolean
+// conditions use only facts the premise supplies.
+func TestPruneUnderStructuralConjuncts(t *testing.T) {
+	a, b := paramTerm("a", 1), paramTerm("b", 1)
+	x, y, z := paramTerm("x", 32), paramTerm("y", 32), paramTerm("z", 32)
+	premise := binaryTerm("and", a, notTerm(b))
+	value := iteTerm(binaryTerm("and", a, b), x, iteTerm(a, iteTerm(b, x, y), z))
+	widthOf := func(string) int { return 32 }
+	got := pruneUnder(premise, []*term{value}, widthOf)[0]
+	if !equalTerms(got, y) {
+		t.Fatalf("pruned nested value: %s, want %s", got, y)
+	}
+	unknown := iteTerm(paramTerm("c", 1), x, y)
+	if got := pruneUnder(premise, []*term{unknown}, widthOf)[0]; got.kind != termIte {
+		t.Fatalf("a condition absent from the premise was settled: %s", got)
+	}
+	wideBool := binaryTerm("and", cmpTerm("eq", paramTerm("w", 32), constTerm(0, 32)), constTerm(1, 32))
+	if got := pruneUnder(premise, []*term{iteTerm(wideBool, x, y)}, widthOf)[0]; got.kind != termIte {
+		t.Fatalf("an unrelated wider Boolean condition was settled: %s", got)
+	}
+}
+
+// Zero/nonzero facts may differ only by a redundant narrow-register mask.
+// Match those facts without rewriting the terms, but reject a mask that can
+// actually clear a set bit.
+func TestPruneUnderRedundantLowMaskFact(t *testing.T) {
+	x := paramTerm("x", 64)
+	masked := binaryTerm("and", x, constTerm(0x3fff, 64))
+	narrowView := truncate(masked, 16)
+	wideNonzero := truncate(cmpTerm("ne", masked, constTerm(0, 64)), 1)
+	narrowNonzero := truncate(cmpTerm("ne", narrowView, constTerm(0, 16)), 1)
+
+	if relation := maskedZeroTestRelation(canonical(wideNonzero), canonical(narrowNonzero)); relation != 1 {
+		t.Fatalf("same zero test relation = %d, want 1", relation)
+	}
+	wideZero := truncate(cmpTerm("eq", masked, constTerm(0, 64)), 1)
+	if relation := maskedZeroTestRelation(canonical(wideZero), canonical(narrowNonzero)); relation != -1 {
+		t.Fatalf("opposite zero test relation = %d, want -1", relation)
+	}
+
+	left, right := paramTerm("left", 32), paramTerm("right", 32)
+	widthOf := func(string) int { return 64 }
+	if got := pruneUnder(narrowNonzero, []*term{iteTerm(wideNonzero, left, right)}, widthOf)[0]; !equalTerms(got, left) {
+		t.Fatalf("matching masked fact selected %s, want %s", got, left)
+	}
+	if got := pruneUnder(narrowNonzero, []*term{iteTerm(wideZero, left, right)}, widthOf)[0]; !equalTerms(got, right) {
+		t.Fatalf("opposite masked fact selected %s, want %s", got, right)
+	}
+
+	lowByteNonzero := truncate(cmpTerm("ne", truncate(masked, 8), constTerm(0, 8)), 1)
+	if relation := maskedZeroTestRelation(canonical(wideNonzero), canonical(lowByteNonzero)); relation != 0 {
+		t.Fatalf("value-changing mask relation = %d, want 0", relation)
+	}
+	if got := pruneUnder(wideNonzero, []*term{iteTerm(lowByteNonzero, left, right)}, widthOf)[0]; got.kind != termIte {
+		t.Fatalf("value-changing mask settled the branch: %s", got)
+	}
+
+	for xv := uint64(0); xv <= 0xffff; xv++ {
+		inputs := map[string]uint64{"x": xv}
+		if got, want := wideNonzero.eval(inputs), narrowNonzero.eval(inputs); got != want {
+			t.Fatalf("x=%#x: wide predicate %d, narrow predicate %d", xv, got, want)
+		}
+	}
+}
+
+// Structural premise facts simplify complete Boolean formulas, not only ITE
+// conditions. AND/OR short-circuit before a large unrelated tail is visited.
+func TestPruneUnderBooleanFormula(t *testing.T) {
+	p := paramTerm("p", 1)
+	unknown := truncate(cmpTerm("eq", selectTerm("s.pages", paramTerm("i", 32), 64), constTerm(7, 64)), 1)
+	widthOf := func(string) int { return 64 }
+
+	falseFormula := binaryTerm("and", notTerm(p), unknown)
+	if got := pruneUnder(p, []*term{falseFormula}, widthOf)[0]; got.kind != termConst || got.value != 0 {
+		t.Fatalf("known-false formula pruned to %s", got)
+	}
+	trueFormula := binaryTerm("or", p, unknown)
+	if got := pruneUnder(p, []*term{trueFormula}, widthOf)[0]; got.kind != termConst || got.value != 1 {
+		t.Fatalf("known-true formula pruned to %s", got)
+	}
+	undecided := binaryTerm("and", p, unknown)
+	if got := pruneUnder(p, []*term{undecided}, widthOf)[0]; got.kind == termConst {
+		t.Fatalf("unknown formula was decided: %s", got)
+	}
+}
+
+// Direct premise facts remain useful when the premise as a whole contains a
+// construct the branch-pruning diagram cannot handle cheaply. The fact-only
+// pass removes the redundant guard and leaves an unrelated guard untouched.
+func TestImpliesEqualUsesStructuralFactsBeforeDiagram(t *testing.T) {
+	p, q := paramTerm("p", 1), paramTerm("q", 1)
+	bound := paramTerm("bound", 8)
+	k := paramTerm("k@q", 8)
+	quantified := quantTerm("forall", "k@q", 8, cmpTerm("ls", k, bound), k)
+	premise := binaryTerm("and", p, quantified)
+	widthOf := func(string) int { return 8 }
+
+	if holds, decided := impliesEqual(premise, binaryTerm("and", p, q), q, widthOf); !decided || !holds {
+		t.Fatalf("direct fact must settle guarded equality: holds=%v decided=%v", holds, decided)
+	}
+	if got := canonical(pruneUnderFacts(premise, []*term{binaryTerm("and", p, notTerm(q))})[0]); got.kind == termConst {
+		t.Fatalf("unrelated fact was decided: %s", got)
+	}
+	x := paramTerm("x", 8)
+	wideZero := cmpTerm("eq", x, constTerm(0, 8))
+	wideNonzero := truncate(cmpTerm("ne", x, constTerm(0, 8)), 1)
+	if got := pruneUnderFacts(wideNonzero, []*term{wideZero})[0]; got.kind != termConst || got.width != 8 || got.value != 0 {
+		t.Fatalf("wide Boolean fact pruned to %s, want u8(0)", got)
+	}
+	if got := pruneUnderFacts(wideNonzero, []*term{x})[0]; got.kind != termParam {
+		t.Fatalf("non-Boolean wide value was decided: %s", got)
+	}
+}
+
+// Pure scalar status checks can be split into separate post-loop reach facts;
+// a factor reading symbolic memory stays atomic so a callee's memory condition
+// is not duplicated through every postcondition.
+func TestRefinePureReachFactors(t *testing.T) {
+	a, b := paramTerm("a", 1), paramTerm("b", 1)
+	status := iteTerm(a, constTerm(4, 8), iteTerm(b, constTerm(5, 8), constTerm(0, 8)))
+	zero := truncate(cmpTerm("eq", status, constTerm(0, 8)), 1)
+	if got := refinePureReachFactors([]*term{zero}); len(got) != 2 {
+		t.Fatalf("pure status factor split into %d parts, want 2: %v", len(got), got)
+	}
+	combinedStatus := iteTerm(binaryTerm("or", a, b), constTerm(4, 8), constTerm(0, 8))
+	combinedZero := truncate(cmpTerm("eq", combinedStatus, constTerm(0, 8)), 1)
+	combined := refinePureReachFactors([]*term{combinedZero})
+	if len(combined) != 2 || !equalTerms(combined[0], notTerm(a)) || !equalTerms(combined[1], notTerm(b)) {
+		t.Fatalf("negated disjunction factors: %v", combined)
+	}
+	x, y := paramTerm("x", 64), paramTerm("y", 64)
+	wideA := cmpTerm("ne", binaryTerm("and", x, constTerm(15, 64)), constTerm(0, 64))
+	wideB := cmpTerm("ne", binaryTerm("and", y, constTerm(15, 64)), constTerm(0, 64))
+	wideStatus := iteTerm(binaryTerm("or", wideA, wideB), constTerm(4, 8), constTerm(0, 8))
+	wideZero := truncate(cmpTerm("eq", wideStatus, constTerm(0, 8)), 1)
+	wide := refinePureReachFactors([]*term{wideZero})
+	if len(wide) != 2 {
+		t.Fatalf("wide Boolean disjunction factors: %v", wide)
+	}
+	for xv := uint64(0); xv < 18; xv++ {
+		for yv := uint64(0); yv < 18; yv++ {
+			inputs := map[string]uint64{"x": xv, "y": yv}
+			if got, want := wide[0].eval(inputs), notTerm(truncate(wideA, 1)).eval(inputs); got != want {
+				t.Fatalf("wide factor 0 at %v: got %d, want %d", inputs, got, want)
+			}
+			if got, want := wide[1].eval(inputs), notTerm(truncate(wideB, 1)).eval(inputs); got != want {
+				t.Fatalf("wide factor 1 at %v: got %d, want %d", inputs, got, want)
+			}
+		}
+	}
+	c := paramTerm("c", 1)
+	outer := binaryTerm("and", canonical(wideZero), notTerm(c))
+	if got := refinePureReachFactors([]*term{outer}); len(got) != 3 {
+		t.Fatalf("nested negated disjunction split into %d factors, want 3: %v", len(got), got)
+	}
+	memoryBad := truncate(cmpTerm("ne", selectTerm("s.pages", paramTerm("i", 32), 8), constTerm(0, 8)), 1)
+	memoryStatus := iteTerm(memoryBad, constTerm(4, 8), iteTerm(b, constTerm(5, 8), constTerm(0, 8)))
+	memoryZero := truncate(cmpTerm("eq", memoryStatus, constTerm(0, 8)), 1)
+	if got := refinePureReachFactors([]*term{memoryZero}); len(got) != 1 || !equalTerms(got[0], memoryZero) {
+		t.Fatalf("memory-dependent factor was expanded: %v", got)
+	}
+}
+
+// Later reach factors are interpreted under the prefix accumulated before
+// them. Removing a repeated prefix fact preserves both resulting partitions
+// and leaves unrelated memory conditions intact.
+func TestRefineReachFactorUnderPrefix(t *testing.T) {
+	p, q := paramTerm("p", 1), paramTerm("q", 1)
+	factor := binaryTerm("and", p, q)
+	refined := refineReachFactorUnder(p, factor)
+	if !equalTerms(refined, q) {
+		t.Fatalf("factor refined to %s, want %s", refined, q)
+	}
+	for pv := uint64(0); pv < 2; pv++ {
+		for qv := uint64(0); qv < 2; qv++ {
+			env := map[string]uint64{"p": pv, "q": qv}
+			for _, pair := range [][2]*term{
+				{binaryTerm("and", p, factor), binaryTerm("and", p, refined)},
+				{binaryTerm("and", p, notTerm(factor)), binaryTerm("and", p, notTerm(refined))},
+			} {
+				if got, want := pair[1].eval(env), pair[0].eval(env); got != want {
+					t.Fatalf("partition changed at %v: got %d, want %d", env, got, want)
+				}
+			}
+		}
+	}
+	memory := truncate(cmpTerm("ne", selectTerm("s.pages", paramTerm("i", 32), 64), constTerm(0, 64)), 1)
+	if got := refineReachFactorUnder(p, memory); !equalTerms(got, memory) {
+		t.Fatalf("unrelated memory factor changed to %s", got)
+	}
+}
+
 // A premise of exit facts binding a dozen symbols to terms (`g = (total +
 // 15) >> 4`) is satisfied by no random valuation; settled through its
 // bindings, a valuation refutes an obligation over two distinct symbols
@@ -212,5 +705,36 @@ func TestCanonicalBitOfBooleanCombination(t *testing.T) {
 	x, y := paramTerm("x", 32), paramTerm("y", 32)
 	if got := canonical(truncate(binaryTerm("add", x, y), 1)); got.kind != termBinary || got.op != "and" {
 		t.Fatalf("bit of a sum: %s", got)
+	}
+}
+
+// A known one-bit value remains Boolean through a wider register truncation.
+// Its zero test should expose the bit instead of leaving a comparison around
+// the full-mask wrapper.
+func TestCanonicalZeroTestOfKnownBit(t *testing.T) {
+	x := paramTerm("x", 64)
+	bit := binaryTerm("and", x, constTerm(1, 64))
+	word := truncate(bit, 32)
+	for _, code := range []string{"eq", "ne"} {
+		machine := truncate(cmpTerm(code, word, constTerm(0, 32)), 1)
+		want := truncate(bit, 1)
+		if code == "eq" {
+			want = notTerm(want)
+		}
+		got, want := canonical(machine), canonical(want)
+		if !equalTerms(got, want) {
+			t.Fatalf("%s zero test: %s, want %s", code, got, want)
+		}
+		for xv := uint64(0); xv < 256; xv++ {
+			inputs := map[string]uint64{"x": xv}
+			if actual, expected := got.eval(inputs), machine.eval(inputs); actual != expected {
+				t.Fatalf("%s x=%d: got %d, want %d", code, xv, actual, expected)
+			}
+		}
+	}
+
+	twoBits := truncate(binaryTerm("and", x, constTerm(3, 64)), 32)
+	if got := canonical(truncate(cmpTerm("eq", twoBits, constTerm(0, 32)), 1)); got.kind != termCmp {
+		t.Fatalf("two-bit zero test was reduced as Boolean: %s", got)
 	}
 }

@@ -162,7 +162,7 @@ func init() {
 	}
 	for _, m := range []string{"str", "strb", "strh", "stp", "stur", "sturb", "sturh", "stlr", "stlrb", "stlrh", "st1", "st2", "st3", "st4",
 		"cmp", "cmn", "tst", "fcmp", "fcmpe", "ccmp", "ccmn",
-		"b", "b.", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "dmb", "dsb", "isb", "nop", "hint", "yield", "sev", "sevl", "wfe", "wfi", "prfm", "bl", "blr"} {
+		"b", "b.", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "dmb", "dsb", "isb", "tlbi", "nop", "hint", "yield", "sev", "sevl", "wfe", "wfi", "prfm", "bl", "blr"} {
 		shapes[m] = noDef
 	}
 	for _, m := range []string{"ld1", "ld2", "ld3", "ld4", "ld1r", "ld2r", "ld3r", "ld4r"} {

@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -227,6 +228,9 @@ type emitter struct {
 	// lane(), so a store indexed by one is each lane's own.
 	arena      []string
 	laneLocals map[string]bool
+	// groupStoreErrors records stores whose control or value is not
+	// uniform. It is consulted only for stores emitted for lane 0.
+	groupStoreErrors map[*ast.IndexAssignmentStatement]string
 	// fusing names the kernels on the current fusion path (independence.go);
 	// kernelName and kernelGid are the kernel being emitted and its
 	// position parameter, which a fused callee must be passed.
@@ -588,6 +592,10 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	}
 	desc.Fault = next
 	args = append(args, fmt.Sprintf("device atomic_uint* oak_fault [[buffer(%d)]]", next))
+	em.groupStoreErrors = nil
+	if groupSize > 0 {
+		em.groupStoreErrors = em.groupStoreRestrictions(fn)
+	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "kernel void %s(%s) {\n", ident(fn.Name.Value), strings.Join(args, ", "))
 	em.indent = "  "
@@ -614,22 +622,21 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 // parameters — once, callee-first, and returns its MSL name. The current
 // function's emission state is saved around the nested emission.
 func (em *emitter) requireHelper(fn *ast.FunctionStatement, subst map[string]string) (string, error) {
-	name := fn.Name.Value
-	if fn.Kernel {
-		// A fused kernel's helper instance (docs/spec/56-kernels.md
-		// section 2b) lives beside the kernel entry of the same name.
-		name += "__fused"
-	}
+	// A private namespace avoids Metal's keywords and library names, such
+	// as metal::plus. Escape every component separately: escaped names
+	// contain no double underscore, so specialization tuples stay distinct.
+	// Fused helpers also use this namespace, beside their kernel entries.
+	name := "oak_helper__" + modules.Escape(fn.Name.Value)
 	keys := make([]string, 0, len(subst))
 	for k := range subst {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		name += "__" + subst[k]
+		name += "__" + modules.Escape(k) + "__" + modules.Escape(subst[k])
 	}
 	if em.helperDone[name] {
-		return ident(name), nil
+		return name, nil
 	}
 	if em.helperBusy[name] {
 		return "", em.fail("recursion through %s is outside the kernel subset", fn.Name.Value)
@@ -640,9 +647,15 @@ func (em *emitter) requireHelper(fn *ast.FunctionStatement, subst map[string]str
 		locals  map[string]oakType
 		indent  string
 		subst   map[string]string
-	}{em.current, em.locals, em.indent, em.fnSubst}
+		kernel  bool
+		ret     oakType
+	}{em.current, em.locals, em.indent, em.fnSubst, em.inKernel, em.currentRet}
+	// An ordinary helper has no group state. A fused kernel still runs
+	// as a kernel and may itself fuse another ordinary kernel.
+	em.inKernel = fn.Kernel
 	text, err := em.helper(fn, name, subst)
 	em.current, em.locals, em.indent, em.fnSubst = saved.current, saved.locals, saved.indent, saved.subst
+	em.inKernel, em.currentRet = saved.kernel, saved.ret
 	delete(em.helperBusy, name)
 	if err != nil {
 		return "", err
@@ -650,7 +663,7 @@ func (em *emitter) requireHelper(fn *ast.FunctionStatement, subst map[string]str
 	em.helperDone[name] = true
 	em.helperText.WriteString(text)
 	em.helperText.WriteString("\n")
-	return ident(name), nil
+	return name, nil
 }
 
 // helper emits a function the kernel calls as a static inline function
@@ -709,7 +722,7 @@ func (em *emitter) helper(fn *ast.FunctionStatement, instance string, subst map[
 		retMSL = em.mslType(ret)
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "static inline %s %s(%s) {\n", retMSL, ident(instance), strings.Join(args, ", "))
+	fmt.Fprintf(&out, "static inline %s %s(%s) {\n", retMSL, instance, strings.Join(args, ", "))
 	em.indent = "  "
 	body, err := em.functionBody(fn, ret)
 	if err != nil {
@@ -894,9 +907,11 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 			return err
 		}
 		if em.groupSize > 0 && em.inKernel && t.kind == "span" && !em.laneIndexed(s.Target.Index) {
-			// Every thread of the group computes the same value; one
-			// writes it. An index that depends on lane() is each lane's
-			// own slot (docs/spec/56-kernels.md section 2a).
+			if reason := em.groupStoreErrors[s]; reason != "" {
+				return em.fail("lane-independent store to %s %s; guard it with lane(%d) == 0 or store to each lane's own slot", s.Target.String(), reason, em.groupSize)
+			}
+			// Uniform control and values, or an explicit lane-0 guard,
+			// make one writer equivalent to the host's lane loop.
 			emit("if (oak_lid == 0u) { %s = %s; }", em.elementRef(ref, t, index, s.Target.Token), value)
 			return nil
 		}

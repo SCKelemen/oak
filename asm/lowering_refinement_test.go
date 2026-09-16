@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/ast"
@@ -13,11 +14,12 @@ import (
 // spec/lean/Oak/LoweringRefinement.lean as `lowerT`, and `lowerT_eval`
 // proves it agrees with the Lean extraction's embedding of the same
 // expression in every agreeing scope (docs/spec/126-verification-chain.md
-// §4, the seam). That proof is about `lowerT`; these tests pin
-// `oakLowering.lower` to it: every expression below is lowered at its own
-// width and its `term.String()` must be the render `lowerT` gives, stated
-// as an `example` in the Lean file. A change to either side has to visit
-// the other.
+// §4, the seam). Oak.FloatLoweringRefinement does the same for its bounded
+// binary32 and binary64 slices. These tests pin `oakLowering.lower` to the
+// two models: every expression below is lowered at its own width and its
+// `term.String()` must be the render stated as an `example` in the
+// corresponding Lean file.
+// A change to either side has to visit the other.
 var loweringRenders = []struct {
 	decl, body, want string
 }{
@@ -32,6 +34,67 @@ var loweringRenders = []struct {
 	{"f: (a, b: u32) -> u32", "a % b", "((a sub (udiv32(a, b) mul b)) and 4294967295)"},
 	{"f: (a, b: i32) -> i32", "a / b", "(((sdiv32(a, b) and 4294967295) shl 0) sar 0)"},
 	{"f: (a, b: i8) -> i8", "a % b", "((((a sub (sdiv8(a, b) mul b)) and 255) shl 0) sar 0)"},
+	// Exact binary32 arithmetic (FloatLoweringRefinement.lowerF): the
+	// extraction's add32/sub32/mul32/fma32 or Float32 division and the
+	// verifier's width-32 termFloat keep the same operation and operand order.
+	// Multiplication followed by addition stays two operations; it is never
+	// contracted implicitly.
+	{"f: (a, b: f32) -> f32", "a + b", "fadd32(a, b)"},
+	{"f: (a, b: f32) -> f32", "a - b", "fsub32(a, b)"},
+	{"f: (a, b: f32) -> f32", "a * b", "fmul32(a, b)"},
+	{"f: (a, b: f32) -> f32", "a / b", "fdiv32(a, b)"},
+	{"f: (a, b, c: f32) -> f32", "fma(a, b, c)", "fma32(a, b, c)"},
+	{"f: (a, b, c: f32) -> f32", "a * b + c", "fadd32(fmul32(a, b), c)"},
+	// The separate bounded binary64 family retains the four arithmetic
+	// operation identities and one ordered FMA node. Multiplication followed
+	// by addition remains two operations, never an implicit FMA.
+	{"f: (a, b: f64) -> f64", "a + b", "fadd64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a - b", "fsub64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a * b", "fmul64(a, b)"},
+	{"f: (a, b: f64) -> f64", "a / b", "fdiv64(a, b)"},
+	{"f: (a, b, c: f64) -> f64", "a * b + c", "fadd64(fmul64(a, b), c)"},
+	{"f: (a, b, c: f64) -> f64", "fma(a, b, c)", "fma64(a, b, c)"},
+	// Exact f32-to-f64 widening retains the source's width-32 operation
+	// beneath one ordered width-changing fcvt node.
+	{"f: (a, b: f32) -> f64", "f64(a + b)", "fcvt64(fadd32(a, b))"},
+	// The same widening node remains visible when it is an ordered f64 FMA
+	// operand; the two width-specific refinement families compose here.
+	{"f: (a, b: f32, x, y: f64) -> f64", "fma(f64(a + b), x, y)", "fma64(fcvt64(fadd32(a, b)), x, y)"},
+	// Binary64 arithmetic composes over the same proved widening leaf without
+	// erasing either width's operations or contracting multiply-then-add.
+	{"f: (a, b: f32, x, y: f64) -> f64", "f64(a + b) * x + y", "fadd64(fmul64(fcvt64(fadd32(a, b)), x), y)"},
+	// Exact sign operations (FloatLoweringRefinement): negation flips the
+	// sign bit, abs clears it, and copysign combines the magnitude and sign.
+	{"f: (a: f32) -> f32", "-a", "(a xor 2147483648)"},
+	{"f: (a: f32) -> f32", "abs(a)", "(a and 2147483647)"},
+	{"f: (a, b: f32) -> f32", "copysign(-a, b)", "(((a xor 2147483648) and 2147483647) or (b and 2147483648))"},
+	// The binary64 seam retains the same ordered sign transformations at
+	// width 64. Its Lean reading deliberately shares extraction's Float
+	// carriers rather than claiming an independent hardware theorem.
+	{"f: (a: f64) -> f64", "-a", "(a xor 9223372036854775808)"},
+	{"f: (a: f64) -> f64", "abs(a)", "(a and 9223372036854775807)"},
+	{"f: (a, b: f64) -> f64", "copysign(-a, b)", "(((a xor 9223372036854775808) and 9223372036854775807) or (b and 9223372036854775808))"},
+	// IEEE comparisons (FloatLoweringRefinement.lowerCondition): NaNs are
+	// unordered, signed zeros compare equal, and finite nonzero values use
+	// the sign-magnitude order.  The deliberately explicit renders pin the
+	// production floatCompare expansion to that model.
+	{"f: (a, b: f32) -> Bool", "a == b", "((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and ((a eq b) or (((a and 2147483647) or (b and 2147483647)) eq 0)))"},
+	{"f: (a, b: f32) -> Bool", "a != b", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and ((a eq b) or (((a and 2147483647) or (b and 2147483647)) eq 0))) xor 1)"},
+	{"f: (a, b: f32) -> Bool", "a < b", "((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647)))))))"},
+	{"f: (a, b: f32) -> Bool", "a <= b", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) or ((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and ((a eq b) or (((a and 2147483647) or (b and 2147483647)) eq 0))))"},
+	{"f: (a, b: f32) -> Bool", "a > b", "((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((b shr 31) and 1) and (((a shr 31) and 1) xor 1)) or (((((b shr 31) and 1) and ((a shr 31) and 1)) and ((b and 2147483647) hi (a and 2147483647))) or (((((b shr 31) and 1) xor 1) and (((a shr 31) and 1) xor 1)) and ((b and 2147483647) lo (a and 2147483647)))))))"},
+	{"f: (a, b: f32) -> Bool", "a >= b", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((b shr 31) and 1) and (((a shr 31) and 1) xor 1)) or (((((b shr 31) and 1) and ((a shr 31) and 1)) and ((b and 2147483647) hi (a and 2147483647))) or (((((b shr 31) and 1) xor 1) and (((a shr 31) and 1) xor 1)) and ((b and 2147483647) lo (a and 2147483647))))))) or ((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and ((a eq b) or (((a and 2147483647) or (b and 2147483647)) eq 0))))"},
+	// Pure Boolean composition is recursive: comparison leaves use the f32
+	// rules above, ! flips one bit, and &&/|| preserve Oak precedence.
+	{"f: (a, b: f32) -> Bool", "!(a < b) || a == b && b != 0.0", "((((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) xor 1) or (((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and ((a eq b) or (((a and 2147483647) or (b and 2147483647)) eq 0))) and (((((((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0)) or 0) xor 1) and ((b eq 0) or (((b and 2147483647) or 0) eq 0))) xor 1)))"},
+	// One value-position Bool conditional composes the comparison and float
+	// expression refinements, matching the verifier's iteTerm.
+	{"f: (a, b: f32) -> f32", "a < b ? a + 1.0 | b * 2.0", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fadd32(a, 1065353216) : fmul32(b, 1073741824))"},
+	// Arbitrary nesting recursively composes verifier iteTerm nodes.
+	{"f: (a, b: f32) -> f32", "a < b ? (a == 0.0 ? a + 1.0 | b - 1.0) | b * 2.0", "(((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? (((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or 0) xor 1) and ((a eq 0) or (((a and 2147483647) or 0) eq 0))) ? fadd32(a, 1065353216) : fsub32(b, 1065353216)) : fmul32(b, 1073741824))"},
+	// A float literal is rounded to its binary32 bits before it enters the
+	// term language.  1.5 is 0x3fc00000 (1069547520).
+	{"f: (a: f32) -> f32", "a + 1.5", "fadd32(a, 1069547520)"},
 	{"f: (a: u32) -> u32", "-a", "(0 sub a)"},
 	{"f: (a: u32) -> u32", "^a", "(a xor 4294967295)"},
 	{"f: (a, b: u32) -> u32", "(a << 3) | (b >> 5)", "((a shl 3) or (b shr 5))"},
@@ -68,6 +131,83 @@ var loweringRenders = []struct {
 	{"f: (a: u32) -> u32", "a + 0", "a"},
 }
 
+// Binary64 floatCompare has the same syntax tree as the six literal-pinned
+// binary32 renders above, with only the format masks and sign-bit position
+// changed. Comparing the complete lifted string keeps every operation and
+// operand ordered while avoiding a second copy of six multi-kilobyte terms.
+func TestBinary64ComparisonLoweringMatchesLeanTransliteration(t *testing.T) {
+	operators := []string{"==", "!=", "<", "<=", ">", ">="}
+	for _, operator := range operators {
+		body := "a " + operator + " b"
+		var binary32 string
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == body {
+				binary32 = candidate.want
+				break
+			}
+		}
+		if binary32 == "" {
+			t.Fatalf("binary32 comparison %q has no literal render pin", body)
+		}
+		want := binary64ComparisonRender(binary32)
+		spec, err := parseSignatureWithBody("f: (a, b: f64) -> Bool = " + body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lo := newLowering(spec)
+		term, reason, ok := lo.lower(spec.Body, 1)
+		if !ok {
+			t.Fatalf("%s: not lowered (%s)", body, reason)
+		}
+		if got := term.String(); got != want {
+			t.Errorf("%s\n  lowered: %s\n  model:   %s", body, got, want)
+		}
+	}
+
+	comparison := binary64ComparisonRender(func() string {
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == "a < b" {
+				return candidate.want
+			}
+		}
+		return ""
+	}())
+	equality := binary64ComparisonRender(func() string {
+		for _, candidate := range loweringRenders {
+			if candidate.decl == "f: (a, b: f32) -> Bool" && candidate.body == "a == b" {
+				return candidate.want
+			}
+		}
+		return ""
+	}())
+	spec, err := parseSignatureWithBody(
+		"f: (a, b: f64) -> f64 = a < b ? (a == b ? -abs(a) | a + b) | copysign(b, a)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(spec)
+	term, reason, ok := lo.lower(spec.Body, 64)
+	if !ok {
+		t.Fatalf("binary64 conditional: not lowered (%s)", reason)
+	}
+	want := "(" + comparison + " ? (" + equality +
+		" ? ((a and 9223372036854775807) xor 9223372036854775808)" +
+		" : fadd64(a, b))" +
+		" : ((b and 9223372036854775807) or (a and 9223372036854775808)))"
+	if got := term.String(); got != want {
+		t.Errorf("binary64 conditional\n  lowered: %s\n  model:   %s", got, want)
+	}
+}
+
+func binary64ComparisonRender(binary32 string) string {
+	return strings.NewReplacer(
+		"2139095040", "9218868437227405312",
+		"8388607", "4503599627370495",
+		"2147483647", "9223372036854775807",
+		" shr 31", " shr 63",
+	).Replace(binary32)
+}
+
 // Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local
 // is lowered once and substituted, a rebinding replaces its term, a call
 // binds the callee's parameters to the lowered arguments and inlines the
@@ -77,6 +217,26 @@ var loweringRenders = []struct {
 var loweringProgramRenders = []struct {
 	program, want string
 }{
+	// Binary64 locals substitute the complete arithmetic tree.
+	{"f: (a, b, c: f64) -> f64 = {\n  t: f64 = a / b\n  (t + c) * b\n}\n", "fmul64(fadd64(fdiv64(a, b), c), b)"},
+	// Reusing a pure local substitutes its complete tree at each use. This
+	// pins value/dependency structure, not runtime sharing or evaluation count.
+	{"f: (a, b: f64) -> f64 = {\n  t: f64 = a * b\n  t + t\n}\n", "fadd64(fmul64(a, b), fmul64(a, b))"},
+	// Binary64 FMA locals substitute their ordered ternary term exactly once.
+	{"f: (a, b, c: f64) -> f64 = {\n  t: f64 = fma(a, b, c)\n  fma(t, b, c)\n}\n", "fma64(fma64(a, b, c), b, c)"},
+	// A pure f32 call (FloatLoweringRefinement.lowerCall): arguments lower in
+	// the caller scope, bind to the callee parameters, and its body inlines.
+	{"g: (x, y: f32) -> f32 = x * y + 1.0\n\nf: (a, b: f32) -> f32 = g(a + b, b)\n", "fadd32(fmul32(fadd32(a, b), b), 1065353216)"},
+	// Exact-f32 locals (FloatLoweringRefinement.lowerWith): declaration and
+	// rebinding substitute the initializer term into the remaining body.
+	{"f: (a: f32) -> f32 = {\n  y: f32 = a + 1.5\n  y * y\n}\n", "fmul32(fadd32(a, 1069547520), fadd32(a, 1069547520))"},
+	{"f: (a: f32) -> f32 = {\n  y: f32 = a\n  y = y + 1.0\n  y * 2.0\n}\n", "fmul32(fadd32(a, 1065353216), 1073741824)"},
+	// A statement conditional assigns one existing f32 local in each arm;
+	// the verifier merges those values with iteTerm before the continuation.
+	{"f: (a, b: f32) -> f32 = {\n  y: f32 = a\n  a < b ? { y = b + 1.0 } | { y = a * 2.0 }\n  y - 3.0\n}\n", "fsub32((((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fadd32(b, 1065353216) : fmul32(a, 1073741824)), 1077936128)"},
+	// Arm bindings are sequential and any finite write set merges pointwise:
+	// each y assignment observes its arm's preceding x assignment.
+	{"f: (a, b: f32) -> f32 = {\n  x: f32 = a\n  y: f32 = b\n  x < y ? {\n    x = y + 1.0\n    y = x * 2.0\n  } | {\n    x = x - 1.0\n    y = y + 3.0\n  }\n  x - y\n}\n", "fsub32((((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fadd32(b, 1065353216) : fsub32(a, 1065353216)), (((((((a and 2139095040) eq 2139095040) and ((a and 8388607) ne 0)) or (((b and 2139095040) eq 2139095040) and ((b and 8388607) ne 0))) xor 1) and (((((a and 2147483647) or (b and 2147483647)) eq 0) xor 1) and ((((a shr 31) and 1) and (((b shr 31) and 1) xor 1)) or (((((a shr 31) and 1) and ((b shr 31) and 1)) and ((a and 2147483647) hi (b and 2147483647))) or (((((a shr 31) and 1) xor 1) and (((b shr 31) and 1) xor 1)) and ((a and 2147483647) lo (b and 2147483647))))))) ? fmul32(fadd32(b, 1065353216), 1073741824) : fadd32(b, 1077936128)))"},
 	{"f: (a, b: u32) -> u32 = {\n  y: u32 = a + b\n  y * y\n}\n", "((a add b) mul (a add b))"},
 	{"f: (a: u32) -> u32 = {\n  y: u32 = a\n  y = y + 1\n  y * 2\n}\n", "((a add 1) mul 2)"},
 	{"f: (a: u32) -> u32 = {\n  y: u8 = u8_trunc_u32(a)\n  u32(y)\n}\n", "(a and 255)"},
@@ -127,6 +287,16 @@ var loweringProgramRenders = []struct {
 	// local gives the same terms.
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 2 {\n    d: u32 = n * 2\n    s = s + d\n    i = i + 1\n  }\n  s\n}\n", "((n mul 2) add (n mul 2))"},
 	{"f: (a, b: u32) -> u32 = {\n  r: u32 = a\n  a < b ? {\n    t: u32 = b - a\n    r = t\n  } | { }\n  r\n}\n", "((a lo b) ? (b sub a) : a)"},
+	// Restoring the two arms of an aggregate-valued conditional preserves
+	// the aggregate place's identity: assignPlace may already hold that
+	// pointer while it lowers the conditional on the assignment's RHS.
+	{"R: type = struct {\n  x: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: a }\n  r = a < b ? { R { x: b } } | { r }\n  r.x\n}\n", "((a lo b) ? b : a)"},
+	// Statements in an aggregate conditional's arms still update locals on
+	// that arm alone; forkLocals merges the side effect on the condition.
+	{"R: type = struct {\n  x: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: a }\n  v: R = a < b ? {\n    r.x = b\n    R { x: b }\n  } | { R { x: a } }\n  r.x + v.x\n}\n", "(((a lo b) ? b : a) add ((a lo b) ? b : a))"},
+	// Nested places are stable too: restoring r while lowering the RHS must
+	// not detach the r.x[0] leaf that the assignment already resolved.
+	{"R: type = struct {\n  x: [1]u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: [a] }\n  r.x[0] = a < b ? { b } | { a }\n  r.x[0]\n}\n", "((a lo b) ? b : a)"},
 	// Data-dependent loops (`whileEvent`): the carried locals stand as the
 	// fresh symbols `loop<index>.<var>` after the loop (`loopEvent`).
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < n {\n    s = s + i\n    i = i + 1\n  }\n  s + i\n}\n", "(loop1.s add loop1.i)"},

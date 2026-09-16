@@ -14,11 +14,28 @@ func TestRV64VerifyFloat(t *testing.T) {
 	if v := rv64Verify(t, decl, "fma(a, x, y)", bind+"  fmadd.d fa0, fa0, fa1, fa2\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("fma against fmadd.d must be proven, got %s: %s", v.Kind, v.Message)
 	}
+	if v := rv64Verify(t, decl, "fma(a, x, y)", bind+"  fmadd.d fa0, fa0, fa2, fa1\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("f64 fma with a permuted addend must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	fused32 := "  bind fa0 = a\n  bind fa1 = b\n  bind fa2 = c\n"
+	if v := rv64Verify(t, "axpy32: (a, b, c: f32) -> f32", "fma(a, b, c)", fused32+"  fmadd.s fa0, fa0, fa1, fa2\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("f32 fma against fmadd.s must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, "axpy32: (a, b, c: f32) -> f32", "fma(a, b, c)", fused32+"  fmadd.s fa0, fa0, fa2, fa1\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("f32 fma with a permuted addend must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
 	if v := rv64Verify(t, decl, "a * x + y", bind+"  fmadd.d fa0, fa0, fa1, fa2\n  ret"); v.Kind != VerdictMismatch {
 		t.Fatalf("contracting a*x + y into fmadd.d must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 	if v := rv64Verify(t, decl, "a * x + y", bind+"  fmul.d fa0, fa0, fa1\n  fadd.d fa0, fa0, fa2\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("fmul.d then fadd.d must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	divide := "divide: (a, b: f32) -> f32"
+	if v := rv64Verify(t, divide, "a / b", "  bind fa0 = a\n  bind fa1 = b\n  fdiv.s fa0, fa0, fa1\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("a / b against fdiv.s must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, divide, "a / b", "  bind fa0 = a\n  bind fa1 = b\n  fdiv.s fa0, fa1, fa0\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("a / b against b / a must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 	if v := rv64Verify(t, decl, "fma(-a, x, -y)", bind+"  fnmadd.d fa0, fa0, fa1, fa2\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("fnmadd.d as fma(-a, x, -y) must be proven, got %s: %s", v.Kind, v.Message)

@@ -50,6 +50,7 @@ func TestCheckerDecisionsMatchLeanTransliteration(t *testing.T) {
 		{"span element under a constant below the minimum", 0, nil, span(8, false, true, 4, 1), nil, imm(4), 8},
 		{"span element above the minimum", 0, nil, span(8, false, true, 4, 1), nil, imm(5), 8},
 		{"span lanes under a slack guard", 0, nil, span(1, true, true, 16, 1), nil, reg(1, 16, true), 1},
+		{"four u64 span cells under a slack guard", 0, nil, span(8, true, true, 4, 1), nil, reg(1, 4, true), 8},
 		{"span of another element size", 0, nil, span(4, true, false, 0, 1), nil, reg(1, 0, false), 8},
 		{"table of thirty-two bytes", 0, nil, nil, &region{size: 32}, imm(32), 1},
 		{"table read past its size", 0, nil, nil, &region{size: 32}, imm(33), 1},
@@ -81,6 +82,10 @@ func TestCheckerDecisionsMatchLeanTransliteration(t *testing.T) {
 		{"a store through a read-only copy", region{size: 12, writable: false}, true, 0, 4, nil},
 		{"an indexed byte under a guard that fits", region{size: 32, writable: false}, false, 0, 1, ptrIdx(imm(32))},
 		{"an indexed word under a guard that does not fit", region{size: 12, writable: true}, false, 0, 4, ptrIdx(imm(4))},
+		{"a pair store over the first two of four u64 cells", region{size: 32, writable: true}, true, 0, 16, nil},
+		{"a pair store over the last two of four u64 cells", region{size: 32, writable: true}, true, 16, 16, nil},
+		{"a pair store past four u64 cells", region{size: 32, writable: true}, true, 24, 16, nil},
+		{"a pair store through a read-only u64 view", region{size: 32, writable: false}, true, 0, 16, nil},
 	} {
 		got := regionAdmits(tc.extent, tc.isStore, tc.off, tc.size, tc.index)
 		line := fmt.Sprintf("example : regionAdmits ⟨%d, %v⟩ %v %d %d %s = %v := by decide", tc.extent.size, tc.extent.writable, tc.isStore, tc.off, tc.size, renderOptIdx(tc.index), got)

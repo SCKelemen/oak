@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math/bits"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -190,14 +191,24 @@ var rv64ALUImm = map[string]string{"addi": "add", "andi": "and", "ori": "or", "x
 // Oak.IntegerDivision), so an RV64 unit and a NEON unit decide against
 // one term.
 func rv64ALUTerm(op string, l, r *term, width int) *term {
+	// An unsigned quotient or remainder by a constant power of two is the
+	// shift or the mask (the Oak lowering's spelling), not the
+	// uninterpreted division.
+	powerOfTwo := r.kind == termConst && r.value != 0 && r.value&(r.value-1) == 0
 	switch op {
 	case "rv.div":
 		return floatTerm("rv.sdiv", width, l, r)
 	case "rv.divu":
+		if powerOfTwo {
+			return binaryTerm("shr", l, constTerm(uint64(bits.TrailingZeros64(r.value)), width))
+		}
 		return floatTerm("rv.udiv", width, l, r)
 	case "rv.rem":
 		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.sdiv", width, l, r), r))
 	case "rv.remu":
+		if powerOfTwo {
+			return binaryTerm("and", l, constTerm(r.value-1, width))
+		}
 		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.udiv", width, l, r), r))
 	}
 	return binaryTerm(op, l, r)

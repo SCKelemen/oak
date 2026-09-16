@@ -20,7 +20,18 @@ distributive lattice of `Oak.TypeLattice`:
   type-level procedure decides the type-level ordering.
 
 The Go implementation folds n-ary unions/intersections; the model uses their
-binary form, which agrees by associativity of join/meet. -/
+binary form, which agrees by associativity of join/meet.  The model's
+`DecidableEq α` premise is discharged in production by the separate
+`latticeAtomIdentical` decision, not by `Type.Equals`: the latter also answers
+some compatibility questions and is not atom identity.  The Go
+tests check the production atom decision's equivalence laws over every current
+type constructor and pin the two compatibility shapes that originally exposed
+the distinction.
+
+`typechecker/lattice_refinement_test.go` renders the live Go normalization
+and subtype decisions as the equations at the end of this module.  Lean checks
+the equations by reduction, and the Go test requires their exact text, pinning
+the covered transliteration cases against silent implementation drift. -/
 
 variable {α : Type} [DecidableEq α]
 
@@ -213,5 +224,38 @@ theorem isSubtype_complete {t1 t2 : LatticeTy α}
   intro x hx
   have := hle x ((dnfOf_denotes V t1 x).mp hx)
   exact (dnfOf_denotes V t2 x).mpr this
+
+/-! ## Normalizations and decisions rendered by the Go checker
+
+These exact equations are generated from the production `latticeDNFOf` and
+`IsSubtype` procedures by `typechecker/lattice_refinement_test.go`.  The corpus
+covers every lattice constructor, identities, n-ary folds, duplicate atoms,
+distribution, and both accepted and rejected subtype decisions. -/
+
+example : dnfOf (.never : LatticeTy String) = [] := by decide
+example : dnfOf (.any : LatticeTy String) = [[]] := by decide
+example : dnfOf ((.atom "p") : LatticeTy String) = [["p"]] := by decide
+example : dnfOf ((.union (.atom "p") (.atom "q")) : LatticeTy String) = [["p"], ["q"]] := by decide
+example : dnfOf ((.inter (.atom "p") (.atom "q")) : LatticeTy String) = [["p", "q"]] := by decide
+example : dnfOf ((.inter (.union (.atom "p") (.atom "q")) (.union (.atom "p") (.atom "r"))) : LatticeTy String) = [["p"], ["p", "r"], ["q", "p"], ["q", "r"]] := by decide
+example : dnfOf ((.union (.atom "p") (.inter (.atom "q") (.atom "r"))) : LatticeTy String) = [["p"], ["q", "r"]] := by decide
+example : dnfOf ((.inter (.inter (.atom "p") (.atom "p")) (.atom "q")) : LatticeTy String) = [["p", "q"]] := by decide
+example : dnfOf ((.union (.union (.atom "p") (.atom "q")) (.atom "r")) : LatticeTy String) = [["p"], ["q"], ["r"]] := by decide
+example : dnfOf ((.inter (.inter (.atom "p") (.atom "q")) (.atom "r")) : LatticeTy String) = [["p", "q", "r"]] := by decide
+
+example : decide (dnfOf (.never : LatticeTy String)) (dnfOf ((.atom "p") : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.atom "p") : LatticeTy String)) (dnfOf (.any : LatticeTy String)) = true := by decide
+example : decide (dnfOf (.any : LatticeTy String)) (dnfOf ((.atom "p") : LatticeTy String)) = false := by decide
+example : decide (dnfOf ((.atom "p") : LatticeTy String)) (dnfOf (.never : LatticeTy String)) = false := by decide
+example : decide (dnfOf ((.atom "p") : LatticeTy String)) (dnfOf ((.atom "p") : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.atom "p") : LatticeTy String)) (dnfOf ((.union (.atom "p") (.atom "q")) : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.union (.atom "p") (.atom "q")) : LatticeTy String)) (dnfOf ((.atom "p") : LatticeTy String)) = false := by decide
+example : decide (dnfOf ((.inter (.atom "p") (.atom "q")) : LatticeTy String)) (dnfOf ((.atom "p") : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.atom "p") : LatticeTy String)) (dnfOf ((.inter (.atom "p") (.atom "q")) : LatticeTy String)) = false := by decide
+example : decide (dnfOf ((.inter (.union (.atom "p") (.atom "q")) (.union (.atom "p") (.atom "r"))) : LatticeTy String)) (dnfOf ((.union (.atom "p") (.inter (.atom "q") (.atom "r"))) : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.union (.atom "p") (.inter (.atom "q") (.atom "r"))) : LatticeTy String)) (dnfOf ((.inter (.union (.atom "p") (.atom "q")) (.union (.atom "p") (.atom "r"))) : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.inter (.inter (.atom "p") (.atom "q")) (.atom "r")) : LatticeTy String)) (dnfOf ((.inter (.atom "p") (.atom "q")) : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.union (.atom "p") (.atom "q")) : LatticeTy String)) (dnfOf ((.union (.union (.atom "p") (.atom "q")) (.atom "r")) : LatticeTy String)) = true := by decide
+example : decide (dnfOf ((.union (.union (.atom "p") (.atom "q")) (.atom "r")) : LatticeTy String)) (dnfOf ((.union (.atom "p") (.atom "q")) : LatticeTy String)) = false := by decide
 
 end Oak.TypeLatticeRefinement

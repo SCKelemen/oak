@@ -16,6 +16,7 @@ import (
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -72,6 +73,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	verified, fromCache := 0, 0 // the verdict cache's tally, reported once
 	constants := constantGlobals(root, tc)
 	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
+	optIRPlanner := newOptIRCallEffectPlanner(root, tc, checkedOptIRGlobals(root, tc))
 	tables, data := nativeGlobalArrays(root)
 	// The verdict cache (compiler/verdict_cache.go), the optimization
 	// report (opt.Report; printed under -opt-report or OAK_OPT_REPORT), and
@@ -107,6 +109,15 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			result.Fallbacks[fn.Name.Value] = reason
 			continue
 		}
+		// OAK_NATIVE_ONLY (a debugging aid): the functions named, and only
+		// those, lower natively; the rest stay with the C backend, so a
+		// native-against-C disagreement bisects to one function.
+		if only := nativeOnly(); only != nil && !only[fn.Name.Value] && !only[nativeUnitName(fn.Name.Value)] {
+			reason := fmt.Sprintf("OAK_NATIVE_ONLY names other functions; this one is %s", fn.Name.Value)
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
+			result.Fallbacks[fn.Name.Value] = reason
+			continue
+		}
 		// A read of a constant top-level scalar (the OS pilot's N1:
 		// `page_size`, `entries`) reaches the backend and the verifier as
 		// its folded value (constants); the C emitter keeps the body and
@@ -122,6 +133,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
+		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
+			applyNativeOptIRCandidate(&lane, nativeOptIRCandidate(source, optIRPlanner, tc, globals))
+		}
 		// The candidate search (compiler/native_search.go, package opt;
 		// docs/notes/optimizer-search-2026-09.md): the plain lowering is the
 		// identity candidate, the lane's transforms — check elision, strength
@@ -171,6 +185,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 		}
 		verdict := driver.verdicts[asmFn]
+		if changed := nativegen.OptIRLowered(asmFn); changed > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: optimized OptIR selected (%d generic SSA change(s), proven)", fn.Name.Value, changed)))
+		}
 		if kept := nativegen.VectorHomes(asmFn); kept > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
 		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
@@ -244,6 +261,190 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	result.Report = report
 	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
 	return result
+}
+
+// nativeOptIRCandidate projects and runs the exact artifact-DAG middle end
+// used by Compilation.OptIR. Unsupported functions and any failed analysis
+// simply have no candidate: the direct native lowering remains the identity.
+// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, LICM, checked region DSE, or
+// checked region-load forwarding is proposed, so the search never pays to
+// validate an alternate spelling with no generic optimization in it.
+type nativeOptIRPlan struct {
+	cfg              *optir.CFG
+	changes          int
+	fingerprint      string
+	metadata         *optir.RegionMemoryMetadata
+	memorySSA        *optir.RegionMemorySSA
+	memoryAuthority  *optir.CheckedMemoryAuthority
+	memoryProjection *optir.CheckedMemoryProjection
+	memoryCallCert   *optir.CheckedMemoryCallCertificate
+	observability    optir.RegionMemoryObservability
+	bindings         map[optir.RegionID]nativegen.OptIRRegionGlobal
+}
+
+func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
+	if lane == nil || plan.cfg == nil {
+		return
+	}
+	lane.OptIR = plan.cfg
+	lane.OptIRChanges = plan.changes
+	lane.OptIRFingerprint = plan.fingerprint
+	lane.OptIRMemory = plan.metadata
+	lane.OptIRMemorySSA = plan.memorySSA
+	lane.OptIRMemoryAuthority = plan.memoryAuthority
+	lane.OptIRMemoryProjection = plan.memoryProjection
+	lane.OptIRMemoryCallCertificate = plan.memoryCallCert
+	lane.OptIRMemoryObservability = plan.observability
+	lane.OptIRRegionGlobals = plan.bindings
+}
+
+func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRCallEffectPlanner, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
+	if planner == nil {
+		return nativeOptIRPlan{}
+	}
+	checked, err := planner.lowerRoot(function)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	authority, memoryAuthority, cfg := checked.facts, checked.memory, checked.cfg
+	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
+		return nativeOptIRPlan{}
+	}
+	analyses, err := runOptIRAnalysisGraphWithMemory(cfg, memoryAuthority)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := verifyOptIRAnalysisFacts(authority, analyses); err != nil {
+		return nativeOptIRPlan{}
+	}
+	changes := analyses.sccpSimplification.Changes() + analyses.simplification.Changes() + analyses.loopMotion.HoistedOperations
+	optimized := analyses.loopInvariant
+	if analyses.hasMemory {
+		changes += len(analyses.deadStoreElimination.Removed)
+		changes += analyses.regionLoadForwarding.Changes()
+		changes += analyses.memoryCleanup.Changes()
+		optimized = analyses.memoryCleanup.CFG
+	}
+	if changes == 0 {
+		return nativeOptIRPlan{}
+	}
+	if !analyses.hasMemory {
+		fingerprint, err := optir.FingerprintCFG(optimized)
+		if err != nil {
+			return nativeOptIRPlan{}
+		}
+		return nativeOptIRPlan{cfg: &optimized, changes: changes, fingerprint: fingerprint}
+	}
+	if err := optir.VerifyDeadStoreElimination(
+		analyses.loopInvariant,
+		analyses.memoryProjection.Metadata,
+		analyses.memorySSA,
+		analyses.memoryProjection.Observability,
+		analyses.memoryLiveness,
+		analyses.deadStores,
+		analyses.deadStoreMetadata,
+		analyses.deadStoreElimination,
+	); err != nil {
+		return nativeOptIRPlan{}
+	}
+	if !reflect.DeepEqual(analyses.postDSEProjection.Metadata, analyses.deadStoreMetadata) ||
+		!reflect.DeepEqual(analyses.postDSEProjection.Observability, analyses.memoryProjection.Observability) {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyCheckedMemoryProjection(analyses.deadStores, memoryAuthority, analyses.postDSEProjection); err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyRegionLoadForwarding(
+		analyses.deadStores,
+		analyses.postDSEProjection.Metadata,
+		analyses.postDSEMemorySSA,
+		analyses.regionLoads,
+		analyses.regionLoadMetadata,
+		analyses.regionLoadForwarding,
+	); err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := verifyOptIRMemoryCleanup(analyses.regionLoads, memoryAuthority, analyses.memoryCleanup); err != nil {
+		return nativeOptIRPlan{}
+	}
+	projection, err := optir.ProjectCheckedMemory(optimized, memoryAuthority)
+	if err != nil || !reflect.DeepEqual(projection, analyses.memoryCleanup.Projection) {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyCheckedMemoryProjection(optimized, memoryAuthority, projection); err != nil {
+		return nativeOptIRPlan{}
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(optimized, projection.Metadata)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyRegionMemorySSA(optimized, projection.Metadata, memorySSA); err != nil {
+		return nativeOptIRPlan{}
+	}
+	if !reflect.DeepEqual(memorySSA, analyses.memoryCleanup.MemorySSA) {
+		return nativeOptIRPlan{}
+	}
+	// SCCP can remove every memory-bearing path. The replay above authenticates
+	// that removal; the surviving scalar/call CFG uses the ordinary selector.
+	if len(projection.Metadata.Regions) == 0 {
+		fingerprint, err := optir.FingerprintCFG(optimized)
+		if err != nil {
+			return nativeOptIRPlan{}
+		}
+		return nativeOptIRPlan{cfg: &optimized, changes: changes, fingerprint: fingerprint}
+	}
+	var certificate *optir.CheckedMemoryCallCertificate
+	activeCalls, err := activeOptIRMemoryCalls(optimized, memoryAuthority)
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	var fingerprint string
+	if len(activeCalls) == 0 {
+		fingerprint, err = optir.FingerprintRegionMemoryInput(optimized, projection.Metadata, projection.Observability)
+	} else {
+		checkedCertificate, certificateErr := planner.memoryCallCertificate(function.Name.Value, optimized, memoryAuthority)
+		if certificateErr != nil {
+			return nativeOptIRPlan{}
+		}
+		fingerprint, err = optir.FingerprintCertifiedRegionMemoryInput(
+			optimized, projection.Metadata, projection.Observability,
+			function.Name.Value, memoryAuthority, checkedCertificate,
+		)
+		certificate = &checkedCertificate
+	}
+	if err != nil {
+		return nativeOptIRPlan{}
+	}
+	bindings, ok := nativeOptIRRegionBindings(projection.Metadata, tc, globals)
+	if !ok {
+		return nativeOptIRPlan{}
+	}
+	metadata := projection.Metadata
+	return nativeOptIRPlan{
+		cfg: &optimized, changes: changes, fingerprint: fingerprint,
+		metadata: &metadata, memorySSA: &memorySSA, memoryAuthority: &memoryAuthority, memoryProjection: &projection,
+		memoryCallCert: certificate, observability: projection.Observability, bindings: bindings,
+	}
+}
+
+func nativeOptIRRegionBindings(metadata optir.RegionMemoryMetadata, tc *typechecker.TypeChecker, globals map[string]asm.Global) (map[optir.RegionID]nativegen.OptIRRegionGlobal, bool) {
+	if tc == nil {
+		return nil, false
+	}
+	regions := tc.ScalarGlobalRegions()
+	bindings := make(map[optir.RegionID]nativegen.OptIRRegionGlobal, len(metadata.Regions))
+	for _, regionID := range metadata.Regions {
+		region, exists := regions[string(regionID)]
+		if !exists {
+			return nil, false
+		}
+		global, exists := globals[region.Name]
+		if !exists || global.Type != region.Type {
+			return nil, false
+		}
+		bindings[regionID] = nativegen.OptIRRegionGlobal{Symbol: region.Name, Global: global}
+	}
+	return bindings, true
 }
 
 // nativeLowering is what the native backend made of a program: the
@@ -577,4 +778,36 @@ func describeRewrites(sites []nativegen.RewriteSite) string {
 		parts = append(parts, name+" "+strings.Join(kinds, ", "))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// nativeOnly reads OAK_NATIVE_ONLY: nil when unset, else the set of
+// function names (comma-separated, spelled as the source names them or
+// as their native units are) that lower natively.
+func nativeOnly() map[string]bool {
+	raw := os.Getenv("OAK_NATIVE_ONLY")
+	if raw == "" {
+		return nil
+	}
+	only := map[string]bool{}
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			only[name] = true
+		}
+	}
+	return only
+}
+
+// nativeUnitName spells a source function name as its native unit is
+// spelled in the diagnostics: a module's dot becomes two underscores and
+// an underscore in the name becomes `_u`.
+func nativeUnitName(name string) string {
+	module, local := "", name
+	if k := strings.LastIndex(name, "."); k >= 0 {
+		module, local = name[:k], name[k+1:]
+	}
+	local = strings.ReplaceAll(local, "_", "_u")
+	if module == "" {
+		return local
+	}
+	return module + "__" + local
 }

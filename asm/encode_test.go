@@ -115,7 +115,7 @@ var encoderSamples = []string{
 	"prfm pldl1keep, [x0]", "prfm pstl2strm, [x0, #8]", "prfm #5, [x0]", "prfum pldl1keep, [x0, #-8]",
 	"br x1", "blr x2", "ret", "ret x30", "eret", "nop", "wfe", "wfi", "sev", "sevl", "yield", "csdb", "esb", "hint #7", "clrex", "brk #1", "svc #0", "hvc #3", "smc #2",
 	"dmb ish", "dmb sy", "dsb sy", "dsb ishst", "dsb #4", "isb", "isb sy", "ssbb", "pssbb", "sb", "dgh", "bti", "bti c", "bti j", "bti jc", "wfet x0", "wfit x1",
-	"dc civac, x0", "dc zva, x1", "ic iallu", "ic ivau, x0", "tlbi vmalle1is", "tlbi vae1is, x0", "at s1e1r, x0", "cfp rctx, x0", "cpp rctx, x0", "dvp rctx, x0",
+	"dc civac, x0", "dc zva, x1", "ic iallu", "ic ivau, x0", "tlbi vmalle1is", "tlbi vmalls12e1is", "tlbi vae1is, x0", "at s1e1r, x0", "cfp rctx, x0", "cpp rctx, x0", "dvp rctx, x0",
 	"mrs x0, cntvct_el0", "mrs x0, s3_3_c14_c0_2", "msr cntvoff_el2, x0", "msr vbar_el1, x0", "mrs x0, nzcv", "msr nzcv, x0", "msr daifset, #2", "msr daifclr, #3", "msr spsel, #1",
 	"crc32b w0, w1, w2", "crc32x w0, w1, x2", "crc32cw w0, w1, w2", "cfinv", "setf8 w0", "setf16 w1", "rmif x0, #3, #15", "axflag", "xaflag",
 	"pacia x0, x1", "pacib x0, sp", "autda x0, x1", "autdb x0, sp", "paciza x0", "autizb x1", "xpaci x0", "xpacd x1", "paciasp", "autiasp", "paciaz", "autibz", "pacia1716", "autib1716", "xpaclri", "pacga x0, x1, x2", "pacga x0, x1, sp",

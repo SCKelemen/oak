@@ -1,0 +1,1850 @@
+package semir
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+	"unicode"
+	"unicode/utf8"
+)
+
+const (
+	catLispMaxBytes = 8 << 20
+	catLispMaxDepth = 256
+	catLispMaxNodes = 250_000
+)
+
+var errCATLispTooLarge = errors.New("CAT parser output exceeds the configured limit")
+
+// These hashes cover the normalized AST emitted by Herdtools7's own
+// cat2lisp parser at the revision in spec/litmus/aarch64/HERDTOOLS7_COMMIT.
+// They intentionally certify only the relation definitions used by Oak's
+// restricted projection, not the complete semantics of the Arm CAT model.
+var pinnedAArch64ProjectionHashes = map[string]string{
+	"dmb.full":            "7f0e43f97632346b01cfb634eb6d58a9ceb4a51dabf60aa378f2a0b72ea76555",
+	"dmb.ld":              "9f29bd95706acf92340db7085c5dd409e0d2c4458c416557d2e12cb9290d5f9d",
+	"dsb.full":            "4fdbe77c686677c1c1a133ba17b7a5e6930bdf3c2f87563976cce7ec47ef3fdf",
+	"dsb.ld":              "2c9e7a6a7a2e46caf783099840744699b3da701c6739b1e3e10b05a84cff35e5",
+	"DSB-ob":              "2c2d1203a9426dcbce587d994668dd5996870cd6dae02a9c9ae08937fec08abb",
+	"IFB":                 "a58fe8df59d374ab93bbd99a0f8c531cecf0f4a963faba7583715c6291c33e8f",
+	"IFB-ob":              "fb843e22617036291fa424a8b744854f5980d51c21502d12a8ebfe1ef05253f9",
+	"BBM":                 "a62ebb7ec51abaaa8cf711db47c5735306743a417163e0cf5561c003aa57bd35",
+	"TLBUncacheableTTD":   "c11e80b07e965db086f8bfabf9b96a07b3c5d69db86f9af0265b86833653886e",
+	"TLBCacheableTTD":     "3c89334e50810b29eae42759ad550f7b049862eb8ee41aad170038ec604ce1a6",
+	"TTD-update-BBM-cand": "8c1a0c4195c2b6fec86fe9ba7afea63a1b35cfe9915c1d325d791baa04a08d16",
+	"TTD-update-needsBBM": "5c7a60eeb50c5d0626fa3972fe5fcb4a2b559f17c96af12305d4ff1ee1099aa5",
+	"bob":                 "425be3474246aec01d5c37892e91a55d8d7b9ed18926e8591d87b365bb4bc3c6",
+	"lob":                 "ee18823f317c169ed24fb10a8f74cf64a74cc424c9c63c27cb2366378381a5d2",
+	"local-hw-reqs":       "f06d99cb47fa5b0c7d38139a5df0f26e6951925b29c9b79534aba9a98effd8d0",
+	"hw-reqs":             "5de8d9ab52b47cbfd5541a6c3913ac466b7fb084a8fe65ccc4253fa10848ce97",
+	"Exp-obs":             "52c8a651e8479a19c224dfe10577b96a3483e4775546d717e548543875252419",
+	"obs":                 "547031d91767ede427f6f42ba64fdd6dd6800d2cbb4e9eff5f072ff41371199d",
+	"ob":                  "60f3e529e30a548fa078a31c7feb2dc1d378b6283123ee3921434938413b5936",
+}
+
+var pinnedAArch64BobArmHashes = []string{
+	"83764f28247fa8eab7d6a826595520b8e49ed7b71fc0ccec797f9a1595f887cb",
+	"5139573a29ccf13fd38db712c7055764fc4701fe7aa9fac6ae23c6ea94c96dbe",
+	"51f25b7f9f6a6abbe79fb1d24df6d6fc5449f0c99d60101a0b56a76f46cce625",
+	"58ba1d284d6da0510ee087f3685bccaa88476a313e82cdf676b0b3e2b904401a",
+	"c58e94dbab846a1996d298889dc3bb92a70fd002af324356c82fa4bfbc1883e7",
+}
+
+const pinnedAArch64ExternalIrreflexiveHash = "0d3935d123120064a5f8c4cb229df1eb5e8df41fe0bd0adb56d62d27a7c4a6cf"
+
+const pinnedAArch64DSBFullArmHash = "5591f902cc9e242fb058023293d939a414688205aab118ca61d6994814c13e98"
+const pinnedAArch64IFBControlArmHash = "66f0c45e72f09b9c2d28952a625953ef422f4e40d470b5a1377a8874e5f41527"
+const pinnedAArch64IFBDsbArmHash = "dc9583eacb2c1ff264fb746e8b85e0910fecc2b67e29374c5b180d65c4103b1e"
+const pinnedAArch64BBMWarningHash = "316f717cf3080a7fd9ea40770b905cd9bab389379b6e7e224ce867b3b84c918b"
+
+type catLispNode struct {
+	atom   string
+	quoted bool
+	list   []*catLispNode
+}
+
+func (n *catLispNode) isList() bool { return n != nil && n.list != nil }
+
+func (n *catLispNode) canonical() string {
+	if !n.isList() {
+		if n.quoted {
+			return strconv.Quote(n.atom)
+		}
+		return n.atom
+	}
+	var result strings.Builder
+	result.WriteByte('(')
+	for index, child := range n.list {
+		if index != 0 {
+			result.WriteByte(' ')
+		}
+		result.WriteString(child.canonical())
+	}
+	result.WriteByte(')')
+	return result.String()
+}
+
+func (n *catLispNode) clone() *catLispNode {
+	if n == nil {
+		return nil
+	}
+	copyNode := &catLispNode{atom: n.atom, quoted: n.quoted}
+	if n.isList() {
+		copyNode.list = make([]*catLispNode, len(n.list))
+		for index, child := range n.list {
+			copyNode.list[index] = child.clone()
+		}
+	}
+	return copyNode
+}
+
+type catLispParser struct {
+	input []byte
+	pos   int
+	nodes int
+}
+
+func parseCATLisp(input []byte) (*catLispNode, error) {
+	if len(input) > catLispMaxBytes {
+		return nil, errCATLispTooLarge
+	}
+	parser := catLispParser{input: input}
+	parser.skipSpace()
+	if parser.pos == len(parser.input) {
+		return nil, errors.New("empty CAT parser output")
+	}
+	root, err := parser.parseNode(0)
+	if err != nil {
+		return nil, err
+	}
+	parser.skipSpace()
+	if parser.pos != len(parser.input) {
+		return nil, fmt.Errorf("trailing CAT parser output at byte %d", parser.pos)
+	}
+	if !root.isList() {
+		return nil, errors.New("CAT parser output root is not a list")
+	}
+	return root, nil
+}
+
+func (p *catLispParser) parseNode(depth int) (*catLispNode, error) {
+	if depth > catLispMaxDepth {
+		return nil, fmt.Errorf("CAT parser output exceeds depth %d", catLispMaxDepth)
+	}
+	if p.nodes >= catLispMaxNodes {
+		return nil, fmt.Errorf("CAT parser output exceeds %d nodes", catLispMaxNodes)
+	}
+	p.nodes++
+	if p.pos >= len(p.input) {
+		return nil, errors.New("unexpected end of CAT parser output")
+	}
+	switch p.input[p.pos] {
+	case '(':
+		p.pos++
+		node := &catLispNode{list: []*catLispNode{}}
+		for {
+			p.skipSpace()
+			if p.pos >= len(p.input) {
+				return nil, errors.New("unterminated list in CAT parser output")
+			}
+			if p.input[p.pos] == ')' {
+				p.pos++
+				return node, nil
+			}
+			child, err := p.parseNode(depth + 1)
+			if err != nil {
+				return nil, err
+			}
+			node.list = append(node.list, child)
+		}
+	case ')':
+		return nil, fmt.Errorf("unexpected ')' at byte %d", p.pos)
+	case '"':
+		start := p.pos
+		p.pos++
+		escaped := false
+		for p.pos < len(p.input) {
+			current := p.input[p.pos]
+			p.pos++
+			if escaped {
+				escaped = false
+				continue
+			}
+			if current == '\\' {
+				escaped = true
+				continue
+			}
+			if current == '"' {
+				decoded, err := strconv.Unquote(string(p.input[start:p.pos]))
+				if err != nil {
+					return nil, fmt.Errorf("decode CAT parser string at byte %d: %w", start, err)
+				}
+				return &catLispNode{atom: decoded, quoted: true}, nil
+			}
+		}
+		return nil, fmt.Errorf("unterminated string at byte %d", start)
+	default:
+		start := p.pos
+		for p.pos < len(p.input) {
+			current := p.input[p.pos]
+			if current == '(' || current == ')' || unicode.IsSpace(rune(current)) {
+				break
+			}
+			p.pos++
+		}
+		if start == p.pos {
+			return nil, fmt.Errorf("invalid CAT parser token at byte %d", start)
+		}
+		return &catLispNode{atom: string(p.input[start:p.pos])}, nil
+	}
+}
+
+func (p *catLispParser) skipSpace() {
+	for p.pos < len(p.input) && unicode.IsSpace(rune(p.input[p.pos])) {
+		p.pos++
+	}
+}
+
+type cappedCATBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *cappedCATBuffer) Write(data []byte) (int, error) {
+	if len(data) > b.limit-b.Len() {
+		return 0, errCATLispTooLarge
+	}
+	return b.Buffer.Write(data)
+}
+
+func parsePinnedAArch64CAT(cat2lisp, model, libdir string) (*catLispNode, error) {
+	stdout := cappedCATBuffer{limit: catLispMaxBytes}
+	stderr := cappedCATBuffer{limit: 1 << 20}
+	command := exec.Command(cat2lisp, "-set-libdir", libdir, model)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("cat2lisp failed: %w\n%s", err, stderr.String())
+	}
+	return parseCATLisp(stdout.Bytes())
+}
+
+type pinnedCATBlob struct {
+	mode string
+	oid  string
+}
+
+func pinnedCATBlobIDs(checkout, revision string) (map[string]pinnedCATBlob, error) {
+	command := exec.Command("git", "-C", checkout, "ls-tree", "-r", revision, "--", "herd/libdir")
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("list pinned CAT blobs: %w", err)
+	}
+	result := make(map[string]pinnedCATBlob)
+	for lineNumber, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 4 || fields[1] != "blob" {
+			return nil, fmt.Errorf("parse ls-tree line %d: %q", lineNumber+1, line)
+		}
+		path := fields[3]
+		if !strings.HasPrefix(path, "herd/libdir/") || !strings.HasSuffix(path, ".cat") {
+			continue
+		}
+		result[path] = pinnedCATBlob{mode: fields[0], oid: fields[2]}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("pinned revision contains no herd/libdir CAT files")
+	}
+	return result, nil
+}
+
+func readCATWorktreeBytes(path, mode string) ([]byte, error) {
+	if mode == "120000" {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(target), nil
+	}
+	return os.ReadFile(path)
+}
+
+func verifyPinnedCATSourceBytes(checkout, revision string) error {
+	expected, err := pinnedCATBlobIDs(checkout, revision)
+	if err != nil {
+		return err
+	}
+	for path, want := range expected {
+		absolute := filepath.Join(checkout, filepath.FromSlash(path))
+		actual, err := readCATWorktreeBytes(absolute, want.mode)
+		if err != nil {
+			return fmt.Errorf("read pinned CAT source %s: %w", path, err)
+		}
+		command := exec.Command("git", "-C", checkout, "cat-file", "blob", want.oid)
+		pinned, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("read pinned CAT blob %s for %s: %w", want.oid, path, err)
+		}
+		if !bytes.Equal(actual, pinned) {
+			return fmt.Errorf("CAT source %s does not byte-match pinned blob %s", path, want.oid)
+		}
+	}
+	libdir := filepath.Join(checkout, "herd", "libdir")
+	return filepath.WalkDir(libdir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".cat") {
+			return nil
+		}
+		relative, err := filepath.Rel(checkout, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if _, ok := expected[relative]; !ok {
+			return fmt.Errorf("untracked CAT source can affect include resolution: %s", relative)
+		}
+		return nil
+	})
+}
+
+func firstAtom(node *catLispNode) string {
+	if node == nil || !node.isList() || len(node.list) == 0 || node.list[0].isList() {
+		return ""
+	}
+	return node.list[0].atom
+}
+
+func bindingFromNode(node *catLispNode) (string, *catLispNode, bool) {
+	if node == nil || !node.isList() {
+		return "", nil, false
+	}
+	var name string
+	var expression *catLispNode
+	for _, child := range node.list {
+		if firstAtom(child) == "cat::pat" && len(child.list) == 3 &&
+			child.list[1].atom == ":pvar" && child.list[2].quoted {
+			name = child.list[2].atom
+		}
+		if firstAtom(child) == "cat::exp" && len(child.list) >= 2 {
+			expression = &catLispNode{list: child.list[1:]}
+		}
+	}
+	return name, expression, name != "" && expression != nil
+}
+
+func collectBindings(node *catLispNode, result map[string][]*catLispNode) {
+	if name, expression, ok := bindingFromNode(node); ok {
+		result[name] = append(result[name], expression)
+	}
+	if node != nil && node.isList() {
+		for _, child := range node.list {
+			collectBindings(child, result)
+		}
+	}
+}
+
+func uniqueCATDefinition(bindings map[string][]*catLispNode, name string) (*catLispNode, error) {
+	definitions := bindings[name]
+	if len(definitions) == 0 {
+		return nil, fmt.Errorf("expanded CAT AST has no %q definition", name)
+	}
+	canonical := definitions[0].canonical()
+	for _, definition := range definitions[1:] {
+		if definition.canonical() != canonical {
+			return nil, fmt.Errorf("expanded CAT AST has conflicting %q definitions", name)
+		}
+	}
+	return definitions[len(definitions)-1], nil
+}
+
+func expressionHash(node *catLispNode) string {
+	hash := sha256.Sum256([]byte(node.canonical()))
+	return fmt.Sprintf("%x", hash[:])
+}
+
+func catVariable(node *catLispNode, name string) bool {
+	return node != nil && node.isList() && len(node.list) == 3 &&
+		node.list[0].atom == ":e_var" && node.list[1].atom == "nil" &&
+		node.list[2].quoted && node.list[2].atom == name
+}
+
+func catOperator(node *catLispNode, operator string) ([]*catLispNode, bool) {
+	if node == nil || !node.isList() || len(node.list) != 4 ||
+		node.list[0].atom != ":e_op" || node.list[1].atom != "nil" ||
+		node.list[2].atom != operator || !node.list[3].isList() {
+		return nil, false
+	}
+	return node.list[3].list, true
+}
+
+func catUnaryOperator(node *catLispNode, operator string) (*catLispNode, bool) {
+	if node == nil || !node.isList() || len(node.list) != 4 ||
+		node.list[0].atom != ":e_op1" || node.list[1].atom != "nil" ||
+		node.list[2].atom != operator {
+		return nil, false
+	}
+	return node.list[3], true
+}
+
+func containsCATVariable(node *catLispNode, name string) bool {
+	if catVariable(node, name) {
+		return true
+	}
+	if node != nil && node.isList() {
+		for index := 0; index+2 < len(node.list); index++ {
+			if node.list[index].atom == ":e_var" && node.list[index+1].atom == "nil" &&
+				node.list[index+2].quoted && node.list[index+2].atom == name {
+				return true
+			}
+		}
+		for _, child := range node.list {
+			if containsCATVariable(child, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsCATAtom(node *catLispNode, atom string) bool {
+	if node == nil {
+		return false
+	}
+	if !node.isList() {
+		return node.atom == atom
+	}
+	for _, child := range node.list {
+		if containsCATAtom(child, atom) {
+			return true
+		}
+	}
+	return false
+}
+
+func directUnionContainsVariable(node *catLispNode, name string) bool {
+	operands, ok := catOperator(node, ":union")
+	if !ok {
+		return false
+	}
+	for _, operand := range operands {
+		if catVariable(operand, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsIntersection(node *catLispNode, left, right string) bool {
+	if operands, ok := catOperator(node, ":inter"); ok && len(operands) == 2 &&
+		catVariable(operands[0], left) && catVariable(operands[1], right) {
+		return true
+	}
+	if node != nil && node.isList() {
+		for _, child := range node.list {
+			if containsIntersection(child, left, right) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsSequence(node *catLispNode, predicate func([]*catLispNode) bool) bool {
+	if operands, ok := catOperator(node, ":seq"); ok && predicate(operands) {
+		return true
+	}
+	if node != nil && node.isList() {
+		for _, child := range node.list {
+			if containsSequence(child, predicate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func catSetFilter(node *catLispNode, name string) bool {
+	set, ok := catUnaryOperator(node, ":toid")
+	return ok && catVariable(set, name)
+}
+
+func catOperatorVariables(node *catLispNode, operator string, names ...string) bool {
+	operands, ok := catOperator(node, operator)
+	if !ok || len(operands) != len(names) {
+		return false
+	}
+	for index, name := range names {
+		if !catVariable(operands[index], name) {
+			return false
+		}
+	}
+	return true
+}
+
+func catRightAssociatedIntersection(node *catLispNode, first, second, third string) bool {
+	operands, ok := catOperator(node, ":inter")
+	return ok && len(operands) == 2 && catVariable(operands[0], first) &&
+		catOperatorVariables(operands[1], ":inter", second, third)
+}
+
+// The unconditional full-DSB arm used by Oak's stage-2 projection is exactly
+// `[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;
+//
+//	[~(Imp & TTD & M | Imp & Instr & R)]`.
+func isAArch64DSBFullArm(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	if !ok || len(operands) != 5 ||
+		!catVariable(operands[1], "po") ||
+		!catSetFilter(operands[2], "dsb.full") ||
+		!catVariable(operands[3], "po") {
+		return false
+	}
+	source, ok := catUnaryOperator(operands[0], ":toid")
+	if !ok || !catOperatorVariables(source, ":union", "M", "DC.CVAU", "IC", "TLBI") {
+		return false
+	}
+	destination, ok := catUnaryOperator(operands[4], ":toid")
+	if !ok {
+		return false
+	}
+	excluded, ok := catUnaryOperator(destination, ":comp")
+	if !ok {
+		return false
+	}
+	exclusions, ok := catOperator(excluded, ":union")
+	return ok && len(exclusions) == 2 &&
+		catRightAssociatedIntersection(exclusions[0], "Imp", "TTD", "M") &&
+		catRightAssociatedIntersection(exclusions[1], "Imp", "Instr", "R")
+}
+
+func isAArch64BBMSequence(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	if !ok || len(operands) != 7 {
+		return false
+	}
+	intersection, ok := catOperator(operands[5], ":inter")
+	return catSetFilter(operands[0], "TLBCacheableTTD") &&
+		catVariable(operands[1], "ca") &&
+		catSetFilter(operands[2], "TLBUncacheableTTD") &&
+		catVariable(operands[3], "ob") &&
+		catSetFilter(operands[4], "TLBI") &&
+		ok && len(intersection) == 2 &&
+		catVariable(intersection[0], "ob") &&
+		catVariable(intersection[1], "inv-scope") &&
+		catSetFilter(operands[6], "TLBCacheableTTD")
+}
+
+func isAArch64TLBUncacheableTTD(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":union")
+	return ok && len(operands) == 2 &&
+		catVariable(operands[0], "TTDINV") && catVariable(operands[1], "TTDAF0")
+}
+
+func isAArch64TLBCacheableTTD(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":diff")
+	if !ok || len(operands) != 2 || !catVariable(operands[1], "TLBUncacheableTTD") {
+		return false
+	}
+	intersection, ok := catOperator(operands[0], ":inter")
+	return ok && len(intersection) == 2 &&
+		catVariable(intersection[0], "TTD") && catVariable(intersection[1], "M")
+}
+
+func isAArch64TTDUpdateBBMCandidate(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":union")
+	if !ok || len(operands) != 6 {
+		return false
+	}
+	for index, name := range []string{
+		"TTD-MT-update", "TTD-SH-update", "TTD-ICH-update",
+		"TTD-OCH-update", "TTD-DT-update",
+	} {
+		if !catVariable(operands[index], name) {
+			return false
+		}
+	}
+	intersection, ok := catOperator(operands[5], ":inter")
+	if !ok || len(intersection) != 2 || !catVariable(intersection[0], "TTD-OA-update") {
+		return false
+	}
+	alternatives, ok := catOperator(intersection[1], ":union")
+	return ok && len(alternatives) == 2 &&
+		catVariable(alternatives[0], "TTD-at-least-one-writable") &&
+		catVariable(alternatives[1], "TTD-memory-contents-mismatch")
+}
+
+func isAArch64TTDUpdateNeedsBBM(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	return ok && len(operands) == 3 &&
+		catSetFilter(operands[0], "TLBCacheableTTD") &&
+		catVariable(operands[1], "TTD-update-BBM-cand") &&
+		catSetFilter(operands[2], "TLBCacheableTTD")
+}
+
+func catNamedTest(node *catLispNode, name string) bool {
+	if firstAtom(node) != ":i_test" || len(node.list) < 2 || !node.list[1].isList() {
+		return false
+	}
+	for _, field := range node.list[1].list {
+		if firstAtom(field) == "cat::name" && len(field.list) == 3 &&
+			field.list[1].atom == "." && field.list[2].quoted && field.list[2].atom == name {
+			return true
+		}
+	}
+	return false
+}
+
+// The official BBM condition is a flagged non-emptiness warning, not an
+// execution-validity axiom. Pinning :flagged is therefore semantically
+// important: replacing it with a checked CAT test must fail this certificate.
+func isAArch64BBMWarning(node *catLispNode) bool {
+	if firstAtom(node) != ":i_test" || len(node.list) != 3 ||
+		node.list[2].atom != ":flagged" || !node.list[1].isList() {
+		return false
+	}
+	fields := node.list[1].list
+	if len(fields) != 5 || firstAtom(fields[0]) != "cat::loc" || len(fields[0].list) != 1 ||
+		firstAtom(fields[1]) != "cat::pos" || len(fields[1].list) != 1 ||
+		firstAtom(fields[2]) != "cat::test" || len(fields[2].list) != 3 ||
+		fields[2].list[1].atom != ":t_no" || fields[2].list[2].atom != ":testempty" ||
+		firstAtom(fields[3]) != "cat::exp" || len(fields[3].list) < 2 ||
+		firstAtom(fields[4]) != "cat::name" || len(fields[4].list) != 3 ||
+		fields[4].list[1].atom != "." || !fields[4].list[2].quoted ||
+		fields[4].list[2].atom != "Warning-BBM-expected" {
+		return false
+	}
+	expression := &catLispNode{list: fields[3].list[1:]}
+	difference, ok := catOperator(expression, ":diff")
+	return ok && len(difference) == 2 &&
+		catVariable(difference[0], "TTD-update-needsBBM") &&
+		catVariable(difference[1], "BBM")
+}
+
+// The IFB-ob arm used by Oak's stage-2 sequence is exactly
+// `DSB-ob; [IFB]; po`. Keeping this selector structural prevents another IFB
+// dependency arm from satisfying the stage-2 projection by name alone.
+func isAArch64IFBDsbArm(node *catLispNode) bool {
+	operands, ok := catOperator(node, ":seq")
+	return ok && len(operands) == 3 &&
+		catVariable(operands[0], "DSB-ob") &&
+		catSetFilter(operands[1], "IFB") &&
+		catVariable(operands[2], "po")
+}
+
+type aarch64CATProjection struct {
+	definitions map[string]*catLispNode
+	bbmWarning  *catLispNode
+	external    *catLispNode
+}
+
+func (p *aarch64CATProjection) clone() *aarch64CATProjection {
+	result := &aarch64CATProjection{
+		definitions: make(map[string]*catLispNode, len(p.definitions)),
+		bbmWarning:  p.bbmWarning.clone(),
+		external:    p.external.clone(),
+	}
+	for name, definition := range p.definitions {
+		result.definitions[name] = definition.clone()
+	}
+	return result
+}
+
+func extractAArch64CATProjection(root *catLispNode) (*aarch64CATProjection, error) {
+	bindings := make(map[string][]*catLispNode)
+	collectBindings(root, bindings)
+	projection := &aarch64CATProjection{definitions: make(map[string]*catLispNode)}
+	for name := range pinnedAArch64ProjectionHashes {
+		definition, err := uniqueCATDefinition(bindings, name)
+		if err != nil {
+			return nil, err
+		}
+		projection.definitions[name] = definition
+	}
+	for _, form := range root.list {
+		if catNamedTest(form, "Warning-BBM-expected") {
+			if projection.bbmWarning != nil {
+				return nil, errors.New("expanded CAT AST has duplicate Warning-BBM-expected tests")
+			}
+			projection.bbmWarning = form
+		}
+		if firstAtom(form) != ":i_test" || !containsCATAtom(form, "external") {
+			continue
+		}
+		if projection.external != nil {
+			return nil, errors.New("expanded CAT AST has duplicate external tests")
+		}
+		projection.external = form
+	}
+	if projection.external == nil {
+		return nil, errors.New("expanded CAT AST has no external test")
+	}
+	if projection.bbmWarning == nil {
+		return nil, errors.New("expanded CAT AST has no Warning-BBM-expected test")
+	}
+	return projection, nil
+}
+
+func verifyAArch64ProjectionStructure(projection *aarch64CATProjection) error {
+	definition := projection.definitions
+	if !directUnionContainsVariable(definition["dmb.full"], "DMB.ISH") {
+		return errors.New("dmb.full does not directly contain DMB.ISH")
+	}
+	if !directUnionContainsVariable(definition["dmb.full"], "DMB.SY") {
+		return errors.New("dmb.full does not directly contain DMB.SY")
+	}
+	if !directUnionContainsVariable(definition["dmb.ld"], "DMB.ISHLD") {
+		return errors.New("dmb.ld does not directly contain DMB.ISHLD")
+	}
+	if !directUnionContainsVariable(definition["dsb.full"], "DSB.ISH") ||
+		!directUnionContainsVariable(definition["dsb.full"], "DSB.SY") {
+		return errors.New("dsb.full does not directly contain DSB.ISH and DSB.SY")
+	}
+	if !directUnionContainsVariable(definition["dsb.ld"], "DSB.ISHLD") ||
+		!directUnionContainsVariable(definition["dsb.ld"], "DSB.LD") {
+		return errors.New("dsb.ld does not directly contain DSB.ISHLD and DSB.LD")
+	}
+	if !directUnionContainsVariable(definition["IFB"], "ISB") {
+		return errors.New("IFB does not directly contain ISB")
+	}
+	if !isAArch64BBMSequence(definition["BBM"]) {
+		return errors.New("BBM is not the exact cacheable-ca-uncacheable-ob-TLBI-(ob & inv-scope)-cacheable sequence")
+	}
+	if !isAArch64TLBUncacheableTTD(definition["TLBUncacheableTTD"]) {
+		return errors.New("TLBUncacheableTTD is not exactly TTDINV | TTDAF0")
+	}
+	if !isAArch64TLBCacheableTTD(definition["TLBCacheableTTD"]) {
+		return errors.New("TLBCacheableTTD is not exactly (TTD & M) \\ TLBUncacheableTTD")
+	}
+	if !isAArch64TTDUpdateBBMCandidate(definition["TTD-update-BBM-cand"]) {
+		return errors.New("TTD-update-BBM-cand does not have the exact six update arms")
+	}
+	if !isAArch64TTDUpdateNeedsBBM(definition["TTD-update-needsBBM"]) {
+		return errors.New("TTD-update-needsBBM is not the exact cacheable-candidate-cacheable sequence")
+	}
+	if !isAArch64BBMWarning(projection.bbmWarning) {
+		return errors.New("Warning-BBM-expected is not the exact flagged non-empty needsBBM \\ BBM test")
+	}
+	bobArms, ok := catOperator(definition["bob"], ":union")
+	if !ok {
+		return errors.New("bob is not a union")
+	}
+	var fullDMB, loadDMB, beforeRelease, afterAcquire, releaseAcquire bool
+	for _, arm := range bobArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		switch {
+		case has("dmb.full") && has("po") && has("Exp") && has("M") && !has("DC.CVAU"):
+			fullDMB = true
+		case has("dmb.ld") && has("po") && has("Exp") && has("R") && has("NoRet") && has("M"):
+			loadDMB = true
+		case has("L") && has("A") && has("po") && !has("Q") && !has("amo"):
+			releaseAcquire = true
+		case has("A") && has("Q") && has("po") && !has("L"):
+			afterAcquire = true
+		case has("L") && has("po") && !has("A") && !has("Q"):
+			beforeRelease = true
+		}
+	}
+	if !fullDMB || !loadDMB || !beforeRelease || !afterAcquire || !releaseAcquire {
+		return fmt.Errorf("bob scalar arms: full-dmb=%t load-dmb=%t before-release=%t after-acquire=%t release-acquire=%t",
+			fullDMB, loadDMB, beforeRelease, afterAcquire, releaseAcquire)
+	}
+	dsbArms, ok := catOperator(definition["DSB-ob"], ":union")
+	if !ok {
+		return errors.New("DSB-ob is not a union")
+	}
+	fullDSBArms := 0
+	for _, arm := range dsbArms {
+		if isAArch64DSBFullArm(arm) {
+			fullDSBArms++
+		}
+	}
+	if fullDSBArms != 1 {
+		return fmt.Errorf("DSB-ob has %d exact unconditional full-DSB arms, want 1", fullDSBArms)
+	}
+	ifbArms, ok := catOperator(definition["IFB-ob"], ":union")
+	if !ok {
+		return errors.New("IFB-ob is not a union")
+	}
+	var controlIFB bool
+	dsbIFBArms := 0
+	for _, arm := range ifbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("Exp") && has("R") && has("ctrl") && has("IFB") && has("po") &&
+			!has("pick-ctrl-dep") {
+			controlIFB = true
+		}
+		if isAArch64IFBDsbArm(arm) {
+			dsbIFBArms++
+		}
+	}
+	if !controlIFB {
+		return errors.New("IFB-ob lacks the explicit-read control arm")
+	}
+	if dsbIFBArms != 1 {
+		return fmt.Errorf("IFB-ob has %d exact DSB-ob; [IFB]; po arms, want 1", dsbIFBArms)
+	}
+	if !directUnionContainsVariable(definition["lob"], "DSB-ob") ||
+		!directUnionContainsVariable(definition["lob"], "IFB-ob") {
+		return errors.New("lob does not directly contain DSB-ob and IFB-ob")
+	}
+	chain := []struct{ definition, member string }{
+		{"lob", "bob"},
+		{"local-hw-reqs", "lob"},
+		{"hw-reqs", "local-hw-reqs"},
+	}
+	for _, edge := range chain {
+		if !directUnionContainsVariable(definition[edge.definition], edge.member) {
+			return fmt.Errorf("%s does not directly contain %s", edge.definition, edge.member)
+		}
+	}
+	if !containsIntersection(definition["Exp-obs"], "rf", "ext") ||
+		!containsIntersection(definition["Exp-obs"], "ca", "ext") {
+		return errors.New("Exp-obs lacks external rf or external ca")
+	}
+	if !containsSequence(definition["obs"], func(operands []*catLispNode) bool {
+		if len(operands) != 2 || !catVariable(operands[0], "Exp-obs") {
+			return false
+		}
+		optional, ok := catUnaryOperator(operands[1], ":opt")
+		return ok && catVariable(optional, "sca-class")
+	}) {
+		return errors.New("obs lacks Exp-obs; sca-class?")
+	}
+	if !directUnionContainsVariable(definition["ob"], "hw-reqs") ||
+		!directUnionContainsVariable(definition["ob"], "obs") ||
+		!containsSequence(definition["ob"], func(operands []*catLispNode) bool {
+			return len(operands) == 2 && catVariable(operands[0], "ob") && catVariable(operands[1], "ob")
+		}) {
+		return errors.New("ob lacks hw-reqs, obs, or ob; ob")
+	}
+	if !containsCATAtom(projection.external, ":irreflexive") ||
+		!containsCATVariable(projection.external, "ob") {
+		return fmt.Errorf("external test is not irreflexive ob: %s", projection.external.canonical())
+	}
+	return nil
+}
+
+func verifyAArch64ProjectionHashes(projection *aarch64CATProjection) error {
+	var missing []string
+	for name, want := range pinnedAArch64ProjectionHashes {
+		got := expressionHash(projection.definitions[name])
+		if want == "" {
+			missing = append(missing, fmt.Sprintf("%s=%s", name, got))
+			continue
+		}
+		if got != want {
+			return fmt.Errorf("%s AST hash %s, want %s", name, got, want)
+		}
+	}
+	bobArms, _ := catOperator(projection.definitions["bob"], ":union")
+	var armHashes []string
+	for _, arm := range bobArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if (has("dmb.full") && has("po") && has("Exp") && has("M") && !has("DC.CVAU")) ||
+			(has("dmb.ld") && has("po") && has("Exp") && has("R") && has("NoRet") && has("M")) ||
+			(has("L") && has("A") && has("po") && !has("Q") && !has("amo")) ||
+			(has("A") && has("Q") && has("po") && !has("L")) ||
+			(has("L") && has("po") && !has("A") && !has("Q")) {
+			armHashes = append(armHashes, expressionHash(arm))
+		}
+	}
+	sort.Strings(armHashes)
+	wantArms := append([]string(nil), pinnedAArch64BobArmHashes...)
+	sort.Strings(wantArms)
+	if len(wantArms) != len(armHashes) || strings.Join(wantArms, ",") != strings.Join(armHashes, ",") {
+		missing = append(missing, "bob-arms="+strings.Join(armHashes, ","))
+	}
+	dsbArms, _ := catOperator(projection.definitions["DSB-ob"], ":union")
+	var dsbFullArmHash string
+	for _, arm := range dsbArms {
+		if isAArch64DSBFullArm(arm) {
+			dsbFullArmHash = expressionHash(arm)
+		}
+	}
+	if dsbFullArmHash != pinnedAArch64DSBFullArmHash {
+		return fmt.Errorf("DSB-ob full arm AST hash %s, want %s", dsbFullArmHash, pinnedAArch64DSBFullArmHash)
+	}
+	ifbArms, _ := catOperator(projection.definitions["IFB-ob"], ":union")
+	var ifbControlArmHash string
+	for _, arm := range ifbArms {
+		has := func(name string) bool { return containsCATVariable(arm, name) }
+		if has("Exp") && has("R") && has("ctrl") && has("IFB") && has("po") &&
+			!has("pick-ctrl-dep") {
+			ifbControlArmHash = expressionHash(arm)
+		}
+	}
+	if ifbControlArmHash != pinnedAArch64IFBControlArmHash {
+		return fmt.Errorf("IFB-ob control arm AST hash %s, want %s", ifbControlArmHash, pinnedAArch64IFBControlArmHash)
+	}
+	var ifbDsbArmHash string
+	for _, arm := range ifbArms {
+		if isAArch64IFBDsbArm(arm) {
+			ifbDsbArmHash = expressionHash(arm)
+		}
+	}
+	if ifbDsbArmHash != pinnedAArch64IFBDsbArmHash {
+		return fmt.Errorf("IFB-ob DSB arm AST hash %s, want %s", ifbDsbArmHash, pinnedAArch64IFBDsbArmHash)
+	}
+	bbmWarningHash := expressionHash(projection.bbmWarning)
+	if bbmWarningHash != pinnedAArch64BBMWarningHash {
+		return fmt.Errorf("Warning-BBM-expected AST hash %s, want %s",
+			bbmWarningHash, pinnedAArch64BBMWarningHash)
+	}
+	externalHash := expressionHash(projection.external)
+	if pinnedAArch64ExternalIrreflexiveHash == "" {
+		missing = append(missing, "external="+externalHash)
+	} else if externalHash != pinnedAArch64ExternalIrreflexiveHash {
+		return fmt.Errorf("external irreflexive AST hash %s, want %s", externalHash, pinnedAArch64ExternalIrreflexiveHash)
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("unrecorded pinned CAT AST hashes: %s", strings.Join(missing, " "))
+	}
+	return nil
+}
+
+func replaceFirstCATAtom(node *catLispNode, from, to string) bool {
+	if node == nil {
+		return false
+	}
+	if !node.isList() {
+		if node.atom == from {
+			node.atom = to
+			return true
+		}
+		return false
+	}
+	for _, child := range node.list {
+		if replaceFirstCATAtom(child, from, to) {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceNthCATAtom(node *catLispNode, from, to string, occurrence int) bool {
+	if occurrence <= 0 {
+		return false
+	}
+	seen := 0
+	var replace func(*catLispNode) bool
+	replace = func(current *catLispNode) bool {
+		if current == nil {
+			return false
+		}
+		if !current.isList() {
+			if current.atom == from {
+				seen++
+				if seen == occurrence {
+					current.atom = to
+					return true
+				}
+			}
+			return false
+		}
+		for _, child := range current.list {
+			if replace(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return replace(node)
+}
+
+func verifyAArch64ProjectionMutationChecks(projection *aarch64CATProjection) error {
+	mutations := []struct{ definition, from string }{
+		{"dmb.full", "DMB.ISH"},
+		{"dmb.full", "DMB.SY"},
+		{"dmb.ld", "DMB.ISHLD"},
+		{"dsb.full", "DSB.ISH"},
+		{"dsb.full", "DSB.SY"},
+		{"dsb.ld", "DSB.ISHLD"},
+		{"dsb.ld", "DSB.LD"},
+		{"DSB-ob", "dsb.full"},
+		{"DSB-ob", "TLBI"},
+		{"IFB", "ISB"},
+		{"IFB-ob", "ctrl"},
+		{"BBM", "TLBCacheableTTD"},
+		{"BBM", "TLBUncacheableTTD"},
+		{"BBM", "ca"},
+		{"BBM", "TLBI"},
+		{"BBM", "ob"},
+		{"BBM", "inv-scope"},
+		{"TLBUncacheableTTD", ":union"},
+		{"TLBUncacheableTTD", "TTDINV"},
+		{"TLBUncacheableTTD", "TTDAF0"},
+		{"TLBCacheableTTD", ":diff"},
+		{"TLBCacheableTTD", ":inter"},
+		{"TLBCacheableTTD", "TTD"},
+		{"TLBCacheableTTD", "M"},
+		{"TLBCacheableTTD", "TLBUncacheableTTD"},
+		{"TTD-update-BBM-cand", ":union"},
+		{"TTD-update-BBM-cand", ":inter"},
+		{"TTD-update-BBM-cand", "TTD-MT-update"},
+		{"TTD-update-BBM-cand", "TTD-SH-update"},
+		{"TTD-update-BBM-cand", "TTD-ICH-update"},
+		{"TTD-update-BBM-cand", "TTD-OCH-update"},
+		{"TTD-update-BBM-cand", "TTD-DT-update"},
+		{"TTD-update-BBM-cand", "TTD-OA-update"},
+		{"TTD-update-BBM-cand", "TTD-at-least-one-writable"},
+		{"TTD-update-BBM-cand", "TTD-memory-contents-mismatch"},
+		{"TTD-update-needsBBM", ":seq"},
+		{"TTD-update-needsBBM", "TTD-update-BBM-cand"},
+		{"bob", "dmb.full"},
+		{"bob", "dmb.ld"},
+		{"bob", "NoRet"},
+		{"lob", "DSB-ob"},
+		{"lob", "IFB-ob"},
+		{"lob", "bob"},
+		{"local-hw-reqs", "lob"},
+		{"hw-reqs", "local-hw-reqs"},
+		{"Exp-obs", "rf"},
+		{"Exp-obs", "ca"},
+		{"obs", "Exp-obs"},
+		{"ob", "hw-reqs"},
+		{"ob", "obs"},
+		{"ob", "ob"},
+	}
+	for _, mutation := range mutations {
+		copyProjection := projection.clone()
+		if !replaceFirstCATAtom(copyProjection.definitions[mutation.definition], mutation.from, mutation.from+".removed") {
+			return fmt.Errorf("mutation fixture cannot find %s in %s", mutation.from, mutation.definition)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted %s without %s", mutation.definition, mutation.from)
+		}
+	}
+	for _, atom := range []string{"DSB-ob", "IFB", "po"} {
+		copyProjection := projection.clone()
+		arms, ok := catOperator(copyProjection.definitions["IFB-ob"], ":union")
+		if !ok {
+			return errors.New("mutation fixture cannot find IFB-ob union")
+		}
+		mutated := false
+		for _, arm := range arms {
+			if isAArch64IFBDsbArm(arm) {
+				mutated = replaceFirstCATAtom(arm, atom, atom+".removed")
+				break
+			}
+		}
+		if !mutated {
+			return fmt.Errorf("mutation fixture cannot find %s in the exact IFB-ob DSB arm", atom)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted the IFB-ob DSB arm without %s", atom)
+		}
+	}
+	for _, mutation := range []struct {
+		atom       string
+		occurrence int
+	}{
+		{"TLBCacheableTTD", 2},
+		{"ob", 2},
+	} {
+		copyProjection := projection.clone()
+		if !replaceNthCATAtom(copyProjection.definitions["BBM"], mutation.atom, mutation.atom+".removed", mutation.occurrence) {
+			return fmt.Errorf("mutation fixture cannot find BBM %s occurrence %d", mutation.atom, mutation.occurrence)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted BBM without %s occurrence %d", mutation.atom, mutation.occurrence)
+		}
+	}
+	for _, occurrence := range []int{1, 2} {
+		copyProjection := projection.clone()
+		if !replaceNthCATAtom(copyProjection.definitions["TTD-update-needsBBM"],
+			"TLBCacheableTTD", "TLBCacheableTTD.removed", occurrence) {
+			return fmt.Errorf("mutation fixture cannot find TTD-update-needsBBM cacheable occurrence %d", occurrence)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted TTD-update-needsBBM without cacheable occurrence %d", occurrence)
+		}
+	}
+	for _, mutation := range []struct {
+		definition string
+		atom       string
+		occurrence int
+	}{
+		{"TTD-update-BBM-cand", ":union", 2},
+		{"TTD-update-needsBBM", ":toid", 1},
+		{"TTD-update-needsBBM", ":toid", 2},
+	} {
+		copyProjection := projection.clone()
+		if !replaceNthCATAtom(copyProjection.definitions[mutation.definition],
+			mutation.atom, mutation.atom+".removed", mutation.occurrence) {
+			return fmt.Errorf("mutation fixture cannot find %s occurrence %d in %s",
+				mutation.atom, mutation.occurrence, mutation.definition)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted %s without %s occurrence %d",
+				mutation.definition, mutation.atom, mutation.occurrence)
+		}
+	}
+	for _, atom := range []string{
+		":t_no", ":testempty", ":diff", "TTD-update-needsBBM", "BBM",
+		"Warning-BBM-expected", ":flagged",
+	} {
+		copyProjection := projection.clone()
+		if !replaceFirstCATAtom(copyProjection.bbmWarning, atom, atom+".removed") {
+			return fmt.Errorf("mutation fixture cannot find %s in Warning-BBM-expected", atom)
+		}
+		if verifyAArch64ProjectionStructure(copyProjection) == nil {
+			return fmt.Errorf("projection checker accepted Warning-BBM-expected without %s", atom)
+		}
+	}
+	copyProjection := projection.clone()
+	if !replaceFirstCATAtom(copyProjection.external, ":irreflexive", ":acyclic") {
+		return errors.New("mutation fixture cannot find external irreflexive test")
+	}
+	if verifyAArch64ProjectionStructure(copyProjection) == nil {
+		return errors.New("projection checker accepted a non-irreflexive external test")
+	}
+	return nil
+}
+
+func verifyPinnedAArch64CATProjection(cat2lisp, model, libdir string) error {
+	root, err := parsePinnedAArch64CAT(cat2lisp, model, libdir)
+	if err != nil {
+		return err
+	}
+	projection, err := extractAArch64CATProjection(root)
+	if err != nil {
+		return err
+	}
+	if err := verifyAArch64ProjectionStructure(projection); err != nil {
+		return err
+	}
+	if err := verifyAArch64ProjectionMutationChecks(projection); err != nil {
+		return err
+	}
+	return verifyAArch64ProjectionHashes(projection)
+}
+
+func TestCATLispParserRejectsMalformedInput(t *testing.T) {
+	deep := strings.Repeat("(", catLispMaxDepth+2) + strings.Repeat(")", catLispMaxDepth+2)
+	for _, input := range []string{"", "atom", "(", "())", "(\"unterminated)", "(ok) trailing", deep} {
+		if _, err := parseCATLisp([]byte(input)); err == nil {
+			t.Errorf("parseCATLisp(%q) succeeded", input)
+		}
+	}
+}
+
+func TestCATLispConflictingDefinitionRejected(t *testing.T) {
+	root, err := parseCATLisp([]byte(`(
+(:i_let nil (((cat::loc) (cat::pat :pvar "bob") (cat::exp :e_var nil "first"))))
+(:i_let nil (((cat::loc) (cat::pat :pvar "bob") (cat::exp :e_var nil "second"))))
+)`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := make(map[string][]*catLispNode)
+	collectBindings(root, bindings)
+	if _, err := uniqueCATDefinition(bindings, "bob"); err == nil {
+		t.Fatal("conflicting CAT definitions were accepted")
+	}
+}
+
+func TestAArch64IFBDsbArmShapeAndHash(t *testing.T) {
+	root, err := parseCATLisp([]byte(
+		`(:e_op nil :seq ((:e_var nil "DSB-ob") ` +
+			`(:e_op1 nil :toid (:e_var nil "IFB")) ` +
+			`(:e_var nil "po")))`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAArch64IFBDsbArm(root) {
+		t.Fatalf("exact IFB-ob DSB arm was not recognized: %s", root.canonical())
+	}
+	if got := expressionHash(root); got != pinnedAArch64IFBDsbArmHash {
+		t.Fatalf("IFB-ob DSB arm hash %s, want %s", got, pinnedAArch64IFBDsbArmHash)
+	}
+	for _, atom := range []string{"DSB-ob", "IFB", "po"} {
+		mutated := root.clone()
+		if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+			t.Fatalf("mutation fixture lacks %s", atom)
+		}
+		if isAArch64IFBDsbArm(mutated) {
+			t.Fatalf("IFB-ob DSB arm without %s was accepted", atom)
+		}
+	}
+}
+
+func TestAArch64DSBFullArmShapeHashAndMutations(t *testing.T) {
+	root, err := parseCATLisp([]byte(
+		`(:e_op nil :seq (` +
+			`(:e_op1 nil :toid (:e_op nil :union (` +
+			`(:e_var nil "M") (:e_var nil "DC.CVAU") ` +
+			`(:e_var nil "IC") (:e_var nil "TLBI")))) ` +
+			`(:e_var nil "po") ` +
+			`(:e_op1 nil :toid (:e_var nil "dsb.full")) ` +
+			`(:e_var nil "po") ` +
+			`(:e_op1 nil :toid (:e_op1 nil :comp ` +
+			`(:e_op nil :union (` +
+			`(:e_op nil :inter ((:e_var nil "Imp") ` +
+			`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))))) ` +
+			`(:e_op nil :inter ((:e_var nil "Imp") ` +
+			`(:e_op nil :inter ((:e_var nil "Instr") (:e_var nil "R")))))))))))`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAArch64DSBFullArm(root) {
+		t.Fatalf("exact unconditional full-DSB arm was not recognized: %s", root.canonical())
+	}
+	if got := expressionHash(root); got != pinnedAArch64DSBFullArmHash {
+		t.Fatalf("full-DSB arm hash %s, want %s", got, pinnedAArch64DSBFullArmHash)
+	}
+	mutations := []struct {
+		atom       string
+		occurrence int
+	}{
+		{":seq", 1},
+		{":toid", 1}, {":toid", 2}, {":toid", 3},
+		{":union", 1}, {":union", 2},
+		{"M", 1}, {"M", 2},
+		{"DC.CVAU", 1}, {"IC", 1}, {"TLBI", 1},
+		{"po", 1}, {"po", 2}, {"dsb.full", 1},
+		{":comp", 1},
+		{":inter", 1}, {":inter", 2}, {":inter", 3}, {":inter", 4},
+		{"Imp", 1}, {"Imp", 2},
+		{"TTD", 1}, {"Instr", 1}, {"R", 1},
+	}
+	for _, mutation := range mutations {
+		mutated := root.clone()
+		if !replaceNthCATAtom(mutated, mutation.atom, mutation.atom+".removed",
+			mutation.occurrence) {
+			t.Fatalf("full-DSB mutation fixture lacks %s occurrence %d",
+				mutation.atom, mutation.occurrence)
+		}
+		if isAArch64DSBFullArm(mutated) {
+			t.Fatalf("full-DSB arm without %s occurrence %d was accepted",
+				mutation.atom, mutation.occurrence)
+		}
+		if got := expressionHash(mutated); got == pinnedAArch64DSBFullArmHash {
+			t.Fatalf("full-DSB mutation of %s occurrence %d retained pinned hash",
+				mutation.atom, mutation.occurrence)
+		}
+	}
+}
+
+func TestAArch64BBMNeedsAndWarningShapesAndHashes(t *testing.T) {
+	definitions := []struct {
+		name  string
+		ast   string
+		hash  string
+		shape func(*catLispNode) bool
+	}{
+		{
+			name: "TLBUncacheableTTD",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTDINV") (:e_var nil "TTDAF0")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBUncacheableTTD"],
+			shape: isAArch64TLBUncacheableTTD,
+		},
+		{
+			name: "TLBCacheableTTD",
+			ast: `(:e_op nil :diff (` +
+				`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))) ` +
+				`(:e_var nil "TLBUncacheableTTD")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBCacheableTTD"],
+			shape: isAArch64TLBCacheableTTD,
+		},
+		{
+			name: "TTD-update-BBM-cand",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTD-MT-update") (:e_var nil "TTD-SH-update") ` +
+				`(:e_var nil "TTD-ICH-update") (:e_var nil "TTD-OCH-update") ` +
+				`(:e_var nil "TTD-DT-update") ` +
+				`(:e_op nil :inter ((:e_var nil "TTD-OA-update") ` +
+				`(:e_op nil :union ((:e_var nil "TTD-at-least-one-writable") ` +
+				`(:e_var nil "TTD-memory-contents-mismatch")))))))`,
+			hash:  pinnedAArch64ProjectionHashes["TTD-update-BBM-cand"],
+			shape: isAArch64TTDUpdateBBMCandidate,
+		},
+		{
+			name: "TTD-update-needsBBM",
+			ast: `(:e_op nil :seq (` +
+				`(:e_op1 nil :toid (:e_var nil "TLBCacheableTTD")) ` +
+				`(:e_var nil "TTD-update-BBM-cand") ` +
+				`(:e_op1 nil :toid (:e_var nil "TLBCacheableTTD"))))`,
+			hash:  pinnedAArch64ProjectionHashes["TTD-update-needsBBM"],
+			shape: isAArch64TTDUpdateNeedsBBM,
+		},
+	}
+	for _, definition := range definitions {
+		t.Run(definition.name, func(t *testing.T) {
+			node, err := parseCATLisp([]byte(definition.ast))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !definition.shape(node) {
+				t.Fatalf("exact %s AST was not recognized: %s", definition.name, node.canonical())
+			}
+			if got := expressionHash(node); got != definition.hash {
+				t.Fatalf("%s AST hash %s, want %s", definition.name, got, definition.hash)
+			}
+		})
+	}
+
+	warning, err := parseCATLisp([]byte(
+		`(:i_test ((cat::loc) (cat::pos) (cat::test :t_no :testempty) ` +
+			`(cat::exp :e_op nil :diff ((:e_var nil "TTD-update-needsBBM") ` +
+			`(:e_var nil "BBM"))) (cat::name . "Warning-BBM-expected")) :flagged)`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catNamedTest(warning, "Warning-BBM-expected") || !isAArch64BBMWarning(warning) {
+		t.Fatalf("exact Warning-BBM-expected AST was not recognized: %s", warning.canonical())
+	}
+	if got := expressionHash(warning); got != pinnedAArch64BBMWarningHash {
+		t.Fatalf("Warning-BBM-expected AST hash %s, want %s", got, pinnedAArch64BBMWarningHash)
+	}
+	for _, atom := range []string{
+		":t_no", ":testempty", ":diff", "TTD-update-needsBBM", "BBM",
+		"Warning-BBM-expected", ":flagged",
+	} {
+		mutated := warning.clone()
+		if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+			t.Fatalf("warning mutation fixture lacks %s", atom)
+		}
+		if isAArch64BBMWarning(mutated) {
+			t.Fatalf("Warning-BBM-expected without %s was accepted", atom)
+		}
+	}
+}
+
+func TestAArch64DescriptorClassifierShapesHashesAndMutations(t *testing.T) {
+	definitions := []struct {
+		name      string
+		ast       string
+		hash      string
+		shape     func(*catLispNode) bool
+		mutations []string
+	}{
+		{
+			name: "TLBUncacheableTTD",
+			ast: `(:e_op nil :union (` +
+				`(:e_var nil "TTDINV") (:e_var nil "TTDAF0")))`,
+			hash:      pinnedAArch64ProjectionHashes["TLBUncacheableTTD"],
+			shape:     isAArch64TLBUncacheableTTD,
+			mutations: []string{":union", "TTDINV", "TTDAF0"},
+		},
+		{
+			name: "TLBCacheableTTD",
+			ast: `(:e_op nil :diff (` +
+				`(:e_op nil :inter ((:e_var nil "TTD") (:e_var nil "M"))) ` +
+				`(:e_var nil "TLBUncacheableTTD")))`,
+			hash:  pinnedAArch64ProjectionHashes["TLBCacheableTTD"],
+			shape: isAArch64TLBCacheableTTD,
+			mutations: []string{
+				":diff", ":inter", "TTD", "M", "TLBUncacheableTTD",
+			},
+		},
+	}
+	for _, definition := range definitions {
+		t.Run(definition.name, func(t *testing.T) {
+			node, err := parseCATLisp([]byte(definition.ast))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !definition.shape(node) {
+				t.Fatalf("exact %s AST was not recognized: %s", definition.name, node.canonical())
+			}
+			if got := expressionHash(node); got != definition.hash {
+				t.Fatalf("%s AST hash %s, want %s", definition.name, got, definition.hash)
+			}
+			for _, atom := range definition.mutations {
+				mutated := node.clone()
+				if !replaceFirstCATAtom(mutated, atom, atom+".removed") {
+					t.Fatalf("mutation fixture lacks %s", atom)
+				}
+				if definition.shape(mutated) {
+					t.Fatalf("%s classifier without %s was accepted", definition.name, atom)
+				}
+				if got := expressionHash(mutated); got == definition.hash {
+					t.Fatalf("%s mutation of %s retained pinned hash", definition.name, atom)
+				}
+			}
+		})
+	}
+
+	uncacheable, err := parseCATLisp([]byte(definitions[0].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncacheableOperands, ok := catOperator(uncacheable, ":union")
+	if !ok || len(uncacheableOperands) != 2 {
+		t.Fatal("uncacheable operand-order fixture lost its union")
+	}
+	uncacheableOperands[0], uncacheableOperands[1] =
+		uncacheableOperands[1], uncacheableOperands[0]
+	if isAArch64TLBUncacheableTTD(uncacheable) {
+		t.Fatal("uncacheable classifier accepted swapped TTDINV/TTDAF0 operands")
+	}
+
+	cacheable, err := parseCATLisp([]byte(definitions[1].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheableOperands, ok := catOperator(cacheable, ":diff")
+	if !ok || len(cacheableOperands) != 2 {
+		t.Fatal("cacheable operand-order fixture lost its difference")
+	}
+	intersectionOperands, ok := catOperator(cacheableOperands[0], ":inter")
+	if !ok || len(intersectionOperands) != 2 {
+		t.Fatal("cacheable operand-order fixture lost its intersection")
+	}
+	intersectionOperands[0], intersectionOperands[1] =
+		intersectionOperands[1], intersectionOperands[0]
+	if isAArch64TLBCacheableTTD(cacheable) {
+		t.Fatal("cacheable classifier accepted swapped TTD/M operands")
+	}
+
+	cacheable, err = parseCATLisp([]byte(definitions[1].ast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheableOperands, ok = catOperator(cacheable, ":diff")
+	if !ok || len(cacheableOperands) != 2 {
+		t.Fatal("cacheable difference-direction fixture lost its operands")
+	}
+	cacheableOperands[0], cacheableOperands[1] = cacheableOperands[1], cacheableOperands[0]
+	if isAArch64TLBCacheableTTD(cacheable) {
+		t.Fatal("cacheable classifier accepted reversed set difference")
+	}
+}
+
+func isLeanHexDigit(value byte) bool {
+	return value >= '0' && value <= '9' ||
+		value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
+}
+
+// leanCharLiteralEnd recognizes the complete character-literal token shape
+// parsed by Lean's charLitFnAux. Non-literal apostrophes, including identifier
+// suffixes such as foo', deliberately do not create scanner state.
+func leanCharLiteralEnd(source []byte, offset int) (int, bool) {
+	if offset < 0 || offset+1 >= len(source) || source[offset] != '\'' ||
+		source[offset+1] == '\'' {
+		return 0, false
+	}
+	cursor := offset + 1
+	if source[cursor] == '\\' {
+		cursor++
+		if cursor >= len(source) {
+			return 0, false
+		}
+		switch source[cursor] {
+		case '\\', '"', '\'', 'r', 'n', 't':
+			cursor++
+		case 'x':
+			if cursor+2 >= len(source) || !isLeanHexDigit(source[cursor+1]) ||
+				!isLeanHexDigit(source[cursor+2]) {
+				return 0, false
+			}
+			cursor += 3
+		case 'u':
+			if cursor+4 >= len(source) {
+				return 0, false
+			}
+			for digit := cursor + 1; digit <= cursor+4; digit++ {
+				if !isLeanHexDigit(source[digit]) {
+					return 0, false
+				}
+			}
+			cursor += 5
+		default:
+			return 0, false
+		}
+	} else {
+		_, size := utf8.DecodeRune(source[cursor:])
+		if size == 0 || size == 1 && source[cursor] >= utf8.RuneSelf {
+			return 0, false
+		}
+		cursor += size
+	}
+	if cursor >= len(source) || source[cursor] != '\'' {
+		return 0, false
+	}
+	return cursor + 1, true
+}
+
+// lexicallyVisibleLeanMarkerOffsets finds markers whose opening `/-` starts in
+// normal Lean lexical state. This is a source-spelling drift guard, not a Lean
+// command elaborator: quotations, macros, and conditional commands are outside
+// its contract. Kernel-checked formula lemmas establish the semantic shape.
+func lexicallyVisibleLeanMarkerOffsets(source, marker []byte) ([]int, error) {
+	var offsets []int
+	blockDepth := 0
+	lineComment := false
+	inString := false
+	escaped := false
+	rawString := false
+	rawHashes := 0
+	quotedIdentifier := false
+	quotedIdentifierOpen := []byte("«")
+	quotedIdentifierClose := []byte("»")
+	for offset := 0; offset < len(source); {
+		if lineComment {
+			if source[offset] == '\n' {
+				lineComment = false
+			}
+			offset++
+			continue
+		}
+		if blockDepth > 0 {
+			if offset+1 < len(source) && source[offset] == '/' && source[offset+1] == '-' {
+				blockDepth++
+				offset += 2
+				continue
+			}
+			if offset+1 < len(source) && source[offset] == '-' && source[offset+1] == '/' {
+				blockDepth--
+				offset += 2
+				continue
+			}
+			offset++
+			continue
+		}
+		if rawString {
+			if source[offset] == '"' && offset+rawHashes < len(source) {
+				closes := true
+				for hash := 0; hash < rawHashes; hash++ {
+					if source[offset+1+hash] != '#' {
+						closes = false
+						break
+					}
+				}
+				if closes {
+					rawString = false
+					offset += rawHashes + 1
+					continue
+				}
+			}
+			offset++
+			continue
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				offset++
+				continue
+			}
+			switch source[offset] {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			offset++
+			continue
+		}
+		if quotedIdentifier {
+			if bytes.HasPrefix(source[offset:], quotedIdentifierClose) {
+				quotedIdentifier = false
+				offset += len(quotedIdentifierClose)
+				continue
+			}
+			offset++
+			continue
+		}
+		if bytes.HasPrefix(source[offset:], marker) {
+			offsets = append(offsets, offset)
+		}
+		if source[offset] == 'r' {
+			quote := offset + 1
+			for quote < len(source) && source[quote] == '#' {
+				quote++
+			}
+			if quote < len(source) && source[quote] == '"' {
+				rawString = true
+				rawHashes = quote - offset - 1
+				offset = quote + 1
+				continue
+			}
+		}
+		if bytes.HasPrefix(source[offset:], quotedIdentifierOpen) {
+			quotedIdentifier = true
+			offset += len(quotedIdentifierOpen)
+			continue
+		}
+		if end, ok := leanCharLiteralEnd(source, offset); ok {
+			offset = end
+			continue
+		}
+		if offset+1 < len(source) && source[offset] == '-' && source[offset+1] == '-' {
+			lineComment = true
+			offset += 2
+			continue
+		}
+		if offset+1 < len(source) && source[offset] == '/' && source[offset+1] == '-' {
+			blockDepth = 1
+			offset += 2
+			continue
+		}
+		if source[offset] == '"' {
+			inString = true
+		}
+		offset++
+	}
+	if blockDepth != 0 {
+		return nil, errors.New("unterminated Lean block comment")
+	}
+	if inString {
+		return nil, errors.New("unterminated Lean string")
+	}
+	if rawString {
+		return nil, errors.New("unterminated Lean raw string")
+	}
+	if quotedIdentifier {
+		return nil, errors.New("unterminated Lean escaped identifier")
+	}
+	return offsets, nil
+}
+
+func exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker []byte) ([]byte, error) {
+	if count := bytes.Count(source, beginMarker); count != 1 {
+		return nil, fmt.Errorf("source has %d begin markers, want 1", count)
+	}
+	if count := bytes.Count(source, endMarker); count != 1 {
+		return nil, fmt.Errorf("source has %d end markers, want 1", count)
+	}
+	beginOffsets, err := lexicallyVisibleLeanMarkerOffsets(source, beginMarker)
+	if err != nil {
+		return nil, err
+	}
+	endOffsets, err := lexicallyVisibleLeanMarkerOffsets(source, endMarker)
+	if err != nil {
+		return nil, err
+	}
+	if len(beginOffsets) != 1 || len(endOffsets) != 1 {
+		return nil, errors.New("source markers are not both in normal Lean lexical state")
+	}
+	begin := beginOffsets[0] + len(beginMarker)
+	end := endOffsets[0]
+	if begin > end {
+		return nil, errors.New("source markers are reversed")
+	}
+	return source[begin:end], nil
+}
+
+func TestExactLexicallyVisibleLeanSourceBlockRejectsHiddenMarkers(t *testing.T) {
+	beginMarker := []byte("/- TEST-BEGIN -/")
+	endMarker := []byte("/- TEST-END -/")
+	active := append(append(append([]byte{}, beginMarker...), []byte(" body ")...), endMarker...)
+	doubleQuoteChar := []byte(`'"'`)
+	markersInStringBetweenChars := append(append(append(append(append([]byte{},
+		doubleQuoteChar...), ' ', '"'), active...), '"', ' '), doubleQuoteChar...)
+	identifierApostrophe := append(append([]byte(`foo' "prefix ' `), active...),
+		[]byte(` " '"' z'`)...)
+	block, err := exactLexicallyVisibleLeanSourceBlock(active, beginMarker, endMarker)
+	if err != nil || string(block) != " body " {
+		t.Fatalf("lexically visible Lean source block was rejected: block=%q err=%v", block, err)
+	}
+	for name, source := range map[string][]byte{
+		"outer block comment":   append(append([]byte("/- outer "), active...), []byte(" -/")...),
+		"line comment":          append(append([]byte("-- "), active...), '\n'),
+		"string":                append(append([]byte("\""), active...), '"'),
+		"raw string":            append(append([]byte(`r#"prefix " `), active...), []byte(` "#`)...),
+		"escaped identifier":    append(append([]byte("«prefix "), active...), []byte("»")...),
+		"chars around string":   markersInStringBetweenChars,
+		"identifier apostrophe": identifierApostrophe,
+		"unterminated comment":  append(append(append([]byte{}, active...), ' '), []byte("/-")...),
+		"unterminated string":   append(append(append([]byte{}, active...), ' '), '"'),
+		"unterminated raw":      append(append([]byte(`r#"`), active...), ' '),
+		"unterminated ident":    append(append([]byte("«"), active...), ' '),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker); err == nil {
+				t.Fatal("inactive or lexically malformed Lean markers were accepted")
+			}
+		})
+	}
+}
+
+func TestAArch64DescriptorClassifierLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-TTD-CLASSIFIER-END -/")
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean classifier source: %v", err)
+	}
+	got := strings.Join(strings.Fields(string(block)), " ")
+	wantSource :=
+		"/-- Primitive occurrence tags corresponding to the four operands used by the\n" +
+			"    pinned Arm CAT descriptor classifiers. These tags remain external inputs;\n" +
+			"    this structure does not construct a CAT execution or identify an Oak\n" +
+			"    occurrence with a CAT event. -/\n" +
+			"structure ProjectedCATDescriptorTags (Occurrence : Type) where\n" +
+			"  isTTD : Occurrence → Prop\n" +
+			"  isMemory : Occurrence → Prop\n" +
+			"  isTTDInvalid : Occurrence → Prop\n" +
+			"  isTTDAccessFlagZero : Occurrence → Prop\n\n" +
+			"/-- Set-membership reading of pinned CAT `TTDINV | TTDAF0`. -/\n" +
+			"def ProjectedCATTLBUncacheableTTD {Occurrence : Type}\n" +
+			"    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=\n" +
+			"  tags.isTTDInvalid event ∨ tags.isTTDAccessFlagZero event\n\n" +
+			"/-- Set-membership reading of pinned CAT\n" +
+			"    `(TTD & M) \\ TLBUncacheableTTD`. -/\n" +
+			"def ProjectedCATTLBCacheableTTD {Occurrence : Type}\n" +
+			"    (tags : ProjectedCATDescriptorTags Occurrence) (event : Occurrence) : Prop :=\n" +
+			"  tags.isTTD event ∧ tags.isMemory event ∧\n" +
+			"    ¬ProjectedCATTLBUncacheableTTD tags event\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean projected CAT descriptor classifier drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAArch64ExactBBMLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-BBM-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-BBM-END -/")
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean BBM source: %v", err)
+	}
+	got := strings.Join(strings.Fields(string(block)), " ")
+	wantSource :=
+		"/-- The projected occurrence sets and relations consumed by the pinned CAT\n" +
+			"    `BBM` expression. Every field is supplied by an execution refinement;\n" +
+			"    this record neither constructs official CAT events nor identifies these\n" +
+			"    relations with Oak's local trace relations. -/\n" +
+			"structure ProjectedCATBBMRelations (Occurrence : Type) where\n" +
+			"  descriptorTags : ProjectedCATDescriptorTags Occurrence\n" +
+			"  isTLBI : Occurrence → Prop\n" +
+			"  ca : Occurrence → Occurrence → Prop\n" +
+			"  ob : Occurrence → Occurrence → Prop\n" +
+			"  invScope : Occurrence → Occurrence → Prop\n\n" +
+			"/-- Exact occurrence-level reading of pinned CAT\n\n" +
+			"`[TLBCacheableTTD]; ca; [TLBUncacheableTTD]; ob; [TLBI];\n" +
+			" (ob & inv-scope); [TLBCacheableTTD]`.\n\n" +
+			"The shared arguments of `ob` and `inv-scope` preserve CAT's relational\n" +
+			"intersection. This definition is a pullback over supplied occurrence\n" +
+			"predicates, not an execution generator or a complete CAT semantics. -/\n" +
+			"def ProjectedCATBBM {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (old make : Occurrence) : Prop :=\n" +
+			"  ∃ breakEvent tlbiEvent,\n" +
+			"    ProjectedCATTLBCacheableTTD cat.descriptorTags old ∧\n" +
+			"      cat.ca old breakEvent ∧\n" +
+			"      ProjectedCATTLBUncacheableTTD cat.descriptorTags breakEvent ∧\n" +
+			"      cat.ob breakEvent tlbiEvent ∧\n" +
+			"      cat.isTLBI tlbiEvent ∧\n" +
+			"      cat.ob tlbiEvent make ∧ cat.invScope tlbiEvent make ∧\n" +
+			"      ProjectedCATTLBCacheableTTD cat.descriptorTags make\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean exact projected CAT BBM drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAArch64DSBFullLeanProjectionSource(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "AArch64Stage2Maintenance.lean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginMarker := []byte("/- OAK-A64-CAT-DSB-FULL-BEGIN -/")
+	endMarker := []byte("/- OAK-A64-CAT-DSB-FULL-END -/")
+	block, err := exactLexicallyVisibleLeanSourceBlock(source, beginMarker, endMarker)
+	if err != nil {
+		t.Fatalf("locate lexically visible Lean DSB-full source: %v", err)
+	}
+	got := strings.Join(strings.Fields(string(block)), " ")
+	wantSource :=
+		"/-- Additional supplied occurrence predicates used by the unconditional full\n" +
+			"    `DSB-ob` arm. The memory, TTD, TLBI, and final `ob` predicates are shared\n" +
+			"    with `ProjectedCATBBMRelations`; these inputs add only the remaining\n" +
+			"    operands. Nothing here constructs an official CAT execution. -/\n" +
+			"structure ProjectedCATDSBFullInputs (Occurrence : Type) where\n" +
+			"  isDCCVAU : Occurrence → Prop\n" +
+			"  isIC : Occurrence → Prop\n" +
+			"  isImplicit : Occurrence → Prop\n" +
+			"  isInstruction : Occurrence → Prop\n" +
+			"  isRead : Occurrence → Prop\n" +
+			"  isDSBFull : Occurrence → Prop\n" +
+			"  po : Occurrence → Occurrence → Prop\n\n" +
+			"/-- Exact source filter `M | DC.CVAU | IC | TLBI` of the pinned unconditional\n" +
+			"    full-DSB arm. -/\n" +
+			"def ProjectedCATDSBFullSource {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (event : Occurrence) : Prop :=\n" +
+			"  cat.descriptorTags.isMemory event ∨ inputs.isDCCVAU event ∨\n" +
+			"    inputs.isIC event ∨ cat.isTLBI event\n\n" +
+			"/-- Exact destination filter\n" +
+			"    `~(Imp & TTD & M | Imp & Instr & R)` of that arm. -/\n" +
+			"def ProjectedCATDSBFullDestination {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (event : Occurrence) : Prop :=\n" +
+			"  ¬((inputs.isImplicit event ∧ cat.descriptorTags.isTTD event ∧\n" +
+			"        cat.descriptorTags.isMemory event) ∨\n" +
+			"      (inputs.isImplicit event ∧ inputs.isInstruction event ∧\n" +
+			"        inputs.isRead event))\n\n" +
+			"/-- Exact occurrence-level reading of the pinned unconditional arm\n\n" +
+			"`[M | DC.CVAU | IC | TLBI]; po; [dsb.full]; po;\n" +
+			" [~(Imp & TTD & M | Imp & Instr & R)]`.\n\n" +
+			"Its inclusion in `DSB-ob` and ultimately `ob` remains a supplied one-way\n" +
+			"refinement fact. -/\n" +
+			"def ProjectedCATDSBFullArm {Occurrence : Type}\n" +
+			"    (cat : ProjectedCATBBMRelations Occurrence)\n" +
+			"    (inputs : ProjectedCATDSBFullInputs Occurrence)\n" +
+			"    (before after : Occurrence) : Prop :=\n" +
+			"  ∃ dsbEvent,\n" +
+			"    ProjectedCATDSBFullSource cat inputs before ∧\n" +
+			"      inputs.po before dsbEvent ∧ inputs.isDSBFull dsbEvent ∧\n" +
+			"      inputs.po dsbEvent after ∧\n" +
+			"      ProjectedCATDSBFullDestination cat inputs after\n"
+	want := strings.Join(strings.Fields(wantSource), " ")
+	if got != want {
+		t.Fatalf("Lean exact projected CAT DSB-full arm drifted\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestCATSourceBytesDetectChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "model.cat")
+	original := []byte("let ob = obs\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readCATWorktreeBytes(path, "100644")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatal("unchanged CAT bytes differ")
+	}
+	if err := os.WriteFile(path, []byte("let ob = 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err = readCATWorktreeBytes(path, "100644")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(data, original) {
+		t.Fatal("changed CAT bytes matched the original")
+	}
+}

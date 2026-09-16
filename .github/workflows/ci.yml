@@ -19,9 +19,9 @@ jobs:
         # shards partition every test name exactly once (compiler E2E A-R,
         # the standard-library E2E tests in two halves (the text tests,
         # the rest), the remaining compiler E2E S-Z, the rest of compiler,
-        # every other package). The S-Z shard alone reached the 45-minute
-        # limit once TestE2EStd* passed eighty tests, and those alone did
-        # too under the race detector on a slow runner.
+        # every other package). The broad A-R shard needs a 90-minute
+        # ceiling on slow runners, while the stdlib shards use 60 minutes;
+        # S-Z and the remaining compiler tests retain their 45-minute bound.
         shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
 
     steps:
@@ -69,7 +69,7 @@ jobs:
         OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          e2e-a-r) go test -v -race -timeout 45m ./compiler -run '^TestE2E[A-R]' ;;
+          e2e-a-r) go test -v -race -timeout 90m ./compiler -run '^TestE2E[A-R]' ;;
           e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
           e2e-stdlib-rest) go test -v -race -timeout 60m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
           e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;
@@ -130,6 +130,11 @@ jobs:
     name: AArch64 Memory Refinement
     runs-on: ubuntu-24.04
 
+    timeout-minutes: 90
+    env:
+      HERDTOOLS7_COMMIT: 76d5bd259d4c4b553a0f52158b9638559b79a5b5
+      HERDTOOLS7_OCAML: 5.2.1
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -138,6 +143,52 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.27.1'
+
+    - name: Install Herd build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends opam
+
+    - name: Fetch Arm's official model at the recorded revision
+      run: |
+        set -euo pipefail
+        recorded="$(cat spec/litmus/aarch64/HERDTOOLS7_COMMIT)"
+        test "${#recorded}" -eq 40
+        case "$recorded" in *[!0-9a-f]*) exit 1 ;; esac
+        test "$recorded" = "$HERDTOOLS7_COMMIT"
+        git init -q external/herdtools7
+        git -C external/herdtools7 remote add origin https://github.com/herd/herdtools7.git
+        git -C external/herdtools7 fetch -q --depth 1 --filter=blob:none origin "$HERDTOOLS7_COMMIT"
+        git -C external/herdtools7 checkout -q FETCH_HEAD
+        test "$(git -C external/herdtools7 rev-parse HEAD)" = "$HERDTOOLS7_COMMIT"
+
+    - name: Restore pinned Herd build
+      id: herd-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.opam
+        key: herdtools7-${{ env.HERDTOOLS7_COMMIT }}-ocaml-${{ env.HERDTOOLS7_OCAML }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Build pinned Herd
+      if: steps.herd-cache.outputs.cache-hit != 'true'
+      run: |
+        set -euo pipefail
+        opam init --yes --no-setup --bare --disable-sandboxing
+        opam switch create herdtools7 "ocaml-base-compiler.${HERDTOOLS7_OCAML}" --yes
+        opam install --switch herdtools7 --yes dune
+        cd external/herdtools7
+        opam exec --switch herdtools7 -- dune build asllib/aslref.opam
+        cd ../..
+        opam pin add --switch herdtools7 --no-action --yes aslref ./external/herdtools7/asllib
+        opam install --switch herdtools7 --yes aslref
+        opam pin add --switch herdtools7 --no-action --yes herdtools7 ./external/herdtools7
+        opam install --switch herdtools7 --yes herdtools7
+
+    - name: Put pinned Herd on PATH
+      run: |
+        test -x "$HOME/.opam/herdtools7/bin/herd7"
+        echo "$HOME/.opam/herdtools7/bin" >> "$GITHUB_PATH"
+        "$HOME/.opam/herdtools7/bin/herd7" -version
 
     - name: Verify Clang cross-target support
       run: |
@@ -152,4 +203,7 @@ jobs:
       run: go test -v ./codegen -run '^TestAArch64'
 
     - name: Verify memory-model litmus outcomes
+      env:
+        OAK_REQUIRE_HERD7: '1'
+        OAK_HERDTOOLS7_DIR: ${{ github.workspace }}/external/herdtools7
       run: go test -v ./semir -run '^TestLitmus'

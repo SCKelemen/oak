@@ -3,10 +3,10 @@ package main
 // The certificate rung of `oak prove` (docs/spec/125-verification.md §3,
 // §4): every bit-level obligation as clauses (asm.ExportCNF), an external
 // SAT solver run on them when one is installed, and its LRAT certificate
-// checked by the Go checker (prove/lrat.go) and the checker written in
-// Oak (prove/solver/lrat.oak) before a row changes. The solver is
-// untrusted: an unsatisfiable verdict counts only with an accepted
-// certificate, a model only when the clause engine's own evaluation
+// checked by the Go kernel (internal/lrat/lrat.go, exposed through prove) and
+// the checker written in Oak (prove/solver/lrat.oak) before a row changes.
+// The solver is untrusted: an unsatisfiable verdict counts only with an
+// accepted certificate, a model only when the clause engine's own evaluation
 // confirms it is a counterexample. Where the ladder already decided, the
 // rung is a cross-check, and a disagreement makes the row open naming
 // both, as the Oak-solver cross-check does.
@@ -89,7 +89,11 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 		switch {
 		case outcome.Unsatisfiable:
 			checked, goErr := prove.CheckLRAT(cnf.Text, outcome.Certificate)
-			oak, oakErr := runOakLRAT(cnf.Text, outcome.Certificate)
+			var oak OakLRATVerdict
+			var oakErr error
+			if goErr == nil {
+				oak, oakErr = runOakLRAT(cnf.Text, outcome.Certificate)
+			}
 			refusal := ""
 			switch {
 			case goErr != nil:

@@ -73,6 +73,64 @@ main: (): i32 = 0
 	}
 }
 
+// A conditional on an aggregate assignment's right-hand side snapshots and
+// restores the lowering's locals. The resolved destination must remain part
+// of the restored aggregate tree: replacing that tree made these writes land
+// on detached nodes and produced false counterexamples.
+func TestConditionalAggregateAssignmentKeepsResolvedPlace(t *testing.T) {
+	src := `
+Box: type = struct { items: [2]u8, value: u8 }
+
+whole_update: (x: u8): Box {
+  out: Box = Box { items: [2]u8{ 0, 0 }, value: 0 }
+  i: u8 = 0
+  while i < u8(1) {
+    out = true ? { Box { items: [2]u8{ x, 0 }, value: x } } | { out }
+    i = i + u8(1)
+  }
+  out
+}
+
+field_update: (x: u8): Box {
+  out: Box = Box { items: [2]u8{ 0, 0 }, value: 0 }
+  i: u8 = 0
+  while i < u8(1) {
+    out.value = true ? { x } | { u8(0) }
+    i = i + u8(1)
+  }
+  out
+}
+
+indexed_update: (x: u8): Box {
+  out: Box = Box { items: [2]u8{ 0, 0 }, value: 0 }
+  i: u8 = 0
+  while i < u8(1) {
+    out.items[u32(i)] = true ? { x } | { u8(0) }
+    i = i + u8(1)
+  }
+  out
+}
+
+whole_update_keeps_target: theorem (x: u8) { whole_update(x).value == x && whole_update(x).items[u32(0)] == x }
+field_update_keeps_target: theorem (x: u8) { field_update(x).value == x }
+indexed_update_keeps_target: theorem (x: u8) { indexed_update(x).items[u32(0)] == x }
+
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(results), results)
+	}
+	for _, result := range results {
+		if result.Status != Decided || !strings.Contains(result.Detail, "bit level") {
+			t.Errorf("%s: got %s (%s), want a bit-level decision", result.Name, result.Status, result.Detail)
+		}
+	}
+}
+
 // A theorem over an uninterpreted operation — integer division by a
 // constant that is not a power of two — is never refuted by a path that
 // falsifies only the operation's abstraction: the decider confirms every

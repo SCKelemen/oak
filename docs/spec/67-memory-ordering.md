@@ -320,8 +320,8 @@ The Semantic IR test suite includes:
 | zero-allocation release-sequence walk | regression-tested |
 | implementation-to-Lean refinement | not yet proved |
 | sequential-consistency total order | specified + implemented + Lean-modeled in chapter 68 |
-| C/backend weak-memory refinement | next major layer |
-| AArch64 litmus/assembly validation | next major layer |
+| C/backend weak-memory refinement | partial: instruction families checked; C/LLVM refinement remains open |
+| AArch64 litmus/assembly validation | gated: pinned CAT AST certificate + MP/SB/LB/IRIW Herd runs (chapter 69) |
 
 ## 11. Next closure layer: backend refinement
 
@@ -329,10 +329,10 @@ Chapter 68 defines the explicit global seq-cst witness and ties it to HB,
 modification order, and read visibility. The language-level relation set is
 therefore explicit enough to stop inventing semantics in the backend.
 
-The next work is to verify that generated C and AArch64 code preserve these
-relations through assembly inspection and weak-memory litmus tests. Only then
-should a lock-free queue be accepted as relying on Oak's memory model end to
-end.
+Chapter 69 now checks generated-C/AArch64 instruction families, proves a
+restricted ordered-before projection, mechanically pins it to the official CAT
+parser AST, and runs weak-memory litmus tests. The remaining work is the full
+C/LLVM/event-generation refinement rather than the assembly/litmus layer itself.
 
 The RISC-V refinement layer is `69-riscv-memory-refinement.md`: the same
 evidence stack over RVWMO — now with RVWMO's fence and load-value rules

@@ -2,10 +2,12 @@ package nativegen
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 )
 
 func ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
@@ -106,6 +108,12 @@ func TestMetricsCountsLoopsAndGuards(t *testing.T) {
 	}}
 	fn.Items[3] = asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_5"}}}
 	m := Metrics(fn)
+	// The stall estimate is the latency model's (machine.StallEstimate,
+	// tested with the scheduler); the counts are what this test pins.
+	m.Stalls, m.LoopStalls = 0, 0
+	for k := range m.LoopBodies {
+		m.LoopBodies[k].Stalls = 0
+	}
 	want := opt.Metrics{Instructions: 13, Branches: 3, Loads: 1, Calls: 1, Multiplies: 1, Divides: 1, Guards: 1, Loops: 1, LoopInstructions: 8, LoopBranches: 3, LoopLoads: 1, LoopGuards: 1,
 		LoopBodies: []opt.LoopMetrics{{Instructions: 8, Branches: 3, Loads: 1, Guards: 1, Stride: 1}}}
 	if fmt.Sprint(m) != fmt.Sprint(want) {
@@ -156,11 +164,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 11 {
+	if got := len(registry.Transforms()); got != 19 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, VectorReductions: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.VectorReductions || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, Fuse: true, FuseExits: true, Schedule: true})
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -173,16 +181,17 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.VectorReductions || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
-	// The rv64 lane has the law-licensed unrolling, check elision, and
-	// layer A's strength reduction (nativegen/rewrite.go, both lanes).
-	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
+	// The rv64 lane also has verifier-gated OptIR emission, the law-licensed
+	// unrolling, check elision, and layer A's strength reduction
+	// (nativegen/rewrite.go, both lanes).
+	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate) {
+		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}
@@ -222,5 +231,96 @@ func TestMetricsStrideNeedsOneIncrement(t *testing.T) {
 	m := Metrics(fn)
 	if len(m.LoopBodies) != 1 || m.LoopBodies[0].Stride != 1 {
 		t.Fatalf("loop bodies %+v", m.LoopBodies)
+	}
+}
+
+func TestCompileForRefusesMismatchedOptIRFingerprint(t *testing.T) {
+	cfg := optir.CFG{Name: "f", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID:         0,
+		Operations: []optir.Operation{{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	for _, arch := range []string{asm.ArchArm64, asm.ArchRV64} {
+		lane := Lane{Arch: arch, OptIR: &cfg, OptIRFingerprint: "not-the-cfg-fingerprint", OptIRChanges: 1, UseOptIR: true}
+		if _, err := CompileFor(lane, nil, nil, nil, nil, nil, nil); err == nil {
+			t.Fatalf("mismatched OptIR fingerprint reached %s materialization", arch)
+		}
+	}
+}
+
+func TestOptIRFingerprintRequiresCompleteCheckedMemoryEvidence(t *testing.T) {
+	cfg := optir.CFG{Name: "f", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID:         0,
+		Operations: []optir.Operation{{Code: optir.OpConstInt, Results: []optir.Value{{ID: 1, Type: "u32"}}, Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: "0"}}}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	metadata := optir.RegionMemoryMetadata{}
+	memorySSA := optir.RegionMemorySSA{}
+	lane := Lane{OptIR: &cfg, OptIRMemory: &metadata, OptIRMemorySSA: &memorySSA}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "complete checked evidence") {
+		t.Fatalf("incomplete checked memory fingerprint error = %v", err)
+	}
+	authority := optir.CheckedMemoryAuthority{}
+	lane = Lane{OptIR: &cfg, OptIRMemoryAuthority: &authority}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without region metadata") {
+		t.Fatalf("one-sided checked memory fingerprint error = %v", err)
+	}
+}
+
+func TestOptIRFingerprintRequiresCallCertificateExactlyForCallAuthority(t *testing.T) {
+	source := optir.Source{Context: "fingerprint-call.oak", Line: 1, Column: 20}
+	call, err := optir.NewCheckedMemoryCallRecord(source, "leaf", "leaf-summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := optir.NewCheckedMemoryAuthorityWithCalls(nil, []optir.CheckedMemoryCallRecord{call})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := optir.CFG{Name: "caller", Entry: 0, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 0,
+		Operations: []optir.Operation{{
+			Code: optir.OpCall, Results: []optir.Value{{ID: 1, Type: "u32"}}, Effects: []optir.Effect{optir.EffectCall},
+			Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: "leaf"}}, Source: source, MemoryCallID: call.ID,
+		}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}},
+	}}}
+	projection, err := optir.ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySSA, err := optir.AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lane := Lane{
+		OptIR: &cfg, OptIRMemory: &projection.Metadata, OptIRMemorySSA: &memorySSA,
+		OptIRMemoryAuthority: &authority, OptIRMemoryProjection: &projection,
+	}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without a call certificate") {
+		t.Fatalf("missing checked call certificate fingerprint error = %v", err)
+	}
+
+	emptyAuthority, err := optir.NewCheckedMemoryAuthority(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyProjection, err := optir.ProjectCheckedMemory(optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}, emptyAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptySSA, err := optir.AnalyzeRegionMemorySSA(optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}, emptyProjection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unexpected optir.CheckedMemoryCallCertificate
+	plainCFG := optir.CFG{Name: "plain", Entry: 0, Blocks: []optir.Block{{ID: 0, Terminator: optir.Terminator{Kind: optir.TerminatorReturn}}}}
+	lane = Lane{
+		OptIR: &plainCFG, OptIRMemory: &emptyProjection.Metadata, OptIRMemorySSA: &emptySSA,
+		OptIRMemoryAuthority: &emptyAuthority, OptIRMemoryProjection: &emptyProjection,
+		OptIRMemoryCallCertificate: &unexpected,
+	}
+	if _, err := lane.optIRFingerprint(); err == nil || !strings.Contains(err.Error(), "without checked memory call authority") {
+		t.Fatalf("unexpected checked call certificate fingerprint error = %v", err)
 	}
 }

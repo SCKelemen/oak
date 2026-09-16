@@ -264,7 +264,11 @@ func (g *generator) takeCalleeRegister() (int, bool) {
 		return r, true
 	}
 	if g.usedCallee+fieldHomeReserve >= calleeHigh-calleeLow+1 {
-		return 0, false
+		// The loop-invariant pass's reserve yields to a field a loop
+		// touches: a home saves a load and a store per iteration where a
+		// hoisted invariant saves one instruction (§9 "The register
+		// budget"; the reserve was claimed before the body lowered).
+		return g.reclaimReserve()
 	}
 	if g.saveArea == 0 {
 		if g.nslots != 0 {

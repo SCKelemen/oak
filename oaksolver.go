@@ -88,7 +88,7 @@ var oakWitnessSource string
 var oakDriverHelpersSource string
 
 // The LRAT certificate checker (prove/solver/lrat.oak): the twin of
-// prove/lrat.go for the certificate rung, reached through
+// internal/lrat/lrat.go for the certificate rung, reached through
 // OAK_SOLVER_MODE=lrat with the encoded formula and certificate on stdin.
 //
 //go:embed prove/solver/lrat.oak
@@ -1116,12 +1116,25 @@ type OakLRATVerdict struct {
 	Additions, Deletions int
 }
 
+func checkOakLRATAllocationBounds(words []uint32) error {
+	if len(words) < 8 {
+		return fmt.Errorf("oak lrat checker: record has no complete header")
+	}
+	if uint64(words[1]) > uint64(len(words)) {
+		return fmt.Errorf("oak lrat checker: %d declared variables are disproportionate to %d encoded words", words[1], len(words))
+	}
+	return nil
+}
+
 // runOakLRAT checks a certificate with the checker written in Oak
 // (prove/solver/lrat.oak) inside the compiled solver binary, the encoded
 // words on its standard input.
 func runOakLRAT(formula, certificate string) (OakLRATVerdict, error) {
 	words, err := prove.EncodeLRATWords(formula, certificate)
 	if err != nil {
+		return OakLRATVerdict{}, err
+	}
+	if err := checkOakLRATAllocationBounds(words); err != nil {
 		return OakLRATVerdict{}, err
 	}
 	solver, err := oakSolverBinary()

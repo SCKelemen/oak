@@ -10,7 +10,8 @@ package asm
 // trap fires, or the claim is false": the formula is unsatisfiable exactly
 // when the theorem holds, and a model of it is a counterexample read back
 // through the parameter bits. The solver that decides it is untrusted; its
-// LRAT certificate is checked (prove/lrat.go, prove/solver/lrat.oak), and
+// LRAT certificate is checked (internal/lrat/lrat.go through prove's
+// compatibility surface, and prove/solver/lrat.oak), and
 // the checker, not the solver's verdict, settles the row.
 
 import (
@@ -259,12 +260,23 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	if undecided != nil {
 		return CNF{}, undecided.Message, false
 	}
-	bl := newCNFBlaster(lowered.names, lowered.widths)
+	return exportTermCNF("oak prove: "+sig.Name.Value, lowered.names, lowered.widths, lowered.claim, lowered.traps)
+}
+
+// exportTermCNF is the one clause authority shared by theorem and native
+// equality certificates. claim is a Boolean-valued term; the emitted formula
+// is satisfiable exactly when a trap fires or claim is false, modulo the
+// explicitly documented abstraction of select/uninterpreted terms.
+func exportTermCNF(label string, names []string, widths map[string]int, claim *term, traps []*term) (CNF, string, bool) {
+	bl := newCNFBlaster(names, widths)
 	var obligation []int
 	trapAlways := false
-	for _, trap := range lowered.traps {
+	for _, trap := range traps {
+		if trap == nil {
+			return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
+		}
 		bits := bl.blast(trap)
-		if bits == nil || bl.exceeded() {
+		if len(bits) != 1 || bl.exceeded() {
 			return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 		}
 		switch bits[0] {
@@ -276,11 +288,14 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 			obligation = append(obligation, bits[0])
 		}
 	}
-	claim := bl.blast(lowered.claim)
-	if claim == nil || bl.exceeded() {
+	if claim == nil {
 		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 	}
-	out := CNF{Owners: map[int]VariableOwner{}, Names: lowered.names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: lowered.claim, traps: lowered.traps}
+	claimBits := bl.blast(claim)
+	if len(claimBits) != 1 || bl.exceeded() {
+		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
+	}
+	out := CNF{Owners: map[int]VariableOwner{}, Names: names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: claim, traps: traps}
 	for v, dimacs := range bl.cnf.inputs {
 		if owner, isParam := bl.owners[v]; isParam {
 			out.Owners[dimacs] = VariableOwner{Param: owner.param, Bit: owner.bit}
@@ -289,27 +304,42 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	switch {
 	case trapAlways:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the body traps on every input"}
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationTrapAlways, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
-	case claim[0] == bddFalse && len(obligation) == 0:
+	case claimBits[0] == bddFalse:
 		out.Settled = &Decision{Kind: DecisionRefuted, Message: "the claim is false on every input"}
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationClaimFalse, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
-	case claim[0] != bddTrue:
-		obligation = append(obligation, claim[0]^1)
+	case claimBits[0] != bddTrue:
+		obligation = append(obligation, claimBits[0]^1)
 	}
 	if len(obligation) == 0 {
 		out.Settled = &Decision{Kind: DecisionProven, Message: "at the bit level (the obligation is constant)"}
+		if err := validateSettledCNFObligation(bl, traps, claim, cnfObligationConstantProven, obligation); err != nil {
+			return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+		}
 		return out, "", true
 	}
-	out.obligation = obligation
+	if err := validateCNFObligation(bl, traps, claim, cnfObligationFormula, obligation); err != nil {
+		return CNF{}, fmt.Sprintf("internal CNF obligation check failed: %v", err), false
+	}
 	final := make([]int, len(obligation))
 	for i, edge := range obligation {
 		final[i] = cnfLit(edge)
 	}
 	clauses := append(bl.cnf.clauses, final)
+	if err := validateCNFTrace(bl.cnf, obligation, clauses); err != nil {
+		return CNF{}, fmt.Sprintf("internal CNF trace check failed: %v", err), false
+	}
+	out.obligation = obligation
 	out.Variables = bl.cnf.variables
 	out.Clauses = len(clauses)
 	var b strings.Builder
-	fmt.Fprintf(&b, "c oak prove: %s\n", sig.Name.Value)
+	fmt.Fprintf(&b, "c %s\n", label)
 	fmt.Fprintf(&b, "p cnf %d %d\n", out.Variables, out.Clauses)
 	for _, clause := range clauses {
 		for _, lit := range clause {

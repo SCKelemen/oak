@@ -16,7 +16,11 @@ All operations are nullary and return Unit. The instruction choice and any immed
 
 ## 2. Authority and semantics
 
-`daifset_irq` masks the IRQ bit in PSTATE. `daifclr_irq` unmasks that bit. These functions intentionally expose IRQ masking only; broader DAIF manipulation is not part of this v1 surface.
+On successful, access-admitted execution, `daifset_irq` sets the IRQ mask bit
+`PSTATE.I`; its `#2` operand preserves PSTATE.D, A, and F. `daifclr_irq`
+clears I under the corresponding architectural preconditions. These functions
+intentionally expose IRQ masking only; broader DAIF manipulation is not part
+of this v1 surface.
 
 `wfi` and `wfe` may suspend forward execution according to AArch64 architectural event/interrupt rules. They are therefore explicit machine effects and must never be introduced by an optimizer as an ordinary power hint.
 
@@ -50,6 +54,15 @@ The implementation is guarded by:
 4. negative assembly checks forbidding hidden `DMB`, `DSB`, or `ISB`;
 5. Lean `Oak.AArch64EventControl` facts separating IRQ-mask, wait, event-send, and memory-ordering capabilities.
 
+The DAIFSet leaf has a deeper exact seam. `Oak.AArch64Encoding` computes
+`MSR DAIFSet, #2` as `0xd50342df`; generated Lean from Oak's pure Sail
+projection maps the official `PSTATEField_DAIFSet` branch to the local DAIFSet
+target with operand `#2`, and its D/A/I/F body is proved equal to Oak's local
+transition that sets I while preserving D/A/F. An oracle test pins the
+instruction class, access/trap boundary, dispatch, and four assignments to
+the pinned official Sail source. Zero and
+the nearby DAIFClr word fail closed in the DAIFSet-only projection.
+
 ## 6. Non-goals
 
 This surface does not yet define:
@@ -60,5 +73,13 @@ This surface does not yet define:
 - proof that a particular wait/wakeup protocol has no lost wakeup;
 - interrupt-controller acknowledgement/EOI semantics;
 - a full Arm axiomatic model for architectural events.
+
+The DAIFSet seam does not prove that `AArch64_CheckSystemAccess` succeeds, that
+EL/feature trap checks admit the instruction, or that a dynamic source/object
+execution occurrence reaches the state body. It also gives no interval-wide
+critical-section guarantee, pending/already-taken interrupt semantics, or
+claim about FIQ, SError, debug, NMI, or synchronous exceptions. It adds no CAT
+edge, memory ordering, completion, publication, context synchronization, or
+TLBI effect.
 
 Those require higher-level protocols rather than being hidden inside these instruction primitives.

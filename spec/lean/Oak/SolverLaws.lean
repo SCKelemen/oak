@@ -5,7 +5,7 @@ import Oak.RupCheck
 
 `prove/solver/sat.oak` is the conflict-driven solver behind the
 certificate rung (docs/spec/125-verification.md §3 "By certificate"). It
-is untrusted: whatever it records, the checkers (`prove/lrat.go`,
+is untrusted: whatever it records, the checkers (`internal/lrat/lrat.go`,
 `prove/solver/lrat.oak`) decide, and `Oak.RupCheck` is why an accepted
 record refutes the formula. This module states the other half, the laws
 the solver relies on so that what it records is accepted — a completeness

@@ -2,18 +2,27 @@
 
 Status: OptIR analysis DAG with exact identities, checked selective reuse, and
 bounded deterministic parallel execution; the complete native candidate path
-from materialization through selection is also live. This note refines the
-optimizer search design; it does not change Oak semantics or authorize OptIR
-emission.
+from materialization through selection is also live. Typed artifact references
+and arity-specific builders derive keys and decode dependencies for the OptIR
+graph. This note refines the optimizer search design; it does not change Oak
+semantics or authorize OptIR emission.
 
 ## 1. Decision
 
-Oak's compiler stages, optimizer analyses, transforms, validation, costing, and
-selection should be represented as one dependency graph of immutable
-artifacts. `compiler.Stage.Then` remains linear and native candidate search
-still owns an internal branching proposal search. OptIR's first generic
-analysis chain and every proposed native candidate's materialization and gates
-now execute through artifact graphs rather than direct calls.
+Reusable, branching, independently verifiable, proof-gating, or expensive
+compiler results should be represented as dependency graphs of immutable
+artifacts. Straight-line frontend sequencing and local implementation-detail
+cleanup remain ordinary deterministic code. `compiler.Stage.Then` is therefore
+deliberately linear, while OptIR's reusable generic analysis chain and every
+proposed native candidate's materialization and gates execute through artifact
+graphs.
+
+The boundary is demand-driven: a result deserves artifact identity when
+another computation needs to cache it, reuse it, compare it, verify it, run it
+concurrently, or bind evidence to its exact version. A private sequence such as
+canonicalize → GVN → DCE may remain one `ScalarCleanup` node unless an
+intermediate result gains one of those consumers. The compiler is a hybrid of
+pipelines and artifact DAGs, not one global graph by decree.
 
 The graph is about computation and evidence, not control-flow. An OptIR CFG may
 contain cycles while the artifact graph that produced and analyzed that CFG is
@@ -116,8 +125,11 @@ also include the compiler build identity in the producer revision.
 | selection | cheapest sufficiently admitted candidate | chooses; proves nothing itself |
 
 The generic graph executor schedules these kinds but does not infer semantic
-permission from a kind name. Typed compiler builders will impose the stronger
-candidate/admission/verdict/selection edge rules.
+permission from a kind name. `ArtifactRef[T]` and the typed root/unary/binary/
+ternary builders derive exact ordered-dependency keys, extract inputs, and fail
+closed on a missing or wrongly typed payload. They remove graph plumbing, not
+proof obligations: stronger candidate/admission/verdict/selection edge rules
+remain explicit compiler policy.
 
 ## 5. Costing and validation order
 
@@ -240,18 +252,31 @@ Completed:
 
 1. The generic graph, deterministic executor, derived versions, and
    process-local cache are in `opt/`.
-2. The current OptIR analysis API is projected onto graph nodes without
-   changing its analysis results or emission behavior.
-3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP,
-   loop analysis, and GVN/DCE consume that exact key. GVN/DCE publishes CFG v1,
-   a second loop node analyzes v1, and LICM consumes both v1 artifacts. LICM no
+2. The current OptIR analysis and transformation API is projected onto graph
+   nodes. A changed final CFG can enter the separately gated native candidate
+   path; artifact identity alone never licenses emission.
+3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP
+   analyzes that exact key, and the exact-evidence SCCP rewrite publishes CFG
+   v1. Loop analysis and GVN/DCE consume v1; GVN/DCE publishes CFG v2, a second
+   loop node analyzes v2, and LICM consumes both v2 artifacts. LICM no
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
+   After the checked memory transforms, one `optir.memory-cleanup` node
+   composes SCCP, phi/GVN/DCE cleanup, fresh memory liveness and verified DSE,
+   pure DCE, and a final pure LICM pass with fresh exact-CFG loop analysis.
+   Its dependencies are the exact
+   forwarding artifact and checked memory authority, and its revision includes
+   the constituent analysis/rewrite revisions, including memory liveness and
+   DSE, loop structure/analysis, and LICM. It rebuilds checked projection and
+   MemorySSA after scalar/CFG rewrites and after final store/producer deletion
+   and scalar motion. Native selection replays that
+   bounded composition and uses the final CFG for bindings, call certificates,
+   and materialization identity; intermediate helpers need no separate nodes.
 4. OptIR has closed analysis-aspect declarations and checked preservation
    certificates. GVN/DCE's certificate is an admission artifact over exact CFG
-   v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
-   so v1 reuses dominance/natural loops while recomputing induction facts.
+   v1/v2 identities. The loop-structure artifact declares only `CFGTopology`,
+   so v2 reuses v1 dominance/natural loops while recomputing induction facts.
 5. Native search gives every proposal a canonical, pre-lowering recipe over
    its complete lane configuration, source/program inputs, and the checked fact
    domains nativegen reads. A checked input node feeds materialization, then
@@ -264,9 +289,12 @@ Completed:
    a separately validated ungated fallback. The per-search cache remains
    ephemeral while backend-owned `Config` and `Body` values lack canonical
    serialization and a deep freeze boundary.
-6. The graph has bounded deterministic ready-wave concurrency. OptIR runs with
-   three workers; reverse completion, worker bounds, deterministic failures,
+6. The graph has bounded deterministic ready-wave concurrency. Reverse
+   completion, worker bounds, deterministic failures,
    cancellation, exact-once dependencies, and cache pruning are race-tested.
+7. Generic typed artifact references and arity-specific derived-task builders
+   own dependency extraction and recipe-key derivation. Tests pin ordered
+   identities and refusal of wrong cached payloads.
 
 The compiler currently runs this graph without a cross-call cache. Public
 OptIR results contain mutable slice-backed Go values, so sharing cached payloads
@@ -276,13 +304,15 @@ complete dependent invalidation after an input change.
 
 Remaining:
 
-7. Add persistent content-addressed caching only after canonical serialization
+8. Add persistent content-addressed caching only after canonical serialization
    and version invalidation are stable.
 
 ## 11. Non-goals of the first slice
 
-- no code-emission change;
+- no emission license derived merely from an artifact edge;
 - no persistent cache;
+- no requirement that straight-line frontend stages or private local cleanup
+  become artifact nodes;
 - no analysis reuse across IR versions without a checked aspect certificate;
 - no claim that a graph kind replaces a proof or verifier verdict;
 - no requirement that language users understand or configure the graph.

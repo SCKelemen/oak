@@ -55,6 +55,14 @@ The Go package `semir` is the first executable representation of this design. It
 
 The current `semir` package is a host compiler data model, not yet a promise that every proposed Oak surface syntax exists. Surface syntax should be added only after its semantic meaning is stable in the IR.
 
+The first end-to-end fact transport also exists for proved element indices.
+The typechecker owns an opaque `IndexProof` record; OptIR facts may refer to its
+normalized proposition, native lowering attaches its ID only to the exact
+machine access, MachineIR preserves that reference, and the assembler seam
+checker resolves it only against independently supplied typechecker authority
+and concrete region identity. The proof is therefore reused without turning
+optimizer metadata into permission.
+
 ## Type axis
 
 The type axis preserves:

@@ -241,9 +241,196 @@ the recurrence analysis, and a loop the analysis cannot read keeps the
 heuristic's stride rather than losing it — the vectorized reduction's
 sixteen-element trips were priced at stride one for one test run.
 
+Fifth increment: post-allocation instruction scheduling
+(`machine.Schedule`, the `schedule` transform, gated). Within a block,
+between barriers — calls, returns, traps, branches, memory barriers,
+atomics, sp writes, system instructions, and the flag-setting compares,
+which keep their place so the verifier's loop and condition shapes
+survive — instructions list-schedule by critical path over a dependence
+graph of register reads-after-writes at the producer's latency, writes
+after reads and writes, the condition flags as a pseudo-register, and a
+conservative memory order (a store against every memory instruction,
+loads past loads). The cost model gains a stall term
+(`machine.StallEstimate`: the latency a consumer's distance from its
+producer does not cover, at most eight apart), straight and per loop, so
+a better-scheduled body is priced lower; the first version without the
+compare barrier scheduled bodies past the verifier's path budget, which
+the vector-homes test caught. Three corrections to the measure followed
+from the suite: it counts across barriers and block boundaries (a guard
+branch between a divide and its consumer hides none of the latency on
+the fall-through path, so the branch-free strength-reduced form was
+being charged stalls the guarded form skipped), a pair whose two
+instructions lie in different loops counts once and in no loop's share,
+and a fall-through block without a label counts under the label before
+it (the top-tested loop's body block has none, and its load's stall was
+being lost while the rotated form's was charged). And one correction to
+the scheduler itself: the RV64 checker reads the length normalization
+`slli rX, len, 32; srli rX, rX, 32` as one definition only as adjacent
+halves, so a schedule that slid a copy between them lost every guard on
+the length and was refused; the target now names such *bonded* pairs
+(`target.bonded`) and the scheduler moves them as one unit, after which
+the RV64 binary search's scheduled form is admitted and proven.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
-directly, scheduling, and exact trip counts against register bounds.
+directly, and exact trip counts against register bounds.
+
+### Phase B, sixth increment: the lift reads the vector extension
+
+The RV64 target knows the RVV instructions the lane emits
+(`machine/target.go`): the vector registers are the lift's `VEC` class at
+128 bits and keep their assignment (reserved: the RVV psABI binds v8 at
+the boundary and the checker's fixed configurations name registers), the
+configuration `vsetivli` is a barrier no vector instruction crosses,
+loads and stores carry their memory operand, the accumulating forms
+(`vfmacc`, `vslideup`, `vmv.s.x`) read their destination, and every
+vector register is caller-saved with v8–v23 as arguments. A frame address
+(`addi tX, sp, off`) is not pure on this lane: the checker admits vector
+memory through a frame address formed beside the access, and a hoisted
+one written twice is no address to it. The recurrence analysis reads a
+register-form stride (`li t0, 4; addw t1, t1, t0`), takes a loop's single
+induction as its index when the exit test is a computed flag, and bounds
+the remainder loop after such a strided loop. With that, RV64 vector
+bodies lift, schedule (`vsetivli` regions), reallocate their scalar
+registers, and price by stride — what the RV64 map vectorization needed
+from this side (item 24 below).
+
+### Phase B, seventh increment: peephole fusion over the lifted IR
+
+`machine.Fuse` (the `fuse` candidate, gated like the reallocator and the
+scheduler) folds two instructions the lowering spells one after the
+other into the one AArch64 instruction that does both, where the lifted
+webs show the intermediate register has one definition and one use in
+the same block and nothing the pair reads changes in between: a shift
+into an add's shifted operand (`lsr w9, w9, #1; add w25, w7, w9` → `add
+w25, w7, w9, lsr #1`) and an increment into a csinc (`add w10, w25, #1;
+csel w7, w10, w7, lo` → `csinc w7, w7, w25, hs`). The binary search's
+inner loop — `search` and `page_probe` in `benchmarks/kernels`, the two
+largest gaps left in proven or witnessed code — was eleven instructions
+against clang's nine for the same source, and these two fusions are the
+difference but for clang's `ccmp`, which combines the loop's two exit
+tests into one branch. That fusion ships too (`machine.FuseExits`, the
+`fuse-exits` candidate, gated): a bottom-tested loop's tail `b.cond exit;
+cbz wR, back` becomes `ccmp wR, #0, #nzcv, !cond; b.eq back`, the
+constant flags failing the branch where the first test exited, and the
+loop's entry test — the same two tests, both to the exit, the mirror the
+verifier's tail shape needs — becomes `ccmp wR, #0, #nzcv, !cond; b.ne
+exit`, the constant flags taking it. Three readers had to learn the
+form. The seam checker carries the compare's fact through the conditional
+compare to the branch it feeds (`ccmpFact`), in both polarities: where
+the constant flags fail the branch, the taken path knows the first
+compare's fact under its condition (the back edge, so the loop body's
+elided guard stands); where they take it, the fall-through knows it (the
+entry test, so the loop is entered under `lo < hi` as before). The
+verifier's tail shape (`tailLoopShape`) accepts a `ccmp` in the tail run
+and before the back edge, so the fused loops are judged by the loop
+argument rather than a path budget spent unrolling them — without it every
+such form came back trusted, which is why the transform sat unregistered
+for a commit. And the search's shape rule: validations were spread over
+shapes with the gated transforms struck from the name, which lumped the
+exit-fused form with its parent and never validated it; gated transforms
+now declare whether they are shape-neutral (`opt.Neutral` — the
+reallocator and the scheduler are, the fusions are not), and only the
+neutral ones drop out of the shape. The exit-fused search loop is ten
+instructions and one branch (clang's nine and one), priced the same as
+the pair-fused form's ten and two — the model prices a branch as an
+arithmetic instruction, and `ccmp` is one — so it wins on the tie-break
+toward more transforms; a branch weight above one would separate them,
+left for a measurement that shows the branch's cost. Measured on the clock, the two pair fusions
+are neutral within noise (`search` 1.11× against 1.12× unfused,
+`page_probe` 1.20× against 1.22×, native over the C backend, three
+interleaved runs each): the loop is bound by its load-compare-select
+chain, not its instruction count, which is the argument for the exit
+fusion — one branch to resolve per trip instead of two. The seam checker had to learn
+the fused midpoint: its bound arithmetic followed `sub; lsr; add` to
+`mid < hi` (Oak.Assembler.midpoint_below) and read the shifted-operand
+add as nothing, so the fused form kept its element guard and priced
+above the unfused one until `asm/bounds_arith.go` took the halving off
+the operand — the same lemma, one instruction. With that the search
+selects the fused forms for both kernels (`search`'s loop 10 instructions
+from 12 with the guard, cost 3732 against 4116).
+
+### Phase D, second increment: order-preserving fold vectorization
+
+The kernel table's `dot` at 1.31× was the last gap in proven code with a
+transform behind it: clang vectorizes the products (`fmul.4s` over four
+elements, sixteen a trip) and keeps the additions in source order, one
+`fadd` per element, where the native loop ran scalar — two loads, a
+multiply, an add, and the loop's three instructions per element. Float
+addition does not reassociate, so `vectorize-reductions`' four strided
+accumulators are out; but the element work vectorizes without touching
+the order. `vectorize-folds` (`nativegen/vector_fold.go`) rewrites a
+reduction whose element expression is lane-wise over span parameters of
+one length — the map vectorization's reading of the expression, spans at
+the loop's index, invariant scalars, constants, and the lane-wise
+operators — into a main loop that computes one vector of element values
+and adds its lanes to the accumulator in element order through
+`simd.extract`, under the slack guard, with the remainder loop as written.
+The license is `Oak.Fold.blocked_eq` (`spec/lean/Oak/Fold.lean`): the
+blocked fold equals the sequential fold for any lane function and any
+accumulation, so no law of the element type is used and the float
+accumulator rounds as before. The verifier already read every instruction
+the form needs (vector loads at wider lanes, `fmul` over an arrangement,
+the lane move `mov sD, vN.s[k]`), so the dot products prove
+(`compiler/e2e_native_vector_fold_test.go`: `f32` and `f64` dot products
+and a scaled sum; a bare float sum is left scalar, a vector saving it
+nothing). The first form of `bench_dot`'s loop was twenty instructions for four
+elements — two vector loads, the multiply, four lane moves, four adds,
+and six instructions of tests it did not need. The second span's slack
+test stood although the loop sits under `len(a) == len(b)`: the vector
+load decides its own guard from the enclosing loop conditions
+(`provenLanes`), which name the first span only, so the lowering now
+carries the conditionals' length equalities (`equalLens`, read as the
+map recognizer reads an arm) and a slack fact over one span is the
+fact over its equals. The checker then had to agree, in three places
+where it read a length register literally: the minimum a `cmp wL, #K;
+b.lo` proves (`measuresLen`), the element region an `add xE, xB, wI,
+uxtw #s` derives (the bound's register substituted for the span's own
+before the Lean-mirrored decision, Oak.Assembler.index_under_equal_len),
+and `lenLike` — each resolving the equality through any register that
+holds the same length, since the compare reads the copy (`w20`) where
+the slack fact names the primary (`w1`). And with no guard left to peel,
+the invariant pass hoists the condition's invariant half instead of
+leaving it in the header for the rotation to copy into the tail. The
+loop is sixteen instructions for four elements, one compare a trip,
+priced 1789 against the identity's 5537, proven.
+
+### Found by the harness: a miscompile in the plain lowering (2026-09-16)
+
+The kernel harness (`benchmarks/kernels/run.py`) refuses timings until
+every implementation's checksum agrees, and the night's run of the ten
+kernels found `blake3` disagreeing between the C backend and the native
+one. The search played no part — withholding every transform
+(`OAK_OPT_SKIP`) changed nothing — so the plain lowering was wrong, in a
+body the verifier trusts (an indexed load through a record argument) and
+whose callers it trusts for calling it. Three debugging knobs came out of
+finding it, all default off: `OAK_OPT_SKIP` withholds named transforms,
+`OAK_NATIVE_ONLY` lowers only the named functions natively (the rest stay
+with the C backend, so a disagreement bisects to one function), and
+`OAK_NATIVE_TRACE_SLOTS` prints every frame-slot event. The defect was in
+slot recycling: a scalar-replaced array's binding carries a zero offset
+and none of the markers the release paths check for, so its last use
+returned frame slot zero — a live array's — to the pool
+(`nativegen/liveness.go`, `popScope`; the write-up is in
+`benchmarks/kernels/RESULTS.md`). Two lessons for the architecture: the
+verifier's trust boundary is where miscompiles live, so the harness's
+checksum gate is part of the landing rule, not a benchmark nicety; and a
+loop-free cut of the same body was refuted by the verifier at once, which
+is the argument for keeping bodies decidable wherever the source allows.
+
+### Phase D, first rewrite after the reductions: map vectorization
+
+`vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
+first layer-A rewrite whose license is lane-wise semantics alone
+(`Oak.Map.blocked_eq`, `spec/lean/Oak/Map.lean`: the blocked map over a
+list is the element-wise map, for any function of one element), so it
+carries no fact requirement and its remainder loop is the source loop
+itself. It reads span parameters only, and it knows two spans have one
+length only from an enclosing `len(dst) == len(a) ? { … }`, the shape
+the seam checker admits for a store through one span under the other's
+guard. The increment's cost was in the verifier, not the rewrite: the
+hoisted form's remainder loop proved only once a premise could say that
+a skipped loop leaves its variables at their header values.
 
 ### Phase C, checked projection and first analysis: `optir/`
 
@@ -263,12 +450,22 @@ loops, value-preserving integer widening, and effect-marked calls. Unsupported
 memory and richer language forms are deterministic per-function refusals; a
 projection or verification inconsistency fails the complete analysis request.
 
-Analysis-only SCCP independently validates its operation vocabulary and computes
-exact constants plus executable blocks and edges. Integer folding follows Oak's
-fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
-it does not rewrite the CFG or authorize emission.
+SCCP independently validates its operation vocabulary and computes exact
+constants plus executable blocks and edges. Integer folding follows Oak's
+fixed-width wrapping, signedness, division-overflow, and logical-shift
+semantics. A separate transform consumes exact, independently recomputed SCCP
+evidence to replace known closed total-pure results, select known branches,
+remove unreachable blocks, and perform bounded SSA-aware block/trampoline
+cleanup. The transformed CFG verifies independently and still authorizes no
+emission without the ordinary candidate gates.
 
-The first generic transformation candidate is also connected. GVN numbers
+Before GVN, unused non-entry block parameters and their exact incoming edge
+positions are removed to a bounded fixed point; proof facts count as uses. Then
+trivial phi-like block parameters are removed only when every explicit incoming
+edge resolves to the same dominating SSA definition (with a self loop edge
+allowed for an invariant). Entry parameters are never inferred from backedges
+because their ABI inputs are implicit. Edge argument positions, uses, and facts
+are remapped and the CFG verifies again. GVN then runs on that CFG. It numbers
 plain copies alike, canonicalizes exact commutative integer/equality operations
 and inverse order comparisons, then shares a congruent expression only from a
 dominating definition. DCE removes the exposed unused pure chains and copies to
@@ -276,8 +473,8 @@ a fixed point. Both are restricted to a closed vocabulary of total scalar
 operations: missing effect metadata never makes calls, traps, memory, or
 unknown operations removable, and an unknown attribute disables algebraic
 normalization. Proof facts are remapped only where they remain valid. Input and
-output pass the independent verifier, and `Compilation.OptIR()` retains the
-original CFG beside the simplified candidate and its deterministic report.
+output pass the independent verifier, and `Compilation.OptIR()` retains each
+CFG version beside deterministic SCCP-rewrite and GVN/DCE reports.
 
 OptIR also has its semantic loop analysis: reverse postorder and immediate
 dominators; natural loops with back edges, latches, exits, canonical preheaders,
@@ -289,34 +486,77 @@ and wrapping boundaries retain only the facts actually established. These
 results complement MachineIR's structural loop tree: OptIR owns Oak arithmetic
 meaning, while MachineIR owns eventual layout and scheduling.
 
-Its first loop transform is analysis-only LICM. After GVN/DCE it moves a closed
+Its first loop transform is LICM. After GVN/DCE it moves a closed
 total-pure operation to a canonical preheader only when all operands are
 available there. Potential traps, effects, calls, memory, unknown operations,
 noncanonical entries, and facts other than the definition-local checked type
-fact pin the operation. The cloned result passes the independent verifier and
-is retained with deterministic movement evidence; emission consumes neither.
+fact pin the operation. The checked type fact carries an opaque source/type
+proof ID and is matched against immutable typechecker authority after every CFG
+rewrite; transformed metadata cannot authorize itself. The cloned result passes
+the independent verifier and is retained with deterministic movement evidence.
+A changed final CFG enters
+native search as the verifier-gated `optir-emit` candidate. Target-neutral SSA
+liveness/interference coloring precedes closed AArch64 and RV64 selectors. The
+RV64 selector preserves canonical sign-extended 32-bit values and explicitly
+zero-extends unsigned widening. Both selectors now admit a deliberately closed
+direct-call form: a known Oak body with zero through eight matching
+Bool/8/16/32/64-bit scalar arguments and exactly one
+matching scalar result, represented by exactly `EffectCall` plus one nonempty
+`callee` attribute. Since the available colors are caller-saved, any other
+non-unit value live across the call refuses the candidate. An admitted calling
+function reserves a sixteen-byte save area for AArch64 `x30` or RV64 `ra`,
+places the ABI register arguments as a simultaneous parallel copy whose cycles
+use the selector's reserved scratch, and normalizes the result at the boundary.
+A ninth or stack argument, all broader call forms, and other effects still
+refuse. The independently verified abstract spill plan is materialized on
+AArch64 and composed with this call frame. Spilled constants and bounded copy
+chains may instead be rematerialized after independent recipe verification and
+a target cost check; accepted recipes remove their physical slots, while
+expensive literals stay spilled. A canonical AArch64 pre-test loop now keeps
+its Bool predicate register-resident and machine-proves a loop-carried `u32`
+spill through the backedge. RV64 materializes acyclic CFGs with no effect
+except an admitted direct call, plus one exact call-free natural loop with a
+unique preheader, conditional header, straight-line latch, and return exit.
+The loop predicate remains in a register, only aligned four- or eight-byte
+spill slots cross its backedge, and broader cycles refuse. Canonical scalar
+slots live in a bounded 16-byte-aligned frame, at most two ordinary spilled
+operands use reserved `t5`/`t6` scratches, and simultaneous register/slot copies
+cover SSA edges and call arguments. Its `ra` save area sits above the spill
+slots in the same frame. Width-correct stores, signed/narrow reloads,
+production-pressure diamonds, spilled returns, a composed spill/call frame,
+and a loop-carried `u32` spill are machine-proven. On acyclic CFGs, RV64 also
+independently verifies constant-rematerialization evidence, admits only exact
+Bool/integer constants whose encoded-word cost beats their store/load traffic,
+compacts fully reconstructed slots, and rebuilds uses including call arguments;
+wide expensive constants remain physical. Broader RV64 loops and calls,
+copy-chain rematerialization, and cyclic rematerialization still refuse. The
+direct lowering remains the identity,
+and every selected OptIR body must pass seam admission and semantic translation
+validation; refusal or a trusted verdict falls back.
 
 The implementation topology is not yet one end-to-end pass DAG: `Stage.Then`
 remains linear, and native candidate proposal enumeration still branches
 internally. The generic OptIR chain is migrated. Immutable, exact-version nodes
-hold CFG v0, SCCP, loop structure/facts, GVN/DCE, CFG v1, checked preservation,
-recomputed induction facts, and LICM. CFGs have canonical content fingerprints.
+hold CFG v0, SCCP, SCCP rewrite and CFG v1, loop structure/facts, GVN/DCE and
+CFG v2, checked preservation, recomputed induction facts, and LICM. CFGs have
+canonical content fingerprints.
 Analyses declare a closed set of topology, SSA, operation, effect, type, fact,
 and layout aspects. GVN/DCE's admission node independently compares per-aspect
-digests for v0/v1; because `CFGTopology` is preserved, v1 reuses v0 dominance
-and natural loops while recomputing recurrence facts from v1. No certificate is
+digests for v1/v2; because `CFGTopology` is preserved, v2 reuses v1 dominance
+and natural loops while recomputing recurrence facts from v2. SCCP's topology
+changes force the first loop structure to be analyzed on v1. No certificate is
 an equivalence verdict or emission license. Every native proposal has a
 canonical checked-input recipe and materializes through candidate → admission
 → metrics → cost artifacts; every attempted semantic check is a verdict
 artifact, and selection depends on candidate, clean admission, cost, and
 verdict for every possible result. Validation stays sequential to retain the
 budget and proof early-stop. The executor runs bounded deterministic ready
-waves, and OptIR uses three workers for its independent analysis fan-out. The
-complete design is `optimizer-artifact-dag-2026-09.md`.
+waves for independent analysis work. The complete design is
+`optimizer-artifact-dag-2026-09.md`.
 
-Not yet: equivalence-validated emission of the candidate, join/loop-parameter
-value congruence, region-aware memory SSA and the dead stores it would license,
-non-affine and symbolic trip-count proofs,
+Not yet: aggregate/partial memory-region projection, multiple unavailable phi
+inputs, broader load placement, partial/call-written versions, conceptual-entry
+loop phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -749,10 +989,162 @@ B0 --store--> B1
 
 rather than treating the store to `B` as a possible clobber of `A` and asking a later alias analysis to recover independence.
 
-A region-aware memory SSA or equivalent def-use representation should power:
+The first explicit-metadata region MemorySSA has landed. It represents each
+declared region independently with deterministic entry, definition, join, and
+loop versions; exact Mod/Ref must agree with the operation effects, while an
+opaque call clobbers every declared region. An exact direct internal call may
+instead carry positive Mod/Ref authority derived recursively from checked
+OptIR projections. An empty set is `NoModRef`; a nonempty set lists exact typed
+nonvolatile scalar-global `Ref`, `Mod`, or `ModRef` may-effects. Write-bearing
+entries are partial definitions, never definite whole-region replacements,
+because a callee may execute an assignment conditionally. Every child call has
+the same evidence, and the summary fingerprint binds the exact callee CFG,
+sorted child summaries, and canonical effect set. Foreign, bodyless, and
+recursive graphs fail closed; absence of authority never implies an effect.
+Production does not rely on those sealed records alone. One fail-closed
+CFG-order projection resolves every active operation against separate
+authority and supplies the same accepted records to summary construction and
+the proof trace. A standalone OptIR checker then consumes a closed certificate
+graph: the exact final optimized root
+and the original checked CFG/authority for every reachable callee. It
+reprojects every node, requires exact non-root authority coverage, recursively
+recomputes the canonical Mod/Ref joins, and rejects cycles, missing, duplicate,
+unreachable, stale, or under-approximated nodes. The root may keep unused
+upper-bound records after a verified rewrite. A versioned length-delimited
+fingerprint also binds a deterministic child-before-parent proof trace. A small
+consumer checks that trace without reading CFGs or hashes: every child must
+already be accepted with the exact claimed access set, every typed region effect
+is joined exactly, names are unique, the root is final, and every non-root is
+referenced. `Oak.OptIRMemoryAuthorityProjection` proves the preceding
+structural operation/authority model has exact active membership, exact-mode
+coverage, and composes with the exact summary fold.
+`Oak.OptIRCallSummaryCertificate` proves the trace model over well-formed
+projected accesses sound for exact reachable read/write bits, closure, and
+topological acyclicity; bounded production decisions at both seams are pinned
+to executable Lean examples. Concrete CFG/validator refinement and universal
+Go-to-Lean correspondence remain open. The graph
+fingerprint binds the whole accepted graph, and AArch64/RV64 production
+region-memory selection requires and reruns that certificate exactly when an
+active final call summary is interpreted by MemorySSA. A call-only `NoModRef`
+CFG consumes no memory-summary fact and stays on the ordinary call path. The
+certificate participates in candidate and materialization identity. It checks
+the internal consistency of compiler-supplied checked projections rather than
+independently re-lowering Oak or identifying the actual machine callee;
+semantic translation validation remains the final independent source/body
+gate.
+Exact CFG and metadata fingerprints plus independent recomputation reject
+stale or mutated evidence. Memory-definition liveness now takes an explicit
+set of regions observable on normal return,
+roots reads, volatile accesses, opaque clobbers, and those terminal versions,
+and propagates through join/loop phis. Partial writes keep their predecessors
+live. A verified transform deletes only a dead, whole-region, nonvolatile
+`store.region`, rewrites its metadata, and rebuilds MemorySSA. A verified
+load-forwarding transform then removes canonical nonvolatile region loads only
+when their exact MemorySSA input identifies the same typed value from a
+dominating load or whole-region store. A closed join or loop memory phi is
+promoted when each real predecessor already has the exact typed value, either
+from the direct whole-region nonvolatile store defining its incoming version or
+from a canonical load of that version dominating the predecessor terminator.
+Exactly one unavailable entry-memory input may instead be materialized on its
+real incoming edge. An unconditional predecessor receives the load directly.
+If exactly one conditional arm targets the phi, a new block receives only that
+arm and branches onward with the arm's existing SSA arguments plus the loaded
+value. The transform moves the removed canonical load's checked source/access
+identity into the edge block; it does not synthesize authority or execute the
+load on another arm. A fresh typed parameter in the phi block receives the edge
+values, and loads in the phi block and dominated blocks can share it.
+Conceptual function-entry inputs, ambiguous two-arm edges, multiple missing
+inputs, partial/call definitions, type mismatches, missing edges, and value- or
+block-ID exhaustion fail closed. The evidence records the original predecessor,
+the insertion site, and whether the edge was split as well as removed-load
+replacements. Values from loads removed later in the same transform are
+resolved before edge materialization. The transform drops facts bound to
+removed SSA identities, remaps every use and operation site, and rebuilds
+MemorySSA. A composed regression then reprojects the checked authority and
+requires both AArch64 and RV64 lowering of the split CFG to pass seam admission
+with a proven semantic verdict. Multiple region phis now share the same split
+block for an exact original predecessor/target pair. Every promoted input
+follows that final edge, including an already-available value from a phi
+planned before another region requested the split. Distinct targets stay
+separate. Regressions remove both join loads and prove the resulting two-region
+CFGs on AArch64 and RV64, including mixtures of moved and available inputs;
+the one-missing-input limit remains per region phi. Checked Oak
+Bool/fixed-integer package-global reads and whole-cell assignments now project
+into it. Metadata first follows the exact structured operation identity into a
+CFG site. Each projected operation then carries only an opaque access ID; a
+separate immutable authority fixes its exact source, region, kind, scalar type,
+whole-region contract, and volatility. The two projections must agree.
+Projection rejects missing, duplicated, stale, forged, or mismatched authority
+and treats every global region as live on normal return. The typed artifact DAG
+runs projection, MemorySSA, liveness, combined evidence, DSE, and load
+forwarding after LICM; both transforms independently verify their complete
+rewrites before publishing them. One subsequent `optir.memory-cleanup` node
+runs SCCP and phi/GVN/DCE cleanup to consume newly exposed scalar facts,
+then recomputes checked memory projection, MemorySSA, and liveness to remove
+stores made dead by forwarding or branch pruning. The existing closed DSE
+transform independently verifies its rewrite; pure DCE removes unused
+store-value producers while retaining effectful calls. One final pure LICM
+pass consumes freshly analyzed loops for that exact DCE snapshot, allowing
+scalar arithmetic exposed as invariant by memory promotion and phi cleanup
+to leave the loop. It retains the existing total-pure vocabulary and does not
+move memory or trapping operations. This is a bounded composition within the
+same artifact, not additional global graph plumbing.
+Checked access projection and MemorySSA are rebuilt for `MemoryCleanup.CFG`,
+and native selection independently replays the cleanup before deriving final
+bindings, active call certificates, and materialization identity. The source
+global declarations needed to verify removed paths survive as arbitrary
+entry-state declarations, without added machine accesses. Constant branches,
+removed calls, wrapping arithmetic, and the final source-state comparison are
+covered by proven AArch64/RV64 candidates and host/QEMU execution. There is no
+unbounded iteration between memory and scalar passes.
+Changed final CFGs can enter native search on
+AArch64 and RV64 when the memory vocabulary is acyclic control flow over exact
+scalar package-global reads and whole nonvolatile writes, optionally composed
+with authenticated exact `NoModRef`/`Ref`/`Mod`/`ModRef` scalar calls. A `Ref`
+call creates reads with no output version, so DSE retains the definitions the
+callee may observe while load forwarding can cross it. `Mod` and `ModRef`
+create partial output versions, retain their predecessors conservatively, and
+block forwarding across the call. Selection retains callee-only globals
+without emitting caller memory operations for the summary. Both targets also
+admit one exact call-free canonical natural loop with a unique preheader,
+conditional header, straight-line body/latch, backedge, and return exit. Its
+RegionMemorySSA contains the loop-header phi joining the entry memory version
+with the exact body-store definition. Selection independently rechecks that
+evidence, `asm.Check` admits each selected body, and `asm.Verify` proves it
+against the corresponding Oak loop, including its package-global write.
+RV64's verifier requires exact `la`-derived scalar-global address provenance;
+direct positive and negative tests prove the correct loop and refute an
+incorrect store, removing the previous trusted boundary for package-global
+loop-carried state. The production loop fixture has no synthetic source-level
+preheader read: the transform moves one authenticated load to the unconditional
+preheader edge, promotes the MemorySSA phi, and removes the body and exit
+loads. When
+the promoted value has both a result-register carrier and a global-cell
+carrier, the verifier admits the extra global alias only after bounded proofs
+of header equality and one-step preservation; a divergent global store is not
+proven. Arbitrary and nested memory loops remain refused. Selection
+reprojects immutable checked source-access authority over the exact final CFG,
+independently verifies rebuilt MemorySSA, and matches every opaque region
+through typechecker authority to an exact global descriptor already authorized
+by the assembler template. Width- and signedness-correct code covers Bool and
+8/16/32/64-bit integers. Authority and final-projection fingerprints are part
+of materialization identity. Existing verified register plans and typed aligned
+spill frames compose with global accesses using disjoint reserved scratches on
+both targets; seam admission and semantic translation validation still decide
+whether the body may ship. Aggregate/partial regions, broader memory loops,
+multiple unavailable phi inputs, broader load placement, conceptual-entry loop
+phis, partial/call-written versions, definite-write summaries, and calls in
+memory loops remain open;
+exact recursive
+`NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
+checker, and composed Lean structural models of active-authority projection
+and the small postorder effect core have landed. Concrete CFG/validator
+refinement and universal implementation correspondence remain TCB-closure
+work.
 
-- load CSE;
-- store-to-load forwarding;
+As the projection broadens, region memory SSA should power:
+
+- multiple-missing-input and broader load placement;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;
@@ -818,12 +1210,27 @@ The existing native optimizations should be migrated into the candidate interfac
 ### Machine
 
 - addressing-mode selection;
-- multiply-add/select forms — **in progress (2026-09-16, the oak session
-  at ~/oakmcu/oak)**: `a + b * c` lowers to `mul` then `add` where
-  `madd` is one instruction, `a - b * c` to `mul` then `sub` where
-  `msub` is one, and `0 - b * c` where `mneg` is one; the verifier
-  already models all three. Integers only — `fmla` is one rounding where
-  Oak's `a + b * c` is two (`-ffp-contract=off`);
+- multiply-add forms — **landed 2026-09-16** (`multiply-add`,
+  `nativegen/multiply_add.go`): `a + b * c` as `madd`, `a - b * c` as
+  `msub`, `T(0) - b * c` as `mneg`, the verifier needing no extension.
+  Integers only — `fmla` is one rounding where Oak's expression is two
+  (`-ffp-contract=off`) — and a constant operand is left to the strength
+  reduction's shift. Measured neutral on an integer dot product
+  (seven instructions an element become six, 0.39–0.46 ns either way): the third increment in a row
+  whose instruction saving an M4's spare issue slots absorb, which is
+  itself worth recording — the static cost model counts instructions,
+  and on this core that is not what the clock counts. A port-pressure or
+  dependency-chain term (item 26) is what would tell these apart;
+- select forms — **landed 2026-09-16** (`value-select`,
+  `nativegen/value_select.go`): a value-position conditional as a compare
+  and one `csel`, with `csinc`/`csneg`/`csinv` where the arms share a
+  variable, the verifier needing no extension. The first increment in
+  this run with a large measured win: 3.4 times on a clamp whose
+  comparison is unpredictable, and free where it predicts. Both arms are
+  evaluated before the compare, so `speculable` gates it as it gates
+  if-conversion. The statement form (`nativegen/select.go`) still wants
+  every condition in a chain to compare the same two operands, which is
+  the next thing to widen;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
@@ -903,6 +1310,17 @@ A practical order is:
 
 Where a transform depends on a source theorem, establish that theorem/license before machine candidate validation.
 
+Step 5 spends the validation budget one *shape* at a time (2026-09-16,
+`opt/search.go`): a candidate's shape is its transforms without the
+verifier-gated ones (`reallocate`, `schedule`), which move and rename but
+change nothing the verifier reads. Once a shape has been validated without
+a proof, the next validation goes to the cheapest candidate of a shape not
+yet judged, and only when every shape has been judged does the budget
+return to cost order. The case that forced it: the vectorized map's three
+cheapest forms were one hoisted shape under different gated transforms,
+each witnessed on the same remainder-loop obligation, and the plain
+vectorized shape, which proves, never got a validation.
+
 The optimizer should cache verdicts using the same dependency-aware mechanism already used for native verdicts so candidate search does not make incremental builds re-prove unchanged implementations.
 
 ## 16. Roadmap
@@ -924,9 +1342,14 @@ The roadmap is dependency-driven rather than a list of isolated peepholes.
 
 8. MachineIR with virtual registers;
 9. global scalar and vector liveness;
-10. register allocation with splitting/spilling;
+10. register allocation with splitting/spilling (**deterministic abstract spill
+    plan, verifier-gated AArch64 scalar insertion, and the first closed RV64
+    loop-carried insertion landed; RV64 acyclic constant rematerialization also
+    landed; splitting, broader MachineIR/RV64 loops, copy-chain
+    rematerialization, and RV64 splitting remain**);
 11. call-aware vector allocation;
-12. late copy and branch cleanup;
+12. late copy and branch cleanup (**target-independent loop-biased block layout
+    and AArch64/RV64 fallthrough cleanup landed; edge-copy cleanup remains**);
 13. simple pre/post-allocation scheduling.
 
 This phase targets the measured UTF-8 call/spill gap directly.
@@ -937,10 +1360,17 @@ This phase targets the measured UTF-8 call/spill gap directly.
 15. dominators and canonical loops;
 16. explicit loop outputs;
 17. recurrence/trip-count analysis;
-18. region-aware memory SSA / Mod-Ref summaries;
+18. region-aware memory SSA / Mod-Ref summaries (**explicit analysis substrate,
+    checked scalar-global projection, and one verifier-proved canonical memory
+    loop on both targets landed; exact recursive
+    `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries plus a standalone closed-DAG
+    certificate checker and composed Lean structural models of active-authority
+    projection and its small postorder effect core also landed, while concrete
+    CFG/validator refinement, universal implementation correspondence, broader
+    loops, aggregate regions, and definite-write summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
-21. LICM (**analysis-only OptIR candidate landed**), loop rotation, address
+21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address
     induction, loop strength reduction.
 
 ### Phase D: vector planning
@@ -959,19 +1389,49 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization — **surveyed 2026-09-16, blocked on the
-    verifier**: a hand-written vector map (`simd.store_u32x4(dst, i,
-    simd.add_u32x4(simd.load_u32x4(a, i), kv))` under
-    `len(dst) == len(a)` and the slack guard) is admitted by the seam
-    checker and modeled by the verifier lane by lane, but comes out
-    *witnessed*: "the memory of the span dst after the loops was not
-    proven equal". The scalar map is proven with its span memory, so
-    what is missing is coupling a span's memory across two loops — the
-    vector main loop and the scalar remainder. Two notes for whoever
-    takes it: an index guarded against two spans keeps only the last
-    bound, so the equal-length shape (`len(dst) == len(a)`) is the one
-    the checker admits; and a map needs no reassociation at all, so the
-    law is far weaker than the reduction's and floats vectorize too;
+24. map/zip vectorization — **landed 2026-09-16** (`vectorize-maps`,
+    `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
+    map or zip over span parameters — `dst[i] = E(a[i], b[i], …)` with `E`
+    over the elements at `i`, invariant scalars, and constants under
+    `+ - & | ^` for `u8`/`u16`/`u32`/`u64` lanes and `+ - * /` for
+    `f32`/`f64` lanes,
+    in place or under an enclosing conjunction of `len(x) == len(y)`
+    guards (closed transitively) — runs one vector a trip (the `ldr q`s,
+    the lane-wise operations, `str q`) under the slack guard with the
+    scalar remainder as written, licensed by `Oak.Map.blocked_eq`
+    (lane-wise semantics alone: no law of the element type, so no fact of
+    the body is required and floats vectorize where a reduction's cannot),
+    and proven by the verifier with the span memory it writes. Measured
+    over 2^20 elements (`benchmarks/native/README.md`, "Map
+    vectorization"): 2.8–3.0× on a `u32` map, 3.2–3.6× in place, 2.6–2.8×
+    on an `f32` multiply-add map, 2.2–2.3× on a zip. Two
+    verifier increments made it provable: the store-loop split (§0,
+    "loops that never ran keep the entry memory") proved the hand-written
+    shape that the 2026-09-16 survey found *witnessed*; and the hoisted
+    form — a guard peeled around the vector loop skips it when `len(a) <
+    4`, carrying the index's header value into the remainder loop where
+    the Oak side carries the loop symbol — needed the scalar counterpart,
+    "loops that never ran keep their variables" (`notRunPins` in
+    `asm/loops.go`: a loop ran, or each of its symbols is its header
+    value, in every premise that can read an earlier sibling's symbols).
+    Still to do: integer multiplication (no integer `mul` lane in v1) and
+    shifts, signed lanes, spans bound in the body (tried 2026-09-16: the
+    rewrite is easy, but the seam checker admits no vector access at a
+    variable index through a span bound over a frame array — "memory
+    operands go through the declared sp frame or a bound span base" — so
+    the checker's frame idiom has to learn the element address first),
+    and the RV64 lane (2026-09-16: the machine lift now reads the RVV
+    instructions the lane emits — a vector register class that keeps its
+    assignment, `vsetivli` a barrier, register-form strides `li t0, 4;
+    addw t1, t1, t0`, a single induction standing in for an unread exit
+    test, the remainder bounded after it — so the vectorized form is
+    priced 3822 against the scalar loop's 7451 under `reallocate`; but
+    the verifier on that lane does not yet model a vector store in a
+    data-dependent loop body ("a span store in a data-dependent loop
+    body"), so the form comes back trusted and the proven scalar loop
+    keeps winning; the transform stays AArch64 only until the RV64
+    verifier takes `vse` in loops), elements at `i ± k`
+    (stencils), and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

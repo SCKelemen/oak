@@ -33,6 +33,19 @@ const (
 	OpGreater      = "compare.greater"
 	OpGreaterEqual = "compare.greater-equal"
 
+	// OpLoadRegion reads one complete checked semantic memory region. Its
+	// opaque MemoryAccessID must resolve against separate checked authority.
+	OpLoadRegion = "memory.region-load"
+
+	// OpStoreRegion replaces one complete checked semantic memory region with
+	// its sole operand. Region identity and exactness live in
+	// RegionMemoryMetadata; partial stores remain extension operations until
+	// their address semantics join the closed OptIR vocabulary.
+	OpStoreRegion = "memory.region-store"
+
+	// OpCall remains effectful even when MemoryCallID resolves to a checked
+	// NoModRef summary. The ID describes only memory behavior; it never permits
+	// DCE, constant folding, or removal of the call itself.
 	OpCall = "call"
 )
 

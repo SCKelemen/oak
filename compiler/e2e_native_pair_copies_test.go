@@ -70,7 +70,7 @@ func TestE2ENativePairCopies(t *testing.T) {
 }
 
 func TestNativeShapesPairCopies(t *testing.T) {
-	model, err := New().WithSource("pairs.oak", nativePairCopiesProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("pairs.oak", nativePairCopiesProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

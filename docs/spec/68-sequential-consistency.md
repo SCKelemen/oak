@@ -225,8 +225,8 @@ The Semantic IR tests cover:
 | implicit-initial SC visibility | specified + implemented + Lean-modeled |
 | zero-allocation SC validation | regression-tested |
 | implementation-to-Lean refinement | not yet proved |
-| compiler/C weak-memory refinement | next major layer |
-| AArch64 assembly/litmus validation | next major layer |
+| compiler/C weak-memory refinement | partial: instruction families checked; C/LLVM refinement remains open |
+| AArch64 assembly/litmus validation | gated: pinned CAT AST certificate + MP/SB/LB/IRIW Herd runs (chapter 69) |
 | target lock-free admission | C backend: per-carrier static assertion (65-machine-memory.md §6) |
 
 ## 12. Language-level memory model closure
@@ -251,7 +251,7 @@ SC read visibility
 That is enough to stop inventing new language semantics when implementing the
 backend.
 
-The next work is **refinement**: demonstrate that generated C and AArch64 code
-preserve these relations with litmus tests, assembly inspection, and eventually
-formal refinement where practical. Only after that should a lock-free queue be
-accepted as relying on Oak's memory model end to end.
+Chapter 69 supplies assembly inspection, a mechanically pinned restricted Arm
+ordered-before projection, and official-model litmus execution. The remaining
+refinement work is to connect C/LLVM and generated Arm events to the complete
+machine model; the landed ring proofs consume only the demonstrated subset.

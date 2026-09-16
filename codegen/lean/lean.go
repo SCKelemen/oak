@@ -30,7 +30,7 @@ import (
 
 // Options select the extraction's modeling choices a driver may vary.
 type Options struct {
-	// BitFloats renders f32 addition, subtraction, and multiplication
+	// BitFloats renders the supported f32 arithmetic and sign operations
 	// through Oak.FloatOps' bit-level operations instead of Lean's opaque
 	// Float32 operators (docs/spec/95-extraction.md section 3).
 	BitFloats bool
@@ -116,6 +116,14 @@ func EmitWith(program *ast.Program, tc *typechecker.TypeChecker, namespace strin
 		}
 		if len(fn.TypeParams) != 0 || fn.ExternSymbol != "" || fn.Body == nil {
 			return "", fmt.Errorf("lean: %s: generics and extern functions are outside the extracted subset", name)
+		}
+		for _, p := range functionParams(fn) {
+			if _, function := p.Type.(*ast.FunctionTypeExpression); function {
+				return "", fmt.Errorf("lean: %s: function parameter %s must be bound by a call with a named function argument", name, p.Name.Value)
+			}
+		}
+		if err := em.routeCalls(fn, candidates); err != nil {
+			return "", err
 		}
 		em.functions[name] = fn
 		functionOrder = append(functionOrder, name)
@@ -307,6 +315,10 @@ type emitter struct {
 	// leanNames maps a Lean type name back to the ADT it renders.
 	leanNames map[string]string
 	functions map[string]*ast.FunctionStatement
+	// Specializations share checked expression nodes. Routes resolve calls
+	// separately for each function instance without rewriting those nodes.
+	routes   map[string]map[*ast.InvocationExpression]callRoute
+	bindings map[string]map[string]string
 	// globals holds the program's top-level bindings; the ones the
 	// extracted functions read are emitted as Lean definitions, and the ones
 	// some function writes — package state (docs/spec/95-extraction.md
@@ -330,6 +342,7 @@ type emitter struct {
 
 	// Per-function state.
 	fnName  string
+	fnKey   string
 	scope   *scope
 	helpers []string // loop helpers, innermost first
 	loops   int
@@ -447,6 +460,13 @@ func (em *emitter) callees(fn *ast.FunctionStatement) []string {
 	var names []string
 	walkExpressions(fn.Body, func(e ast.Expression) {
 		if call, ok := e.(*ast.InvocationExpression); ok {
+			if route, ok := em.routes[functionKey(fn)][call]; ok {
+				if !seen[route.target] {
+					seen[route.target] = true
+					names = append(names, route.target)
+				}
+				return
+			}
 			if call.ResolvedMethod != "" {
 				// A method call, under the identity the checker resolved.
 				if !seen[call.ResolvedMethod] {
@@ -748,6 +768,7 @@ func isSpanType(expr ast.Expression) bool {
 
 func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 	em.fnName = em.defName(fn)
+	em.fnKey = functionKey(fn)
 	em.scope = newScope(nil)
 	em.helpers = nil
 	em.loops = 0
@@ -1059,98 +1080,11 @@ func (em *emitter) statementInner(stmt ast.Statement, lines *[]string) error {
 		emit("let %s := %s", ident(s.Name.Value), term)
 		return nil
 	case *ast.IndexAssignmentStatement:
-		if s.Target.Dot {
-			if elementAccess, isElement := s.Target.Left.(*ast.IndexExpression); isElement && !elementAccess.Dot {
-				// arr[i].field = v: the element record is read, its field
-				// replaced, and the record stored back at the same index
-				// (docs/spec/95-extraction.md section 2); out-of-range
-				// stores are dropped like every other element store.
-				array, isIdent := elementAccess.Left.(*ast.Identifier)
-				field, isName := s.Target.Index.(*ast.Identifier)
-				if !isIdent || !isName {
-					return fmt.Errorf("field assignment %s is outside the extracted subset (one level of fields)", s.Target.String())
-				}
-				arrayType, known := em.scope.lookup(array.Value)
-				element, isArray := elementOf(arrayType)
-				if !known || !isArray {
-					return fmt.Errorf("field assignment into non-array %s", array.Value)
-				}
-				fieldType, err := em.recordFieldType(element, field.Value)
-				if err != nil {
-					return err
-				}
-				index, err := em.indexTerm(elementAccess.Index)
-				if err != nil {
-					return err
-				}
-				term, err := em.expr(s.Value, fieldType)
-				if err != nil {
-					return err
-				}
-				emit("let %s := %s.setIfInBounds %s { (%s.getD %s %s) with %s := %s }", ident(array.Value), ident(array.Value), index, ident(array.Value), index, zeroOf(element), ident(field.Value), term)
-				return nil
-			}
-			base, ok := s.Target.Left.(*ast.Identifier)
-			field, isField := s.Target.Index.(*ast.Identifier)
-			if !ok || !isField {
-				return fmt.Errorf("field assignment %s is outside the extracted subset (one level of fields)", s.Target.String())
-			}
-			fieldType, err := em.fieldType(base.Value, field.Value)
-			if err != nil {
-				return err
-			}
-			term, err := em.expr(s.Value, fieldType)
-			if err != nil {
-				return err
-			}
-			emit("let %s := { %s with %s := %s }", ident(base.Value), ident(base.Value), ident(field.Value), term)
-			return nil
-		}
-		if fieldAccess, isField := s.Target.Left.(*ast.IndexExpression); isField && fieldAccess.Dot {
-			// r.field[i] = v: the field's array is updated and written back
-			// into the record (one level of fields, as for field assignment).
-			record, isIdent := fieldAccess.Left.(*ast.Identifier)
-			field, isName := fieldAccess.Index.(*ast.Identifier)
-			if !isIdent || !isName {
-				return fmt.Errorf("element assignment into %s is outside the extracted subset (one level of fields)", s.Target.Left.String())
-			}
-			fieldType, err := em.fieldType(record.Value, field.Value)
-			if err != nil {
-				return err
-			}
-			element, isArray := elementOf(fieldType)
-			if !isArray {
-				return fmt.Errorf("element assignment into non-array field %s", s.Target.Left.String())
-			}
-			index, err := em.indexTerm(s.Target.Index)
-			if err != nil {
-				return err
-			}
-			term, err := em.expr(s.Value, element)
-			if err != nil {
-				return err
-			}
-			emit("let %s := { %s with %s := %s.%s.setIfInBounds %s %s }", ident(record.Value), ident(record.Value), ident(field.Value), ident(record.Value), ident(field.Value), index, term)
-			return nil
-		}
-		base, ok := s.Target.Left.(*ast.Identifier)
-		if !ok {
-			return fmt.Errorf("element assignment into %s is outside the extracted subset", s.Target.Left.String())
-		}
-		arrayType, known := em.scope.lookup(base.Value)
-		element, isArray := elementOf(arrayType)
-		if !known || !isArray {
-			return fmt.Errorf("element assignment into non-array %s", base.Value)
-		}
-		index, err := em.indexTerm(s.Target.Index)
+		root, term, err := em.assignment(s.Target, s.Value)
 		if err != nil {
 			return err
 		}
-		term, err := em.expr(s.Value, element)
-		if err != nil {
-			return err
-		}
-		emit("let %s := %s.setIfInBounds %s %s", ident(base.Value), ident(base.Value), index, term)
+		emit("let %s := %s", ident(root), term)
 		return nil
 	case *ast.WhileStatement:
 		return em.whileStatement(s, lines, &hoisted)
@@ -1211,14 +1145,6 @@ func (em *emitter) initialValue(typeExpr ast.Expression, leanType string) string
 		}
 	}
 	return zeroOf(leanType)
-}
-
-func (em *emitter) fieldType(variable, field string) (string, error) {
-	recordType, ok := em.scope.lookup(variable)
-	if !ok {
-		return "", fmt.Errorf("unknown variable %s", variable)
-	}
-	return em.recordFieldType(recordType, field)
 }
 
 func (em *emitter) recordFieldType(recordType, field string) (string, error) {
@@ -1610,16 +1536,17 @@ func (em *emitter) callWrites(call *ast.InvocationExpression) []string {
 	owners := spanArguments(call)
 	_, state := em.callState(call)
 	owners = append(owners, state...)
-	callee, ok := call.Function.(*ast.Identifier)
-	if !ok {
+	route, routed := em.routes[em.fnKey][call]
+	if !routed {
 		return owners
 	}
-	fn, known := em.functions[callee.Value]
-	if !known || len(fn.Parameters) != len(call.Arguments) {
+	fn, known := em.functions[route.target]
+	if !known || len(functionParams(fn)) != len(route.arguments) {
 		return owners
 	}
-	for i, arg := range call.Arguments {
-		if !em.isThreadedType(fn.Parameters[i].Type) {
+	params := functionParams(fn)
+	for i, arg := range route.arguments {
+		if !em.isThreadedType(params[i].Type) {
 			continue
 		}
 		owner := addressOf(argOperand(arg))
@@ -1806,6 +1733,10 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 			if isFloatLean(typ) {
 				// Negation flips the sign bit (section 11.3.5); `0 - x` would
 				// give +0 for x = +0.
+				if em.options.BitFloats && typ == "Float32" {
+					em.usesFloatOps = true
+					return "(Oak.FloatOps.neg32 " + inner + ")", nil
+				}
 				return "(-" + inner + ")", nil
 			}
 			return "(0 - " + inner + ")", nil
@@ -2002,6 +1933,14 @@ func (em *emitter) infix(e *ast.InfixExpression, want string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if em.options.BitFloats && operand == "Float32" {
+			op := map[string]string{
+				"==": "eq32", "!=": "ne32", "<": "lt32",
+				"<=": "le32", ">": "gt32", ">=": "ge32",
+			}[e.Operator]
+			em.usesFloatOps = true
+			return fmt.Sprintf("(Oak.FloatOps.%s %s %s)", op, left, right), nil
+		}
 		switch e.Operator {
 		case "==":
 			return fmt.Sprintf("(%s == %s)", left, right), nil
@@ -2089,6 +2028,13 @@ func (em *emitter) indexTerm(index ast.Expression) (string, error) {
 
 // call renders a builtin or a user function call; user calls are hoisted.
 func (em *emitter) call(call *ast.InvocationExpression, want string) (string, error) {
+	if route, ok := em.routes[em.fnKey][call]; ok {
+		fn := em.functions[route.target]
+		if fn == nil {
+			return "", fmt.Errorf("call to %s is outside the extracted subset", route.target)
+		}
+		return em.extractedCall(route.target, em.defName(fn), functionParams(fn), route.arguments)
+	}
 	if call.ResolvedMethod != "" {
 		// recv.method(args): the method's definition applied to the
 		// receiver first (docs/spec/90-backend.md).
@@ -2382,6 +2328,9 @@ func (em *emitter) analyzeState(candidates map[string]*ast.FunctionStatement) {
 		for _, p := range functionParams(fn) {
 			locals[p.Name.Value] = true
 		}
+		for name := range em.bindings[functionKey(fn)] {
+			locals[name] = true
+		}
 		body := fn.Body
 		walkStatements(body, func(stmt ast.Statement) {
 			if decl, ok := stmt.(*ast.VariableDeclaration); ok && decl.Name != nil {
@@ -2484,6 +2433,9 @@ func (em *emitter) analyzeState(candidates map[string]*ast.FunctionStatement) {
 // loop analyses: a loop body that calls a state-touching function threads
 // that state like a variable it mentions.
 func (em *emitter) callState(call *ast.InvocationExpression) (touched, written []string) {
+	if route, ok := em.routes[em.fnKey][call]; ok {
+		return em.touched[route.target], em.written[route.target]
+	}
 	key := call.ResolvedMethod
 	if key == "" {
 		callee, ok := call.Function.(*ast.Identifier)
@@ -2641,7 +2593,8 @@ var leanReserved = map[string]bool{
 	// Keywords of later Lean releases and the float carriers, so a parameter
 	// named like one (the float package's `meta`) is escaped the same way.
 	"meta": true, "public": true, "export": true, "omit": true, "include": true, "lemma": true,
-	"only": true, "using": true, "attribute": true, "scoped": true, "local": true, "renaming": true,
+	"matches": true,
+	"only":    true, "using": true, "attribute": true, "scoped": true, "local": true, "renaming": true,
 	"hiding": true, "nomatch": true, "nofun": true, "termination_by": true, "decreasing_by": true,
 	"Type": true, "Prop": true, "Sort": true, "Float": true, "Float32": true,
 }
@@ -2922,17 +2875,26 @@ func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, w
 	if err != nil {
 		return "", err
 	}
+	if em.options.BitFloats && width == "Float32" && name == "abs" {
+		em.usesFloatOps = true
+		return fmt.Sprintf("(Oak.FloatOps.abs32 %s)", inner), nil
+	}
 	return fmt.Sprintf("(%s.%s %s)", width, leanName, inner), nil
 }
 
-// zeroTerm is the Lean value of a zero-initialized global: 0, false, or a
-// fixed array of zeros; anything else fails closed.
+// zeroTerm is the Lean value of a zero-initialized global: 0, false, a
+// record's explicit zero default, or a fixed array of such values.
 func (em *emitter) zeroTerm(typeExpr ast.Expression, typ string) (string, error) {
 	switch typ {
 	case "Bool":
 		return "false", nil
 	case "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64":
 		return "0", nil
+	}
+	if _, isRecord := em.records[typ]; isRecord {
+		// emitRecord supplies the same zero value as an uninitialized
+		// local record, including fixed-size arrays in its fields.
+		return zeroOf(typ), nil
 	}
 	if index, isArray := typeExpr.(*ast.IndexExpression); isArray && !index.Dot {
 		if length, isLiteral := index.Index.(*ast.IntegerLiteral); isLiteral {

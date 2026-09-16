@@ -38,3 +38,48 @@ main: (): i32 = {
 		t.Fatalf("an undeclared codec word as a value is refused with its position: %v", err)
 	}
 }
+
+// F23's remaining bootstrap case: codec entry points are syntax, not
+// exported declarations. An ordinary global or function keeps its name.
+func TestE2ECodecWordsStayOrdinaryWithStd(t *testing.T) {
+	for _, spelling := range []string{"std", `"std"`} {
+		t.Run(spelling, func(t *testing.T) {
+			source := "package main\nimport(" + spelling + ")\n" + `
+from: u32 = 3
+encode: (n: u32): u32 = n * 2
+decode: (n: u32): u32 = n + from
+encoded_size: (n: u32): u32 = n + 1
+decode_located: (n: u32): u32 = n + 1
+main: (): i32 = {
+  total: u32 = decode_located(encoded_size(decode(encode(18))))
+  total == 41 && ascii_lower(u8(65)) == u8(97) ? 42 | 1
+}
+`
+			root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": source})
+			if code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root)); abnormal || code != 42 {
+				t.Fatalf("C exit=(%d,%v), want 42", code, abnormal)
+			}
+			if got := interpretModule(t, root); got != 42 {
+				t.Fatalf("interpreter result=%d, want 42", got)
+			}
+		})
+	}
+	// Explicit type arguments still select the ordinary generic function.
+	t.Run("generic", func(t *testing.T) {
+		source := `import(std)
+encode[T]: (value: T): T = value
+main: (): i32 = i32_bits_u32(encode[u32](u32(42)))
+`
+		if code, abnormal := buildAndRun(t, "generic_encode", source); abnormal || code != 42 {
+			t.Fatalf("C exit=(%d,%v), want 42", code, abnormal)
+		}
+		if got := interpretChecked(t, source); got != 42 {
+			t.Fatalf("interpreter result=%d, want 42", got)
+		}
+	})
+	// Actual exports still cannot be rebound by the importing package.
+	source := "import(std)\nascii_lower: (n: u8): u8 = n\nmain: (): i32 = 0\n"
+	if _, err := New().WithSource("collision.oak", source).Check().Get(); err == nil || !strings.Contains(err.Error(), `declaration "ascii_lower" conflicts with a standard library export`) {
+		t.Fatalf("real export collision must fail, got %v", err)
+	}
+}

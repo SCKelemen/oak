@@ -84,6 +84,23 @@ func TestE2EKernelsOnDevice(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	// F32: both uniform stores and explicit lane-0 stores compute the
+	// values checked against the C backend and interpreter in the host test.
+	uniform := emitKernels(t, "package main\n"+kernelUniformStoresProgram)
+	for _, c := range []struct {
+		name string
+		want uint32
+	}{{"uniform", 7}, {"selected", 3}, {"reversed", 5}, {"otherwise", 9}} {
+		res, err := gpu.Run(ctx, uniform.Source, kernelNamed(t, uniform, c.name), 1, map[string]gpu.Arg{"out": u32arg(0)})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		data := res.Spans["out"]
+		if res.Fault != 0 || len(data) != 4 || binary.LittleEndian.Uint32(data) != c.want {
+			t.Fatalf("%s: fault %d, output %v; want %d", c.name, res.Fault, data, c.want)
+		}
+	}
+
 	// Elementwise and tiled, from the first kernel program.
 	first := emitKernels(t, "package main\n"+kernelProgram)
 	res, err := gpu.Run(ctx, first.Source, kernelNamed(t, first, "relu"), 4, map[string]gpu.Arg{

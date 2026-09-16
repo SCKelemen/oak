@@ -20,6 +20,20 @@ programs whose behavior is fixed and testable, and the hand-written model
 becomes a proof intermediate whose relation to the extraction is itself
 checkable.
 
+`oak build -lean out.lean` chooses `Oak.<package directory>` as its
+namespace (capitalized and sanitized as an identifier).
+`-lean-namespace Name` supplies the full Lean namespace instead, used in
+both the opening `namespace` and closing `end`. For example, two modes of
+one package can be generated and imported into one Lean library directly:
+
+```sh
+oak build -o canon.c -lean Canon.lean -lean-namespace Ml.Canon ./canon
+oak build -o canon.c -lean CanonBits.lean -lean-namespace Ml.CanonBits -lean-floats bits ./canon
+```
+
+The namespace option applies to `-lean`; it does not change Oak package
+identities or generated C. An omitted or empty option keeps the default.
+
 ## 2. The translation
 
 The output is the shallow embedding the hand-written models use, so the
@@ -66,11 +80,13 @@ the match `try` lowers to, under the generated `oak_try_err_N` binder.
 | `a & b`, `a \| b`, `a ^ b`, `a << n`, `a >> n` | `a &&& b`, `a \|\|\| b`, `a ^^^ b`, `a <<< n`, `a >>> n` (see section 3 for the count) |
 | `u8_checked_u32(x)` | `if x > 255 then Result_u8_Overflow.Err Overflow.Overflow else Result_u8_Overflow.Ok x.toUInt8` — the range test per signedness pair, then the wrapping conversion |
 | `f[T]: (items: [*]T): ()` called as `f[u32](s)` | the checker's specialization `f_u32` (typechecker/genericfn.go), extracted like any function; the template itself is never emitted |
+| `reduce.lanes(xs, zero, plus, count, run)` with a named function argument | a separate definition for the checked callee and each ordered set of function bindings; function parameters become direct calls and leave the value parameter list. Forwarded function parameters retain their bindings, and the callbacks' span and package-state writes join the caller's write sets |
 | `NAME: u32 = 16` at top level | `def NAME : UInt32 := (16 : UInt32)`, emitted when a function reads it; an initializer that calls a function fails closed |
 | `TABLE: [256]u8 = [256]u8{ ... }` at top level, `[16]u32{ m[2], ... }` anywhere | `def TABLE : Array UInt8 := (#[...] : Array UInt8)`; an array literal is the Lean array literal, split into `++`-joined chunks of 128 beyond that length so a 2048-entry table elaborates |
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
-| `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
+| `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` |
 | `arr[i].field = v` | `let arr := arr.setIfInBounds i.toNat { (arr.getD i.toNat zero) with field := v }` — the element record read, one field replaced, stored back at the same index (the text cursors of `strings`) |
+| `views[id].shape[d] = v`, nested field/element stores | rebuild the target path from its leaf to the named owner: update `shape` with `setIfInBounds`, replace the record's field, then store the record back into `views`. Other fields and elements are preserved; loops, branches, span windows and package state thread the owner as for a direct store |
 | `is_valid_utf8(v)` | `Oak.Utf8Exec.valid v` — the same Table 3-7 decision procedure over the carrier (section 3), imported only when used |
 | `^x` | `~~~x`, the complement over the operand's width |
 | `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
@@ -113,7 +129,9 @@ every fixed array field at its declared length; with Lean's derived
 `Inhabited` the fields would be empty arrays and every element store into
 an uninitialized record would be dropped as out of range — SHA-256 hashed
 an empty block until this was made explicit. Both were found by the
-faithfulness check of section 5, not by the drift test.
+faithfulness check of section 5, not by the drift test. The same explicit
+record default initializes global records and arrays of records, so a
+zero-initialized arena retains the declared lengths of every array field.
 
 **Floats are the host's.** `f32` and `f64` extract to Lean's `Float32` and
 `Float`, whose operations are the compiled runtime's binary32 and binary64
@@ -159,14 +177,19 @@ ml pilot's F25: the packages whose state lives in flat arenas extract, and
 the oracle's `view` package reaches Lean without being rewritten as pure
 functions over parameters. A read-only global stays a constant.
 
-**Seventh: `f32` arithmetic at the bit level, on request.** Lean's
+**Seventh: `f32` arithmetic and comparisons at the bit level, on request.** Lean's
 `Float32` is the host's binary32 with opaque arithmetic: it computes the
 right bits but a theorem cannot see how `+` rounds. Under `oak build -lean
 out.lean -lean-floats bits` the extraction renders `f32` addition,
 subtraction, and multiplication through `Oak.FloatOps.add32`, `sub32`, and
 `mul32` — each one `fma` with an exact operand, so one rounding of the
 exact result over the bit pattern, executable and defined — and a theorem
-about the extracted code reaches the rounding. `Oak.FloatOps.roundShift_eq_roundNat`
+about the extracted code reaches the rounding. Unary negation and `abs`
+likewise render through `Oak.FloatOps.neg32` and `abs32`; with the existing
+`copysign32`, these are exact sign-bit operations on finite values, signed
+zeros, and infinities. Lean's `Float32.ofBits` canonicalizes NaN sign and
+payload, matching the verifier's result-level NaN quotient; payload-observing
+bitcasts remain outside this refinement. `Oak.FloatOps.roundShift_eq_roundNat`
 and `roundTo_value` are the bridge to the evaluation discipline's integer
 model: the rounding `encode` performs on a significand is
 `Oak.Floats.roundNat`, and in the normal range the value it packs —
@@ -174,10 +197,58 @@ significand times its exponent's power — *is* `roundNat prec n`, so the
 bounds of `Oak.FloatBounds` are bounds on these functions wherever the
 exact result rounds to a normal number (the ml pilot's E4, RFC 0004's
 `bounded`). Subnormal and overflowing results follow IEEE 754-2019 in the
-code and are outside the integer model, as `Oak.Floats` says of itself. Division and the comparisons stay Lean's.
-`compiler/lean_float_bits_test.go` holds the three functions to the host's
-binary32 on edge and random operands; the default mode is unchanged, so an
-extraction that never states a rounding fact keeps Lean's operators.
+code and are outside the integer model, as `Oak.Floats` says of itself.
+The six comparison operators render through `Oak.FloatOps.eq32`, `ne32`,
+`lt32`, `le32`, `gt32`, and `ge32`: NaN is unordered, either signed zero equals
+the other, and nonzero values use the IEEE sign-magnitude order. Division and
+`f64` comparisons stay Lean's. `compiler/lean_float_bits_test.go` holds all
+twelve functions to binary32 on explicit zeros, infinities and NaNs plus edge
+and random operands—arithmetic against the host, sign operations against their
+exact bit transforms under the canonical-NaN carrier, and comparisons against
+the host's IEEE predicates. The default mode is unchanged, so an extraction
+that never states a rounding or bit-level comparison fact keeps Lean's
+operators. Pure guards compose comparison leaves with Boolean literals, `!`,
+`&&`, and `||`; the theorem is intentionally about effect-free leaves, where
+strict verifier conjunction/disjunction and Oak's short circuit have the same
+value. A value-position Bool conditional over these expressions keeps the same
+carriers in its guard and arms and renders as Lean `if`;
+`Oak.FloatLoweringRefinement.lowerFlow_eval` closes every finite nesting of
+such value conditionals. `lowerConditionalAssignment_eval` closes the first
+statement-position case as a corollary of the general
+`lowerConditionalBlock_eval`: any finite sequence of scalar `f32` locals may
+be initialized, and each arm may then assign any finite sequence in statement
+order from the same incoming scope. The theorem derives the union write set,
+merges each written name with the verifier's `iteTerm`, and proves that scope
+agrees with the tuple the extraction's selected do-block returns. Nested
+statement conditionals and effectful arms remain outside this slice.
+Pure `f32` calls compose too:
+arguments are evaluated in the caller scope, bound by the callee's ordered
+parameter list, and the straight-line callee body uses the same bit-level
+carriers. Borrowing, recursion, and effectful calls are outside this slice.
+Explicit `f64(e)` also composes when `e` is in that straight-line `f32` slice:
+`Oak.FloatLoweringRefinement.lowerWiden_eval` proves that extraction's
+`Float32.toFloat` and the verifier's width-changing `fcvt64` consume the same
+binary32 value. This is operation identity and width/operand composition, not
+an independent proof of IEEE conversion, NaN-payload mapping, the production
+evaluator, or either ISA instruction.
+Separately, `lowerF64_eval` closes binary64 `+`, `-`, `*`, `/`, ordered FMA,
+negation, `abs`, and `copysign` over parameters, already-rounded `UInt64`
+literal bits, straight-line local substitution, and leaves from the widening
+family. `lowerF64Condition_eval` adds all six comparisons plus recursively
+composed pure Boolean guards, and `lowerF64Flow_eval` closes every finite tree
+of value-position conditionals. Both readings retain the same operation
+identity, carrier, and operand order for explicit source trees:
+`a * b + c` remains a
+multiply followed by an add, while the explicit `fma` remains one ordered
+`Oak.FloatOps.fma64` application. The mixed production pin
+`f64(a + b) * x + y` retains verifier `fadd32`/`fcvt64`/`fmul64`/`fadd64`
+and extraction `Float32` addition/`.toFloat` followed by binary64 multiply/add.
+The widened leaf reads the function's initial binary32 parameter scope, not an
+arbitrary mixed-width local scope. Binary64 effectful/statement control flow,
+calls, memory, the Go evaluator, IEEE implementation details, NaN payloads,
+and ISA semantics remain outside this theorem. Locals are modeled by pure
+substitution, so reuse may duplicate a term tree; the theorem does not claim
+runtime evaluation count or sharing.
 
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
@@ -232,9 +303,9 @@ integer conversion rows, the bitwise operators and the complement,
 `assert`, `subslice`; `f32` and `f64` with their literals, arithmetic,
 comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
 them and the integers, and the intrinsics of the table above (`fma`,
-`copysign`, and `round_even` through `Oak.FloatOps`); field
-assignment and element assignment into a record's array field, one level
-deep, and field assignment through an element of a span (`arr[i].field`);
+`copysign`, and `round_even` through `Oak.FloatOps`); assignments through
+nested record fields and array/span elements rooted in a named owner
+(`views[id].shape[d]`, `arr[i].meta.field`);
 array literals; top-level constants, including constant tables read
 through `view`, target constants (`c.const`, as opaque constants of
 their `c.*` scalar type), and measured constants (opaque within their
@@ -245,7 +316,14 @@ the receiver as the first parameter (`def Handle.peek (h : Handle) ...`)
 and called through the identity the checker resolved, so a plain function
 `Handle_peek` never collides. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
-functions it reaches. Everything else — strings in encodings other than
+functions it reaches. Calls with function-typed parameters specialize at
+named Oak function arguments, including forwarded bindings and direct
+self-recursion. The extractor preserves the checked expression nodes and
+resolves each instance's calls before state analysis, so separate callback
+bindings retain their own reads and writes. A root with an unbound function
+parameter, a computed function argument, or reassignment of a bound function
+parameter fails closed; this does not introduce general function values into
+the Lean model. Everything else — strings in encodings other than
 UTF-8, generic templates
 themselves, mutual recursion, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`

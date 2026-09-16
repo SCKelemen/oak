@@ -3,10 +3,12 @@ package asm
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // Check enforces the seams of one asm function against its Oak declaration
@@ -32,6 +34,19 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
+	return checkWithFacts(fn, decl, symbols, nil)
+}
+
+// CheckWithFacts is Check with checked semantic propositions supplied by the
+// compiler's typechecker. Instruction-local references remain untrusted: each
+// must match this authority set and the exact memory operand and capacity it
+// claims. Handwritten assembler continues to use Check and receives no such
+// authority.
+func CheckWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof) []string {
+	return checkWithFacts(fn, decl, symbols, facts)
+}
+
+func checkWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof) []string {
 	if fn.Arch == ArchRV64 {
 		return checkRV64(fn, decl, symbols)
 	}
@@ -43,25 +58,128 @@ func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) [
 	// shrink, so the iteration terminates. Only the stable pass reports.
 	var labelIn map[string]*guardState
 	for pass := 0; pass < maxGuardPasses; pass++ {
-		c := runPass(fn, decl, symbols, labelIn, false)
+		c := runPass(fn, decl, symbols, facts, labelIn, false)
 		if len(c.errors) != 0 && c.labelArrive == nil {
 			return c.errors // signature errors: nothing to iterate
 		}
 		if labelIn != nil && guardStatesEqual(labelIn, c.labelArrive) {
-			return dischargeByVersion(fn, decl, symbols, labelIn, c)
+			return dischargeByVersion(fn, decl, symbols, facts, labelIn, c)
 		}
 		labelIn = c.labelArrive
 	}
 	// Past the cap: the conservative pass forgets every guard at every
 	// label (a sound assumption, the pre-fixpoint behavior).
-	return runPass(fn, decl, symbols, nil, true).errors
+	return runPass(fn, decl, symbols, facts, nil, true).errors
+}
+
+// checkedTableSources reconstructs only the narrow source identity needed by
+// dynamic checked-index facts. A name is usable when the body contains exactly
+// one declaration `name = view(&TABLE)` (or span), TABLE is a constant data
+// symbol in this machine body, and no assignment can retarget name. Shadowing,
+// mutation, unfamiliar borrow expressions, and missing table metadata all
+// fail closed by leaving the name unmapped.
+func checkedTableSources(fn *Function, decl *ast.FunctionStatement) map[string]string {
+	out := map[string]string{}
+	if fn == nil || decl == nil {
+		return out
+	}
+	candidates := map[string]string{}
+	invalid := map[string]bool{}
+	declarations := map[string]int{}
+	walkASTNodes(decl, func(node ast.Node) {
+		switch node := node.(type) {
+		case *ast.VariableDeclaration:
+			if node.Name == nil {
+				return
+			}
+			name := node.Name.Value
+			declarations[name]++
+			if declarations[name] > 1 {
+				invalid[name] = true
+			}
+			symbol, ok := checkedBorrowedTable(node.Value)
+			if !ok {
+				return
+			}
+			if _, known := fn.Tables[symbol]; !known {
+				return
+			}
+			candidates[name] = symbol
+		case *ast.AssignmentStatement:
+			if node.Name != nil {
+				invalid[node.Name.Value] = true
+			}
+		}
+	})
+	for name, symbol := range candidates {
+		if !invalid[name] {
+			out[name] = symbol
+		}
+	}
+	return out
+}
+
+func checkedBorrowedTable(expr ast.Expression) (string, bool) {
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return "", false
+	}
+	callee, ok := call.Function.(*ast.Identifier)
+	if !ok || callee.Value != "view" && callee.Value != "span" {
+		return "", false
+	}
+	borrow, ok := call.Arguments[0].(*ast.PrefixExpression)
+	if !ok || borrow.Operator != "&" {
+		return "", false
+	}
+	owner, ok := borrow.Right.(*ast.Identifier)
+	if !ok {
+		return "", false
+	}
+	return "data_" + owner.Value, true
+}
+
+// walkASTNodes visits the checked AST through exported fields. Parser ASTs are
+// acyclic, but pointer identity is still tracked so caches or future sharing
+// cannot make this authority-building walk recurse indefinitely.
+func walkASTNodes(node ast.Node, visit func(ast.Node)) {
+	seen := map[uintptr]bool{}
+	var walk func(reflect.Value)
+	walk = func(value reflect.Value) {
+		switch value.Kind() {
+		case reflect.Interface:
+			if !value.IsNil() {
+				walk(value.Elem())
+			}
+		case reflect.Ptr:
+			if value.IsNil() || seen[value.Pointer()] {
+				return
+			}
+			seen[value.Pointer()] = true
+			if current, ok := value.Interface().(ast.Node); ok {
+				visit(current)
+			}
+			walk(value.Elem())
+		case reflect.Struct:
+			for field := 0; field < value.NumField(); field++ {
+				if value.Type().Field(field).IsExported() {
+					walk(value.Field(field))
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for index := 0; index < value.Len(); index++ {
+				walk(value.Index(index))
+			}
+		}
+	}
+	walk(reflect.ValueOf(node))
 }
 
 // maxGuardPasses caps the fixpoint iteration.
 const maxGuardPasses = 16
 
-func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
-	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, forgetAtLabels: forgetAtLabels}
+func runPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, forgetAtLabels bool) *checker {
+	c := &checker{fn: fn, symbols: symbols, checkedFacts: facts, semanticTables: checkedTableSources(fn, decl), labelIn: labelIn, forgetAtLabels: forgetAtLabels}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
 		return c
@@ -177,6 +295,7 @@ func (c *checker) applyGuards(gs *guardState) {
 	c.upper = copyMap(gs.upper)
 	c.mid = copyMap(gs.mid)
 	c.pendingCmp = cmpFact{}
+	c.pendingCcmp = ccmpFact{}
 	c.flagsValid = gs.flags
 }
 
@@ -358,7 +477,7 @@ const (
 // and is discharged. Findings are only ever removed, so a body the meet
 // admits is unaffected, and one the versions admit is admissible under
 // every state that actually arrives.
-func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, stable *checker) []string {
+func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, stable *checker) []string {
 	findings := stable.errors
 	if os.Getenv("OAK_CHECK_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "DBG %s: meet findings %v\n", fn.Name, findings)
@@ -392,7 +511,7 @@ func dischargeByVersion(fn *Function, decl *ast.FunctionStatement, symbols map[s
 		perVersion := make([][]string, 0, len(versions))
 		for _, version := range versions {
 			passes++
-			perVersion = append(perVersion, runVersionPass(fn, decl, symbols, labelIn, label, version).errors)
+			perVersion = append(perVersion, runVersionPass(fn, decl, symbols, facts, labelIn, label, version).errors)
 		}
 		if os.Getenv("OAK_CHECK_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "DBG   %s: per-version findings %v\n", label, perVersion)
@@ -468,8 +587,8 @@ func findingPlace(finding string) string {
 // runVersionPass checks the body with one label entered at one of the
 // states that reach it, rather than at the meet, and with the regions
 // this context cannot reach left unchecked (contextDead).
-func runVersionPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, labelIn map[string]*guardState, label string, version *guardState) *checker {
-	c := &checker{fn: fn, symbols: symbols, labelIn: labelIn, pinnedLabel: label, pinnedState: version}
+func runVersionPass(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof, labelIn map[string]*guardState, label string, version *guardState) *checker {
+	c := &checker{fn: fn, symbols: symbols, checkedFacts: facts, semanticTables: checkedTableSources(fn, decl), labelIn: labelIn, pinnedLabel: label, pinnedState: version}
 	c.checkSignature(decl)
 	if len(c.errors) != 0 {
 		return c
@@ -512,6 +631,15 @@ type checker struct {
 	fn      *Function
 	symbols map[string]bool
 	errors  []string
+	// checkedFacts is the semantic authority supplied separately from the
+	// lowered body. A CheckedFactRef in an instruction has no force unless
+	// it exactly matches an entry here.
+	checkedFacts map[string]typechecker.IndexProof
+	// semanticTables is independently recovered from the checked Oak body:
+	// an unshadowed, never-reassigned local `v = view(&TABLE)` maps v to
+	// the exact constant-data symbol the machine region addresses. Dynamic
+	// extent facts have no authority without this second identity check.
+	semanticTables map[string]string
 
 	// contract
 	paramClass    map[string]RegClass // parameter -> width class
@@ -537,6 +665,11 @@ type checker struct {
 	spans      map[int]*spanFact
 	spanParams map[string]spanParam
 	pendingCmp cmpFact
+	// pendingCcmp: the conditional compare the previous instruction was,
+	// with the compare before it: `cmp; ccmp R, #k, #nzcv, c; b.eq back`
+	// (machine.FuseExits) carries the compare's fact under c to the taken
+	// path, as `b.c back` would.
+	pendingCcmp ccmpFact
 	// idxFacts: index register -> the bound a dominating guard proved it
 	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
 	// any write to the index or bound register, any label, and any call.
@@ -713,6 +846,9 @@ type stackParam struct {
 type region struct {
 	size     int64
 	writable bool
+	// source is the exact data symbol whose address formed this region.
+	// It survives aliases and constant-offset narrowing.
+	source string
 }
 
 type spanFact struct {
@@ -782,6 +918,16 @@ type cmpFact struct {
 	left     int   // the compared register
 	rightReg int   // the register compared against, or -1 for an immediate
 	imm      int64 // the immediate compared against
+}
+
+// ccmpFact: a conditional compare following a compare — the compare's
+// fact, the condition under which the second compare replaces its flags,
+// and whether the constant flags it sets otherwise have Z set.
+type ccmpFact struct {
+	valid bool
+	guard cmpFact
+	cond  string
+	zSet  bool
 }
 
 // idxFact: the register is below an immediate bound (boundReg == -1) or
@@ -1420,6 +1566,7 @@ func (c *checker) enterLabel(label Label) {
 		c.forgetGuards()
 	case c.labelIn == nil:
 		c.pendingCmp = cmpFact{}
+		c.pendingCcmp = ccmpFact{}
 		c.condFacts = map[int]condFact{}
 	default:
 		if assumed, known := c.labelIn[label.Name]; known {
@@ -1445,10 +1592,14 @@ var conditionInverse = map[string]string{
 
 func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
-	// len >= N for every span whose length register is wL.
+	// len >= N for every span whose length register is wL — or is proven
+	// equal to wL (`cmp wA, wB; b.ne`, lenEqual): equal lengths share
+	// their minimum (Oak.Assembler.index_under_equal_len's premise), so
+	// `len(a) == len(b) ? { … }` lets one span's slack test stand for
+	// both, as it does for the element guards.
 	if guard.valid && guard.rightReg < 0 && (cond == "lo" || cond == "cc") {
 		for _, fact := range c.spans {
-			if fact.holdsLen(guard.left) {
+			if c.measuresLen(fact, guard.left) {
 				fact.hasMin = true
 				fact.minLen = guard.imm
 			}
@@ -1459,7 +1610,7 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// and `len(v) == u32(K) ? …` as the lowering spells them.
 	if guard.valid && guard.rightReg < 0 && cond == "ne" && guard.imm >= 0 {
 		for _, fact := range c.spans {
-			if fact.holdsLen(guard.left) && (!fact.hasMin || fact.minLen < guard.imm) {
+			if c.measuresLen(fact, guard.left) && (!fact.hasMin || fact.minLen < guard.imm) {
 				fact.hasMin = true
 				fact.minLen = guard.imm
 			}
@@ -1526,12 +1677,78 @@ func (c *checker) guardFacts(guard cmpFact, cond string) {
 	// registers are equal — two spans' lengths, so an index guarded below
 	// one is below the other (Oak.Assembler.index_under_equal_len).
 	if guard.valid && guard.rightReg >= 0 && cond == "ne" && guard.left != guard.rightReg {
-		if c.lenEqual == nil {
-			c.lenEqual = map[int]int{}
-		}
-		c.lenEqual[guard.left] = guard.rightReg
-		c.lenEqual[guard.rightReg] = guard.left
+		c.recordLenEqual(guard.left, guard.rightReg)
 	}
+}
+
+// recordLenEqual records that w registers a and b hold one value. The map
+// keeps one partner per register, so a register already paired keeps its
+// pair — `len(dst) == len(a) && len(b) == len(a)` leaves a paired with
+// dst and b pointing at a — and equalLenReg reads the pairs as a graph,
+// in both directions, so every register the compares chained is reached.
+func (c *checker) recordLenEqual(a, b int) {
+	if c.lenEqual == nil {
+		c.lenEqual = map[int]int{}
+	}
+	if _, paired := c.lenEqual[a]; !paired {
+		c.lenEqual[a] = b
+	}
+	if _, paired := c.lenEqual[b]; !paired {
+		c.lenEqual[b] = a
+	}
+}
+
+// measuresLen reports whether w register n holds the span's length or is
+// proven equal to a register that does (checker.lenEqual).
+func (c *checker) measuresLen(f *spanFact, n int) bool {
+	return f.holdsLen(n) || c.equalLenReg(f, n) >= 0
+}
+
+// equalLenReg returns a register holding span f's length that `cmp wA,
+// wB; b.ne` proved equal (lenEqual) to w register n — through the chain
+// of compares in either direction, and through the other registers
+// holding the same length as any register on it (a span's copies of its
+// length are one value, and a compare may have read the copy where a
+// slack fact names the primary) — or -1.
+func (c *checker) equalLenReg(f *spanFact, n int) int {
+	if len(c.lenEqual) == 0 {
+		return -1
+	}
+	reached := map[int]bool{n: true}
+	queue := []int{n}
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		var next []int
+		if other, equal := c.lenEqual[r]; equal {
+			next = append(next, other)
+		}
+		for key, value := range c.lenEqual {
+			if value == r {
+				next = append(next, key)
+			}
+		}
+		for _, g := range c.spans {
+			if g != f && g.holdsLen(r) {
+				for alias := range g.lenRegs {
+					next = append(next, alias)
+				}
+			}
+		}
+		for _, m := range next {
+			if !reached[m] {
+				reached[m] = true
+				queue = append(queue, m)
+			}
+		}
+	}
+	best := -1
+	for r := range reached {
+		if r != n && f.holdsLen(r) && (best < 0 || r < best) {
+			best = r
+		}
+	}
+	return best
 }
 
 // forgetGuards drops every span length guard: control merged (label) or
@@ -1541,6 +1758,7 @@ func (c *checker) forgetGuards() {
 		fact.hasMin = false
 	}
 	c.pendingCmp = cmpFact{}
+	c.pendingCcmp = ccmpFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
 	c.condFacts = map[int]condFact{}
@@ -1564,6 +1782,17 @@ func (c *checker) instruction(instr Instruction) bool {
 	// A length comparison guards exactly the next instruction.
 	guard := c.pendingCmp
 	c.pendingCmp = cmpFact{}
+	ccmpGuard := c.pendingCcmp
+	c.pendingCcmp = ccmpFact{}
+	if instr.Mnemonic == "ccmp" && guard.valid && len(instr.Operands) == 4 {
+		// The compare's fact rides through the conditional compare to
+		// the branch after it (the `b.` case below).
+		if cond, isCond := instr.Operands[3].(Condition); isCond {
+			if nzcv, isImm := instr.Operands[2].(Immediate); isImm {
+				c.pendingCcmp = ccmpFact{valid: true, guard: guard, cond: cond.Code, zSet: nzcv.Value&4 != 0}
+			}
+		}
+	}
 	spec := instructionTable[instr.Mnemonic]
 	if spec.tableForms && (len(spec.forms) == 0 || usesScalable(instr.Operands)) {
 		return c.scalable(instr) // SVE/SME: Arm's templates are the forms (asm/isa_sme.go)
@@ -1621,6 +1850,47 @@ func (c *checker) instruction(instr Instruction) bool {
 	case "b.":
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
+		}
+		if !guard.valid && ccmpGuard.valid && (instr.Cond == "eq" || instr.Cond == "ne") {
+			// `cmp wI, wL; ccmp wR, #k, #nzcv, c; b.eq/b.ne target`
+			// (machine.FuseExits): where c fails the constant flags decide
+			// the branch alone. When they fail it (`b.eq` with Z clear,
+			// `b.ne` with Z set — a loop's back edge), the branch is taken
+			// only where c held and the second compare agreed, so the
+			// taken path knows the first compare's fact under c, as `b.c
+			// target`'s would, and the fall-through knows nothing. When
+			// they take it (`b.ne` with Z clear, `b.eq` with Z set — a
+			// loop's entry exit), the fall-through is reached only where c
+			// held and the second compare failed, so it knows the fact,
+			// and the taken path knows nothing.
+			inverse, known := conditionInverse[ccmpGuard.cond]
+			if known {
+				takenKnows := (instr.Cond == "eq" && !ccmpGuard.zSet) || (instr.Cond == "ne" && ccmpGuard.zSet)
+				if takenKnows {
+					savedIdx := map[int]idxFact{}
+					for reg, fact := range c.idxFacts {
+						savedIdx[reg] = fact
+					}
+					savedMins := map[*spanFact][2]int64{}
+					for _, fact := range c.spans {
+						has := int64(0)
+						if fact.hasMin {
+							has = 1
+						}
+						savedMins[fact] = [2]int64{has, fact.minLen}
+					}
+					c.guardFacts(ccmpGuard.guard, inverse)
+					c.branch(instr, false)
+					c.idxFacts = savedIdx
+					for fact, saved := range savedMins {
+						fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
+					}
+					return false
+				}
+				c.branch(instr, false)
+				c.guardFacts(ccmpGuard.guard, inverse)
+				return false
+			}
 		}
 		if inverse, known := conditionInverse[instr.Cond]; known && guard.valid {
 			// The taken path knows what the fall-through of the
@@ -1764,6 +2034,18 @@ func (c *checker) instruction(instr Instruction) bool {
 		} else {
 			c.branch(instr, false)
 		}
+		if instr.Mnemonic == "cbz" && reg.Class == ClassW {
+			// The fall-through knows this unsigned value is nonzero. When it
+			// is a span length, that is exactly the minimum length one needed
+			// by element zero (Oak.Forwarding.unsigned_lt_one_is_zero). The
+			// branch state was captured above, so the taken edge gains no such
+			// fact; a stronger existing minimum is preserved.
+			for _, fact := range c.spans {
+				if fact.holdsLen(reg.Num) && (!fact.hasMin || fact.minLen < 1) {
+					fact.hasMin, fact.minLen = true, 1
+				}
+			}
+		}
 		// A context that knows the register's value decides the branch:
 		// when it is always taken the fall-through is unreachable here.
 		if c.pinnedState != nil && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {
@@ -1829,7 +2111,7 @@ func (c *checker) instruction(instr Instruction) bool {
 			return false
 		}
 		c.write(instr, dest)
-		c.regions[dest.Num] = region{size: table.Size}
+		c.regions[dest.Num] = region{size: table.Size, source: sym.Name}
 		return false
 	}
 
@@ -2249,9 +2531,17 @@ func (c *checker) boundVector(num int) bool {
 // the result register, or a declared clobber. wN/xN alias: writing either
 // width is a write of the physical register.
 func (c *checker) write(instr Instruction, reg Register) {
-	if other, equal := c.lenEqual[reg.Num]; equal && (reg.Class == ClassW || reg.Class == ClassX) {
-		delete(c.lenEqual, reg.Num)
-		delete(c.lenEqual, other)
+	if reg.Class == ClassW || reg.Class == ClassX {
+		// Every equality the register took part in lapses: its own pair
+		// and every register paired with it.
+		if _, equal := c.lenEqual[reg.Num]; equal {
+			delete(c.lenEqual, reg.Num)
+		}
+		for key, value := range c.lenEqual {
+			if value == reg.Num {
+				delete(c.lenEqual, key)
+			}
+		}
 	}
 	if reg.Class == ClassW || reg.Class == ClassX {
 		delete(c.sumFacts, reg.Num)
@@ -2499,7 +2789,7 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 			// region the source held before the write.
 			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
 				if value := tail.Value << uint(tail.Shift); value <= priorRegion.size {
-					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable}
+					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable, source: priorRegion.source}
 				}
 			}
 		}
@@ -2549,6 +2839,16 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 	bound, guarded := c.idxFacts[index]
 	if !guarded {
 		return
+	}
+	// A bound against a register proven equal to this span's length
+	// (`cmp wA, wB; b.ne`, lenEqual) is a bound against the length: the
+	// registers hold one value (Oak.Assembler.index_under_equal_len), so
+	// the decision below reads it as the span's own — `len(a) == len(b) ?
+	// { … }` with a slack test over `a` guarding the same lanes of `b`.
+	if sp := c.spans[base.Num]; sp != nil && bound.boundReg >= 0 && !sp.holdsLen(bound.boundReg) {
+		if other := c.equalLenReg(sp, bound.boundReg); other >= 0 {
+			bound.boundReg = other
+		}
 	}
 	var frameAddr *int64
 	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
@@ -2840,6 +3140,9 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
+		if !guarded {
+			bound, guarded = c.checkedIndexBound(instr, mem, index, extent.size/size, extent.source)
+		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the array's index", instr.Mnemonic, index.Text, index.Text)
 			return
@@ -2900,6 +3203,9 @@ func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, 
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
+		if !guarded && base >= 0 && size > 0 && base <= c.fn.Frame {
+			bound, guarded = c.checkedIndexBound(instr, mem, index, (c.fn.Frame-base)/size, "")
+		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the frame array's index", instr.Mnemonic, index.Text, index.Text)
 			return
@@ -3278,6 +3584,9 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		return
 	}
 	bound, guarded := c.idxFacts[index.Num]
+	if !guarded && fact.hasMin && fact.elem > 0 {
+		bound, guarded = c.checkedIndexBound(instr, mem, index, fact.minLen, "")
+	}
 	if guarded && bound.slack && size > fact.elem && size%fact.elem == 0 && int64(1)<<uint(mem.Shift) == fact.elem {
 		// A vector access of size/elem elements at wI under wI + K <= len,
 		// K >= that many elements and len >= K (so the slack subtraction did
@@ -3331,6 +3640,57 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 			c.write(instr, reg)
 		}
 	}
+}
+
+// checkedIndexBound resolves an instruction-local index-in-extent reference.
+// The source proposition comes from checkedFacts, supplied independently of
+// the lowered function. The lowered reference must name the exact indexed
+// memory operand and a positive extent no larger than the concrete machine
+// region. A static source extent must agree exactly. A dynamic source extent
+// is admitted only when the Oak body independently maps the proof's local
+// container to the exact constant-data symbol carried by the machine region.
+func (c *checker) checkedIndexBound(instr Instruction, mem Memory, index Register, capacity int64, source string) (idxFact, bool) {
+	if len(instr.CheckedFacts) == 0 || len(c.checkedFacts) == 0 || capacity <= 0 {
+		return idxFact{}, false
+	}
+	operand := -1
+	for position, raw := range instr.Operands {
+		candidate, ok := raw.(Memory)
+		if !ok || candidate.Index == nil || mem.Index == nil {
+			continue
+		}
+		if candidate.Base.Class == mem.Base.Class && candidate.Base.Num == mem.Base.Num && candidate.Index.Class == index.Class && candidate.Index.Num == index.Num && candidate.Shift == mem.Shift && candidate.Extend == mem.Extend && candidate.Offset == mem.Offset && candidate.Mode == mem.Mode {
+			operand = position
+			break
+		}
+	}
+	if operand < 0 {
+		return idxFact{}, false
+	}
+	for _, reference := range instr.CheckedFacts {
+		if reference.Operand != operand {
+			continue
+		}
+		proof, authorized := c.checkedFacts[reference.ID]
+		switch {
+		case !authorized:
+			c.errorf(instr.Line, "%s: checked fact %q has no typechecker authority", instr.Mnemonic, reference.ID)
+		case reference.Kind != "index-in-extent" || proof.Proposition != reference.Kind:
+			c.errorf(instr.Line, "%s: checked fact %q has proposition %q, not index-in-extent", instr.Mnemonic, reference.ID, proof.Proposition)
+		case reference.Container == "" || reference.Container != proof.Container:
+			c.errorf(instr.Line, "%s: checked fact %q maps container %q, typechecker proved %q", instr.Mnemonic, reference.ID, reference.Container, proof.Container)
+		case reference.Extent <= 0 || reference.Extent > capacity:
+			c.errorf(instr.Line, "%s: checked fact %q maps %d elements into a machine region of %d", instr.Mnemonic, reference.ID, reference.Extent, capacity)
+		case proof.Extent >= 0 && proof.Extent != reference.Extent:
+			c.errorf(instr.Line, "%s: checked fact %q maps extent %d, typechecker proved fixed extent %d", instr.Mnemonic, reference.ID, reference.Extent, proof.Extent)
+		case proof.Extent < 0 && (source == "" || c.semanticTables[proof.Container] == "" || c.semanticTables[proof.Container] != source):
+			c.errorf(instr.Line, "%s: checked fact %q has dynamic container %q, which the Oak body does not map uniquely to machine region %q", instr.Mnemonic, reference.ID, proof.Container, source)
+		default:
+			return idxFact{boundReg: -1, bound: reference.Extent}, true
+		}
+		return idxFact{}, false
+	}
+	return idxFact{}, false
 }
 
 func log2(n int64) int {

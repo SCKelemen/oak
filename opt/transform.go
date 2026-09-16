@@ -108,6 +108,16 @@ type Gated interface {
 	NeedsVerdict() bool
 }
 
+// Neutral is a gated transform that changes no evaluation shape the
+// verifier reads — a register assignment, an instruction order — so a
+// candidate carrying it shares its shape with the candidate without it,
+// and one validation judges both (Search.shape). A gated transform that
+// changes instructions or branches is not neutral: its verdict can
+// differ from its parent's, and it is validated on its own.
+type Neutral interface {
+	ShapeNeutral() bool
+}
+
 // Refinable is a transform that can narrow a candidate the checker
 // refused — verifier-guided search in its smallest form
 // (docs/notes/proof-guided-optimization-2026-09.md §16): the finding

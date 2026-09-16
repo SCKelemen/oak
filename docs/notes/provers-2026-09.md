@@ -150,13 +150,32 @@ literature; cuda-cic does not check proof terms.
 
 **Assessment**, recorded as `125-verification.md` §7 "A certificate rung"
 (items 1 and the checkers of item 2 landed on 2026-09-13: `asm/cnf.go`,
-`prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
+`internal/lrat/lrat.go` (with compatibility wrappers in `prove/lrat.go`),
+`prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
 written in Oak landed the same day as the rung's default,
 `prove/solver/sat.oak`, then clause-database reduction with deletion lines,
 two watched literals, learned-clause minimization, Luby restarts,
 activity-based reduction, and bounded variable elimination at load; the
-encoder's laws are stated in `Oak.Tseitin` and its code checked against
-them by truth table; the clause engine written in Oak (`cnf.oak`) now
+encoder's laws are stated in `Oak.Tseitin`; `Oak.TseitinCNF` connects exact
+raw-gate lists, supplied-list/final-clause composition, and their exact
+1-based initial database to RUP semantics; a supplied sequence satisfying
+`WellFormedFrom` (strictly increasing outputs and backward-only operands) has
+a constructed model of its gate clauses; `Oak.CNFBuilderTrace` now derives
+that premise from a checked supplied allocation-event projection. The concrete
+exporter separately memo-replays the supplied trap terms in slice order and
+the claim term, and checks the four-way outcome and exact filtered root order
+before streaming its actual builder snapshot through the
+allocator/gate/clause/final-edge audit.
+`Oak.CNFFinalObligation` proves the corresponding decoded-root construction
+and counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation
+and transports counterexample semantics for a supplied normalized Boolean
+term/root encoding. The concrete audit now also requires an exact bijection between gate
+records and their unique-table memo entries, rejecting record shapes the
+builder should have folded. Go-to-Lean refinement, actual Go term/root
+encoding, bit-blaster operation and fold selection, term-memo semantics,
+trap/claim term-list provenance and source ordering, and the complete builder
+remain open; the clause engine written in Oak
+(`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
 for clause in count over the corpus; and the rung runs inside the prover
 written in Oak too (`certify.oak`), the solver recording its steps as
@@ -213,9 +232,23 @@ Oak; `spec/oak/shapes.oak`'s nine rows all agree):
 
 1. Add a SAT rung with LRAT rather than a bigger BDD budget; keep the BDD
    for canonical equivalence and counterexamples.
-2. The trusted base then narrows to the clause encoder, which is
-   cross-checked against Go node for node and not proved — the finding to
-   close first (`performance.md` §13 "Trusted base of the checker stated").
+2. The trusted base then narrows to the complete clause encoder. Raw gate
+   lists, supplied-list/final-clause composition, and exact 1-based initial
+   database models are proved by `Oak.TseitinCNF`; supplied sequences
+   satisfying `WellFormedFrom` (strictly increasing outputs and backward-only
+   operands) also get a constructed gate-clause model. `Oak.CNFBuilderTrace`
+   checks that premise for a supplied shared-allocation projection, while the
+   `Oak.CNFFinalObligation` proves the corresponding four-way decoded-root
+   construction, and `Oak.CNFTermRoot` composes a supplied normalized Boolean
+   term/root encoding through it. The concrete exporter independently
+   memo-replays its supplied trap terms in slice order and claim term, checks
+   every outcome and the exact gate-record/unique-table-memo bijection, and
+   audits its actual allocation, gate-clause, and final-edge snapshot before
+   DIMACS. Actual Go term/root encoding, bit-blaster operation and fold
+   selection, term-memo semantics, trap/claim term-list provenance and source
+   ordering, DIMACS, and Go-to-Lean implementation refinement remain open
+   (`performance.md` §13 "Trusted base
+   of the checker stated").
 3. The GPU is not ParaFROST-shaped for Oak: obligations are kilobytes.
    The parallel axis is the many small independent evaluations — the
    witness pass, exhaustive enumeration, reachable-state exploration — a

@@ -23,6 +23,17 @@ func newTermEvaluator(roots ...*term) *termEvaluator {
 	return ev
 }
 
+// fork reuses an evaluator's immutable term numbering while giving one
+// concurrent evaluation attempt private memo values and generation stamps.
+// The source evaluator must be fully constructed before any forks start.
+func (ev *termEvaluator) fork() *termEvaluator {
+	return &termEvaluator{
+		terms: ev.terms,
+		value: make([]uint64, len(ev.terms)+1),
+		stamp: make([]uint32, len(ev.terms)+1),
+	}
+}
+
 // numbered reports whether t already carries this evaluator's id.
 func (ev *termEvaluator) numbered(t *term) bool {
 	return t.id > 0 && int(t.id) <= len(ev.terms) && ev.terms[t.id-1] == t

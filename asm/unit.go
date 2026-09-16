@@ -238,6 +238,30 @@ type Instruction struct {
 	Cond     string // condition suffix for b.cond ("ne", "eq", ...), else ""
 	Operands []Operand
 	Line     int
+	// OptIRCallSite is the nonzero SSA result ID of an OptIR call emitted as
+	// this instruction. It is compiler-owned, is not parsed or encoded, and
+	// lets post-materialization admission bind the final call target back to
+	// the exact fingerprinted CFG occurrence after scheduling and rewriting.
+	OptIRCallSite uint32
+	// CheckedFacts are instruction-local references to semantic facts
+	// established before lowering. They are not parsed from .oakasm and are
+	// powerless under Check; CheckWithFacts must match them against an
+	// independently supplied authority set. Operand identifies the memory
+	// operand whose index the proposition describes, so register rewriting
+	// cannot make a reference stale.
+	CheckedFacts []CheckedFactRef
+}
+
+// CheckedFactRef maps one checked semantic proposition to an exact machine
+// use. Extent is the number of elements the lowering maps the source
+// container to at this use; the checker independently verifies that the
+// addressed machine region has at least that capacity.
+type CheckedFactRef struct {
+	ID        string
+	Kind      string
+	Container string
+	Operand   int
+	Extent    int64
 }
 
 func (l Label) itemLine() int       { return l.Line }

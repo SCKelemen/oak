@@ -321,6 +321,7 @@ func cloneFunction(fn *asm.Function) *asm.Function {
 	for i, item := range fn.Items {
 		if ins, ok := item.(asm.Instruction); ok {
 			ins.Operands = append([]asm.Operand(nil), ins.Operands...)
+			ins.CheckedFacts = append([]asm.CheckedFactRef(nil), ins.CheckedFacts...)
 			item = ins
 		}
 		out.Items[i] = item

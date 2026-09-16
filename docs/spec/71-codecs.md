@@ -324,8 +324,12 @@ All three operations return `Result[u32, JsonError]`; lengths are bytes.
 `Json` is a compile-time format marker. The fluent form emits identical C
 to the direct form and evaluates the source expression once. `from` is an
 immediate producer expression, not a storable codec object or borrowed
-aggregate. `from`, `encode`, and `encoded_size` are reserved under
-`import(std)`; no implicit codec search or runtime format dispatch occurs.
+aggregate. The codec words (`from`, `encode`, `encoded_size`, `decode`,
+`decode_located`) are contextual forms: an ordinary declaration keeps its
+name, including a generic function called with explicit type arguments.
+`import(std)` does not reserve those names as exports. An undeclared codec
+word must appear in an immediately consumed, explicitly typed codec call;
+no implicit codec search or runtime format dispatch occurs.
 
 Supported values are all fixed-width signed/unsigned integers, `Bool`,
 top-level `string`, and closed concrete records recursively containing

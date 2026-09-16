@@ -8,6 +8,7 @@ import (
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/opt"
+	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -92,6 +93,29 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedGlobal.Globals["z"] = asm.Global{Type: "u64", Bits: 64, Aggregate: true, Size: 16}
 	changedTable := lane(false)
 	changedTable.Tables["z"] = nativegen.GlobalArray{Symbol: "data_z", Elem: "u8", Length: 9}
+	changedOptIR := lane(false)
+	changedOptIR.UseOptIR = true
+	changedOptIR.OptIRFingerprint = "cfg-a"
+	changedOptIR.OptIRChanges = 3
+	changedOptIRFingerprint := changedOptIR
+	changedOptIRFingerprint.OptIRFingerprint = "cfg-b"
+	changedOptIRCount := changedOptIR
+	changedOptIRCount.OptIRChanges = 4
+	changedOptIRMemory := changedOptIR
+	changedOptIRMemory.OptIRMemory = &optir.RegionMemoryMetadata{}
+	changedOptIRAuthority := changedOptIR
+	emptyAuthority := optir.CheckedMemoryAuthority{}
+	changedOptIRAuthority.OptIRMemoryAuthority = &emptyAuthority
+	changedOptIRProjection := changedOptIR
+	emptyProjection := optir.CheckedMemoryProjection{}
+	changedOptIRProjection.OptIRMemoryProjection = &emptyProjection
+	changedOptIRCallCertificate := changedOptIR
+	emptyCallCertificate := optir.CheckedMemoryCallCertificate{}
+	changedOptIRCallCertificate.OptIRMemoryCallCertificate = &emptyCallCertificate
+	changedOptIRBinding := changedOptIR
+	changedOptIRBinding.OptIRRegionGlobals = map[optir.RegionID]nativegen.OptIRRegionGlobal{
+		"region": {Symbol: "state", Global: asm.Global{Type: "u32", Bits: 32}},
+	}
 	changes := []struct {
 		name      string
 		driver    *nativeDriver
@@ -105,6 +129,14 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"constant", changedConstant, opt.Identity(lane(false))},
 		{"global", driver(false), opt.Identity(changedGlobal)},
 		{"table", driver(false), opt.Identity(changedTable)},
+		{"optir", driver(false), opt.Identity(changedOptIR)},
+		{"optir-fingerprint", driver(false), opt.Identity(changedOptIRFingerprint)},
+		{"optir-changes", driver(false), opt.Identity(changedOptIRCount)},
+		{"optir-memory", driver(false), opt.Identity(changedOptIRMemory)},
+		{"optir-memory-authority", driver(false), opt.Identity(changedOptIRAuthority)},
+		{"optir-memory-projection", driver(false), opt.Identity(changedOptIRProjection)},
+		{"optir-memory-call-certificate", driver(false), opt.Identity(changedOptIRCallCertificate)},
+		{"optir-region-binding", driver(false), opt.Identity(changedOptIRBinding)},
 	}
 	for _, change := range changes {
 		t.Run(change.name, func(t *testing.T) {
@@ -114,6 +146,32 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 			}
 			if key == want {
 				t.Fatalf("changed %s retained key %s", change.name, key)
+			}
+		})
+	}
+
+	// Every switch the registry can turn on has to reach the key: two
+	// candidates the digest cannot tell apart would serve one's body for
+	// the other out of the cache, which is the one way a cache can be
+	// wrong. The loop is over the registry, so a transform added later
+	// fails here until its flag is written into the lane's digest.
+	plain := opt.Identity(nativegen.PlainLane(lane(false)))
+	plainKey, err := driver(false).MaterializationKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transform := range nativegen.Registry().Transforms() {
+		next := transform.Apply(plain)
+		if next == nil {
+			continue
+		}
+		t.Run("switch/"+transform.Name(), func(t *testing.T) {
+			key, err := driver(false).MaterializationKey(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key == plainKey {
+				t.Fatalf("%s does not reach the materialization key", transform.Name())
 			}
 		})
 	}

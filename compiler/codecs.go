@@ -39,6 +39,11 @@ func lowerDerivedCodecs(program *ast.Program) ([]CodecLayout, error) {
 			return expr, nil
 		}
 		name, args, ordinary := codecApplication(call.Function)
+		if ordinary && d.names[name] {
+			// Explicit type arguments do not turn an ordinary generic
+			// function declaration into a codec operation.
+			return expr, nil
+		}
 		values := call.Arguments
 		if !ordinary {
 			// from[T](value).to[Json](output) is one static operation. Neither
@@ -60,7 +65,7 @@ func lowerDerivedCodecs(program *ast.Program) ([]CodecLayout, error) {
 				return expr, nil
 			}
 			producerName, producerTypes, ok := codecApplication(producer.Function)
-			if !ok || producerName != "from" {
+			if !ok || producerName != "from" || d.names[producerName] {
 				return expr, nil
 			}
 			if len(producerTypes) != 1 || len(producer.Arguments) != 1 {

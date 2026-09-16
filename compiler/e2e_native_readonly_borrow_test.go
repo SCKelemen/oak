@@ -80,7 +80,7 @@ func TestE2ENativeReadOnlyBorrow(t *testing.T) {
 }
 
 func TestNativeShapesReadOnlyBorrow(t *testing.T) {
-	model, err := New().WithSource("borrow.oak", nativeReadOnlyBorrowProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("borrow.oak", nativeReadOnlyBorrowProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

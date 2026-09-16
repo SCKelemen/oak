@@ -200,6 +200,22 @@ theorem spanElement_sound (fact : SpanFact) (bound : IdxFact) (size len : Int) (
       exact span_element size len i hi hsize hlt
     · simp at h
 
+/-- A region derived from a span preserves exactly the span's writability
+metadata; the slack form widens only its byte extent. -/
+theorem spanElement_writable (fact : SpanFact) (bound : IdxFact) (size : Int)
+    (r : Region) (h : spanElement fact bound size = some r) :
+    r.writable = fact.writable := by
+  unfold spanElement at h
+  split at h
+  · simp only [Option.some.injEq] at h
+    subst r
+    rfl
+  · split at h
+    · simp only [Option.some.injEq] at h
+      subst r
+      rfl
+    · simp at h
+
 /-- A region element: the region is one element, inside the parent. -/
 theorem regionElement_sound (extent : Region) (bound : IdxFact) (size : Int) (r : Region)
     (h : regionElement extent bound size = some r)
@@ -295,6 +311,27 @@ theorem span_element_then_access (fact : SpanFact) (bound : IdxFact) (size len :
   have h0 : 0 ≤ i * size := Int.mul_nonneg hi hsize
   constructor <;> omega
 
+/-- The exact arithmetic needed by an offset-form 64-bit pair store after a
+slack-derived span element: a writable admitted 16-byte access covers two
+adjacent u64 cells and remains inside the span.  This is a bounds/writability
+fact only, not execution, atomicity, ordering, or publication authority. -/
+theorem span_element_then_pair64_store (fact : SpanFact) (bound : IdxFact)
+    (len : Int) (r : Region)
+    (hr : spanElement fact bound fact.elem = some r) (helem : fact.elem = 8)
+    (i d : Int) (hi : 0 ≤ i) (hg : GuardMeans fact bound len i)
+    (ha : regionAdmits r true (8 * d) 16 none = true) :
+    fact.writable = true ∧ 0 ≤ i + d ∧ i + d + 2 ≤ len := by
+  rw [helem] at hr
+  have hspan := spanElement_sound fact bound 8 len r hr i hi (by omega) hg
+  have hwritable := spanElement_writable fact bound 8 r hr
+  obtain ⟨⟨hoff, hend⟩, hstore⟩ :=
+    regionAdmits_offset_sound r true (8 * d) 16 ha
+  have hrw : r.writable = true := hstore rfl
+  constructor
+  · rw [← hwritable]
+    exact hrw
+  · constructor <;> omega
+
 
 /-! ## The decisions rendered by the Go checker
 
@@ -309,6 +346,7 @@ example : elementRegion 0 ⟨none, (some ⟨8, true, false, 0, [1]⟩), none⟩ 
 example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 4, false, 0⟩) 8 = some ⟨8, false⟩ := by decide
 example : elementRegion 0 ⟨none, (some ⟨8, false, true, 4, [1]⟩), none⟩ (some ⟨(-1), 5, false, 0⟩) 8 = none := by decide
 example : elementRegion 0 ⟨none, (some ⟨1, true, true, 16, [1]⟩), none⟩ (some ⟨1, 16, true, 0⟩) 1 = some ⟨16, true⟩ := by decide
+example : elementRegion 0 ⟨none, (some ⟨8, true, true, 4, [1]⟩), none⟩ (some ⟨1, 4, true, 0⟩) 8 = some ⟨32, true⟩ := by decide
 example : elementRegion 0 ⟨none, (some ⟨4, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false, 0⟩) 8 = none := by decide
 example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 32, false, 0⟩) 1 = some ⟨1, false⟩ := by decide
 example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 33, false, 0⟩) 1 = none := by decide
@@ -317,6 +355,10 @@ example : regionAdmits ⟨12, true⟩ false 12 4 none = false := by decide
 example : regionAdmits ⟨12, false⟩ true 0 4 none = false := by decide
 example : regionAdmits ⟨32, false⟩ false 0 1 (some ⟨(-1), 32, false, 0⟩) = true := by decide
 example : regionAdmits ⟨12, true⟩ false 0 4 (some ⟨(-1), 4, false, 0⟩) = false := by decide
+example : regionAdmits ⟨32, true⟩ true 0 16 none = true := by decide
+example : regionAdmits ⟨32, true⟩ true 16 16 none = true := by decide
+example : regionAdmits ⟨32, true⟩ true 24 16 none = false := by decide
+example : regionAdmits ⟨32, false⟩ true 0 16 none = false := by decide
 example : frameArrayAdmits 16 (-16) 4 4 none = true := by decide
 example : frameArrayAdmits 16 (-16) 12 8 none = false := by decide
 example : frameArrayAdmits 16 (-16) 0 4 (some ⟨(-1), 4, false, 0⟩) = true := by decide

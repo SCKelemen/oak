@@ -66,9 +66,29 @@ type inliner struct {
 	// (docs/spec/112-protocols.md section 5): the resource analysis judges
 	// a transition at its call, so the call must remain.
 	transitions map[string]bool
+	// refinements names the program's refinement types and templates
+	// (`Small: type = u16 where value < 4`, `IrqId[N: u32]: type = …`): a
+	// parameter of such a type keeps a typed temporary at its call, so the
+	// checker still sees the argument flow into the refinement (renaming
+	// the parameter to the argument would drop the declared type).
+	refinements map[string]bool
 	counter     int
 	caller      string
 	applied     map[inlineEdge]int
+}
+
+// refinedParameter reports a parameter type naming a refinement or a
+// refinement template application (`Small`, `IrqId[4]`).
+func (in *inliner) refinedParameter(typ ast.Expression) bool {
+	switch t := typ.(type) {
+	case *ast.Identifier:
+		return in.refinements[t.Value]
+	case *ast.IndexExpression:
+		if ident, isIdent := t.Left.(*ast.Identifier); isIdent && !t.Dot {
+			return in.refinements[ident.Value]
+		}
+	}
+	return false
 }
 
 type inlineEdge struct {
@@ -90,7 +110,12 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) (
 	if program == nil {
 		return nil
 	}
-	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}, applied: map[inlineEdge]int{}}
+	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}, applied: map[inlineEdge]int{}, refinements: map[string]bool{}}
+	for _, stmt := range program.Statements {
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Refinement != nil && adt.Name != nil {
+			in.refinements[adt.Name.Value] = true
+		}
+	}
 	defer func() { decisions = in.decisions() }()
 	duplicates := map[string]bool{}
 	for _, stmt := range program.Statements {
@@ -444,8 +469,11 @@ func (in *inliner) inlineStatement(stmt ast.Statement, scope *callerScope) []ast
 // with nothing to hold). A match filling the slot has its arms rewritten as
 // slots of their own — in statement position every arm, since the backends
 // lower a statement-position match to branches of statements; in a value
-// position only arms that are already statement-bearing blocks, so no arm
-// acquires statements where the backends expect a bare expression.
+// position no arm is rewritten: even an already statement-bearing outer arm
+// can end in a nested value match, and hoisting into that nested match would
+// put declarations inside the C backend's ternary expression. Keeping the
+// complete arm opaque preserves its conditional evaluation and the C99
+// expression/statement boundary.
 // Anything else is walked for calls in operand position.
 func (in *inliner) rewriteSlot(slot *ast.Expression, scope *callerScope, statement bool) (hoisted []ast.Statement, dropped bool) {
 	switch e := (*slot).(type) {
@@ -473,7 +501,7 @@ func (in *inliner) rewriteSlot(slot *ast.Expression, scope *callerScope, stateme
 				continue
 			}
 			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-				if statement || (block.Block != nil && len(block.Block.Statements) > 1) {
+				if statement {
 					in.inlineBlock(block.Block, scope)
 				}
 				continue
@@ -675,7 +703,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	var stmts []ast.Statement
 	for i, p := range cand.fn.Parameters {
 		arg := call.Arguments[i]
-		if ident, isIdent := arg.(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] {
+		if ident, isIdent := arg.(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] && !in.refinedParameter(p.Type) {
 			rename[p.Name.Value] = ident.Value
 			continue
 		}

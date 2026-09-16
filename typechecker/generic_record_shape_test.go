@@ -73,6 +73,22 @@ result: i32 = sum_xy(point)
 	}
 }
 
+func TestRecordShapeConstraintDoesNotUseNestedCompatibilityAsIdentity(t *testing.T) {
+	u8 := &PrimitiveType{Name: "u8"}
+	nestedShape := &RecordType{Fields: map[string]Type{"x": u8}}
+	nestedStored := &RecordType{Name: "Stored", Struct: true, Fields: map[string]Type{"x": u8}}
+	candidate := &RecordType{Fields: map[string]Type{"item": nestedStored}}
+	required := &RecordType{Fields: map[string]Type{"item": nestedShape}}
+
+	if !nestedStored.Equals(nestedShape) {
+		t.Fatal("regression setup no longer exercises broad record compatibility")
+	}
+	tc := setupTypeChecker("")
+	if tc.implementsInterface(candidate, required) {
+		t.Fatal("record-shape constraint accepted a merely compatible nested field type")
+	}
+}
+
 func TestGenericBodyCannotUseFieldNotGuaranteedByConstraint(t *testing.T) {
 	input := `
 Position: type = { x: i32, y: i32 }

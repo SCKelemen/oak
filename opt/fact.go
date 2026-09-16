@@ -104,6 +104,10 @@ func (p Proposition) Equal(q Proposition) bool {
 // remark can name the fact that licensed a transform
 // (docs/notes/proof-guided-optimization-2026-09.md §1).
 type Fact struct {
+	// ID is the stable identity of the checked/proved fact when one exists.
+	// Empty IDs are permitted for language-wide laws, but a downstream seam
+	// that consumes source-specific evidence must require one.
+	ID          string
 	Proposition Proposition
 	Provenance  Provenance
 	// Source names the establishing authority: a checker and its entry
@@ -112,6 +116,10 @@ type Fact struct {
 	// Scope is the program point the fact holds at (a function, a source
 	// line, a loop); empty for a fact of the whole body or the language.
 	Scope string
+	// Dependencies name the already-checked propositions used by the
+	// establishing authority. They are explanatory/provenance data, not a
+	// second way to satisfy a Requirement.
+	Dependencies []Proposition
 }
 
 func (f Fact) String() string {
@@ -143,7 +151,9 @@ func (f *Facts) Add(facts ...Fact) {
 	if f == nil {
 		return
 	}
-	f.facts = append(f.facts, facts...)
+	for _, fact := range facts {
+		f.facts = append(f.facts, cloneFact(fact))
+	}
 }
 
 // Len is the number of facts.
@@ -159,7 +169,20 @@ func (f *Facts) All() []Fact {
 	if f == nil {
 		return nil
 	}
-	return append([]Fact(nil), f.facts...)
+	out := make([]Fact, len(f.facts))
+	for index, fact := range f.facts {
+		out[index] = cloneFact(fact)
+	}
+	return out
+}
+
+func cloneFact(fact Fact) Fact {
+	fact.Proposition.Terms = append([]string(nil), fact.Proposition.Terms...)
+	fact.Dependencies = append([]Proposition(nil), fact.Dependencies...)
+	for index := range fact.Dependencies {
+		fact.Dependencies[index].Terms = append([]string(nil), fact.Dependencies[index].Terms...)
+	}
+	return fact
 }
 
 // Has finds a fact stating p with at least the given provenance.

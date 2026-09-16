@@ -226,14 +226,21 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				artifacts[next] = nextArtifacts
 				proposals = append(proposals, next)
 			}
-			frontier = prune(append(frontier, proposals...), beam, identity)
+			frontier = prune(append(frontier, proposals...), beam, identity, s.gated)
 		}
 	}
 
 	// Validation in cost order, the identity last: a proven candidate ends
 	// the search; otherwise the strongest verdict wins, the cheaper body
 	// on a tie, so a faster body never ships on a weaker verdict than the
-	// plain lowering earns (docs/spec/90-backend.md §16 item 5).
+	// plain lowering earns (docs/spec/90-backend.md §16 item 5). One shape
+	// at a time: a candidate whose ungated transforms are those of a form
+	// already validated without a proof waits while a form of another
+	// shape is left — the gated transforms (a register assignment, an
+	// instruction order) change no evaluation shape, so the budget is
+	// better spent on a shape the verifier has not judged (the map whose
+	// hoisted form was witnessed three times over while its plain form,
+	// which proves, was never tried).
 	order := make([]*Candidate, 0, len(frontier))
 	for _, c := range frontier {
 		if !c.IsIdentity() {
@@ -243,12 +250,31 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 	sort.SliceStable(order, func(i, j int) bool { return cheaper(order[i], order[j]) })
 	order = append(order, identity)
 	sel.Frontier = order
-	var best *Validated
-	for i, c := range order {
-		if !c.IsIdentity() && len(sel.Validations) >= budget-1 {
-			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: %d of %d validations spent on cheaper candidates", c.Name(), len(sel.Validations), budget))
-			continue
+	validated := map[*Candidate]bool{}
+	unproven := map[string]*Candidate{} // shapes validated without a proof, by the form that was
+	pick := func() *Candidate {
+		var fallback *Candidate
+		for _, c := range order {
+			if c.IsIdentity() || validated[c] {
+				continue
+			}
+			if unproven[s.shape(c)] == nil {
+				return c
+			}
+			if fallback == nil {
+				fallback = c
+			}
 		}
+		return fallback
+	}
+	var best *Validated
+	var proved *Candidate
+	for len(sel.Validations) < budget-1 {
+		c := pick()
+		if c == nil {
+			break
+		}
+		validated[c] = true
 		verdict, err := pipeline.validate(artifacts[c])
 		if err != nil {
 			return nil, err
@@ -259,12 +285,36 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			best = v
 		}
 		if verdict.Outcome == Proven {
-			for _, rest := range order[i+1:] {
-				if !rest.IsIdentity() {
-					s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: the cheaper %s form proved", rest.Name(), c.Name()))
-				}
-			}
+			proved = c
 			break
+		}
+		unproven[s.shape(c)] = c
+	}
+	if proved == nil {
+		validated[identity] = true
+		verdict, err := pipeline.validate(artifacts[identity])
+		if err != nil {
+			return nil, err
+		}
+		sel.Validations = append(sel.Validations, Validated{Candidate: identity, Verdict: verdict})
+		v := &sel.Validations[len(sel.Validations)-1]
+		if best == nil || verdict.Outcome > best.Verdict.Outcome {
+			best = v
+		}
+	}
+	for _, c := range order {
+		if c.IsIdentity() || validated[c] {
+			continue
+		}
+		switch judged := unproven[s.shape(c)]; {
+		case judged != nil && judged != c:
+			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: the %s form, its shape under other gated transforms, was judged %s", c.Name(), judged.Name(), sel.verdictOf(judged).Outcome))
+		case proved != nil && proved.Cost <= c.Cost:
+			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: the cheaper %s form proved", c.Name(), proved.Name()))
+		case proved != nil:
+			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: the %s form proved", c.Name(), proved.Name()))
+		default:
+			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: %d of %d validations spent on cheaper candidates", c.Name(), len(sel.Validations), budget))
 		}
 	}
 	if best.Verdict.Outcome <= Trusted && s.gated(best.Candidate) {
@@ -389,21 +439,55 @@ func cheaper(a, b *Candidate) bool {
 	return len(a.Applied) > len(b.Applied)
 }
 
-// prune keeps the beam cheapest candidates, the identity always among
-// them; order among equal costs is by transforms applied, then the order
-// proposed.
-func prune(candidates []*Candidate, beam int, identity *Candidate) []*Candidate {
+// prune keeps the beam cheapest candidates, the identity always among them,
+// and (when the beam has room) the cheapest ungated candidate. Keeping that
+// second fallback matters when a later machine transform is verifier-gated:
+// it must not evict a cheaper form whose independently checked transforms may
+// still ship when verification is undecided. Order among equal costs is by
+// transforms applied, then the order proposed.
+func prune(candidates []*Candidate, beam int, identity *Candidate, gated func(*Candidate) bool) []*Candidate {
 	if len(candidates) <= beam {
 		return candidates
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return cheaper(candidates[i], candidates[j]) })
-	kept := candidates[:beam]
-	for _, c := range kept {
-		if c == identity {
-			return kept
+	kept := append([]*Candidate(nil), candidates[:beam]...)
+	required := []*Candidate{identity}
+	if beam >= 2 {
+		for _, candidate := range candidates {
+			if gated == nil || !gated(candidate) {
+				if candidate == identity {
+					continue
+				}
+				required = append(required, candidate)
+				break
+			}
 		}
 	}
-	return append(kept[:beam-1:beam-1], identity)
+	isRequired := func(candidate *Candidate) bool {
+		for _, need := range required {
+			if candidate == need {
+				return true
+			}
+		}
+		return false
+	}
+	for _, need := range required {
+		present := false
+		for _, candidate := range kept {
+			present = present || candidate == need
+		}
+		if present {
+			continue
+		}
+		for index := len(kept) - 1; index >= 0; index-- {
+			if !isRequired(kept[index]) {
+				kept[index] = need
+				break
+			}
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return cheaper(kept[i], kept[j]) })
+	return kept
 }
 
 // remark explains the selection: a passed remark per transform of the
@@ -453,6 +537,36 @@ func (s *Search) remark(function string, sel *Selection) {
 	if best != sel.Identity {
 		s.Report.Analysis(function, "metrics", Delta(sel.Identity.Metrics, best.Metrics))
 	}
+}
+
+// shape names a candidate's evaluation shape: its transforms without the
+// gated ones that declare themselves neutral (Neutral) — they move and
+// rename but change no shape the verifier reads. A gated transform that
+// changes instructions or branches (a fusion) stays in the shape.
+func (s *Search) shape(c *Candidate) string {
+	var names []string
+	for _, name := range c.Applied {
+		if t, ok := s.Registry.Lookup(name); ok {
+			if g, ok := t.(Gated); ok && g.NeedsVerdict() {
+				if n, isNeutral := t.(Neutral); isNeutral && n.ShapeNeutral() {
+					continue
+				}
+			}
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, "+")
+}
+
+// verdictOf finds a validated candidate's verdict; the zero verdict when
+// it was not validated.
+func (sel *Selection) verdictOf(c *Candidate) Verdict {
+	for _, v := range sel.Validations {
+		if v.Candidate == c {
+			return v.Verdict
+		}
+	}
+	return Verdict{}
 }
 
 // gated reports whether a candidate carries a transform that ships only

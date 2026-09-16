@@ -114,7 +114,7 @@ func recordSatisfiesShape(candidate, required *RecordType) bool {
 	}
 	for name, requiredType := range required.Fields {
 		candidateType, ok := candidate.Fields[name]
-		if !ok || !candidateType.Equals(requiredType) {
+		if !ok || !latticeAtomIdentical(candidateType, requiredType) {
 			return false
 		}
 	}
@@ -169,7 +169,7 @@ func (tc *TypeChecker) constrainedFieldType(typeVar *TypeVar, fieldName string) 
 			found = true
 			continue
 		}
-		if !result.Equals(fieldType) {
+		if !latticeAtomIdentical(result, fieldType) {
 			return nil, false
 		}
 	}
@@ -207,7 +207,7 @@ func (tc *TypeChecker) constraintMismatchDetail(concreteType Type, constraint Co
 			if !present {
 				return fmt.Sprintf("`%s` requires field `%s: %s`, but the inferred type has no `%s` field", requirementName, name, requiredType, name)
 			}
-			if !candidateType.Equals(requiredType) {
+			if !latticeAtomIdentical(candidateType, requiredType) {
 				return fmt.Sprintf("`%s` requires `%s: %s`, but the inferred type provides `%s: %s`", requirementName, name, requiredType, name, candidateType)
 			}
 		}

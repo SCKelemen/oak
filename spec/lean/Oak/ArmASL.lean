@@ -401,6 +401,89 @@ def logicalFlags {w : Nat} (result : BitVec w) : Flags :=
 
 theorem tst_asl {w : Nat} (l r : BitVec w) : andFlagsOf l r = logicalFlags (l &&& r) := rfl
 
+/-! The pinned Arm decoder's pure STR64 unsigned-offset projection.  This
+stops at the virtual-address/data request immediately before `Mem`; it does
+not model successful execution or any architectural memory effect. -/
+
+/-- Extract the fields selected by the STR (unsigned immediate), 64-bit
+decoder class.  Invalid words retain their extracted fields, matching the
+generated Sail projection, but have `valid = false`. -/
+def decode64Str64Unsigned (word : BitVec 32) :
+    Bool × BitVec 5 × BitVec 5 × BitVec 12 :=
+  let rt := BitVec.extractLsb' 0 5 word
+  let rn := BitVec.extractLsb' 5 5 word
+  let imm12 := BitVec.extractLsb' 10 12 word
+  (decide ((word &&& 0xffc00000#32) = 0xf9000000#32), rt, rn, imm12)
+
+/-- The pre-`Mem` request for a decoded normal STR64 unsigned-offset
+instruction.  `rnValue` and `rtValue` are the values of the decoded registers;
+the two explicit branches retain Arm's Rn=31-as-SP and Rt=31-as-zero rules. -/
+def str64UnsignedStoreRequest (rt rn : BitVec 5) (imm12 : BitVec 12)
+    (rnValue rtValue spValue : BitVec 64) : BitVec 64 × BitVec 64 :=
+  let base := if rn = 0b11111#5 then spValue else rnValue
+  let data := if rt = 0b11111#5 then 0#64 else rtValue
+  (base + (imm12.zeroExtend 64 <<< 3), data)
+
+/-! The pinned Arm decoder's pure STP64 signed-offset projection.  As above,
+this stops immediately before the two `Mem` operations.  The returned request
+arguments do not make the two writes atomic, non-tearing, or ordered. -/
+
+/-- Extract the fields selected by the integer STP (signed offset), 64-bit
+decoder class. Invalid words retain their extracted fields. -/
+def decode64Stp64Offset (word : BitVec 32) :
+    Bool × BitVec 5 × BitVec 5 × BitVec 5 × BitVec 7 :=
+  let rt := BitVec.extractLsb' 0 5 word
+  let rn := BitVec.extractLsb' 5 5 word
+  let rt2 := BitVec.extractLsb' 10 5 word
+  let imm7 := BitVec.extractLsb' 15 7 word
+  (decide ((word &&& 0xffc00000#32) = 0xa9000000#32), rt, rn, rt2, imm7)
+
+/-- The two pre-`Mem` address/data argument pairs selected by an offset STP64.
+`rnValue`, `rtValue`, and `rt2Value` are the values of decoded registers.  The
+explicit branches preserve Arm's Rn=31-as-SP and Rt/Rt2=31-as-zero rules.
+Returning both requests records neither their occurrence nor an observer order. -/
+def stp64OffsetStoreRequests (rt rn rt2 : BitVec 5) (imm7 : BitVec 7)
+    (rnValue rtValue rt2Value spValue : BitVec 64) :
+    BitVec 64 × BitVec 64 × BitVec 64 × BitVec 64 :=
+  let base := if rn = 0b11111#5 then spValue else rnValue
+  let data1 := if rt = 0b11111#5 then 0#64 else rtValue
+  let data2 := if rt2 = 0b11111#5 then 0#64 else rt2Value
+  let offset := imm7.signExtend 64 <<< 3
+  let address1 := base + offset
+  (address1, data1, address1 + 8, data2)
+
+/-- Width-64 specialization of Arm's recursive `BigEndianReverse`. At width
+    eight it is the identity; recursively concatenating the low half before
+    the high half therefore reverses the eight bytes, not the bits in a byte. -/
+def bigEndianReverse64 (value : BitVec 64) : BitVec 64 :=
+  BitVec.extractLsb' 0 8 value ++
+    (BitVec.extractLsb' 8 8 value ++
+      (BitVec.extractLsb' 16 8 value ++
+        (BitVec.extractLsb' 24 8 value ++
+          (BitVec.extractLsb' 32 8 value ++
+            (BitVec.extractLsb' 40 8 value ++
+              (BitVec.extractLsb' 48 8 value ++
+                BitVec.extractLsb' 56 8 value))))))
+
+/-- Conditional arguments of the pinned ordinary aligned size-eight
+    `__WriteMemory` call. `paddress` is an externally supplied translated
+    physical address. Reaching this call remains an external premise; this
+    function neither translates an address nor performs a memory effect. -/
+def str64AlignedNormalWriteMemoryArguments (bigEndian : Bool)
+    (paddress : BitVec 52) (preMemData : BitVec 64) :
+    BitVec 56 × BitVec 64 :=
+  (paddress.zeroExtend 56,
+    if bigEndian then bigEndianReverse64 preMemData else preMemData)
+
+/-- Selected arguments at the external `write_ram` boundary of the pinned
+    no-device wrappers, specialized to one ordinary 64-bit store. The default
+    RAM register value is explicit. This function does not invoke the external
+    primitive or describe any memory effect. -/
+def str64NoDeviceWriteRAMCallArguments (defaultRAM address : BitVec 56)
+    (data : BitVec 64) :
+    Int × Int × BitVec 56 × BitVec 56 × BitVec 64 :=
+  (56, 8, defaultRAM, address, data)
+
 /-- Arm's `HighestSetBit`, `CountLeadingZeroBits`, `CountLeadingSignBits`:
 ```
 function HighestSetBit x = { foreach (i from ('N - 1) to 0 by 1 in dec)
