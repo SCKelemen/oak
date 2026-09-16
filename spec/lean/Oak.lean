@@ -210,6 +210,8 @@ import Oak.Tseitin
 import Oak.TseitinCNF
 import Oak.CNFBuilderTrace
 import Oak.CNFDenseAllocation
+import Oak.CNFClauseTrace
+import Oak.CNFClauseCertificate
 import Oak.CNFFinalObligation
 import Oak.CNFTermRoot
 import Oak.CNFBitwiseWordRoot

@@ -458,6 +458,26 @@ correspondence, not a universal Go-memory/map refinement or a proof of signed
 projection, mutation history, clause emission, DIMACS, solving, LRAT, or
 compiler verdict authority.
 
+`Oak.CNFClauseTrace` extends the accepted allocation snapshot to the actual
+signed builder and emitted clause lists. Its checker requires exact gate,
+clause, and literal order, applies the builder-clause budget, rejects signed
+zero, and preserves repeated or complementary final edges. Acceptance proves
+that decoding the emitted list gives precisely the existing gate clauses plus
+the supplied final obligation, including their exact initial RUP database.
+`TestValidateCNFTraceMatchesLean` checks 72 fixed production decisions and
+replays 71 nonnegative-edge snapshots in the Lean kernel; the remaining
+negative-edge case must refuse projection. Shared builder/export corruptions
+are included, so agreement between those two lists alone cannot pass.
+These small fixtures do not exercise the 50-million-clause budget boundary.
+
+`Oak.CNFClauseCertificate` composes that checked emitted database with RUP
+acceptance. It proves the supplied final obligation is false under every
+evaluation of the checked gate trace and discharges `DirectEncoding`'s
+`cnf_complete` field. Word equality follows **conditional on an explicit
+result-to-root equality premise**. Universal Go/projection refinement, that
+source/root connection, DIMACS bytes, LRAT implementation refinement, and
+compiler verdict authority remain separate obligations.
+
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
 over false-claim refutation, an all-constant safe obligation is proven, and

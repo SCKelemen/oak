@@ -375,6 +375,17 @@ shared ownership, ordered backward gates, exact memo witnesses, and the same
 well-formed sequence. Representative Go accept/refuse decisions are
 kernel-pinned; arbitrary Go memory/map projection, signed conversion, builder
 history, clauses, DIMACS, and verdict authority remain open.
+The next checked layer, `Oak.CNFClauseTrace`, now identifies the actual signed
+builder/emitted lists with the decoded gates and supplied final obligation,
+preserving literal order and rejecting zero. Its exact database theorem is
+backed by 72 fixed production decisions, 71 of them kernel-replayed snapshots,
+including shared producer/export corruptions. This is bounded correspondence;
+the small fixtures do not test the 50-million-clause limit.
+`Oak.CNFClauseCertificate` uses that database theorem to discharge the
+direct-word contract's abstract CNF-completeness assumption. Accepted RUP gives
+word equality only with an explicit result-to-root equality premise; arbitrary
+Go/projection refinement, source/root provenance, DIMACS bytes, LRAT
+implementation refinement, and compiler verdict authority remain open.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and

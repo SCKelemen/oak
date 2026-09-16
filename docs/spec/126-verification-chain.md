@@ -204,7 +204,18 @@ proves each in-range variable has exactly one owner. Representative production
 accept/refuse decisions are rendered as kernel-checked Lean examples;
 arbitrary Go memory/map projection, signed conversion, builder history,
 clauses, DIMACS, and verdict authority remain outside this bounded
-correspondence. `Oak.CNFFinalObligation` proves
+correspondence. `Oak.CNFClauseTrace` now checks the actual signed builder and
+emitted lists against those decoded gates and the supplied final edges. It
+proves exact clause/literal order, positive-index signed decoding, and equality
+with the initial RUP database, not just equisatisfiability. The production test
+checks 72 fixed decisions and kernel-replays 71 projectable snapshots,
+including shared builder/export corruption; this is bounded correspondence,
+not a universal Go refinement or a test of the 50-million-clause limit.
+`Oak.CNFClauseCertificate` discharges the native direct-word contract's
+`cnf_complete` field at this checked trace boundary. Accepted RUP then implies
+word equality under an explicit result-to-root equality premise. Source/root
+provenance, DIMACS bytes, LRAT implementation refinement, and verdict authority
+are still open. `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
 proves evaluation preservation and pending counterexample semantics for a
