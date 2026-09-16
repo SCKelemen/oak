@@ -20,6 +20,20 @@ programs whose behavior is fixed and testable, and the hand-written model
 becomes a proof intermediate whose relation to the extraction is itself
 checkable.
 
+`oak build -lean out.lean` chooses `Oak.<package directory>` as its
+namespace (capitalized and sanitized as an identifier).
+`-lean-namespace Name` supplies the full Lean namespace instead, used in
+both the opening `namespace` and closing `end`. For example, two modes of
+one package can be generated and imported into one Lean library directly:
+
+```sh
+oak build -o canon.c -lean Canon.lean -lean-namespace Ml.Canon ./canon
+oak build -o canon.c -lean CanonBits.lean -lean-namespace Ml.CanonBits -lean-floats bits ./canon
+```
+
+The namespace option applies to `-lean`; it does not change Oak package
+identities or generated C. An omitted or empty option keeps the default.
+
 ## 2. The translation
 
 The output is the shallow embedding the hand-written models use, so the

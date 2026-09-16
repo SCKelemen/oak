@@ -441,6 +441,17 @@ a loop; unsupported dynamic bindings fail closed. A temporary copy of ml's
 `canon` package replaces the handwritten `canonical_sum` body with
 `reduce.lanes`; its extraction passes Lean. ml's checkout is unchanged.
 
+## Ask 5.27 follow-up (2026-09-16): extraction namespaces
+
+**Implemented** (`95-extraction.md` §1). `oak build -lean out.lean
+-lean-namespace Ml.CanonBits -lean-floats bits ./canon` emits the complete
+extraction under the chosen namespace; the ordinary extraction can use
+`Ml.Canon`. Omitting the option retains `Oak.Canon`. `lean_cli_test.go`
+builds both modes and imports them together into Lean, checking their
+definitions and results without editing generated text. The namespace and
+float mode leave the generated C identical. This removes the gate's
+namespace-line `sed`.
+
 ## Roadmap disposition (2026-09-11, night)
 
 ml's `docs/notes/oak-roadmap.md` (stages A–E) against the Oak tree, after the

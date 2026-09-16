@@ -109,11 +109,11 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
 	output, header, leanOut, metalOut, profile, targetFlag, cpu, opt := "", "", "", "", "", "", "", ""
-	leanFloats := ""
+	leanFloats, leanNS := "", ""
 	metalCheck := false
 	lines, emitC, nativeBodies, verified := false, false, false, false
 	asmMode, linkMode := "", "c"
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-opt-report] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-namespace Name] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-opt-report] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
@@ -121,6 +121,7 @@ func buildPackage(args []string) int {
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
 	fs.StringVar(&leanOut, "lean", "", "write the Lean 4 extraction of the package (docs/spec/95-extraction.md)")
+	fs.StringVar(&leanNS, "lean-namespace", "", "namespace for -lean (default: Oak.<package directory>; docs/spec/95-extraction.md)")
 	fs.StringVar(&leanFloats, "lean-floats", "", "how -lean renders f32 arithmetic: bits for Oak.FloatOps' bit-level operations (docs/spec/95-extraction.md section 3)")
 	fs.StringVar(&metalOut, "metal", "", "write the Metal Shading Language of the package's kernels (docs/spec/56-kernels.md)")
 	fs.BoolVar(&metalCheck, "metal-check", false, "with -metal, compile the emitted kernels on this machine's GPU device and report the driver's errors (docs/spec/56-kernels.md section 9)")
@@ -177,7 +178,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck, asmGiven, verified); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, leanNS, leanFloats, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck, asmGiven, verified); code != 0 {
 			return code
 		}
 	}
@@ -193,7 +194,7 @@ var verifyFresh bool
 // compiler.Options.OptReport).
 var optReport bool
 
-func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven, verified bool) int {
+func buildOne(dir, output, header, leanOut, leanNS, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven, verified bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -236,7 +237,10 @@ func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMo
 			fmt.Fprintf(os.Stderr, "oak build: -lean-floats takes bits, got %q\n", leanFloats)
 			return 2
 		}
-		extracted, err := comp.WithLeanFloats(leanFloats).EmitLean("Oak." + leanNamespace(dir)).Get()
+		if leanNS == "" {
+			leanNS = "Oak." + leanNamespace(dir)
+		}
+		extracted, err := comp.WithLeanFloats(leanFloats).EmitLean(leanNS).Get()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 1
