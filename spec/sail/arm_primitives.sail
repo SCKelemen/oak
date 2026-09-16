@@ -770,6 +770,34 @@ enum MBReqDomain = {
 
 enum MBReqTypes = {MBReqTypes_Reads, MBReqTypes_Writes, MBReqTypes_All}
 
+/* The call targets of the pinned official system_barriers dispatch.  This
+ * projection records which named architecture primitive is selected while
+ * deliberately leaving that primitive's state effect outside this pure
+ * model.  In the pinned sail-arm model InstructionSynchronizationBarrier and
+ * SynchronizeContext are both unit-returning stubs, so target identity is not
+ * evidence of context synchronization by itself. */
+enum BarrierExecutionTarget = {
+  BarrierExecutionTarget_DataSynchronizationBarrier,
+  BarrierExecutionTarget_DataMemoryBarrier,
+  BarrierExecutionTarget_InstructionSynchronizationBarrier,
+  BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA,
+  BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA,
+  BarrierExecutionTarget_SpeculationBarrier
+}
+
+val system_barriers_target_pure :
+  (MBReqDomain, MemBarrierOp, MBReqTypes) -> BarrierExecutionTarget
+
+function system_barriers_target_pure (domain, op, types) =
+  match op {
+    MemBarrierOp_DSB => BarrierExecutionTarget_DataSynchronizationBarrier,
+    MemBarrierOp_DMB => BarrierExecutionTarget_DataMemoryBarrier,
+    MemBarrierOp_ISB => BarrierExecutionTarget_InstructionSynchronizationBarrier,
+    MemBarrierOp_SSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA,
+    MemBarrierOp_PSSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA,
+    MemBarrierOp_SB => BarrierExecutionTarget_SpeculationBarrier
+  }
+
 val system_barriers_decode_pure :
   (bits(2), bits(4)) -> (bool, MemBarrierOp, MBReqDomain, MBReqTypes)
 

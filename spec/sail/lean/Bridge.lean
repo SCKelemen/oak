@@ -2,6 +2,7 @@ import Out
 import Oak.ArmASL
 import Oak.AArch64Encoding
 import Oak.AArch64Barrier
+import Oak.AArch64ColdEntry
 import Oak.AArch64WeakMemory
 import Oak.NeonSemantics
 
@@ -87,6 +88,66 @@ theorem isb_decoder :
     barrierDecode (Out.Functions.decode64_barrier_pure isbSy) =
       isbDecode := by
   native_decide
+
+/-! Arm's pinned `system_barriers` dispatch routes the decoded operation to a
+named execution primitive.  This is stronger than decoder identity, but the
+pinned primitive itself is a unit-returning stub, so the external context-sync
+predicate remains an independent obligation. -/
+
+def decodedBarrierTarget (word : BitVec 32) : Option _root_.BarrierExecutionTarget :=
+  let result := Out.Functions.decode64_barrier_pure word
+  match result.1 with
+  | false => none
+  | true => some (Out.Functions.system_barriers_target_pure
+      result.2.2.1 result.2.1 result.2.2.2)
+
+theorem isb_decoder_execution_target :
+    decodedBarrierTarget isbSy = some
+      .BarrierExecutionTarget_InstructionSynchronizationBarrier := by
+  rfl
+
+theorem invalid_barrier_has_no_execution_target :
+    decodedBarrierTarget 0#32 = none := by
+  rfl
+
+open Oak.AArch64ColdEntry
+
+/-- The exact occurrence is an ISB and Arm's generated dispatch selects its
+    named instruction-synchronization primitive. -/
+def SailISBDispatch {Occurrence : Type} (trace : Trace Occurrence)
+    (event : Occurrence) : Prop :=
+  trace.action event = .barrier isbSy ∧
+    decodedBarrierTarget isbSy = some
+      .BarrierExecutionTarget_InstructionSynchronizationBarrier
+
+/-- Refine, rather than replace, the external architectural proposition with
+    the generated Sail dispatch fact. -/
+def sailRefinedContextSync {Occurrence : Type}
+    (external : ArmContextSync Occurrence) : ArmContextSync Occurrence :=
+  fun trace event => SailISBDispatch trace event ∧ external trace event
+
+/-- Existing architectural evidence can be decorated with the generated Sail
+    call-target proof without changing any occurrence or ordering witness. -/
+def refineContextSyncWitnessWithSailDispatch
+    {Occurrence : Type} {trace : Trace Occurrence}
+    {external : ArmContextSync Occurrence}
+    (sync : ContextSyncWitness trace external) :
+    ContextSyncWitness trace (sailRefinedContextSync external) := {
+  writeOccurrence := sync.writeOccurrence
+  isbOccurrence := sync.isbOccurrence
+  writesAreExact := sync.writesAreExact
+  writesBeforeIsb := sync.writesBeforeIsb
+  isbIsExact := sync.isbIsExact
+  architecturalSync :=
+    ⟨⟨sync.isbIsExact, isb_decoder_execution_target⟩, sync.architecturalSync⟩
+}
+
+/-- The refined proposition cannot manufacture architectural context sync. -/
+theorem sail_refined_context_sync_requires_external
+    {Occurrence : Type} {trace : Trace Occurrence} {event : Occurrence}
+    {external : ArmContextSync Occurrence}
+    (h : sailRefinedContextSync external trace event) :
+    external trace event := h.2
 
 /-! Refinement from the generated decoder tuples into Oak's deliberately
 narrow barrier capability model.  `ofDecode` is fail-closed, so these facts

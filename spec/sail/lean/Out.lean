@@ -20,8 +20,9 @@ open MBReqTypes
 open MBReqDomain
 open LogicalOp
 open CompareOp
+open BarrierExecutionTarget
 
-/-- Type quantifiers: k_ex9920_ : Bool, k_ex9919_ : Bool -/
+/-- Type quantifiers: k_ex9962_ : Bool, k_ex9961_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -171,7 +172,7 @@ def ConditionHolds (cond : (BitVec 4)) (nzcv : (BitVec 4)) : Bool :=
   then (! result)
   else result
 
-/-- Type quantifiers: k_ex10104_ : Bool, k_ex10103_ : Bool, k_datasize : Nat, k_datasize ∈
+/-- Type quantifiers: k_ex10146_ : Bool, k_ex10145_ : Bool, k_datasize : Nat, k_datasize ∈
   {32, 64} -/
 def integer_conditional_select (condition : (BitVec 4)) (nzcv : (BitVec 4)) (else_inc : Bool) (else_inv : Bool) (operand1 : (BitVec k_datasize)) (operand2 : (BitVec k_datasize)) : (BitVec k_datasize) :=
   let result : (BitVec k_datasize) := operand2
@@ -187,7 +188,7 @@ def integer_conditional_select (condition : (BitVec 4)) (nzcv : (BitVec 4)) (els
     then (BitVec.addInt result 1)
     else result)
 
-/-- Type quantifiers: k_ex10120_ : Bool, k_datasize : Nat, k_datasize ∈ {32, 64} -/
+/-- Type quantifiers: k_ex10162_ : Bool, k_datasize : Nat, k_datasize ∈ {32, 64} -/
 def integer_conditional_compare_register (condition : (BitVec 4)) (nzcv : (BitVec 4)) (flags__arg : (BitVec 4)) (operand1 : (BitVec k_datasize)) (operand2__arg : (BitVec k_datasize)) (sub_op : Bool) : (BitVec 4) :=
   let flags : (BitVec 4) := flags__arg
   let operand2 : (BitVec k_datasize) := operand2__arg
@@ -332,7 +333,7 @@ def vector_transfer_integer_dup (datasize : Nat) (elements : Nat) (esize : Nat) 
     loop_vars := (aset_Elem result e esize element)
   (pure loop_vars)
 
-/-- Type quantifiers: k_ex10259_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex10301_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_add_wrapping_single (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (sub_op : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -355,7 +356,7 @@ def vector_arithmetic_binary_uniform_add_wrapping_single (datasize : Nat) (eleme
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex10327_ : Bool, k_ex10326_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex10369_ : Bool, k_ex10368_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_single (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (minimum : Bool) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -380,7 +381,7 @@ def vector_arithmetic_binary_uniform_maxmin_single (datasize : Nat) (elements : 
     (pure loop_vars) ) : Id (Int × Int × Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex10378_ : Bool, k_ex10377_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex10420_ : Bool, k_ex10419_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_cmp_int (cmp_eq : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -409,7 +410,7 @@ def vector_arithmetic_binary_uniform_cmp_int (cmp_eq : Bool) (datasize : Nat) (e
     (pure loop_vars) ) : Id (Int × Int × (BitVec datasize) × Bool) )
   (pure result)
 
-/-- Type quantifiers: k_ex10424_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex10466_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_cmp_bitwise (and_test : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -488,7 +489,7 @@ def vector_arithmetic_unary_cmp_int_bulk (comparison : CompareOp) (datasize : Na
     (pure loop_vars) ) : Id (Int × (BitVec datasize) × Bool) )
   (pure result)
 
-/-- Type quantifiers: k_ex10553_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex10595_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_sub_saturating (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -511,7 +512,7 @@ def vector_arithmetic_binary_uniform_sub_saturating (datasize : Nat) (elements :
     (pure loop_vars) ) : Id (Int × Int × Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex10604_ : Bool, shift : Int, k_ex10602_ : Bool, k_ex10601_ : Bool, datasize
+/-- Type quantifiers: k_ex10646_ : Bool, shift : Int, k_ex10644_ : Bool, k_ex10643_ : Bool, datasize
   : Nat, elements : Nat, esize : Nat, esize ≥ 1 ∧
   elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_shift_right (accumulate : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (accumulator : (BitVec datasize)) (round : Bool) (shift : Int) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
@@ -541,7 +542,7 @@ def vector_shift_right (accumulate : Bool) (datasize : Nat) (elements : Nat) (es
     (pure loop_vars) ) : Id (Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex10657_ : Bool, datasize : Nat, elements : Nat, elements ≥ 1 ∧
+/-- Type quantifiers: k_ex10699_ : Bool, datasize : Nat, elements : Nat, elements ≥ 1 ∧
   (elements * 8) = datasize ∧ datasize ≤ 128 -/
 def vector_transfer_vector_table (datasize : Nat) (elements : Nat) (is_tbl : Bool) (indices : (BitVec datasize)) (table : (BitVec 128)) (dst : (BitVec datasize)) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) :=
@@ -565,7 +566,7 @@ def vector_transfer_vector_extract (datasize : Nat) (hi : (BitVec datasize)) (lo
   let concat : (BitVec (2 * datasize)) := (hi +++ lo)
   (BitVec.slice concat position datasize)
 
-/-- Type quantifiers: k_ex10689_ : Bool, k_ex10688_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex10731_ : Bool, k_ex10730_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_reduce_intmax (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (min : Bool) (is_unsigned : Bool) : (BitVec esize) := Id.run do
   let maxmin : Int := 0
@@ -621,7 +622,7 @@ def num_of_LogicalOp (arg_ : LogicalOp) : Int :=
   | .LogicalOp_EOR => 1
   | .LogicalOp_ORR => 2
 
-/-- Type quantifiers: k_ex10747_ : Bool, datasize : Nat, datasize ≥ 1 -/
+/-- Type quantifiers: k_ex10789_ : Bool, datasize : Nat, datasize ≥ 1 -/
 def vector_arithmetic_binary_uniform_logical_andorr (datasize : Nat) (invert : Bool) (operand1 : (BitVec datasize)) (operand2__arg : (BitVec datasize)) (op : LogicalOp) : (BitVec datasize) :=
   let operand2 : (BitVec datasize) := operand2__arg
   let result : (BitVec datasize) := (Zeros datasize)
@@ -694,7 +695,7 @@ def FPNeg (op : (BitVec k_N)) : (BitVec k_N) :=
 def FPAbs (op : (BitVec k_N)) : (BitVec k_N) :=
   (0#1 +++ (BitVec.slice op 0 ((Sail.BitVec.length op) -i 1)))
 
-/-- Type quantifiers: k_ex10906_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex10948_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_add_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -724,7 +725,7 @@ def vector_arithmetic_binary_uniform_add_fp (datasize : Nat) (elements : Nat) (e
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex11013_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex11055_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_sub_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (abs : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -772,7 +773,7 @@ def vector_arithmetic_binary_uniform_mul_fp_product (datasize : Nat) (elements :
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex11187_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex11229_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_mul_fp_fused (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (operand3 : (BitVec datasize)) (fpcr : (BitVec 32)) (sub_op : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -798,7 +799,7 @@ def vector_arithmetic_binary_uniform_mul_fp_fused (datasize : Nat) (elements : N
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex11263_ : Bool, k_ex11262_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex11305_ : Bool, k_ex11304_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ∈ {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_fp_1985 (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (minimum : Bool) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -830,7 +831,7 @@ def vector_arithmetic_binary_uniform_maxmin_fp_1985 (datasize : Nat) (elements :
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex11361_ : Bool, k_ex11360_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex11403_ : Bool, k_ex11402_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ∈ {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_fp_2008 (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (minimum : Bool) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -880,7 +881,7 @@ def vector_arithmetic_unary_special_sqrt (datasize : Nat) (elements : Nat) (esiz
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex11508_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex11550_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_unary_diffneg_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (neg : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -959,6 +960,38 @@ def num_of_MBReqTypes (arg_ : MBReqTypes) : Int :=
   | .MBReqTypes_Reads => 0
   | .MBReqTypes_Writes => 1
   | .MBReqTypes_All => 2
+
+def undefined_BarrierExecutionTarget (_ : Unit) : SailM BarrierExecutionTarget := do
+  (internal_pick
+    [BarrierExecutionTarget_DataSynchronizationBarrier, BarrierExecutionTarget_DataMemoryBarrier, BarrierExecutionTarget_InstructionSynchronizationBarrier, BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA, BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA, BarrierExecutionTarget_SpeculationBarrier])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 5 -/
+def BarrierExecutionTarget_of_num (arg_ : Nat) : BarrierExecutionTarget :=
+  match arg_ with
+  | 0 => BarrierExecutionTarget_DataSynchronizationBarrier
+  | 1 => BarrierExecutionTarget_DataMemoryBarrier
+  | 2 => BarrierExecutionTarget_InstructionSynchronizationBarrier
+  | 3 => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA
+  | 4 => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA
+  | _ => BarrierExecutionTarget_SpeculationBarrier
+
+def num_of_BarrierExecutionTarget (arg_ : BarrierExecutionTarget) : Int :=
+  match arg_ with
+  | .BarrierExecutionTarget_DataSynchronizationBarrier => 0
+  | .BarrierExecutionTarget_DataMemoryBarrier => 1
+  | .BarrierExecutionTarget_InstructionSynchronizationBarrier => 2
+  | .BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA => 3
+  | .BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA => 4
+  | .BarrierExecutionTarget_SpeculationBarrier => 5
+
+def system_barriers_target_pure (domain : MBReqDomain) (op : MemBarrierOp) (types : MBReqTypes) : BarrierExecutionTarget :=
+  match op with
+  | .MemBarrierOp_DSB => BarrierExecutionTarget_DataSynchronizationBarrier
+  | .MemBarrierOp_DMB => BarrierExecutionTarget_DataMemoryBarrier
+  | .MemBarrierOp_ISB => BarrierExecutionTarget_InstructionSynchronizationBarrier
+  | .MemBarrierOp_SSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA
+  | .MemBarrierOp_PSSBB => BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA
+  | .MemBarrierOp_SB => BarrierExecutionTarget_SpeculationBarrier
 
 def system_barriers_decode_pure (opc : (BitVec 2)) (CRm : (BitVec 4)) : (Bool × MemBarrierOp × MBReqDomain × MBReqTypes) :=
   let valid : Bool := true

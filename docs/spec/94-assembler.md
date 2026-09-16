@@ -709,8 +709,15 @@ through their eight context-register writes to the exact ISB word and
 `RET`/`ERET`. This is an executable regression witness that pins the observed
 source-to-object bytes,
 while the encoder-to-Arm-decoder equality is the kernel proof. The same gate
-found and removed an unused
-80-byte frame from register-only AArch64 leaf functions. The general
+found and removed an unused 80-byte frame from register-only AArch64 leaf
+functions. The generated Sail bridge kernel-proves that the source-checked
+local projection sends the exact ISB word to the named
+`InstructionSynchronizationBarrier` call target. A Go source-drift gate audits
+all six projection arms against the pinned official barrier dispatch and
+confirms that `InstructionSynchronizationBarrier` and
+`SynchronizeContext` are still unit-returning stubs in this model; call-target
+identity therefore does not masquerade as a context-synchronization state
+proof. The general
 instruction table remains audited rather than proved.
 **The table audited against Arm's decoder (`asm/sail_coverage_test.go`).**
 The same Sail model carries Arm's A64 decode tree as one clause per

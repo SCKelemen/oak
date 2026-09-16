@@ -99,6 +99,13 @@ The evidence-bearing `Oak.AArch64ColdEntry.Step` is occurrence-indexed. Its
 `Step.eret` separately carries the exact ERET occurrence/action and its
 program-order edge after that same retained ISB witness.
 
+The generated Sail bridge refines such a witness with a kernel proof that the
+exact ISB word selects `InstructionSynchronizationBarrier` in Oak's local pure
+projection. A Go drift gate audits that projection against the pinned official
+Sail source. The refinement is a conjunction and retains the original external
+`ArmContextSync`; it cannot construct synchronization evidence from dispatch
+identity.
+
 The Lean model proves:
 
 - shape-only transfer can occur only from `synchronized`;
@@ -107,12 +114,12 @@ The Lean model proves:
 - every required context write precedes ERET by transitivity;
 - `transferred` is terminal in the cold-entry protocol.
 
-`ArmContextSync` remains an explicit parameter until an official Arm
-execution/state model discharges it. It is not derived from the barrier
-capability Boolean, the pure Sail decoder, or CAT ordering. Caller register
-values also remain outside these protocol-order proofs. Only the eight writes,
-ISB, and ERET are occurrence-classified here; DAIFSet and the remaining phase
-transitions are still shape-only.
+`ArmContextSync` remains an explicit parameter until an Arm execution/state
+model with non-erased context effects discharges it. It is not derived from the
+barrier capability Boolean, pure decoding/dispatch, or CAT ordering. Caller
+register values also remain outside these protocol-order proofs. Only the eight
+writes, ISB, and ERET are occurrence-classified here; DAIFSet and the remaining
+phase transitions are still shape-only.
 
 ## Executable refinement test
 

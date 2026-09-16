@@ -135,6 +135,13 @@ literal DAIFSet, their eight context-register MSR words, the exact ISB word, and
 overhead but is not a Lean proof of the compiler. `Oak.AArch64ColdEntry.Step`
 therefore still requires an
 explicit occurrence-indexed external Arm context-synchronization witness.
+The generated Sail bridge kernel-proves that the exact ISB word selects
+`InstructionSynchronizationBarrier` in Oak's local pure projection and
+conjoins that fact with the witness. A Go drift gate audits all six projection
+mappings against the pinned official Sail source. Its
+`InstructionSynchronizationBarrier` and `SynchronizeContext` functions are
+separate unit-returning stubs, so this new dispatch proof deliberately does not
+discharge the external state-semantic obligation.
 
 The seam checker's join rule for index bounds is **refined**:
 `Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s

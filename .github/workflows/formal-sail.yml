@@ -11,6 +11,8 @@ name: Formal Verification (Sail)
 #     the pinned Sail release generates
 #   - asm/sail_coverage_test.go: the AArch64 table audited against Arm's
 #     decode tree (rems-project/sail-arm), llvm-mc as the text oracle
+#   - asm/sail_barrier_dispatch_test.go: the six official barrier call targets
+#     and the model's still-erased ISB/context synchronization bodies
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -34,6 +36,7 @@ on:
       - 'spec/lean/Oak/RiscV.lean'
       - 'spec/lean/Oak/ArmASL.lean'
       - 'spec/lean/Oak/AssemblerSemantics.lean'
+      - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
       - '.github/workflows/formal-sail.yml'
   pull_request:
@@ -98,7 +101,7 @@ jobs:
           install -m 0755 /tmp/sail-riscv-Linux-x86_64/bin/sail_riscv_sim external/sail-riscv/build/c_emulator/sail_riscv_sim
           external/sail-riscv/build/c_emulator/sail_riscv_sim --version
 
-      - name: Fetch Arm's Sail model (the decode tree only, pinned)
+      - name: Fetch Arm's pinned Sail model sources
         run: |
           set -euo pipefail
           git init -q external/sail-arm
@@ -133,7 +136,7 @@ jobs:
       - name: Run the oracle tests, every oracle required
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

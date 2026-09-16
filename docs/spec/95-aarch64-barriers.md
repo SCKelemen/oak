@@ -203,14 +203,16 @@ dependency-sensitive `IFB-ob` arm, and their routes through `lob`. DSB and ISB
 are not smuggled through DMB ordering. Eleven official-model Herd cases include
 forbidden DSB ISH/SY store buffering and allowed bare-ISB store buffering.
 
-Oak's pure Sail fragment intentionally projects barrier decoding to the
-operation/domain/access tuple and omits architectural state changes and the
-final barrier execution call. Consequently the bridge proves exact
-decode/dispatch identity and the selected DMB/DSB CAT ordering, but it does not
-yet prove DSB completion or ISB context synchronization. The corresponding
-Boolean fields remain Oak profile capabilities until an occurrence-indexed Arm
-execution rule discharges them; positive `IFB-ob` also requires its specified
-dependency.
+Oak's pure Sail fragment projects barrier decoding to the
+operation/domain/access tuple and now separately projects the official
+`system_barriers` call target. The Lean bridge kernel-proves that the exact ISB
+word selects `InstructionSynchronizationBarrier` in this local projection; a
+Go drift gate audits all six mappings against the pinned official Sail source.
+The projection does not execute architectural state changes: the pinned model
+implements `InstructionSynchronizationBarrier` and `SynchronizeContext` as
+separate unit-returning stubs. The drift gate pins that boundary. DSB completion
+and ISB context synchronization therefore remain external obligations;
+positive `IFB-ob` also requires its specified dependency.
 
 `compiler/e2e_native_barrier_words_test.go` independently checks occurrence at
 the direct-native object seam. Each of six Oak source functions must be exactly

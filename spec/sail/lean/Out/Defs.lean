@@ -44,6 +44,10 @@ inductive MBReqTypes where | MBReqTypes_Reads | MBReqTypes_Writes | MBReqTypes_A
   deriving BEq, Inhabited, Repr
   open MBReqTypes
 
+inductive BarrierExecutionTarget where | BarrierExecutionTarget_DataSynchronizationBarrier | BarrierExecutionTarget_DataMemoryBarrier | BarrierExecutionTarget_InstructionSynchronizationBarrier | BarrierExecutionTarget_SpeculativeSynchronizationBarrierToVA | BarrierExecutionTarget_SpeculativeSynchronizationBarrierToPA | BarrierExecutionTarget_SpeculationBarrier
+  deriving BEq, Inhabited, Repr
+  open BarrierExecutionTarget
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 
