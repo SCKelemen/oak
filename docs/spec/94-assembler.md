@@ -6039,6 +6039,26 @@ transliteration pins them. `protocol_line_done` with all seven pushes
 proves in 3 s (`TestE2ENativeGuardedWrites` carries the body verbatim);
 the pushes from one to seven prove in one to three seconds each, where
 the seventh was evidence after five.
+
+**Substitutions share what they do not change (2026-09-16).** The
+prover's `add_carry` (a `Bits` loop whose body inlines the BDD `apply`
+four times) took twenty-six minutes a candidate and seventeen gigabytes
+— not in any decision: `restoreLoopEntryMemories` and `substituteMemo`
+rebuilt every node of a term they walked, changed or not, so each inner
+loop event of each inlined callee copied the whole graph once more.
+Both now return the node itself when no child changed; `add_carry`
+verifies in a second a candidate. Two pitfalls from the same afternoon:
+the tests read the verdict cache (`$TMPDIR/oak-verify-cache`) unless
+`OAK_VERIFY_CACHE=0`, so a proof cached by an earlier verifier can hide
+a regression until the cache is bypassed — the vectorized maps of
+`TestE2ENativeVectorMap` are witnessed, not proven, since 63a6a47b
+("the conditions for reaching loop 1 were not proven equal": the
+machine's reach condition carries the vector loop's guards, the Oak
+side's does not), which the cache masked; and `termSize` is a tree
+size, so a "12 million node" term may be a 330-node graph. The loop
+coupling's stages report their times under the trace (the witness pass
+with its inputs and work, the coupling and the decisions), as does each
+witness input's two sides.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.

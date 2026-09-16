@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -3423,6 +3424,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// its proof is the coupling alone.
 	checked := 0
 	work := 0
+	stageStarted := time.Now()
+	stage := func(name string) {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: %s took %s\n", fn.Name, name, time.Since(stageStarted).Round(time.Millisecond))
+		}
+		stageStarted = time.Now()
+	}
 	for _, env := range loopWitnessInputs(fn, sig) {
 		if !lowering.inDomain(env) {
 			continue // a union tag outside its variants: not a well-typed input
@@ -3434,10 +3442,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if work > witnessWorkBudget {
 			break
 		}
+		inputStarted := time.Now()
 		asmValue, asmRun, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
 		if asmRun != nil {
 			work += asmRun.steps
 		}
+		asmTook := time.Since(inputStarted)
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk
 		var oakValues []*term
@@ -3451,7 +3461,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		work += witnessIterationCost * concrete.work
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
-			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
+			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v (%s); oak ok=%v %q (%s, work %d)\n", fn.Name, env, okA, reasonA, asmValue == trapPath, asmTook.Round(time.Millisecond), okO, reasonO, (time.Since(inputStarted) - asmTook).Round(time.Millisecond), concrete.work)
 		}
 		names := make([]string, 0, len(env))
 		for name := range env {
@@ -3565,6 +3575,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// after the loop; an accumulator's spill slot, reloaded past the loop,
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
+	stage(fmt.Sprintf("the witness pass (%d inputs, %d work)", checked, work))
+	defer func() { stage("the coupling and the decisions") }()
 	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
 	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
 	// Slots whose one-iteration value mentions fewer of the event's own
@@ -5110,11 +5122,21 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		}
 		return t
 	}
+	cond := restoreLoopEntryMemories(t.cond, ev, memo, valid)
+	left := restoreLoopEntryMemories(t.left, ev, memo, valid)
+	right := restoreLoopEntryMemories(t.right, ev, memo, valid)
+	if cond == t.cond && left == t.left && right == t.right {
+		// Nothing below reads a loop memory: the node stands, shared.
+		// Copying it anyway copied the whole graph once per call — an
+		// inner loop event of every inlined callee, on a body whose
+		// terms are large — and add_carry's lowering grew past twenty
+		// gigabytes in the copies.
+		memo[t] = t
+		return t
+	}
 	out := *t
 	out.kbDone = false
-	out.cond = restoreLoopEntryMemories(t.cond, ev, memo, valid)
-	out.left = restoreLoopEntryMemories(t.left, ev, memo, valid)
-	out.right = restoreLoopEntryMemories(t.right, ev, memo, valid)
+	out.cond, out.left, out.right = cond, left, right
 	memo[t] = &out
 	return &out
 }
@@ -5149,11 +5171,22 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		memo[t] = rebuilt
 		return rebuilt
 	}
+	cond := substituteMemo(t.cond, sigma, memo)
+	left := substituteMemo(t.left, sigma, memo)
+	right := substituteMemo(t.right, sigma, memo)
+	if cond == t.cond && left == t.left && right == t.right {
+		// Nothing below is substituted: the node stands, shared, rather
+		// than copied once per substitution (restoreLoopEntryMemories).
+		if lane, isExtraction := extractedLane(t); isExtraction {
+			memo[t] = lane
+			return lane
+		}
+		memo[t] = t
+		return t
+	}
 	out := *t
 	out.kbDone = false
-	out.cond = substituteMemo(t.cond, sigma, memo)
-	out.left = substituteMemo(t.left, sigma, memo)
-	out.right = substituteMemo(t.right, sigma, memo)
+	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
 		// the Oak lanes is that Oak lane (extractedLane).
