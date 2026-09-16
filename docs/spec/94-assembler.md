@@ -1023,6 +1023,31 @@ behavior, CAT membership, completion, invalidation, publication, and context
 synchronization remain open. No Darwin/Mach-O object oracle or privileged
 Apple EL2 execution gate exists yet.
 
+The adjacent **offset-form STP64 slice is formal evidence only**. The
+XML-generated row `STP_64_ldstpair_off` has base `0xa9000000`, mask
+`0xffc00000`, and the signed, eight-byte-scaled `imm7` field. Lean's
+`encodeStp64Offset` computes `STP XZR, XZR, [X0]` as `0xa9007c1f` and the
+`#16` form as `0xa9017c1f`; the table/source gate also pins the default offset,
+range, scale, field order, and nearby W-register, load, register, and offset
+mutations. A source-audited pure projection of Arm's official Sail model
+selects the 64-bit, no-writeback, non-post-index, normal-store arm and exposes
+its two pre-`Mem` request argument pairs: zero at the effective address and
+zero at that address plus eight. The generated Sail Lean definition is proved
+equal to `Oak.ArmASL`'s projection. Returning the two argument pairs records
+neither request occurrence nor an ordering relation between them.
+
+This increment does **not** enable blocked-fill STP code generation or teach
+the semantic verifier any new pair stores through spans or record fields. It
+proves no atomicity, single-copy atomicity, non-tearing, memory ordering,
+translation, fault-free access, architectural or external memory effect, CAT
+event or edge, visibility, completion, or page-table publication. Ordinary
+`STP` is neither a store-release operation nor a barrier. In particular, live
+PTE break/make publication remains on the existing scalar `STR` path. A future
+four-word zero-fill optimization first needs a source-level blocked-fill
+equivalence law, complete bounds/provenance and verifier support, and a scalar
+tail; its authority must be restricted to ordinary private memory that has not
+yet been published, never a live descriptor-update protocol.
+
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
 `#2` and proves its pure D/A/I/F body sets I while preserving D/A/F. A Go

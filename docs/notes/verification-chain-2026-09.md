@@ -165,8 +165,15 @@ or the verifier, not in the program:
    ordinary class:** local `B <label>` has exact fixed-bit/imm26 and Branch26
    relocation theorems, a generated Sail projection to `BranchType_DIR` with
    its signed scaled offset, and an overflow-safe/alignment-checked production
-   encoder. The remaining AArch64 instruction forms remain generated/audited
-   rather than universally decoder-proved.
+   encoder. **Bounded pair-store class:** offset STP64 now has the exact
+   XML-generated layout and two XZR/X0 words proved in Lean, plus a
+   source-audited official-Sail projection of the two pre-`Mem` address/data
+   argument pairs. It remains formal-only for blocked fills: no blocked-fill
+   code generation or new span/record pair-store verification is enabled, and
+   the projection proves no
+   request occurrence or order, atomicity/non-tearing, memory effect, CAT
+   event, or publication. The remaining AArch64 instruction forms remain
+   generated/audited rather than universally decoder-proved.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the
