@@ -199,7 +199,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// most rewritten shape tried first, the source last. The RV64 lane
 	// expands no helpers; it unrolls and strength-reduces as the AArch64
 	// lane does.
-	for _, stage := range rewriteStages(fn, functions, false, unroll, false, strength) {
+	for _, stage := range rewriteStages(fn, functions, false, unroll, false, false, strength) {
 		if stage.body == fn.Body {
 			break
 		}

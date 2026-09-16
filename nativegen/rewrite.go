@@ -47,6 +47,10 @@ func Unrolled(fn *asm.Function) int { return countSites(fn, "reduction unrolling
 // Lane.VectorReductions (nativegen/vector_reduction.go).
 func Vectorized(fn *asm.Function) int { return countSites(fn, "reduction vectorization", false) }
 
+// VectorizedMaps reports how many bodies' element-wise maps a lowering
+// vectorized under Lane.VectorMaps (nativegen/vector_map.go).
+func VectorizedMaps(fn *asm.Function) int { return countSites(fn, "map vectorization", false) }
+
 // StrengthReduced reports how many sites layer A strength-reduced in a
 // body, each decided at the bit level (the strength transform's count,
 // beside the emitter's own).
@@ -66,8 +70,8 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                  *ast.FunctionStatement
-	expand, unroll, vectorize, strength bool
+	fn                                        *ast.FunctionStatement
+	expand, unroll, vectorize, maps, strength bool
 }
 
 var (
@@ -88,22 +92,22 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, strength bool) []rewriteStage {
-	key := stageKey{fn: fn, expand: expand, unroll: unroll, vectorize: vectorize, strength: strength}
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, strength bool) []rewriteStage {
+	key := stageKey{fn: fn, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, expand, unroll, vectorize, strength)
+	stages := computeStages(fn, functions, expand, unroll, vectorize, maps, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
 	return stages
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
@@ -130,6 +134,16 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 		sites = append(sites, RewriteSite{Rewrite: "span forwarding", Law: "Oak.SpanForward.let_forward", Detail: "a span local used once, in the next statement, as a call argument stands for its expression"})
 		body = forwarded
 		push()
+	}
+	// The element-wise maps over spans as one vector a trip
+	// (nativegen/vector_map.go): lane-wise semantics alone license it.
+	if maps {
+		if vectorized, changed := vectorizeMaps(fn, body); changed {
+			sites = append(sites, RewriteSite{Rewrite: "map vectorization", Law: "Oak.Map.blocked_eq", Detail: "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map", Line: fn.Token.Line})
+			body = vectorized
+			judged = true
+			push()
+		}
 	}
 	// The vector form of the reduction (nativegen/vector_reduction.go)
 	// takes the loop when asked; the scalar unrolling otherwise.

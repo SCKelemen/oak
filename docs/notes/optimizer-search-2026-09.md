@@ -261,6 +261,20 @@ Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
 
+### Phase D, first rewrite after the reductions: map vectorization
+
+`vectorize-maps` (`nativegen/vector_map.go`; item 24 below) is the
+first layer-A rewrite whose license is lane-wise semantics alone
+(`Oak.Map.blocked_eq`, `spec/lean/Oak/Map.lean`: the blocked map over a
+list is the element-wise map, for any function of one element), so it
+carries no fact requirement and its remainder loop is the source loop
+itself. It reads span parameters only, and it knows two spans have one
+length only from an enclosing `len(dst) == len(a) ? { … }`, the shape
+the seam checker admits for a store through one span under the other's
+guard. The increment's cost was in the verifier, not the rewrite: the
+hoisted form's remainder loop proved only once a premise could say that
+a skipped loop leaves its variables at their header values.
+
 ### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
@@ -1024,19 +1038,28 @@ This phase targets the measured UTF-8 call/spill gap directly.
     witnessed where folding them pairwise first is proven; and the cost
     model's assumed trip count had to be calibrated before it agreed
     with any of it (item 26 below);
-24. map/zip vectorization — **surveyed 2026-09-16, blocked on the
-    verifier**: a hand-written vector map (`simd.store_u32x4(dst, i,
-    simd.add_u32x4(simd.load_u32x4(a, i), kv))` under
-    `len(dst) == len(a)` and the slack guard) is admitted by the seam
-    checker and modeled by the verifier lane by lane, but comes out
-    *witnessed*: "the memory of the span dst after the loops was not
-    proven equal". The scalar map is proven with its span memory, so
-    what is missing is coupling a span's memory across two loops — the
-    vector main loop and the scalar remainder. Two notes for whoever
-    takes it: an index guarded against two spans keeps only the last
-    bound, so the equal-length shape (`len(dst) == len(a)`) is the one
-    the checker admits; and a map needs no reassociation at all, so the
-    law is far weaker than the reduction's and floats vectorize too;
+24. map/zip vectorization — **maps landed 2026-09-16** (`vectorize-maps`,
+    `nativegen/vector_map.go`, `spec/lean/Oak/Map.lean`): an element-wise
+    map over span parameters — `dst[i] = E(a[i])` with `E` over the
+    element, invariant scalars, and constants under `+ - & | ^`, `u32` or
+    `u64` lanes, one span in place or two under `len(dst) == len(a)` —
+    runs one vector a trip (`ldr q`, the lane-wise operations, `str q`)
+    under the slack guard with the scalar remainder as written, licensed
+    by `Oak.Map.blocked_eq` (lane-wise semantics alone: no law of the
+    element type, so no fact of the body is required), and proven by the
+    verifier with the span memory it writes. Two verifier increments made
+    it provable: the store-loop split (§0, "loops that never ran keep the
+    entry memory") proved the hand-written shape that the 2026-09-16
+    survey found *witnessed*; and the hoisted form — a guard peeled around
+    the vector loop skips it when `len(a) < 4`, carrying the index's
+    header value into the remainder loop where the Oak side carries the
+    loop symbol — needed the scalar counterpart, "loops that never ran
+    keep their variables" (`notRunPins` in `asm/loops.go`: a loop ran, or
+    each of its symbols is its header value, in every premise that can
+    read an earlier sibling's symbols). Still to do: zips (two source
+    spans), floats (the law admits them; the lane shapes are `F32x4` and
+    `F64x2`), multiplication and shifts, narrow lanes, spans bound in the
+    body, and more than one vector a trip;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

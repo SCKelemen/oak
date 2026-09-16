@@ -44,6 +44,7 @@ const (
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
 	TransformVectorize   = "vectorize-reductions"
+	TransformVectorMaps  = "vectorize-maps"
 	TransformVecBlocks   = "vector-blocks"
 	TransformMultiplyAdd = "multiply-add"
 	TransformReallocate  = "reallocate"
@@ -260,6 +261,18 @@ func Transforms() []opt.Transform {
 			fired:   Vectorized,
 		},
 		&laneTransform{
+			// Map vectorization (nativegen/vector_map.go): an element-wise
+			// map over span parameters as one vector a trip under the slack
+			// guard, the remainder as written, licensed by Oak.Map.blocked_eq
+			// — lane-wise semantics alone, no law of the element type, so no
+			// fact of the body is required.
+			name: TransformVectorMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorMaps },
+			apply:   func(l Lane) Lane { l.VectorMaps = true; return l },
+			fired:   VectorizedMaps,
+		},
+		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
 			// peeling (nativegen/licm.go; §9 "Loop invariants"): machine
 			// shape only, judged by the checker and the verifier.
@@ -376,6 +389,7 @@ func PlainLane(lane Lane) Lane {
 	lane.Reallocate = false
 	lane.Schedule = false
 	lane.VectorReductions = false
+	lane.VectorMaps = false
 	lane.NoReductions = true
 	return lane
 }

@@ -4499,6 +4499,37 @@ sixteen-element main loop's fifteen-trip remainder half the work, so no
 strided form could pay for its tail; it is 256 now, calibrated from
 these rows (`opt/cost.go`, §16 of `90-backend.md`).
 
+**Map vectorization (2026-09-16, AArch64 lane; `nativegen/vector_map.go`,
+`spec/lean/Oak/Map.lean`, the `vectorize-maps` candidate).** An
+element-wise map over span parameters — `while i < len(a) { dst[i] =
+E(a[i]); i = i + u32(1) }`, `E` over the element, loop-invariant scalars
+of the element type, and constants under `+`, `-`, `&`, `|`, `^`; `dst`
+a writable span and `a` a span or view of one integer element width,
+`u32` or `u64`; the index a `u32`; either one span in place (`v[i] =
+(v[i] ^ k) + u32(1)`) or two under an enclosing `len(dst) == len(a) ?
+{ … }` — is rewritten before lowering into a main loop over one vector a
+trip under the slack guard the vector kernels spell, `len(a) >= u32(L)
+&& i <= len(a) - u32(L)` for `L` lanes, each invariant scalar and
+constant splatted once before it (`k_v: simd.U32x4 = simd.splat_u32x4(k)`),
+the body one `simd.load`, the lane-wise operations, one `simd.store`
+into `dst` at `i`, and the remainder loop as written. The main loop is a
+`ldr q`, the vector arithmetic, and a `str q`, no scalar element access.
+The license is the lane-wise semantics of `93-simd.md` §1 alone — `load`
+reads and `store` writes consecutive elements, the operations wrap per
+lane as the scalar operators do (`20-types.md`) — so the blocked map is
+the element-wise map for any function of one element
+(`Oak.Map.blocked_eq`, `block_eq`); nothing reassociates, no fact of the
+body is required, and the remainder loop is the source loop itself. The
+lowering sees the rewritten body and the verifier proves the assembly
+against it: the two loops coupled inductively and the span memory of
+`dst` compared after them (§9 "Span memories through loops", "Loops that
+never ran keep the entry memory"). Not rewritten: a value reading any
+other element or a scalar the loop assigns, spans bound in the body,
+spans of different widths or without the equal-length guard, float or
+narrow lanes, multiplication and shifts, and the remainder loop of a map
+this rewrite made (the loop after a slack guard over the same span and
+index). One vector a trip, not four: a map carries nothing across trips.
+
 **Multiply-add forms (2026-09-16, AArch64 lane;
 `nativegen/multiply_add.go`).** AArch64 computes a product and its addend
 in one instruction, so the integer expressions `a + b * c`, `b * c + a`,
@@ -6777,3 +6808,18 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**Loops that never ran keep their variables (2026-09-16).** The scalar
+counterpart: the Oak side's summary of a loop leaves each variable at
+the loop's symbol (`loop1.i`) whether the loop ran or not, and the
+machine that skips the loop under a hoisted guard — `len(a) < 4` peeled
+around a vector main loop — carries the header value (`0`) into the next
+loop instead. The two are one only under the fact that a loop which
+never ran leaves its variables at their header values, which no premise
+stated. Each loop's exit premise, and the body premise of every loop
+that can read an earlier sibling's symbols, now carries it: the loop ran
+(its guard held at the header and the machine's path reached it), or
+each of its symbols equals its header value (`notRunPins`,
+`asm/loops.go`). The vectorized map's hoisted form — the form the search
+prices lowest — is proven with it where it was witnessed before ("loop
+2's continue conditions were not proven equal").
