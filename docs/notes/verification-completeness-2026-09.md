@@ -409,19 +409,26 @@ and consistency checks. The outputs are inspected by LLVM tools and executed
 under QEMU or on host hardware where available.
 
 The current verification-chain documents nevertheless classify the writers
-as trusted. One bounded seam is now closed: `Oak.ObjectLayout` proves that the
+as trusted. Two bounded seams are now closed. `Oak.ObjectLayout` proves that the
 object writer's relocation-footprint admission keeps the complete four-byte
 word, or both words of an eight-byte `adrl21`/RV64 PC-relative pair, inside
 the defining function. The production decision table is pinned exhaustively
-to the Lean model. This is not yet a section-layout or relocation-semantics
-theorem. Object-to-binary linking is also explicitly trusted and generally
-runs through the C compiler's driver.
+to the Lean model. `Oak.ObjectRelocation` proves the opcode, range, patch,
+decode, and target-reachability laws for the AArch64 executable resolver's
+direct `B`/`BL` word; production boundary pins and a final-ELF word check hold
+that helper to the model on the exercised correspondence table, not by a
+universal Go-refinement theorem. These are not section-layout,
+symbol-resolution, or whole-link theorems. Object-to-binary linking is
+otherwise explicitly trusted and generally runs through the C compiler's
+driver.
 
 Consequently, even for a proven native body, the strict present claim is:
 
 > The body is proved equal to its Oak specification down to modeled machine
-> instructions, with target-dependent assurance for encoding; object and
-> executable construction and final linking remain trusted.
+> instructions, with target-dependent assurance for encoding; the AArch64
+> direct-branch relocation word is proved at its arithmetic/bit seam, while
+> the remaining object and executable construction and final linking stay
+> trusted.
 
 It is not yet:
 
@@ -591,7 +598,9 @@ should remain as drift and implementation checks after the theorem lands.
 
 Specify and prove the exact ELF and Mach-O subsets Oak writes, including
 relocations and startup layout. Connect instruction encoding theorems to the
-bytes placed at linked virtual addresses.
+bytes placed at linked virtual addresses. The AArch64 direct `B`/`BL`
+relocation arithmetic is the first proved word-level slice; function/symbol
+layout, the remaining relocation families, and file structure are next.
 
 ### 6. Close or explicitly terminate at linking
 

@@ -4292,6 +4292,18 @@ self-hosting: the runtime the C shell still provides for the rest of the
 language (strings, the assertion message, the host boundary) as Oak or
 asm units, and the compiler itself in Oak.
 
+The AArch64 direct-branch patch is a first formally specified part of that
+in-process link. `Oak.ObjectRelocation` states the exact `B`/`BL` opcode,
+signed scaled 26-bit displacement range, low-bit replacement, decoding, and
+target-reachability laws. The production helper refuses an unknown kind, a
+word with the wrong opcode, an unaligned or out-of-range target, and address
+arithmetic that would wrap; it checks the decoded result before returning a
+word. A Go-to-Lean decision table pins its boundary behavior, and the
+executable test pins the patched call word in the final ELF text. This is a
+proof of the direct-branch arithmetic and bits only. Function layout and
+symbol-address authority, ELF headers and sections, every other relocation,
+and the final image as a whole remain trusted.
+
 **Constant top-level bindings.** A body's read of a constant integer
 top-level binding (never assigned or addressed, a constant initializer;
 `90-backend.md` §8a's `static const`) reaches the native generator and the

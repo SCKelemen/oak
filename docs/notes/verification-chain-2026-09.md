@@ -219,10 +219,14 @@ or the verifier, not in the program:
    program now builds natively on both lanes with no refusal. Base
    facts through spills and spans copied across labels remain outside
    the label state.
-7. **The object and executable writers have no laws.** Their arithmetic
-   (section offsets, relocation ranges, program-header extents) is
-   checked at run time and tested against llvm-objdump and QEMU; the
-   `Oak.Assembler` frame laws are the model for stating them in Lean.
+7. **The object and executable writers are mostly without laws.**
+   `Oak.ObjectLayout` closes relocation-footprint admission, and
+   `Oak.ObjectRelocation` proves the opcode/range/patch/decode arithmetic model
+   for the AArch64 executable resolver's direct `B`/`BL` word, with production
+   held to a kernel-checked boundary table rather than a universal Go theorem.
+   Section offsets, symbol authority, other relocations, program-header
+   extents, and the whole image remain run-time checked and tested against
+   llvm-objdump and QEMU.
 8. **amd64.** Only through a lane. Until then, amd64 binaries are the C
    compiler's, checked by the differential corpus alone.
 9. **A real program all the way down.** `oak build -link oak` links a

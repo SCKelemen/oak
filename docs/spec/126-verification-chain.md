@@ -456,12 +456,27 @@ examples. The writer now rejects missing symbols and incomplete pairs before
 format-specific emission. This does not prove ELF/Mach-O record encoding,
 relocation meaning, symbol resolution, section layout, or linking.
 
+One executable-relocation case now has a **proved model and bounded production
+correspondence**. `Oak.ObjectRelocation` specifies AArch64 `B`/`BL` patching:
+the original opcode, four-byte alignment, the exact signed 26-bit scaled reach,
+replacement of only the immediate bits, signed decoding, opcode preservation,
+and arrival at the target. The final-ELF resolver applies the corresponding
+fail-closed helper for `call26`, `jump26`, and the legacy `branch26` spelling;
+its Go boundary decisions are pinned to kernel-checked examples and the start
+stub's linked call word is checked in the written ELF. The pins are not a
+universal implementation-refinement theorem for Go. This closes only the
+model's word-level arithmetic. Symbol/layout authority, other relocations, ELF
+structure, and the complete output bytes remain trusted.
+
 ### 2.6 Object → binary
 
-Linking is the C compiler's driver (`compileC`), static for Linux cross
-builds, with the manifests' `link`/`framework` inputs and the realization
-shims. **Trusted**; **differential** through `oak run -target` under
-QEMU where present.
+The default link is the C compiler's driver (`compileC`), static for Linux
+cross builds, with the manifests' `link`/`framework` inputs and the
+realization shims. `-link oak` instead writes the closed native program's
+static ELF in process. Both remain **trusted** as complete layout/link steps;
+the AArch64 direct `B`/`BL` patch described above is the one proved word-level
+exception. Finished images are **differentially** exercised through
+`oak run -target` under QEMU where present.
 
 ## 3. Per target
 
