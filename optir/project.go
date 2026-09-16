@@ -33,7 +33,7 @@ func project(function Function, metadata StructuredRegionMemoryMetadata, validat
 	}
 	if validateMemory {
 		p.memory = RegionMemoryMetadata{Regions: append([]RegionID(nil), metadata.Regions...)}
-		p.structuredMemory = make(map[*Operation][]MemoryAccessSpec, len(metadata.Operations))
+		p.structuredMemory = make(map[*Operation]StructuredMemoryOperationMetadata, len(metadata.Operations))
 		p.consumedMemory = make(map[*Operation]bool, len(metadata.Operations))
 		for _, operation := range metadata.Operations {
 			if operation.Operation == nil {
@@ -42,7 +42,8 @@ func project(function Function, metadata StructuredRegionMemoryMetadata, validat
 			if _, duplicate := p.structuredMemory[operation.Operation]; duplicate {
 				return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: structured memory metadata repeats an operation")
 			}
-			p.structuredMemory[operation.Operation] = append([]MemoryAccessSpec(nil), operation.Accesses...)
+			operation.Accesses = append([]MemoryAccessSpec(nil), operation.Accesses...)
+			p.structuredMemory[operation.Operation] = operation
 		}
 	}
 	entry := p.newBlock()
@@ -77,7 +78,7 @@ type projector struct {
 	nextBlock        BlockID
 	nextValue        ValueID
 	memory           RegionMemoryMetadata
-	structuredMemory map[*Operation][]MemoryAccessSpec
+	structuredMemory map[*Operation]StructuredMemoryOperationMetadata
 	consumedMemory   map[*Operation]bool
 }
 
@@ -102,14 +103,15 @@ func (p *projector) emitRegion(region Region, current BlockID, bindings map[Valu
 	for _, node := range region.Nodes {
 		switch {
 		case node.Operation != nil:
-			if accesses, tracked := p.structuredMemory[node.Operation]; tracked {
+			if metadata, tracked := p.structuredMemory[node.Operation]; tracked {
 				if p.consumedMemory[node.Operation] {
 					return 0, fmt.Errorf("optir: structured memory operation occurs more than once")
 				}
 				p.consumedMemory[node.Operation] = true
 				p.memory.Operations = append(p.memory.Operations, MemoryOperationMetadata{
-					Site:     OperationSite{Block: current, Index: len(p.block(current).Operations)},
-					Accesses: append([]MemoryAccessSpec(nil), accesses...),
+					Site:       OperationSite{Block: current, Index: len(p.block(current).Operations)},
+					Accesses:   append([]MemoryAccessSpec(nil), metadata.Accesses...),
+					CallEffect: metadata.CallEffect,
 				})
 			}
 			op := cloneOperation(*node.Operation)

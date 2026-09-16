@@ -53,6 +53,27 @@ func TestFingerprintCFGRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+func TestFingerprintCFGIncludesMemoryCallAuthorityID(t *testing.T) {
+	cfg := CFG{Name: "call", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 0, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}}, MemoryCallID: "summary-a",
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	first, err := FingerprintCFG(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Blocks[0].Operations[0].MemoryCallID = "summary-b"
+	second, err := FingerprintCFG(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("memory call authority ID change retained CFG fingerprint")
+	}
+}
+
 func TestFingerprintRegionMemoryInputIsCanonical(t *testing.T) {
 	cfg, metadata, observability := regionMemoryFingerprintInput()
 	first, err := FingerprintRegionMemoryInput(cfg, metadata, observability)

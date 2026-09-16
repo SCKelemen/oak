@@ -45,6 +45,38 @@ func TestDeadStoreEliminationRemovesExactOverwrittenStore(t *testing.T) {
 	}
 }
 
+func TestDeadStoreEliminationPreservesNoModRefCallMetadata(t *testing.T) {
+	cfg := deadStoreCFG("no_modref_call", []Operation{
+		deadStoreOperation(),
+		{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}}},
+		deadStoreOperation(),
+	})
+	metadata := RegionMemoryMetadata{
+		Regions: []RegionID{"heap"},
+		Operations: []MemoryOperationMetadata{
+			deadStoreMetadata(0, "heap", MemoryWrite, true, false),
+			{Site: OperationSite{Block: 1, Index: 1}, CallEffect: MemoryCallNoModRef},
+			deadStoreMetadata(2, "heap", MemoryWrite, true, false),
+		},
+	}
+	observability := RegionMemoryObservability{LiveOut: []RegionID{"heap"}}
+	memorySSA, liveness := deadStoreEvidence(t, cfg, metadata, observability)
+	result, resultMetadata, report, err := EliminateDeadRegionStores(cfg, metadata, memorySSA, observability, liveness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDeadStoreElimination(cfg, metadata, memorySSA, observability, liveness, result, resultMetadata, report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Removed) != 1 || len(result.Blocks[0].Operations) != 2 {
+		t.Fatalf("DSE result=%+v report=%+v", result, report)
+	}
+	if got := resultMetadata.Operations; len(got) != 2 || got[0].Site != (OperationSite{Block: 1, Index: 0}) ||
+		got[0].CallEffect != MemoryCallNoModRef || len(got[0].Accesses) != 0 || got[1].Site != (OperationSite{Block: 1, Index: 1}) {
+		t.Fatalf("rewritten no-ModRef metadata = %+v", got)
+	}
+}
+
 func TestDeadStoreEliminationPreservesReadAndLiveOutDefinitions(t *testing.T) {
 	tests := []struct {
 		name          string

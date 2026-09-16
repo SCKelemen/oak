@@ -80,6 +80,7 @@ type Operation struct {
 	Facts          []Fact
 	Source         Source
 	MemoryAccessID string
+	MemoryCallID   string
 }
 
 // Region is structured control with explicit arguments and yielded values.

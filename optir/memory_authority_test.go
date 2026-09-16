@@ -49,6 +49,134 @@ func TestCheckedMemoryAuthorityProjectsExactGlobalAccesses(t *testing.T) {
 	}
 }
 
+func TestCheckedMemoryAuthorityProjectsExactNoModRefCall(t *testing.T) {
+	read := checkedMemoryRecord(t, Source{Context: "calls.oak", Line: 3, Column: 3}, "global:counter", MemoryRead, "u32", false)
+	call, err := NewCheckedMemoryCallRecord(Source{Context: "calls.oak", Line: 4, Column: 8}, "identity", "summary:identity:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := NewCheckedMemoryAuthorityWithCalls([]CheckedMemoryAccessRecord{read}, []CheckedMemoryCallRecord{call})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := CFG{Name: "caller", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 0, Operations: []Operation{
+			{Code: OpLoadRegion, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectReadMemory}, Source: read.Source, MemoryAccessID: read.ID},
+			{Code: OpCall, Results: []Value{{ID: 2, Type: "u32"}}, Operands: []ValueID{1}, Effects: []Effect{EffectCall}, Attributes: []Attribute{{Name: AttributeCallee, Value: "identity"}}, Source: call.Source, MemoryCallID: call.ID},
+		}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{2}},
+	}}}
+	projection, err := ProjectCheckedMemory(cfg, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Metadata.Operations) != 2 || projection.Metadata.Operations[1].CallEffect != MemoryCallNoModRef || len(projection.Metadata.Operations[1].Accesses) != 0 {
+		t.Fatalf("checked call projection = %+v", projection.Metadata)
+	}
+	mutated := projection
+	mutated.Metadata.Operations = append([]MemoryOperationMetadata(nil), projection.Metadata.Operations...)
+	mutated.Metadata.Operations[1].CallEffect = ""
+	if err := VerifyCheckedMemoryProjection(cfg, authority, mutated); err == nil || !strings.Contains(err.Error(), "mutated") {
+		t.Fatalf("mutated call projection error = %v", err)
+	}
+	memory, err := AnalyzeRegionMemorySSA(cfg, projection.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memory.Accesses) != 1 || memory.Accesses[0].Kind != MemoryRead {
+		t.Fatalf("no-ModRef call created memory accesses: %+v", memory.Accesses)
+	}
+
+	calls := authority.CallRecords()
+	calls[0].Callee = "forged"
+	if authority.CallRecords()[0].Callee != "identity" {
+		t.Fatal("call-record inspection aliases authority")
+	}
+	changed, err := NewCheckedMemoryCallRecord(call.Source, call.Callee, "summary:identity:v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewCheckedMemoryAuthorityWithCalls([]CheckedMemoryAccessRecord{read}, []CheckedMemoryCallRecord{changed})
+	if err != nil || authority.Fingerprint() == other.Fingerprint() {
+		t.Fatalf("summary change retained authority fingerprint, err=%v", err)
+	}
+}
+
+func TestCheckedMemoryCallAuthorityRejectsMissingForgedAndMismatchedCalls(t *testing.T) {
+	call, err := NewCheckedMemoryCallRecord(Source{Context: "calls.oak", Line: 2, Column: 5}, "identity", "summary:identity:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{call})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := CFG{Name: "caller", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 0, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "identity"}}, Source: call.Source, MemoryCallID: call.ID,
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	tests := []struct {
+		name   string
+		mutate func(*CFG)
+		want   string
+	}{
+		{name: "stale", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].MemoryCallID = "stale" }, want: "stale or unknown"},
+		{name: "missing", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].MemoryCallID = "" }, want: "unknown-clobber"},
+		{name: "source", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].Source.Column++ }, want: "source scope"},
+		{name: "callee", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].Attributes[0].Value = "other" }, want: "checked callee"},
+		{name: "effect", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].Effects = []Effect{EffectReadMemory} }, want: "canonical call effect"},
+		{name: "access ID", mutate: func(cfg *CFG) { cfg.Blocks[0].Operations[0].MemoryAccessID = "other" }, want: "both memory access and call IDs"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := cloneCFG(valid)
+			test.mutate(&candidate)
+			if _, err := ProjectCheckedMemory(candidate, authority); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ProjectCheckedMemory error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	forged := call
+	forged.SummaryFingerprint = "summary:forged"
+	if _, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{forged}); err == nil || !strings.Contains(err.Error(), "stale or forged") {
+		t.Fatalf("forged call record error = %v", err)
+	}
+	if _, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{call, call}); err == nil || !strings.Contains(err.Error(), "repeats") {
+		t.Fatalf("duplicate call record error = %v", err)
+	}
+}
+
+func TestProjectWithCheckedMemoryCarriesStructuredNoModRefCall(t *testing.T) {
+	callRecord, err := NewCheckedMemoryCallRecord(Source{Context: "calls.oak", Line: 2, Column: 3}, "pure", "summary:pure:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := NewCheckedMemoryAuthorityWithCalls(nil, []CheckedMemoryCallRecord{callRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := &Operation{
+		Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+		Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}}, Source: callRecord.Source, MemoryCallID: callRecord.ID,
+	}
+	function := Function{Name: "caller", Results: []Type{"u32"}, Body: Region{Nodes: []Node{{Operation: call}}, Yield: []ValueID{1}}}
+	cfg, projection, err := ProjectWithCheckedMemory(function, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Metadata.Operations; len(got) != 1 || got[0].CallEffect != MemoryCallNoModRef || len(got[0].Accesses) != 0 {
+		t.Fatalf("structured no-ModRef projection = %+v", got)
+	}
+}
+
 func TestProjectWithCheckedMemoryComposesStructuredIdentityAndAuthority(t *testing.T) {
 	read := checkedMemoryRecord(t, Source{Context: "memory.oak", Line: 3, Column: 10}, "global:counter", MemoryRead, "u32", false)
 	write := checkedMemoryRecord(t, Source{Context: "memory.oak", Line: 4, Column: 3}, "global:counter", MemoryWrite, "u32", true)

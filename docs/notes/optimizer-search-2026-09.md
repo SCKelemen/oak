@@ -868,8 +868,14 @@ rather than treating the store to `B` as a possible clobber of `A` and asking a 
 The first explicit-metadata region MemorySSA has landed. It represents each
 declared region independently with deterministic entry, definition, join, and
 loop versions; exact Mod/Ref must agree with the operation effects, while an
-opaque call clobbers every declared region. Exact CFG/metadata fingerprints and
-independent recomputation reject stale or mutated evidence. Memory-definition
+opaque call clobbers every declared region. An exact direct internal call may
+instead carry positive `NoModRef` authority derived recursively from checked
+OptIR projections: the callee has no direct checked global access, every child
+call has the same evidence, and the summary fingerprint binds the exact callee
+CFG plus sorted child summaries. Foreign, bodyless, stateful, and recursive
+graphs fail closed; absence of authority never means purity. Exact CFG and
+metadata fingerprints plus independent recomputation reject stale or mutated
+evidence. Memory-definition
 liveness now takes an explicit set of regions observable on normal return,
 roots reads, volatile accesses, opaque clobbers, and those terminal versions,
 and propagates through join/loop phis. Partial writes keep their predecessors
@@ -890,9 +896,9 @@ and treats every global region as live on normal return. The typed artifact DAG
 runs projection, MemorySSA, liveness, combined evidence, DSE, and load
 forwarding after LICM; both transforms independently verify their complete
 rewrites before publishing them. Changed final CFGs can enter native search on
-AArch64 and RV64 when the
-memory vocabulary is acyclic, call-free control flow over exact
-scalar package-global reads and whole nonvolatile writes. Both targets also
+AArch64 and RV64 when the memory vocabulary is acyclic control flow over exact
+scalar package-global reads and whole nonvolatile writes, optionally composed
+with authenticated `NoModRef` scalar calls. Both targets also
 admit one exact call-free canonical natural loop with a unique preheader,
 conditional header, straight-line body/latch, backedge, and return exit. Its
 RegionMemorySSA contains the loop-header phi joining the entry memory version
@@ -912,7 +918,8 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-and interprocedural call Mod/Ref summaries remain open.
+broader load PRE through memory phis, and interprocedural `Ref`/`ModRef`
+summaries remain open; the exact empty `NoModRef` summary has landed.
 
 As the projection broadens, region memory SSA should power:
 

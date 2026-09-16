@@ -168,6 +168,50 @@ func TestRegionMemorySSAUnknownCallClobbersEveryRegion(t *testing.T) {
 	}
 }
 
+func TestRegionMemorySSANoModRefCallCreatesNoAccess(t *testing.T) {
+	cfg := CFG{Name: "pure_call", Entry: 1, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 1, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}},
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	metadata := RegionMemoryMetadata{Operations: []MemoryOperationMetadata{{
+		Site: OperationSite{Block: 1, Index: 0}, CallEffect: MemoryCallNoModRef,
+	}}}
+	analysis, err := AnalyzeRegionMemorySSA(cfg, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRegionMemorySSA(cfg, metadata, analysis); err != nil {
+		t.Fatal(err)
+	}
+	if len(analysis.Accesses) != 0 || len(analysis.Versions) != 0 {
+		t.Fatalf("no-ModRef call changed memory SSA: %+v", analysis)
+	}
+
+	tests := []struct {
+		name     string
+		metadata RegionMemoryMetadata
+		want     string
+	}{
+		{name: "missing", metadata: RegionMemoryMetadata{}, want: "unknown-clobber"},
+		{name: "unknown", metadata: RegionMemoryMetadata{Operations: []MemoryOperationMetadata{{Site: OperationSite{Block: 1, Index: 0}, CallEffect: "forged"}}}, want: "unknown call effect"},
+		{name: "with access", metadata: RegionMemoryMetadata{Regions: []RegionID{"heap"}, Operations: []MemoryOperationMetadata{{Site: OperationSite{Block: 1, Index: 0}, CallEffect: MemoryCallNoModRef, Accesses: []MemoryAccessSpec{{Region: "heap", Kind: MemoryRead}}}}}, want: "cannot carry accesses"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := AnalyzeRegionMemorySSA(cfg, test.metadata); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	malformedCall := cloneCFG(cfg)
+	malformedCall.Blocks[0].Operations[0].Attributes = nil
+	if _, err := AnalyzeRegionMemorySSA(malformedCall, metadata); err == nil || !strings.Contains(err.Error(), "callee attribute") {
+		t.Fatalf("malformed summarized call error = %v", err)
+	}
+}
+
 func TestRegionMemorySSAFailsClosedOnMissingOrMalformedMetadata(t *testing.T) {
 	cfg := memoryStraightLineCFG()
 	tests := []struct {

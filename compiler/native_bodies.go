@@ -73,6 +73,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	verified, fromCache := 0, 0 // the verdict cache's tally, reported once
 	constants := constantGlobals(root, tc)
 	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
+	optIRPlanner := newOptIRNoModRefPlanner(root, tc, checkedOptIRGlobals(root, tc))
 	tables, data := nativeGlobalArrays(root)
 	// The verdict cache (compiler/verdict_cache.go), the optimization
 	// report (opt.Report; printed under -opt-report or OAK_OPT_REPORT), and
@@ -124,7 +125,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		if arch := comp.options.Target.AsmArch(); arch == asm.ArchArm64 || arch == asm.ArchRV64 {
-			applyNativeOptIRCandidate(&lane, nativeOptIRCandidate(source, root, tc, globals))
+			applyNativeOptIRCandidate(&lane, nativeOptIRCandidate(source, optIRPlanner, tc, globals))
 		}
 		// The candidate search (compiler/native_search.go, package opt;
 		// docs/notes/optimizer-search-2026-09.md): the plain lowering is the
@@ -286,15 +287,15 @@ func applyNativeOptIRCandidate(lane *nativegen.Lane, plan nativeOptIRPlan) {
 	lane.OptIRRegionGlobals = plan.bindings
 }
 
-func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
-	structured, authority, memoryAuthority, err := lowerCheckedOptIRFunction(function, tc, checkedOptIRGlobals(root, tc))
+func nativeOptIRCandidate(function *ast.FunctionStatement, planner *optIRNoModRefPlanner, tc *typechecker.TypeChecker, globals map[string]asm.Global) nativeOptIRPlan {
+	if planner == nil {
+		return nativeOptIRPlan{}
+	}
+	checked, err := planner.lowerRoot(function)
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
-	cfg, err := projectCheckedOptIRFunction(structured, memoryAuthority)
-	if err != nil {
-		return nativeOptIRPlan{}
-	}
+	authority, memoryAuthority, cfg := checked.facts, checked.memory, checked.cfg
 	if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
 		return nativeOptIRPlan{}
 	}

@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -74,18 +76,180 @@ type optIRUnsupported struct {
 
 func (unsupported *optIRUnsupported) Error() string { return unsupported.reason }
 
+// optIRNoModRefPlanner derives call summaries from exact checked projections,
+// never from a source-level purity annotation. A cached projection is suitable
+// as a call summary only when it has no direct checked global access records;
+// its own calls have already passed through the same recursive check.
+type optIRNoModRefPlanner struct {
+	tc        *typechecker.TypeChecker
+	globals   map[string]optir.Type
+	functions map[string]*ast.FunctionStatement
+	visiting  map[string]bool
+	cache     map[string]optIRCheckedProjection
+}
+
+type optIRCheckedProjection struct {
+	structured         optir.Function
+	facts              optir.CheckedFactAuthority
+	memory             optir.CheckedMemoryAuthority
+	cfg                optir.CFG
+	summaryFingerprint string
+}
+
+func newOptIRNoModRefPlanner(root *ast.Program, tc *typechecker.TypeChecker, globals map[string]optir.Type) *optIRNoModRefPlanner {
+	functions := map[string]*ast.FunctionStatement{}
+	if root != nil {
+		for _, statement := range root.Statements {
+			function, ok := statement.(*ast.FunctionStatement)
+			if ok && function.Name != nil {
+				functions[function.Name.Value] = function
+			}
+		}
+	}
+	return &optIRNoModRefPlanner{
+		tc: tc, globals: globals, functions: functions,
+		visiting: map[string]bool{}, cache: map[string]optIRCheckedProjection{},
+	}
+}
+
+func (planner *optIRNoModRefPlanner) lower(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
+	if function == nil || function.Name == nil || function.Name.Value == "" {
+		return optIRCheckedProjection{}, refuseOptIR(token.Token{}, "unnamed call target cannot receive a checked no-ModRef summary")
+	}
+	name := function.Name.Value
+	if cached, exists := planner.cache[name]; exists {
+		return cached, nil
+	}
+	if function.Body == nil || function.ExternSymbol != "" || function.AsmBacked {
+		return optIRCheckedProjection{}, refuseOptIR(function.Token, "callee %s has no concrete internal Oak body", name)
+	}
+	if function.Receiver != nil || len(function.TypeParams) != 0 {
+		return optIRCheckedProjection{}, refuseOptIR(function.Token, "callee %s is not a concrete nonmethod function", name)
+	}
+	if len(function.Dispatch) != 0 {
+		return optIRCheckedProjection{}, refuseOptIR(function.Token, "callee %s has target-dispatched realizations", name)
+	}
+	if planner.visiting[name] {
+		return optIRCheckedProjection{}, refuseOptIR(function.Token, "recursive call cycle through %s has no finite no-ModRef summary", name)
+	}
+	planner.visiting[name] = true
+	defer delete(planner.visiting, name)
+
+	structured, facts, memory, err := lowerCheckedOptIRFunctionWithCalls(function, planner.tc, planner.globals, planner.authorizePureCall)
+	if err != nil {
+		return optIRCheckedProjection{}, err
+	}
+	cfg, err := projectCheckedOptIRFunction(structured, memory)
+	if err != nil {
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR projection of %s failed verification: %w", name, err)
+	}
+	if err := optir.VerifyCFGCheckedFacts(cfg, facts); err != nil {
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after projection: %w", name, err)
+	}
+	summaryFingerprint, err := fingerprintOptIRNoModRefSummary(cfg, memory.CallRecords())
+	if err != nil {
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: OptIR no-ModRef summary for %s: %w", name, err)
+	}
+	projection := optIRCheckedProjection{
+		structured: structured, facts: facts, memory: memory, cfg: cfg,
+		summaryFingerprint: summaryFingerprint,
+	}
+	planner.cache[name] = projection
+	return projection, nil
+}
+
+// lowerRoot preserves the pre-summary call-only OptIR subset. It first asks
+// for the strict recursively checked projection. If that ordinary subset
+// refusal was solely needed to summarize a call, a second unsummarized
+// lowering may still succeed when the caller has no direct checked memory.
+// The old mixed-memory guard remains in that lowering, so this fallback cannot
+// authorize a memory transform.
+func (planner *optIRNoModRefPlanner) lowerRoot(function *ast.FunctionStatement) (optIRCheckedProjection, error) {
+	checked, strictErr := planner.lower(function)
+	if strictErr == nil {
+		return checked, nil
+	}
+	var unsupported *optIRUnsupported
+	if !errors.As(strictErr, &unsupported) {
+		return optIRCheckedProjection{}, strictErr
+	}
+	structured, facts, memory, err := lowerCheckedOptIRFunction(function, planner.tc, planner.globals)
+	if err != nil {
+		return optIRCheckedProjection{}, strictErr
+	}
+	cfg, err := projectCheckedOptIRFunction(structured, memory)
+	if err != nil {
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: fallback OptIR projection of %s failed verification: %w", function.Name.Value, err)
+	}
+	if err := optir.VerifyCFGCheckedFacts(cfg, facts); err != nil {
+		return optIRCheckedProjection{}, fmt.Errorf("compiler: fallback OptIR checked facts for %s failed after projection: %w", function.Name.Value, err)
+	}
+	return optIRCheckedProjection{structured: structured, facts: facts, memory: memory, cfg: cfg}, nil
+}
+
+func (planner *optIRNoModRefPlanner) authorizePureCall(name string) (string, error) {
+	function, exists := planner.functions[name]
+	if !exists {
+		return "", refuseOptIR(token.Token{}, "callee %s is unknown or not an internal function", name)
+	}
+	projection, err := planner.lower(function)
+	if err != nil {
+		return "", err
+	}
+	if len(projection.memory.Records()) != 0 {
+		return "", refuseOptIR(function.Token, "callee %s directly accesses checked global memory", name)
+	}
+	return projection.summaryFingerprint, nil
+}
+
+func fingerprintOptIRNoModRefSummary(cfg optir.CFG, calls []optir.CheckedMemoryCallRecord) (string, error) {
+	cfgFingerprint, err := optir.FingerprintCFG(cfg)
+	if err != nil {
+		return "", err
+	}
+	type childSummary struct{ callee, fingerprint string }
+	children := make([]childSummary, 0, len(calls))
+	for _, call := range calls {
+		children = append(children, childSummary{callee: call.Callee, fingerprint: call.SummaryFingerprint})
+	}
+	sort.Slice(children, func(i, j int) bool {
+		if children[i].callee != children[j].callee {
+			return children[i].callee < children[j].callee
+		}
+		return children[i].fingerprint < children[j].fingerprint
+	})
+	digest := sha256.New()
+	writePart := func(value string) {
+		var size [8]byte
+		binary.LittleEndian.PutUint64(size[:], uint64(len(value)))
+		_, _ = digest.Write(size[:])
+		_, _ = digest.Write([]byte(value))
+	}
+	writePart("oak.compiler.optir-no-mod-ref-summary.v1")
+	writePart(cfgFingerprint)
+	var count [8]byte
+	binary.LittleEndian.PutUint64(count[:], uint64(len(children)))
+	_, _ = digest.Write(count[:])
+	for _, child := range children {
+		writePart(child.callee)
+		writePart(child.fingerprint)
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil)), nil
+}
+
 func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 	if model == nil || model.Tree == nil || model.Tree.Root == nil || model.TypeChecker == nil {
 		return OptIRModule{}, fmt.Errorf("compiler: OptIR requires a checked semantic model")
 	}
 	var module OptIRModule
 	globals := checkedOptIRGlobals(model.Tree.Root, model.TypeChecker)
+	planner := newOptIRNoModRefPlanner(model.Tree.Root, model.TypeChecker, globals)
 	for _, statement := range model.Tree.Root.Statements {
 		function, isFunction := statement.(*ast.FunctionStatement)
 		if !isFunction || function.Name == nil || function.Body == nil || function.ExternSymbol != "" || function.AsmBacked || len(function.TypeParams) != 0 {
 			continue
 		}
-		structured, authority, memoryAuthority, err := lowerCheckedOptIRFunction(function, model.TypeChecker, globals)
+		checked, err := planner.lowerRoot(function)
 		if err != nil {
 			var unsupported *optIRUnsupported
 			if errors.As(err, &unsupported) {
@@ -94,13 +258,7 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			}
 			return OptIRModule{}, err
 		}
-		cfg, err := projectCheckedOptIRFunction(structured, memoryAuthority)
-		if err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR projection of %s failed verification: %w", function.Name.Value, err)
-		}
-		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {
-			return OptIRModule{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after projection: %w", function.Name.Value, err)
-		}
+		structured, authority, memoryAuthority, cfg := checked.structured, checked.facts, checked.memory, checked.cfg
 		analyses, err := runOptIRAnalysisGraphWithMemory(cfg, memoryAuthority)
 		if err != nil {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR analysis graph for %s failed: %w", function.Name.Value, err)
@@ -163,13 +321,19 @@ type optIRFactBuilder struct {
 }
 
 type optIRMemoryBuilder struct {
-	globals map[string]optir.Type
-	records map[string]optir.CheckedMemoryAccessRecord
-	hasCall bool
-	err     error
+	globals          map[string]optir.Type
+	records          map[string]optir.CheckedMemoryAccessRecord
+	callRecords      map[string]optir.CheckedMemoryCallRecord
+	authorizeCall    func(string) (string, error)
+	unsummarizedCall bool
+	err              error
 }
 
 func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
+	return lowerCheckedOptIRFunctionWithCalls(function, tc, globals, nil)
+}
+
+func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (string, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
 	if function.Receiver != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
 	}
@@ -190,8 +354,11 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 	}
 	lowerer := &optIRLowerer{
 		tc: tc, ids: &optIRIDs{next: 1}, env: map[string]optir.Value{},
-		facts:  &optIRFactBuilder{records: map[string]optir.CheckedFactRecord{}, values: map[string]optir.ValueID{}},
-		memory: &optIRMemoryBuilder{globals: globals, records: map[string]optir.CheckedMemoryAccessRecord{}},
+		facts: &optIRFactBuilder{records: map[string]optir.CheckedFactRecord{}, values: map[string]optir.ValueID{}},
+		memory: &optIRMemoryBuilder{
+			globals: globals, records: map[string]optir.CheckedMemoryAccessRecord{},
+			callRecords: map[string]optir.CheckedMemoryCallRecord{}, authorizeCall: authorizeCall,
+		},
 	}
 	structured := optir.Function{Name: function.Name.Value, Results: []optir.Type{resultType}}
 	for index, parameter := range function.Parameters {
@@ -228,7 +395,7 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 	if lowerer.memory.err != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, lowerer.memory.err
 	}
-	if lowerer.memory.hasCall && len(lowerer.memory.records) != 0 {
+	if lowerer.memory.unsummarizedCall && len(lowerer.memory.records) != 0 {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "calls mixed with checked global memory require interprocedural effect summaries")
 	}
 	records := make([]optir.CheckedFactRecord, 0, len(lowerer.facts.records))
@@ -246,7 +413,11 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 	for _, record := range lowerer.memory.records {
 		memoryRecords = append(memoryRecords, record)
 	}
-	memoryAuthority, err := optir.NewCheckedMemoryAuthority(memoryRecords)
+	callRecords := make([]optir.CheckedMemoryCallRecord, 0, len(lowerer.memory.callRecords))
+	for _, record := range lowerer.memory.callRecords {
+		callRecords = append(callRecords, record)
+	}
+	memoryAuthority, err := optir.NewCheckedMemoryAuthorityWithCalls(memoryRecords, callRecords)
 	if err != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, fmt.Errorf("compiler: OptIR checked memory authority for %s: %w", function.Name.Value, err)
 	}
@@ -293,7 +464,7 @@ func checkedOptIRGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[str
 }
 
 func projectCheckedOptIRFunction(function optir.Function, memoryAuthority optir.CheckedMemoryAuthority) (optir.CFG, error) {
-	if len(memoryAuthority.Records()) == 0 {
+	if len(memoryAuthority.Records()) == 0 && len(memoryAuthority.CallRecords()) == 0 {
 		return optir.Project(function)
 	}
 	cfg, projection, err := optir.ProjectWithCheckedMemory(function, memoryAuthority)
@@ -594,8 +765,37 @@ func (lowerer *optIRLowerer) lowerCall(call *ast.InvocationExpression, resultTyp
 		}
 		operands = append(operands, value.ID)
 	}
-	lowerer.memory.hasCall = true
-	return lowerer.emit(region, optir.OpCall, resultType, "call", call.Token, operands, []optir.Effect{optir.EffectCall}, []optir.Attribute{{Name: optir.AttributeCallee, Value: callee.Value}}), nil
+	var callID string
+	if lowerer.memory.authorizeCall == nil {
+		lowerer.memory.unsummarizedCall = true
+	} else {
+		summaryFingerprint, err := lowerer.memory.authorizeCall(callee.Value)
+		if err != nil {
+			var unsupported *optIRUnsupported
+			if errors.As(err, &unsupported) {
+				return optir.Value{}, refuseOptIR(call.Token, "call to %s has no checked no-ModRef summary: %s", callee.Value, unsupported.reason)
+			}
+			return optir.Value{}, err
+		}
+		record, err := optir.NewCheckedMemoryCallRecord(optIRSource(call.Token), callee.Value, summaryFingerprint)
+		if err != nil {
+			return optir.Value{}, fmt.Errorf("compiler: checked memory call to %s: %w", callee.Value, err)
+		}
+		if _, duplicate := lowerer.memory.callRecords[record.ID]; duplicate {
+			return optir.Value{}, fmt.Errorf("compiler: checked memory call %s is emitted more than once", record.ID)
+		}
+		lowerer.memory.callRecords[record.ID] = record
+		callID = record.ID
+	}
+	result := lowerer.ids.value(resultType, "call", optIRSource(call.Token))
+	operation := &optir.Operation{
+		Code: optir.OpCall, Results: []optir.Value{result}, Operands: operands,
+		Effects:    []optir.Effect{optir.EffectCall},
+		Attributes: []optir.Attribute{{Name: optir.AttributeCallee, Value: callee.Value}},
+		Facts:      lowerer.checkedTypeFact(call.Token, result), Source: optIRSource(call.Token), MemoryCallID: callID,
+	}
+	region.Nodes = append(region.Nodes, optir.Node{Operation: operation})
+	return result, nil
 }
 
 func (lowerer *optIRLowerer) lowerBooleanMatch(match *ast.MatchExpression, resultType optir.Type, region *optir.Region) (optir.Value, error) {

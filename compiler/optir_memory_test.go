@@ -90,7 +90,7 @@ main: (): i32 = 0
 	}
 }
 
-func TestCheckedGlobalMemoryKeepsBranchStoresAndRejectsAggregateGlobals(t *testing.T) {
+func TestCheckedGlobalMemoryKeepsBranchStoresAndAcceptsProvenPureCalls(t *testing.T) {
 	module, err := New().WithSource("optir_memory_branch.oak", `
 flag: Bool = false
 items: [2]u32
@@ -107,8 +107,18 @@ choose: (value: Bool): Bool {
 read_item: (): u32 = items[u32(0)]
 
 identity: (value: Bool): Bool = value
+forward: (value: Bool): Bool = identity(value)
 mixed: (value: Bool): Bool {
-  flag = identity(value)
+  flag = forward(value)
+  flag
+}
+touch: (value: Bool): Bool {
+  flag = value
+  flag
+}
+stateful_wrapper: (value: Bool): Bool = touch(value)
+stateful: (value: Bool): Bool {
+  flag = touch(value)
   flag
 }
 main: (): i32 = 0
@@ -126,17 +136,123 @@ main: (): i32 = 0
 	if _, ok := optIRFunction(module, "read_item"); ok {
 		t.Fatal("aggregate global unexpectedly entered the closed scalar memory vocabulary")
 	}
-	if _, ok := optIRFunction(module, "mixed"); ok {
-		t.Fatal("call mixed with global state unexpectedly entered memory analysis")
+	mixed, ok := optIRFunction(module, "mixed")
+	if !ok {
+		t.Fatalf("pure call mixed with global state was refused: %+v", module.Refusals)
 	}
-	foundMixedRefusal := false
-	for _, refusal := range module.Refusals {
-		if refusal.Function == "mixed" && strings.Contains(refusal.Reason, "interprocedural effect summaries") {
-			foundMixedRefusal = true
+	calls := mixed.CheckedMemory.CallRecords()
+	if len(calls) != 1 || calls[0].Callee != "forward" || calls[0].SummaryFingerprint == "" {
+		t.Fatalf("mixed checked call authority = %+v", calls)
+	}
+	seenCall := false
+	for _, block := range mixed.CFG.Blocks {
+		for _, operation := range block.Operations {
+			if operation.Code == optir.OpCall {
+				seenCall = operation.MemoryCallID == calls[0].ID
+			}
 		}
 	}
-	if !foundMixedRefusal {
-		t.Fatalf("mixed call/global refusal = %+v", module.Refusals)
+	if !seenCall {
+		t.Fatalf("mixed CFG does not carry checked call ID %s: %#v", calls[0].ID, mixed.CFG)
+	}
+	seenNoModRef := false
+	for _, operation := range mixed.MemoryProjection.Metadata.Operations {
+		seenNoModRef = seenNoModRef || operation.CallEffect == optir.MemoryCallNoModRef
+	}
+	if !seenNoModRef {
+		t.Fatalf("mixed memory projection has no checked no-ModRef call: %+v", mixed.MemoryProjection.Metadata)
+	}
+	if err := optir.VerifyCheckedMemoryProjection(mixed.LoopInvariant, mixed.CheckedMemory, mixed.MemoryProjection); err != nil {
+		t.Fatalf("mixed checked memory projection: %v", err)
+	}
+	forward, ok := optIRFunction(module, "forward")
+	if !ok || len(forward.CheckedMemory.CallRecords()) != 1 || forward.CheckedMemory.CallRecords()[0].Callee != "identity" {
+		t.Fatalf("transitive pure summary was not projected: function=%+v refusals=%+v", forward, module.Refusals)
+	}
+	foundStatefulRefusal := false
+	for _, refusal := range module.Refusals {
+		if refusal.Function == "stateful" && strings.Contains(refusal.Reason, "directly accesses checked global memory") {
+			foundStatefulRefusal = true
+		}
+	}
+	if !foundStatefulRefusal {
+		t.Fatalf("stateful call/global refusal = %+v", module.Refusals)
+	}
+	wrapper, ok := optIRFunction(module, "stateful_wrapper")
+	if !ok {
+		t.Fatalf("call-only stateful wrapper lost the unsummarized OptIR fallback: %+v", module.Refusals)
+	}
+	if len(wrapper.CheckedMemory.Records()) != 0 || len(wrapper.CheckedMemory.CallRecords()) != 0 {
+		t.Fatalf("call-only stateful wrapper received memory authority: %+v", wrapper.CheckedMemory)
+	}
+	for _, block := range wrapper.CFG.Blocks {
+		for _, operation := range block.Operations {
+			if operation.Code == optir.OpCall && operation.MemoryCallID != "" {
+				t.Fatalf("call-only stateful wrapper carries unauthorized summary ID %s", operation.MemoryCallID)
+			}
+		}
+	}
+}
+
+func TestCheckedPureCallSummaryFingerprintBindsCalleeCFG(t *testing.T) {
+	summary := func(body string) string {
+		t.Helper()
+		module, err := New().WithSource("optir_call_fingerprint.oak", `
+flag: Bool = false
+identity: (value: Bool): Bool = `+body+`
+mixed: (value: Bool): Bool {
+  flag = identity(value)
+  flag
+}
+main: (): i32 = 0
+`).OptIR().Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		mixed, ok := optIRFunction(module, "mixed")
+		if !ok {
+			t.Fatalf("mixed was refused: %+v", module.Refusals)
+		}
+		records := mixed.CheckedMemory.CallRecords()
+		if len(records) != 1 {
+			t.Fatalf("checked call records = %+v", records)
+		}
+		return records[0].SummaryFingerprint
+	}
+	first := summary("value")
+	if again := summary("value"); first == "" || again != first {
+		t.Fatalf("pure summary fingerprint is not deterministic: %q / %q", first, again)
+	}
+	if changed := summary("value == true"); changed == first {
+		t.Fatalf("callee CFG change retained pure summary fingerprint %q", first)
+	}
+}
+
+func TestCheckedPureCallSummaryRefusesRecursiveSCC(t *testing.T) {
+	module, err := New().WithSource("optir_recursive_call.oak", `
+flag: Bool = false
+first: (value: Bool): Bool = second(value)
+second: (value: Bool): Bool = first(value)
+mixed: (value: Bool): Bool {
+  flag = first(value)
+  flag
+}
+main: (): i32 = 0
+`).OptIR().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := optIRFunction(module, "mixed"); ok {
+		t.Fatal("recursive call SCC unexpectedly received a checked no-ModRef summary")
+	}
+	found := false
+	for _, refusal := range module.Refusals {
+		if refusal.Function == "mixed" && strings.Contains(refusal.Reason, "recursive call cycle") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("recursive SCC refusal = %+v", module.Refusals)
 	}
 }
 

@@ -21,12 +21,12 @@ const (
 	optIRPreservationRevision     = "oak.optir.preservation.v1"
 	optIRLICMRevision             = "oak.optir.licm.v1"
 	optIRFinalCFGRevision         = "oak.optir.final-cfg.v1"
-	optIRMemoryProjectionRevision = "oak.optir.checked-memory-projection.v1"
-	optIRMemorySSARevision        = "oak.optir.region-memory-ssa.v2"
+	optIRMemoryProjectionRevision = "oak.optir.checked-memory-projection.v2"
+	optIRMemorySSARevision        = "oak.optir.region-memory-ssa.v3"
 	optIRMemoryLivenessRevision   = "oak.optir.memory-liveness.v2"
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
-	optIRDSERevision              = "oak.optir.dead-store-elimination.v1"
-	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v1"
+	optIRDSERevision              = "oak.optir.dead-store-elimination.v2"
+	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v2"
 )
 
 type optIRSCCPRewriteArtifact struct {

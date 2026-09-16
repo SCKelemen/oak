@@ -258,7 +258,9 @@ func forwardRegionLoads(
 			return CFG{}, RegionMemoryMetadata{}, RegionLoadForwardingReport{}, fmt.Errorf("optir: region load forwarding could not remap memory operation %d:%d", operation.Site.Block, operation.Site.Index)
 		}
 		resultMetadata.Operations = append(resultMetadata.Operations, MemoryOperationMetadata{
-			Site: newSite, Accesses: append([]MemoryAccessSpec(nil), operation.Accesses...),
+			Site:       newSite,
+			Accesses:   append([]MemoryAccessSpec(nil), operation.Accesses...),
+			CallEffect: operation.CallEffect,
 		})
 	}
 	if err := validateAnalysisCFG(result); err != nil {
@@ -343,7 +345,7 @@ func dropReplacementFacts(facts []Fact, replacements map[ValueID]ValueID, droppe
 
 func fingerprintRegionLoadForwardingReport(report RegionLoadForwardingReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-load-forwarding.v1")
+	fingerprintString(digest, "oak.optir.region-load-forwarding.v2")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

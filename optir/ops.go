@@ -43,6 +43,9 @@ const (
 	// their address semantics join the closed OptIR vocabulary.
 	OpStoreRegion = "memory.region-store"
 
+	// OpCall remains effectful even when MemoryCallID resolves to a checked
+	// NoModRef summary. The ID describes only memory behavior; it never permits
+	// DCE, constant folding, or removal of the call itself.
 	OpCall = "call"
 )
 

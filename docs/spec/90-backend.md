@@ -698,10 +698,13 @@ functions: fixed-width integers, Bool, unit, local assignments, structured
 branches and short-circuiting, exhaustive Bool matches, pre-test loops with
 explicit carried locals, value-preserving integer widening, and effect-marked
 calls. Reads and whole-cell assignments of checked package globals whose types
-are Bool or fixed-width integers project as explicit region operations. Arrays,
-spans, pointers, partial accesses, calls mixed with global state, methods,
-kernels, protocol lowerings, and richer algebraic forms are per-function
-refusals, never partial projections.
+are Bool or fixed-width integers project as explicit region operations. A call
+mixed with those operations is admitted only when its exact direct internal
+callee and every transitive callee successfully project with no checked global
+access; foreign, bodyless, stateful, or recursive call graphs receive no such
+summary. Arrays, spans, pointers, partial accesses, methods, kernels, protocol
+lowerings, and richer algebraic forms are per-function refusals, never partial
+projections.
 
 The SCCP analysis validates its operation vocabulary before computing exact
 constants and executable CFG edges. Its folds use Oak's exact fixed-width
@@ -727,8 +730,9 @@ definition. Calls, traps, memory, synchronization, unknown operations, and
 every explicitly effectful operation remain roots. The first region-memory SSA
 substrate consumes explicit checked region metadata beside operation effects.
 It gives each region deterministic entry/definition/join versions, expands an
-opaque call to a clobber of every declared region, handles loop phis, and binds
-its independently recomputed evidence to exact CFG and metadata fingerprints.
+opaque call to a clobber of every declared region, gives an authenticated
+`NoModRef` call no memory version or access, handles loop phis, and binds its
+independently recomputed evidence to exact CFG and metadata fingerprints.
 Missing or inconsistent Mod/Ref information fails closed. A second analysis,
 under an explicit list of regions observable at normal return, propagates live
 definitions through reads and join/loop phis and reports overwritten exact
@@ -747,12 +751,22 @@ sites. It then independently resolves each projected operation's opaque access
 ID against a separate immutable typechecker-backed authority: source, region,
 access kind, scalar type, whole-region contract, and volatility must all match,
 the two projections must agree, and missing, duplicated, forged, or stale IDs
-fail closed. Every package-global region is observable at normal return.
-Projection, MemorySSA, liveness, evidence, DSE, and load forwarding are exact
-typed artifact-DAG nodes after LICM; each transform independently reruns its
-complete verifier before publishing a candidate. Changed final CFGs now enter
-AArch64 or RV64 native search for closed acyclic, call-free control flow containing
-exact scalar package-global reads and whole nonvolatile writes. Both targets also admit
+fail closed. The same authority may carry an exact call-site record binding its
+source, resolved callee, and transitive summary fingerprint. That fingerprint
+covers the callee CFG and the sorted fingerprints of its child summaries;
+absence never implies purity. Authority is an upper bound after verified
+rewrites, so a removed operation may leave an unused record, but every active
+operation must resolve exactly once. The record constructor seals supplied
+summary text; the normal compiler derives that text, while final semantic
+translation validation remains the independent shipping gate. A standalone
+call-summary certificate checker remains future TCB-closure work. Every
+package-global region is observable at normal return. Projection, MemorySSA,
+liveness, evidence, DSE, and load forwarding are exact typed artifact-DAG nodes
+after LICM; each transform independently reruns its complete verifier before
+publishing a candidate. Changed final CFGs now enter AArch64 or RV64 native
+search for closed acyclic control flow containing exact scalar package-global
+reads and whole nonvolatile writes; direct scalar calls may be present only
+with authenticated `NoModRef` summaries. Both targets also admit
 exactly one call-free canonical natural loop with a unique preheader, conditional
 header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
 must contain the header phi joining entry memory with the exact body-store
@@ -773,8 +787,10 @@ The target's independently verified register plan, typed aligned spill frame,
 and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
-semantic-verifier verdict before selection. Broader memory loops,
-aggregate regions, and interprocedural call Mod/Ref summaries remain open.
+semantic-verifier verdict before selection. Broader memory loops, aggregate
+regions, broader load PRE through memory phis, and interprocedural
+`Ref`/`ModRef` summaries remain open; the exact empty `NoModRef` case is
+implemented.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each
 deterministic report. Its
@@ -848,8 +864,15 @@ arguments from verified spill slots and compose spill storage with the link-
 register save in one checked frame. RV64 keeps its slots below a dedicated
 sixteen-byte save area and caps the combined frame at 2032 bytes. A ninth or
 stack argument refuses, as do unknown, indirect, method, generic, external, or
-multi-result calls, other effects, traps, source memory, stack parameters,
-unfamiliar operations, an oversized frame, or unsupported RV64 pressure.
+multi-result calls, other effects, traps, unauthenticated source-memory/call
+combinations, stack parameters, unfamiliar operations, an oversized frame, or
+unsupported RV64 pressure. When checked scalar region memory is present, the
+production selector reprojects immutable call authority over the exact final
+CFG and accepts only zero-access `NoModRef` sites. Caller-supplied metadata,
+unknown clobbers, stale call IDs, changed callees/effects, and mutated
+projections refuse. The ordinary call frame, live-across-call restrictions,
+seam checker, and semantic verifier remain unchanged; target tests require both
+the callee and package-global state to appear in a proven verdict.
 
 A target-independent block-layout analysis assigns neutral branch weights
 except for loop continuation/backedges, which receive a qualitative 8:1

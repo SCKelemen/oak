@@ -159,8 +159,8 @@ func lowerOptIRRV64Selection(cfg optir.CFG, template *asm.Function, strictRegist
 	if err != nil {
 		return nil, err
 	}
-	if memory != nil && len(calls) != 0 {
-		return nil, fmt.Errorf("machine: OptIR RV64 region memory refuses calls")
+	if memory != nil && len(calls) != 0 && !memory.admitsNoModRefCalls(cfg) {
+		return nil, fmt.Errorf("machine: OptIR RV64 region memory call lacks authenticated no-ModRef evidence")
 	}
 	spillFrame := spillLayout.Frame
 	frame, raOffset, err := composeOptIRRV64Frame(spillFrame, len(calls) != 0)

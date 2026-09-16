@@ -20,11 +20,28 @@ type CheckedMemoryAccessRecord struct {
 	Volatile    bool
 }
 
-// CheckedMemoryAuthority is an immutable set of checked access records. The
-// private maps and fingerprint keep transformed IR metadata separate from the
-// authority that permits memory analysis.
+// CheckedMemoryCallRecord transports compiler-derived authority that one exact
+// direct call has the transitive no-ModRef summary named by
+// SummaryFingerprint. ID binds the call source and exact callee to that
+// separately derived summary. Constructing this record checks its canonical
+// identity; it does not by itself prove that an arbitrary fingerprint denotes
+// a pure callee. Production derives the fingerprint from checked callee CFGs
+// and still requires final semantic translation validation.
+type CheckedMemoryCallRecord struct {
+	ID                 string
+	Source             Source
+	Callee             string
+	SummaryFingerprint string
+}
+
+// CheckedMemoryAuthority is an immutable set of checked access and call
+// records. It is an upper bound on source operations: records may remain after
+// a verified rewrite removes their operation, but an active operation must
+// resolve exactly once. The private maps and fingerprint keep transformed IR
+// metadata separate from the authority that permits memory analysis.
 type CheckedMemoryAuthority struct {
 	records     map[string]CheckedMemoryAccessRecord
+	callRecords map[string]CheckedMemoryCallRecord
 	regionTypes map[RegionID]Type
 	fingerprint string
 }
@@ -43,11 +60,31 @@ func NewCheckedMemoryAccessRecord(source Source, region RegionID, kind MemoryAcc
 	return record, nil
 }
 
+// NewCheckedMemoryCallRecord constructs the canonical identity for one direct
+// call whose transitive summary was derived separately. See
+// CheckedMemoryCallRecord: this constructor validates transport integrity, not
+// the semantic truth of caller-supplied summary text.
+func NewCheckedMemoryCallRecord(source Source, callee, summaryFingerprint string) (CheckedMemoryCallRecord, error) {
+	record := CheckedMemoryCallRecord{Source: source, Callee: callee, SummaryFingerprint: summaryFingerprint}
+	if err := validateCheckedMemoryCallRecord(record, false); err != nil {
+		return CheckedMemoryCallRecord{}, err
+	}
+	record.ID = fingerprintCheckedMemoryCall(record)
+	return record, nil
+}
+
 // NewCheckedMemoryAuthority validates and defensively copies a closed set of
 // access records. Every access to one region must agree on its checked type.
 func NewCheckedMemoryAuthority(records []CheckedMemoryAccessRecord) (CheckedMemoryAuthority, error) {
+	return NewCheckedMemoryAuthorityWithCalls(records, nil)
+}
+
+// NewCheckedMemoryAuthorityWithCalls validates and defensively copies exact
+// scalar accesses and exact no-ModRef direct-call summaries.
+func NewCheckedMemoryAuthorityWithCalls(records []CheckedMemoryAccessRecord, calls []CheckedMemoryCallRecord) (CheckedMemoryAuthority, error) {
 	authority := CheckedMemoryAuthority{
 		records:     make(map[string]CheckedMemoryAccessRecord, len(records)),
+		callRecords: make(map[string]CheckedMemoryCallRecord, len(calls)),
 		regionTypes: map[RegionID]Type{},
 	}
 	for _, record := range records {
@@ -63,7 +100,19 @@ func NewCheckedMemoryAuthority(records []CheckedMemoryAccessRecord) (CheckedMemo
 		authority.records[record.ID] = record
 		authority.regionTypes[record.Region] = record.ValueType
 	}
-	authority.fingerprint = fingerprintCheckedMemoryAuthority(authority.records)
+	for _, record := range calls {
+		if err := validateCheckedMemoryCallRecord(record, true); err != nil {
+			return CheckedMemoryAuthority{}, err
+		}
+		if _, exists := authority.records[record.ID]; exists {
+			return CheckedMemoryAuthority{}, fmt.Errorf("optir: checked memory authority reuses access ID %s as a call ID", record.ID)
+		}
+		if _, exists := authority.callRecords[record.ID]; exists {
+			return CheckedMemoryAuthority{}, fmt.Errorf("optir: checked memory authority repeats call ID %s", record.ID)
+		}
+		authority.callRecords[record.ID] = record
+	}
+	authority.fingerprint = fingerprintCheckedMemoryAuthority(authority.records, authority.callRecords)
 	return authority, nil
 }
 
@@ -81,6 +130,20 @@ func (authority CheckedMemoryAuthority) Records() []CheckedMemoryAccessRecord {
 	records := make([]CheckedMemoryAccessRecord, 0, len(ids))
 	for _, id := range ids {
 		records = append(records, authority.records[id])
+	}
+	return records
+}
+
+// CallRecords returns a canonical defensive copy for inspection and transport.
+func (authority CheckedMemoryAuthority) CallRecords() []CheckedMemoryCallRecord {
+	ids := make([]string, 0, len(authority.callRecords))
+	for id := range authority.callRecords {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	records := make([]CheckedMemoryCallRecord, 0, len(ids))
+	for _, id := range ids {
+		records = append(records, authority.callRecords[id])
 	}
 	return records
 }
@@ -183,6 +246,29 @@ func projectCheckedMemory(cfg CFG, authority CheckedMemoryAuthority) (CheckedMem
 	for _, block := range cfg.Blocks {
 		for index, operation := range block.Operations {
 			hasMemoryEffect := operationHasEffect(operation, EffectReadMemory) || operationHasEffect(operation, EffectWriteMemory)
+			if operation.MemoryAccessID != "" && operation.MemoryCallID != "" {
+				return CheckedMemoryProjection{}, fmt.Errorf("optir: operation %d:%d carries both memory access and call IDs", block.ID, index)
+			}
+			if operation.MemoryCallID != "" {
+				record, exists := authority.callRecords[operation.MemoryCallID]
+				if !exists {
+					return CheckedMemoryProjection{}, fmt.Errorf("optir: call operation %d:%d has stale or unknown call ID %s", block.ID, index, operation.MemoryCallID)
+				}
+				if seen[record.ID] {
+					return CheckedMemoryProjection{}, fmt.Errorf("optir: checked memory call ID %s is attached more than once", record.ID)
+				}
+				if operation.Source != record.Source {
+					return CheckedMemoryProjection{}, fmt.Errorf("optir: checked memory call %s moved from its source scope", record.ID)
+				}
+				if err := validateCheckedMemoryCallOperation(operation, record); err != nil {
+					return CheckedMemoryProjection{}, fmt.Errorf("optir: checked memory call %d:%d: %w", block.ID, index, err)
+				}
+				seen[record.ID] = true
+				metadata.Operations = append(metadata.Operations, MemoryOperationMetadata{
+					Site: OperationSite{Block: block.ID, Index: index}, CallEffect: MemoryCallNoModRef,
+				})
+				continue
+			}
 			if operation.MemoryAccessID == "" {
 				if hasMemoryEffect {
 					return CheckedMemoryProjection{}, fmt.Errorf("optir: memory operation %d:%d has no checked access ID", block.ID, index)
@@ -238,6 +324,29 @@ func checkedStructuredMemoryMetadata(region Region, authority CheckedMemoryAutho
 			case node.Operation != nil:
 				operation := node.Operation
 				hasMemoryEffect := operationHasEffect(*operation, EffectReadMemory) || operationHasEffect(*operation, EffectWriteMemory)
+				if operation.MemoryAccessID != "" && operation.MemoryCallID != "" {
+					return fmt.Errorf("optir: structured operation %s carries both memory access and call IDs", operation.Code)
+				}
+				if operation.MemoryCallID != "" {
+					record, exists := authority.callRecords[operation.MemoryCallID]
+					if !exists {
+						return fmt.Errorf("optir: structured call operation %s has stale or unknown call ID %s", operation.Code, operation.MemoryCallID)
+					}
+					if seen[record.ID] {
+						return fmt.Errorf("optir: checked memory call ID %s is attached more than once", record.ID)
+					}
+					if operation.Source != record.Source {
+						return fmt.Errorf("optir: checked memory call %s moved from its source scope", record.ID)
+					}
+					if err := validateCheckedMemoryCallOperation(*operation, record); err != nil {
+						return fmt.Errorf("optir: checked structured memory call: %w", err)
+					}
+					seen[record.ID] = true
+					metadata.Operations = append(metadata.Operations, StructuredMemoryOperationMetadata{
+						Operation: operation, CallEffect: MemoryCallNoModRef,
+					})
+					continue
+				}
 				if operation.MemoryAccessID == "" {
 					if hasMemoryEffect {
 						return fmt.Errorf("optir: structured memory operation %s has no checked access ID", operation.Code)
@@ -315,6 +424,19 @@ func validateCheckedMemoryOperation(operation Operation, record CheckedMemoryAcc
 	return nil
 }
 
+func validateCheckedMemoryCallOperation(operation Operation, record CheckedMemoryCallRecord) error {
+	if operation.Code != OpCall || len(operation.Effects) != 1 || operation.Effects[0] != EffectCall {
+		return fmt.Errorf("call does not have one canonical call effect")
+	}
+	if len(operation.Attributes) != 1 || operation.Attributes[0].Name != AttributeCallee || operation.Attributes[0].Value != record.Callee {
+		return fmt.Errorf("call does not match checked callee %s", record.Callee)
+	}
+	if operation.MemoryAccessID != "" || operation.MemoryCallID != record.ID {
+		return fmt.Errorf("call does not match checked authority %s", record.ID)
+	}
+	return nil
+}
+
 func validateCheckedMemoryAccessRecord(record CheckedMemoryAccessRecord, requireID bool) error {
 	if record.Region == "" || record.ValueType == "" || record.Source.Line <= 0 || record.Source.Column <= 0 {
 		return fmt.Errorf("optir: malformed checked memory access record %q", record.ID)
@@ -339,9 +461,19 @@ func validateCheckedMemoryAccessRecord(record CheckedMemoryAccessRecord, require
 	return nil
 }
 
+func validateCheckedMemoryCallRecord(record CheckedMemoryCallRecord, requireID bool) error {
+	if record.Source.Line <= 0 || record.Source.Column <= 0 || record.Callee == "" || record.SummaryFingerprint == "" {
+		return fmt.Errorf("optir: malformed checked memory call record %q", record.ID)
+	}
+	if requireID && (record.ID == "" || record.ID != fingerprintCheckedMemoryCall(record)) {
+		return fmt.Errorf("optir: checked memory call record has stale or forged ID %q", record.ID)
+	}
+	return nil
+}
+
 func verifyCheckedMemoryAuthorityIntegrity(authority CheckedMemoryAuthority) error {
-	if authority.records == nil || authority.regionTypes == nil || authority.fingerprint == "" ||
-		authority.fingerprint != fingerprintCheckedMemoryAuthority(authority.records) {
+	if authority.records == nil || authority.callRecords == nil || authority.regionTypes == nil || authority.fingerprint == "" ||
+		authority.fingerprint != fingerprintCheckedMemoryAuthority(authority.records, authority.callRecords) {
 		return fmt.Errorf("optir: checked memory authority is missing or corrupted")
 	}
 	regions := map[RegionID]Type{}
@@ -353,6 +485,12 @@ func verifyCheckedMemoryAuthorityIntegrity(authority CheckedMemoryAuthority) err
 	}
 	if !reflect.DeepEqual(authority.regionTypes, regions) {
 		return fmt.Errorf("optir: checked memory authority is corrupted")
+	}
+	for id, record := range authority.callRecords {
+		_, accessCollision := authority.records[id]
+		if id != record.ID || accessCollision || validateCheckedMemoryCallRecord(record, true) != nil {
+			return fmt.Errorf("optir: checked memory authority is corrupted")
+		}
 	}
 	return nil
 }
@@ -393,9 +531,18 @@ func fingerprintCheckedMemoryAccess(record CheckedMemoryAccessRecord) string {
 	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
-func fingerprintCheckedMemoryAuthority(records map[string]CheckedMemoryAccessRecord) string {
+func fingerprintCheckedMemoryCall(record CheckedMemoryCallRecord) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.checked-memory-authority.v1")
+	fingerprintString(digest, "oak.optir.checked-memory-call.v1")
+	fingerprintSource(digest, record.Source)
+	fingerprintString(digest, record.Callee)
+	fingerprintString(digest, record.SummaryFingerprint)
+	return fmt.Sprintf("%x", digest.Sum(nil))
+}
+
+func fingerprintCheckedMemoryAuthority(records map[string]CheckedMemoryAccessRecord, calls map[string]CheckedMemoryCallRecord) string {
+	digest := sha256.New()
+	fingerprintString(digest, "oak.optir.checked-memory-authority.v2")
 	ids := make([]string, 0, len(records))
 	for id := range records {
 		ids = append(ids, id)
@@ -406,12 +553,22 @@ func fingerprintCheckedMemoryAuthority(records map[string]CheckedMemoryAccessRec
 		fingerprintString(digest, id)
 		fingerprintString(digest, fingerprintCheckedMemoryAccess(records[id]))
 	}
+	callIDs := make([]string, 0, len(calls))
+	for id := range calls {
+		callIDs = append(callIDs, id)
+	}
+	sort.Strings(callIDs)
+	fingerprintUint64(digest, uint64(len(callIDs)))
+	for _, id := range callIDs {
+		fingerprintString(digest, id)
+		fingerprintString(digest, fingerprintCheckedMemoryCall(calls[id]))
+	}
 	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
 func fingerprintCheckedMemoryProjection(projection CheckedMemoryProjection) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.checked-memory-projection.v1")
+	fingerprintString(digest, "oak.optir.checked-memory-projection.v2")
 	fingerprintString(digest, projection.cfgFingerprint)
 	fingerprintString(digest, projection.authorityFingerprint)
 	normalized := normalizedMemoryMetadata{

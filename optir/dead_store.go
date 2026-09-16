@@ -258,7 +258,9 @@ func eliminateDeadRegionStores(
 			return CFG{}, RegionMemoryMetadata{}, DeadStoreEliminationReport{}, fmt.Errorf("optir: DSE could not remap memory operation %d:%d", operation.Site.Block, operation.Site.Index)
 		}
 		resultMetadata.Operations = append(resultMetadata.Operations, MemoryOperationMetadata{
-			Site: newSite, Accesses: append([]MemoryAccessSpec(nil), operation.Accesses...),
+			Site:       newSite,
+			Accesses:   append([]MemoryAccessSpec(nil), operation.Accesses...),
+			CallEffect: operation.CallEffect,
 		})
 	}
 	if err := validateAnalysisCFG(result); err != nil {
@@ -272,7 +274,7 @@ func eliminateDeadRegionStores(
 
 func fingerprintDeadStoreEliminationReport(report DeadStoreEliminationReport) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.dead-store-elimination.v1")
+	fingerprintString(digest, "oak.optir.dead-store-elimination.v2")
 	fingerprintString(digest, report.inputFingerprint)
 	fingerprintString(digest, report.metadataFingerprint)
 	fingerprintString(digest, report.memorySSAFingerprint)

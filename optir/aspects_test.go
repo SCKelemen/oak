@@ -144,6 +144,30 @@ func TestMemoryEffectAspectTreatsUnknownOperationsAsObservable(t *testing.T) {
 	}
 }
 
+func TestCallAuthorityIdentityIsAnOperationAndMemoryEffectAspect(t *testing.T) {
+	before := CFG{Name: "call-authority", Entry: 0, Results: []Type{"u32"}, Blocks: []Block{{
+		ID: 0, Operations: []Operation{{
+			Code: OpCall, Results: []Value{{ID: 1, Type: "u32"}}, Effects: []Effect{EffectCall},
+			Attributes: []Attribute{{Name: AttributeCallee, Value: "pure"}}, MemoryCallID: "summary-a",
+		}}, Terminator: Terminator{Kind: TerminatorReturn, Values: []ValueID{1}},
+	}}}
+	after := cloneCFG(before)
+	after.Blocks[0].Operations[0].MemoryCallID = "summary-b"
+	certificate, err := CheckCFGPreservation(
+		aspectTestKey("cfg.v0", "call-a"), before,
+		aspectTestKey("cfg.v1", "call-b"), after,
+		AspectOperationSemantics, AspectMemoryEffects,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range certificate.Checks() {
+		if check.Preserved {
+			t.Fatalf("%s ignored changed call authority ID: %+v", check.Aspect, certificate.Checks())
+		}
+	}
+}
+
 func TestGVNDCECertificatePreservesTopologyAndEffectTraceOnlyWhenChecked(t *testing.T) {
 	before := CFG{
 		Name:    "cleanup_preservation",

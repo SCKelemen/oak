@@ -41,7 +41,7 @@ func FingerprintRegionMemoryInput(
 	}
 
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-input.v1")
+	fingerprintString(digest, "oak.optir.region-memory-input.v2")
 	fingerprintString(digest, fingerprintCFG(cfg))
 	fingerprintString(digest, fingerprintNormalizedMemoryMetadata(normalizedMetadata))
 	fingerprintString(digest, fingerprintRegionMemoryObservability(normalizedObservability))
@@ -50,7 +50,7 @@ func FingerprintRegionMemoryInput(
 
 func fingerprintCFG(cfg CFG) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.cfg.v1")
+	fingerprintString(digest, "oak.optir.cfg.v2")
 	fingerprintString(digest, cfg.Name)
 	fingerprintUint64(digest, uint64(cfg.Entry))
 	fingerprintUint64(digest, uint64(len(cfg.Results)))
@@ -176,6 +176,7 @@ func fingerprintBlock(digest hash.Hash, block Block) {
 func fingerprintOperation(digest hash.Hash, operation Operation) {
 	fingerprintString(digest, operation.Code)
 	fingerprintString(digest, operation.MemoryAccessID)
+	fingerprintString(digest, operation.MemoryCallID)
 	fingerprintValues(digest, operation.Results)
 	fingerprintValueIDs(digest, operation.Operands)
 	fingerprintUint64(digest, uint64(len(operation.Effects)))

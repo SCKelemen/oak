@@ -124,8 +124,8 @@ func lowerOptIRArm64Selection(cfg optir.CFG, template *asm.Function, strictRegis
 	if err != nil {
 		return nil, err
 	}
-	if memory != nil && hasCalls {
-		return nil, fmt.Errorf("machine: OptIR AArch64 region memory refuses calls")
+	if memory != nil && hasCalls && !memory.admitsNoModRefCalls(cfg) {
+		return nil, fmt.Errorf("machine: OptIR AArch64 region memory call lacks authenticated no-ModRef evidence")
 	}
 	spillFrame, frame := allocation.frame, allocation.frame
 	if hasCalls {

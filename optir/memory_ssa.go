@@ -30,6 +30,13 @@ const (
 	MemoryUnknownClobber MemoryAccessKind = "unknown-clobber"
 )
 
+// MemoryCallEffect is the complete checked memory-effect summary vocabulary
+// for calls. NoModRef means that the call neither reads nor writes memory;
+// absence of a summary never implies NoModRef.
+type MemoryCallEffect string
+
+const MemoryCallNoModRef MemoryCallEffect = "no-mod-ref"
+
 // MemoryVersionKind distinguishes entry definitions, control-flow joins, and
 // operation definitions.
 type MemoryVersionKind string
@@ -64,14 +71,17 @@ type MemoryAccessSpec struct {
 // Access order is not semantic: exact accesses to the same region are rejected,
 // and the analysis canonicalizes distinct-region accesses by region identity.
 type MemoryOperationMetadata struct {
-	Site     OperationSite
-	Accesses []MemoryAccessSpec
+	Site       OperationSite
+	Accesses   []MemoryAccessSpec
+	CallEffect MemoryCallEffect
 }
 
-// RegionMemoryMetadata is the explicit input to region-memory analysis. It is
-// intentionally separate from Operation.Effects: effects say that memory is
-// observable, while this record supplies checked region identity. Missing
-// metadata never implies purity.
+// RegionMemoryMetadata is the explicit trusted input to raw region-memory
+// analysis. It is intentionally separate from Operation.Effects: effects say
+// that memory is observable, while this record supplies checked region
+// identity. Missing metadata never implies purity. Compiler emission does not
+// consume caller-authored NoModRef metadata; it requires a
+// CheckedMemoryProjection derived from immutable authority.
 type RegionMemoryMetadata struct {
 	Regions    []RegionID
 	Operations []MemoryOperationMetadata
@@ -82,8 +92,9 @@ type RegionMemoryMetadata struct {
 // only while ProjectWithRegionMemory constructs a CFG; the returned metadata
 // contains stable CFG operation sites instead.
 type StructuredMemoryOperationMetadata struct {
-	Operation *Operation
-	Accesses  []MemoryAccessSpec
+	Operation  *Operation
+	Accesses   []MemoryAccessSpec
+	CallEffect MemoryCallEffect
 }
 
 // StructuredRegionMemoryMetadata is the lossless handoff between a checked
@@ -144,9 +155,10 @@ type RegionMemorySSA struct {
 }
 
 type normalizedMemoryMetadata struct {
-	regions    []RegionID
-	operations []MemoryOperationMetadata
-	bySite     map[OperationSite][]MemoryAccessSpec
+	regions     []RegionID
+	operations  []MemoryOperationMetadata
+	bySite      map[OperationSite][]MemoryAccessSpec
+	callEffects map[OperationSite]MemoryCallEffect
 }
 
 type memoryVersionKey struct {
@@ -235,8 +247,9 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 	operations := make([]MemoryOperationMetadata, len(metadata.Operations))
 	for index, operation := range metadata.Operations {
 		operations[index] = MemoryOperationMetadata{
-			Site:     operation.Site,
-			Accesses: append([]MemoryAccessSpec(nil), operation.Accesses...),
+			Site:       operation.Site,
+			Accesses:   append([]MemoryAccessSpec(nil), operation.Accesses...),
+			CallEffect: operation.CallEffect,
 		}
 	}
 	sort.Slice(operations, func(i, j int) bool {
@@ -247,6 +260,7 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 	})
 
 	bySite := make(map[OperationSite][]MemoryAccessSpec, len(operations))
+	callEffects := make(map[OperationSite]MemoryCallEffect, len(operations))
 	for index := range operations {
 		operation := &operations[index]
 		block, exists := blocks[operation.Site.Block]
@@ -255,6 +269,17 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 		}
 		if _, exists := bySite[operation.Site]; exists {
 			return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata repeats operation %d:%d", operation.Site.Block, operation.Site.Index)
+		}
+		if operation.CallEffect != "" {
+			if operation.CallEffect != MemoryCallNoModRef {
+				return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d has unknown call effect %q", operation.Site.Block, operation.Site.Index, operation.CallEffect)
+			}
+			if len(operation.Accesses) != 0 {
+				return normalizedMemoryMetadata{}, fmt.Errorf("optir: no-mod-ref call metadata for operation %d:%d cannot carry accesses", operation.Site.Block, operation.Site.Index)
+			}
+			bySite[operation.Site] = nil
+			callEffects[operation.Site] = operation.CallEffect
+			continue
 		}
 		if len(operation.Accesses) == 0 {
 			return normalizedMemoryMetadata{}, fmt.Errorf("optir: memory metadata for operation %d:%d has no accesses", operation.Site.Block, operation.Site.Index)
@@ -305,16 +330,16 @@ func normalizeMemoryMetadata(cfg CFG, metadata RegionMemoryMetadata) (normalized
 		for index, operation := range block.Operations {
 			site := OperationSite{Block: block.ID, Index: index}
 			accesses, hasMetadata := bySite[site]
-			if err := validateOperationMemoryMetadata(operation, accesses, hasMetadata); err != nil {
+			if err := validateOperationMemoryMetadata(operation, accesses, callEffects[site], hasMetadata); err != nil {
 				return normalizedMemoryMetadata{}, fmt.Errorf("optir: block %d operation %d (%s): %w", block.ID, index, operation.Code, err)
 			}
 		}
 	}
 
-	return normalizedMemoryMetadata{regions: regions, operations: operations, bySite: bySite}, nil
+	return normalizedMemoryMetadata{regions: regions, operations: operations, bySite: bySite, callEffects: callEffects}, nil
 }
 
-func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAccessSpec, hasMetadata bool) error {
+func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAccessSpec, callEffect MemoryCallEffect, hasMetadata bool) error {
 	reads := false
 	writes := false
 	opaque := operation.Code == OpCall
@@ -340,6 +365,13 @@ func validateOperationMemoryMetadata(operation Operation, accesses []MemoryAcces
 		opaque = true
 	}
 	if opaque {
+		if callEffect == MemoryCallNoModRef {
+			if operation.Code != OpCall || len(operation.Effects) != 1 || operation.Effects[0] != EffectCall || len(accesses) != 0 ||
+				len(operation.Attributes) != 1 || operation.Attributes[0].Name != AttributeCallee || operation.Attributes[0].Value == "" {
+				return fmt.Errorf("no-mod-ref summary requires one canonical call effect")
+			}
+			return nil
+		}
 		if !hasMetadata || len(accesses) != 1 || accesses[0].Kind != MemoryUnknownClobber {
 			return fmt.Errorf("opaque operation requires one unknown-clobber access")
 		}
@@ -588,7 +620,7 @@ func allocateMemoryAccess(next *MemoryAccessID) (MemoryAccessID, error) {
 
 func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-metadata.v2")
+	fingerprintString(digest, "oak.optir.region-memory-metadata.v3")
 	fingerprintUint64(digest, uint64(len(metadata.regions)))
 	for _, region := range metadata.regions {
 		fingerprintString(digest, string(region))
@@ -597,6 +629,7 @@ func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) stri
 	for _, operation := range metadata.operations {
 		fingerprintUint64(digest, uint64(operation.Site.Block))
 		fingerprintUint64(digest, uint64(operation.Site.Index))
+		fingerprintString(digest, string(operation.CallEffect))
 		fingerprintUint64(digest, uint64(len(operation.Accesses)))
 		for _, access := range operation.Accesses {
 			fingerprintString(digest, string(access.Region))
@@ -610,7 +643,7 @@ func fingerprintNormalizedMemoryMetadata(metadata normalizedMemoryMetadata) stri
 
 func fingerprintRegionMemorySSA(analysis RegionMemorySSA) string {
 	digest := sha256.New()
-	fingerprintString(digest, "oak.optir.region-memory-ssa.v2")
+	fingerprintString(digest, "oak.optir.region-memory-ssa.v3")
 	fingerprintString(digest, analysis.inputFingerprint)
 	fingerprintString(digest, analysis.metadataFingerprint)
 	fingerprintUint64(digest, uint64(len(analysis.Regions)))

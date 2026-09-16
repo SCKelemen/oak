@@ -355,6 +355,7 @@ func fingerprintCFGOperations(digest hash.Hash, cfg CFG) {
 		for _, operation := range block.Operations {
 			fingerprintString(digest, operation.Code)
 			fingerprintString(digest, operation.MemoryAccessID)
+			fingerprintString(digest, operation.MemoryCallID)
 			fingerprintUint64(digest, uint64(len(operation.Results)))
 			fingerprintUint64(digest, uint64(len(operation.Operands)))
 			fingerprintUint64(digest, uint64(len(operation.Attributes)))
@@ -386,6 +387,7 @@ func fingerprintCFGEffects(digest hash.Hash, cfg CFG) {
 			}
 			fingerprintString(digest, operation.Code)
 			fingerprintString(digest, operation.MemoryAccessID)
+			fingerprintString(digest, operation.MemoryCallID)
 			// Operand identities are conservative region/effect inputs. A
 			// future RegionMemorySSA projection can replace this with proved
 			// region identities; until then, an address/value remap invalidates
