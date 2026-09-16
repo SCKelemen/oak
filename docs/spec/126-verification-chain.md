@@ -532,6 +532,23 @@ normal eight-byte store parameters, X31-as-zero, and the final official
 `Mem(address, 8, AccType_NORMAL) = data` call. These generated facts decorate,
 but cannot create, each external descriptor occurrence/action witness.
 
+The separate offset-form STP64 increment is deliberately not connected to
+code generation or the semantic verifier. `Oak.AArch64Encoding` pins the
+XML-generated `STP_64_ldstpair_off` base/mask and signed scaled `imm7` layout,
+and computes `STP XZR, XZR, [X0]` and `[X0, #16]` as `0xa9007c1f` and
+`0xa9017c1f`. The official-Sail source gate pins the corresponding 64-bit
+normal-store decode and the instruction body's two `Mem` calls. Immediately
+before those calls, the pure generated-Sail/`Oak.ArmASL` bridge exposes zero
+request data at the effective address and at that address plus eight. This is
+a pair of request arguments, not evidence that either request occurs and not
+an observer-order relation between them. It proves no execution effect,
+translation, fault freedom, atomicity or non-tearing, ordering, CAT event,
+visibility, completion, or publication. Ordinary `STP` supplies no release or
+barrier semantics; live PTE publication therefore remains scalar. Any future
+blocked zero fill additionally requires its source law, bounds/provenance and
+pair-store verifier support, a scalar tail, and private/unpublished ordinary
+memory authority.
+
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied
 translated 52-bit PA, generated Lean proves a 56-bit zero-extended call address

@@ -424,6 +424,34 @@ def str64UnsignedStoreRequest (rt rn : BitVec 5) (imm12 : BitVec 12)
   let data := if rt = 0b11111#5 then 0#64 else rtValue
   (base + (imm12.zeroExtend 64 <<< 3), data)
 
+/-! The pinned Arm decoder's pure STP64 signed-offset projection.  As above,
+this stops immediately before the two `Mem` operations.  The returned request
+arguments do not make the two writes atomic, non-tearing, or ordered. -/
+
+/-- Extract the fields selected by the integer STP (signed offset), 64-bit
+decoder class. Invalid words retain their extracted fields. -/
+def decode64Stp64Offset (word : BitVec 32) :
+    Bool × BitVec 5 × BitVec 5 × BitVec 5 × BitVec 7 :=
+  let rt := BitVec.extractLsb' 0 5 word
+  let rn := BitVec.extractLsb' 5 5 word
+  let rt2 := BitVec.extractLsb' 10 5 word
+  let imm7 := BitVec.extractLsb' 15 7 word
+  (decide ((word &&& 0xffc00000#32) = 0xa9000000#32), rt, rn, rt2, imm7)
+
+/-- The two pre-`Mem` address/data argument pairs selected by an offset STP64.
+`rnValue`, `rtValue`, and `rt2Value` are the values of decoded registers.  The
+explicit branches preserve Arm's Rn=31-as-SP and Rt/Rt2=31-as-zero rules.
+Returning both requests records neither their occurrence nor an observer order. -/
+def stp64OffsetStoreRequests (rt rn rt2 : BitVec 5) (imm7 : BitVec 7)
+    (rnValue rtValue rt2Value spValue : BitVec 64) :
+    BitVec 64 × BitVec 64 × BitVec 64 × BitVec 64 :=
+  let base := if rn = 0b11111#5 then spValue else rnValue
+  let data1 := if rt = 0b11111#5 then 0#64 else rtValue
+  let data2 := if rt2 = 0b11111#5 then 0#64 else rt2Value
+  let offset := imm7.signExtend 64 <<< 3
+  let address1 := base + offset
+  (address1, data1, address1 + 8, data2)
+
 /-- Width-64 specialization of Arm's recursive `BigEndianReverse`. At width
     eight it is the identity; recursively concatenating the low half before
     the high half therefore reverses the eight bytes, not the bits in a byte. -/

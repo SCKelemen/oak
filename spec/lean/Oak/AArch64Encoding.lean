@@ -51,6 +51,10 @@ def eret : Encoding := ⟨"ERET_64E_branch_reg", "eret", 0xd69f03e0#32, 0xffffff
 def str64UnsignedOffset : Encoding := ⟨"STR_64_ldst_pos", "str", 0xf9000000#32, 0xffc00000#32, [⟨"size", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"opc", 23, 2⟩, ⟨"imm12", 21, 12⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
 -- OAK-A64-STR64-ENC-END
 
+-- OAK-A64-STP64-ENC-BEGIN (generated from asm/encodings_gen.go; do not edit)
+def stp64Offset : Encoding := ⟨"STP_64_ldstpair_off", "stp", 0xa9000000#32, 0xffc00000#32, [⟨"opc", 31, 2⟩, ⟨"VR", 26, 1⟩, ⟨"L", 22, 1⟩, ⟨"imm7", 21, 7⟩, ⟨"Rt2", 14, 5⟩, ⟨"Rn", 9, 5⟩, ⟨"Rt", 4, 5⟩]⟩
+-- OAK-A64-STP64-ENC-END
+
 inductive MemBarrierOp where
   | dsb | dmb | isb | ssbb | pssbb | sb
   deriving DecidableEq, Repr
@@ -104,6 +108,14 @@ def encodeStr64UnsignedOffset (imm12 : BitVec 12) (rn rt : BitVec 5) :
     BitVec 32 :=
   (str64UnsignedOffset.value &&& str64UnsignedOffset.mask) |||
     (imm12.setWidth 32 <<< 10) ||| (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
+
+/-- Fill the generated offset STP (64-bit) encoding fields. The immediate is
+    the signed, scaled `imm7` field; one encoded unit is eight bytes. -/
+def encodeStp64Offset (imm7 : BitVec 7) (rn rt rt2 : BitVec 5) :
+    BitVec 32 :=
+  (stp64Offset.value &&& stp64Offset.mask) |||
+    (imm7.setWidth 32 <<< 15) ||| (rt2.setWidth 32 <<< 10) |||
+    (rn.setWidth 32 <<< 5) ||| rt.setWidth 32
 
 def dmbIshld : BitVec 32 := encodeCRm dmb 0x9#4
 def dmbIsh : BitVec 32 := encodeCRm dmb 0xb#4
@@ -192,6 +204,36 @@ def strX2X0 : BitVec 32 := encodeStr64UnsignedOffset 0#12 0#5 2#5
 theorem str_xzr_x0_word : strXzrX0 = 0xf900001f#32 := by native_decide
 theorem str_x2_x0_word : strX2X0 = 0xf9000002#32 := by native_decide
 -- OAK-A64-DESCRIPTOR-STORE-WORD-END
+
+-- OAK-A64-ZERO-PAIR-STORE-WORD-BEGIN (checked against asm/encode.go; do not edit)
+def stpXzrXzrX0 : BitVec 32 :=
+  encodeStp64Offset 0#7 0#5 0b11111#5 0b11111#5
+def stpXzrXzrX0Plus16 : BitVec 32 :=
+  encodeStp64Offset 2#7 0#5 0b11111#5 0b11111#5
+theorem stp_xzr_xzr_x0_word : stpXzrXzrX0 = 0xa9007c1f#32 := by native_decide
+theorem stp_xzr_xzr_x0_plus_16_word :
+    stpXzrXzrX0Plus16 = 0xa9017c1f#32 := by native_decide
+-- OAK-A64-ZERO-PAIR-STORE-WORD-END
+
+/-- The adjacent 32-bit pair-store class cannot be the first zero-pair word. -/
+theorem stp_wzr_wzr_x0_cannot_equal_zero_pair :
+    (0x29007c1f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- The adjacent pair-load class cannot be the first zero-pair word. -/
+theorem ldp_xzr_xzr_x0_cannot_equal_zero_pair :
+    (0xa9407c1f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- Changing either source register or the base produces a different word. -/
+theorem nearby_stp64_register_fields_remain_distinct :
+    (0xa9007c1e#32 : BitVec 32) ≠ stpXzrXzrX0 ∧
+      (0xa900781f#32 : BitVec 32) ≠ stpXzrXzrX0 ∧
+      (0xa9007c3f#32 : BitVec 32) ≠ stpXzrXzrX0 := by native_decide
+
+/-- The zero, eight-byte, and sixteen-byte offsets remain distinct. -/
+theorem nearby_stp64_offsets_remain_distinct :
+    stpXzrXzrX0 ≠ (0xa900fc1f#32 : BitVec 32) ∧
+      (0xa900fc1f#32 : BitVec 32) ≠ stpXzrXzrX0Plus16 ∧
+      stpXzrXzrX0 ≠ stpXzrXzrX0Plus16 := by native_decide
 
 /-- A make from X1 is a different exact word; this only detects Rt drift. -/
 theorem str_x1_x0_cannot_equal_make :

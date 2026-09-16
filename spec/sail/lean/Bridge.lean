@@ -57,6 +57,85 @@ theorem str64_unsigned_store_request_bridge
     Oak.ArmASL.str64UnsignedStoreRequest, Sail.BitVec.zeroExtend,
     Out.Functions.Zeros]
 
+/-! The pinned integer STP64 signed-offset decoder and its two pre-`Mem`
+address/data argument pairs.  This projection does not assert that either
+request executes, and the tuple order is not an architectural observer-order,
+atomicity, or non-tearing claim. -/
+
+theorem decode64_stp64_offset_bridge (word : BitVec 32) :
+    Out.Functions.decode64_stp64_offset_pure word =
+      Oak.ArmASL.decode64Stp64Offset word := by
+  simp only [Out.Functions.decode64_stp64_offset_pure,
+    Oak.ArmASL.decode64Stp64Offset, Sail.BitVec.slice,
+    BitVec.extractLsb']
+  by_cases h : word &&& 0xffc00000#32 = 0xa9000000#32 <;> simp [h]
+
+theorem stp64_offset_store_requests_bridge
+    (rt rn rt2 : BitVec 5) (imm7 : BitVec 7)
+    (rnValue rtValue rt2Value spValue : BitVec 64) :
+    Out.Functions.stp64_offset_store_requests_pure rt rn rt2 imm7
+        rnValue rtValue rt2Value spValue =
+      Oak.ArmASL.stp64OffsetStoreRequests rt rn rt2 imm7
+        rnValue rtValue rt2Value spValue := by
+  simp [Out.Functions.stp64_offset_store_requests_pure,
+    Oak.ArmASL.stp64OffsetStoreRequests, Sail.BitVec.signExtend,
+    Out.Functions.Zeros]
+
+theorem stp_xzr_xzr_x0_decoder :
+    Out.Functions.decode64_stp64_offset_pure stpXzrXzrX0 =
+      (true, 0b11111#5, 0#5, 0b11111#5, 0#7) := by
+  native_decide
+
+theorem stp_xzr_xzr_x0_plus_16_decoder :
+    Out.Functions.decode64_stp64_offset_pure stpXzrXzrX0Plus16 =
+      (true, 0b11111#5, 0#5, 0b11111#5, 2#7) := by
+  native_decide
+
+theorem stp_xzr_xzr_x0_store_requests
+    (x0 discardedRtValue discardedRt2Value sp : BitVec 64) :
+    Out.Functions.stp64_offset_store_requests_pure
+        0b11111#5 0#5 0b11111#5 0#7
+        x0 discardedRtValue discardedRt2Value sp =
+      (x0, 0#64, x0 + 8, 0#64) := by
+  simp [Out.Functions.stp64_offset_store_requests_pure,
+    Sail.BitVec.signExtend, Out.Functions.Zeros]
+
+theorem stp_xzr_xzr_x0_plus_16_store_requests
+    (x0 discardedRtValue discardedRt2Value sp : BitVec 64) :
+    Out.Functions.stp64_offset_store_requests_pure
+        0b11111#5 0#5 0b11111#5 2#7
+        x0 discardedRtValue discardedRt2Value sp =
+      (x0 + 16, 0#64, x0 + 24, 0#64) := by
+  simp [Out.Functions.stp64_offset_store_requests_pure,
+    Sail.BitVec.signExtend, Out.Functions.Zeros]
+  rw [BitVec.add_assoc]
+  have h : (16#64 : BitVec 64) + 8#64 = 24#64 := by native_decide
+  rw [h]
+
+/-- The two exact zero-pair words select the four distinct request addresses
+used by a blocked four-word fill.  This is address/data coverage only; it does
+not authorize that source rewrite or describe memory effects. -/
+theorem two_stp_xzr_pairs_cover_four_words
+    (x0 discardedRtValue discardedRt2Value sp : BitVec 64) :
+    Out.Functions.stp64_offset_store_requests_pure
+        0b11111#5 0#5 0b11111#5 0#7
+        x0 discardedRtValue discardedRt2Value sp =
+        (x0, 0#64, x0 + 8, 0#64) ∧
+      Out.Functions.stp64_offset_store_requests_pure
+        0b11111#5 0#5 0b11111#5 2#7
+        x0 discardedRtValue discardedRt2Value sp =
+        (x0 + 16, 0#64, x0 + 24, 0#64) := by
+  exact ⟨stp_xzr_xzr_x0_store_requests _ _ _ _,
+    stp_xzr_xzr_x0_plus_16_store_requests _ _ _ _⟩
+
+theorem ldp_xzr_xzr_x0_not_stp64 :
+    (Out.Functions.decode64_stp64_offset_pure 0xa9407c1f#32).1 = false := by
+  native_decide
+
+theorem stp_wzr_wzr_x0_not_stp64 :
+    (Out.Functions.decode64_stp64_offset_pure 0x29007c1f#32).1 = false := by
+  native_decide
+
 theorem big_endian_reverse64_bridge (value : BitVec 64) :
     Out.Functions.big_endian_reverse64_pure value =
       Oak.ArmASL.bigEndianReverse64 value := by

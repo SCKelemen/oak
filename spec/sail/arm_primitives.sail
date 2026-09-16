@@ -786,6 +786,56 @@ function str64_unsigned_store_request_pure (Rt, Rn, imm12, rn_value, rt_value, s
     (base + offset, data)
 }
 
+/* ---------------------------------------------------------------------
+ * The A64 STP (signed offset), 64-bit, two normal-store requests.
+ *
+ * The pinned aarch_decode.sail SEE-1357 clause extracts Rt/Rn/Rt2/imm7/L/V/
+ * opc and calls memory_pair_general_offset_memory_pair_general_postidx__decode.
+ * For opc=10, V=0, L=0 that decoder fixes wback=false, postindex=false,
+ * scale=3, AccType_NORMAL, MemOp_STORE, datasize=64, signed=false.  The
+ * instruction body reads Xn (SP only for Rn=31), independently reads Xt and
+ * Xt2 (zero for register 31), and supplies two size-eight Mem requests at the
+ * selected address and address+8.
+ *
+ * These pure functions expose only the decoder fields and those pre-Mem
+ * address/data arguments.  A returned four-tuple is not a claim that either
+ * request occurs or that observers order them.  The projection erases
+ * __PostDecode admission, alignment and endian handling, translation and
+ * faults, permissions, MTE/tag checks, exclusives, MMIO/device paths,
+ * physical-memory writes, CAT events, atomicity, non-tearing, single-copy
+ * atomicity, page-table publication, and every other architectural effect.
+ */
+
+val decode64_stp64_offset_pure :
+  bits(32) -> (bool, bits(5), bits(5), bits(5), bits(7))
+
+function decode64_stp64_offset_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let Rn : bits(5) = slice(op_code, 5, 5);
+    let Rt2 : bits(5) = slice(op_code, 10, 5);
+    let imm7 : bits(7) = slice(op_code, 15, 7);
+    if (op_code & 0xFFC00000) == 0xA9000000 then {
+        (true, Rt, Rn, Rt2, imm7)
+    } else {
+        (false, Rt, Rn, Rt2, imm7)
+    }
+}
+
+val stp64_offset_store_requests_pure :
+  (bits(5), bits(5), bits(5), bits(7), bits(64), bits(64), bits(64), bits(64)) ->
+    (bits(64), bits(64), bits(64), bits(64))
+
+function stp64_offset_store_requests_pure
+  (Rt, Rn, Rt2, imm7, rn_value, rt_value, rt2_value, sp_value) = {
+    let base : bits(64) = if Rn == 0b11111 then sp_value else rn_value;
+    let data1 : bits(64) = if Rt == 0b11111 then Zeros(64) else rt_value;
+    let data2 : bits(64) = if Rt2 == 0b11111 then Zeros(64) else rt2_value;
+    let offset : bits(64) = sail_shiftleft(sail_sign_extend(imm7, 64), 3);
+    let address1 : bits(64) = base + offset;
+    let address2 : bits(64) = address1 + 0x0000000000000008;
+    (address1, data1, address2, data2)
+}
+
 /* The next conditional projection covers only the arguments selected by the
  * ordinary aligned size-8 route after Mem.  In the pinned model, aset_Mem
  * performs BigEndianReverse before AArch64_aset_MemSingle; successful

@@ -566,6 +566,20 @@ individual-alignment refusals, and official decode route. Architectural PC,
 X30, `PostDecode`, `BranchTo`, target/source-label authority, and object/link
 correctness remain outside the theorem.
 
+Offset-form integer STP64 is one more exact but intentionally isolated class.
+The generated row's base/mask and signed, eight-byte-scaled `imm7` fields are
+pinned, and Lean computes `STP XZR, XZR, [X0]` and `[X0, #16]` as
+`0xa9007c1f` and `0xa9017c1f`. A source-audited projection of the official Arm
+Sail offset-pair decode exposes the two pre-`Mem` address/data pairs, and the
+generated Sail Lean function agrees with `Oak.ArmASL`: zero at the effective
+address and zero at that address plus eight. This does not enable codegen or
+verifier support. The tuple proves neither request occurrence nor ordering,
+atomicity/non-tearing, translation or effects, CAT events, visibility,
+completion, or PTE publication; ordinary `STP` is not a release or a barrier.
+Live descriptors stay on scalar stores. A future blocked-fill lowering remains
+conditional on its source law, full bounds/provenance and verifier support, a
+scalar tail, and private/unpublished ordinary-memory authority.
+
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable
 model. Until that lands, RV64 is closer to a formally closed
