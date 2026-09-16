@@ -132,3 +132,136 @@ func TestCheckerGuardFacts(t *testing.T) {
 		})
 	}
 }
+
+// The divided bound (docs/spec/94-assembler.md §7): a length divided by a
+// constant that is not a power of two, and an index multiplied back by it
+// — the binary search over a three-word table that the typechecker
+// discharges by Oak.Extents.div_bound_scaled. Each case cites its law.
+func TestCheckerDividedBound(t *testing.T) {
+	decl := "search: (t: []u32, k: u32) -> u32"
+	symbols := map[string]bool{}
+	epilogue := "\ntrap:\n  brk #1"
+	// entries = len(t) / 3 in w10, the index guarded below it in w2.
+	divided := "  bind x0, w1 = t\n  bind w2 = k\n  clobber x9, x10, x11, x12\n  movz w9, #3\n  udiv w10, w1, w9\n  cmp w2, w10\n  b.hs trap\n"
+	accepts := []struct{ name, body string }{
+		{"the scaled index itself (Oak.Assembler.scaled_index_slack)",
+			divided + "  mul w11, w2, w9\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+		{"the second word of the entry (Oak.Assembler.scaled_index_element)",
+			divided + "  mul w11, w2, w9\n  add w11, w11, #1\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+		{"the third word of the entry",
+			divided + "  mul w11, w2, w9\n  add w11, w11, #2\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+		{"the constant on the left of the multiply",
+			divided + "  mul w11, w9, w2\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+		{"a scale below the divisor leaves room to spare",
+			divided + "  movz w12, #2\n  mul w11, w2, w12\n  add w11, w11, #1\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+		{"the midpoint of the search is below the same divided bound (Oak.Assembler.midpoint_below)",
+			"  bind x0, w1 = t\n  bind w2 = k\n  clobber x9, x10, x11, x12\n  movz w9, #3\n  udiv w10, w1, w9\n  mov w12, wzr\n  cmp w12, w10\n  b.hs trap\n  sub w11, w10, w12\n  lsr w11, w11, #1\n  add w11, w12, w11\n  mul w11, w11, w9\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("divided.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+				t.Fatalf("must pass: %v", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, body, want string }{
+		{"a word past the entry is outside the slack the divisor leaves",
+			divided + "  mul w11, w2, w9\n  add w11, w11, #3\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"a scale above the divisor proves nothing",
+			divided + "  movz w12, #4\n  mul w11, w2, w12\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"an unguarded index scaled by the divisor proves nothing",
+			"  bind x0, w1 = t\n  bind w2 = k\n  clobber x9, x10, x11\n  movz w9, #3\n  udiv w10, w1, w9\n  mul w11, w2, w9\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"a quotient by a register no constant defined bounds nothing",
+			"  bind x0, w1 = t\n  bind w2 = k\n  clobber x9, x10, x11\n  mov w9, w2\n  udiv w10, w1, w9\n  cmp w2, w10\n  b.hs trap\n  movz w12, #3\n  mul w11, w2, w12\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"the divisor rewritten between the quotient and the multiply proves nothing",
+			divided + "  movz w9, #1\n  mul w11, w2, w9\n  add w11, w11, #2\n  ldr w0, [x0, w11, uxtw #2]\n  ret" + epilogue,
+			"without a dominating index guard"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("divided.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			findings := Check(unit.Functions[0], sig, symbols)
+			if len(findings) == 0 {
+				t.Fatalf("must be refused")
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, findings)
+			}
+		})
+	}
+}
+
+// The same divided bound over a constant table (docs/spec/94-assembler.md
+// §7): a global array whose element count is a literal, `entries = N / 3`
+// folded to a constant, and the search index scaled back by three. This is
+// the shape the stdlib's binary searches take — no register holds a
+// length, so the bound is an immediate throughout
+// (Oak.Extents.scaled_under_bound).
+func TestCheckerDividedConstantBound(t *testing.T) {
+	decl := "lookup: (scalar: u32) -> u32"
+	symbols := map[string]bool{}
+	epilogue := "\ntrap:\n  brk #1"
+	// 12 four-byte words: four entries of three. entries = 12 / 3 = 4.
+	table := map[string]Table{"grapheme_table": {Size: 48, Elem: 4}}
+	prologue := "  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13\n  adrl x9, grapheme_table\n  add x13, x9, #0\n  movz w10, #12\n  movz w11, #3\n  udiv w12, w10, w11\n"
+	accepts := []struct{ name, body string }{
+		{"the first word of the entry",
+			prologue + "  cmp w0, w12\n  b.hs trap\n  mul w9, w0, w11\n  add x10, x13, #0\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue},
+		{"the third word of the entry",
+			prologue + "  cmp w0, w12\n  b.hs trap\n  mul w9, w0, w11\n  add w9, w9, #2\n  add x10, x13, #0\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("table.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			unit.Functions[0].Tables = table
+			sig, _ := parseSignature(decl)
+			if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+				t.Fatalf("must pass: %v", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, body, want string }{
+		{"a fourth word runs past the last entry",
+			prologue + "  cmp w0, w12\n  b.hs trap\n  mul w9, w0, w11\n  add w9, w9, #3\n  add x10, x13, #0\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue,
+			"past the"},
+		{"the quotient of a length the checker does not know is no bound",
+			"  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13\n  adrl x9, grapheme_table\n  add x13, x9, #0\n  movz w11, #3\n  udiv w12, w0, w11\n  cmp w0, w12\n  b.hs trap\n  mul w9, w0, w11\n  add x10, x13, #0\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue,
+			"without a dominating constant index guard"},
+		{"an index guarded below a wider count runs past the table",
+			"  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13\n  adrl x9, grapheme_table\n  add x13, x9, #0\n  movz w10, #21\n  movz w11, #3\n  udiv w12, w10, w11\n  cmp w0, w12\n  b.hs trap\n  mul w9, w0, w11\n  add x10, x13, #0\n  ldr w0, [x10, w9, uxtw #2]\n  ret" + epilogue,
+			"past the"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("table.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			unit.Functions[0].Tables = table
+			sig, _ := parseSignature(decl)
+			findings := Check(unit.Functions[0], sig, symbols)
+			if len(findings) == 0 {
+				t.Fatalf("must be refused")
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, findings)
+			}
+		})
+	}
+}

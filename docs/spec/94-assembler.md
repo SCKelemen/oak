@@ -263,12 +263,20 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   `add wMid, wLo, wT` prove `wMid < wHi` (`Oak.Assembler.midpoint_below`);
   a narrowing copy `mov wHi, wMid` under `wMid < wHi` keeps the new `hi`
   at most the register the old one was at most — the span's length, or a
-  length shifted by `lsr wP, wL, #s` (an upper fact `reg <= ref >> shift`,
-  `Oak.Assembler.narrowed_upper`, `upper_chain`); and `lsl wD, wI, #k`
-  under `wI < wB` with `wB <= wL >> s` and `k <= s` proves the slack fact
-  `wD + 2^k <= len` (`Oak.Assembler.shifted_index_slack`) — the binary
-  search reads its midpoint, and the page probe its page's keys, with no
-  guard of their own. At a label the index facts meet (`meetIdx`): a fact
+  length divided by `lsr wP, wL, #s` or by `udiv wP, wL, wK` with `wK`
+  holding a constant (an upper fact `reg <= ref / div`,
+  `Oak.Assembler.narrowed_upper`, `upper_chain_div`, `divided_upper`); and
+  an index scaled back by that divisor — `lsl wD, wI, #k` under `wI < wB`
+  with `wB <= wL >> s` and `k <= s`, or `mul wD, wI, wK` under `wB <= wL /
+  d` with the constant `k <= d` — proves the slack fact `wD + k <= len`
+  (`Oak.Assembler.shifted_index_slack`, `scaled_index_slack`), which `add
+  wJ, wD, #j` carries down to the element `wD + j` for `j < k`
+  (`scaled_index_element`) — the binary search reads its midpoint, and the
+  page probe its page's keys, with no guard of their own. The divisor is
+  carried rather than a shift count because the tables the search walks
+  are not powers of two wide: `entries = len(table) / 3` over a
+  three-word table, the index `mid * 3 + j`, which is what the
+  typechecker discharges by `Oak.Extents.div_bound_scaled` (2026-09-16). At a label the index facts meet (`meetIdx`): a fact
   both paths state survives, and so does a register bound one path states
   (`wI < wB`) when the other states the index below a constant that `wB`
   holds at least on that path (`wI < K`, `wB = K' >= K`) — the entry of a
@@ -6529,3 +6537,62 @@ between whole implementations of one operation and may defer the choice to
 run time, while this chooses nothing at all — it only checks the one
 implementation more carefully.
 
+### 9.aj The divided bound (2026-09-16)
+
+The class §9.ai measured as the largest remaining refusal, closed. Three
+stdlib bodies — `grapheme_class`, `normalize_props`,
+`normalize_compose_pair` — binary search a table of three-word entries,
+and every read of an entry was refused for want of a constant index
+guard. The typechecker discharges those indices by
+`Oak.Extents.div_bound_scaled` and `scaled_under_bound`. The checker had
+no fact for a length divided by anything but a power of two, and none at
+all for an index multiplied back by one.
+
+Three rules close it, each a generalization of one already there.
+
+- **The divisor replaces the shift.** An upper fact was `reg <= ref >>
+  shift`; it is now `reg <= ref / div` with `div >= 1`, and a chain
+  multiplies the divisors where it summed the shifts
+  (`Oak.Assembler.upper_chain_div`). `lsr wP, wL, #s` records the divisor
+  `2^s` as before; `udiv wP, wL, wK` with `wK` holding a constant records
+  that constant (`divided_upper`); and `mul wD, wI, wK` under `wI < wB`
+  with `wB <= wL / d` and `k <= d` proves the slack fact `wD + k <= len`
+  (`scaled_index_slack`), which `add wJ, wD, #j` carries down to the
+  element `wD + j` for `j < k` (`scaled_index_element`). The `lsl` rule
+  of §7 is this one with `k` and `d` powers of two. Capping the divisor
+  weakens the fact rather than breaking it, so the cap costs reach only.
+- **A constant table has no length register.** These tables are globals:
+  the generator spells the entry count as a literal, so both operands of
+  the division are constants and the quotient is one too. The checker
+  folds it, and a compare against a register holding a constant already
+  guards as the immediate would.
+- **A constant bound scales and offsets.** `wI < U` scaled by a constant
+  `k` leaves `wI · k < (U - 1) · k + 1` (`Oak.Extents.scaled_under_bound`),
+  and an offset raises the bound: `wI < B` leaves `wI + j < B + j`. Both
+  cap below 2^31, so neither 32-bit result wraps.
+
+Measured on the stdlib-bearing program against the commit this work
+branched from (`a045071b`, the merge of §9.ai), with the verdict cache
+off:
+
+| | base | after |
+|---|---|---|
+| element guards elided | 144 | **154** |
+| bodies eliding a guard | 59 | **63** |
+| trap branches emitted | 1461 | **1433** |
+| units proven equal | 338 | 338 |
+
+Five bodies improved and none regressed: `grapheme_class` 0 → 2,
+`normalize_compose_pair` 0 → 3, `normalize_find` 0 → 2,
+`normalize_props` 0 → 2, `unicode_lookup` 1 → 2. All 290 units keep their
+verdicts, and the refused elided forms fall from 228 to 216 — the three
+bodies named above each halve theirs. The RV64 lane is unchanged on every
+count (277 proven, 28 guards over 19 bodies, 119 refused forms on both
+sides), as its checker shares none of this machinery.
+
+What stays refused is the read inside the search loop. There the bound
+register is rewritten on the back edge by a conditional select, so no
+constant bound survives the loop header, and the midpoint's fact names a
+register the meet can say nothing about. Admitting it needs a bound that
+survives a select — the transitive reading of `wI < wB` under `wB < K` as
+`wI < K - 1` — which is the next increment rather than this one.
