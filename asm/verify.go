@@ -3041,7 +3041,10 @@ var unitResult = &term{kind: termConst, width: 64}
 // registerFrameMemory reports a load or store whose base register holds a
 // frame address term, with the address.
 func registerFrameMemory(instr Instruction, state *symbolicState) (Memory, int64, bool) {
-	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic)) {
+	// A pair load through a frame address (the result area's parked
+	// register, a record copied by pairs) is frame memory as a pair store
+	// is (docs/spec/94-assembler.md §9 "The SHA-256 path").
+	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldp") {
 		return Memory{}, 0, false
 	}
 	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
@@ -5823,6 +5826,104 @@ func (x *pathExecutor) frameRecordArgument(lo *oakLowering, param *ast.FunctionP
 	return "", true
 }
 
+// aggregateAtOffset builds a callee's aggregate parameter from the leaves
+// of a caller's by-reference record argument at a byte offset inside it:
+// every leaf of the parameter's type, at its relative offset, is the
+// caller's leaf at offset plus that, of the same width, under the caller
+// leaf's union guards. A gap or a width that differs fails closed.
+func (x *pathExecutor) aggregateAtOffset(lo *oakLowering, param *ast.FunctionParameter, typ *oakType, record compositeArg, offset int64) (*oakValue, string, bool) {
+	relative, reason, ok := x.typeLeaves(param.Type, typ, "", 0)
+	if !ok {
+		return nil, reason, false
+	}
+	byOffset := map[int64]compositeLeaf{}
+	for _, leaf := range record.leaves {
+		byOffset[leaf.offset] = leaf
+	}
+	byName := map[string]compositeLeaf{}
+	for _, leaf := range relative {
+		byName[leaf.name] = leaf
+	}
+	missing := ""
+	agg, built := aggregateFrom(typ, "", func(name string, leafType *oakType) *term {
+		rel, has := byName[name]
+		if !has {
+			missing = "a leaf the layout lacks: " + name
+			return nil
+		}
+		owner, present := byOffset[offset+rel.offset]
+		if !present || owner.width != leafType.width {
+			missing = fmt.Sprintf("no caller leaf of width %d at offset %d", leafType.width, offset+rel.offset)
+			return nil
+		}
+		return owner.guarded(x.leafInput(owner.name, owner.width), func(tag string) *term { return x.leafInput(tag, 32) })
+	})
+	if !built {
+		if missing == "" {
+			missing = "a type without a model"
+		}
+		return nil, missing, false
+	}
+	return agg, "", true
+}
+
+// typeLeaves lists the scalar leaves of a parameter's type by the access
+// path aggregateFrom spells (`.f`, `[k]`, nested), each at its byte offset
+// from the aggregate's start: a named composite through its layout, an
+// owned array by its element size.
+func (x *pathExecutor) typeLeaves(syntax ast.Expression, typ *oakType, prefix string, base int64) ([]compositeLeaf, string, bool) {
+	switch typ.kind {
+	case oakScalar:
+		return []compositeLeaf{{name: prefix, offset: base, width: typ.width, signed: typ.signed}}, "", true
+	case oakArray:
+		elemSyntax := syntax
+		if index, isIndex := syntax.(*ast.IndexExpression); isIndex {
+			elemSyntax = index.Left
+		}
+		var out []compositeLeaf
+		stride, ok := x.typeSize(elemSyntax, typ.elem)
+		if !ok {
+			return nil, "an array whose element has no layout", false
+		}
+		for k := int64(0); k < typ.length; k++ {
+			leaves, reason, ok := x.typeLeaves(elemSyntax, typ.elem, fmt.Sprintf("%s[%d]", prefix, k), base+k*stride)
+			if !ok {
+				return nil, reason, false
+			}
+			out = append(out, leaves...)
+		}
+		return out, "", true
+	default:
+		leaves, reason, ok := compositeLeaves(x.fn.Composites, typeText(syntax), prefix, base, nil)
+		if !ok {
+			return nil, reason, false
+		}
+		return leaves, "", true
+	}
+}
+
+// typeSize is the byte size of a parameter type: a scalar's width, an
+// array's element size times its length, a named composite's layout size.
+func (x *pathExecutor) typeSize(syntax ast.Expression, typ *oakType) (int64, bool) {
+	switch typ.kind {
+	case oakScalar:
+		return int64((typ.width + 7) / 8), true
+	case oakArray:
+		elemSyntax := syntax
+		if index, isIndex := syntax.(*ast.IndexExpression); isIndex {
+			elemSyntax = index.Left
+		}
+		elem, ok := x.typeSize(elemSyntax, typ.elem)
+		return elem * typ.length, ok
+	default:
+		comp, has := x.fn.Composites[typeText(syntax)]
+		if !has {
+			return 0, false
+		}
+		return comp.Size, true
+	}
+}
+
 // unpackAggregate reads an aggregate value of the type from its register
 // chunks (the inverse of packAggregateChunk): each leaf is the slice of
 // the chunk at its offset and width.
@@ -6122,8 +6223,9 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 }
 
 // sameType is structural identity: declared records and unions by name,
-// arrays by element and length, scalars by width and signedness (an array
-// type is built afresh at each mention, so pointer identity would part
+// arrays by element and length, scalars by width, signedness, and numeric
+// category. An array type is built afresh at each mention, so pointer
+// identity would part
 // `[4]u8` from `[4]u8`).
 func sameType(a, b *oakType) bool {
 	if a == b {
@@ -6134,11 +6236,11 @@ func sameType(a, b *oakType) bool {
 	}
 	switch a.kind {
 	case oakScalar:
-		return a.width == b.width && a.signed == b.signed
+		return a.width == b.width && a.signed == b.signed && a.float == b.float
 	case oakArray:
 		return a.length == b.length && sameType(a.elem, b.elem)
 	}
-	return a.name == b.name
+	return a.name != "" && a.name == b.name
 }
 
 // aggregateRoot reports an expression that yields an aggregate without
@@ -7125,17 +7227,34 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	return truncate(result, width), "", true
 }
 
-// inlineCallValue inlines a call whose result is a record or a sum type
-// (docs/spec/125-verification.md section 3): the body as an aggregate
-// value, the arms of its matches merged leaf by leaf.
+// describe spells a type for a message: its name, or its shape.
+func (t *oakType) describe() string {
+	if t == nil {
+		return "nothing"
+	}
+	if t.name != "" {
+		return t.name
+	}
+	switch t.kind {
+	case oakArray:
+		return fmt.Sprintf("[%d]%s", t.length, t.elem.describe())
+	case oakScalar:
+		return fmt.Sprintf("a %d-bit scalar", t.width)
+	}
+	return "an aggregate"
+}
+
+// inlineCallValue inlines a call whose result is an aggregate
+// (docs/spec/125-verification.md section 3): the body as an aggregate value,
+// the arms of its matches merged leaf by leaf.
 func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.InvocationExpression, typ *oakType) (*oakValue, string, bool) {
 	name := callee.Name.Value
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
 	returned, ok := lo.oakTypeOf(callee.ReturnType)
-	if !ok || returned != typ {
-		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.name), false
+	if !ok || !sameType(returned, typ) {
+		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.describe()), false
 	}
 	restore, reason, ok := lo.enterCall(callee, call)
 	if !ok {
@@ -9053,16 +9172,24 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				continue
 			}
 			owner, offset, isBase := spanBaseOf(base)
-			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {
+			record, isRecord := x.records[owner]
+			if !isBase || !isRecord {
 				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
 			}
 			typ, ok := lo.oakTypeOf(param.Type)
 			if !ok || typ.kind == oakScalar {
 				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
 			}
-			agg, ok := lo.paramAggregate(typ, owner)
+			// The address of the caller's record parameter, or of a field
+			// inside it (`state.cv` handed to a callee taking `[8]u32`):
+			// the callee's leaves are the caller's leaves at those offsets,
+			// by the caller's names — naming them `owner[k]` made the same
+			// word two symbols and refuted hash.blake3_chunk_cv where the
+			// machine and the C oracle agree (docs/spec/94-assembler.md §9
+			// "Call summaries").
+			agg, reason, ok := x.aggregateAtOffset(lo, param, typ, record, offset)
 			if !ok {
-				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+				return fmt.Sprintf("a call to %s: parameter %s: %s", name, param.Name.Value, reason), false
 			}
 			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
 		case argSpan:
