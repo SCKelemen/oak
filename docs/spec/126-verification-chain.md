@@ -126,6 +126,16 @@ agrees, **trusted** when the unit reaches outside the decided subset
 labeled. Then the assembler encodes the words itself (§9) and writes the
 companion object; the object format and lane are those of `Oak.Target`.
 
+The OptIR scalar-call memory path has the first deliberately small
+proof-certificate core beneath its larger graph producer. The production Go
+consumer checks a child-before-parent trace using only exact typed region
+effects and graph names; `Oak.OptIRCallSummaryCertificate` proves the matching
+structural model yields exact reachable read/write bits and a closed acyclic
+graph. Selected Go decisions are pinned to kernel-checked examples. This is a
+**proved model with bounded correspondence**, not full implementation
+refinement: CFG-to-trace projection, SHA identity, source re-lowering, and
+machine-callee identity remain outside the theorem.
+
 For the six AArch64 barrier forms, an independent executable regression witness
 now checks the direct-native portion of this seam: six Oak source functions must
 produce complete two-word object bodies containing the literal expected

@@ -600,6 +600,23 @@ compares the Go `IsSubtype` result with an independent pointwise truth-table
 containment oracle. This is bounded executable correspondence evidence for the
 maintained Go transliteration; it is not code extraction from Lean.
 
+The proof's atom parameter requires a genuine decidable equality. Production
+therefore uses `latticeAtomIdentical`, a lattice-only recursive identity
+decision over every current checker `Type`, for DNF membership, deduplication,
+subtyping, and join/meet collapse. It does not reuse `Type.Equals`, because that
+older API also recognizes compatibility between a narrowed ADT case and its
+parent and between a concrete struct and a semantic record shape; those
+relations are not transitive atom identity. Regression tests exercise
+reflexivity, symmetry, and transitivity across the current type constructors,
+pin both compatibility counterexamples, and keep alignment's separate fact
+order outside the opaque-atom lattice. Core `Join`/`Meet` therefore retain
+their proved upper/lower-bound laws for differently aligned spans, while the
+inferred value-flow join of one span shape explicitly keeps the weakest fact.
+Directional assignability weakens alignment and function alignment contracts
+without changing representation. This closes the equality premise for the
+maintained production universe by audited implementation plus tests; it is
+still not extraction of the Go type representation into Lean.
+
 The ordinary value-flow boundary consumes this decision only for
 representation-neutral exact and bottom flow. The verified semantic fact
 `never <= T` therefore applies to returns, arguments, assignments, and match

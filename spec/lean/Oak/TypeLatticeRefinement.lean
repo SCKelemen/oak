@@ -20,7 +20,13 @@ distributive lattice of `Oak.TypeLattice`:
   type-level procedure decides the type-level ordering.
 
 The Go implementation folds n-ary unions/intersections; the model uses their
-binary form, which agrees by associativity of join/meet.
+binary form, which agrees by associativity of join/meet.  The model's
+`DecidableEq α` premise is discharged in production by the separate
+`latticeAtomIdentical` decision, not by `Type.Equals`: the latter also answers
+some compatibility questions and is not atom identity.  The Go
+tests check the production atom decision's equivalence laws over every current
+type constructor and pin the two compatibility shapes that originally exposed
+the distinction.
 
 `typechecker/lattice_refinement_test.go` renders the live Go normalization
 and subtype decisions as the equations at the end of this module.  Lean checks

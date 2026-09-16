@@ -4,12 +4,14 @@ import (
 	"github.com/SCKelemen/oak/ast"
 )
 
-// TypeLattice implements Oak's semantic lattice over nominal atomic types.
+// TypeLattice implements Oak's semantic lattice over opaque atomic types.
 //
 // never is bottom, any is top, UnionType is semantic join, and
 // IntersectionType is semantic meet. Atomic types have no subtype relation
-// beyond Type.Equals; nominal/structural feature-specific relations belong in
-// their own checking rules rather than being smuggled into this lattice.
+// beyond latticeAtomIdentical. Type.Equals also carries a few compatibility
+// relations, so it is intentionally not the atom equality used here;
+// nominal/structural feature-specific relations belong in their own checking
+// rules rather than being smuggled into this lattice.
 
 // A lattice clause is a conjunction of atomic types. A DNF is a disjunction
 // of such clauses. This gives a small, complete decision procedure for the
@@ -28,7 +30,7 @@ type latticeDNF []latticeClause
 
 func clauseContains(clause latticeClause, typ Type) bool {
 	for _, existing := range clause {
-		if existing.Equals(typ) {
+		if latticeAtomIdentical(existing, typ) {
 			return true
 		}
 	}
@@ -144,7 +146,7 @@ func latticeSubtypeWithoutRepresentation(valueType, targetType Type) bool {
 	if _, isNever := valueType.(*NeverType); isNever {
 		return true
 	}
-	return valueType.Equals(targetType)
+	return latticeAtomIdentical(valueType, targetType)
 }
 
 // Join computes the least upper bound (join) of types
@@ -178,6 +180,48 @@ func weakestAlignment(types []Type) Type {
 	return &joined
 }
 
+func sameAlignmentShape(types []Type) bool {
+	first, ok := types[0].(*ArrayType)
+	if !ok || !(first.IsSlice || first.IsSpan) {
+		return false
+	}
+	for _, typ := range types[1:] {
+		other, ok := typ.(*ArrayType)
+		if !ok || other.Length != first.Length || other.IsSlice != first.IsSlice ||
+			other.IsSpan != first.IsSpan || !latticeAtomIdentical(other.ElementType, first.ElementType) {
+			return false
+		}
+	}
+	return true
+}
+
+// joinValueFlowTypes preserves the representation-free alignment weakening
+// used when inferred match arms return the same view/span shape. Alignment is
+// a separate fact order, not an atom relation in the proved free lattice, so
+// the public lattice Join remains a true upper bound under IsSubtype.
+func joinValueFlowTypes(types ...Type) Type {
+	joined := Join(types...)
+	nonNever := make([]Type, 0, len(types))
+	for _, typ := range types {
+		if _, isNever := typ.(*NeverType); !isNever {
+			nonNever = append(nonNever, typ)
+		}
+	}
+	if len(nonNever) != 0 && sameAlignmentShape(nonNever) {
+		return weakestAlignment(nonNever)
+	}
+	return joined
+}
+
+func allLatticeTypesIdentical(types []Type) bool {
+	for _, typ := range types[1:] {
+		if !latticeAtomIdentical(types[0], typ) {
+			return false
+		}
+	}
+	return true
+}
+
 func Join(types ...Type) Type {
 	if len(types) == 0 {
 		return &NeverType{} // Empty join is bottom
@@ -207,18 +251,11 @@ func Join(types ...Type) Type {
 		}
 	}
 
-	// Check if all types are equal
-	firstType := nonNeverTypes[0]
-	allEqual := true
-	for i := 1; i < len(nonNeverTypes); i++ {
-		if !nonNeverTypes[i].Equals(firstType) {
-			allEqual = false
-			break
-		}
-	}
-
-	if allEqual {
-		return weakestAlignment(nonNeverTypes)
+	// Collapse only strict atom identity, never the broader Type.Equals
+	// compatibility relation. Representation facts such as alignment are
+	// composed separately at value-flow boundaries.
+	if allLatticeTypesIdentical(nonNeverTypes) {
+		return nonNeverTypes[0]
 	}
 
 	// For two types, create a union type A | B
@@ -276,18 +313,10 @@ func Meet(types ...Type) Type {
 		return &AnyType{}
 	}
 
-	// Check if all types are equal
-	firstType := nonAnyTypes[0]
-	allEqual := true
-	for i := 1; i < len(nonAnyTypes); i++ {
-		if !nonAnyTypes[i].Equals(firstType) {
-			allEqual = false
-			break
-		}
-	}
-
-	if allEqual {
-		return firstType
+	// Compatible-but-distinct types remain a real intersection instead of
+	// being collapsed by Equals.
+	if allLatticeTypesIdentical(nonAnyTypes) {
+		return nonAnyTypes[0]
 	}
 
 	// For two types, create an intersection type A & B

@@ -1,6 +1,7 @@
 import Oak.TypeLattice
 import Oak.Effects
 import Oak.EffectRows
+import Oak.OptIRCallSummaryCertificate
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact

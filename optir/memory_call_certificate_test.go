@@ -38,6 +38,21 @@ func TestDeriveCheckedMemoryCallSummaryJoinsCanonicalMayEffects(t *testing.T) {
 	}
 }
 
+func TestCheckedMemoryCallCertificateAcceptsNoModRefLeaf(t *testing.T) {
+	root := checkedMemoryCertificateDirectNode(t, "root", nil)
+	certificate, err := NewCheckedMemoryCallCertificate("root", []CheckedMemoryCallCertificateNode{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certificate.proofTrace) != 1 || certificate.proofTrace[0].name != "root" ||
+		certificate.proofTrace[0].summary != nil {
+		t.Fatalf("NoModRef proof trace = %+v", certificate.proofTrace)
+	}
+	if err := VerifyCheckedMemoryCallCertificate("root", root.CFG, root.Authority, certificate); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckedMemoryCallCertificateAuthenticatesTransitiveSummaries(t *testing.T) {
 	leaf := checkedMemoryCertificateDirectNode(t, "leaf", []CheckedMemoryCallAccess{
 		{Region: "global:state", Kind: MemoryRead, ValueType: "u32"},
@@ -68,6 +83,13 @@ func TestCheckedMemoryCallCertificateAuthenticatesTransitiveSummaries(t *testing
 	}
 	if certificate.Fingerprint() == "" {
 		t.Fatal("certificate has no fingerprint")
+	}
+	var proofOrder []string
+	for _, step := range certificate.proofTrace {
+		proofOrder = append(proofOrder, step.name)
+	}
+	if !reflect.DeepEqual(proofOrder, []string{"leaf", "middle", "root"}) {
+		t.Fatalf("proof trace order = %v, want child-before-parent", proofOrder)
 	}
 	if err := VerifyCheckedMemoryCallCertificate("root", root.CFG, root.Authority, certificate); err != nil {
 		t.Fatal(err)
@@ -195,6 +217,17 @@ func TestCheckedMemoryCallCertificateDefensiveCopiesAndRechecksIntegrity(t *test
 	changedRoot.Blocks[0].Operations = append(changedRoot.Blocks[0].Operations, Operation{Code: OpConstInt, Results: []Value{{ID: 99, Type: "u32"}}, Attributes: []Attribute{{Name: AttributeValue, Value: "1"}}})
 	if err := VerifyCheckedMemoryCallCertificate("root", changedRoot, originalAuthority, certificate); err == nil || !strings.Contains(err.Error(), "different root inputs") {
 		t.Fatalf("changed root CFG error = %v", err)
+	}
+
+	// Even if an in-package attacker refreshes the outer integrity digest, the
+	// semantic checker independently rejects a forged access claim. Hashes bind
+	// identity; they are not evidence that a child reads or writes a region.
+	forgedTrace := certificate
+	forgedTrace.proofTrace = cloneCheckedMemoryCallProofTrace(certificate.proofTrace)
+	forgedTrace.proofTrace[1].children[0].accesses[0].Kind = MemoryWrite
+	forgedTrace.fingerprint = fingerprintCheckedMemoryCallCertificate(forgedTrace)
+	if err := VerifyCheckedMemoryCallCertificate("root", originalRoot, originalAuthority, forgedTrace); err == nil || !strings.Contains(err.Error(), "forged summary access claim") {
+		t.Fatalf("forged proof trace error = %v", err)
 	}
 
 	corrupted := certificate

@@ -92,6 +92,69 @@ f: (y: BA): u8 = takeAB(y)
 	}
 }
 
+// A successful unification is inference evidence, not permission for the
+// symmetric Type.Equals compatibility to reverse a structural shape flow.
+func TestSemanticShapeCannotFlowIntoNominalStructAfterUnification(t *testing.T) {
+	input := `Shape: type = { x: u8 }
+Stored: type = struct { x: u8 }
+
+take: (v: Stored): u8 = v.x
+
+bad_call: (v: Shape): u8 = take(v)
+bad_binding: (v: Shape): u8 {
+  stored: Stored = v
+  stored.x
+}
+`
+	tc := setupTypeChecker(input)
+	tc.CheckProgram(parseProgram(input))
+	joined := strings.Join(tc.Errors(), "\n")
+	if !strings.Contains(joined, "argument 1: expected Stored, got") ||
+		!strings.Contains(joined, "variable stored: expected type Stored") {
+		t.Fatalf("reverse shape flow escaped a successful unification: %v", tc.Errors())
+	}
+}
+
+// Contextual record-literal checking is value flow, so it must use the same
+// directional rule as calls and bindings rather than symmetric shape
+// compatibility for each field.
+func TestSemanticShapeCannotInitializeNominalRecordField(t *testing.T) {
+	input := `Shape: type = { x: u8 }
+Stored: type = struct { x: u8 }
+Carrier: type = struct { item: Stored }
+
+good: (v: Stored): Carrier = Carrier { item: v }
+bad: (v: Shape): Carrier = Carrier { item: v }
+`
+	tc := setupTypeChecker(input)
+	tc.CheckProgram(parseProgram(input))
+	joined := strings.Join(tc.Errors(), "\n")
+	if !strings.Contains(joined, "record literal: field item expects Stored") {
+		t.Fatalf("shape value initialized a nominal record field: %v", tc.Errors())
+	}
+}
+
+// Untyped array inference has no target to authorize directional shape flow.
+// It therefore requires atom identity (apart from numeric promotion), and its
+// result must not depend on which compatible-looking type appears first.
+func TestArrayInferenceRejectsNominalShapeMixturesInBothOrders(t *testing.T) {
+	for _, elements := range []string{"stored, shape", "shape, stored"} {
+		input := `Shape: type = { x: u8 }
+Stored: type = struct { x: u8 }
+
+mixed: (stored: Stored, shape: Shape): () {
+  values := [` + elements + `]
+}
+`
+		tc := setupTypeChecker(input)
+		tc.CheckProgram(parseProgram(input))
+		joined := strings.Join(tc.Errors(), "\n")
+		if !strings.Contains(joined, "array element") {
+			t.Fatalf("array inference accepted nominal/shape mixture %q: %v", elements, tc.Errors())
+		}
+	}
+}
+
 // Grouped field names declare each name at the shared type, in written
 // order — { a, b: u8 } is a and b, both u8.
 func TestGroupedFieldNames(t *testing.T) {

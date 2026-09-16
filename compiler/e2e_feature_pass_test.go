@@ -35,6 +35,8 @@ main: (): i32 {
   // A function value requiring less than the target supplies is admitted
   // (contravariance), and one requiring exactly the fact is admitted where
   // the fact is supplied.
+	f: ([* align 4096]u8) -> u32 = takes_plain
+	ok = ok && f(aligned) == u32(8192)
   ok = ok && apply(takes_plain, aligned) == u32(8192)
   ok = ok && apply_aligned(needs_sector, aligned) == u32(8192)
   ok = ok && apply_aligned(takes_plain, aligned) == u32(8192)

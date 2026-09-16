@@ -311,6 +311,15 @@ found the proof.
 Oak's LRAT, RUP, Tseitin, and self-hosted checker work provides much of the
 architectural precedent for this step.
 
+One narrow slice now follows this shape. Recursive OptIR scalar-call memory
+summaries carry a deterministic postorder trace; a small hash-free Go consumer
+checks exact child access claims, typed effect joins, closure, and root order.
+`Oak.OptIRCallSummaryCertificate` proves those properties for the structural
+model over well-formed projected accesses, with selected production decisions
+pinned to Lean examples. This does not yet remove the surrounding TCB:
+CFG-to-trace projection, universal Go-to-Lean correspondence, source lowering,
+and machine-callee identity remain open.
+
 ### 3.4 Object, executable, relocation, and linking are not formally closed
 
 `asm/object.go` and `asm/executable.go` compute ELF and Mach-O layouts, symbol
@@ -468,6 +477,10 @@ of the algorithms that discovered them.
 
 The checker itself should be implemented twice or refined to Lean, following
 the LRAT checker's pattern.
+
+The OptIR call-summary postorder checker is the first scoped model/proof slice;
+its CFG-to-trace and universal implementation-refinement seams remain before it
+can count as a fully independently verified certificate checker.
 
 ### 3. Finish frontend and resource implementation refinements
 

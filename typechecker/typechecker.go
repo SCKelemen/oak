@@ -1853,7 +1853,7 @@ func (tc *TypeChecker) checkFieldAccessorExpression(expr *ast.FieldAccessorExpre
 	}
 	// Function-pointer ABIs are invariant: even a value-level numeric
 	// widening would give the helper a different C function type.
-	if !fieldType.Equals(fn.ReturnType) {
+	if !latticeAtomIdentical(fieldType, fn.ReturnType) {
 		tc.addError(expr, "field accessor .%s returns %s, not %s", expr.Field.Value, fieldType, fn.ReturnType)
 		return nil
 	}
@@ -3004,25 +3004,15 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 				tc.addError(expr.Arguments[i], "argument %d conflicts with an earlier type specialization", i+1)
 				continue
 			}
-			// Unification is structural; a span's alignment fact must still
-			// be at least the parameter's (50-borrowing.md section 2a).
-			if !tc.alignmentAssignable(argType, expectedType) {
+			// Unification discovers generic equations; it does not authorize
+			// value flow. Recheck the substituted concrete types through the
+			// same directional boundary as non-generic arguments.
+			resolvedArgument := merged.Apply(argType)
+			resolvedExpected := merged.Apply(expectedType)
+			if !tc.isAssignable(resolvedArgument, resolvedExpected) {
 				validCall = false
-				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
+				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, resolvedExpected, resolvedArgument)
 				continue
-			}
-			// Unification reads a refined primitive as its base: a refined
-			// parameter takes only its own refinement's values (a base value
-			// gets there through the checked construction; instantiations of
-			// one template are distinct types, docs/spec/20-types.md
-			// section 12), while a refined value erases into a base
-			// parameter.
-			if expectedPrim, isPrim := expectedType.(*PrimitiveType); isPrim && expectedPrim.Refinement != "" {
-				if argPrim, isArgPrim := argType.(*PrimitiveType); !isArgPrim || argPrim.Refinement != expectedPrim.Refinement {
-					validCall = false
-					tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
-					continue
-				}
 			}
 			bindings = merged
 			continue
@@ -4005,9 +3995,10 @@ func (tc *TypeChecker) checkMatchExpressionContext(expr *ast.MatchExpression, st
 		tc.env = oldEnv
 	}
 
-	// Compute join of all arm types (lattice-based)
+	// Compute the semantic join, weakening only the separate alignment fact
+	// when every arm has the same view/span representation.
 	tc.restoreDead(armsAfter)
-	returnType := Join(armTypes...)
+	returnType := joinValueFlowTypes(armTypes...)
 
 	// Expected typing keeps branch-local widening, shape satisfaction, and
 	// never elimination out of the runtime representation. A mismatch already
@@ -4053,7 +4044,7 @@ func nonNeverDistinctTypes(types []Type) []Type {
 		}
 		distinct := true
 		for _, existing := range result {
-			if typ.Equals(existing) {
+			if latticeAtomIdentical(typ, existing) {
 				distinct = false
 				break
 			}
@@ -4074,7 +4065,7 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 			// `x: T = try e` (docs/spec/10-syntax.md section 2d): T must be
 			// the payload's type.
 			declared := tc.parseTypeExpression(p.Ascribed)
-			if declared != nil && expectedType != nil && !declared.Equals(expectedType) {
+			if declared != nil && expectedType != nil && !latticeAtomIdentical(declared, expectedType) {
 				tc.addError(p.Name, "try binds %s: %s, but the payload is %s", p.Name.Value, declared, expectedType)
 				return nil
 			}
@@ -4380,7 +4371,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 				valid = false
 				continue
 			}
-			if given != nil && !given.Equals(declared) {
+			if given != nil && !tc.isAssignable(given, declared) {
 				tc.addError(expr, "record literal: field %s expects %s, got %s", name, declared, given)
 				valid = false
 			}
@@ -4706,15 +4697,19 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					if !tc.isAssignable(valueType, varType) {
 						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
-				} else if !tc.alignmentAssignable(valueType, varType) {
-					// Unification is structural; the alignment fact's
-					// direction is checked apart (50-borrowing.md section 2a).
-					tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 				} else {
-					// Apply substitution to get the unified type. Commit equations
-					// for a blocked initializer only after the complete declaration succeeds.
-					varType = sub.Apply(varType)
-					initializerBindings = sub
+					// Unification discovers generic equations; the substituted
+					// types must still pass the directional value-flow boundary.
+					resolvedValue := sub.Apply(valueType)
+					resolvedVariable := sub.Apply(varType)
+					if !tc.isAssignable(resolvedValue, resolvedVariable) {
+						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, resolvedVariable, resolvedValue)
+					} else {
+						// Commit equations for a blocked initializer only after
+						// the complete declaration succeeds.
+						varType = resolvedVariable
+						initializerBindings = sub
+					}
 				}
 			}
 		}
@@ -4756,33 +4751,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 // proved semantic lattice with the separately specified representation-aware
 // relations; semantic subtyping never silently chooses a runtime layout.
 func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
-	// Open targets use width matching; source representation remains intact.
-	if target, ok := varType.(*RecordType); ok && target.Open {
-		if source, ok := valueType.(*RecordType); ok {
-			for name, required := range target.Fields {
-				actual, present := source.Fields[name]
-				if !present || !actual.Equals(required) {
-					return false
-				}
-			}
-			return true
-		}
-	}
-
-	// A view or span stands where its shape is required with a weaker or
-	// absent alignment fact, never a stronger one (docs/spec/50-borrowing.md
-	// section 2a): the fact's direction is decided here, before equality,
-	// which is structural.
-	if value, isArray := valueType.(*ArrayType); isArray && (value.IsSlice || value.IsSpan) {
-		if target, targetIsArray := varType.(*ArrayType); targetIsArray && (target.IsSlice || target.IsSpan) {
-			return value.alignedInto(target)
-		}
-	}
-
-	// A function value's parameter and result facts have a direction too
-	// (alignmentAssignable), which structural equality does not see.
-	if _, isFunction := valueType.(*FunctionType); isFunction && !tc.alignmentAssignable(valueType, varType) {
-		return false
+	// Exact atoms and the explicitly directional, representation-preserving
+	// case/shape/alignment/function relations need no runtime conversion.
+	if tc.representationPreservingAssignable(valueType, varType) {
+		return true
 	}
 
 	// The lattice admits exact types and bottom without introducing a runtime
@@ -4820,6 +4792,83 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 	}
 
 	return false
+}
+
+// representationPreservingAssignable contains the static compatibility
+// relations which keep one runtime representation. It is deliberately
+// directional and recursive; Type.Equals is broader and cannot safely decide
+// lattice identity or nested value flow.
+func (tc *TypeChecker) representationPreservingAssignable(valueType, targetType Type) bool {
+	if latticeAtomIdentical(valueType, targetType) {
+		return true
+	}
+
+	if narrowed, ok := valueType.(*NarrowedADTVariantType); ok {
+		switch target := targetType.(type) {
+		case *ADTType:
+			return len(narrowed.TypeArgs) == 0 && narrowed.ADTName == target.Name
+		case *GenericType:
+			return narrowed.ADTName == target.Name &&
+				latticeTypeListsIdentical(narrowed.TypeArgs, target.TypeArgs, false)
+		}
+	}
+
+	if target, ok := targetType.(*RecordType); ok && !target.Struct {
+		source, sourceIsRecord := valueType.(*RecordType)
+		if !sourceIsRecord || (!target.Open && len(source.Fields) != len(target.Fields)) {
+			return false
+		}
+		for name, required := range target.Fields {
+			actual, present := source.Fields[name]
+			if !present || !latticeAtomIdentical(actual, required) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if value, ok := valueType.(*ArrayType); ok && (value.IsSlice || value.IsSpan) {
+		target, targetIsArray := targetType.(*ArrayType)
+		return targetIsArray && (target.IsSlice || target.IsSpan) &&
+			value.Length == target.Length && value.IsSlice == target.IsSlice &&
+			value.IsSpan == target.IsSpan &&
+			latticeAtomIdentical(value.ElementType, target.ElementType) &&
+			(target.Align == 0 || value.Align >= target.Align)
+	}
+
+	if value, ok := valueType.(*FunctionType); ok {
+		target, targetIsFunction := targetType.(*FunctionType)
+		return targetIsFunction && sameTypeModuloAlignment(value, target) &&
+			tc.alignmentAssignable(value, target)
+	}
+
+	return false
+}
+
+// sameTypeModuloAlignment recognizes only the representation-identical
+// function signatures for which alignmentAssignable supplies the directional
+// contract order. Other compatibility relations do not become function
+// variance implicitly.
+func sameTypeModuloAlignment(left, right Type) bool {
+	switch left := left.(type) {
+	case *ArrayType:
+		right, ok := right.(*ArrayType)
+		return ok && left.Length == right.Length && left.IsSlice == right.IsSlice &&
+			left.IsSpan == right.IsSpan && latticeAtomIdentical(left.ElementType, right.ElementType)
+	case *FunctionType:
+		right, ok := right.(*FunctionType)
+		if !ok || left.Variadic != right.Variadic || len(left.Parameters) != len(right.Parameters) {
+			return false
+		}
+		for index := range left.Parameters {
+			if !sameTypeModuloAlignment(left.Parameters[index], right.Parameters[index]) {
+				return false
+			}
+		}
+		return sameTypeModuloAlignment(left.ReturnType, right.ReturnType)
+	default:
+		return latticeAtomIdentical(left, right)
+	}
 }
 
 func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
@@ -5941,7 +5990,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 		if elemType == nil {
 			continue
 		}
-		if !elemType.Equals(commonType) {
+		if !latticeAtomIdentical(elemType, commonType) {
 			// Try to find a common type (promotion)
 			if tc.isNumericType(elemType) && tc.isNumericType(commonType) {
 				commonType = tc.promoteNumericTypes(expr.Elements[i], commonType, elemType)
@@ -6048,7 +6097,7 @@ func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
 // at least as strong (alignments are powers of two, so at least as large
 // means a multiple). A target without a fact takes any.
 func (t *ArrayType) alignedInto(target *ArrayType) bool {
-	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !t.ElementType.Equals(target.ElementType) {
+	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !latticeAtomIdentical(t.ElementType, target.ElementType) {
 		return false
 	}
 	return target.Align == 0 || t.Align >= target.Align
@@ -6497,7 +6546,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 			for fieldName, fieldType := range recordType.Fields {
 				// Check for conflicts
 				if existingType, exists := mergedFields[fieldName]; exists {
-					if !existingType.Equals(fieldType) {
+					if !latticeAtomIdentical(existingType, fieldType) {
 						tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 						return nil
 					}
@@ -6512,7 +6561,7 @@ func (tc *TypeChecker) normalizeIntersectionToRecord(intersection *IntersectionT
 				if recordType, ok := namedType.(*RecordType); ok {
 					for fieldName, fieldType := range recordType.Fields {
 						if existingType, exists := mergedFields[fieldName]; exists {
-							if !existingType.Equals(fieldType) {
+							if !latticeAtomIdentical(existingType, fieldType) {
 								tc.addError(nil, "intersection type: field %s has conflicting types %s and %s", fieldName, existingType, fieldType)
 								return nil
 							}
@@ -6554,7 +6603,7 @@ func (tc *TypeChecker) checkIntersectionConstraint(concreteType Type, constraint
 // This is a structural check: the type must have methods matching the interface
 func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type) bool {
 	// If it's the same type, return true
-	if concreteType.Equals(interfaceType) {
+	if latticeAtomIdentical(concreteType, interfaceType) {
 		return true
 	}
 
@@ -6608,7 +6657,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 		}
 
 		// Check that return types match
-		if !concreteMethodType.ReturnType.Equals(requiredMethodType.ReturnType) {
+		if !latticeAtomIdentical(concreteMethodType.ReturnType, requiredMethodType.ReturnType) {
 			// Return type mismatch
 			return false
 		}
@@ -6621,7 +6670,7 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 		for i, requiredParam := range requiredMethodType.Parameters {
 			concreteParam := concreteMethodType.Parameters[i]
 			// Parameters must match exactly (no subtyping for parameters)
-			if !concreteParam.Equals(requiredParam) {
+			if !latticeAtomIdentical(concreteParam, requiredParam) {
 				return false
 			}
 		}
@@ -6880,7 +6929,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 
 			// Check for duplicate field names
 			if existingType, exists := (*fields)[fieldName]; exists {
-				if !existingType.Equals(fieldType) {
+				if !latticeAtomIdentical(existingType, fieldType) {
 					if node, ok := fieldExpr.(ast.Node); ok {
 						tc.addError(node, "duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
@@ -6912,7 +6961,7 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			for fieldName, fieldType := range recordType.Fields {
 				// Check for duplicate field names
 				if existingType, exists := (*fields)[fieldName]; exists {
-					if !existingType.Equals(fieldType) {
+					if !latticeAtomIdentical(existingType, fieldType) {
 						tc.addError(ident, "duplicate field %s in record composition with conflicting types: %s vs %s",
 							fieldName, existingType, fieldType)
 					}

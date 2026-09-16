@@ -885,6 +885,15 @@ reprojects every node, requires exact non-root authority coverage, recursively
 recomputes the canonical Mod/Ref joins, and rejects cycles, missing, duplicate,
 unreachable, stale, or under-approximated nodes. The root may keep unused
 upper-bound records after a verified rewrite. A versioned length-delimited
+fingerprint also binds a deterministic child-before-parent proof trace. A small
+consumer checks that trace without reading CFGs or hashes: every child must
+already be accepted with the exact claimed access set, every typed region effect
+is joined exactly, names are unique, the root is final, and every non-root is
+referenced. `Oak.OptIRCallSummaryCertificate` proves the structural model over
+well-formed projected accesses sound for exact reachable read/write bits,
+closure, and topological acyclicity; bounded production decisions are pinned
+to executable Lean examples. CFG-to-trace refinement and universal Go-to-Lean
+correspondence remain open. The graph
 fingerprint binds the whole accepted graph, and AArch64/RV64 production
 region-memory selection requires and reruns that certificate exactly when an
 active final call summary is interpreted by MemorySSA. A call-only `NoModRef`
@@ -949,10 +958,10 @@ both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
 load PRE from entry/read/call-produced versions or loop phis, definite-write
 summaries, and calls in memory loops remain open; exact recursive
-`NoModRef`/`Ref`/`Mod`/`ModRef`
-may-effect summaries and their standalone graph checker have landed. Formal
-refinement of the checker, or a smaller proof-certificate consumer beneath it,
-remains TCB-closure work.
+`NoModRef`/`Ref`/`Mod`/`ModRef` may-effect summaries, their standalone graph
+checker, and a Lean-proved model of its small postorder effect core have landed.
+CFG-to-trace refinement and universal implementation correspondence remain
+TCB-closure work.
 
 As the projection broadens, region memory SSA should power:
 
@@ -1176,8 +1185,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     checked scalar-global projection, and one verifier-proved canonical memory
     loop on both targets landed; exact recursive
     `NoModRef`/`Ref`/`Mod`/`ModRef` call summaries plus a standalone closed-DAG
-    certificate checker also landed, while formal checker refinement, broader
-    loops, aggregate regions, and definite-write summaries remain**);
+    certificate checker and a Lean-proved model of its small postorder effect
+    core also landed, while CFG-to-trace refinement, universal implementation
+    correspondence, broader loops, aggregate regions, and definite-write
+    summaries remain**);
 19. worklist scalar canonicalizer;
 20. SCCP/CSE/GVN/DCE/DSE;
 21. LICM (**verifier-gated AArch64/RV64 OptIR candidate landed**), loop rotation, address
