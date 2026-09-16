@@ -199,11 +199,23 @@ main: (): i32 {
 }
 
 func TestStdlibMinHeapRejectsInvalidEntry(t *testing.T) {
-	for _, fields := range []string{"value: u32", "priority: u32, value: u32"} {
+	heap := func(fields string) error {
 		src := "import(std)\nBad: type = struct { " + fields + " }\nmain: (): i32 {\ndata: [1]Bad\nstate: [1]MinHeapCursor\ns: [*]Bad = span(&data)\nq: [*]MinHeapCursor = span(&state)\nr: Result[u32, CollectionError] = min_heap_build(q, s, u32(1))\n0\n}"
-		if _, err := New().WithSource("badheap.oak", src).EmitC().Get(); err == nil {
-			t.Fatal("heap entry must have a u64 priority")
-		}
+		_, err := New().WithSource("badheap.oak", src).EmitC().Get()
+		return err
+	}
+	if err := heap("value: u32"); err == nil {
+		t.Fatal("heap entry must have a priority")
+	}
+	// A narrower unsigned priority widens into the key's u64 at the return
+	// (docs/spec/20-types.md section 3.1: numeric widening is a value-flow
+	// rule of the expected position), so a u32 priority is a valid entry;
+	// a signed one is not.
+	if err := heap("priority: u32, value: u32"); err != nil {
+		t.Fatalf("a u32 priority widens into the u64 key: %v", err)
+	}
+	if err := heap("priority: i64, value: u32"); err == nil {
+		t.Fatal("a signed priority must be rejected")
 	}
 }
 
