@@ -393,7 +393,12 @@ the slack fact names the primary (`w1`). And with no guard left to peel,
 the invariant pass hoists the condition's invariant half instead of
 leaving it in the header for the rotation to copy into the tail. The
 loop is sixteen instructions for four elements, one compare a trip,
-priced 1789 against the identity's 5537, proven.
+priced 1789 against the identity's 5537, proven. On the clock
+(`benchmarks/kernels/RESULTS.md`, three alternated runs): `dot`'s native
+time falls eight to twelve percent, from 1.10× the C backend to 1.03× —
+clang's loop is the same shape at sixteen products a trip, and both are
+bound by the one ordered `fadd` an element, so the remaining gap is the
+loop's overhead, not its arithmetic.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
