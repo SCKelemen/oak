@@ -69,6 +69,78 @@ func (f *Function) Fuse() (int, error) {
 	return fused, nil
 }
 
+// FuseExits lifts a body, folds its loop tails' paired exit tests
+// (fuseExitTests), and lowers it back; it reports the tails fused. Its
+// own candidate, apart from the pair fusion: the seam checker reads the
+// `b.cond` exit it replaces for the index fact the loop body's guard
+// elision stands on, and does not yet read the `ccmp` form, so the form
+// is refused where a body's guards were elided — the search then keeps
+// the pair fusion and drops this one.
+func FuseExits(fn *asm.Function) (*asm.Function, int, error) {
+	lifted, err := Lift(cloneFunction(fn))
+	if err != nil {
+		return nil, 0, err
+	}
+	fused := lifted.fuseExitTests()
+	if fused > 0 {
+		lifted.reindex()
+	}
+	out := lifted.Asm
+	out.Items = lifted.Items()
+	return out, fused, nil
+}
+
+// fuseExitTests folds a loop tail's two exit tests into one conditional
+// compare: a block ending in `b.c1 exit` whose fall-through block holds
+// only `cbz wR, back` (or cbnz), the exit label being the block after,
+// becomes `ccmp wR, #0, #nzcv, !c1; b.eq back` (b.ne for cbnz) — the
+// second test is taken only where the first did not exit, and where it
+// did the nzcv constant makes the branch fall through to the exit. One
+// branch where there were two (clang's shape for `while lo < hi &&
+// !found`).
+func (f *Function) fuseExitTests() int {
+	fused := 0
+	for i := 0; i+2 < len(f.Blocks); i++ {
+		a, b, c := f.Blocks[i], f.Blocks[i+1], f.Blocks[i+2]
+		if len(a.Instrs) < 2 || len(b.Instrs) != 1 || b.Label != "" || len(b.Lead) != 0 || len(b.Preds) != 1 || b.Preds[0] != a || c.Label == "" {
+			continue
+		}
+		exit := a.Instrs[len(a.Instrs)-1].Asm
+		if (exit.Mnemonic != "b" && exit.Mnemonic != "b.") || exit.Cond == "" || len(exit.Operands) != 1 {
+			continue
+		}
+		exitSym, isSym := exit.Operands[0].(asm.Symbol)
+		if !isSym || exitSym.Lo12 || exitSym.Name != c.Label {
+			continue
+		}
+		inverted, known := invertCondition[exit.Cond]
+		if !known {
+			continue
+		}
+		test := b.Instrs[0].Asm
+		if (test.Mnemonic != "cbz" && test.Mnemonic != "cbnz") || len(test.Operands) != 2 {
+			continue
+		}
+		reg, isReg := test.Operands[0].(asm.Register)
+		back, isBack := test.Operands[1].(asm.Symbol)
+		if !isReg || !isBack || back.Lo12 || (reg.Class != asm.ClassW && reg.Class != asm.ClassX) || reg.ZeroRegister() {
+			continue
+		}
+		// Where the first test exits, the constant flags must fail the
+		// second: Z clear for `b.eq`, Z set (#4) for `b.ne`.
+		branch, nzcv := "eq", int64(0)
+		if test.Mnemonic == "cbnz" {
+			branch, nzcv = "ne", 4
+		}
+		ccmp := &Instr{Asm: asm.Instruction{Mnemonic: "ccmp", Operands: []asm.Operand{reg, asm.Immediate{Value: 0}, asm.Immediate{Value: nzcv}, asm.Condition{Code: inverted}}, Line: exit.Line}, Block: a}
+		bck := &Instr{Asm: asm.Instruction{Mnemonic: exit.Mnemonic, Cond: branch, Operands: []asm.Operand{back}, Line: test.Line}, Branch: true, Block: a}
+		a.Instrs = append(a.Instrs[:len(a.Instrs)-1], ccmp, bck)
+		f.Blocks = append(f.Blocks[:i+1], f.Blocks[i+2:]...)
+		fused++
+	}
+	return fused
+}
+
 func indexIn(b *Block, ins *Instr) int {
 	for k, x := range b.Instrs {
 		if x == ins {

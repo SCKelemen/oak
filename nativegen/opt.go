@@ -51,6 +51,7 @@ const (
 	TransformReallocate  = "reallocate"
 	TransformSchedule    = "schedule"
 	TransformFuse        = "fuse"
+	TransformFuseExits   = "fuse-exits"
 	TransformRotate      = "rotate-loops"
 )
 
@@ -232,6 +233,13 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Fuse = true; return l },
 			fired:   Fused,
 		}},
+		// Exit-test fusion (machine.FuseExits, Lane.FuseExits): a loop
+		// tail's `b.cond exit; cbz back` as `ccmp; b.eq back`, one branch
+		// for two. Built and admitted by the checker (the compare's fact
+		// rides through the ccmp to the branch), but not registered: the
+		// verifier's loop shapes do not read a `ccmp` tail yet, so every
+		// form came back trusted after a path budget spent for nothing.
+		// Register it as a gated transform here once they do.
 		&gatedTransform{laneTransform{
 			// Instruction scheduling (package machine, Phase B): each block's
 			// instructions reordered between barriers so a consumer follows
@@ -426,6 +434,7 @@ func PlainLane(lane Lane) Lane {
 	lane.Reallocate = false
 	lane.Schedule = false
 	lane.Fuse = false
+	lane.FuseExits = false
 	lane.VectorReductions = false
 	lane.VectorMaps = false
 	lane.NoReductions = true

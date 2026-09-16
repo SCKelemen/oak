@@ -295,6 +295,7 @@ func (c *checker) applyGuards(gs *guardState) {
 	c.upper = copyMap(gs.upper)
 	c.mid = copyMap(gs.mid)
 	c.pendingCmp = cmpFact{}
+	c.pendingCcmp = ccmpFact{}
 	c.flagsValid = gs.flags
 }
 
@@ -664,6 +665,11 @@ type checker struct {
 	spans      map[int]*spanFact
 	spanParams map[string]spanParam
 	pendingCmp cmpFact
+	// pendingCcmp: the conditional compare the previous instruction was,
+	// with the compare before it: `cmp; ccmp R, #k, #nzcv, c; b.eq back`
+	// (machine.FuseExits) carries the compare's fact under c to the taken
+	// path, as `b.c back` would.
+	pendingCcmp ccmpFact
 	// idxFacts: index register -> the bound a dominating guard proved it
 	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
 	// any write to the index or bound register, any label, and any call.
@@ -912,6 +918,16 @@ type cmpFact struct {
 	left     int   // the compared register
 	rightReg int   // the register compared against, or -1 for an immediate
 	imm      int64 // the immediate compared against
+}
+
+// ccmpFact: a conditional compare following a compare — the compare's
+// fact, the condition under which the second compare replaces its flags,
+// and whether the constant flags it sets otherwise have Z set.
+type ccmpFact struct {
+	valid bool
+	guard cmpFact
+	cond  string
+	zSet  bool
 }
 
 // idxFact: the register is below an immediate bound (boundReg == -1) or
@@ -1550,6 +1566,7 @@ func (c *checker) enterLabel(label Label) {
 		c.forgetGuards()
 	case c.labelIn == nil:
 		c.pendingCmp = cmpFact{}
+		c.pendingCcmp = ccmpFact{}
 		c.condFacts = map[int]condFact{}
 	default:
 		if assumed, known := c.labelIn[label.Name]; known {
@@ -1671,6 +1688,7 @@ func (c *checker) forgetGuards() {
 		fact.hasMin = false
 	}
 	c.pendingCmp = cmpFact{}
+	c.pendingCcmp = ccmpFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
 	c.condFacts = map[int]condFact{}
@@ -1694,6 +1712,17 @@ func (c *checker) instruction(instr Instruction) bool {
 	// A length comparison guards exactly the next instruction.
 	guard := c.pendingCmp
 	c.pendingCmp = cmpFact{}
+	ccmpGuard := c.pendingCcmp
+	c.pendingCcmp = ccmpFact{}
+	if instr.Mnemonic == "ccmp" && guard.valid && len(instr.Operands) == 4 {
+		// The compare's fact rides through the conditional compare to
+		// the branch after it (the `b.` case below).
+		if cond, isCond := instr.Operands[3].(Condition); isCond {
+			if nzcv, isImm := instr.Operands[2].(Immediate); isImm {
+				c.pendingCcmp = ccmpFact{valid: true, guard: guard, cond: cond.Code, zSet: nzcv.Value&4 != 0}
+			}
+		}
+	}
 	spec := instructionTable[instr.Mnemonic]
 	if spec.tableForms && (len(spec.forms) == 0 || usesScalable(instr.Operands)) {
 		return c.scalable(instr) // SVE/SME: Arm's templates are the forms (asm/isa_sme.go)
@@ -1751,6 +1780,35 @@ func (c *checker) instruction(instr Instruction) bool {
 	case "b.":
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
+		}
+		if !guard.valid && ccmpGuard.valid && ((instr.Cond == "eq" && !ccmpGuard.zSet) || (instr.Cond == "ne" && ccmpGuard.zSet)) {
+			// `cmp wI, wL; ccmp wR, #k, #nzcv, c; b.eq back`
+			// (machine.FuseExits): where c fails the constant flags fail
+			// the branch, so the branch is taken only where c held and the
+			// second compare agreed — the taken path knows the first
+			// compare's fact under c, as `b.c back`'s would; the
+			// fall-through knows nothing (either compare may have failed).
+			if inverse, known := conditionInverse[ccmpGuard.cond]; known {
+				savedIdx := map[int]idxFact{}
+				for reg, fact := range c.idxFacts {
+					savedIdx[reg] = fact
+				}
+				savedMins := map[*spanFact][2]int64{}
+				for _, fact := range c.spans {
+					has := int64(0)
+					if fact.hasMin {
+						has = 1
+					}
+					savedMins[fact] = [2]int64{has, fact.minLen}
+				}
+				c.guardFacts(ccmpGuard.guard, inverse)
+				c.branch(instr, false)
+				c.idxFacts = savedIdx
+				for fact, saved := range savedMins {
+					fact.hasMin, fact.minLen = saved[0] != 0, saved[1]
+				}
+				return false
+			}
 		}
 		if inverse, known := conditionInverse[instr.Cond]; known && guard.valid {
 			// The taken path knows what the fall-through of the

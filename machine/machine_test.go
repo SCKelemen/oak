@@ -1377,3 +1377,44 @@ func TestFuseShiftAndIncrement(t *testing.T) {
 		t.Fatalf("fused %d:\n%s", fused, text(out.Items))
 	}
 }
+
+// A rotated loop's two exit tests fold into one conditional compare:
+// `b.hs done; cbz w5, loop` becomes `ccmp w5, #0, #0, lo; b.eq loop`.
+func TestFuseExitTests(t *testing.T) {
+	f := fn(
+		ins("mov", w(5), w(0)),
+		asm.Label{Name: "loop_4"},
+		ins("add", w(3), w(3), imm(1)),
+		ins("cmp", w(3), w(4)),
+		asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_5"}}},
+		ins("cbz", w(5), asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("mov", w(0), w(3)),
+		ins("ret"),
+	)
+	out, fused, err := FuseExits(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ccmp, back bool
+	for _, item := range out.Items {
+		ins, ok := item.(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if ins.Mnemonic == "ccmp" && len(ins.Operands) == 4 {
+			if c, isCond := ins.Operands[3].(asm.Condition); isCond && c.Code == "lo" && ins.Operands[2].(asm.Immediate).Value == 0 {
+				ccmp = true
+			}
+		}
+		if ins.Mnemonic == "b" && ins.Cond == "eq" {
+			back = true
+		}
+		if ins.Mnemonic == "cbz" {
+			t.Fatalf("the cbz survived:\n%s", text(out.Items))
+		}
+	}
+	if fused != 1 || !ccmp || !back {
+		t.Fatalf("fused %d (ccmp %v, back %v):\n%s", fused, ccmp, back, text(out.Items))
+	}
+}

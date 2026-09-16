@@ -1655,6 +1655,9 @@ type Lane struct {
 	// (machine.Fuse: a shift into an add's shifted operand, an increment
 	// into a csinc); the candidate search turns it on, the verifier judges.
 	Fuse bool
+	// FuseExits folds a loop tail's two exit tests into a conditional
+	// compare and one branch (machine.FuseExits); gated like Fuse.
+	FuseExits bool
 	// Schedule reorders each block's instructions between barriers so a
 	// value's consumer follows its producer by its latency where the
 	// block has independent work (machine.Schedule); the candidate search
@@ -1979,6 +1982,14 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 		out.Items = fused.Items
 		fusedOf[out] = n
 	}
+	if lane.FuseExits {
+		fused, n, err := machine.FuseExits(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		out.Items = fused.Items
+		fusedExitsOf[out] = n
+	}
 	if !lane.Schedule {
 		return out, nil
 	}
@@ -2002,6 +2013,12 @@ var scheduledOf = map[*asm.Function]int{}
 func Fused(fn *asm.Function) int { return fusedOf[fn] }
 
 var fusedOf = map[*asm.Function]int{}
+
+// FusedExits reports how many loop tails a lowering fused under
+// Lane.FuseExits.
+func FusedExits(fn *asm.Function) int { return fusedExitsOf[fn] }
+
+var fusedExitsOf = map[*asm.Function]int{}
 
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
