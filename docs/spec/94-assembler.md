@@ -4533,8 +4533,9 @@ reading an element at another index or a scalar the loop assigns, spans
 bound in the body, spans of different element types or without the
 equal-length guard, narrow or Bool lanes, integer multiplication and
 shifts, and the remainder loop of a map this rewrite made (the loop
-after a slack guard over the same span and index). One vector a trip,
-not four: a map carries nothing across trips.
+after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
+and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
+elements (`benchmarks/native/README.md`, "Map vectorization").
 
 **Multiply-add forms (2026-09-16, AArch64 lane;
 `nativegen/multiply_add.go`).** AArch64 computes a product and its addend
