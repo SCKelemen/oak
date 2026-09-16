@@ -70,6 +70,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},
 		{"packed-stack-args", lane.PackedStackArgs},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 	}
 	for _, flag := range flags {
 		writeNativeMaterializationPart(digest, flag.name, strconv.FormatBool(flag.enabled))
