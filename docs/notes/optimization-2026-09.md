@@ -232,16 +232,22 @@ phis, and reports only unused exact writes as dead candidates. Partial writes
 keep the reaching definition live and volatile accesses are observable roots.
 A separately verified transform now deletes only the closed `store.region`
 operation when it is one nonvolatile whole-region write and its exact output is
-dead. It renumbers metadata and rebuilds MemorySSA. Checked Bool/fixed-integer
+dead. It renumbers metadata and rebuilds MemorySSA. A second independently
+verified transform removes a canonical nonvolatile load only when its exact
+MemorySSA input supplies the same typed value from a dominating load or a
+dominating whole-region store. It drops facts tied to removed SSA identities,
+renumbers metadata, rebuilds MemorySSA, and refuses join versions rather than
+guessing through them. Checked Bool/fixed-integer
 package-global reads and whole-cell assignments now bind metadata to exact
 structured operation identities while CFG sites are built, then resolve opaque
 access IDs against separate immutable authority for their exact source, region,
 kind, type, whole-region contract, and volatility. The projections must agree.
 Missing, duplicated, forged, stale, or mismatched authority fails closed;
 globals are conservatively live on normal return. Projection, MemorySSA,
-liveness, combined evidence, and DSE now follow LICM in the typed artifact
-DAG; DSE independently verifies its complete rewrite before publishing it. A
-changed post-DSE CFG can enter native search on AArch64 and RV64 for
+liveness, combined evidence, DSE, and load forwarding now follow LICM in the
+typed artifact DAG; each transform independently verifies its complete rewrite
+before publishing it. A changed post-memory-optimization CFG can enter native
+search on AArch64 and RV64 for
 acyclic, call-free control flow over exact scalar package-global
 reads and whole nonvolatile writes. Both targets additionally admit one exact
 call-free canonical natural loop: one preheader, conditional header, straight-line
@@ -264,7 +270,7 @@ materialization identity. Their independently verified register plans, typed
 aligned spill frames, and reserved scratch disciplines compose with those
 global accesses on both targets. Seam admission and semantic translation
 validation remain the emission gate; direct lowering remains the fallback.
-Aggregate/partial regions, broader memory loops, load GVN, and
+Aggregate/partial regions, broader memory loops, and
 interprocedural call Mod/Ref summaries remain open; a function mixing a call
 with projected global state refuses for now.
 
@@ -277,7 +283,7 @@ pass code no longer owns dependency indexes and type assertions. Exact-version
 immutable nodes represent CFG v0, SCCP analysis, SCCP rewrite and CFG v1, loop
 structure and recurrences, GVN/DCE and CFG v2, preservation evidence,
 recomputed loop facts, LICM and CFG v3, checked-memory projection, region
-MemorySSA, memory liveness, evidence, and DSE. Analyses declare the topology, SSA, operation,
+MemorySSA, memory liveness, evidence, DSE, and region-load forwarding. Analyses declare the topology, SSA, operation,
 effect, type, fact, and layout aspects they read. GVN/DCE's checked certificate
 proves `CFGTopology` unchanged, so v2 reuses v1 dominance/natural-loop
 structure but recomputes induction facts from the changed SSA. Certificates carry exact
@@ -383,7 +389,7 @@ candidate selection.
 | Family | Techniques tracked for Oak | Placement |
 | --- | --- | --- |
 | Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
-| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, and a verified closed whole-region DSE transform have landed; changed post-DSE scalar-global load/store CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops remain fail-closed |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analysis and transformations; SCCP rewrite, unused/congruent phi cleanup, GVN/DCE, and LICM are production AArch64/RV64 candidates for the supported scalar subset; checked scalar-global region projection, explicit region MemorySSA/ModRef, dead-definition liveness, verified whole-region DSE, and dominance-scoped load/store forwarding have landed; changed final scalar-global CFGs are verifier-gated native candidates on both targets for acyclic control flow and one exact canonical natural loop; broader memory loops and load PRE through memory phis remain fail-closed |
 | Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
 | Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
 | Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |

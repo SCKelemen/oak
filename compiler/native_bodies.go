@@ -256,9 +256,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 // nativeOptIRCandidate projects and runs the exact artifact-DAG middle end
 // used by Compilation.OptIR. Unsupported functions and any failed analysis
 // simply have no candidate: the direct native lowering remains the identity.
-// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, LICM, or checked region DSE
-// is proposed, so the search never pays to validate an alternate spelling with
-// no generic optimization in it.
+// Only a CFG changed by SCCP/CFG cleanup, GVN/DCE, LICM, checked region DSE, or
+// checked region-load forwarding is proposed, so the search never pays to
+// validate an alternate spelling with no generic optimization in it.
 type nativeOptIRPlan struct {
 	cfg              *optir.CFG
 	changes          int
@@ -309,7 +309,8 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc
 	optimized := analyses.loopInvariant
 	if analyses.hasMemory {
 		changes += len(analyses.deadStoreElimination.Removed)
-		optimized = analyses.deadStores
+		changes += analyses.regionLoadForwarding.Changes()
+		optimized = analyses.regionLoads
 	}
 	if changes == 0 {
 		return nativeOptIRPlan{}
@@ -333,9 +334,27 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc
 	); err != nil {
 		return nativeOptIRPlan{}
 	}
+	if !reflect.DeepEqual(analyses.postDSEProjection.Metadata, analyses.deadStoreMetadata) ||
+		!reflect.DeepEqual(analyses.postDSEProjection.Observability, analyses.memoryProjection.Observability) {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyCheckedMemoryProjection(analyses.deadStores, memoryAuthority, analyses.postDSEProjection); err != nil {
+		return nativeOptIRPlan{}
+	}
+	if err := optir.VerifyRegionLoadForwarding(
+		analyses.deadStores,
+		analyses.postDSEProjection.Metadata,
+		analyses.postDSEMemorySSA,
+		analyses.regionLoads,
+		analyses.regionLoadMetadata,
+		analyses.regionLoadForwarding,
+	); err != nil {
+		return nativeOptIRPlan{}
+	}
 	projection, err := optir.ProjectCheckedMemory(optimized, memoryAuthority)
-	if err != nil || !reflect.DeepEqual(projection.Metadata, analyses.deadStoreMetadata) ||
-		!reflect.DeepEqual(projection.Observability, analyses.memoryProjection.Observability) {
+	if err != nil || !reflect.DeepEqual(projection.Metadata, analyses.regionLoadMetadata) ||
+		!reflect.DeepEqual(projection.Observability, analyses.memoryProjection.Observability) ||
+		!reflect.DeepEqual(projection, analyses.regionLoadProjection) {
 		return nativeOptIRPlan{}
 	}
 	if err := optir.VerifyCheckedMemoryProjection(optimized, memoryAuthority, projection); err != nil {
@@ -348,11 +367,14 @@ func nativeOptIRCandidate(function *ast.FunctionStatement, root *ast.Program, tc
 	if err := optir.VerifyRegionMemorySSA(optimized, projection.Metadata, memorySSA); err != nil {
 		return nativeOptIRPlan{}
 	}
+	if !reflect.DeepEqual(memorySSA, analyses.regionLoadMemorySSA) {
+		return nativeOptIRPlan{}
+	}
 	fingerprint, err := optir.FingerprintRegionMemoryInput(optimized, projection.Metadata, projection.Observability)
 	if err != nil {
 		return nativeOptIRPlan{}
 	}
-	bindings, ok := nativeOptIRRegionBindings(analyses.deadStoreMetadata, tc, globals)
+	bindings, ok := nativeOptIRRegionBindings(analyses.regionLoadMetadata, tc, globals)
 	if !ok {
 		return nativeOptIRPlan{}
 	}

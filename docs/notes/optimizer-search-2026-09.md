@@ -431,9 +431,8 @@ budget and proof early-stop. The executor runs bounded deterministic ready
 waves for independent analysis work. The complete design is
 `optimizer-artifact-dag-2026-09.md`.
 
-Not yet: checked memory-region projection that can make the landed closed
-whole-region DSE transform a production candidate, load GVN,
-non-affine and symbolic trip-count proofs,
+Not yet: aggregate/partial memory-region projection, load PRE through proven
+memory phis, non-affine and symbolic trip-count proofs,
 unrolling and further loop transforms,
 vector plans (Phase D),
 and the proof-obligation service of the proof-guided note §26 beyond the
@@ -875,7 +874,12 @@ liveness now takes an explicit set of regions observable on normal return,
 roots reads, volatile accesses, opaque clobbers, and those terminal versions,
 and propagates through join/loop phis. Partial writes keep their predecessors
 live. A verified transform deletes only a dead, whole-region, nonvolatile
-`store.region`, rewrites its metadata, and rebuilds MemorySSA. Checked Oak
+`store.region`, rewrites its metadata, and rebuilds MemorySSA. A verified
+load-forwarding transform then removes canonical nonvolatile region loads only
+when their exact MemorySSA input identifies the same typed value from a
+dominating load or whole-region store. It deliberately refuses phi versions,
+drops facts bound to removed SSA identities, remaps every use and operation
+site, and rebuilds MemorySSA. Checked Oak
 Bool/fixed-integer package-global reads and whole-cell assignments now project
 into it. Metadata first follows the exact structured operation identity into a
 CFG site. Each projected operation then carries only an opaque access ID; a
@@ -883,9 +887,10 @@ separate immutable authority fixes its exact source, region, kind, scalar type,
 whole-region contract, and volatility. The two projections must agree.
 Projection rejects missing, duplicated, stale, forged, or mismatched authority
 and treats every global region as live on normal return. The typed artifact DAG
-runs projection, MemorySSA, liveness, combined evidence, and DSE after LICM;
-DSE independently verifies its complete rewrite before publishing it.
-Changed post-DSE CFGs can enter native search on AArch64 and RV64 when the
+runs projection, MemorySSA, liveness, combined evidence, DSE, and load
+forwarding after LICM; both transforms independently verify their complete
+rewrites before publishing them. Changed final CFGs can enter native search on
+AArch64 and RV64 when the
 memory vocabulary is acyclic, call-free control flow over exact
 scalar package-global reads and whole nonvolatile writes. Both targets also
 admit one exact call-free canonical natural loop with a unique preheader,
@@ -907,12 +912,11 @@ of materialization identity. Existing verified register plans and typed aligned
 spill frames compose with global accesses using disjoint reserved scratches on
 both targets; seam admission and semantic translation validation still decide
 whether the body may ship. Aggregate/partial regions, broader memory loops,
-load GVN, and interprocedural call Mod/Ref summaries remain open.
+and interprocedural call Mod/Ref summaries remain open.
 
 As the projection broadens, region memory SSA should power:
 
-- load CSE;
-- store-to-load forwarding;
+- broader load PRE through proven memory phis;
 - dead-store elimination;
 - LICM;
 - safe memory reordering;

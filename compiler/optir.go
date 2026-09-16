@@ -14,30 +14,35 @@ import (
 
 // OptIRFunction is one checked structured projection, its independently
 // verified CFG/SSA view, and optimization results. The native candidate search
-// may select the pure LoopInvariant result or the region-memory DeadStores
-// result through its fail-closed AArch64 and RV64 selectors.
+// may select the pure LoopInvariant result or the final region-memory
+// ForwardedLoads result through its fail-closed AArch64 and RV64 selectors.
 type OptIRFunction struct {
-	Name                 string
-	Structured           optir.Function
-	CheckedFacts         optir.CheckedFactAuthority
-	CheckedFactsHash     string
-	CheckedMemory        optir.CheckedMemoryAuthority
-	CheckedMemoryHash    string
-	CFG                  optir.CFG
-	Constants            optir.SCCPResult
-	SCCPSimplified       optir.CFG
-	SCCPRewrite          optir.SCCPRewriteReport
-	Loops                optir.LoopAnalysis
-	Simplified           optir.CFG
-	Simplification       optir.GVNDCEReport
-	LoopInvariant        optir.CFG
-	LoopMotion           optir.LICMReport
-	MemoryProjection     optir.CheckedMemoryProjection
-	MemorySSA            optir.RegionMemorySSA
-	MemoryLiveness       optir.MemoryDefinitionLiveness
-	DeadStores           optir.CFG
-	DeadStoreMetadata    optir.RegionMemoryMetadata
-	DeadStoreElimination optir.DeadStoreEliminationReport
+	Name                  string
+	Structured            optir.Function
+	CheckedFacts          optir.CheckedFactAuthority
+	CheckedFactsHash      string
+	CheckedMemory         optir.CheckedMemoryAuthority
+	CheckedMemoryHash     string
+	CFG                   optir.CFG
+	Constants             optir.SCCPResult
+	SCCPSimplified        optir.CFG
+	SCCPRewrite           optir.SCCPRewriteReport
+	Loops                 optir.LoopAnalysis
+	Simplified            optir.CFG
+	Simplification        optir.GVNDCEReport
+	LoopInvariant         optir.CFG
+	LoopMotion            optir.LICMReport
+	MemoryProjection      optir.CheckedMemoryProjection
+	MemorySSA             optir.RegionMemorySSA
+	MemoryLiveness        optir.MemoryDefinitionLiveness
+	DeadStores            optir.CFG
+	DeadStoreMetadata     optir.RegionMemoryMetadata
+	DeadStoreElimination  optir.DeadStoreEliminationReport
+	ForwardedLoads        optir.CFG
+	ForwardedLoadMetadata optir.RegionMemoryMetadata
+	RegionLoadForwarding  optir.RegionLoadForwardingReport
+	FinalMemoryProjection optir.CheckedMemoryProjection
+	FinalMemorySSA        optir.RegionMemorySSA
 }
 
 // OptIRRefusal is an ordinary unsupported-subset result. The function remains
@@ -104,27 +109,32 @@ func lowerOptIRModule(model *SemanticModel) (OptIRModule, error) {
 			return OptIRModule{}, fmt.Errorf("compiler: OptIR checked facts for %s failed after optimization: %w", function.Name.Value, err)
 		}
 		module.Functions = append(module.Functions, OptIRFunction{
-			Name:                 function.Name.Value,
-			Structured:           structured,
-			CheckedFacts:         authority,
-			CheckedFactsHash:     authority.Fingerprint(),
-			CheckedMemory:        memoryAuthority,
-			CheckedMemoryHash:    memoryAuthority.Fingerprint(),
-			CFG:                  cfg,
-			Constants:            analyses.constants,
-			SCCPSimplified:       analyses.sccpSimplified,
-			SCCPRewrite:          analyses.sccpSimplification,
-			Loops:                analyses.loops,
-			Simplified:           analyses.simplified,
-			Simplification:       analyses.simplification,
-			LoopInvariant:        analyses.loopInvariant,
-			LoopMotion:           analyses.loopMotion,
-			MemoryProjection:     analyses.memoryProjection,
-			MemorySSA:            analyses.memorySSA,
-			MemoryLiveness:       analyses.memoryLiveness,
-			DeadStores:           analyses.deadStores,
-			DeadStoreMetadata:    analyses.deadStoreMetadata,
-			DeadStoreElimination: analyses.deadStoreElimination,
+			Name:                  function.Name.Value,
+			Structured:            structured,
+			CheckedFacts:          authority,
+			CheckedFactsHash:      authority.Fingerprint(),
+			CheckedMemory:         memoryAuthority,
+			CheckedMemoryHash:     memoryAuthority.Fingerprint(),
+			CFG:                   cfg,
+			Constants:             analyses.constants,
+			SCCPSimplified:        analyses.sccpSimplified,
+			SCCPRewrite:           analyses.sccpSimplification,
+			Loops:                 analyses.loops,
+			Simplified:            analyses.simplified,
+			Simplification:        analyses.simplification,
+			LoopInvariant:         analyses.loopInvariant,
+			LoopMotion:            analyses.loopMotion,
+			MemoryProjection:      analyses.memoryProjection,
+			MemorySSA:             analyses.memorySSA,
+			MemoryLiveness:        analyses.memoryLiveness,
+			DeadStores:            analyses.deadStores,
+			DeadStoreMetadata:     analyses.deadStoreMetadata,
+			DeadStoreElimination:  analyses.deadStoreElimination,
+			ForwardedLoads:        analyses.regionLoads,
+			ForwardedLoadMetadata: analyses.regionLoadMetadata,
+			RegionLoadForwarding:  analyses.regionLoadForwarding,
+			FinalMemoryProjection: analyses.regionLoadProjection,
+			FinalMemorySSA:        analyses.regionLoadMemorySSA,
 		})
 	}
 	return module, nil
@@ -957,7 +967,7 @@ func (lowerer *optIRLowerer) checkedTypeFact(tok token.Token, result optir.Value
 func verifyOptIRAnalysisFacts(authority optir.CheckedFactAuthority, analyses optIRAnalysisArtifacts) error {
 	candidates := []optir.CFG{analyses.sccpSimplified, analyses.simplified, analyses.loopInvariant}
 	if analyses.hasMemory {
-		candidates = append(candidates, analyses.deadStores)
+		candidates = append(candidates, analyses.deadStores, analyses.regionLoads)
 	}
 	for _, cfg := range candidates {
 		if err := optir.VerifyCFGCheckedFacts(cfg, authority); err != nil {

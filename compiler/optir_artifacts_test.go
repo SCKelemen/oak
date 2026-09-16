@@ -41,7 +41,10 @@ main: (): i32 = 0
 	}
 	if !reflect.DeepEqual(first.keys, second.keys) || !reflect.DeepEqual(first.constants, second.constants) ||
 		!reflect.DeepEqual(first.sccpSimplified, second.sccpSimplified) || !reflect.DeepEqual(first.sccpSimplification, second.sccpSimplification) ||
-		!reflect.DeepEqual(first.loops, second.loops) || !reflect.DeepEqual(first.simplified, second.simplified) || !reflect.DeepEqual(first.loopInvariant, second.loopInvariant) {
+		!reflect.DeepEqual(first.loops, second.loops) || !reflect.DeepEqual(first.simplified, second.simplified) || !reflect.DeepEqual(first.loopInvariant, second.loopInvariant) ||
+		!reflect.DeepEqual(first.deadStores, second.deadStores) || !reflect.DeepEqual(first.regionLoads, second.regionLoads) ||
+		!reflect.DeepEqual(first.regionLoadForwarding, second.regionLoadForwarding) || !reflect.DeepEqual(first.regionLoadProjection, second.regionLoadProjection) ||
+		!reflect.DeepEqual(first.regionLoadMemorySSA, second.regionLoadMemorySSA) {
 		t.Fatal("OptIR artifact analysis is not deterministic")
 	}
 	graph, references, err := newOptIRAnalysisGraph(function.CFG, function.CheckedMemory)
@@ -49,8 +52,8 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	keys := references.keys()
-	if keys.sccpRewrite.Name != "optir.sccp-rewrite" || keys.cleanup.Name != "optir.gvn-dce" || keys.preservation.Name != "optir.gvn-dce.preservation" {
-		t.Fatalf("GVN/DCE artifact keys = %s, %s", keys.cleanup, keys.preservation)
+	if keys.sccpRewrite.Name != "optir.sccp-rewrite" || keys.cleanup.Name != "optir.gvn-dce" || keys.preservation.Name != "optir.gvn-dce.preservation" || keys.regionLoads.Name != "optir.region-load-forwarding" {
+		t.Fatalf("optimization artifact keys = %s, %s, %s", keys.cleanup, keys.preservation, keys.regionLoads)
 	}
 	wantOrder, err := graph.TopologicalOrder()
 	if err != nil {
@@ -59,7 +62,7 @@ main: (): i32 = 0
 	if !reflect.DeepEqual(first.run.Executed, wantOrder) || len(first.run.CacheHits) != 0 {
 		t.Fatalf("artifact execution = %v, cache hits = %v, want order %v", first.run.Executed, first.run.CacheHits, wantOrder)
 	}
-	for _, key := range []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.sccpRewrite, keys.cfgV1, keys.loopStructureV1, keys.loopsV1, keys.cleanup, keys.cfgV2, keys.preservation, keys.loopsV2, keys.licm, keys.cfgV3, keys.memoryAuthority, keys.memoryProjection, keys.memorySSA, keys.memoryLiveness, keys.memoryEvidence, keys.dse} {
+	for _, key := range []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.sccpRewrite, keys.cfgV1, keys.loopStructureV1, keys.loopsV1, keys.cleanup, keys.cfgV2, keys.preservation, keys.loopsV2, keys.licm, keys.cfgV3, keys.memoryAuthority, keys.memoryProjection, keys.memorySSA, keys.memoryLiveness, keys.memoryEvidence, keys.dse, keys.regionLoads} {
 		if _, exists := first.run.Artifact(key); !exists {
 			t.Fatalf("artifact graph did not produce %s", key)
 		}
@@ -98,7 +101,7 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	keys := references.keys()
-	targets := []opt.ArtifactKey{keys.sccp, keys.sccpRewrite, keys.loopsV1, keys.cleanup, keys.licm, keys.dse}
+	targets := []opt.ArtifactKey{keys.sccp, keys.sccpRewrite, keys.loopsV1, keys.cleanup, keys.licm, keys.regionLoads}
 	cache := opt.NewMemoryArtifactCache()
 	first, err := graph.Run(context.Background(), cache, targets...)
 	if err != nil {
@@ -108,7 +111,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Executed) != 18 || len(second.Executed) != 0 || len(second.CacheHits) != len(targets) {
+	if len(first.Executed) != 19 || len(second.Executed) != 0 || len(second.CacheHits) != len(targets) {
 		t.Fatalf("cache evidence: first=%+v second=%+v", first, second)
 	}
 
@@ -119,18 +122,18 @@ main: (): i32 = 0
 		t.Fatal(err)
 	}
 	changedKeys := changedReferences.keys()
-	before := []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.sccpRewrite, keys.cfgV1, keys.loopStructureV1, keys.loopsV1, keys.cleanup, keys.cfgV2, keys.preservation, keys.loopsV2, keys.licm, keys.cfgV3, keys.memoryProjection, keys.memorySSA, keys.memoryLiveness, keys.memoryEvidence, keys.dse}
-	after := []opt.ArtifactKey{changedKeys.cfgV0, changedKeys.sccp, changedKeys.sccpRewrite, changedKeys.cfgV1, changedKeys.loopStructureV1, changedKeys.loopsV1, changedKeys.cleanup, changedKeys.cfgV2, changedKeys.preservation, changedKeys.loopsV2, changedKeys.licm, changedKeys.cfgV3, changedKeys.memoryProjection, changedKeys.memorySSA, changedKeys.memoryLiveness, changedKeys.memoryEvidence, changedKeys.dse}
+	before := []opt.ArtifactKey{keys.cfgV0, keys.sccp, keys.sccpRewrite, keys.cfgV1, keys.loopStructureV1, keys.loopsV1, keys.cleanup, keys.cfgV2, keys.preservation, keys.loopsV2, keys.licm, keys.cfgV3, keys.memoryProjection, keys.memorySSA, keys.memoryLiveness, keys.memoryEvidence, keys.dse, keys.regionLoads}
+	after := []opt.ArtifactKey{changedKeys.cfgV0, changedKeys.sccp, changedKeys.sccpRewrite, changedKeys.cfgV1, changedKeys.loopStructureV1, changedKeys.loopsV1, changedKeys.cleanup, changedKeys.cfgV2, changedKeys.preservation, changedKeys.loopsV2, changedKeys.licm, changedKeys.cfgV3, changedKeys.memoryProjection, changedKeys.memorySSA, changedKeys.memoryLiveness, changedKeys.memoryEvidence, changedKeys.dse, changedKeys.regionLoads}
 	for index := range before {
 		if before[index] == after[index] {
 			t.Fatalf("CFG change did not invalidate artifact %s", before[index])
 		}
 	}
-	changedRun, err := changedGraph.Run(context.Background(), cache, changedKeys.sccp, changedKeys.sccpRewrite, changedKeys.loopsV1, changedKeys.cleanup, changedKeys.licm, changedKeys.dse)
+	changedRun, err := changedGraph.Run(context.Background(), cache, changedKeys.sccp, changedKeys.sccpRewrite, changedKeys.loopsV1, changedKeys.cleanup, changedKeys.licm, changedKeys.regionLoads)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changedRun.Executed) != 17 || len(changedRun.CacheHits) != 1 {
+	if len(changedRun.Executed) != 18 || len(changedRun.CacheHits) != 1 {
 		t.Fatalf("changed CFG reused stale artifacts: %+v", changedRun)
 	}
 }
@@ -156,8 +159,8 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if references.hasMemory || len(order) != 12 || references.dse.Key() != (opt.ArtifactKey{}) {
-		t.Fatalf("call-only artifact graph has memory nodes: hasMemory=%t order=%v dse=%v", references.hasMemory, order, references.dse.Key())
+	if references.hasMemory || len(order) != 12 || references.dse.Key() != (opt.ArtifactKey{}) || references.regionLoads.Key() != (opt.ArtifactKey{}) {
+		t.Fatalf("call-only artifact graph has memory nodes: hasMemory=%t order=%v dse=%v regionLoads=%v", references.hasMemory, order, references.dse.Key(), references.regionLoads.Key())
 	}
 	analyses, err := runOptIRAnalysisGraphWithMemory(function.CFG, function.CheckedMemory)
 	if err != nil {

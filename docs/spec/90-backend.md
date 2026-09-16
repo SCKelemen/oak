@@ -736,17 +736,22 @@ writes as dead candidates. Partial writes keep their predecessor live; volatile
 accesses are roots. A separately verified DSE transform can now remove a dead
 operation only when it is the closed `store.region` form and metadata certifies
 one whole-region, nonvolatile write. It rewrites operation sites and metadata,
-then rebuilds MemorySSA. The scalar-global projection first binds metadata to
+then rebuilds MemorySSA. A separately verified load-forwarding transform
+removes only canonical nonvolatile region loads whose exact MemorySSA input
+proves the same typed value is already available from a dominating load or
+whole-region store. It refuses memory phis, drops facts bound to removed SSA
+values, rewrites all uses and metadata sites, and rebuilds MemorySSA. The
+scalar-global projection first binds metadata to
 the exact structured operation identity while constructing CFG operation
 sites. It then independently resolves each projected operation's opaque access
 ID against a separate immutable typechecker-backed authority: source, region,
 access kind, scalar type, whole-region contract, and volatility must all match,
 the two projections must agree, and missing, duplicated, forged, or stale IDs
 fail closed. Every package-global region is observable at normal return.
-Projection, MemorySSA, liveness, evidence, and DSE are exact typed artifact-DAG
-nodes after LICM; the DSE node independently reruns its complete transform
-verifier before publishing a candidate. Changed post-DSE CFGs now enter AArch64
-or RV64 native search for closed acyclic, call-free control flow containing
+Projection, MemorySSA, liveness, evidence, DSE, and load forwarding are exact
+typed artifact-DAG nodes after LICM; each transform independently reruns its
+complete verifier before publishing a candidate. Changed final CFGs now enter
+AArch64 or RV64 native search for closed acyclic, call-free control flow containing
 exact scalar package-global reads and whole nonvolatile writes. Both targets also admit
 exactly one call-free canonical natural loop with a unique preheader, conditional
 header, straight-line body/latch, backedge, and return exit. RegionMemorySSA
@@ -768,8 +773,7 @@ The target's independently verified register plan, typed aligned spill frame,
 and reserved scratch discipline compose with those accesses. The resulting
 authority and final projection fingerprints are part of materialization
 identity. The resulting body still requires seam admission and a
-semantic-verifier verdict before selection. Load forwarding, broader memory
-loops,
+semantic-verifier verdict before selection. Broader memory loops,
 aggregate regions, and interprocedural call Mod/Ref summaries remain open.
 `Compilation.OptIR()` returns
 the original CFG, SCCP evidence and rewritten CFG, later candidates, and each

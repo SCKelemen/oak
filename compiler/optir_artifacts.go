@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 
 	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/optir"
@@ -24,6 +26,7 @@ const (
 	optIRMemoryLivenessRevision   = "oak.optir.memory-liveness.v2"
 	optIRMemoryEvidenceRevision   = "oak.optir.memory-evidence.v1"
 	optIRDSERevision              = "oak.optir.dead-store-elimination.v1"
+	optIRRegionLoadRevision       = "oak.optir.region-load-forwarding.v1"
 )
 
 type optIRSCCPRewriteArtifact struct {
@@ -52,6 +55,16 @@ type optIRDSEArtifact struct {
 	Report   optir.DeadStoreEliminationReport
 }
 
+type optIRRegionLoadArtifact struct {
+	InputProjection optir.CheckedMemoryProjection
+	InputSSA        optir.RegionMemorySSA
+	CFG             optir.CFG
+	Metadata        optir.RegionMemoryMetadata
+	Projection      optir.CheckedMemoryProjection
+	SSA             optir.RegionMemorySSA
+	Report          optir.RegionLoadForwardingReport
+}
+
 type optIRArtifactKeys struct {
 	cfgV0            opt.ArtifactKey
 	sccp             opt.ArtifactKey
@@ -71,6 +84,7 @@ type optIRArtifactKeys struct {
 	memoryLiveness   opt.ArtifactKey
 	memoryEvidence   opt.ArtifactKey
 	dse              opt.ArtifactKey
+	regionLoads      opt.ArtifactKey
 }
 
 type optIRArtifactRefs struct {
@@ -93,6 +107,7 @@ type optIRArtifactRefs struct {
 	memoryLiveness   opt.ArtifactRef[optir.MemoryDefinitionLiveness]
 	memoryEvidence   opt.ArtifactRef[optIRMemoryEvidenceArtifact]
 	dse              opt.ArtifactRef[optIRDSEArtifact]
+	regionLoads      opt.ArtifactRef[optIRRegionLoadArtifact]
 }
 
 func (references optIRArtifactRefs) keys() optIRArtifactKeys {
@@ -115,6 +130,7 @@ func (references optIRArtifactRefs) keys() optIRArtifactKeys {
 		memoryLiveness:   references.memoryLiveness.Key(),
 		memoryEvidence:   references.memoryEvidence.Key(),
 		dse:              references.dse.Key(),
+		regionLoads:      references.regionLoads.Key(),
 	}
 }
 
@@ -134,6 +150,13 @@ type optIRAnalysisArtifacts struct {
 	deadStores           optir.CFG
 	deadStoreMetadata    optir.RegionMemoryMetadata
 	deadStoreElimination optir.DeadStoreEliminationReport
+	postDSEProjection    optir.CheckedMemoryProjection
+	postDSEMemorySSA     optir.RegionMemorySSA
+	regionLoads          optir.CFG
+	regionLoadMetadata   optir.RegionMemoryMetadata
+	regionLoadProjection optir.CheckedMemoryProjection
+	regionLoadMemorySSA  optir.RegionMemorySSA
+	regionLoadForwarding optir.RegionLoadForwardingReport
 	run                  opt.ArtifactRun
 	keys                 optIRArtifactKeys
 }
@@ -145,7 +168,7 @@ func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.Checke
 	}
 	targets := []opt.ArtifactKey{references.sccp.Key(), references.sccpRewrite.Key(), references.loopsV1.Key(), references.cleanup.Key(), references.licm.Key()}
 	if references.hasMemory {
-		targets = append(targets, references.dse.Key())
+		targets = append(targets, references.regionLoads.Key())
 	}
 	run, err := graph.RunParallel(context.Background(), nil, optIRAnalysisWorkers, targets...)
 	if err != nil {
@@ -209,6 +232,17 @@ func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.Checke
 	artifacts.deadStores = dse.CFG
 	artifacts.deadStoreMetadata = dse.Metadata
 	artifacts.deadStoreElimination = dse.Report
+	regionLoads, err := references.regionLoads.Value(run)
+	if err != nil {
+		return optIRAnalysisArtifacts{}, err
+	}
+	artifacts.postDSEProjection = regionLoads.InputProjection
+	artifacts.postDSEMemorySSA = regionLoads.InputSSA
+	artifacts.regionLoads = regionLoads.CFG
+	artifacts.regionLoadMetadata = regionLoads.Metadata
+	artifacts.regionLoadProjection = regionLoads.Projection
+	artifacts.regionLoadMemorySSA = regionLoads.SSA
+	artifacts.regionLoadForwarding = regionLoads.Report
 	return artifacts, nil
 }
 
@@ -313,6 +347,54 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 				}
 				return optIRDSEArtifact{CFG: result, Metadata: metadata, Report: report}, err
 			})
+		regionLoads, regionLoadsTask := opt.DerivedArtifact2(opt.ArtifactCandidate, "optir.region-load-forwarding", optIRRegionLoadRevision, dse, memoryAuthorityRef,
+			func(_ context.Context, input optIRDSEArtifact, authority optir.CheckedMemoryAuthority) (optIRRegionLoadArtifact, error) {
+				inputProjection, err := optir.ProjectCheckedMemory(input.CFG, authority)
+				if err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				if !reflect.DeepEqual(inputProjection.Metadata, input.Metadata) {
+					return optIRRegionLoadArtifact{}, fmt.Errorf("compiler: post-DSE checked memory projection disagrees with rewritten metadata")
+				}
+				if err := optir.VerifyCheckedMemoryProjection(input.CFG, authority, inputProjection); err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				inputSSA, err := optir.AnalyzeRegionMemorySSA(input.CFG, inputProjection.Metadata)
+				if err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				if err := optir.VerifyRegionMemorySSA(input.CFG, inputProjection.Metadata, inputSSA); err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				result, metadata, report, err := optir.ForwardRegionLoads(input.CFG, inputProjection.Metadata, inputSSA)
+				if err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				if err := optir.VerifyRegionLoadForwarding(input.CFG, inputProjection.Metadata, inputSSA, result, metadata, report); err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				projection, err := optir.ProjectCheckedMemory(result, authority)
+				if err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				if !reflect.DeepEqual(projection.Metadata, metadata) {
+					return optIRRegionLoadArtifact{}, fmt.Errorf("compiler: post-forwarding checked memory projection disagrees with rewritten metadata")
+				}
+				if err := optir.VerifyCheckedMemoryProjection(result, authority, projection); err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				memorySSA, err := optir.AnalyzeRegionMemorySSA(result, projection.Metadata)
+				if err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				if err := optir.VerifyRegionMemorySSA(result, projection.Metadata, memorySSA); err != nil {
+					return optIRRegionLoadArtifact{}, err
+				}
+				return optIRRegionLoadArtifact{
+					InputProjection: inputProjection, InputSSA: inputSSA,
+					CFG: result, Metadata: metadata, Projection: projection, SSA: memorySSA, Report: report,
+				}, nil
+			})
 		references.hasMemory = true
 		references.memoryAuthority = memoryAuthorityRef
 		references.memoryProjection = memoryProjection
@@ -320,7 +402,8 @@ func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAut
 		references.memoryLiveness = memoryLiveness
 		references.memoryEvidence = memoryEvidence
 		references.dse = dse
-		tasks = append(tasks, memoryAuthorityTask, memoryProjectionTask, memorySSATask, memoryLivenessTask, memoryEvidenceTask, dseTask)
+		references.regionLoads = regionLoads
+		tasks = append(tasks, memoryAuthorityTask, memoryProjectionTask, memorySSATask, memoryLivenessTask, memoryEvidenceTask, dseTask, regionLoadsTask)
 	}
 	graph, err := opt.NewArtifactGraph(tasks...)
 	if err != nil {

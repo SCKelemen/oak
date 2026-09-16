@@ -66,6 +66,28 @@ main: (): i32 = 0
 	if !reflect.DeepEqual(projected.Metadata, replace.DeadStoreMetadata) {
 		t.Fatalf("post-DSE metadata = %+v, want %+v", projected.Metadata, replace.DeadStoreMetadata)
 	}
+	postDSESSA, err := optir.AnalyzeRegionMemorySSA(replace.DeadStores, projected.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := optir.VerifyRegionLoadForwarding(
+		replace.DeadStores, projected.Metadata, postDSESSA,
+		replace.ForwardedLoads, replace.ForwardedLoadMetadata, replace.RegionLoadForwarding,
+	); err != nil {
+		t.Fatalf("region-load forwarding verification: %v", err)
+	}
+	if replace.RegionLoadForwarding.Changes() != 1 || replace.RegionLoadForwarding.Replacements[0].Kind != optir.RegionLoadFromStore {
+		t.Fatalf("region-load forwarding report = %+v", replace.RegionLoadForwarding)
+	}
+	if stores, loads := countOptIRMemoryOperations(replace.ForwardedLoads); stores != 1 || loads != 0 {
+		t.Fatalf("post-forwarding memory operations = stores %d, loads %d", stores, loads)
+	}
+	if err := optir.VerifyCheckedMemoryProjection(replace.ForwardedLoads, replace.CheckedMemory, replace.FinalMemoryProjection); err != nil {
+		t.Fatalf("final checked memory projection: %v", err)
+	}
+	if err := optir.VerifyRegionMemorySSA(replace.ForwardedLoads, replace.FinalMemoryProjection.Metadata, replace.FinalMemorySSA); err != nil {
+		t.Fatalf("final region MemorySSA: %v", err)
+	}
 }
 
 func TestCheckedGlobalMemoryKeepsBranchStoresAndRejectsAggregateGlobals(t *testing.T) {

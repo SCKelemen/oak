@@ -189,7 +189,8 @@ func Transforms() []opt.Transform {
 			// The generic SSA middle end's optimized CFG becomes a native
 			// implementation candidate. The closed AArch64 and RV64 selectors
 			// also admit exact whole-region scalar-global stores after verified
-			// MemorySSA/DSE. Unsupported effects and types refuse, and every
+			// MemorySSA, DSE, and region-load forwarding. Unsupported effects
+			// and types refuse, and every
 			// emitted body remains translation-validator gated.
 			name: TransformOptIR, phase: opt.PhaseCanonical, proof: opt.Mechanical,
 			arches:  bothLanes,
