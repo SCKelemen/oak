@@ -5922,6 +5922,42 @@ hours and three quarters without finishing in the root suite, agrees on
 small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
+
+**Indexed loads through record arguments; the Bits family's cost
+(2026-09-16).** Sixteen bodies of the prover's `Bits` family (`not_bits`,
+`rotate_right`, `shift_const`, `count_leading_zeros`, …) stopped at "an
+indexed load through a record argument": the backend now passes `a:
+Bits` by reference and reads `a.at[i]` as `ldr w6, [x22, w5, uxtw #2]`
+under `cmp w5, #64; b.hs trap`. The executor reads such a load as the
+element of the array field the address starts, selected from the
+field's leaves by the index under the guard's bound — the fold the Oak
+side builds for `a.at[i]` (`TestVerifyIndexedLoadThroughRecordArgument`:
+proven; the other field's elements refuted). The family then reaches the
+coupling, and its cost came into view: a `Bits` result is 256 bytes,
+thirty-two words returned through memory, and the verifier runs its
+whole pipeline — the execution, the witness pass, the coupling search —
+once per word; at four to five seconds a word `add_bits` takes two and a
+half minutes a candidate deciding nothing it did not decide on the first
+word. Three budgets landed with it, each deterministic: a loop proof
+ends after three failed diagrams (`loopProofNodeBudget`, from eight —
+`count_leading_zeros` spent seven minutes a candidate under eight); a
+loop proof's witness pass stops when its runs have taken two million
+machine steps in all, a lowering's loop iterations at two hundred and
+fifty-six steps each (`witnessWorkBudget`); and a lowering counts the
+loop iterations it runs, its inlined callees' included, against
+`loweringWorkBudget` (32768) rather than unrolling the BDD apply's
+sixty-four trips inside sixty-four trips for minutes. Two more followed
+the measurements: an implication charges the proof its terms' distinct
+nodes whether or not it decides (two thousand small decided ones over a
+long write log took seven minutes), and each implication of a loop proof
+gets a quarter of the straight-line decision's nodes, the proof four
+such failures' worth (three cost ten proofs, six a quarter of an hour on
+one body). Prover build per body, measured at three failures' worth:
+proven 536, evidence 205, trusted 216, no disagreement — the `Bits`
+family moved from trusted to evidence, and ten proofs at the budget's
+edge came back at four. The one execution and one coupling for all of a
+record's words, and `protocol_line_done`'s remaining minutes, are the
+next increments.
  Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
