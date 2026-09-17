@@ -74,8 +74,17 @@ func TestE2ENativeArrayPermutationLoop(t *testing.T) {
 	if v := asm.Verify(body, fn, fn.Body); v.Kind != asm.VerdictProven {
 		t.Fatalf("direct shuffle must be proven: %s: %s", v.Kind, v.Message)
 	}
-	if objects := nativegen.FrameObjects(body); len(objects) != 1 || objects[0].Size != 64 {
-		t.Fatalf("shuffle should own only its message array: %+v\n%s", objects, nativegen.Describe(body))
+	// The message array is the only thing shuffle owns on the frame, and
+	// it need not be there at all: with its elements promoted to
+	// registers the frame holds nothing of its own, and the eighty bytes
+	// it reserves are spill space rather than an object. What must not
+	// appear is a second object, or one of another size.
+	objects := nativegen.FrameObjects(body)
+	if len(objects) > 1 {
+		t.Fatalf("shuffle should own only its message array, got %+v\n%s", objects, nativegen.Describe(body))
+	}
+	if len(objects) == 1 && objects[0].Size != 64 {
+		t.Fatalf("shuffle's one frame object should be its 64-byte message array, got %+v\n%s", objects, nativegen.Describe(body))
 	}
 	for _, build := range []struct {
 		name string
