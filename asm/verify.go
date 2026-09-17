@@ -2326,6 +2326,14 @@ const (
 	// family) refused "more paths than the verifier's budget" on the
 	// merged run too under the flat budget.
 	joinedPathBudget = 16 * pathBudget
+	// mergedTermBudget bounds the distinct term nodes a state merged at a
+	// join may hold (its registers, slots, cells and write logs): the
+	// merged run of a body with hundreds of conditionals over a long
+	// write log builds selects on selects whose canonicalization alone
+	// ran for minutes and past eight gigabytes (the prover's emit_header
+	// under the joined path budget). Past it the body is refused rather
+	// than run on.
+	mergedTermBudget = 1 << 16
 )
 
 // pathLimit is the run's path budget: the joined run's when the paths
@@ -2367,6 +2375,11 @@ type pathExecutor struct {
 	// reads are the body's reads of span memory through the write log, by
 	// node (spanRead), for the aligned fast path's alignReads.
 	reads map[*term]spanRead
+	// decision proved write by write (decideSpans): the machine's reads
+	// over that prefix are the Oak side's (alignReadsBySpan).
+	// mergeOverflow records a merge at a join past mergedTermBudget: the
+	// run is refused rather than continued path by path (run).
+	mergeOverflow bool
 	// frameSpans are the large owned arrays read and written as spans
 	// (frameSpanAccess); zeroSpans the spans whose entry contents are zero
 	// (such an array, on either side); localSpans the spans that are the
@@ -3583,6 +3596,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				return nil, nil, "", true // both sides ended before the join
 			}
 			merged, mergeable := x.mergeStates(parent, parked)
+			if !mergeable && x.mergeOverflow {
+				return nil, nil, atInstruction("the paths merged at their joins exceed the verifier's term budget", instr), false
+			}
 			if !mergeable {
 				for _, parkedState := range parked {
 					if _, _, reason, ok := x.run(join, parkedState); !ok {
@@ -3944,6 +3960,27 @@ func (x *pathExecutor) mergeStates(parent *pathNode, parked []*symbolicState) (*
 		rel = constTerm(1, 1)
 	}
 	acc.path = &pathNode{parent: parent, cond: rel}
+	// The merged state's size (mergedTermBudget): every register, slot,
+	// cell and write, as distinct nodes.
+	var held []*term
+	for _, t := range acc.regs {
+		held = append(held, t)
+	}
+	for _, slot := range acc.frame {
+		held = append(held, slot.value)
+	}
+	for _, t := range acc.globals {
+		held = append(held, t)
+	}
+	for _, log := range acc.writes {
+		for _, w := range log {
+			held = append(held, w.index, w.value, w.guard)
+		}
+	}
+	if _, exceeded := dagNodes(mergedTermBudget, held...); exceeded {
+		x.mergeOverflow = true
+		return nil, false
+	}
 	return acc, true
 }
 

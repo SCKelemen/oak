@@ -8012,6 +8012,36 @@ bodies, addr_space twenty-nine of twenty-nine (`map_page` and
 `get_page_entry` crossed on this head too), where the pilot's pin had
 seventeen and twenty-six with three evidence each.
 
+**The trap-domain obligation end by end; a merged state has a term
+budget (2026-09-17).** The independent trap-domain admission above
+(`asm/trap_domain.go`) decided one bit-level equality, `machine trap ∧
+¬Oak trap = 0`, over the whole fork tree, and `protocol_line_done` —
+seven guarded pushes into an accumulator whose stack pointer is read
+back from the span after each — fell from proven to "value/effect
+comparison proven (evidence, not proof: the machine trap-domain
+obligation is not proven)": the machine's trap is the disjunction of its
+trapping ends' path conditions, each end's condition a chain of
+selects over the log for the pointer it read back, and the diagram of
+the whole exceeded its budget. A disjunction is false exactly when each
+disjunct is, so the obligation now decides end by end
+(`trapDisjuncts`), and each end first as an implication — the end's
+path condition as the premise, the Oak traps as the conclusion — through
+the loop prover's decider (`impliesEqual`), which settles the Oak
+traps' guards from the path's facts and prunes the reads' chains under
+them before any diagram; only an end the implication leaves undecided
+goes to the flat decision. `protocol_line_done`'s ends every one prove
+by implication and the body is proven write by write again
+(`TestE2ENativeGuardedWrites`). Aligning the machine's reads with the
+Oak side's through the proven prefixes, the fast path's move, was tried
+first and is not needed here: the implication decides the unaligned
+obligation. Alongside, the run that merges the paths at their joins
+bounds the merged state itself (`mergedTermBudget`, 65,536 nodes over
+the registers, frame, globals, and write logs of one joined state): a
+merge past it is refused as "the paths merged at their joins exceed
+the verifier's term budget" rather than grown, and `emit_header`, whose
+merged run had passed twenty gigabytes under `joinedPathBudget`, is
+trusted in five seconds.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

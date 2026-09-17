@@ -181,12 +181,70 @@ func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expr
 	bad := binaryTerm("and", truncate(exec.trap, 1), notTerm(oakTrap))
 	// source.machineTrap is nil. Only well-typed input restrictions (union
 	// tags) and the decider's memory-read consistency restrict this proof.
-	proof := decideEqual(fn, source, bad, constTerm(0, 1), 1, " (machine trap-domain obligation)")
-	if proof.Kind != VerdictProven {
-		// The collected traps may be incomplete for a construct outside
-		// this slice. A failed obligation is not itself a concrete source
-		// counterexample; preserve the separate witness mismatch check.
-		return unproven(proof.Message)
+	//
+	// The machine trap is the disjunction of its trapping ends' path
+	// conditions (runAll), and a disjunction is false exactly when every
+	// disjunct is: the obligation decides end by end, each a conjunction
+	// of branch conditions along one path against the Oak traps, where
+	// the whole exceeded the diagrams (protocol_line_done's seven guarded
+	// pushes trap on 14 ends).
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	for k, end := range trapDisjuncts(bad) {
+		// An end's condition is a premise: the machine's path to its trap
+		// implies an Oak trap. The implication decider (the loop prover's)
+		// settles the Oak traps' guards from the path's facts and prunes
+		// the reads' chains under them before any diagram, where the flat
+		// decision blasted the chains whole and exceeded its budget on
+		// protocol_line_done's stack pointer read back after each push.
+		if end.kind == termBinary && end.op == "and" {
+			if holds, decided := impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
+				if trace {
+					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven by implication\n", fn.Name, k)
+				}
+				continue
+			}
+		}
+		proof := decideEqual(fn, source, end, constTerm(0, 1), 1, " (machine trap-domain obligation)")
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d: %s\n", fn.Name, k, proof.Message)
+		}
+		if proof.Kind != VerdictProven {
+			// The collected traps may be incomplete for a construct
+			// outside this slice. A failed obligation is not itself a
+			// concrete source counterexample; preserve the separate
+			// witness mismatch check.
+			return unproven(proof.Message)
+		}
 	}
 	return result
+}
+
+// trapDisjuncts splits `and(or(a, or(b, c)), n)` into `and(a, n)`,
+// `and(b, n)`, `and(c, n)`: the machine trap's or-chain of trapping ends
+// distributed over the negated Oak traps. A term of another shape is its
+// own single case.
+func trapDisjuncts(bad *term) []*term {
+	if bad.kind != termBinary || bad.op != "and" {
+		return []*term{bad}
+	}
+	trap, rest := bad.left, bad.right
+	var ends []*term
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t.kind == termBinary && t.op == "or" {
+			walk(t.left)
+			walk(t.right)
+			return
+		}
+		ends = append(ends, t)
+	}
+	walk(trap)
+	if len(ends) == 1 {
+		return []*term{bad}
+	}
+	out := make([]*term, len(ends))
+	for k, end := range ends {
+		out[k] = binaryTerm("and", end, rest)
+	}
+	return out
 }
