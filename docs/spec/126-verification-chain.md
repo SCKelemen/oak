@@ -712,7 +712,7 @@ the pinned Sail Lean runtime's actual `write_ram`. For arbitrary prior memory,
 it writes exactly eight consecutive bytes, least-significant byte first,
 preserves memory outside that footprint, and leaves every non-memory state
 field unchanged. A generic runtime theorem also covers arbitrary register and
-choice-state types, beyond the generated fragment's empty register vocabulary.
+choice-state types, beyond the generated fragment's single RAM-selector register.
 The selected break/make projections compose with this effect, including Arm's
 pre-call endian conversion; a 52-bit PA plus seven cannot wrap the 56-bit call
 address. This runtime ignores the RAM selector, as another theorem explicitly
@@ -720,6 +720,21 @@ records: the byte map provides no RAM-namespace provenance or storage custody.
 Exact-source/mutation gates pin the external binding and forwarding body, plus
 the separate Lem backend's `Write_plain` requests. Those requests are not
 release writes, and no Lean-to-Lem/CAT refinement is established here.
+
+The next effectful layer retains the exact `__WriteMemory` wrapper, the actual
+`__defaultRAM : bits(56)` register, and the official no-device trace helper in
+the generated Sail fragment. Its execution now has a complete sequential case
+split: an initialized register entry yields the eight-byte update with the
+same frame/state preservation; a missing entry returns Sail's `Unreachable`
+runtime error with the entire state unchanged. Success is equivalent to the
+presence of that entry. Thus the lower runtime's ignored selector does not
+justify bypassing the wrapper's register read. The selected break/make
+projections compose with this wrapper under both endian choices and an actual
+register-lookup premise. No initialization is silently supplied, and the one
+modeled register is not the complete architectural register bank. This error
+is not an Arm Data Abort. Exact-source/mutation checks retain the register,
+write/trace/return order, and no-op trace body, including its continuation
+lines. A no-device trace is not architectural write-event evidence.
 
 Alignment, normal fault-free translation and PA/default-RAM provenance,
 special-route exclusion, dynamic instruction-to-wrapper reachability, and

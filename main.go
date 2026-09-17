@@ -159,7 +159,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	if tgt.CoreWasm() && (verified || nativeBodies || asmGiven || linkMode != "c" || cpu != "" || opt != "" || emitC || strings.HasSuffix(output, ".c") || header != "" || leanOut != "" || metalOut != "" || metalCheck || lines) {
-		fmt.Fprintln(os.Stderr, "oak build: core/wasm32 scalar v0 does not support -verified, native/C/link/CPU/optimization/extraction options")
+		fmt.Fprintln(os.Stderr, "oak build: core/wasm32 scalar profile does not support -verified, native/C/link/CPU/optimization/extraction options")
 		return 2
 	}
 	if err := applyOptLevel(opt); err != nil {

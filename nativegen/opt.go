@@ -35,38 +35,39 @@ const (
 
 // Transform names, as the optimization report spells them.
 const (
-	TransformStrength           = "strength-reduce"
-	TransformOptIR              = "optir-emit"
-	TransformElide              = "elide-guards"
-	TransformReuseFlags         = "reuse-flags"
-	TransformHoist              = "hoist-invariants"
-	TransformUnroll             = "unroll-reductions"
-	TransformUnrollFills        = "unroll-fills"
-	TransformVectorHomes        = "vector-homes"
-	TransformLoopArrayHomes     = "loop-array-homes"
-	TransformLoopResultHomes    = "loop-result-homes"
-	TransformCleanup            = "late-cleanup"
-	TransformVectorize          = "vectorize-reductions"
-	TransformVectorMaps         = "vectorize-maps"
-	TransformUnrollMaps         = "unroll-vector-maps"
-	TransformVectorFolds        = "vectorize-folds"
-	TransformUnrollConst        = "unroll-constant"
-	TransformUnrollSmall        = "unroll-small"
-	TransformVecBlocks          = "vector-blocks"
-	TransformVectorAddresses    = "share-vector-addresses"
-	TransformMultiplyAdd        = "multiply-add"
-	TransformValueSelect        = "value-select"
-	TransformReallocate         = "reallocate"
-	TransformSchedule           = "schedule"
-	TransformFuse               = "fuse"
-	TransformFuseExits          = "fuse-exits"
-	TransformRotate             = "rotate-loops"
-	TransformCarryIndex         = "carry-loop-index"
-	TransformRedundantGuards    = "elide-redundant-guards"
-	TransformRecordBases        = "share-record-bases"
-	TransformGlobalAddresses    = "share-global-addresses"
-	TransformForwardGlobalLoads = "forward-global-loads"
-	TransformGlobalLoadMasks    = "elide-global-load-masks"
+	TransformStrength            = "strength-reduce"
+	TransformOptIR               = "optir-emit"
+	TransformElide               = "elide-guards"
+	TransformReuseFlags          = "reuse-flags"
+	TransformHoist               = "hoist-invariants"
+	TransformUnroll              = "unroll-reductions"
+	TransformUnrollFills         = "unroll-fills"
+	TransformVectorHomes         = "vector-homes"
+	TransformLoopArrayHomes      = "loop-array-homes"
+	TransformLoopResultHomes     = "loop-result-homes"
+	TransformCleanup             = "late-cleanup"
+	TransformPostScheduleCleanup = "post-schedule-cleanup"
+	TransformVectorize           = "vectorize-reductions"
+	TransformVectorMaps          = "vectorize-maps"
+	TransformUnrollMaps          = "unroll-vector-maps"
+	TransformVectorFolds         = "vectorize-folds"
+	TransformUnrollConst         = "unroll-constant"
+	TransformUnrollSmall         = "unroll-small"
+	TransformVecBlocks           = "vector-blocks"
+	TransformVectorAddresses     = "share-vector-addresses"
+	TransformMultiplyAdd         = "multiply-add"
+	TransformValueSelect         = "value-select"
+	TransformReallocate          = "reallocate"
+	TransformSchedule            = "schedule"
+	TransformFuse                = "fuse"
+	TransformFuseExits           = "fuse-exits"
+	TransformRotate              = "rotate-loops"
+	TransformCarryIndex          = "carry-loop-index"
+	TransformRedundantGuards     = "elide-redundant-guards"
+	TransformRecordBases         = "share-record-bases"
+	TransformGlobalAddresses     = "share-global-addresses"
+	TransformForwardGlobalLoads  = "forward-global-loads"
+	TransformGlobalLoadMasks     = "elide-global-load-masks"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -518,6 +519,16 @@ func Transforms() []opt.Transform {
 			apply:    func(l Lane) Lane { l.ElideGlobalLoadMasks = true; return l },
 			fired:    ElidedGlobalLoadMasks,
 		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Scheduling and the final global-forwarding passes can expose or
+			// create block-local copies after the ordinary cleanup has run.
+			name: TransformPostScheduleCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.PostScheduleCleanup },
+			eligible: func(l Lane) bool { return l.Schedule && l.ElideGlobalLoadMasks },
+			apply:    func(l Lane) Lane { l.PostScheduleCleanup = true; return l },
+			fired:    PostScheduledCleanup,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
@@ -618,6 +629,7 @@ func PlainLane(lane Lane) Lane {
 	lane.LoopArrayHomes = false
 	lane.LoopResultHomes = false
 	lane.Cleanup = false
+	lane.PostScheduleCleanup = false
 	lane.VectorBlocks = false
 	lane.ShareVectorAddresses = false
 	lane.MultiplyAdd = false

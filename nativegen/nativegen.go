@@ -1726,6 +1726,11 @@ type Lane struct {
 	// the verifier judge the cleaned body; the compiler keeps the
 	// uncleaned lowering where they refuse it.
 	Cleanup bool
+	// PostScheduleCleanup reruns the same block-local copy and branch cleanup
+	// after scheduling and the final global-address/forwarding passes. It is a
+	// separate candidate so the pre-schedule and uncleaned forms remain
+	// available to the whole-body verifier.
+	PostScheduleCleanup bool
 	// Globals are the program's mutable top-level scalars a body may
 	// address (docs/spec/94-assembler.md §9, the OS pilot's N3), by Oak
 	// name with their storage width; the generator records the ones a body
@@ -2121,6 +2126,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	}
 	if lane.ElideGlobalLoadMasks && lane.ForwardGlobalLoads && lane.Schedule {
 		elidedGlobalLoadMasks[out] = elideGlobalLoadMasks(out)
+	}
+	if lane.PostScheduleCleanup && lane.Schedule {
+		postScheduledCleanup[out] = postScheduleCleanup(out)
 	}
 	return out, nil
 }
@@ -7805,6 +7813,22 @@ func (g *generator) convert(operand ast.Expression, target scalar, op string) (i
 	source, err := g.typeOf(operand, &target)
 	if err != nil {
 		return 0, err
+	}
+	if op == "" && !source.isFloat && !target.isFloat && !source.isVec && !target.isVec && !target.signed {
+		// A plain constructor over a constant is the constant at the
+		// target width — `u8(1)`, `u8(0)`, `u64(page_size)` — materialized
+		// once, normalized by construction: no `and wN, wN, #255` after
+		// the `movz`, no mask after a `mov wN, wzr` (the page walkers'
+		// status conditionals spent two instructions per constant). The
+		// checker admits the constructor only where the value fits.
+		if v, isConst := g.constantOperand(operand, source); isConst {
+			r, err := g.alloc(target)
+			if err != nil {
+				return 0, err
+			}
+			g.constant(r, v&mask64(target.bits), target)
+			return r, nil
+		}
 	}
 	r, err := g.expr(operand, &source)
 	if err != nil {

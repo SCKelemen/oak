@@ -144,13 +144,15 @@ async function compile(runAfter) {
     }
     if (
       response.sourceChecked !== true ||
+      response.module?.profile !== "oak.wasm.scalar.v1" ||
       response.module.translationVerified !== false
     ) {
       throw Error("Unexpected verification claim.");
     }
     const byteCheck = response.module.byteValidation;
     if (
-      byteCheck?.validator !== "oak.wasm.check.v0" ||
+      byteCheck?.validator !== "oak.wasm.check.v1" ||
+      byteCheck.profile !== response.module.profile ||
       byteCheck.sha256 !== response.moduleSHA256
     ) {
       throw Error("Missing or mismatched byte-validation report.");

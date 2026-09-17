@@ -10,7 +10,7 @@ import (
 
 func TestBuildWasm(t *testing.T) {
 	t.Setenv("OAKOPT", os.Getenv("OAKOPT"))
-	root := writeTree(t, map[string]string{"main.oak": "main: (): i32 = 42", "other/main.oak": "main: (): i32 = 7"})
+	root := writeTree(t, map[string]string{"main.oak": "quot: (x: i32, y: i32): i32 = x / y\nmain: (): i32 = 42", "other/main.oak": "main: (): i32 = 7"})
 	output := filepath.Join(root, "main.wasm")
 	if code := buildPackage([]string{"-target", "core/wasm32", "-o", output, filepath.Join(root, "main.oak")}); code != 0 {
 		t.Fatalf("exit=%d", code)
@@ -19,7 +19,7 @@ func TestBuildWasm(t *testing.T) {
 	if err != nil || len(bytes) < 8 || string(bytes[:4]) != "\x00asm" {
 		t.Fatal("no Wasm binary", err)
 	}
-	if _, err := check.Validate(bytes); err != nil {
+	if report, err := check.Validate(bytes); err != nil || report.Profile != "oak.wasm.scalar.v1" {
 		t.Fatal("CLI wrote invalid Wasm bytes", err)
 	}
 	for _, args := range [][]string{{"-verified"}, {"-native"}, {"-emit-c"}, {"-cpu", "m4"}, {"-asm", "native"}, {"-opt", "3"}, {"-link", "oak"}} {

@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Try Oak — experimental Wasm</title>
 <link rel="stylesheet" href="style.css">
-<header><h1>Try Oak</h1><p>Local compilation · Core Wasm scalar v0 · No source uploads</p></header>
+<header><h1>Try Oak</h1><p>Local compilation · Core Wasm scalar v1 · No source uploads</p></header>
 <main>
   <section><label for="source">Oak source</label><textarea id="source" spellcheck="false" aria-describedby="scope">sum: (n: u32): u32 {
   i: u32 = 0
@@ -18,7 +18,7 @@
 }
 
 main: (): u32 = sum(u32(100))</textarea>
-    <p id="scope">32-bit and 64-bit integers, Bool, calls and loops. No imports, memory, floats, division or shifts yet. Run calls a zero-argument <code>main</code>.</p>
+    <p id="scope">32-bit and 64-bit integers (including division/remainder), Bool, calls and loops. Division by zero traps. No imports, memory, floats or shifts yet. Run calls a zero-argument <code>main</code>.</p>
     <div class="controls"><button id="compile" disabled>Compile only</button><button id="run" disabled>Compile &amp; run</button><button id="stop" disabled>Stop</button><button id="download" disabled>Download .wasm</button></div>
   </section>
   <section><h2>Diagnostics and result</h2><pre id="output" role="status" aria-live="polite">Ready. The compiler uses a bounded reusable worker; each execution gets a disposable worker.</pre>

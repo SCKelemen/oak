@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	Profile          = "oak.wasm.scalar.v0"
-	Validator        = "oak.wasm.check.v0"
+	Profile          = "oak.wasm.scalar.v1"
+	Validator        = "oak.wasm.check.v1"
 	CoreSpecRevision = "779957d81feca2ec6a372c40a9130e28ef390645"
 	MaxModuleBytes   = 1 << 20
 	maxFunctions     = 128

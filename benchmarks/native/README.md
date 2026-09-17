@@ -287,6 +287,33 @@ is intentionally unreported because final-build load averages were 176–214.
 
 [Static observations and provenance](results/stage2-global-load-mask-elision-2026-09-17.json).
 
+## OS stage-2: clean final scheduled copies, 2026-09-17
+
+The verifier-gated `post-schedule-cleanup` candidate reruns the established
+block-local copy/branch cleanup after scheduling and the final scalar-global
+passes. It introduces no new rewrite rule. The same final compiler with
+`OAK_OPT_SKIP=post-schedule-cleanup` produced the control; both artifacts used
+fresh verification.
+
+| Selected body | Instructions | Stalls | Static cost | Cleanup sites | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `check_range` | 44 → 44 | 16 → 16 | 67.0 → 67.0 | 0 | proven |
+| `map_page` | 157 → 154 | 32 → 32 | 249.5 → 246.5 | 3 | witnessed |
+| `unmap_page` | 216 → 212 | 46 → 46 | 344.0 → 340.0 | 5 | witnessed |
+
+The selected bodies lose seven instructions in total. The unmap transform
+reports five locally removed sites, while the selected-body delta is four
+because candidate composition changes relative to its disabled fallback.
+Mach-O `__text` shrinks 4420→4392 bytes, and object alignment makes the full
+object shrink 5944→5912 bytes; all 27 relocations remain. The current stricter
+verifier leaves the two loop bodies witnessed on their existing root
+trap-domain obligations, not because cleanup weakened them. Every other
+selected body is unchanged, and all five OS differential tests pass. Runtime
+is intentionally unreported because the host load average exceeded 50 during
+final validation.
+
+[Static observations and provenance](results/stage2-post-schedule-cleanup-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
@@ -1594,6 +1621,38 @@ equivalent recipe label sometimes includes late cleanup). There is no additional
 hash-runtime speedup claimed. Regressions compare the cheaper DCE path against
 fresh analysis across 142 cases. [The measurement record](results/blake3-simplify-cost-2026-09-17.json)
 contains raw samples, per-run load, resource counters, hashes and commands.
+
+### Self-copies no longer exhaust the simplifier (2026-09-17)
+
+After a branch join, a self-copy can have distinct source and destination
+definition webs even though both name the same physical register. Propagation
+respelled its users identically, reported progress, and repeated for all 1,024
+rounds. A useful copy later in the body never got its turn. Regressions reproduced
+this on ARM64 and RV64: 1,024 reported propagations and zero removals.
+
+Propagation now skips these unchanged operand rewrites, so later copies can
+proceed. It retains the self-copy instruction for width-aware cleanup: writing
+`w9` can clear the upper half of `x9`. Tests check later-copy removal, a stable
+second simplification, and preservation of the narrowing write through allocation.
+
+Frozen binaries at `559dae70` and that base plus this fix ran in
+before/after/after/before order, ten samples per variant of three iterations
+each. The new self-copy fixture checks unchanged assembly; the existing control
+checks all 128 useful copies are propagated and removed.
+
+| Fixture | Before ms/op | After ms/op | Before allocations/op | After allocations/op |
+| --- | ---: | ---: | ---: | ---: |
+| Self-copy after a join | 124.981 | 0.061 | 739,420 | 524 |
+| Ordinary 128 copies | 103.923 | 101.027 | 418,126.5 | 418,125.5 |
+
+The saving is specific to the stalled path. A separate BLAKE3 compression-only
+emission pair used 56.33 → 56.50 CPU seconds, essentially unchanged. Wall time
+was 74.60 → 66.99 seconds on the busy shared host; this single observation does
+not establish a BLAKE3 compilation benefit. The emitted C and native object were
+byte-identical, and both runs freshly proved all eight result chunks with the
+normal budget and zero cached verdicts. No experiment builds or tests overlapped
+timing. [The measurement record](results/self-copy-progress-2026-09-17.json)
+includes samples, load, counters, hashes and the pre-fix failures.
 
 ## Reusing allocation proposals, 2026-09-17
 

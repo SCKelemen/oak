@@ -50,6 +50,31 @@ func TestCanonicalLinearRespellsMasksAndForms(t *testing.T) {
 	if reads := canonicalLinear(selectTerm("s.pages", oakIndex, 64), memo); !equalTerms(reads, canonicalLinear(selectTerm("s.pages", asmIndex, 64), memo)) {
 		t.Fatalf("a read's index is respelled too: %s", reads)
 	}
+	// A comparison of two constants is its value, and an equality whose
+	// sides are one term structurally — an index outside the linear form,
+	// `(ipa shr 25) and 1` — is true.
+	entry := &term{kind: termCmp, width: 1, op: "lo", left: constTerm(0, 32), right: constTerm(128, 32)}
+	if c := canonicalLinear(entry, map[*term]*term{}); c.kind != termConst || c.value != 1 {
+		t.Fatalf("0 lo 128 is 1: %s", c)
+	}
+	// A mask covering every bit a comparison can have set is the identity,
+	// whichever side the constant is on; a u16 call result read with its
+	// unspecified upper half, `(r and 65535) or (hi shl 16)`, under `and
+	// 65535` is `r and 65535`.
+	cmp := cmpTerm("eq", paramTerm("a", 32), paramTerm("b", 32))
+	if c := canonicalLinear(&term{kind: termBinary, width: 1, op: "and", left: constTerm(1, 1), right: cmp}, map[*term]*term{}); !equalTerms(c, truncate(cmp, 1)) {
+		t.Fatalf("1 and c is c: %s", c)
+	}
+	r, hi := paramTerm("call1", 32), paramTerm("call1#hi", 32)
+	read := binaryTerm("and", binaryTerm("or", binaryTerm("and", r, constTerm(65535, 32)), binaryTerm("shl", hi, constTerm(16, 32))), constTerm(65535, 32))
+	if c := canonicalLinear(read, map[*term]*term{}); !equalTerms(c, binaryTerm("and", r, constTerm(65535, 32))) {
+		t.Fatalf("the unspecified upper half strips under the mask: %s", c)
+	}
+	odd := binaryTerm("and", binaryTerm("shr", paramTerm("ipa", 64), constTerm(25, 64)), constTerm(1, 64))
+	same := &term{kind: termCmp, width: 1, op: "eq", left: binaryTerm("add", zeroExtend(dom, 64), odd), right: binaryTerm("add", zeroExtend(dom, 64), odd)}
+	if c := canonicalLinear(same, map[*term]*term{}); c.kind != termConst || c.value != 1 {
+		t.Fatalf("X eq X is 1 even outside the linear form: %s", c)
+	}
 }
 
 // spanEqualByCases: the machine writes a constant per permission case,
@@ -75,14 +100,14 @@ func TestSpanEqualByCasesSplitsOnSmallComparisons(t *testing.T) {
 	c4, v4 := branch(binaryTerm("and", not(rx), not(rw)), 192, 1<<53|1<<54)
 	machine := iteTerm(c1, v1, iteTerm(c2, v2, iteTerm(c3, v3, iteTerm(c4, v4, entry))))
 	premise := cmpTerm("lo", paramTerm("va", 64), constTerm(1<<32, 64))
-	equal, decided := spanEqualByCases("map_page", "s.pages", premise, oak, machine)
+	equal, decided := spanEqualByCases("map_page", "s.pages", premise, oak, machine, nil)
 	if !decided || !equal {
 		t.Fatalf("the four permission cases must close: equal=%v decided=%v", equal, decided)
 	}
 	// A machine that writes the wrong bits in one case is not proven.
 	_, v3wrong := branch(binaryTerm("and", rx, not(rw)), 64, 1<<53)
 	wrong := iteTerm(c1, v1, iteTerm(c2, v2, iteTerm(c3, v3wrong, iteTerm(c4, v4, entry))))
-	if _, decided := spanEqualByCases("map_page", "s.pages", premise, oak, wrong); decided {
+	if _, decided := spanEqualByCases("map_page", "s.pages", premise, oak, wrong, nil); decided {
 		t.Fatal("a case that is not one term must stay undecided")
 	}
 	conds := spanSplitConditions(premise, []*term{oak, machine}, spanCaseSplitLimit)
@@ -92,6 +117,13 @@ func TestSpanEqualByCasesSplitsOnSmallComparisons(t *testing.T) {
 	for _, c := range conds {
 		if readsMemory(c) {
 			t.Fatalf("a condition over a memory read is never split on: %s", c)
+		}
+	}
+	// A comparison that is a constant once respelled is not a case.
+	folded := cmpTerm("eq", binaryTerm("and", constTerm(0, 8), constTerm(255, 8)), constTerm(0, 8))
+	for _, c := range spanSplitConditions(premise, []*term{iteTerm(folded, oak, machine)}, spanCaseSplitLimit) {
+		if c == folded || canonicalLinear(c, map[*term]*term{}).kind == termConst {
+			t.Fatalf("a constant comparison must not be split on: %s", c)
 		}
 	}
 }

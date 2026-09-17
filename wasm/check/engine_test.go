@@ -30,7 +30,7 @@ func TestWasmEngineValidation(t *testing.T) {
 	}
 	for _, tt := range controlFixtures() {
 		base := scalarFixture(tt.result, tt.code...)
-		// Type-indexed blocks are valid Core Wasm, intentionally outside v0.
+		// Type-indexed blocks are valid Core Wasm, intentionally outside v1.
 		add(base, tt.name != "unsupported block index")
 		for i := range base {
 			for _, mask := range []byte{1, 0x40, 0x80, 0xff} {

@@ -51,7 +51,7 @@ func Compile(source string) Response {
 	// Refuse imports before the compiler's module resolver can see them.
 	for _, stmt := range program.Statements {
 		if _, ok := stmt.(*ast.FunctionStatement); !ok {
-			out.refuse("playground scalar v0 accepts function declarations only; imports, globals and host bindings are unavailable")
+			out.refuse("playground scalar profile accepts function declarations only; imports, globals and host bindings are unavailable")
 			return out
 		}
 	}

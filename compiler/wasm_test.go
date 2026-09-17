@@ -140,7 +140,7 @@ func TestWasmRefusals(t *testing.T) {
 	for _, source := range []string{
 		"main: (): f32 = f32(1)",
 		"main: (): u8 = u8(1)",
-		"main: (x: u32): u32 = x / u32(3)",
+		"main: (x: u16): u16 = x / u16(3)",
 		"main: (x: u32): u32 = x >> u32(1)",
 		"main: (x: i32): i32 = x & i32(1)",
 		"main: (): u32 { a: [2]u32; a[0] }",

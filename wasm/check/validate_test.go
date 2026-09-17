@@ -59,6 +59,14 @@ func controlFixtures() []struct {
 		{"constant", 0x7f, []byte{0x41, 42, 0x0b}, true},
 		{"unit", 0, []byte{0x0b}, true},
 		{"wide", 0x7e, []byte{0x42, 0x7f, 0x0b}, true},
+		{"i32.div_s", 0x7f, []byte{0x41, 7, 0x41, 3, 0x6d, 0x0b}, true},
+		{"i32.div_u", 0x7f, []byte{0x41, 7, 0x41, 3, 0x6e, 0x0b}, true},
+		{"i32.rem_s", 0x7f, []byte{0x41, 7, 0x41, 3, 0x6f, 0x0b}, true},
+		{"i32.rem_u", 0x7f, []byte{0x41, 7, 0x41, 3, 0x70, 0x0b}, true},
+		{"i64.div_s", 0x7e, []byte{0x42, 7, 0x42, 3, 0x7f, 0x0b}, true},
+		{"i64.div_u", 0x7e, []byte{0x42, 7, 0x42, 3, 0x80, 0x0b}, true},
+		{"i64.rem_s", 0x7e, []byte{0x42, 7, 0x42, 3, 0x81, 0x0b}, true},
+		{"i64.rem_u", 0x7e, []byte{0x42, 7, 0x42, 3, 0x82, 0x0b}, true},
 		{"polymorphic", 0x7f, []byte{0, 0x6a, 0x0b}, true},
 		{"known type still checked", 0x7f, []byte{0, 0x42, 0, 0x6a, 0x0b}, false},
 		{"branch to function", 0x7f, []byte{0x41, 9, 0x0c, 0, 0x0b}, true},
@@ -89,6 +97,28 @@ func controlFixtures() []struct {
 		{"unsupported block index", 0, []byte{2, 0, 0x0b, 0x0b}, false},
 		{"missing end", 0x7f, []byte{0x41, 1}, false},
 		{"extra end", 0, []byte{0x0b, 0x0b}, false},
+	}
+}
+
+func TestWasmDivisionOperandValidation(t *testing.T) {
+	for _, op := range []byte{0x6d, 0x6e, 0x6f, 0x70, 0x7f, 0x80, 0x81, 0x82} {
+		typ, literal, wrong := byte(0x7f), byte(0x41), byte(0x42)
+		if op >= 0x7f {
+			typ, literal, wrong = 0x7e, 0x42, 0x41
+		}
+		for _, code := range [][]byte{
+			{literal, 7, op, 0x0b},           // missing second operand
+			{literal, 7, wrong, 3, op, 0x0b}, // wrong RHS type
+			{wrong, 7, literal, 3, op, 0x0b}, // wrong LHS type
+			{0x00, wrong, 7, op, 0x0b},       // unreachable still checks known types
+		} {
+			if _, err := Validate(scalarFixture(typ, code...)); err == nil {
+				t.Fatalf("opcode %x accepted %x", op, code)
+			}
+		}
+		if _, err := Validate(scalarFixture(typ, literal, 7, literal, 0, op, 0x0b)); err != nil {
+			t.Fatal("a runtime trap is not a structural type error:", err)
+		}
 	}
 }
 

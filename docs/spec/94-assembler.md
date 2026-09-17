@@ -1129,10 +1129,23 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment itself has an empty register vocabulary. This runtime
+the generated fragment itself has one RAM-selector register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
+
+The generated `__WriteMemory` wrapper now retains its real `__defaultRAM` read
+and the selected no-device trace helper. A checked case split proves the same
+eight-byte footprint and state preservation when the register is initialized,
+and Sail's `Unreachable` error with unchanged state when it is missing. Normal
+return is equivalent to an initialized register entry; ignoring the selector
+in the lower runtime does not allow skipping this read. Break/make projections
+compose with the new effectful wrapper under both endian choices, retaining
+the actual register-lookup premise. No full architectural register bank or
+initialization proof is implied, and this runtime error is not an Arm Data
+Abort. Exact-source/mutation gates pin the register, write/trace/return order,
+and the complete no-op trace expression, including continuation lines.
+
 Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
 reachability, architectural memory effects, atomicity/non-tearing, unique
 architectural writes, tags/device behavior, CAT membership, completion,
@@ -6270,6 +6283,34 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
+**Post-schedule cleanup (2026-09-17, AArch64 lane).** Scheduling and the final
+scalar-global passes above can expose copies after the ordinary late cleanup
+has run. The separate `post-schedule-cleanup` candidate reruns the same
+block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
+rule: the five rules, whole-function general-register liveness, control-flow
+boundaries, and refusal conditions specified by "Late copy and branch cleanup"
+remain unchanged. The candidate is eligible only after scheduling and
+normalized scalar-global forwarding, so unrelated functions do not acquire a
+second no-op search branch. Its pre-cleanup parent remains selectable.
+
+The rerun is non-neutral and **verdict-gated**. The seam checker checks the
+rewritten machine body, and the unchanged whole-body verifier remains the
+authority for selection; the cleanup equalities do not promote a witnessed
+body. Materialization v26 keys the new lane flag, and
+`OAK_OPT_SKIP=post-schedule-cleanup` retains the final copies.
+
+On the stage-2 pilot, selected `map_page` removes three instructions
+(157→154, static cost 249.5→246.5) and `unmap_page` removes four
+(216→212, 344→340); `check_range` has no site and remains unchanged. The
+current stricter verifier reports the two loop bodies as `witnessed` because
+their existing root trap-domain obligations are not proven, independently of
+this cleanup. The same-compiler disabled control establishes a 28-byte
+Mach-O `__text` reduction (4420→4392), a 32-byte object reduction after
+alignment (5944→5912), and 27 unchanged relocations. All five OS differential
+tests pass. Runtime is not reported from the heavily loaded host; static
+provenance is in
+`benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with
@@ -6980,8 +7021,17 @@ name it.
 Pinned: `compiler/e2e_native_nested_record_span_test.go` — every field of
 an element read and proven at the bit level, narrow fields among them, a
 store proven in `s.surfaces.x` by name, a write to one field followed by
-a read of another, a constant element index, and a loop storing through
-the field, with both backends agreeing on the values.
+a read of another, a constant element index, a comparison of two
+elements' fields, and a loop storing through the field, with both
+backends agreeing on the values.
+
+Three shapes remain trusted, and are the next a scene proof will meet:
+an element bound to a local by value (`sf: Surface = s[d].surfaces[i]`),
+whose eight-byte load covers two four-byte leaves and matches none; a
+whole-element assignment, whose `stp` the store path refuses as a pair;
+and a loop bounded by the record's own count field, which is witnessed
+rather than proven because no register is an affine image of the Oak
+counter.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
