@@ -2019,6 +2019,54 @@ fourteen boundary lengths and after every sample; assembler, native reference
 and RV64 checks pass. The conflicting timings need a quiet-host follow-up.
 [All samples, selections, hashes and validation](results/blake3-loop-bounds-2026-09-17.json).
 
+## BLAKE3: counted interior copies rejected, 2026-09-17
+
+At baseline `65477201`, the existing guarded input loop becomes `memcpy`
+plus empty induction bookkeeping under clang. Two source-only experiments
+precomputed `min(64-at, len(src)-i)` after the unchanged first checked byte:
+one copied by count alone, and one also retained explicit source/destination
+bounds in the loop guard. Both produced larger vector/scalar copy tails.
+The C update symbol grew **616 → 668 / 692 bytes**; its frame changed
+**2,112 → 2,096 / 2,112 bytes**, respectively.
+
+All three timed libraries are **pure C**, including compression. Complete
+1 MiB hashes, median milliseconds; paired ratios are prototype/baseline
+within each sample, so below one favors the prototype:
+
+| Run | Baseline ms | Counted ms | Guarded counted ms | Counted paired ratio | Guarded paired ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 2.299 | 2.304 | 2.155 | 0.916 | 0.918 |
+| B | 2.288 | 2.265 | 2.524 | 1.050 | 1.136 |
+| C | 2.170 | 2.335 | 2.215 | 1.025 | 1.092 |
+
+**Neither is retained:** both lose on the paired median in two of three
+runs. The host was heavily loaded (one-minute boundary readings 69.56–80.94),
+so these are insufficient evidence of a repeatable benefit, not a precise
+regression estimate. Production source is restored byte-for-byte.
+
+Each run uses 21 samples of 100 hashes, one thread and rotating interleaved
+variants. Library arguments rotate too: baseline/count/guarded, then
+count/guarded/baseline, then guarded/baseline/count. The harness's raw
+`before`, `after`, and `c-control` labels therefore identify argument
+positions, not stable implementations; there is no separate fixed control.
+No builds/tests from this experiment overlap timing. All 32 digest bytes
+agree at fourteen boundary lengths and after every timed sample.
+
+Retained C/interpreter regressions cover source-limited copies from offset
+views, backing-buffer immutability and an input view overlapping the
+original state's block. Independently reconstructed expected bytes protect
+against common-mode corruption in the old/new differential comparison.
+Restored-production hash, extraction and native proof/negative tests pass,
+as do the four existing hash law modules. **Neither prototype was formally
+proved or emitted natively**; no source semantics, proof gate or Lean
+extraction changes ship from this experiment.
+
+[All samples, artifact hashes, commands and proof scope](results/blake3-counted-copy-rejected-2026-09-17.json),
+with reproducible rejected patches for the
+[counted](results/blake3-counted-copy-raw-rejected-2026-09-17.patch) and
+[guarded counted](results/blake3-counted-copy-guarded-rejected-2026-09-17.patch)
+variants against the recorded baseline.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

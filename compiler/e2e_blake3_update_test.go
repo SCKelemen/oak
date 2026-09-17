@@ -313,6 +313,79 @@ main: (): i32 {
 	})
 }
 
+// Keep this small: the broad offset matrix already covers capacity-limited
+// batches. These cases pin source-limited batches and the distinct case where
+// a read-only input aliases the original state but not the returned value.
+func TestE2EBlake3UpdateInputViews(t *testing.T) {
+	source := blake3UpdateSource(t, `
+update_test_input_cutoff: (length: u32): Bool {
+  backing: [80]u8
+  _ = update_test_fill(span(&backing), false)
+  all: []u8 = view(&backing)
+  input: []u8 = subslice(all, u32(7), length)
+  state: Blake3State = update_test_seed(u32(0), u32(0))
+  old: Blake3State = update_test_original(state, input)
+  next: Blake3State = blake3_update(state, input)
+  assert(update_test_same(old, next))
+  assert(next.block_len == length && next.blocks_compressed == u32(0))
+  assert(update_test_same(state, update_test_seed(u32(0), u32(0))))
+  // Rebuild all 80 bytes, including prefix/suffix outside the input view.
+  pristine: [80]u8
+  _ = update_test_fill(span(&pristine), false)
+  i: u32 = 0
+  while i < u32(80) {
+    assert(backing[i] == pristine[i])
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < length {
+    assert(next.block[i] == pristine[u32(7) + i])
+    i = i + u32(1)
+  }
+  true
+}
+
+update_test_overlapping_view: (): Bool {
+  state: Blake3State = update_test_seed(u32(60), u32(0))
+  block: []u8 = view(&state.block)
+  input: []u8 = subslice(block, u32(58), u32(4))
+  // Keep the result separate: the live view borrows the original state.
+  // Losing the value copy would overwrite bytes before later source reads.
+  old: Blake3State = update_test_original(state, input)
+  next: Blake3State = blake3_update(state, input)
+  assert(update_test_same(old, next))
+  pristine: Blake3State = update_test_seed(u32(60), u32(0))
+  assert(update_test_same(state, pristine))
+  assert(next.block_len == u32(64) && next.blocks_compressed == u32(0))
+  i: u32 = 0
+  while i < u32(4) {
+    assert(next.block[u32(60) + i] == pristine.block[u32(58) + i])
+    i = i + u32(1)
+  }
+  true
+}
+
+main: (): i32 {
+  // After the first checked byte: copied counts 0, 1 and 63 respectively.
+  assert(update_test_input_cutoff(u32(1)))
+  assert(update_test_input_cutoff(u32(2)))
+  assert(update_test_input_cutoff(u32(64)))
+  assert(update_test_overlapping_view())
+  42
+}
+`)
+	t.Run("c", func(t *testing.T) {
+		if code, abnormal := buildAndRun(t, "blake3_update_views", source); abnormal || code != 42 {
+			t.Fatalf("input-view differential: code=%d abnormal=%v", code, abnormal)
+		}
+	})
+	t.Run("interpreter", func(t *testing.T) {
+		if got := interpretChecked(t, source); got != 42 {
+			t.Fatalf("input-view differential returned %d", got)
+		}
+	})
+}
+
 func TestE2EBlake3UpdateMalformedStateTraps(t *testing.T) {
 	for _, offset := range []uint32{65, ^uint32(0)} {
 		t.Run(fmt.Sprint(offset), func(t *testing.T) {
