@@ -7411,17 +7411,107 @@ func (g *generator) sourceOperand(expr ast.Expression, typ scalar, mnemonic stri
 }
 
 // constantOperand reads a constant expression's value at a type: a
-// literal, a widening constructor over one, or a constant global.
+// literal, a widening constructor over one, a constant global, or an
+// expression over those — `page_size - u64(1)`, `^(page_size - u64(1))`,
+// `u32(entries)` — folded at the type's width. Oak's fixed-width
+// arithmetic wraps (docs/spec/20-types.md §11.1), so the fold modulo the
+// width is the run-time value, and the verifier proves the body against
+// the Oak semantics whatever the spelling; the page walkers' `ipa &
+// (page_size - u64(1))` and `d & ^(page_size - u64(1))` then meet
+// sourceOperand as one logical immediate rather than three or four
+// instructions building the mask.
 func (g *generator) constantOperand(expr ast.Expression, typ scalar) (uint64, bool) {
+	if typ.isFloat || typ.isVec {
+		return 0, false
+	}
 	if v, ok := constantValue(expr); ok && v >= 0 {
 		return uint64(v), true
 	}
-	if ident, isIdent := expr.(*ast.Identifier); isIdent {
-		if c, isConst := g.constantOf(ident.Value); isConst && !typ.isFloat {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if c, isConst := g.constantOf(e.Value); isConst {
 			return c.Value & mask64(scalars[c.Type].bits), true
+		}
+	case *ast.InfixExpression:
+		l, lok := g.constantOperand(e.Left, typ)
+		r, rok := g.constantOperand(e.Right, typ)
+		if !lok || !rok {
+			return 0, false
+		}
+		m := mask64(typ.bits)
+		switch e.Operator {
+		case "+":
+			return (l + r) & m, true
+		case "-":
+			return (l - r) & m, true
+		case "*":
+			return (l * r) & m, true
+		case "&":
+			return l & r & m, true
+		case "|":
+			return (l | r) & m, true
+		case "^":
+			return (l ^ r) & m, true
+		case "<<":
+			if r < uint64(typ.bits) {
+				return (l << r) & m, true
+			}
+		case ">>":
+			if r < uint64(typ.bits) {
+				return (l & m) >> r, true
+			}
+		}
+	case *ast.PrefixExpression:
+		if e.Operator == "^" {
+			if v, ok := g.constantOperand(e.Right, typ); ok {
+				return ^v & mask64(typ.bits), true
+			}
+		}
+	case *ast.InvocationExpression:
+		// A conversion folds its operand at the operand's checked width,
+		// then applies the destination width. In particular,
+		// `u64(max8 + u8(1))` is zero: the addition wraps as u8 before
+		// it widens. Evaluating the addition as u64 would invent 256.
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
+			if to, isConv := scalars[ident.Value]; isConv && !to.isFloat && !to.isVec && !to.signed {
+				source, known := g.constantOperandSourceType(e.Arguments[0], to)
+				if !known {
+					return 0, false
+				}
+				if v, ok := g.constantOperand(e.Arguments[0], source); ok {
+					return v & mask64(to.bits), true
+				}
+			}
 		}
 	}
 	return 0, false
+}
+
+// constantOperandSourceType is the source width at an explicit scalar
+// conversion. The checked compiler supplies typeOf's recorded arithmetic
+// widths. A direct CompileFor caller may omit the checker; in that mode
+// only a structurally unambiguous leaf has enough authority. A compound
+// expression refuses rather than borrowing the destination width.
+func (g *generator) constantOperandSourceType(expr ast.Expression, hint scalar) (scalar, bool) {
+	if g.tc != nil {
+		inferred, err := g.typeOf(expr, &hint)
+		return inferred, err == nil && !inferred.isFloat && !inferred.isVec
+	}
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return hint, true
+	case *ast.Identifier:
+		if c, isConst := g.constantOf(e.Value); isConst {
+			typ, known := scalars[c.Type]
+			return typ, known && !typ.isFloat && !typ.isVec
+		}
+	case *ast.InvocationExpression:
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
+			typ, known := scalars[ident.Value]
+			return typ, known && !typ.isFloat && !typ.isVec
+		}
+	}
+	return scalar{}, false
 }
 
 func mask64(bits int) uint64 {

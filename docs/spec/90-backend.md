@@ -516,6 +516,13 @@ keeps the run-time check, which traps as `10-syntax.md` §3b says
 (`compiler/e2e_native_constant_shift_test.go`). A refused composition is not
 reinterpreted as permission for one of its parts: each alternative is a
 separate candidate and every selected body passes the ordinary seam checker.
+Below the search, an expression over named module constants is a constant
+to the lowering — `page_size - u64(1)`, `^(page_size - u64(1))`,
+`u32(entries)`, folded at the expression's type width, which is the
+run-time value since fixed-width arithmetic wraps (`20-types.md` §11.1) —
+so the page walkers' offset and frame masks are one `and` with a logical
+immediate rather than the three or four instructions that built the mask
+(`compiler/e2e_native_constant_fold_test.go`).
 Transforms marked verifier-gated are set aside when equivalence is not judged,
 at worst selecting the checked identity lowering.
 
