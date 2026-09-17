@@ -42,6 +42,18 @@ func TestParseAndEnv(t *testing.T) {
 }
 
 func TestSpellings(t *testing.T) {
+	w, err := Parse("core/wasm32")
+	if err != nil || !w.CoreWasm() || w.AsmArch() != "" || w.ZigTriple() != "" || w.LLVMTriple() != "" {
+		t.Fatal("Wasm profile routed to native/C", w, err)
+	}
+	if i, p := w.DataModel(); i != 32 || p != 32 {
+		t.Fatal("Wasm must select 32-bit metadata")
+	}
+	for _, bad := range []string{"wasi/wasm32", "web/wasm32", "linux/wasm32", "core/arm64"} {
+		if _, err := Parse(bad); err == nil {
+			t.Errorf("unimplemented target accepted: %s", bad)
+		}
+	}
 	rv := Target{OSLinux, ArchRiscv64}
 	if rv.ZigTriple() != "riscv64-linux-musl" || rv.LLVMTriple() != "riscv64-unknown-linux-musl" || rv.AsmArch() != "rv64" || rv.MachO() || !rv.StaticLink() {
 		t.Errorf("linux/riscv64 spellings: %s %s %s", rv.ZigTriple(), rv.LLVMTriple(), rv.AsmArch())

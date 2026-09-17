@@ -65,6 +65,9 @@ type Options struct {
 // tables (no runtime to read them), and compile to a relocatable object.
 // A processor (opts.CPU, else the target's default) is passed as -mcpu.
 func Resolve(t target.Target, opts Options, look Lookup, getenv func(string) string) (Driver, error) {
+	if t.CoreWasm() {
+		return Driver{}, fmt.Errorf("core/wasm32 uses Oak's Wasm emitter, not a C toolchain")
+	}
 	if look == nil {
 		look = exec.LookPath
 	}

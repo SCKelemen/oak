@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { max-width: 1200px; margin: auto; padding: 1.5rem; }
+header { border-bottom: 1px solid #80808080; margin-bottom: 1.5rem; }
+h1 { font-size: 2rem; margin-bottom: 0; }
+h2, label { font-size: 1.1rem; font-weight: 600; }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+textarea { display: block; box-sizing: border-box; width: 100%; min-height: 26rem; margin-top: .5rem; padding: 1rem; tab-size: 2; resize: vertical; font: 14px/1.6 ui-monospace, monospace; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: #80808015; border-radius: .4rem; }
+button { padding: .6rem .9rem; font: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .5; }
+.controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+section > p { color: #777; font-size: .9rem; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+@media (prefers-color-scheme: dark) { section > p { color: #bbb; } }

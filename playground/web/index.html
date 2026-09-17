@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Try Oak — experimental Wasm</title>
+<link rel="stylesheet" href="style.css">
+<header><h1>Try Oak</h1><p>Local compilation · Core Wasm scalar v0 · No source uploads</p></header>
+<main>
+  <section><label for="source">Oak source</label><textarea id="source" spellcheck="false" aria-describedby="scope">sum: (n: u32): u32 {
+  i: u32 = 0
+  total: u32 = 0
+  while i &lt; n {
+    total = total + i
+    i = i + u32(1)
+  }
+  total
+}
+
+main: (): u32 = sum(u32(100))</textarea>
+    <p id="scope">32-bit and 64-bit integers, Bool, calls and loops. No imports, memory, floats, division or shifts yet. Run calls a zero-argument <code>main</code>.</p>
+    <div class="controls"><button id="run">Compile &amp; run</button><button id="stop" disabled>Stop</button><button id="download" disabled>Download .wasm</button></div>
+  </section>
+  <section><h2>Diagnostics and result</h2><pre id="output" role="status" aria-live="polite">Ready. Compilation and execution run in separate disposable workers.</pre>
+    <h2>Verification boundary</h2><p id="verification">Source not checked. Module not validated. Translation not formally verified.</p>
+    <p>Engine validation checks Wasm structure and types, not equivalence to the Oak source. The browser engine and the Go-built compiler remain trusted infrastructure.</p>
+    <details><summary>Artifact information</summary><pre id="artifact">No artifact yet.</pre></details>
+  </section>
+</main>
+<script src="app.js" defer></script>
+</html>

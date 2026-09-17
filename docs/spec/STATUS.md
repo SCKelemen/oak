@@ -2,6 +2,12 @@
 
 This matrix is intentionally conservative. A historical document saying “complete” is not sufficient evidence for current implementation/proof status.
 
+For platform-by-platform coverage, see [target maturity](../targets.md).
+The new [Core Wasm scalar profile](91-wasm.md) and browser prototype have an
+implementation and execution tests, **not** Oak Wasm formal models, refinement
+proofs or certificate authority. `-verified` refuses this target. Existing
+`Oak.Target` results below apply to the C/native set, not the Wasm extension.
+
 Legend:
 
 - **S** specified normatively in `docs/spec/`

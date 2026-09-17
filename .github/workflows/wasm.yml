@@ -1,0 +1,29 @@
+name: Core Wasm and browser compiler
+
+on:
+  push:
+    branches: [main, specification]
+  pull_request:
+    branches: [main, specification]
+
+permissions:
+  contents: read
+
+jobs:
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test actual Wasm bytes with an independent engine
+        env:
+          OAK_REQUIRE_WASM_TESTS: '1'
+        run: go test -race . ./wasm ./playground ./compiler ./target ./toolchain -run 'Test(BuildWasm|Wasm|Compile$|LEB|FailClosedCFG|Spellings|ResolveOrder|TimehostCompilesEverywhere)' -count=1
+      - name: Build the locally hosted browser compiler
+        run: sh playground/build.sh
