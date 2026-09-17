@@ -35,36 +35,37 @@ const (
 
 // Transform names, as the optimization report spells them.
 const (
-	TransformStrength        = "strength-reduce"
-	TransformOptIR           = "optir-emit"
-	TransformElide           = "elide-guards"
-	TransformReuseFlags      = "reuse-flags"
-	TransformHoist           = "hoist-invariants"
-	TransformUnroll          = "unroll-reductions"
-	TransformUnrollFills     = "unroll-fills"
-	TransformVectorHomes     = "vector-homes"
-	TransformLoopArrayHomes  = "loop-array-homes"
-	TransformLoopResultHomes = "loop-result-homes"
-	TransformCleanup         = "late-cleanup"
-	TransformVectorize       = "vectorize-reductions"
-	TransformVectorMaps      = "vectorize-maps"
-	TransformUnrollMaps      = "unroll-vector-maps"
-	TransformVectorFolds     = "vectorize-folds"
-	TransformUnrollConst     = "unroll-constant"
-	TransformUnrollSmall     = "unroll-small"
-	TransformVecBlocks       = "vector-blocks"
-	TransformVectorAddresses = "share-vector-addresses"
-	TransformMultiplyAdd     = "multiply-add"
-	TransformValueSelect     = "value-select"
-	TransformReallocate      = "reallocate"
-	TransformSchedule        = "schedule"
-	TransformFuse            = "fuse"
-	TransformFuseExits       = "fuse-exits"
-	TransformRotate          = "rotate-loops"
-	TransformCarryIndex      = "carry-loop-index"
-	TransformRedundantGuards = "elide-redundant-guards"
-	TransformRecordBases     = "share-record-bases"
-	TransformGlobalAddresses = "share-global-addresses"
+	TransformStrength           = "strength-reduce"
+	TransformOptIR              = "optir-emit"
+	TransformElide              = "elide-guards"
+	TransformReuseFlags         = "reuse-flags"
+	TransformHoist              = "hoist-invariants"
+	TransformUnroll             = "unroll-reductions"
+	TransformUnrollFills        = "unroll-fills"
+	TransformVectorHomes        = "vector-homes"
+	TransformLoopArrayHomes     = "loop-array-homes"
+	TransformLoopResultHomes    = "loop-result-homes"
+	TransformCleanup            = "late-cleanup"
+	TransformVectorize          = "vectorize-reductions"
+	TransformVectorMaps         = "vectorize-maps"
+	TransformUnrollMaps         = "unroll-vector-maps"
+	TransformVectorFolds        = "vectorize-folds"
+	TransformUnrollConst        = "unroll-constant"
+	TransformUnrollSmall        = "unroll-small"
+	TransformVecBlocks          = "vector-blocks"
+	TransformVectorAddresses    = "share-vector-addresses"
+	TransformMultiplyAdd        = "multiply-add"
+	TransformValueSelect        = "value-select"
+	TransformReallocate         = "reallocate"
+	TransformSchedule           = "schedule"
+	TransformFuse               = "fuse"
+	TransformFuseExits          = "fuse-exits"
+	TransformRotate             = "rotate-loops"
+	TransformCarryIndex         = "carry-loop-index"
+	TransformRedundantGuards    = "elide-redundant-guards"
+	TransformRecordBases        = "share-record-bases"
+	TransformGlobalAddresses    = "share-global-addresses"
+	TransformForwardGlobalLoads = "forward-global-loads"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -490,6 +491,16 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ShareGlobalAddresses = true; return l },
 			fired:   SharedGlobalAddresses,
 		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Exact scalar-global store/load forwarding runs only on the final
+			// scheduled spelling. The store remains and the verifier authorizes
+			// the replacement truncation against the unchanged Oak body.
+			name: TransformForwardGlobalLoads, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ForwardGlobalLoads },
+			apply:   func(l Lane) Lane { l.ForwardGlobalLoads = true; return l },
+			fired:   ForwardedGlobalLoads,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
@@ -584,6 +595,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ElideRedundantGuards = false
 	lane.ShareRecordBases = false
 	lane.ShareGlobalAddresses = false
+	lane.ForwardGlobalLoads = false
 	lane.VectorHomes = false
 	lane.LoopArrayHomes = false
 	lane.LoopResultHomes = false

@@ -53,6 +53,9 @@ func TestE2ENativeGlobalAddressCSE(t *testing.T) {
 	if nativegen.SharedGlobalAddresses(selected) == 0 {
 		t.Fatalf("the proven scalar-global address must be shared:\n%s", nativegen.Describe(selected))
 	}
+	if nativegen.ForwardedGlobalLoads(selected) == 0 {
+		t.Fatalf("the proven scalar-global reload must be forwarded:\n%s", nativegen.Describe(selected))
+	}
 	if nativegen.Scheduled(selected) == 0 {
 		t.Fatalf("scalar-global sharing must retain its scheduled parent:\n%s", nativegen.Describe(selected))
 	}

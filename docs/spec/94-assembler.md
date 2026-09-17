@@ -5508,7 +5508,7 @@ cannot freshen the inner expansion's newly generated locals. These are
 conservative name-safety refusals, not a change to the unroll law or the
 verification gate. The native/C regression cases cover nested loops and
 successive loops reusing a scoped local name.
-Materialization recipe v23 includes these refusals and retains small-unroll's
+Materialization recipe v24 includes these refusals and retains small-unroll's
 placement veto, scalar-global and sparse record-base sharing, v19's
 result-home budget, v18's extent folding, and the explicit lane flags.
 
@@ -5534,7 +5534,7 @@ displacing the already scalarized message state.
 
 The compiler offers this separate AArch64 candidate only with
 `OAK_NATIVE_UNROLL_SMALL=1`; `OAK_OPT_SKIP=unroll-small` overrides it.
-Materialization v23 and the rewrite-stage cache distinguish the strategy.
+Materialization v24 and the rewrite-stage cache distinguish the strategy.
 The candidate requires an independent semantic verdict, cannot inherit a
 shape-neutral verdict, and never changes the verified profile's proven-only
 requirement. BLAKE3's candidate is proven for all eight result words, but its
@@ -5951,7 +5951,7 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v23 keys
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v24 keys
 it independently from private-frame `loop-array-homes` and records the smaller
 two-result-home budget (the combined frame/result cap remains eight). The
 budget resets per loop and leaves uncached cells on the memory path; it is a
@@ -6168,7 +6168,7 @@ a new group after the call. It does not share aggregate-global addresses and
 does not move, combine, or remove any load or store. It runs after scheduling,
 composes after record-base sharing, and is a non-neutral **verdict-gated**
 candidate; the ordinary checker and unchanged whole-body verifier remain the
-only authority for selection. Materialization v23 keys the new lane flag.
+only authority for selection. Materialization v24 keys the new lane flag.
 
 On the stage-2 pilot, selected `proven` bodies share eight addresses in
 `check_range` (66→50 instructions), thirteen in `map_page` (192→166), two in
@@ -6178,6 +6178,34 @@ selected bodies are unchanged. Forty removed address pairs are 80 instructions
 the object from 7224 to 6264 bytes. All five OS differential tests pass. Runtime
 is not reported from the loaded host; static provenance is in
 `benchmarks/native/results/stage2-global-address-cse-2026-09-17.json`.
+
+**Scalar-global store/load forwarding (2026-09-17, AArch64 lane).** The
+`forward-global-loads` candidate runs after scheduling and recognizes only an
+exact adjacent ordinary store/load pair through `[xA]`, where the last
+definition of `xA` is a declared non-aggregate global's matching
+`adrp`/`add :lo12:` address. The access widths and register views must exactly
+match the declaration. A byte or halfword reload becomes the equivalent
+unsigned mask of the stored register; a word or doubleword reload becomes a
+move, or disappears when its destination is the stored register. The store
+always remains. Indexed, offset, writeback, signed, conditional, atomic,
+aggregate, undeclared, width-mismatched, and non-adjacent shapes refuse.
+
+The local observation is `Oak.Forwarding.narrow_load_after_store` or
+`full_load_after_store`; the retained store still passes the independent seam
+check, including its address provenance. This is a non-neutral
+**verdict-gated** candidate, so neither those small equalities nor the matcher
+can authorize a body: the unchanged whole-body verifier must prove the final
+candidate against its Oak source. Materialization v24 keys the separate lane
+flag and `OAK_OPT_SKIP=forward-global-loads` retains the reloads.
+
+On the stage-2 pilot, the selected proven `check_range`, `map_page`, and
+`unmap_page` bodies forward 2, 5, and 6 loads. Instruction and object sizes are
+unchanged because all thirteen cells are bytes, but selected load counts fall
+6→4, 20→15, and 27→21; estimated stalls fall 20→18, 41→34, and 60→52. The
+same-compiler disabled control is byte-identical to the preceding
+scalar-global-address artifact, and all five OS differential tests pass.
+Runtime is not reported from the loaded host; static provenance is in
+`benchmarks/native/results/stage2-global-load-forward-2026-09-17.json`.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple

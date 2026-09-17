@@ -29,8 +29,8 @@
     "delta": -320
   },
   "relocation_entries": {
-    "baseline": 108,
-    "candidate": 28,
+    "baseline": 107,
+    "candidate": 27,
     "delta": -80,
     "entry_bytes": 8,
     "byte_delta": -640

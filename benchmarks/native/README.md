@@ -203,6 +203,28 @@ reported because host load remained above 40 after verification and linking.
 
 [Static observations and provenance](results/stage2-global-address-cse-2026-09-17.json).
 
+## OS stage-2: forward scalar-global reloads, 2026-09-17
+
+The verifier-gated `forward-global-loads` candidate retains an exact
+scalar-global store and replaces only its immediately adjacent reload through
+the same authenticated address. Narrow reloads become masks; full-width
+reloads become moves or disappear. The same candidate compiler with
+`OAK_OPT_SKIP=forward-global-loads` produced the control.
+
+| Selected body | Loads before | Loads after | Loads forwarded | Stalls before | Stalls after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `check_range` | 6 | 4 | 2 | 20 | 18 |
+| `map_page` | 20 | 15 | 5 | 41 | 34 |
+| `unmap_page` | 27 | 21 | 6 | 60 | 52 |
+
+All three changed bodies remain `proven`; every other selected body is
+unchanged, and all five OS differential tests pass. The 13 byte reloads become
+13 masks, so instruction count, 4,744-byte Mach-O `__text`, 27 relocations,
+and the 6,264-byte object are unchanged. Runtime is not reported because host
+load exceeded 60 during the controlled artifact build.
+
+[Static observations and provenance](results/stage2-global-load-forward-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
@@ -1062,7 +1084,7 @@ before considering default promotion. The downstream pin is unchanged.
 
 **Result-home register budget follow-up (2026-09-17).** The experimental
 candidate now caps result homes at **two per loop**, independently of private
-frame homes (the combined cap stays eight). Integrated materialization v23
+frame homes (the combined cap stays eight). Integrated materialization v24
 records the new recipe alongside upstream extent folding, sparse record-base
 sharing, and late-machine flags. It still
 requires the same alias, trap and verifier checks and is

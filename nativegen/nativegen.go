@@ -1662,6 +1662,10 @@ type Lane struct {
 	// scalar package global through later materializations on call-free paths.
 	// It composes only with scheduling and requires a whole-body verdict.
 	ShareGlobalAddresses bool
+	// ForwardGlobalLoads forwards an exact scalar-global load immediately
+	// following a store to the same cell. It runs on the final scheduled form
+	// and requires a whole-body verdict.
+	ForwardGlobalLoads bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -2104,6 +2108,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	}
 	if lane.ShareGlobalAddresses && lane.Schedule {
 		sharedGlobalAddresses[out] = shareGlobalAddresses(out)
+	}
+	if lane.ForwardGlobalLoads && lane.Schedule {
+		forwardedGlobalLoads[out] = forwardGlobalLoads(out)
 	}
 	return out, nil
 }

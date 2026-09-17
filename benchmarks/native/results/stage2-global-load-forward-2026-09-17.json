@@ -1,0 +1,61 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T12:34:51Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "65070a4bbc63c5a713d5d6b1b64900d7f921cfe6",
+  "candidate": "baseline plus the scheduled, proof-gated nativegen forward-global-loads transform and native materialization-v24 cache-key closure",
+  "baseline_configuration": "same candidate compiler, OAK_OPT_SKIP=forward-global-loads",
+  "os_revision": "0b13bf56068c98e03c481f9fccbe761429af850f",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "benchmark_harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "object_sha256": {
+    "baseline": "4148a140faf46bce23df97d337bab61c9095552e55934d266d4e424d1dcb5b38",
+    "candidate": "24255b6b8b320d10397142cf8f8b3f63f5178a4b253ee68b4fe85efde7859013"
+  },
+  "object_bytes": {
+    "baseline": 6264,
+    "candidate": 6264,
+    "delta": 0
+  },
+  "text_bytes": {
+    "baseline": 4744,
+    "candidate": 4744,
+    "delta": 0
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "oak": ["build", "-native"],
+    "baseline_opt_skip": "forward-global-loads",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0
+  },
+  "selected_bodies": {
+    "check_range": {"instructions_before": 50, "instructions_after": 50, "loads_before": 6, "loads_after": 4, "stalls_before": 20, "stalls_after": 18, "static_cost_before": 81.0, "static_cost_after": 74.0, "loads_forwarded": 2, "candidate_verdict": "proven"},
+    "map_page": {"instructions_before": 166, "instructions_after": 166, "loads_before": 20, "loads_after": 15, "stalls_before": 41, "stalls_after": 34, "static_cost_before": 278.5, "static_cost_after": 260.0, "loads_forwarded": 5, "candidate_verdict": "proven"},
+    "unmap_page": {"instructions_before": 229, "instructions_after": 229, "loads_before": 27, "loads_after": 21, "stalls_before": 60, "stalls_after": 52, "static_cost_before": 383.0, "static_cost_after": 361.0, "loads_forwarded": 6, "candidate_verdict": "proven"}
+  },
+  "summary": {
+    "loads_forwarded": 13,
+    "instructions_removed": 0,
+    "interpretation": "Thirteen exact byte reloads become register masks. Three changed bodies are proven; all other selected bodies and all artifact sizes remain unchanged. Runtime is deliberately unreported because host load exceeded 60."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": ["map/translate/unmap round trip", "unaligned and out-of-range rejection", "pool exhaustion", "shadow-model PRNG operations", "three isolated regimes"]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load exceeded 60 during controlled artifact generation"
+  }
+}

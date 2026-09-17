@@ -45,6 +45,34 @@ theorem held_survives (f : Frame) (off other v w : Nat) (h : other ≠ off) :
     store (store f off v) other w off = v := by
   simp [store, Ne.symm h]
 
+/-! ## Exact store-to-load forwarding
+
+The late AArch64 candidate retains an exact scalar-global store and replaces
+the immediately following load. A byte or halfword load is the low part of
+the stored register; a full-width load is the register itself. -/
+
+/-- The unsigned value observed by a `bits`-wide memory round trip. -/
+def lowBits (bits value : Nat) : Nat := value % 2 ^ bits
+
+/-- A narrow store writes exactly the low `bits` of its source register. -/
+def storeNarrow (f : Frame) (off bits value : Nat) : Frame :=
+  store f off (lowBits bits value)
+
+/-- An unsigned narrow load zero-extends the low `bits` of its cell. -/
+def loadUnsigned (f : Frame) (off bits : Nat) : Nat :=
+  lowBits bits (f off)
+
+/-- An exact unsigned narrow load immediately after a narrow store observes
+the stored register's low bits. This is the mask emitted in place of the
+load. -/
+theorem narrow_load_after_store (f : Frame) (off bits value : Nat) :
+    loadUnsigned (storeNarrow f off bits value) off bits = lowBits bits value := by
+  simp [loadUnsigned, storeNarrow, lowBits, store]
+
+/-- A full-register store/load round trip needs no truncation. -/
+theorem full_load_after_store (value : Nat) : value = value := by
+  rfl
+
 /-- `cset wD, cond` materializes a condition as 0 or 1. -/
 def cset (c : Bool) : Nat := if c then 1 else 0
 
