@@ -276,8 +276,8 @@ func newRecordSpanArg(size int64, leaves []compositeLeaf) recordSpanArg {
 		}
 
 		memory := leaf.name
-		if open := strings.IndexByte(memory, '['); open > 0 {
-			memory = memory[:open]
+		if field, _, isElement := recordSpanArrayElement(memory); isElement {
+			memory = field
 		}
 		if at, exists := arg.memoryFieldByName[memory]; exists {
 			// Preserve memoryWidths' last-leaf behavior for a composite shape
@@ -298,9 +298,19 @@ func newRecordSpanArg(size int64, leaves []compositeLeaf) recordSpanArg {
 			arrayOrder = append(arrayOrder, prefix)
 		}
 		field.length++
-		if k == 0 {
+		switch k {
+		case 0:
 			field.first = leaf
+			// A default for a one-element array, whose stride no address
+			// can observe; element one below gives the real one.
 			field.stride = cellSize
+		case 1:
+			// The distance between the same field of two elements: the
+			// element's own size, which for an array of records is the
+			// record's, not the leaf's cell.
+			if step := leaf.offset - field.first.offset; step > 0 {
+				field.stride = step
+			}
 		}
 		arg.arraysByName[prefix] = field
 	}
@@ -316,16 +326,34 @@ func newRecordSpanArg(size int64, leaves []compositeLeaf) recordSpanArg {
 	return arg
 }
 
+// recordSpanArrayElement reads a leaf name that is element k of an array
+// field: `.entries[7]` for an array of scalars, and `.surfaces[7].x` for
+// an array whose elements are records, whose leaves carry the field path
+// after the index. The field it names is the name with the index taken
+// out — `.entries` and `.surfaces.x` — so one array of records yields one
+// memory per leaf of its element type, each holding that field across
+// every element.
 func recordSpanArrayElement(name string) (prefix string, k int64, ok bool) {
-	open := strings.LastIndexByte(name, '[')
-	if open <= 0 || !strings.HasSuffix(name, "]") {
+	open := strings.IndexByte(name, '[')
+	if open <= 0 {
 		return "", 0, false
 	}
-	index, err := strconv.ParseInt(name[open+1:len(name)-1], 10, 64)
+	close := strings.IndexByte(name[open:], ']')
+	if close < 0 {
+		return "", 0, false
+	}
+	close += open
+	index, err := strconv.ParseInt(name[open+1:close], 10, 64)
 	if err != nil {
 		return "", 0, false
 	}
-	return name[:open], index, true
+	suffix := name[close+1:]
+	// A second index would be an array of arrays, which the leaves do not
+	// name and this model does not carry.
+	if strings.IndexByte(suffix, '[') >= 0 {
+		return "", 0, false
+	}
+	return name[:open] + suffix, index, true
 }
 
 // recordSpanOf recognizes `[*]T` / `[]T` with T a composite of the
@@ -462,6 +490,87 @@ func recordFieldTerm(span string, index *term, leafName string, width int, concr
 // stride, the product of the umaddl otherwise — with any constant offsets
 // gathered; also `&v + K` with a constant element. Reports the span, the
 // element index, and the byte offset inside the element.
+// scaledIndexOf reads `i << k` or `i * c` as a factor and an index.
+func scaledIndexOf(t *term) (factor int64, index *term, ok bool) {
+	if t == nil || t.kind != termBinary {
+		return 0, nil, false
+	}
+	switch {
+	case t.op == "shl" && t.right.kind == termConst && t.right.value < 32:
+		return int64(1) << t.right.value, t.left, true
+	case t.op == "mul" && t.right.kind == termConst:
+		return int64(t.right.value), t.left, true
+	case t.op == "mul" && t.left.kind == termConst:
+		return int64(t.left.value), t.right, true
+	}
+	return 0, nil, false
+}
+
+// recordNestedElementOf reads the address of a field of an element of an
+// array field of a record span element — `s[d].surfaces[i].x`. The
+// lowering materializes both indices into the base, so the address is a
+// sum of the span base, `d` scaled by the record's size, `i` scaled by
+// the array element's size, and the constant offset of the field within
+// the element; the addressing mode carries none of it. recordElementOf
+// peels one scaled index and stops, so this flattens the sum instead and
+// classifies the two scaled terms by their factors.
+func (x *pathExecutor) recordNestedElementOf(address *term, extra int64) (span string, record, elem *term, offset int64, ok bool) {
+	var parts []*term
+	var walk func(*term)
+	walk = func(t *term) {
+		if t != nil && t.kind == termBinary && t.op == "add" {
+			walk(t.left)
+			walk(t.right)
+			return
+		}
+		parts = append(parts, t)
+	}
+	walk(address)
+	offset = extra
+	var scaled []*term
+	found := false
+	for _, p := range parts {
+		if p == nil {
+			return "", nil, nil, 0, false
+		}
+		if p.kind == termConst {
+			offset += int64(p.value)
+			continue
+		}
+		if param, baseOffset, isBase := spanBaseOf(p); isBase && !found {
+			span, found = param, true
+			offset += baseOffset
+			continue
+		}
+		scaled = append(scaled, p)
+	}
+	if !found || len(scaled) != 2 || offset < 0 {
+		return "", nil, nil, 0, false
+	}
+	arg, isRecord := x.recordSpans[span]
+	if !isRecord || arg.size <= 0 {
+		return "", nil, nil, 0, false
+	}
+	// One term is the record index at the record's size; the other is the
+	// element index, whose factor the array field below must confirm.
+	for _, order := range [][2]*term{{scaled[0], scaled[1]}, {scaled[1], scaled[0]}} {
+		factor, idx, isScaled := scaledIndexOf(order[0])
+		if !isScaled || factor != arg.size {
+			continue
+		}
+		step, inner, isInner := scaledIndexOf(order[1])
+		if !isInner {
+			continue
+		}
+		_, _, stride, isArray := arg.arrayFieldAt(offset)
+		if !isArray || stride != step {
+			continue
+		}
+		return span, idx, inner, offset, true
+	}
+	return "", nil, nil, 0, false
+}
+
 func (x *pathExecutor) recordElementOf(address *term, extra int64) (span string, index *term, offset int64, ok bool) {
 	t := address
 	offset = extra
@@ -530,8 +639,14 @@ func (x *pathExecutor) recordSpanStore(instr Instruction, mem Memory, base *term
 		return false, "", false
 	}
 	span, index, offset, isElement := x.recordElementOf(base, mem.Offset)
+	nested, record, elem, fieldAt, isNested := "", (*term)(nil), (*term)(nil), int64(0), false
 	if !isElement {
-		return false, "", false
+		// Both indices in the base (recordNestedElementOf), the writer's
+		// counterpart of the nested load.
+		nested, record, elem, fieldAt, isNested = x.recordNestedElementOf(base, mem.Offset)
+		if !isNested {
+			return false, "", false
+		}
 	}
 	if len(instr.Operands) != 2 {
 		return true, "a pair store to a record span", false
@@ -539,6 +654,25 @@ func (x *pathExecutor) recordSpanStore(instr Instruction, mem Memory, base *term
 	src, isReg := instr.Operands[0].(Register)
 	if !isReg || src.Class == ClassV {
 		return true, "a vector-register store to a record span", false
+	}
+	if isNested {
+		arg := x.recordSpans[nested]
+		size := memorySize(instr.Mnemonic, src.Class)
+		value, okValue := state.read(src)
+		if !okValue {
+			return true, "unbound register read", false
+		}
+		prefix, length, _, isArray := arg.arrayFieldAt(fieldAt)
+		if !isArray {
+			return true, fmt.Sprintf("a store through %s at offset %d, which starts no array field", nested, fieldAt), false
+		}
+		leaf, isLeaf := arg.leafAt(fieldAt, size)
+		if !isLeaf {
+			return true, fmt.Sprintf("a %d-byte store at offset %d of a %s element, which is no field", size, fieldAt, nested), false
+		}
+		linear := binaryTerm("add", binaryTerm("mul", truncate(record, 32), constTerm(uint64(length), 32)), truncate(elem, 32))
+		state.writes = appendWrite(state.writes, nested+prefix, linear, truncate(value, leaf.width), nil)
+		return true, "", true
 	}
 	arg := x.recordSpans[span]
 	size := memorySize(instr.Mnemonic, src.Class)
@@ -582,7 +716,30 @@ func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memo
 	}
 	span, index, offset, isElement := x.recordElementOf(base, mem.Offset)
 	if !isElement {
-		return false, "", false
+		// Both indices in the base: a field of an element of an array
+		// field (`s[d].surfaces[i].x`).
+		nested, record, elem, at, isNested := x.recordNestedElementOf(base, mem.Offset)
+		if !isNested {
+			return false, "", false
+		}
+		arg := x.recordSpans[nested]
+		size := memorySize(instr.Mnemonic, dest.Class)
+		prefix, length, _, isArray := arg.arrayFieldAt(at)
+		if !isArray {
+			return true, fmt.Sprintf("a load through %s at offset %d, which starts no array field", nested, at), false
+		}
+		leaf, isLeaf := arg.leafAt(at, size)
+		if !isLeaf {
+			return true, fmt.Sprintf("a %d-byte load at offset %d of a %s element, which is no field", size, at, nested), false
+		}
+		linear := binaryTerm("add", binaryTerm("mul", truncate(record, 32), constTerm(uint64(length), 32)), truncate(elem, 32))
+		value := memoryAt(state.writes[nested+prefix], linear, recordFieldTerm(nested, linear, prefix, leaf.width, x.concrete))
+		if isSignExtendingLoad(instr.Mnemonic) && leaf.width == int(size)*8 {
+			state.write(dest, extendTerm(value, leaf.width, widthOf(dest.Class), true))
+		} else {
+			state.write(dest, zeroExtend(value, widthOf(dest.Class)))
+		}
+		return true, "", true
 	}
 	arg := x.recordSpans[span]
 	size := memorySize(instr.Mnemonic, dest.Class)
@@ -10398,28 +10555,39 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 	if len(lo.recordSpans) == 0 {
 		return recordSpanPlace{}, false, "", false
 	}
+	// Outside in: each level is a field (`.f`) or an array index (`[j]`),
+	// down to the span's own `root[i]`. The field names build the leaf
+	// path and the one array index is the element's, so `v[i].a[j]` and
+	// `v[i].a[j].f` both resolve — the latter to the leaf memory `v.a.f`,
+	// the field across every element of every record's array
+	// (recordSpanArrayElement).
 	var arrayIndex ast.Expression
-	cur := e
-	if !cur.Dot {
-		left, isIndex := cur.Left.(*ast.IndexExpression)
-		if !isIndex || !left.Dot {
-			return recordSpanPlace{}, false, "", false
-		}
-		arrayIndex = cur.Index
-		cur = left
-	}
 	path := ""
-	for cur.Dot {
-		field, isName := cur.Index.(*ast.Identifier)
-		if !isName {
-			return recordSpanPlace{}, false, "", false
+	cur := e
+	for {
+		if cur.Dot {
+			field, isName := cur.Index.(*ast.Identifier)
+			if !isName {
+				return recordSpanPlace{}, false, "", false
+			}
+			path = "." + field.Value + path
+		} else {
+			if _, isRoot := cur.Left.(*ast.Identifier); isRoot {
+				break // the span's own index
+			}
+			if arrayIndex != nil {
+				return recordSpanPlace{}, false, "", false // an array of arrays
+			}
+			arrayIndex = cur.Index
 		}
-		path = "." + field.Value + path
 		next, isIndex := cur.Left.(*ast.IndexExpression)
 		if !isIndex {
 			return recordSpanPlace{}, false, "", false
 		}
 		cur = next
+	}
+	if cur.Dot {
+		return recordSpanPlace{}, false, "", false
 	}
 	root, isIdent := cur.Left.(*ast.Identifier)
 	if !isIdent {

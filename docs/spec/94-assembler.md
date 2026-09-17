@@ -3898,6 +3898,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The sixty-third increment is nested record spans (§8 "An array field of
+records"): `s[d].surfaces[i].x`, an array field whose elements are
+records, read and stored through a span of records. It was trusted, and
+it is what a window manager's scene invariants need
+(OAK-REQUEST #10).
+
 The sixty-second increment is a computed condition operand in any arm of
 a chain (§9 "If-conversion"): a later arm's comparison operand is
 evaluated before the chain when it is speculable, where it used to leave
@@ -6885,6 +6891,55 @@ span of records flatten to the same leaf memories, so a memory can be
 marked twice while one name has one recorded position in the write log.
 Making the marked memories unique loses those two proofs to "the memory
 after the loops was not proven equal".
+
+**An array field of records (2026-09-17).** A span of records models each
+leaf of its element type as its own memory, `s.count` for a scalar field
+and `s.xs` for an array field, the leaf of element `d` living at index
+`d` and an array element at the linear index `d·N + k`. An array field
+whose elements are *records* had no model: `s[d].surfaces[i].x` was
+refused on both sides — "a load through a register that is not a span
+base" reading, and the store not recognized at all — so a body touching
+one was trusted, and every proof over it was out of reach. It is the
+shape a window manager's surfaces take, and the one its scene invariants
+wait on.
+
+The leaves were already enumerated correctly: `compositeLeaves` recurses
+through a record element type and names them `surfaces[0].x`,
+`surfaces[0].y`, `surfaces[1].x`, … at their true offsets. What was
+missing was the index over them and the address that reaches them.
+
+A leaf of such a field now keys its memory by the field *path* with the
+index taken out — `s.surfaces.x` holds the `x` of every surface of every
+record, at the linear index `d·N + i` — so one array of records yields
+one memory per leaf of its element type, and a store to `x` cannot be
+confused with a read of `y`. Each field's stride is the distance between
+the same leaf of two consecutive elements, which is the element record's
+size and not the leaf's cell; the cell was right only because an array of
+scalars has one leaf per element.
+
+The address is the other half. The lowering materializes both indices
+into the base — the span base, `d` scaled by the record's size, `i`
+scaled by the element's, and the field's offset within the element —
+where a scalar array field leaves the element index in the addressing
+mode. The machine side reads one scaled index and stopped, so it now
+flattens the sum instead and classifies the two scaled terms by their
+factors (`recordNestedElementOf`), the record's size naming one and an
+array field's stride confirming the other. The load compares its size
+against the *leaf's* cell rather than the stride, since a field of an
+element is narrower than the element. The store takes the same path.
+
+On the Oak side the walk down `v[i].f…[j]` accepted one array index and
+only as the outermost level. It now takes each level as a field or an
+index in either order, down to the span's own, so `v[i].a[j]` and
+`v[i].a[j].f` both resolve — the second to the leaf memory the machine
+side computes. An array of arrays is still refused: the leaves do not
+name it.
+
+Pinned: `compiler/e2e_native_nested_record_span_test.go` — every field of
+an element read and proven at the bit level, narrow fields among them, a
+store proven in `s.surfaces.x` by name, a write to one field followed by
+a read of another, a constant element index, and a loop storing through
+the field, with both backends agreeing on the values.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
