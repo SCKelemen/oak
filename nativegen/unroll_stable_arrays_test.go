@@ -118,7 +118,7 @@ const stableUnrollArraySource = `f: (seed: u32): [8]u32 {
 func TestUnrollStableArrayStagesKeepImmutableReference(t *testing.T) {
 	fn, functions, _, tc := checkedFillFunction(t, stableUnrollArraySource, "f")
 	before := cloneNode(fn.Body)
-	stages := computeStages(fn, functions, nil, tc, false, false, false, false, false, false, false, false, true, true)
+	stages := computeStages(fn, functions, nil, tc, false, false, false, false, false, false, false, false, false, true, true)
 	constantStages := 0
 	for _, stage := range stages {
 		unrolled := false
@@ -240,7 +240,7 @@ func TestUnrollSmallStageCacheSeparatesStrategies(t *testing.T) {
 			before := cloneNode(fn.Body)
 			var fullBody, smallBody ast.Expression
 			for _, small := range []bool{smallFirst, !smallFirst, smallFirst, !smallFirst} {
-				stages := rewriteStages(fn, functions, nil, tc, false, false, false, false, false, false, false, !small, small, false)
+				stages := rewriteStages(fn, functions, nil, tc, false, false, false, false, false, false, false, false, !small, small, false)
 				if len(stages) != 2 {
 					t.Fatalf("small=%v: want unrolled and source stages, got %d", small, len(stages))
 				}
@@ -310,7 +310,7 @@ func TestUnrollSmallBudgetIsSharedAcrossTheBody(t *testing.T) {
 
 func TestUnrollSmallRefusalKeepsOriginalPlacement(t *testing.T) {
 	fn, functions, _, tc := checkedFillFunction(t, strings.Replace(stableUnrollArraySource, "u32(8) {", "seed {", 1), "f")
-	stages := rewriteStages(fn, functions, nil, tc, false, false, false, false, false, false, false, false, true, false)
+	stages := rewriteStages(fn, functions, nil, tc, false, false, false, false, false, false, false, false, false, true, false)
 	if len(stages) != 1 || stages[0].body != fn.Body || stages[0].scalarEligibilityReference != nil {
 		t.Fatal("refused small rewrite changed placement or fallback syntax")
 	}

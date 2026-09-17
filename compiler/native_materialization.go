@@ -61,6 +61,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
+		{"vectorize-lanes", lane.VectorLanes},
 		{"unroll-small", lane.UnrollSmall},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},

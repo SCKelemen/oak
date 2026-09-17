@@ -135,7 +135,10 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 	if !ok {
 		t.Fatal("tiled was not lowered natively")
 	}
-	fmuls := 0
+	// The four accumulators are the lanes of one vector
+	// (nativegen/vector_lanes.go): the loop multiplies once, lane-wise, and
+	// accumulates in a vector register; no frame slot either way.
+	fmuls, vectorMuls := 0, 0
 	for _, ins := range loopBody(tiled) {
 		if ins.Mnemonic == "ldr" || ins.Mnemonic == "str" {
 			if mem, isMem := ins.Operands[len(ins.Operands)-1].(asm.Memory); isMem && mem.Base.Class == asm.ClassSP {
@@ -143,6 +146,10 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 			}
 		}
 		if ins.Mnemonic == "fmul" {
+			if dst, isReg := ins.Operands[0].(asm.Register); isReg && dst.Vec == "4s" {
+				vectorMuls++
+				continue
+			}
 			fmuls++
 			l, r := ins.Operands[1].(asm.Register), ins.Operands[2].(asm.Register)
 			if l.Text != r.Text {
@@ -150,8 +157,8 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 			}
 		}
 	}
-	if fmuls != 4 {
-		t.Errorf("tiled's loop must hold four multiplications, got %d", fmuls)
+	if !(vectorMuls == 1 && fmuls == 0) && fmuls != 4 {
+		t.Errorf("tiled's loop must hold one lane-wise multiplication or four scalar ones, got %d and %d", vectorMuls, fmuls)
 	}
 	// The little-endian word assembly is one wide load (nativegen/word_fusion.go).
 	word, ok := units["word_at"]

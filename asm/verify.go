@@ -1854,8 +1854,8 @@ type symbolicState struct {
 	// data-dependent index reached: slots from there up hold opaque values.
 	unknownFrom *int64
 	// bounds: register number -> exclusive bound K established on this
-	// path by `cmp wI, #K; b.hs <trap>` (the checker's frame-array index
-	// guard), cleared when the register is written. A frame store at the
+	// path by a trap guard or an unsigned conditional against a constant,
+	// cleared when the register is written. A frame store at the
 	// register's index then names K possible slots (registerFrameAccess).
 	bounds map[int]uint64
 	// fregs is the RV64 lane's floating-point file (f0–f31, a class of its
@@ -2982,7 +2982,19 @@ func (s *symbolicState) noteIndexBelow(index int, bound uint64) {
 	if s.bounds == nil {
 		s.bounds = map[int]uint64{}
 	}
-	s.bounds[index] = bound
+	if old, known := s.bounds[index]; !known || bound < old {
+		s.bounds[index] = bound
+	}
+	if s.arch == ArchRV64 {
+		if value, held := s.regs[index]; held {
+			if s.termBounds == nil {
+				s.termBounds = map[*term]uint64{}
+			}
+			if old, known := s.termBounds[value]; !known || bound < old {
+				s.termBounds[value] = bound
+			}
+		}
+	}
 }
 
 // noteBranchBound records, on the side of a fork that a compare against a
@@ -2993,6 +3005,19 @@ func (s *symbolicState) noteIndexBelow(index int, bound uint64) {
 // (docs/spec/94-assembler.md §9 "Check elision": an element access under
 // the conditional that proves it keeps the frame array a memory).
 func noteBranchBound(instr Instruction, taken, fallThrough *symbolicState) {
+	if taken != nil {
+		taken.noteBranchIndexBound(instr, true)
+	}
+	if fallThrough != nil {
+		fallThrough.noteBranchIndexBound(instr, false)
+	}
+}
+
+// noteBranchIndexBound learns only on the selected side. Flags may still
+// describe a register's old value: a non-flag-setting write between cmp
+// and the branch must not constrain the replacement value. A 32-bit
+// comparison must not constrain unspecified high bits of its x view.
+func (s *symbolicState) noteBranchIndexBound(instr Instruction, taken bool) {
 	if instr.Mnemonic == "bgeu" || instr.Mnemonic == "bltu" {
 		if len(instr.Operands) != 3 {
 			return
@@ -3002,33 +3027,44 @@ func noteBranchBound(instr Instruction, taken, fallThrough *symbolicState) {
 		if !okI || !okK {
 			return
 		}
-		bound, ok := fallThrough.read(limit)
+		bound, ok := s.read(limit)
 		if !ok || bound.kind != termConst {
 			return
 		}
-		if instr.Mnemonic == "bgeu" {
-			fallThrough.noteIndexBelow(index.Num, bound.value)
-		} else {
-			taken.noteIndexBelow(index.Num, bound.value)
+		if taken == (instr.Mnemonic == "bltu") {
+			s.noteIndexBelow(index.Num, bound.value)
 		}
 		return
 	}
-	f := fallThrough.flags
-	if instr.Mnemonic != "b." || f == nil || f.unknown || f.indexReg < 0 || f.kind != "" {
+	f := s.flags
+	if instr.Mnemonic != "b." || f == nil || f.unknown || f.float || f.cond != nil || f.indexReg < 0 || f.kind != "" {
 		return
 	}
+	value, held := s.regs[f.indexReg]
+	if !held || !equalTerms(truncate(value, f.width), f.left) ||
+		(f.width == 32 && !equalTerms(value, zeroExtend(f.left, 64))) {
+		return
+	}
+	if f.right.kind != termConst {
+		return
+	}
+	bound := f.right.value
 	switch instr.Cond {
 	case "hs", "cs":
-		fallThrough.noteIndexBelow(f.indexReg, f.bound)
+		if !taken {
+			s.noteIndexBelow(f.indexReg, bound)
+		}
 	case "lo", "cc":
-		taken.noteIndexBelow(f.indexReg, f.bound)
+		if taken {
+			s.noteIndexBelow(f.indexReg, bound)
+		}
 	case "hi":
-		if f.bound < ^uint64(0) {
-			fallThrough.noteIndexBelow(f.indexReg, f.bound+1)
+		if !taken && bound < ^uint64(0) {
+			s.noteIndexBelow(f.indexReg, bound+1)
 		}
 	case "ls":
-		if f.bound < ^uint64(0) {
-			taken.noteIndexBelow(f.indexReg, f.bound+1)
+		if taken && bound < ^uint64(0) {
+			s.noteIndexBelow(f.indexReg, bound+1)
 		}
 	}
 }
@@ -10197,6 +10233,7 @@ func (x *pathExecutor) forgetCallerSaved(state *symbolicState) {
 	if x.arch == ArchRV64 {
 		for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
 			delete(state.regs, r)
+			delete(state.bounds, r)
 		}
 		for r := 0; r <= 31; r++ {
 			if !rv64FloatCalleeSaved(r) {
@@ -10207,8 +10244,10 @@ func (x *pathExecutor) forgetCallerSaved(state *symbolicState) {
 	}
 	for r := 0; r <= 17; r++ {
 		delete(state.regs, r)
+		delete(state.bounds, r)
 	}
 	delete(state.regs, 30)
+	delete(state.bounds, 30)
 	state.flags = nil
 	for r := 0; r <= 31; r++ {
 		if !calleeSavedVector(r) {
@@ -10800,12 +10839,15 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if x.arch == ArchRV64 {
 			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
 				delete(state.regs, r)
+				delete(state.bounds, r)
 			}
 		} else {
 			for r := 0; r <= 17; r++ {
 				delete(state.regs, r)
+				delete(state.bounds, r)
 			}
 			delete(state.regs, 30)
+			delete(state.bounds, 30)
 			state.flags = nil
 			for r := 0; r <= 31; r++ {
 				if r < 8 || r >= 16 {
@@ -10879,18 +10921,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if x.arch == ArchRV64 {
 			for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
 				delete(state.regs, r)
+				delete(state.bounds, r)
 			}
 			for k, chunk := range chunks {
-				state.regs[10+k] = chunk
+				state.write(Register{Class: ClassRV64X, Num: 10 + k}, chunk)
 			}
 		} else {
 			for r := 0; r <= 17; r++ {
 				delete(state.regs, r)
+				delete(state.bounds, r)
 			}
 			delete(state.regs, 30)
+			delete(state.bounds, 30)
 			state.flags = nil
 			for k, chunk := range chunks {
-				state.regs[k] = chunk
+				state.write(Register{Class: ClassX, Num: k}, chunk)
 			}
 		}
 		for _, seen := range x.summarized {
@@ -10942,6 +10987,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if x.arch == ArchRV64 {
 		for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
 			delete(state.regs, r) // ra, t0–t6, a1–a7: dead after a call
+			delete(state.bounds, r)
 		}
 		switch {
 		case resultSigned:
@@ -10949,12 +10995,14 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		case resultWidth == 32:
 			value = extendTerm(value, 32, 64, true) // a u32 arrives sign-extended (Oak.RiscV.widen)
 		}
-		state.regs[10] = value
+		state.write(Register{Class: ClassRV64X, Num: 10}, value)
 	} else {
 		for r := 1; r <= 17; r++ {
 			delete(state.regs, r)
+			delete(state.bounds, r)
 		}
 		delete(state.regs, 30)
+		delete(state.bounds, 30)
 		state.flags = nil
 		defined := resultWidth
 		if typeText(callee.ReturnType) == "Bool" {
@@ -10976,7 +11024,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			}
 			value = binaryTerm("or", value, binaryTerm("shl", zeroExtend(upper, 64), constTerm(uint64(defined), 64)))
 		}
-		state.regs[0] = value
+		state.write(Register{Class: ClassX, Num: 0}, value)
 	}
 	for _, seen := range x.summarized {
 		if seen == name {

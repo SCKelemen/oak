@@ -227,6 +227,7 @@ var setAside = map[string]string{
 	nativegen.TransformUnrollMaps:          "keeps one vector per map trip",
 	nativegen.TransformVectorFolds:         "keeps its scalar fold",
 	nativegen.TransformUnrollConst:         "keeps its constant-trip loops",
+	nativegen.TransformVectorLanes:         "keeps its scalar accumulators",
 	nativegen.TransformUnrollSmall:         "keeps its small constant-trip loops",
 	nativegen.TransformVecBlocks:           "addresses each vector load",
 	nativegen.TransformVectorAddresses:     "keeps separate vector access addresses",

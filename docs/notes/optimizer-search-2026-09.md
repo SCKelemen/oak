@@ -729,6 +729,93 @@ recover those checks. Constant aggregate leaves also have a separate
 loop-coupling limitation; the reduced loop tests use changing leaves.
 The selections, diagnostics, artifact hashes and baseline failures are
 recorded in `benchmarks/native/results/loop-call-result-coverage-2026-09-17.json`.
+### Phase D, third increment: lane-wise accumulators (2026-09-17, evening)
+
+The end-of-day table had `tiled` at 1.08×, and its loop said why: eight
+independent float accumulators updated one element each per trip, 34
+instructions for eight elements, seven of them recomputing element
+addresses. clang half-vectorizes the same loop with shuffles (23
+instructions). Eight independent accumulators are two vectors' lanes,
+and adding lane by lane keeps every lane's rounding order, so the vector
+form is exact — no reassociation, which is what kept the float `sum` out
+of `vectorize-reductions`. `vectorize-lanes` (`nativegen/vector_lanes.go`)
+recognizes the block shape — `L` statements `acc[k] = acc[k] + E_k` under
+the slack guard, `E_k` lane 0's expression shifted `k` along the index —
+and rewrites it to `L / lanes` vector accumulators gathered from `acc`
+before the loop and extracted back after it, the loads and the operators
+lane-wise as the map vectorization spells them (`vectorExprAt`, the read
+at the vector's own block). The license is `Oak.Lanes.blocks_eq`
+(`spec/lean/Oak/Lanes.lean`): the block's statements touch `L` distinct
+lanes, so one lane-wise step is all of them, proven over `Fin L → β`
+with `List.finRange`'s distinctness. The search takes it for the test
+bodies at a third of the identity's cost (1097 against 3642 for eight
+`f32` accumulators), witnessed — the scalar form is witnessed too, its
+accumulators' coupling past the loop proof's affine images. The
+register-shape test that pinned `tiled`'s four scalar multiplications
+reads the one lane-wise multiplication now. On the harness, three
+interleaved runs under heavy load: `tiled` from 1.20× the C backend to
+0.76×, the first kernel after `dispatch` where the native lane beats
+clang, which half-vectorizes the same loop with shuffles.
+
+### Recovering the bounded update store (2026-09-17)
+
+The missing `.stack_len` was a verifier bookkeeping loss: an indexed
+store without its redundant trap guard forgot every frame field after
+the array base. Conditional branches now retain the index bound on the
+side where it holds. Linear loop conditions also supply that bound to
+the store probe and the iteration, so the probe inventories the changed
+array slots while leaving neighboring fields intact. The ordinary loop
+coupling still has to prove those slots; continuing-side facts never
+escape the loop. A register rewrite, uncertain flags or an unsupported
+header cannot supply a new fact.
+
+At `e58ef720`, fresh default-budget emission selected the plain update:
+547 instructions, four guards, witness-checked on 305 inputs. With the
+conditional and loop-bound changes it selects the elided, hoisted,
+rotated, scheduled and reallocated form with trimmed callee saves:
+523 instructions, one guard, witness-checked on 307 inputs. The
+`.stack_len` loss is gone; the remaining proof failure is the inductive
+coupling of `next.cv[0]` through nested call events. This is not a proof
+of the complete update, and instruction counts alone do not establish
+a runtime gain.
+
+Four reduced top-tested/rotated cases with byte/word initialization
+move from witness checking to proof. They exercise a neighboring field,
+zero iterations and deliberately wrong stores. Branch-fact tests cover
+both sides, inclusive bounds, stale registers, conditional flags,
+widths, overflow and RV64 scaling. The before/after diagnostics and
+validation record are in
+`benchmarks/native/results/blake3-loop-bounds-2026-09-17.json`.
+
+After integration onto `2bc9a867`, which changes the absorption helper
+to avoid whole-state copies, an upstream-only emitter still selects
+the plain update (548 instructions, four guards). With these bounds
+changes, the same hash source selects the optimized update (528
+instructions, one guard). The 307-input witness verdict and remaining
+`next.cv[0]` coupling failure are unchanged. The integrated comparison
+therefore isolates the verifier fix from the separate source optimization.
+The final parent `2689708f` already includes the conditional fix from
+`9db8ba8b`; its emitted C and native object are byte-identical to that
+timed baseline. The added loop-header bounds are still needed to recover
+the optimized update.
+
+Runtime remains unsettled. Three same-process runs with C compression
+fixed give median paired candidate/baseline ratios of **1.261, 0.987
+and 0.898**; the first is slower, the reverse-order run roughly flat,
+and the longer repeat faster. All digest bytes agree at fourteen
+boundary lengths and after every sample. No builds or tests from this
+experiment overlapped timing, but the shared host's one-minute load
+ranged from 65.6 to 106.3. These conflicting results do not establish
+a runtime improvement. The bounds changes are retained for verification
+coverage; a quiet-host comparison is still needed before assigning them
+a performance gain.
+
+Final review also found stale bounds across calls: scalar and aggregate
+summaries replaced return registers directly, leaving the prior value's
+bound attached. Those result writes now invalidate the bound, and all
+call paths clear facts on the caller-saved registers they discard. Eight
+ARM64/RV64 cases fail before the fix and pass after it, including actual
+scalar, pair and vector-returning call summaries; callee-saved facts remain valid.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 

@@ -5668,6 +5668,25 @@ element term `T[k]` the span reading of the table gives — the same term
 the asm side's load through the table's address yields — for tables of
 at most sixty-four elements.
 
+**Lane-wise accumulators (2026-09-17, AArch64 lane;
+`nativegen/vector_lanes.go`, `spec/lean/Oak/Lanes.lean`, the
+`vectorize-lanes` candidate).** A loop under the slack guard `len(a) >= L
+&& i <= len(a) - L` whose body is `L` statements `acc[k] = acc[k] + E_k`,
+`k` in order, each `E_k` lane 0's expression with every element read moved
+`k` along the index (`a[i + k]`), over spans of one length, invariant
+scalars, and constants, then `i = i + L` — the tiled reduction's shape,
+`acc` an owned array of `L` float elements the body indexes by constants —
+becomes the same loop over `L / lanes` vector accumulators (one to four):
+each gathered from `acc` before the loop (a splat and inserts), each trip
+loading the block's elements as vectors, applying the expression
+lane-wise, and adding each lane to its accumulator, and each lane stored
+back into `acc` after the loop (`extract`), before the remainder loop and
+whatever reads the accumulators. Lane `k` meets exactly the values `acc[k]`
+met, in the same order, so a float accumulator rounds as before; the
+license is `Oak.Lanes.blocks_eq` — the block's statements touch distinct
+lanes, so their order is immaterial and one lane-wise step is all of them
+— and the verifier judges the assembly against the rewritten body.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
@@ -9164,6 +9183,29 @@ now records the bound its compare establishes on the side that holds it
 on the taken side, `b.hi`/`b.ls` below K+1, `bgeu`/`bltu` alike on the
 RV64 lane (`noteBranchBound`) — in straight-line bodies and in loop
 bodies, so the elided form is proven and taken.
+
+The same fact is available inside a loop whose continuing condition
+bounds the index (`while i < n && i < 16`). The indexed-store inventory
+replays a linear, comparison-only header on its private probe state and
+on the iteration state; recognized rotated loops use their matching
+entry/tail test. Each changed slot joins the loop-carried frame before
+the usual coupling proof. Bounds on replaced entry registers are cleared
+when those registers become fresh iteration symbols. Continuing-side
+facts do not escape to the state after the loop. Headers with setup,
+loads, calls or internal forks keep the existing conservative handling,
+as do bodies with calls or inner loops that cannot use the store probe
+(`noteLoopBodyBounds`, `TestVerifyLoopConditionFrameStore`).
+
+A conditional's register fact applies only while the register still
+holds the compared value. Conditional, floating or unknown flags do not
+establish it; a W comparison cannot constrain an X value with unknown
+upper bits. Inclusive bounds never wrap at the operand-width boundary,
+and a later weaker comparison retains the tighter fact. RV64 keeps the
+bound on the original index term when address scaling rewrites its
+register (`TestBranchIndexBound*`, `TestRV64BranchIndexBound`).
+Calls clear bounds on caller-saved registers, including scalar and
+aggregate result registers whose values the summary replaces directly;
+callee-saved facts still hold (`TestCallClearsRegisterBounds`).
 
 **A field's address as an aggregate argument (2026-09-16).** A callee
 taking an owned array or record by reference may receive the address of

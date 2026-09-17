@@ -52,6 +52,7 @@ const (
 	TransformUnrollMaps          = "unroll-vector-maps"
 	TransformVectorFolds         = "vectorize-folds"
 	TransformUnrollConst         = "unroll-constant"
+	TransformVectorLanes         = "vectorize-lanes"
 	TransformUnrollSmall         = "unroll-small"
 	TransformVecBlocks           = "vector-blocks"
 	TransformVectorAddresses     = "share-vector-addresses"
@@ -363,6 +364,18 @@ func Transforms() []opt.Transform {
 			fired:    UnrolledMaps,
 		},
 		&laneTransform{
+			// Lane-wise accumulators (nativegen/vector_lanes.go): a block's
+			// independent accumulators as the lanes of vectors, licensed by
+			// Oak.Lanes.blocks_eq — each lane meets its accumulator's values
+			// in order, so no law of the element type and no fact of the
+			// body is required, and a float accumulator rounds as before.
+			name: TransformVectorLanes, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorLanes },
+			apply:   func(l Lane) Lane { l.VectorLanes = true; return l },
+			fired:   VectorizedLanes,
+		},
+		&laneTransform{
 			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
 			// from zero to a literal bound becomes its trips, the index a
 			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
@@ -670,6 +683,7 @@ func PlainLane(lane Lane) Lane {
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
 	lane.UnrollConstant = false
+	lane.VectorLanes = false
 	lane.UnrollSmall = false
 	lane.UnrollFills = false
 	lane.NoReductions = true
