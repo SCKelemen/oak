@@ -68,16 +68,85 @@ Core placement and machine contention are uncontrolled; use the raw samples
 and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
 
-## Two-vector map candidate
+## Late vector address sharing
 
-The later address-sharing increment keeps the map execution, matcher,
-materialization, race and vet checks. A broader existing test,
+`share-vector-addresses` retries address sharing after copy cleanup and
+includes stores. The second vector load and store use their respective
+first addresses at `#16`, removing four index/address adds per two-vector
+trip. It does not reorder memory accesses, change floating operations or
+alter tail handling. This is a separate verifier-gated candidate; the earlier
+`vector-blocks` pass remains load-only. Register versions, private temporary
+uses, W/X aliasing, writeback bases and immediate bounds are checked
+conservatively. Materialization revision v10 includes the new flag.
+
+### Address-sharing measurements: 2026-09-17
+
+Clean revision `5165a82ba17d7f7605590ba605bae3dfca68c814`, M4 Max,
+Apple clang 21.0.0, nine interleaved samples per variant. Each report contains
+six backends and twenty-four variants. All twenty native bodies remain
+`proven`; checksums agree on this benchmark's input family. The no-sharing
+control's assembly is identical to the selected pre-change map assembly at
+`40558540074d9aab2c86a93a5276033c5f7ff844`.
+
+At 4,096 elements × 4,096 calls, median ns/element:
+
+| Map | C | Native no sharing | Native shared addresses | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0507 | 0.0834 | 0.0488 | 41.5% | 0.96× |
+| f32 explicit FMA | 0.0517 | 0.0784 | 0.0537 | 31.5% | 1.04× |
+| f64 strict multiply/add | 0.1457 | 0.1575 | 0.1273 | 19.2% | 0.87× |
+| f64 explicit FMA | 0.1193 | 0.1596 | 0.1240 | 22.3% | 1.04× |
+
+A repeat with longer samples (32,768 calls, still 4,096 elements and nine
+samples per variant) retains the improvement:
+
+| Map | C | Native no sharing | Native shared addresses | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0592 | 0.0915 | 0.0634 | 30.7% | 1.07× |
+| f32 explicit FMA | 0.0574 | 0.0955 | 0.0650 | 32.0% | 1.13× |
+| f64 strict multiply/add | 0.1571 | 0.1992 | 0.1476 | 25.9% | 0.94× |
+| f64 explicit FMA | 0.1393 | 0.2032 | 0.1433 | 29.5% | 1.03× |
+
+The explicit-FMA body shrinks from 244 to 228 encoded bytes, with the frame
+unchanged at 144 bytes. The main loop has 13 rather than 17 instructions,
+still two loads and two stores. Strict maps shrink from 248 to 232 bytes and
+retain separate multiply/add roundings. The reports keep the
+[default-duration run](results/map-shared-addresses-m4-max-2026-09-17.json)
+and [longer repeat](results/map-shared-addresses-longer-m4-max-2026-09-17.json),
+including every timing, all controls, assembly and sharing counts.
+
+One-minute host load stayed around 23–26, but timing spreads remain wide.
+The repeat supports a real native-to-native gain; the variation in C ratios
+does not support a general claim of beating C or a quiet-host regression
+guarantee. Explicit FMA remains roughly 3–13% behind C across these runs.
+
+Short-input checks use 1,048,576 calls per sample. Explicit-FMA medians,
+again ns/element:
+
+| Elements | Width | Native no sharing | Native shared addresses | Time change |
+| --- | --- | ---: | ---: | ---: |
+| 7 | f32 | 0.5147 | 0.5097 | −1.0% |
+| 7 | f64 | 0.4827 | 0.5125 | +6.2% |
+| 2 | f32 | 1.4720 | 1.4749 | +0.2% |
+| 2 | f64 | 1.4095 | 1.4081 | −0.1% |
+
+No short-input speedup is claimed: distributions overlap substantially, and
+the seven-element f64 slower median is retained. See the
+[seven-element](results/map-shared-addresses-n7-m4-max-2026-09-17.json) and
+[two-element](results/map-shared-addresses-n2-m4-max-2026-09-17.json) reports,
+which also preserve the strict-map controls.
+
+Validation includes nativegen/machine/opt/harness tests, targeted compiler
+map/fold/unrolling execution and materialization tests, race checks and vet.
+A broader existing test,
 `TestE2ENativeVectorReduction`, still expects one sum32 address where the
 compiler selects two. Replaying the original matcher with late sharing
 disabled produces the same failing shape. Its old liveness analysis counts
 the second destination of a paired load as a source, keeping an index
 temporary live unnecessarily. That separate limitation is not fixed or
 hidden by weakening the shape test in this increment.
+
+## Two-vector map candidate
 
 `unroll-vector-maps` adds a two-vector main loop before the existing
 one-vector cleanup and scalar tail. It instantiates `Oak.Map.grouped_eq`:
