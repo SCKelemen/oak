@@ -1453,6 +1453,33 @@ Build the pure-C control separately. Run `blake3_same_process.c` with absolute
 baseline/selected/control library paths and `100 21`, reversing the first two
 paths for run B. No special candidate probe or raised proof budget is needed.
 
+**Independent repeat (2026-09-17).** Three further runs started with a pristine
+`732505af` baseline and an independent exact-trip costing prototype. After
+integration, a fresh default-mode build of `f07b5f99` emitted **byte-identical
+native code and C companion** to the timed prototype. Offering small unrolling
+also produced the same object; the winner uses full constant unrolling.
+
+| Run | Baseline ms/MiB | Selected ms/MiB | Ratio of medians | Median paired ratio | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 5.861 | 4.125 | 0.704 | 0.795 | 4.156 |
+| B, reversed | 5.077 | 3.632 | 0.715 | 0.759 | 3.815 |
+| C | 4.898 | 4.468 | 0.912 | 0.879 | 3.824 |
+
+The same 100-call, 21-sample protocol checked all digest bytes at fourteen
+boundary lengths and after every sample. The **12–24% paired improvement**
+supports the earlier result under another period of heavy, variable load
+(one-minute load 51–175 across run boundaries). Only compression was native;
+core placement and frequency remained uncontrolled, and run C remained slower
+than C. [The repeat record](results/blake3-exact-trips-repeat-2026-09-17.json)
+preserves all samples, the reversed labels for run B, source and object hashes,
+fresh all-eight-chunk proof diagnostics, and the reproduction commands.
+
+An additional 3,120-case regression compares recognized trip counts with direct
+loop execution across both register widths, test placements, inclusive bounds,
+nonzero starts and uneven strides. The loop-array-home competition regression
+now uses the measured full-unroll and rolled profiles above, retaining its
+proof, stack-count nonregression and deterministic-selection checks.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

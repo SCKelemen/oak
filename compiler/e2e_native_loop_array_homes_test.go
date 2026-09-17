@@ -173,9 +173,9 @@ func TestNativeBlake3LoopArrayHomesCompetition(t *testing.T) {
 			if fn.Name != nativeBlake3CompressName {
 				continue
 			}
-			if fn.Frame > 208 {
-				t.Fatalf("frame regressed to %d", fn.Frame)
-			}
+			// Exact trip costs may select the measured fully unrolled
+			// profile. Keep its bounds distinct from the rolled fallback.
+			requireNativeBlake3StrongProfile(t, fn)
 			count := 0
 			for _, item := range fn.Items {
 				if ins, ok := item.(asm.Instruction); ok && (strings.HasPrefix(ins.Mnemonic, "ld") || strings.HasPrefix(ins.Mnemonic, "st")) {
