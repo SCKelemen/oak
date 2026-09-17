@@ -4,6 +4,14 @@
   "experiment": "Batch BLAKE3 input bytes inside a block while retaining the original checked boundary step",
   "status": "retained; exact library source optimization, no new compiler transform or semantic relaxation",
   "baseline_commit": "559dae7046145ddb5b5ddbc91a019457bbec3762",
+  "production_validation": {
+    "integrated_upstream": "cb4db29b",
+    "final_integrated_upstream": "cc22121d",
+    "final_integration": "Same focused Go test command passed again (33.055s), the same 5 Lean build jobs passed, and fresh default-budget emission again proved all 8 chunks with 0 cached verdicts. Native object and native C companion remain byte-identical to the measured candidate. Final upstream changes do not touch hash source/extraction/proof.",
+    "tests_after_rebase": "go test ./compiler -run '^(TestE2EBlake3Update.*|TestE2EHashBlake3|TestBlake3ReferenceAnchors|TestLeanStdlibExtract)$' -count=1 -timeout=5m passed (40.469s).",
+    "Lean_after_rebase": "lake build Oak.Stdlib.Blake3UpdateLaws Oak.Stdlib.HashLaws Oak.Stdlib.Sha256Laws passed (5 jobs).",
+    "fresh_emission_after_rebase": "All 8 native compression result chunks proven at the default budget, 0 of 1 verdicts cached. Native object, native C companion and pure-C output are byte-identical to the measured candidate artifacts below. No fresh runtime claim is substituted for the six recorded runs."
+  },
   "scope": "Complete 1 MiB BLAKE3 hash. First cohort holds the native compression object fixed and changes the C-compiled update loop. Second cohort compares fresh pure-C builds. This is not a native whole-update proof or a measured native compiler code-generation improvement.",
   "decision": "All three runs in each cohort improve: median paired candidate/baseline ratios 0.687–0.716 with native compression fixed and 0.710–0.759 with pure C. Retain the source change. Shared-host timing supports a repeatable trend, not an isolated-host speedup guarantee or a short-input claim.",
   "change": {

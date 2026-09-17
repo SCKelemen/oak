@@ -1833,6 +1833,14 @@ fuel. Source trap behavior is covered separately by the differential tests.
 The gain is retained for its measured runtime benefit despite the larger
 update symbol. It does not establish parity between the native and C backends.
 
+After integration onto `cb4db29b`, the full focused hash/differential/extraction
+test set and the new, CRC and SHA Lean law modules pass again. Fresh native
+emission still proves all eight compression chunks with caching disabled;
+the native object, its C companion and the pure-C output are byte-identical
+to the measured candidate artifacts.
+The focused tests, Lean builds, fresh native proof and native artifact
+comparisons passed again after the final rebase onto `cc22121d`.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
