@@ -189,7 +189,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial code-size slice: direct single-returning-block emission with baseline-byte/engine regression gates. General structurization, local reuse, stackification, formal translation validation and runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial direct returning-block and four-block-loop emission, executable baseline/size gates, preliminary warmed V8 sum timings. General structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -198,7 +198,7 @@ certificate replay. Gate stronger features on their actual evidence.
 Native speed and Wasm speed are separate measurements. A browser's JIT chooses
 physical allocation, scheduling and ISA instructions. Measure guest runtime,
 module size, compiler download/startup, compilation latency and memory separately.
-The current direct-returning-block/dispatch-fallback implementation makes no
+The current direct-block/structured-loop/dispatch-fallback implementation makes no
 native-parity claim.
 
 Initial execution evidence (2026-09-17): actual bytes pass V8 engine tests;
@@ -260,3 +260,14 @@ single-block-backedge fallback. The v3 materialization recipe invalidates old
 encoding identities without changing scalar/check v1. This is measured static
 size improvement, not a wall-clock result or formal translation proof; see the
 [fixture table](../spec/91-wasm.md#direct-returning-block-emission).
+
+Structured-loop increment (2026-09-17): the exact entry/header/body/returning-exit
+shape now emits a Wasm loop directly, including inverted condition polarity and
+arbitrary block order. All other shapes still dispatch. Shared edge-copy emission
+preserves cyclic phi assignments, and entry/header/body/exit calls and traps keep
+their execution domains. Counter/sum/swap/GCD fixtures shrink by 61–63 bytes and
+34 instructions. Four noisy local Deno/V8 sum timing runs measured ratios of
+median new/old execution time from 0.151 to 0.436. [Recorded samples and method](../../benchmarks/wasm/README.md)
+make this reproducible without implying general browser performance or imposing
+a noisy CI timing threshold. The encoding identity is v4; byte profiles remain
+v1 and formal translation verification is still open.

@@ -243,8 +243,10 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	// Do not select this path for a single-block back edge, even if an analysis
 	// claims it is unreachable: this emitter consumes the checked raw CFG.
 	direct := len(f.cfg.Blocks) == 1 && f.entry.Terminator.Kind == optir.TerminatorReturn
+	loop, structuredLoop := f.matchLoop()
+	dispatch := !direct && !structuredLoop
 	extra := 0
-	if !direct {
+	if dispatch {
 		extra = 1
 	}
 	// One group per SSA local, plus the optional i32 program counter. Entry
@@ -255,7 +257,7 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		b.u(1)
 		b.op(t)
 	}
-	if !direct {
+	if dispatch {
 		b.u(1)
 		b.op(0x7f)
 	}
@@ -268,13 +270,17 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 	}
 	if direct {
-		for _, op := range f.entry.Operations {
-			if err := f.operation(&b, op, functions); err != nil {
-				return nil, err
-			}
+		if err := f.operations(&b, f.entry, functions); err != nil {
+			return nil, err
 		}
 		f.returnValue(&b, f.entry.Terminator)
 		b.op(0x0b) // function end returns the result already on the operand stack
+		return b, nil
+	}
+	if structuredLoop {
+		if err := f.loopBody(&b, loop, functions); err != nil {
+			return nil, err
+		}
 		return b, nil
 	}
 	b.i32(int32(f.blocks[f.cfg.Entry]))
@@ -284,10 +290,8 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		b.local(0x20, pc)
 		b.i32(int32(i))
 		b.op(0x46, 0x04, 0x40)
-		for _, op := range block.Operations {
-			if err := f.operation(&b, op, functions); err != nil {
-				return nil, err
-			}
+		if err := f.operations(&b, block, functions); err != nil {
+			return nil, err
 		}
 		switch t := block.Terminator; t.Kind {
 		case optir.TerminatorReturn:
@@ -311,6 +315,15 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	return b, nil
 }
 
+func (f *function) operations(b *binary, block optir.Block, functions map[string]*function) error {
+	for _, op := range block.Operations {
+		if err := f.operation(b, op, functions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *function) returnValue(b *binary, t optir.Terminator) {
 	if f.cfg.Results[0] != "()" {
 		f.get(b, t.Values[0])
@@ -319,6 +332,14 @@ func (f *function) returnValue(b *binary, t optir.Terminator) {
 
 func (f *function) get(b *binary, id optir.ValueID) { b.local(0x20, f.locals[id]) }
 func (f *function) edge(b *binary, e optir.Edge, pc, depth uint32) {
+	f.edgeValues(b, e)
+	b.i32(int32(f.blocks[e.Target]))
+	b.local(0x21, pc)
+	b.op(0x0c)
+	b.u(uint64(depth))
+}
+
+func (f *function) edgeValues(b *binary, e optir.Edge) {
 	// Parallel copies: snapshot ALL incoming values before writing any phi.
 	for _, a := range e.Arguments {
 		f.get(b, a)
@@ -327,10 +348,6 @@ func (f *function) edge(b *binary, e optir.Edge, pc, depth uint32) {
 	for i := len(params) - 1; i >= 0; i-- {
 		b.local(0x21, f.locals[params[i].ID])
 	}
-	b.i32(int32(f.blocks[e.Target]))
-	b.local(0x21, pc)
-	b.op(0x0c)
-	b.u(uint64(depth))
 }
 
 func (f *function) operation(b *binary, op optir.Operation, functions map[string]*function) error {

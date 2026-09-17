@@ -80,8 +80,9 @@ revision, not a change to the Core Wasm binary-version header.
 The emitter checks CFG/SSA structure and the existing closed scalar operation
 typing rules, applies profile limits, and emits deterministic type/function/
 export/code sections. A single-block CFG ending in return emits directly,
-without a program-counter local or dispatch loop. All other accepted CFGs retain
-the dispatch-loop baseline. Edge values are pushed before any phi local is
+without a program-counter local or dispatch loop. The four-block loop shape
+below also emits directly; all other accepted CFGs retain the dispatch-loop
+baseline. Edge values are pushed before any phi local is
 overwritten. This is a first bounded code-size optimization, not a mature
 throughput-optimized backend.
 
@@ -96,7 +97,7 @@ Bool argument checks remain before the body, including for unused arguments;
 Unit results do not suppress calls or traps. Returning a parameter does not skip
 preceding operations. The function's final `end` returns its declared result.
 
-The encoding recipe is now `oak.wasm.encode.v3`; scalar/check profiles remain
+The encoding recipe is now `oak.wasm.encode.v4`; scalar/check profiles remain
 v1 because neither the accepted vocabulary nor the byte-validation rules
 changed. Independent final-byte admission is unchanged, and translation
 verification remains false.
@@ -117,11 +118,50 @@ Wasm instructions, not native JIT instructions or dynamic execution counts.
 | Unit return | 60 → 40 | 15 → 3 |
 | signed i64 division | 82 → 62 | 27 → 15 |
 | caller plus add callee | 126 → 86 | 40 → 16 |
-| conditional / loop fixtures | 133 / 166, unchanged | 55 / 65, unchanged |
+| conditional fixture | 133, unchanged | 55, unchanged |
 
 These are deterministic code-size gates, not a measured wall-clock speedup or
-formal equivalence proof. Multi-block structurization, stack expression emission,
-local allocation and runtime benchmarks remain open.
+formal equivalence proof. The loop increment below adds a first, narrow runtime
+comparison. General structurization, stack expression emission, local allocation
+and representative runtime benchmarks remain open.
+
+### Four-block structured loops
+
+The emitter recognizes exactly four distinct blocks: entry branches to header;
+header conditionally branches to body or exit; body branches back to header;
+exit returns. Either condition polarity and any block ordering/IDs work. It emits
+`loop`/`if`/`else`, a direct backedge and a returning exit arm. No PC local,
+dispatch comparison or dispatch update remains. The recognizer covers the whole
+CFG and never uses constant reachability to discard blocks or operations.
+
+Entry operations run once; header operations run on every test (including the
+initial and final test); body operations run only on the selected body edge;
+exit operations run on exit. All edge values are pushed before any destination
+local is set, preserving cyclic phi assignments. Bool argument guards and all
+operation/effect admission gates are shared with the other emission paths.
+Nested loops, extra blocks, conditional bodies and other shapes keep the
+dispatcher. A one-block self-loop is not a returning block or this loop shape.
+
+Engine tests compare retained dispatcher bytes with current output and reference
+results for sum, swap and GCD, including zero trips, u32 wraparound and full-width
+u64 remainders. Additional tests exercise inverted polarity, shuffled block order,
+header-parameter swap cycles, malformed effects in every region, header/body/exit
+call traps, Unit returns and the nested-loop fallback.
+
+| Loop fixture | Module bytes, before → after | Wasm instructions, before → after |
+| --- | ---: | ---: |
+| counter | 166 → 103 | 65 → 31 |
+| sum | 203 → 140 | 79 → 45 |
+| swap | 246 → 185 | 95 → 61 |
+| GCD | 183 → 120 | 71 → 37 |
+
+An opt-in warmed sum benchmark compares the exact old/new binaries, alternates
+timing order and checks results. Four local Deno/V8 processes measured median
+structured/dispatcher time ratios of 0.151–0.436. The shared Darwin/arm64 host
+was noisy; this is one microbenchmark, not a browser/application performance
+guarantee. [Raw samples and reproduction](../../benchmarks/wasm/README.md) retain
+the engine version, protocol and limits. Timing is not a CI pass/fail threshold.
+This lowering remains untrusted and execution-tested, not formally refined.
 
 ### Execution and proof coverage
 
