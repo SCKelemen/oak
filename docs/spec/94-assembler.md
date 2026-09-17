@@ -7856,6 +7856,26 @@ verifier judging each candidate as on AArch64
 the variable divisor keeping its test). Doing this by hand a second time
 is the case for the shared item-level layer below.
 
+**Exact local-view extent quotients (2026-09-17).** Under the same
+`Strength` candidate, both emitters share a recognizer for u32
+`len(named_view) / constant` and `% constant`. The local view's recorded
+extent must equal its owned-array/table extent and fit u32. The divisor
+must be a positive u32 literal (optionally its literal constructor) or an
+unshadowed immutable u32 constant. This folds, for example, the grapheme
+table's `4893 / 3` to `1631` before machine emission. The view declaration
+still evaluates its address; no call or conversion is silently skipped.
+Dynamic spans, subslices, nested conversions and zero divisors are not
+folded. Native span rebindings remain unsupported.
+
+RV64 now separates source rewriting from body emission, as AArch64 does,
+so a Layer-A rewrite no longer disables emitter strength reductions. The
+source theorem and final seam/semantic checks are unchanged; materialization
+identity advances to v18. Tests cover both lanes' proven quotient/remainder
+bodies, composition with source rewriting, C/native execution and retained
+traps. The actual stdlib grapheme candidate must prove and contain no `udiv`.
+Runtime evidence belongs to `benchmarks/native/table_views`, not the static
+instruction count; there is no floating-point relaxation in this transform.
+
 **Where the optimizer's layers should live (decision, 2026-09-15).** Three
 layers, split by where the proofs live rather than by the textbook line
 between machine-independent and machine-dependent. The AST, shared, for
