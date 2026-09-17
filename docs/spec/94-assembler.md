@@ -9401,6 +9401,20 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**Covering masks and packed pairs canonicalize away (2026-09-18).** The
+machine spells a 32-bit word it widened as `h and 0xffffffff`, and the
+low word of a pair it packed as `(lo or (hi shl 32)) and 0xffffffff`;
+the Oak side spells the word. Through a hash round the two spellings
+made the coupling's preservation obligations differ at every leaf, so
+they went to the bit level and past its budget. The canonicalizer now
+drops a low-ones mask that covers every significant bit of its operand
+and reads the low word of a packed pair as its low operand (the high
+word's rule existed), so the sides meet syntactically:
+`sha256_compress_view` is proven where it was witnessed, and the first
+loop of `sha256_update` preserves its state words. Among a slot's
+coupling candidates an equality whose header is not a constant now ranks
+first and an image with a symbolic offset last.
+
 **Probing a body that calls (2026-09-17).** The slots a store at a
 data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its
 guard) are found by running the body once on the fresh register state
