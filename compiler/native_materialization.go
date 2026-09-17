@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v12 corrects paired-load input/output roles, tied writeback handling,
-	// and conditional fallthrough in the shared native liveness/cleanup path.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v12")
+	// v13 exposes eligible frame X-pair initializers to W-word promotion,
+	// on top of v12's paired-load/tied-operand and fallthrough corrections.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v13")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")

@@ -60,12 +60,30 @@ func Promote(fn *asm.Function) (*asm.Function, int, error) { return PromoteWith(
 
 // PromoteWith is Promote with the lowering's frame layout, when known.
 func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, error) {
+	return promoteWith(fn, objects, true)
+}
+
+func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm.Function, int, error) {
 	lifted, err := Lift(cloneFunction(fn))
 	if err != nil {
 		return nil, 0, err
 	}
 	if fn.Frame <= 0 {
 		return lifted.Asm, 0, nil
+	}
+	var splitWords map[int64]bool
+	if splitPairs {
+		split, words, splitErr := splitFramePairInitializers(lifted, objects)
+		if splitErr != nil {
+			return nil, 0, splitErr
+		}
+		if split != nil {
+			lifted, err = Lift(split)
+			if err != nil {
+				return nil, 0, err
+			}
+			splitWords = words
+		}
 	}
 	accesses, escaped, blocked := frameAccesses(lifted)
 	// An address taken inside a recorded object blocks the object; the
@@ -91,6 +109,9 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 	slots := qualify(accesses, escaped, blocked, fn.Frame)
 	traceSlots("%s: frame %d, %d access(es), escapes %v, blocked %v, %d slot(s) qualify", fn.Name, fn.Frame, len(accesses), escaped, blocked, len(slots))
 	if len(slots) == 0 {
+		if len(splitWords) != 0 {
+			return promoteWith(fn, objects, false)
+		}
 		return lifted.Asm, 0, nil
 	}
 	// The slots join the web machinery as pseudo-registers: a store
@@ -140,6 +161,7 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 	sort.SliceStable(slotWebs, func(i, j int) bool { return slotWebs[i].From < slotWebs[j].From })
 	taken := map[Reg][]*Web{} // promoted slot webs by their register
 	promoted := 0
+	splitBenefit := false
 	for _, w := range slotWebs {
 		if w.From < 0 || len(w.Uses) == 0 {
 			continue // never read: the store stays (the checker may read it)
@@ -183,6 +205,12 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 		}
 		taken[r] = append(taken[r], w)
 		promoted++
+		splitBenefit = splitBenefit || splitWords[int64(w.Reg.Num)]
+	}
+	if len(splitWords) != 0 && !splitBenefit {
+		// Expansion is only preparation for a successful promotion, not
+		// an independently selected code-size increase.
+		return promoteWith(fn, objects, false)
 	}
 	out := lifted.Asm
 	out.Items = lifted.Items()
