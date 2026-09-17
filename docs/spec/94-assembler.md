@@ -7247,6 +7247,11 @@ state, and a parser's few hundred sequential conditionals (`cnf_ite`,
 `peek_precedence`, the `step_*_p` family) were refused on the merged run
 too; `peek_precedence` proves in 33 ms
 (`TestE2ENativeManySequentialConditionalsProven`, three hundred of them).
+Tallied on the plain bodies at the extern increment: 574 proven, 218
+evidence, 172 trusted — twenty-two bodies of the write family crossed
+from trusted to evidence at the extern, and stop now at the loop budgets
+behind `write_flush`'s chunking loops ("more data-dependent loops than
+the verifier's budget", "a call writing package global out_len in a loop").
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
