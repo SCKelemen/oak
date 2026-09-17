@@ -419,7 +419,14 @@ locals, `__inl<N>_a<i>` for copied arguments, `__inl<N>_r` for the result,
 three spellings that cannot meet (a local named `a1` or `r` once collided
 with the temporaries) — a plain
 identifier argument substitutes for a parameter the helper never assigns
-(so the caller's facts about it apply unchanged), so does an integer
+(so the caller's facts about it apply unchanged) when the caller declares
+it with the parameter's own type spelling: the pass runs before the type
+checker, and a substituted name is the one argument no seam remains to
+check, so a name of another spelling, or one the pass has no declaration
+for (a pattern binding), binds through the typed temporary below, whose
+declaration the checker types as it types a call's argument (`Buffer[Device]`
+passed for `Buffer[Staging]` is rejected whether or not the helper inlines);
+so does an integer
 literal — `u32(8)` as written, or a bare literal wrapped in the parameter's
 type — so the merged body reads `v[u32(8) + u32(3)]` under
 `len(v) >= u32(8) + u32(4)`, constant sums the extents checker folds and
