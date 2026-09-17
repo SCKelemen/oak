@@ -17,10 +17,18 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	secondFunction := nativeMaterializationFunction("g")
 	lane := func(reverse bool) nativegen.Lane {
 		result := nativegen.Lane{
-			Arch:       asm.ArchArm64,
-			GuardLines: map[int]bool{},
-			Globals:    map[string]asm.Global{},
-			Tables:     map[string]nativegen.GlobalArray{},
+			Arch:                asm.ArchArm64,
+			GuardLines:          map[int]bool{},
+			Globals:             map[string]asm.Global{},
+			Tables:              map[string]nativegen.GlobalArray{},
+			UnrollFillsEligible: true,
+			LoopRewrites: nativegen.LoopRewriteEligibility{
+				Reduction:       true,
+				VectorReduction: true,
+				VectorMap:       true,
+				VectorFold:      true,
+				Constant:        true,
+			},
 		}
 		if reverse {
 			result.GuardLines[9] = true

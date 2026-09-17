@@ -129,6 +129,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		source := fn
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables, PackedStackArgs: comp.options.Target.OS == target.OSDarwin}
 		lane.UnrollFillsEligible = nativegen.CanUnrollFills(source, tc, constants)
+		lane.LoopRewrites = nativegen.AnalyzeLoopRewriteEligibility(source, functions, tc)
 		// The processor decides the rv64 lane's vector lowering: the fixed
 		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
 		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]

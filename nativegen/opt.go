@@ -291,11 +291,12 @@ func Transforms() []opt.Transform {
 			// slack test is theirs to peel and rotate — where a candidate
 			// they fire on nothing would never meet the unrolling.
 			name: TransformUnroll, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
-			arches:  bothLanes,
-			applied: func(l Lane) bool { return !l.NoReductions },
-			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
-			fired:   Unrolled,
+			reqs:     []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
+			arches:   bothLanes,
+			applied:  func(l Lane) bool { return !l.NoReductions },
+			eligible: func(l Lane) bool { return l.LoopRewrites.Reduction },
+			apply:    func(l Lane) Lane { l.NoReductions = false; return l },
+			fired:    Unrolled,
 		},
 		&laneTransform{
 			// Scalar blocked zero fills (nativegen/fill_unroll.go): four
@@ -318,11 +319,12 @@ func Transforms() []opt.Transform {
 			// other; beside the unrolling at the head of the loop phase,
 			// so the invariant pass and the rotation see its shape too.
 			name: TransformVectorize, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
-			arches:  arm64Only,
-			applied: func(l Lane) bool { return l.VectorReductions },
-			apply:   func(l Lane) Lane { l.VectorReductions = true; return l },
-			fired:   Vectorized,
+			reqs:     []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.VectorReductions },
+			eligible: func(l Lane) bool { return l.LoopRewrites.VectorReduction },
+			apply:    func(l Lane) Lane { l.VectorReductions = true; return l },
+			fired:    Vectorized,
 		},
 		&laneTransform{
 			// Map vectorization (nativegen/vector_map.go): an element-wise
@@ -338,20 +340,22 @@ func Transforms() []opt.Transform {
 			// only be trusted and never ships over the proven scalar loop
 			// (2026-09-16; the plumbing through compileRV64 is in place).
 			name: TransformVectorMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			arches:  arm64Only,
-			applied: func(l Lane) bool { return l.VectorMaps },
-			apply:   func(l Lane) Lane { l.VectorMaps = true; return l },
-			fired:   VectorizedMaps,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.VectorMaps },
+			eligible: func(l Lane) bool { return l.LoopRewrites.VectorMap },
+			apply:    func(l Lane) Lane { l.VectorMaps = true; return l },
+			fired:    VectorizedMaps,
 		},
 		&laneTransform{
 			// Two consecutive blocks under one slack guard. This only changes
 			// a body with VectorMaps enabled; lane-wise semantics license it,
 			// without associativity or numerical relaxation.
 			name: TransformUnrollMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			arches:  arm64Only,
-			applied: func(l Lane) bool { return l.UnrollVectorMaps },
-			apply:   func(l Lane) Lane { l.UnrollVectorMaps = true; return l },
-			fired:   UnrolledMaps,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollVectorMaps },
+			eligible: func(l Lane) bool { return l.LoopRewrites.VectorMap },
+			apply:    func(l Lane) Lane { l.UnrollVectorMaps = true; return l },
+			fired:    UnrolledMaps,
 		},
 		&laneTransform{
 			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
@@ -365,7 +369,7 @@ func Transforms() []opt.Transform {
 			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
 			arches:   arm64Only,
 			applied:  func(l Lane) bool { return l.UnrollConstant },
-			eligible: func(l Lane) bool { return !l.UnrollSmall },
+			eligible: func(l Lane) bool { return l.LoopRewrites.Constant && !l.UnrollSmall },
 			apply:    func(l Lane) Lane { l.UnrollConstant = true; return l },
 			fired:    UnrolledConstant,
 		},
@@ -376,7 +380,7 @@ func Transforms() []opt.Transform {
 			name: TransformUnrollSmall, phase: opt.PhaseLoop, proof: opt.LawLicensed,
 			arches:   arm64Only,
 			applied:  func(l Lane) bool { return l.UnrollSmall },
-			eligible: func(l Lane) bool { return !l.UnrollConstant },
+			eligible: func(l Lane) bool { return l.LoopRewrites.Constant && !l.UnrollConstant },
 			apply:    func(l Lane) Lane { l.UnrollSmall = true; return l },
 			fired:    UnrolledSmall,
 		}},
@@ -389,10 +393,11 @@ func Transforms() []opt.Transform {
 			// law of the element type, so no fact of the body is required and
 			// the float accumulator rounds as the scalar loop's did.
 			name: TransformVectorFolds, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			arches:  arm64Only,
-			applied: func(l Lane) bool { return l.VectorFolds },
-			apply:   func(l Lane) Lane { l.VectorFolds = true; return l },
-			fired:   VectorizedFolds,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.VectorFolds },
+			eligible: func(l Lane) bool { return l.LoopRewrites.VectorFold },
+			apply:    func(l Lane) Lane { l.VectorFolds = true; return l },
+			fired:    VectorizedFolds,
 		},
 		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
