@@ -85,6 +85,7 @@ func TestWasmByteManifest(t *testing.T) {
 		"parameter arity":  func(m *Module) { m.Exports[0].Parameters = nil },
 		"export arity":     func(m *Module) { m.Exports = nil },
 		"profile":          func(m *Module) { m.Profile = "other" },
+		"old profile":      func(m *Module) { m.Profile = "oak.wasm.scalar.v0" },
 		"unlicensed proof": func(m *Module) { m.TranslationVerified = true },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -99,5 +100,41 @@ func TestWasmByteManifest(t *testing.T) {
 	m.ByteValidation.SHA256 = "forged"
 	if r, err := m.ValidateBytes(); err != nil || r.SHA256 == "forged" {
 		t.Fatal("relied on saved report", err)
+	}
+}
+
+func TestWasmDivisionEffects(t *testing.T) {
+	for _, typ := range []optir.Type{"u32", "i32", "u64", "i64"} {
+		for _, code := range []string{optir.OpIntDiv, optir.OpIntRem} {
+			makeCFG := func() optir.CFG {
+				return optir.CFG{Name: "f", Entry: 1, Results: []optir.Type{typ}, Blocks: []optir.Block{{
+					ID: 1, Parameters: []optir.Value{{ID: 1, Type: typ}, {ID: 2, Type: typ}},
+					Operations: []optir.Operation{{Code: code, Results: []optir.Value{{ID: 3, Type: typ}},
+						Operands: []optir.ValueID{1, 2}, Effects: []optir.Effect{optir.EffectTrap}}},
+					Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{3}},
+				}}}
+			}
+			if _, err := Emit([]optir.CFG{makeCFG()}); err != nil {
+				t.Fatal(typ, code, err)
+			}
+			for name, mutate := range map[string]func(*optir.Operation){
+				"missing trap":   func(op *optir.Operation) { op.Effects = nil },
+				"memory":         func(op *optir.Operation) { op.Effects = []optir.Effect{optir.EffectReadMemory} },
+				"extra effect":   func(op *optir.Operation) { op.Effects = append(op.Effects, optir.EffectAllocate) },
+				"duplicate trap": func(op *optir.Operation) { op.Effects = append(op.Effects, optir.EffectTrap) },
+				"attribute":      func(op *optir.Operation) { op.Attributes = []optir.Attribute{{Name: "no-trap", Value: "true"}} },
+				"authority":      func(op *optir.Operation) { op.MemoryAccessID = "forged" },
+				"arity":          func(op *optir.Operation) { op.Operands = op.Operands[:1] },
+				"result type":    func(op *optir.Operation) { op.Results[0].Type = "Bool" },
+			} {
+				t.Run(string(typ)+"/"+code+"/"+name, func(t *testing.T) {
+					cfg := makeCFG()
+					mutate(&cfg.Blocks[0].Operations[0])
+					if m, err := Emit([]optir.CFG{cfg}); err == nil || len(m.Bytes) != 0 || m.ByteValidation != nil {
+						t.Fatal("malformed division emitted", err)
+					}
+				})
+			}
+		}
 	}
 }

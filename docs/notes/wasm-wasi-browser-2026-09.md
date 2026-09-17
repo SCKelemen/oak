@@ -125,8 +125,12 @@ Hashes identify artifacts; they do not establish semantic correctness.
   survive lowering. Memory growth and allocation failure are observable.
 - Explicitly state recursion/stack/resource limits and termination assumptions.
 
-Division, shifts, casts, narrow integers, floats, memory and pointers are
-refused by v0 rather than given a provisional incompatible interpretation.
+Scalar v1 now lowers 32/64-bit division and remainder with zero-divisor traps
+and Oak's signed overflow behavior: division by `-1` becomes wrapping negation
+instead of executing a trapping Wasm `div_s`. The independent validator admits
+the eight new typed opcodes, with a new profile/validator/encoding identity.
+Shifts, casts, narrow integers, floats, memory and pointers still refuse rather
+than receiving a provisional incompatible interpretation.
 
 ## Local-first browser architecture
 
@@ -162,7 +166,7 @@ or Stop. This detects mismatched artifacts, not malicious-compilation semantics.
 Current budgets: 32 KiB source, 1 MiB executable module, 90 seconds compiler
 startup, 10 seconds compilation, 2 seconds execution. Stop terminates workers;
 stale responses are ignored. These are UI cancellation limits, not a formally
-proved per-worker memory quota. Core v0 has no guest linear memory, but compiler
+proved per-worker memory quota. Core v1 has no guest linear memory, but compiler
 and engine allocation/stack exhaustion still need operational protection.
 
 No CDN dependencies, source upload, persistent browser storage, domain changes
@@ -179,7 +183,7 @@ certificate replay. Gate stronger features on their actual evidence.
 
 | Milestone | Deliverable / acceptance gate | State |
 | --- | --- | --- |
-| W0 | Scalar raw-CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Initial implementation |
+| W0 | Scalar raw-CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Implemented subset: scalar v1 adds 32/64-bit division/remainder with Oak trap/overflow behavior |
 | B0 | Local compiler/editor/runner prototype; cancellation; explicit unverified status | Initial implementation |
 | W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; LEB model theorems and finite Go/Lean pins | Partial; universal production decoder/validator refinement open |
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
@@ -234,3 +238,12 @@ the engine. Seven engine-selection unit tests cover explicit selection,
 automatic fallback, cancellation/whitelisting, diagnostic retention, required
 versus optional policy, bounded output and invalid command refusal. This closes
 the opaque engine-discovery failure, not the separate Chrome rerun gap above.
+
+Scalar-v1 execution evidence (2026-09-17): `TestWasmDivisionRemainderExecution`
+compares 4,360 arithmetic/trap cases against BigInt reference arithmetic, then
+checks calls, guarded branches, unused results, constant-zero traps, zero-trip
+loops and a remainder-based GCD loop. Independent byte validation now compares
+5,875 cases, including the eight new division/remainder opcodes; all 160
+Oak-accepted cases also validate in the engine. Malformed effect declarations,
+operation shapes, operand widths and old profile manifests still refuse.
+These are conformance tests, not a new formal refinement or performance claim.

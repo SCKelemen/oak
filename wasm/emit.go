@@ -12,7 +12,7 @@ import (
 	"github.com/SCKelemen/oak/wasm/check"
 )
 
-const Profile = "oak.wasm.scalar.v0"
+const Profile = "oak.wasm.scalar.v1"
 
 // Export retains Oak types: Wasm's i32 alone cannot distinguish Bool/u32/i32.
 type Export struct {
@@ -313,8 +313,17 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 	if op.MemoryAccessID != "" {
 		return fmt.Errorf("memory is outside %s", Profile)
 	}
-	if op.Code != optir.OpCall && len(op.Effects) != 0 {
-		return fmt.Errorf("effects of %s are outside %s", op.Code, Profile)
+	switch op.Code {
+	case optir.OpIntDiv, optir.OpIntRem:
+		if len(op.Effects) != 1 || op.Effects[0] != optir.EffectTrap {
+			return fmt.Errorf("%s requires exactly the trap effect in %s", op.Code, Profile)
+		}
+	case optir.OpCall:
+		// Its actual effects come from the checked in-module callee.
+	default:
+		if len(op.Effects) != 0 {
+			return fmt.Errorf("effects of %s are outside %s", op.Code, Profile)
+		}
 	}
 	r := op.Results[0]
 	wide := r.Type == "u64" || r.Type == "i64"
@@ -368,6 +377,8 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 		} else {
 			b.op(0x6b)
 		}
+	case optir.OpIntDiv, optir.OpIntRem:
+		f.divrem(b, op)
 	case optir.OpCall:
 		callee := functions[op.Attributes[0].Value]
 		if callee == nil || len(callee.entry.Parameters) != len(op.Operands) || callee.cfg.Results[0] != r.Type {
@@ -399,6 +410,54 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 	}
 	b.local(0x21, f.locals[r.ID])
 	return nil
+}
+
+// divrem preserves Oak's zero-divisor trap and signed overflow behavior. Wasm
+// div_s traps on MIN/-1, while Oak wraps. For every dividend, division by -1
+// is wrapping negation, so that arm never executes div_s. rem_s already returns
+// zero for MIN%-1. Operands are SSA locals: no calls are evaluated again here.
+func (f *function) divrem(b *binary, op optir.Operation) {
+	t := op.Results[0].Type
+	wide := t == "i64" || t == "u64"
+	signed := t == "i32" || t == "i64"
+	opcode := byte(0x6d) // i32.div_s
+	if op.Code == optir.OpIntRem {
+		opcode += 2
+	}
+	if !signed {
+		opcode++
+	}
+	if wide {
+		opcode += 0x12
+	}
+	guard := signed && op.Code == optir.OpIntDiv
+	if guard {
+		f.get(b, op.Operands[1])
+		if wide {
+			b.op(0x42)
+			b.s(-1)
+			b.op(0x51, 0x04, 0x7e) // i64.eq; if (result i64)
+			b.op(0x42)
+			b.s(0)
+		} else {
+			b.i32(-1)
+			b.op(0x46, 0x04, 0x7f) // i32.eq; if (result i32)
+			b.i32(0)
+		}
+		f.get(b, op.Operands[0])
+		if wide {
+			b.op(0x7d)
+		} else {
+			b.op(0x6b)
+		}
+		b.op(0x05) // else
+	}
+	f.get(b, op.Operands[0])
+	f.get(b, op.Operands[1])
+	b.op(opcode)
+	if guard {
+		b.op(0x0b)
+	}
 }
 
 func binaryOpcode(code string, t optir.Type) (byte, bool) {

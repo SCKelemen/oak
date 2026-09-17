@@ -17,6 +17,11 @@ The example sums 0 through 99 and returns 4950. Run invokes a zero-argument
 [scalar profile](../docs/spec/91-wasm.md) is accepted. The CLI alternative is
 `oak build -target core/wasm32 -o program.wasm program.oak`.
 
+Scalar v1 includes signed/unsigned 32- and 64-bit division and remainder.
+Zero divisors trap; signed overflow preserves Oak's wrapping result. The page
+requires matching v1 profile/validator reports. Rebuild the compiler assets and
+reload the page together after updating; stale v0 reports are not accepted.
+
 “Compile only” produces a downloadable module without executing it or requiring
 `main`. Artifact information includes the compiler's target and DAG provenance.
 The page checks hashes against the actual source and module bytes before

@@ -7,7 +7,7 @@ Coverage: [target matrix](../targets.md).
 ## 1. Target and artifact
 
 `core/wasm32` emits one import-free Core Wasm module directly from checked raw
-OptIR. The target uses 32-bit pointer/data-model metadata, but v0 does not admit
+OptIR. The target uses 32-bit pointer/data-model metadata, but v1 does not admit
 pointer or memory operations. It has no C fallback, host imports, memory, start
 function, WASI ABI or Component Model output. All admitted functions are exported
 by their checked names; exports are not a stable public component ABI.
@@ -37,10 +37,12 @@ translation-verification authority. See the
   are not admitted. Exported Bool inputs outside 0/1 trap.
 - Constants, copies, negation, wrapping addition/subtraction/multiplication,
   unsigned bitwise AND/OR/XOR, Bool not, equality and signed/unsigned comparisons.
+- Signed/unsigned division and remainder at 32 and 64 bits, with the trap and
+  overflow behavior specified below.
 - CFG branches, conditionals, loops and simultaneous edge argument assignment.
 
 Global declarations, external bodies, dispatch, memory, aggregates, unresolved
-generics, narrow integers, conversions, division/remainder, shifts, float, SIMD
+generics, narrow integers, conversions, shifts, float, SIMD
 and unknown operations/effects refuse the whole emission. No partial successful
 module may hide a refused function. Calls must resolve within the emitted module
 and match exact Oak parameter/result types, not just erased Wasm carrier types.
@@ -48,6 +50,30 @@ and match exact Oak parameter/result types, not just erased Wasm carrier types.
 Integer exports use Wasm's signed JS carriers; hosts interpret the returned bits
 using the retained Oak type. The playground displays unsigned results accordingly.
 Execution resources are finite; no total-termination guarantee is made.
+
+### Division and remainder (scalar v1)
+
+Both operators trap on a zero divisor. Quotients truncate toward zero; signed
+remainders have the dividend's sign. Oak defines `MIN / -1` as `MIN` and
+`MIN % -1` as zero ([integer semantics](20-types.md#111-explicit-integer-conversions)).
+The emitter uses Wasm's unsigned divide/remainder and signed remainder directly.
+For signed division, it emits a typed `if`: when the divisor is `-1`, wrapping
+`0 - dividend`; otherwise `div_s`. This avoids Wasm's signed-overflow trap
+without suppressing the zero-divisor trap. See the
+[Core numeric rules](https://webassembly.github.io/spec/core/exec/numerics.html#op-idiv).
+
+Operands are already evaluated SSA locals: the guard neither duplicates nor
+skips source calls. Division/remainder operations must carry exactly the
+`Control.Trap` effect; absent, duplicate or unrelated effects and attributes
+refuse emission. Unused results still execute; guarded/untaken branches and
+zero-trip loops retain their source trap domain. No proof fact or SCCP result
+is used to erase a trap or select an optimized CFG in this increment.
+
+The expanded operation vocabulary is `oak.wasm.scalar.v1`, paired with
+`oak.wasm.check.v1` and a revisioned encoding recipe. Older profile manifests
+are refused, even when their bytes happen to fit the new subset. Reports are
+still diagnostic, not formal translation certificates. This is an Oak profile
+revision, not a change to the Core Wasm binary-version header.
 
 ## 3. Implementation and verification status
 
@@ -59,6 +85,9 @@ not yet a size- or throughput-optimized backend.
 
 Independent runtime tests decode, validate and execute final bytes, including
 loop-carried swaps, zero-trip loops, overflow, signedness, Bool guards and calls.
+Division tests compare actual engine results with independent BigInt arithmetic
+on boundary and deterministic input pairs, including `MIN/-1`, zero divisors,
+mixed signs, calls, branch guards, dead results and remainder-carrying loops.
 An independent Go byte decoder/validator now runs before emission returns and
 cross-checks the export names and carrier signatures against the manifest.
 Malformed bytes are also checked by the runtime. These are implementations and
@@ -72,7 +101,7 @@ existing C/native targets only; its theorems do not cover `core/wasm32` yet.
 ## 4. Independent byte-validation boundary
 
 `wasm/check.Validate(bytes)` depends only on Go's standard library, not OptIR or
-the emitter. Its version is `oak.wasm.check.v0`. It snapshots input, consumes the
+the emitter. Its version is `oak.wasm.check.v1`. It snapshots input, consumes the
 entire file and returns the exact byte hash, decoded exports, function count and
 instruction count. Callers must not mutate input concurrently with snapshotting.
 No external runtime or guest code is invoked by validation.
@@ -115,6 +144,10 @@ and all unlisted opcodes are outside the profile. Unreachable code retains
 concrete-type, index and syntax checks. Loop labels take inputs, not results;
 branch depths, arm result agreement, frame-local stack heights and function
 returns are checked independently of the emitter's dispatch-loop strategy.
+The v1 additions are `i32/i64.div_s`, `div_u`, `rem_s`, and `rem_u`; each pops
+two same-width integers and pushes one of that width. Type validation does not
+prove a nonzero divisor or the presence of Oak's signed-overflow guard. A
+well-typed division that will trap is still a structurally valid module.
 
 Operational limits: 1 MiB module, 16,449 locals and local declaration groups per
 function (locals include parameters), 65,536 locals across the module, 262,144

@@ -53,7 +53,7 @@ func (comp Compilation) EmitWasmWithReport() Stage[WasmEmission] {
 		for _, stmt := range model.Tree.Root.Statements {
 			fn, ok := stmt.(*ast.FunctionStatement)
 			if !ok {
-				return WasmEmission{}, fmt.Errorf("wasm: scalar v0 supports function declarations only (got %T)", stmt)
+				return WasmEmission{}, fmt.Errorf("wasm: scalar profile supports function declarations only (got %T)", stmt)
 			}
 			if fn.Name == nil || fn.Body == nil || fn.ExternSymbol != "" || fn.AsmBacked || len(fn.TypeParams) != 0 || fn.Receiver != nil || len(fn.Dispatch) != 0 {
 				return WasmEmission{}, fmt.Errorf("wasm: requires concrete, non-extern, non-dispatched functions")
@@ -93,7 +93,7 @@ func emitWasmGraph(ctx context.Context, description target.Description, cfgs []o
 	key := opt.ArtifactKey{Kind: opt.ArtifactChecked, Name: "wasm.checked-raw-cfg",
 		Version: opt.DeriveArtifactVersion("oak.wasm.checked-raw-cfg.v1", inputs...)}
 	module, report, err := runEmissionGraph(ctx, description, key, owned, emissionBackend[[]optir.CFG, wasm.Module]{
-		name: "wasm", materializeRevision: "oak.wasm.encode.v1/" + wasm.Profile,
+		name: "wasm", materializeRevision: "oak.wasm.encode.v2/" + wasm.Profile,
 		admissionRevision: "oak.wasm.manifest-admission.v1/" + check.Validator + "/" + check.CoreSpecRevision,
 		materialize: func(_ context.Context, _ target.Description, input []optir.CFG) (wasm.Module, error) {
 			return wasm.EncodeCandidate(input)

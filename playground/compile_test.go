@@ -10,6 +10,8 @@ import (
 
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/wasm"
+	"github.com/SCKelemen/oak/wasm/check"
 )
 
 func TestCompile(t *testing.T) {
@@ -26,6 +28,22 @@ func TestCompile(t *testing.T) {
 	for _, s := range []string{"import \"https://example.invalid/evil\"", "data: u32 = 1", "main: (): i32 = missing()", strings.Repeat("x", MaxSourceBytes+1)} {
 		if r := Compile(s); r.Error == "" || r.SourceChecked || r.Module != nil || r.Pipeline != nil {
 			t.Fatalf("unsupported input accepted: %+v", r)
+		}
+	}
+}
+
+func TestCompileDivisionProfile(t *testing.T) {
+	for _, source := range []string{
+		"quot: (x: i64, y: i64): i64 = x / y\nmain: (): i64 = quot(-i64(127), -i64(3))",
+		"main: (): u32 = u32(91) % u32(7)",
+	} {
+		r := Compile(source)
+		if r.Error != "" || !r.SourceChecked || r.Module == nil || r.Module.TranslationVerified {
+			t.Fatalf("division did not pass browser API: %+v", r)
+		}
+		if r.Module.Profile != wasm.Profile || r.Module.ByteValidation == nil ||
+			r.Module.ByteValidation.Profile != wasm.Profile || r.Module.ByteValidation.Validator != check.Validator {
+			t.Fatal("mismatched profile or validator revision", r.Module)
 		}
 	}
 }
