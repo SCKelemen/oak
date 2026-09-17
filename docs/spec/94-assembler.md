@@ -1355,6 +1355,21 @@ dynamic `PostDecode`/`BranchTo`, fall-through and trap execution remain open;
 no control-flow occurrence, memory-ordering effect, or proof-admission upgrade
 is inferred from these pure results.
 
+The BBM trap word `BRK #1` has the corresponding software-breakpoint seam.
+`Oak.AArch64BreakpointEncoding` proves its field packing and `0xd4200020`;
+generated Sail Lean recovers the immediate and proves the selected exception-
+argument components from supplied EL, EL2-enabled, HCR/MDCR and instruction-
+address values. The 25-bit syndrome is the zero-extended immediate, the
+preferred-return argument is the supplied instruction address (not PC+4), and
+the vector-offset argument is zero. The pure target-EL rule retains EL2/EL3
+and conditionally routes EL0/EL1 to EL2. Whole official source functions and
+their signatures, the exception-record shape, all 65,536 immediate encodings,
+and negative source mutations are checked. This does not reconstruct the
+complete exception record, pack/write ESR, execute BTI/PostDecode or exception
+entry, prove register provenance, or establish non-resumption by a handler.
+The verifier's non-resuming runtime trap contract is not discharged by this
+argument projection.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization
@@ -7707,6 +7722,19 @@ prover's flush shape — a 4096-byte chunk copied in a loop, viewed,
 subsliced and handed through `host_write_all` to the extern — with both
 loops coupled through the chunk, while the flush itself, a 4192-byte
 frame, stays with the C backend by the native backend's own limit.
+Two corrections followed the first prover tally of the model: the fill's
+split zero stores are not logged while the array's log is still its
+marker (zero over zero changes nothing, and a 4096-byte chunk's fill had
+handed every later symbolic read a chain of thousands of constant-index
+writes — the tally passed twenty gigabytes), and the blaster gives two
+reads of one span whose indices are one linear form spelled two ways one
+block rather than two tied by a consistency implication over the index
+bits (`selectBits`): the OS pilot's `unmap_page`, evidence at the node
+budget since its pin, proves in 1.9 million nodes, and with it the OS
+pilot's two page-table walkers are fully proven: stage2 twenty of twenty
+bodies, addr_space twenty-nine of twenty-nine (`map_page` and
+`get_page_entry` crossed on this head too), where the pilot's pin had
+seventeen and twenty-six with three evidence each.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module

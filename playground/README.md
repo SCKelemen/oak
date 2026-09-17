@@ -17,7 +17,8 @@ The example sums 0 through 99 and returns 4950. Run invokes a zero-argument
 [scalar profile](../docs/spec/91-wasm.md) is accepted. The CLI alternative is
 `oak build -target core/wasm32 -o program.wasm program.oak`.
 
-Source checking and engine validation are shown separately from the missing
+Source checking, Oak byte/type validation and engine validation are shown
+separately from the missing
 formal translation proof. This is **not** a fully verified backend or a
 production deployment of try.oak.dev. No domain or hosting is configured.
 

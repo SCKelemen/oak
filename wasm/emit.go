@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SCKelemen/oak/optir"
+	"github.com/SCKelemen/oak/wasm/check"
 )
 
 const Profile = "oak.wasm.scalar.v0"
@@ -25,7 +26,8 @@ type Module struct {
 	Exports []Export `json:"exports"`
 	Profile string   `json:"profile"`
 	// Always false until source-to-decoded-bytes refinement is implemented.
-	TranslationVerified bool `json:"translationVerified"`
+	TranslationVerified bool          `json:"translationVerified"`
+	ByteValidation      *check.Report `json:"byteValidation,omitempty"`
 }
 
 type function struct {
@@ -170,7 +172,57 @@ func Emit(cfgs []optir.CFG) (Module, error) {
 	b.section(7, exports)
 	b.section(10, code)
 	out.Bytes = []byte(b)
+	report, err := out.ValidateBytes()
+	if err != nil {
+		return Module{}, fmt.Errorf("wasm: emitted bytes refused: %w", err)
+	}
+	out.ByteValidation = &report
 	return out, nil
+}
+
+// ValidateBytes rechecks actual bytes and the carrier-level export manifest.
+// Never trust a stored ByteValidation report after mutation. Carrier matching
+// cannot distinguish Bool/u32/i32, or prove that a named function implements Oak.
+func (m Module) ValidateBytes() (check.Report, error) {
+	if m.Profile != Profile || m.TranslationVerified {
+		return check.Report{}, fmt.Errorf("wasm: unsupported profile or translation-verification claim")
+	}
+	report, err := check.Validate(m.Bytes)
+	if err != nil {
+		return check.Report{}, err
+	}
+	if report.Profile != m.Profile || len(report.Exports) != len(m.Exports) {
+		return check.Report{}, fmt.Errorf("wasm: byte export manifest disagrees")
+	}
+	carrier := func(t optir.Type) check.ValueType {
+		switch t {
+		case "Bool", "u32", "i32":
+			return check.I32
+		case "u64", "i64":
+			return check.I64
+		default:
+			return ""
+		}
+	}
+	for i, e := range m.Exports {
+		actual := report.Exports[i]
+		if e.Name != actual.Name || len(e.Parameters) != len(actual.Parameters) {
+			return check.Report{}, fmt.Errorf("wasm: export name/arity mismatch")
+		}
+		for j, p := range e.Parameters {
+			if carrier(p) != actual.Parameters[j] {
+				return check.Report{}, fmt.Errorf("wasm: export parameter carrier mismatch")
+			}
+		}
+		if e.Result == "()" {
+			if len(actual.Results) != 0 {
+				return check.Report{}, fmt.Errorf("wasm: Unit export has a byte result")
+			}
+		} else if len(actual.Results) != 1 || carrier(e.Result) != actual.Results[0] {
+			return check.Report{}, fmt.Errorf("wasm: export result carrier mismatch")
+		}
+	}
+	return report, nil
 }
 
 func (f *function) body(functions map[string]*function) (binary, error) {

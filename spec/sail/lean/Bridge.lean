@@ -5,6 +5,7 @@ import Oak.AArch64ReturnEncoding
 import Oak.AArch64DirectBranchEncoding
 import Oak.AArch64CallBranchEncoding
 import Oak.AArch64CompareBranchEncoding
+import Oak.AArch64BreakpointEncoding
 import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 import Oak.AArch64Barrier
@@ -1939,6 +1940,86 @@ theorem cbz32_rejects_other_classes :
     (Out.Functions.decode64_cbz32_pure 0xb40000e1#32).encoding_valid = false ∧
     (Out.Functions.decode64_cbz32_pure 0#32).encoding_valid = false := by
   decide
+
+/-! ## BRK and selected software-breakpoint exception arguments
+
+These pure facts stop before BTI/PostDecode, exception entry, ESR packing, and
+handler execution. In particular, they do not justify treating architectural
+BRK as an irreversible halt or establish the verifier's non-resuming runtime
+trap contract.
+-/
+
+theorem brk_generated_decode_exact (immediate : BitVec 16) :
+    Out.Functions.decode64_brk_pure
+      (Oak.AArch64BreakpointEncoding.encodeBrk immediate) = {
+        encoding_valid := true
+        immediate := immediate
+      } := by
+  simp only [Out.Functions.decode64_brk_pure, Sail.BitVec.slice]
+  rw [Oak.AArch64BreakpointEncoding.encodeBrk_extract]
+  congr 1
+  simp [Oak.AArch64BreakpointEncoding.encodeBrk,
+    Oak.AArch64BreakpointEncoding.brk]
+  bv_decide
+
+theorem bbm_trap_generated_decode_exact :
+    Out.Functions.decode64_brk_pure Oak.AArch64BreakpointEncoding.bbmTrap = {
+      encoding_valid := true
+      immediate := 1#16
+    } := by rfl
+
+theorem software_breakpoint_arguments_generated_exact
+    (immediate : BitVec 16) (el : BitVec 2) (enabled : Bool)
+    (hcr mdcr address : BitVec 64) :
+    Out.Functions.software_breakpoint_arguments_pure
+      immediate el enabled hcr mdcr address = {
+        target_el := Oak.AArch64BreakpointEncoding.softwareBreakpointTarget
+          el enabled hcr mdcr
+        syndrome := immediate.zeroExtend 25
+        preferred_exception_return := address
+        vect_offset := 0
+      } := by
+  simp [Out.Functions.software_breakpoint_arguments_pure,
+    Oak.AArch64BreakpointEncoding.softwareBreakpointTarget,
+    Out.Functions.UInt, Sail.BitVec.toNatInt, Sail.BitVec.slice,
+    Out.Functions.Zeros, BitVec.zero_eq]
+  bv_decide
+
+/-- The exact BBM trap word carries comment one into the selected 25-bit
+    syndrome. At supplied EL2 the target remains EL2, regardless of the
+    supplied routing controls. The address is passed unchanged, not PC+4. -/
+theorem bbm_trap_at_el2_generated_arguments
+    (enabled : Bool) (hcr mdcr address : BitVec 64) :
+    Out.Functions.software_breakpoint_arguments_pure
+      (Out.Functions.decode64_brk_pure Oak.AArch64BreakpointEncoding.bbmTrap).immediate
+      2#2 enabled hcr mdcr address = {
+        target_el := 2#2
+        syndrome := 1#25
+        preferred_exception_return := address
+        vect_offset := 0
+      } := by
+  rw [bbm_trap_generated_decode_exact, software_breakpoint_arguments_generated_exact,
+    Oak.AArch64BreakpointEncoding.software_breakpoint_at_el2]
+  rfl
+
+/-- Low 16 syndrome bits are precisely the immediate; the upper nine are
+    zero from ExceptionSyndrome's initialization. This is not ESR_ELx. -/
+theorem software_breakpoint_syndrome_fields
+    (immediate : BitVec 16) (el : BitVec 2) (enabled : Bool)
+    (hcr mdcr address : BitVec 64) :
+    let args := Out.Functions.software_breakpoint_arguments_pure
+      immediate el enabled hcr mdcr address
+    args.syndrome.extractLsb' 0 16 = immediate ∧
+      args.syndrome.extractLsb' 16 9 = 0#9 := by
+  rw [software_breakpoint_arguments_generated_exact]
+  dsimp
+  bv_decide
+
+theorem brk_rejects_neighboring_classes :
+    (Out.Functions.decode64_brk_pure 0xd4400020#32).encoding_valid = false ∧
+    (Out.Functions.decode64_brk_pure 0xd4000021#32).encoding_valid = false ∧
+    (Out.Functions.decode64_brk_pure 0xd4200021#32).encoding_valid = false ∧
+    (Out.Functions.decode64_brk_pure 0#32).encoding_valid = false := by decide
 
 /-! ## Ordinary direct BL-immediate decoder dispatch
 

@@ -144,6 +144,13 @@ try {
   console.log(
     "PASS: browser compiler → actual Wasm → execution = 4950; verification status qualified",
   );
+  if (
+    !String(
+      await evaluate("document.getElementById('verification').textContent"),
+    ).includes("Oak byte validator accepted")
+  ) {
+    throw Error("Missing independent byte-validation status");
+  }
   await evaluate(
     "document.getElementById('source').dispatchEvent(new Event('input'))",
   );

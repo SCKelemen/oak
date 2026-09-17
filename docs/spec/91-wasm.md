@@ -15,7 +15,9 @@ by their checked names; exports are not a stable public component ABI.
 `oak build -target core/wasm32 -o program.wasm program.oak` writes binary bytes.
 Without `-o`, the single-package output is `out.wasm`. `Compilation.EmitWasm()`
 selects this profile and returns bytes, typed export metadata, a profile identity
-and `TranslationVerified=false`. Native/assembly/CPU options are incompatible;
+and `TranslationVerified=false`. `ByteValidation` records successful independent
+decoding/type validation of the final bytes and their SHA-256; it is diagnostic,
+not a certificate. Native/assembly/CPU options are incompatible;
 the CLI also rejects native/C/link/optimization/extraction switches for this
 target. `-verified` is unavailable and must fail, never fall back.
 
@@ -48,9 +50,53 @@ not yet a size- or throughput-optimized backend.
 
 Independent runtime tests decode, validate and execute final bytes, including
 loop-carried swaps, zero-trip loops, overflow, signedness, Bool guards and calls.
-Malformed bytes are checked independently by the runtime. These are tests,
-not universal proofs or an independently verified Oak decoder.
+An independent Go byte decoder/validator now runs before emission returns and
+cross-checks the export names and carrier signatures against the manifest.
+Malformed bytes are also checked by the runtime. These are implementations and
+tests, not universal proofs or an independently **verified** Oak decoder.
 
 No Oak Wasm semantics/refinement theorem, authoritative Wasm certificate checker
 or verified browser runtime is claimed. `Oak.Target` currently models the
 existing C/native targets only; its theorems do not cover `core/wasm32` yet.
+
+## 4. Independent byte-validation boundary
+
+`wasm/check.Validate(bytes)` depends only on Go's standard library, not OptIR or
+the emitter. Its version is `oak.wasm.check.v0`. It snapshots input, consumes the
+entire file and returns the exact byte hash, decoded exports, function count and
+instruction count. Callers must not mutate input concurrently with snapshotting.
+No external runtime or guest code is invoked by validation.
+
+The reviewed Core rules are pinned to [WebAssembly/spec revision
+779957d81feca2ec6a372c40a9130e28ef390645](https://github.com/WebAssembly/spec/tree/779957d81feca2ec6a372c40a9130e28ef390645).
+This is a rules/reference pin, not a formal correspondence theorem.
+
+The bounded binary profile requires type, function, export and code sections,
+once each in that order. Other sections (including custom sections) are refused.
+Types/functions number 1..128; exports number 0..128 with unique, nonempty UTF-8
+names of at most 256 bytes. Signatures have at most 64 i32/i64 parameters and
+one result. Section/body lengths, indices and exact byte coverage are checked.
+LEB32/64 decoding accepts legal padding but rejects overlong encodings and
+incorrect unsigned/sign-extension bits.
+
+Instruction validation uses iterative operand/control stacks. It admits integer
+constants, the emitter's arithmetic/comparison vocabulary, locals get/set/tee,
+direct calls, nop/drop/unreachable, block/loop/if/else/end, br/br_if and return.
+Blocks have no parameters and zero or one i32/i64 result; type-indexed blocks
+and all unlisted opcodes are outside the profile. Unreachable code retains
+concrete-type, index and syntax checks. Loop labels take inputs, not results;
+branch depths, arm result agreement, frame-local stack heights and function
+returns are checked independently of the emitter's dispatch-loop strategy.
+
+Operational limits: 1 MiB module, 16,449 locals and local declaration groups per
+function (locals include parameters), 65,536 locals across the module, 262,144
+instructions, 128 control frames including the function frame, and 16,384
+operand stack entries. These bound validation work, not guest runtime resources.
+
+`Module.ValidateBytes()` rechecks bytes and carrier-level metadata; a saved
+report cannot authorize modified bytes. Carrier validation cannot distinguish
+Bool/u32/i32 or signed/unsigned i64, establish Bool guards, or associate an
+export with the correct Oak body. Those remain source/translation obligations.
+The browser still independently engine-validates output. There is no formally
+refined decoder, source-to-Wasm proof, certificate authority, or separately
+deployed small browser checker yet. Thus milestone W1 is **partial**, not closed.

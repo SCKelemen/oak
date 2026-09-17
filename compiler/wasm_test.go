@@ -60,6 +60,9 @@ main: (): i32 = choose(sum(u32(10)) == u32(45), i32(42), i32(1))
 	if module.TranslationVerified {
 		t.Fatal("experimental emitter claimed formal verification")
 	}
+	if module.ByteValidation == nil || module.ByteValidation.SHA256 == "" {
+		t.Fatal("emission bypassed independent byte validation")
+	}
 	again, err := comp.EmitWasm().Get()
 	if err != nil || !bytes.Equal(module.Bytes, again.Bytes) {
 		t.Fatal("nondeterministic emission", err)

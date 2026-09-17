@@ -4,7 +4,8 @@ This matrix is intentionally conservative. A historical document saying “compl
 
 For platform-by-platform coverage, see [target maturity](../targets.md).
 The new [Core Wasm scalar profile](91-wasm.md) and browser prototype have an
-implementation and execution tests, **not** Oak Wasm formal models, refinement
+implementation, an independent bounded byte/type validator and execution tests,
+**not** Oak Wasm formal models, refinement
 proofs or certificate authority. `-verified` refuses this target. Existing
 `Oak.Target` results below apply to the C/native set, not the Wasm extension.
 

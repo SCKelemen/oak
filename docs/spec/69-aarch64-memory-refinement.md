@@ -507,6 +507,25 @@ X1 or PC, execution of `PostDecode`/`BranchTo`, fall-through, arrival at the
 trap, or absence of memory effects along a dynamic trace. The whole BBM body
 therefore remains outside the strict verified profile.
 
+The trailing `BRK #1` now has a separate encoding and pure exception-argument
+bridge. `Oak.AArch64BreakpointEncoding` proves the `BRK_EX_exception` field
+packer and exact word `0xd4200020`; generated Sail Lean recovers immediate one
+and proves the selected target EL, 25-bit syndrome, supplied preferred-return
+address, and zero vector-offset argument. The immediate occupies precisely the
+low 16 syndrome bits, with nine high zero bits. At supplied EL2 the selected
+target remains EL2 regardless of the supplied routing controls; EL0/EL1
+selection follows the pinned `EL2Enabled`, HCR bit 27, and MDCR bit 8 rule.
+The source gate pins Arm's SEE-1747 clause, complete decode/dispatch/software-
+breakpoint/exception-initializer signatures and bodies, EL constants, and
+`ExceptionRecord` layout. All 65,536 immediate encodings are checked, and
+mutations of routing, syndrome, return address, and source visibility must fail.
+These are selected argument components, not a complete exception record or
+packed ESR. BTI compatibility effects, `PostDecode`, state/address provenance,
+actual `AArch64_TakeException`, and handler behavior remain outside the proof.
+In particular, architectural BRK is not proved to be an irreversible halt:
+Oak's non-resuming runtime trap contract is still needed. No BBM memory-ordering
+or proof-admission claim follows from this slice.
+
 The two official catalogue tests validate generic pinned CAT BBM ordering and
 diagnostic behavior only. Their maintenance instruction is stage-1
 `TLBI VAAE1IS`, not Oak's stage-2 `VMALLS12E1IS`. They establish no Oak

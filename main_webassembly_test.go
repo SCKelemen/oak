@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/SCKelemen/oak/wasm/check"
 )
 
 func TestBuildWasm(t *testing.T) {
@@ -16,6 +18,9 @@ func TestBuildWasm(t *testing.T) {
 	bytes, err := os.ReadFile(output)
 	if err != nil || len(bytes) < 8 || string(bytes[:4]) != "\x00asm" {
 		t.Fatal("no Wasm binary", err)
+	}
+	if _, err := check.Validate(bytes); err != nil {
+		t.Fatal("CLI wrote invalid Wasm bytes", err)
 	}
 	for _, args := range [][]string{{"-verified"}, {"-native"}, {"-emit-c"}, {"-cpu", "m4"}, {"-asm", "native"}, {"-opt", "3"}, {"-link", "oak"}} {
 		badOutput := filepath.Join(root, "refused.wasm")
