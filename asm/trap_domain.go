@@ -225,6 +225,16 @@ func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expr
 		// decision blasted the chains whole and exceeded its budget on
 		// protocol_line_done's stack pointer read back after each push.
 		if end.kind == termBinary && end.op == "and" {
+			// The syntactic decision first (sourceTrapOnPath, as the loop
+			// obligations decide their ends): a walk over the end's path
+			// and the source traps, where the diagrams over unmap_page's
+			// ends exceeded their budget.
+			if sourceTrapOnPath(end.left, oakTrap) {
+				if trace {
+					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven on its path\n", fn.Name, k)
+				}
+				continue
+			}
 			if holds, decided := impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven by implication\n", fn.Name, k)
