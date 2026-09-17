@@ -15,6 +15,8 @@ name: Formal Verification (Sail)
 #     and the model's still-erased ISB/context synchronization bodies
 #   - asm/sail_stp64_dispatch_test.go: the official offset-STP64 decode and
 #     its two separately projected pre-Mem address/data requests
+#   - asm/sail_ram_effect_test.go: the exact no-device RAM wrapper and the
+#     separate Lem backend's plain-write requests (not a CAT refinement)
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -118,6 +120,7 @@ jobs:
           git -C external/sail-arm fetch -q --depth 1 --filter=blob:none origin "${SAIL_ARM_COMMIT}"
           git -C external/sail-arm checkout -q FETCH_HEAD
           test -f external/sail-arm/arm-v8.5-a/model/aarch_decode.sail
+          test -f external/sail-arm/arm-v8.5-a/aarch64_extras.lem
 
       - name: Install elan
         shell: bash
@@ -131,7 +134,7 @@ jobs:
       - name: Fetch the Sail Lean support library at its pinned revision
         run: sh spec/sail/setup.sh
 
-      - name: Build the Arm bridge (Sail-generated Lean ≡ Oak.ArmASL)
+      - name: Build the Arm bridges (pure semantics and sequential RAM effects)
         working-directory: spec/sail/lean
         run: lake build
 
@@ -143,7 +146,7 @@ jobs:
       - name: Run the oracle tests, every oracle required
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailNoDeviceRAMWrapperExactAndMutated|TestSailLemRAMRequestsRemainPlain|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

@@ -1119,12 +1119,28 @@ projection selects the pinned no-device external `write_ram` arguments
 The official-source gate pins complete bodies for endian/alignment selection,
 translation/fault, exclusive and MTE checks, trickbox/counter routing, the
 direct size-eight call, `__defaultRAM`'s width, and both no-device forwarding
-steps. It does not prove that this route or either call is reached or
-returns. Descriptor/PA/default-RAM provenance, translation correctness,
-successful ASL memory or external RAM effects, byte placement/atomicity,
-unique writes, tags/device
-behavior, CAT membership, completion, invalidation, publication, and context
-synchronization remain open. A Darwin/ARM64 Mach-O regression oracle now checks
+steps. This pure projection does not prove that this route or either call is
+reached or returns.
+
+`spec/sail/lean/MemoryBridge.lean` adds a separate effectful boundary: the exact
+no-device wrapper is mechanically generated and its normal return is proved
+against the pinned Sail Lean runtime's actual `write_ram`. It updates eight
+consecutive bytes in the sequential byte map, preserves all other memory and
+non-memory state, and composes with the selected break/make arguments under
+both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
+address. A generic runtime theorem includes arbitrary register/choice types;
+the generated fragment itself has an empty register vocabulary. This runtime
+ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
+Mutation gates check the external binding and wrapper, and separately pin the
+Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
+Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
+reachability, architectural memory effects, atomicity/non-tearing, unique
+architectural writes, tags/device behavior, CAT membership, completion,
+invalidation, publication, and context synchronization remain open. Sequential
+byte-map updates are not architectural events, and this does not verify the C
+runtime.
+
+A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,
 context-sync and BBM slices, and both cold-entry examples. Each is emitted as a
 single-leaf object with no text relocations; no function extent is guessed from
