@@ -524,6 +524,43 @@ the change helps but does not support a precise speedup. The raw samples and
 the invariant machine-shape counts are in
 [`blake3-in-place-permutation-2026-09-17.json`](results/blake3-in-place-permutation-2026-09-17.json).
 
+**The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
+runner and package, seven samples of five rounds, 1 MiB per kernel,
+checksums agreeing on every row; the host was loaded again (load
+average 40–50 from another session's test suites), so the ratios are
+the measurement. Raw samples: `results/kernels-m4-max-2026-09-16.json`.
+
+| Kernel | C backend ns/byte | Native ns/byte | Native / C | Native / C on 2026-09-14 |
+| --- | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.160 | 0.162 | 1.01 | 5.7 |
+| `sha256` | 0.714 | 0.707 | 0.99 | 1.00 |
+| `blake3` | 3.211 | 10.117 | 3.15 | 1.54 |
+| `dot` | 0.901 | 1.124 | 1.25 | 3.24 |
+| `sum` | 0.130 | 0.140 | 1.08 | 3.40 |
+| `search` | 11.841 | 12.918 | 1.09 | 1.76 |
+| `page_probe` | 9.681 | 16.084 | 1.66 | 1.93 |
+| `bitmap` | 0.260 | 0.235 | 0.90 | 1.19 |
+| `dispatch` | 10.763 | 9.044 | 0.84 | 0.83 |
+| `tiled` | 0.187 | 0.199 | 1.07 | 2.8 |
+
+The loop kernels closed most of the gap in two days — `sum` and `tiled`
+within ten percent of the C backend, `dot` within a quarter, `crc32c`
+at parity now that the chunk body is proven and the dispatch stays with
+the C backend — and `page_probe` keeps the largest remaining gap of the
+proven bodies. `blake3` went the other way, from 1.5 to 3.2 times the C
+backend, with the same body shapes (the compress body is 530
+instructions at this revision against 519 at the morning's, 156 loads
+and 141 stores around 34 xors and 32 rotates either way) and none of
+the new transforms selected for it (their forms were judged trusted and
+set aside). The runner refused to time the native row between
+825e9e3e (2026-09-15 16:10) and 3d4e7807 (2026-09-16 05:14), where
+its checksum disagreed with the C backend's; the row agreed again and
+ran at 3.4× from c1283ce6 (13:43) through 1fcaba66, and at f4f8c791
+the next morning (the in-place message permutation, a1783bba, among
+the night's changes) `blake3` measures 5.85 ms/op against the C
+backend's 3.48 — 1.68×, the 2026-09-14 ratio again. The commit that
+cost the factor of two in between was not isolated.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —
