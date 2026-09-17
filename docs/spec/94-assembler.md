@@ -5456,6 +5456,17 @@ lowering's homes run out and the copies price above the loop's trips
 (a hash compression's sixteen state words with seven rounds), the loop
 stays.
 
+Constant-unroll generated locals are reserved across the entire rewrite,
+not just checked against names in the original body. A later loop whose
+trip-local names collide stays rolled. If an inner loop expands, its
+outer loop also stays rolled: the outer match's original declaration list
+cannot freshen the inner expansion's newly generated locals. These are
+conservative name-safety refusals, not a change to the unroll law or the
+verification gate. The native/C regression cases cover nested loops and
+successive loops reusing a scoped local name.
+Materialization recipe v20 includes these refusals and retains v19's
+result-home budgeting, extent folding, and explicit lane flags.
+
 **Dead frame stores and copies through redefined sources (2026-09-17,
 `machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion
 qualifies — plain loads and stores of one width, its address never taken,

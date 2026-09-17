@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v19 combines two-result-home budgeting with v18's exact local-view
-	// extent folding on both lanes. Preserve all explicit late-machine flags
-	// to avoid reusing another candidate's cached body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v19")
+	// v20 adds constant-unroll generated-name guards to v19's result-home
+	// budgeting and exact local-view extent folding. Preserve every explicit
+	// late-machine flag to avoid reusing another candidate's cached body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v20")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")

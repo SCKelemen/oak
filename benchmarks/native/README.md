@@ -1153,6 +1153,62 @@ within a tenth on the loop kernels and ahead on `page_probe` and
 absolute times are about 0.6 of the loaded runs' — the load, not the
 compiler, was the other factor there.
 
+### Selective constant unrolling: not retained (2026-09-17)
+
+At `d735d322`, a 512-node copy-cost heuristic kept BLAKE3's large seven-round
+loop rolled and unrolled only the small final mixing loop. This exposed
+scalar replacement of the state. The prototype was **not retained**:
+fewer memory operations did not produce a repeatable runtime improvement.
+Raw samples and artifact identities are in
+[the experiment record](results/blake3-selective-unroll-rejected-2026-09-17.json).
+
+The ordinary selection was 287 encoded instructions, ten SP-relative
+accesses and a 160-byte frame. Enabling the existing result-home experiment
+at this revision produced the identical object. Partial unrolling plus
+reallocation instead produced 336 assembler instructions (340 encoded),
+a 288-byte frame, and one main loop with 31 loads and 19 stores, against
+the ordinary main loop's 32 loads and 32 stores; the final loop disappeared.
+
+The actual partial-unroll candidate was independently seam-checked and
+**proven for all eight result chunks**, with the normal verification
+budget and no cache hit, before encoding it for measurement. This matters
+because ordinary search did not select it: the counter remained in
+`[sp, #208]`, so the cost estimator missed its seven-trip bound and used
+the default 256 loop weight. The prototype's ordinary search result was
+a different, 299-instruction fallback; that was **not** the timed candidate.
+
+The same-process harness loaded separate baseline/candidate/C libraries,
+checked every digest byte at fourteen lengths including 1 MiB, then ran
+the variants in rotating order. Runs were sequential, without agent
+builds or tests during timing; the second reversed library order. Only
+compression was Oak-native, with the same C companion for both variants.
+
+| Run | Rounds × samples | Baseline ms/MiB | Candidate ms/MiB | Candidate / baseline | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 30 × 15 | 6.040 | 6.253 | 1.035 | 4.910 |
+| B, reversed | 100 × 21 | 6.182 | 7.035 | 1.138 | 4.782 |
+| C | 100 × 21 | 6.580 | 7.323 | 1.113 | 5.732 |
+
+These are medians under heavy shared-host load, not clean regression
+estimates or a replacement for the quiet-machine suite above. They give
+no basis to enable the change. The existing unroll profitability policy
+is restored; only generated-name collision guards and their proof/execution
+regressions remain. The stack-counter cost gap is a follow-up, not a
+performance claim or an implemented change.
+Rebuilding with those guards on the measurement base reproduced the
+baseline object byte-for-byte, still proven for all eight result chunks.
+
+For reproduction, the inert
+[prototype patch](experiments/selective-constant-unroll.patch) targets
+`d735d322` and includes the budget tests and the explicit, proof-gated
+candidate probe. It is **not** a patch against the final name-guard revision.
+The probe uses the historical scratch path `/tmp/oak-hash-next.yX4zpM`;
+its encoded object links against the baseline C companion with
+`cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main`.
+Use `blake3_same_process.c` with absolute baseline/candidate/control library
+paths and the rounds/sample counts above. No experimental flag or weaker
+verdict was made a default.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
