@@ -70,9 +70,10 @@ type variableOwner struct {
 
 type selectAbstraction struct {
 	span  string
-	idx   []int // canonical index bits
-	vars  []int // the fresh variable indices holding the value
-	index *term // the index term (nil for an uninterpreted operation's operand)
+	idx   []int       // canonical index bits
+	vars  []int       // the fresh variable indices holding the value
+	index *term       // the index term (nil for an uninterpreted operation's operand)
+	form  *linearForm // the index's linear normal form, once (selectBits)
 }
 
 const blastNodeBudget = 2000000
@@ -281,6 +282,8 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
 func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
+	// The index's linear form, once per read (a form per comparison over
+	// a large index term made the prover's tally crawl).
 	var form *linearForm
 	if index != nil {
 		form = index.linearAt(32)
@@ -296,12 +299,12 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 				break
 			}
 		}
-		if !same && form != nil && known.index != nil && len(known.vars) == width {
+		if !same && form != nil && known.form != nil && len(known.vars) == width {
 			// Two reads whose indices are one linear form (`dom*K + t*2048
 			// + i` spelled two ways by the two sides) read one element: one
 			// block, rather than two tied by a consistency implication over
 			// the index bits.
-			if equalIndex, decided := indexRelation(form, known.index); decided && equalIndex {
+			if equalIndex, decided := linearFormsRelate(form, known.form); decided && equalIndex {
 				same = true
 			}
 		}
@@ -314,8 +317,21 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 	for i := range vars {
 		vars[i] = bl.selectVariable(slot, i)
 	}
-	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index})
+	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index, form: form})
 	return bl.varsBits(vars, width)
+}
+
+// linearFormsRelate is indexRelation over two forms already computed.
+func linearFormsRelate(a, b *linearForm) (known, equal bool) {
+	if a == nil || b == nil || len(a.coeffs) != len(b.coeffs) {
+		return false, false
+	}
+	for name, c := range a.coeffs {
+		if b.coeffs[name] != c {
+			return false, false
+		}
+	}
+	return true, a.constant == b.constant
 }
 
 // consistency is the functional-consistency constraint over the element

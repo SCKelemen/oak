@@ -67,13 +67,17 @@ func spanEqualByCases(fn string, name string, premise, oak, machine *term) (equa
 func spanSplitConditions(premise *term, terms []*term, limit int) []*term {
 	seen := map[*term]bool{}
 	byText := map[string]*term{}
+	// One size memo for the walk: termSize is a tree size memoized by
+	// node, and a fresh memo at every comparison met re-walked the shared
+	// graph below it (ap_certificate_after_proven hung here for an hour).
+	sizes := map[*term]int{}
 	var walk func(*term)
 	walk = func(t *term) {
 		if t == nil || seen[t] {
 			return
 		}
 		seen[t] = true
-		if t.kind == termCmp && termSize(t, map[*term]int{}) <= spanCaseConditionNodes && !readsMemory(t) && !(t.left.kind == termConst && t.right.kind == termConst) {
+		if t.kind == termCmp && termSize(t, sizes) <= spanCaseConditionNodes && !readsMemory(t) && !(t.left.kind == termConst && t.right.kind == termConst) {
 			text := t.String()
 			if _, dup := byText[text]; !dup {
 				byText[text] = t
