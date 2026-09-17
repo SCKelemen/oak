@@ -1616,6 +1616,10 @@ type Lane struct {
 	// unroll-fills configuration for functions where the exact matcher cannot
 	// fire. It is not proof authority and does not affect lowering by itself.
 	UnrollFillsEligible bool
+	// LoopRewrites is the corresponding non-authoritative preflight for the
+	// other source-level loop rewrites. It is computed once from checked syntax
+	// and prevents known no-op configurations from entering candidate search.
+	LoopRewrites LoopRewriteEligibility
 	// HoistInvariants runs the loop-invariant code motion pass
 	// (nativegen/licm.go) on the AArch64 lane; the compiler clears it and
 	// lowers again when the checker refuses the hoisted form.

@@ -265,18 +265,22 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	if !isGated || !gatedRotate.NeedsVerdict() || !hasShape || neutralRotate.ShapeNeutral() {
 		t.Fatalf("loop rotation must preserve an unrotated fallback until its changed control shape proves")
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, ShareGlobalAddresses: true, ForwardGlobalLoads: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollFills: true, UnrollFillsEligible: true, Fuse: true, FuseExits: true, Schedule: true})
+	loopRewrites := LoopRewriteEligibility{Reduction: true, VectorReduction: true, VectorMap: true, VectorFold: true, Constant: true}
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, ShareGlobalAddresses: true, ForwardGlobalLoads: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollSmall: true, UnrollFills: true, UnrollFillsEligible: true, LoopRewrites: loopRewrites, Fuse: true, FuseExits: true, Schedule: true})
 	if PlainLane(Lane{UnrollVectorMaps: true}).UnrollVectorMaps {
 		t.Fatal("plain lane retained map unrolling")
 	}
 	if PlainLane(Lane{ShareVectorAddresses: true}).ShareVectorAddresses {
 		t.Fatal("plain lane retained late address sharing")
 	}
+	if plain.LoopRewrites != loopRewrites {
+		t.Fatal("plain lane discarded immutable loop-rewrite eligibility")
+	}
 	sharing, _ := registry.Lookup(TransformVectorAddresses)
 	if gated, ok := sharing.(opt.Gated); !ok || !gated.NeedsVerdict() {
 		t.Fatal("late address sharing must require a semantic verdict")
 	}
-	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.CarryLoopIndices || plain.ElideRedundantGuards || plain.ShareRecordBases || plain.ShareGlobalAddresses || plain.ForwardGlobalLoads || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.ShareVectorAddresses || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.UnrollConstant || plain.UnrollFills || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.CarryLoopIndices || plain.ElideRedundantGuards || plain.ShareRecordBases || plain.ShareGlobalAddresses || plain.ForwardGlobalLoads || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.ShareVectorAddresses || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.UnrollConstant || plain.UnrollSmall || plain.UnrollFills || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -289,14 +293,14 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.ElideRedundantGuards || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.UnrollConstant || lane.UnrollFills || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.ElideRedundantGuards || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.UnrollConstant || lane.UnrollSmall || lane.UnrollFills || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
 	// The rv64 lane also has verifier-gated OptIR emission, the law-licensed
 	// unrolling, check elision, and layer A's strength reduction
 	// (nativegen/rewrite.go, both lanes).
-	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UnrollFillsEligible: true}))
+	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UnrollFillsEligible: true, LoopRewrites: loopRewrites}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
 		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformUnrollFills || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
@@ -306,6 +310,12 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	fillUnroll, _ := registry.Lookup(TransformUnrollFills)
 	if fillUnroll.Apply(opt.Identity(PlainLane(Lane{Arch: asm.ArchArm64}))) != nil {
 		t.Fatal("fill unrolling proposed a candidate without a matching source fill")
+	}
+	for _, name := range []string{TransformUnroll, TransformVectorize, TransformVectorMaps, TransformUnrollMaps, TransformVectorFolds, TransformUnrollConst, TransformUnrollSmall} {
+		transform, _ := registry.Lookup(name)
+		if transform.Apply(opt.Identity(PlainLane(Lane{Arch: asm.ArchArm64}))) != nil {
+			t.Fatalf("%s proposed a candidate without a matching source loop", name)
+		}
 	}
 	// Elision refines by the finding's line, once per line.
 	elide, _ := registry.Lookup(TransformElide)

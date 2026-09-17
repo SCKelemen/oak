@@ -225,6 +225,43 @@ load exceeded 60 during the controlled artifact build.
 
 [Static observations and provenance](results/stage2-global-load-forward-2026-09-17.json).
 
+## OS stage-2: preflight source loop rewrites, 2026-09-17
+
+Candidate search previously lowered every source-level loop rewrite in every
+function, then learned from the emitted body's zero site count that most were
+no-ops. The fill rewrite already had an exact checked-source preflight. The
+same non-authoritative pattern now covers reduction unrolling/vectorization,
+map vectorization/unrolling, fold vectorization, and constant-trip unrolling.
+The scan runs once on a private copy after native helper expansion. It only
+keeps known no-op configurations out of search; the existing matcher, law,
+seam checker, and semantic verifier remain the authorities for every candidate
+that is materialized.
+
+The current OS `stage2.oak` at `c44958a7` was compiled sequentially with clean
+compiler binaries, baseline `65070a4bbc63c5a713d5d6b1b64900d7f921cfe6`
+and this increment, using `oak build -native -verify-fresh -opt-report`. Both
+runs bypassed the verdict cache and produced 22 fresh verdicts.
+
+| Whole stage-2 compile | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Candidates considered and lowered | 1,324 | 1,049 | -275 (-20.8%) |
+| Fresh wall time, one sequential run | 100.93 s | 124.57 s | +23.4% |
+
+The selected candidate and verdict for every function are identical. The two
+Mach-O objects are byte-identical, SHA-256
+`4148a140faf46bce23df97d337bab61c9095552e55934d266d4e424d1dcb5b38`.
+Candidate counts and object identity are the deterministic results. No fresh
+wall-time gain is established: verifier time itself rose 74.45 → 94.60 seconds
+between those two non-isolated runs.
+
+With separate verdict caches fully warm (22 of 22 hits), three alternating
+runs took 30.98, 38.38, and 40.97 seconds before and 33.01, 35.37, and 41.72
+seconds after. The after median is 35.37 seconds against 38.38, but only one of
+three pairs improved and the median paired after/before ratio is 1.018. That
+also establishes no repeatable wall-time win. This increment removes known
+no-op search work and reduces its deterministic materialization count; it does
+not claim measured end-to-end compiler throughput.
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

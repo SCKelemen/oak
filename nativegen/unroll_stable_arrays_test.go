@@ -332,7 +332,7 @@ func TestUnrollSmallRegistryIsolation(t *testing.T) {
 		t.Fatal("full unroll strategy unexpectedly acquired a new gate")
 	}
 	for _, arch := range []string{"", asm.ArchArm64} {
-		identity := opt.Identity(Lane{Arch: arch})
+		identity := opt.Identity(Lane{Arch: arch, LoopRewrites: LoopRewriteEligibility{Constant: true}})
 		smallCandidate, fullCandidate := small.Apply(identity), full.Apply(identity)
 		if smallCandidate == nil || fullCandidate == nil {
 			t.Fatalf("a strategy refused its AArch64 identity %q", arch)

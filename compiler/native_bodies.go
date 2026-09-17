@@ -89,6 +89,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	report := &opt.Report{}
 	search := nativeSearch(comp.options.Target.AsmArch(), report)
 	var lowered []*asm.Function
+	tcFingerprint := tc.NativeLoweringFingerprint() // once for the pass (nativeDriver.tcFingerprint)
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
@@ -129,6 +130,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		source := fn
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables, PackedStackArgs: comp.options.Target.OS == target.OSDarwin}
 		lane.UnrollFillsEligible = nativegen.CanUnrollFills(source, tc, constants)
+		lane.LoopRewrites = nativegen.AnalyzeLoopRewriteEligibility(source, functions, tc)
 		// The processor decides the rv64 lane's vector lowering: the fixed
 		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
 		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]
@@ -149,7 +151,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// the seam checker and the verifier judge each, and the cheapest
 		// proven body is kept, else the strongest verdict, the plain lowering
 		// last. A refused or weaker form is reported as set aside.
-		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
+		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
 		selection, err := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
 		if err != nil {

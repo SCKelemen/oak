@@ -41,7 +41,11 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 	writeNativeADTs(digest, d.adts)
 	writeNativeConstants(digest, d.constants)
 	writeNativeMaterializationPart(digest, "declarations", d.declarations)
-	writeNativeMaterializationPart(digest, "typechecker", d.tc.NativeLoweringFingerprint())
+	fingerprint := d.tcFingerprint
+	if fingerprint == "" {
+		fingerprint = d.tc.NativeLoweringFingerprint()
+	}
+	writeNativeMaterializationPart(digest, "typechecker", fingerprint)
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 

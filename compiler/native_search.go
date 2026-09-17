@@ -36,6 +36,11 @@ type nativeDriver struct {
 	tc           *typechecker.TypeChecker
 	symbols      map[string]bool
 	declarations string
+	// tcFingerprint is tc.NativeLoweringFingerprint(), taken once for the
+	// lowering pass: the checker's facts are fixed after checking, and the
+	// fingerprint hashes every position-keyed one in the program — taken
+	// per candidate it was a twentieth of a native build.
+	tcFingerprint string
 	// cacheDir is the verdict cache, "" to verify afresh.
 	cacheDir string
 	// verdicts keeps the verifier's verdict by body for the compiler's
