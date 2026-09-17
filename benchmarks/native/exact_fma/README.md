@@ -13,12 +13,14 @@ The output path must not already exist. Defaults are 4,096 elements,
 
 Every run compares C (`-O3 -ffp-contract=off -fno-fast-math`), native identity,
 native optimized without `vectorize-maps`, native with only one vector per map
-trip (`unroll-vector-maps` disabled), and fully optimized native code.
+trip (`unroll-vector-maps` disabled), native without late address sharing
+(`share-vector-addresses` disabled), and fully optimized native code.
 Each backend has f32/f64 and strict/explicit-FMA variants. Samples interleave
-all twenty combinations and rotate their starting position. The report keeps
+all twenty-four combinations and rotate their starting position. The report keeps
 observation order, raw elapsed times, result checksums, compiler revision,
 dirty-worktree status, host/load information, native verdicts, assembly, frame
-sizes, encoded sizes, rewrite licenses, and structural instruction/loop metrics. Native identity
+sizes, encoded sizes, rewrite licenses, late address-sharing counts, and
+structural instruction/loop metrics. Native identity
 disables the registry's actual transform names rather than a hard-coded list.
 Temporary builds are removed; the report is retained. Volatile indirect calls
 prevent C from hoisting identical pure calls out of the timed loop.
@@ -57,7 +59,8 @@ are refused, and strict multiplication/addition must remain two operations.
 ## Acceptance
 
 A shorter instruction sequence is not sufficient. Compare elapsed time with
-the same-current-compiler no-map baseline before enabling a rewrite. The dot
+the same-current-compiler control disabling the specific transform before
+enabling a rewrite. The dot
 experiment found safe contraction slower on this M4 Max, so no automatic
 contraction was enabled. Independent FMA maps showed a substantial SIMD gain
 and retained proven native verdicts. Both experiments remain reproducible here.
@@ -66,6 +69,15 @@ and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
 
 ## Two-vector map candidate
+
+The later address-sharing increment keeps the map execution, matcher,
+materialization, race and vet checks. A broader existing test,
+`TestE2ENativeVectorReduction`, still expects one sum32 address where the
+compiler selects two. Replaying the original matcher with late sharing
+disabled produces the same failing shape. Its old liveness analysis counts
+the second destination of a paired load as a source, keeping an index
+temporary live unnecessarily. That separate limitation is not fixed or
+hidden by weakening the shape test in this increment.
 
 `unroll-vector-maps` adds a two-vector main loop before the existing
 one-vector cleanup and scalar tail. It instantiates `Oak.Map.grouped_eq`:

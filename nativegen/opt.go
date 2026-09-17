@@ -35,26 +35,27 @@ const (
 
 // Transform names, as the optimization report spells them.
 const (
-	TransformStrength    = "strength-reduce"
-	TransformOptIR       = "optir-emit"
-	TransformElide       = "elide-guards"
-	TransformReuseFlags  = "reuse-flags"
-	TransformHoist       = "hoist-invariants"
-	TransformUnroll      = "unroll-reductions"
-	TransformVectorHomes = "vector-homes"
-	TransformCleanup     = "late-cleanup"
-	TransformVectorize   = "vectorize-reductions"
-	TransformVectorMaps  = "vectorize-maps"
-	TransformUnrollMaps  = "unroll-vector-maps"
-	TransformVectorFolds = "vectorize-folds"
-	TransformVecBlocks   = "vector-blocks"
-	TransformMultiplyAdd = "multiply-add"
-	TransformValueSelect = "value-select"
-	TransformReallocate  = "reallocate"
-	TransformSchedule    = "schedule"
-	TransformFuse        = "fuse"
-	TransformFuseExits   = "fuse-exits"
-	TransformRotate      = "rotate-loops"
+	TransformStrength        = "strength-reduce"
+	TransformOptIR           = "optir-emit"
+	TransformElide           = "elide-guards"
+	TransformReuseFlags      = "reuse-flags"
+	TransformHoist           = "hoist-invariants"
+	TransformUnroll          = "unroll-reductions"
+	TransformVectorHomes     = "vector-homes"
+	TransformCleanup         = "late-cleanup"
+	TransformVectorize       = "vectorize-reductions"
+	TransformVectorMaps      = "vectorize-maps"
+	TransformUnrollMaps      = "unroll-vector-maps"
+	TransformVectorFolds     = "vectorize-folds"
+	TransformVecBlocks       = "vector-blocks"
+	TransformVectorAddresses = "share-vector-addresses"
+	TransformMultiplyAdd     = "multiply-add"
+	TransformValueSelect     = "value-select"
+	TransformReallocate      = "reallocate"
+	TransformSchedule        = "schedule"
+	TransformFuse            = "fuse"
+	TransformFuseExits       = "fuse-exits"
+	TransformRotate          = "rotate-loops"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -393,6 +394,17 @@ func Transforms() []opt.Transform {
 		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
+		&gatedTransform{laneTransform: laneTransform{
+			// Copy cleanup exposes private address temporaries. Retry load
+			// sharing and include stores, in place: no memory reordering.
+			// This is a new gated candidate, not more authority for the
+			// earlier load-only vecBlocksTransform.
+			name: TransformVectorAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareVectorAddresses },
+			apply:   func(l Lane) Lane { l.ShareVectorAddresses = true; return l },
+			fired:   SharedVectorAddresses,
+		}},
 	}
 }
 
@@ -471,6 +483,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
+	lane.ShareVectorAddresses = false
 	lane.MultiplyAdd = false
 	lane.ValueSelect = false
 	lane.Reallocate = false

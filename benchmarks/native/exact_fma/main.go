@@ -44,15 +44,16 @@ type sample struct {
 }
 
 type body struct {
-	Backend   string                  `json:"backend"`
-	Name      string                  `json:"name"`
-	Verdict   string                  `json:"verdict"`
-	Frame     int64                   `json:"frame_bytes"`
-	CodeBytes int                     `json:"code_bytes"`
-	Assembly  string                  `json:"assembly"`
-	Message   string                  `json:"verdict_message"`
-	Metrics   opt.Metrics             `json:"metrics"`
-	Rewrites  []nativegen.RewriteSite `json:"rewrites"`
+	Backend       string                  `json:"backend"`
+	Name          string                  `json:"name"`
+	Verdict       string                  `json:"verdict"`
+	Frame         int64                   `json:"frame_bytes"`
+	CodeBytes     int                     `json:"code_bytes"`
+	Assembly      string                  `json:"assembly"`
+	Message       string                  `json:"verdict_message"`
+	Metrics       opt.Metrics             `json:"metrics"`
+	Rewrites      []nativegen.RewriteSite `json:"rewrites"`
+	AddressShares int                     `json:"shared_vector_addresses"`
 }
 
 type report struct {
@@ -114,7 +115,7 @@ func run() error {
 			return err
 		}
 	}
-	backends := []string{"c", "native-identity", "native-no-maps", "native-one-vector", "native-optimized"}
+	backends := []string{"c", "native-identity", "native-no-maps", "native-one-vector", "native-no-address-sharing", "native-optimized"}
 	executables := make([]string, len(backends))
 	for index, backend := range backends {
 		dir := filepath.Join(build, backend)
@@ -136,6 +137,8 @@ func run() error {
 				skipped = []string{nativegen.TransformVectorMaps}
 			} else if backend == "native-one-vector" {
 				skipped = []string{nativegen.TransformUnrollMaps}
+			} else if backend == "native-no-address-sharing" {
+				skipped = []string{nativegen.TransformVectorAddresses}
 			}
 			if err := os.Setenv("OAK_OPT_SKIP", strings.Join(skipped, ",")); err != nil {
 				return err
@@ -158,7 +161,7 @@ func run() error {
 				if encodeErr != nil {
 					return encodeErr
 				}
-				result.Bodies = append(result.Bodies, body{Backend: backend, Name: function.Name, Verdict: verdict.Kind.String(), Frame: function.Frame, CodeBytes: len(code), Assembly: nativegen.Describe(function), Message: verdict.Message, Metrics: nativegen.Metrics(function), Rewrites: nativegen.RewriteSites(function)})
+				result.Bodies = append(result.Bodies, body{Backend: backend, Name: function.Name, Verdict: verdict.Kind.String(), Frame: function.Frame, CodeBytes: len(code), Assembly: nativegen.Describe(function), Message: verdict.Message, Metrics: nativegen.Metrics(function), Rewrites: nativegen.RewriteSites(function), AddressShares: nativegen.SharedVectorAddresses(function)})
 				seen++
 			}
 			if seen != 4 {

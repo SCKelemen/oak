@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v9 combines parent last-use release for scalar-array homes with
-	// independently keyed single- and two-vector map candidates.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v9")
+	// v10 adds verifier-gated late vector address sharing and tighter
+	// register-version/use checks in the early load-only matcher.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v10")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -64,6 +64,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"vector-blocks", lane.VectorBlocks},
+		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},
 		{"value-select", lane.ValueSelect},
 		{"fuse", lane.Fuse},

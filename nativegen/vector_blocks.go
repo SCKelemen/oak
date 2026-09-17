@@ -1,6 +1,8 @@
 package nativegen
 
 import (
+	"strings"
+
 	"github.com/SCKelemen/oak/asm"
 )
 
@@ -41,7 +43,7 @@ import (
 // vector load through an element address at a non-zero offset as the
 // span's elements from that index (`asm/verify_vector.go` loadVector).
 
-// vectorBlockLoad is a candidate: the load at items[at] through the
+// vectorBlockLoad is a candidate: the access at items[at] through the
 // address written at items[addrAt] by `add xA, xB, wJ, uxtw #s`, where
 // wJ is the group's index plus k (its `add` at items[idxAt], or -1).
 type vectorBlockLoad struct {
@@ -56,6 +58,16 @@ type vectorBlockLoad struct {
 // whole-function liveness of the general registers answers
 // (nativegen/cleanup.go liveAfter).
 func blockVectorLoads(items []asm.Item) ([]asm.Item, int) {
+	return blockVectorAccesses(items, false)
+}
+
+// shareVectorAddresses also considers stores, without moving any memory
+// operation. The separate late transform is gated by semantic verification.
+func shareVectorAddresses(items []asm.Item) ([]asm.Item, int) {
+	return blockVectorAccesses(items, true)
+}
+
+func blockVectorAccesses(items []asm.Item, stores bool) ([]asm.Item, int) {
 	live := liveAfter(items)
 	fused := 0
 	start := 0
@@ -67,7 +79,7 @@ func blockVectorLoads(items []asm.Item) ([]asm.Item, int) {
 			case asm.Label:
 				boundary = true
 			case asm.Instruction:
-				boundary = isTransfer(it)
+				boundary = vectorAddressBarrier(it)
 			}
 		}
 		if !boundary {
@@ -79,7 +91,7 @@ func blockVectorLoads(items []asm.Item) ([]asm.Item, int) {
 				end = i + 1
 			}
 		}
-		block, n := blockVectorBlock(items[start:end], live[start:end])
+		block, n := blockVectorBlock(items[start:end], live[start:end], stores)
 		fused += n
 		out = append(out, block...)
 		if end == i {
@@ -94,6 +106,47 @@ func blockVectorLoads(items []asm.Item) ([]asm.Item, int) {
 	return out, fused
 }
 
+// Only instructions whose GPR defs/uses the local helpers understand may
+// occur inside a sharing region. Calls, atomics, system instructions and
+// unknown operations are boundaries, not assumed register-transparent.
+func vectorAddressBarrier(ins asm.Instruction) bool {
+	switch ins.Mnemonic {
+	case "add", "adds", "sub", "subs", "and", "ands", "orr", "eor", "bic", "bics", "mvn", "not",
+		"mov", "movz", "movn", "movk", "fmov", "dup", "ins", "umov", "smov",
+		"mul", "madd", "msub", "mneg", "smull", "umull", "sdiv", "udiv",
+		"lsl", "lsr", "asr", "ror", "extr", "shl", "ushr", "sshr",
+		"fadd", "fsub", "fmul", "fdiv", "fmla", "fmls", "fmadd", "fmsub", "fneg", "fabs",
+		"cmp", "cmn", "tst", "fcmp", "csel", "csinc", "csinv", "csneg", "cset", "csetm",
+		"ldr", "ldur", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrsw", "ldp",
+		"str", "stur", "strb", "strh", "stp", "nop":
+		return false
+	}
+	return true
+}
+
+func vectorAddressGPR(reg asm.Register) bool {
+	_, ok := generalReg(reg)
+	return ok
+}
+
+// Used only inside vectorAddressBarrier's closed vocabulary. W/X views
+// alias each other, but v10 and w10 are different physical registers.
+func vectorAddressReads(ins asm.Instruction, reg int) bool {
+	for _, src := range sourceRegisters(ins) {
+		if vectorAddressGPR(src) && src.Num == reg {
+			return true
+		}
+	}
+	if len(ins.Operands) == 0 {
+		return false
+	}
+	first, ok := generalReg(ins.Operands[0])
+	if !ok || first.Num != reg {
+		return false
+	}
+	return strings.HasPrefix(ins.Mnemonic, "st") || ins.Mnemonic == "movk" || ins.Mnemonic == "cmp" || ins.Mnemonic == "cmn" || ins.Mnemonic == "tst"
+}
+
 // vectorAddressOf reads `add xA, xB, wJ, uxtw #s` at items[at].
 func vectorAddressOf(item asm.Item) (dest, base, idx int, shift int64, ok bool) {
 	ins, isIns := item.(asm.Instruction)
@@ -103,7 +156,7 @@ func vectorAddressOf(item asm.Item) (dest, base, idx int, shift int64, ok bool) 
 	d, okD := ins.Operands[0].(asm.Register)
 	b, okB := ins.Operands[1].(asm.Register)
 	ext, okE := ins.Operands[2].(asm.Extended)
-	if !okD || !okB || !okE || d.Class != asm.ClassX || b.Class != asm.ClassX || ext.Kind != "uxtw" || ext.Reg.Class != asm.ClassW {
+	if !okD || !okB || !okE || d.Class != asm.ClassX || b.Class != asm.ClassX || ext.Kind != "uxtw" || ext.Reg.Class != asm.ClassW || !vectorAddressGPR(d) || !vectorAddressGPR(b) || !vectorAddressGPR(ext.Reg) || ext.Amount < 0 || ext.Amount > 4 {
 		return 0, 0, 0, 0, false
 	}
 	return d.Num, b.Num, ext.Reg.Num, ext.Amount, true
@@ -118,36 +171,36 @@ func indexOffsetOf(item asm.Item) (dest, src int, k int64, ok bool) {
 	d, okD := ins.Operands[0].(asm.Register)
 	src2, okS := ins.Operands[1].(asm.Register)
 	imm, okI := ins.Operands[2].(asm.Immediate)
-	if !okD || !okS || !okI || d.Class != asm.ClassW || src2.Class != asm.ClassW || imm.Shift != 0 || imm.Value <= 0 {
+	if !okD || !okS || !okI || d.Class != asm.ClassW || src2.Class != asm.ClassW || !vectorAddressGPR(d) || !vectorAddressGPR(src2) || d.Num == src2.Num || imm.Shift != 0 || imm.Value <= 0 {
 		return 0, 0, 0, false
 	}
 	return d.Num, src2.Num, imm.Value, true
 }
 
-// wholeVectorLoad reads `ldr qD, [xA]`.
-func wholeVectorLoad(item asm.Item) (dest asm.Register, addr int, ok bool) {
+// wholeVectorAccess reads `ldr qD, [xA]`, and STR when explicitly enabled.
+func wholeVectorAccess(item asm.Item, stores bool) (dest asm.Register, addr int, ok bool) {
 	ins, isIns := item.(asm.Instruction)
-	if !isIns || ins.Mnemonic != "ldr" || len(ins.Operands) != 2 {
+	if !isIns || (ins.Mnemonic != "ldr" && (!stores || ins.Mnemonic != "str")) || len(ins.Operands) != 2 {
 		return asm.Register{}, 0, false
 	}
 	d, okD := ins.Operands[0].(asm.Register)
 	mem, okM := ins.Operands[1].(asm.Memory)
-	if !okD || !okM || d.Class != asm.ClassV || d.Vec != "q" || mem.Index != nil || mem.Mode != asm.MemOffset || mem.Offset != 0 || mem.Base.Class != asm.ClassX {
+	if !okD || !okM || d.Class != asm.ClassV || d.Vec != "q" || mem.Index != nil || mem.Mode != asm.MemOffset || mem.Offset != 0 || mem.Base.Class != asm.ClassX || !vectorAddressGPR(mem.Base) {
 		return asm.Register{}, 0, false
 	}
 	return d, mem.Base.Num, true
 }
 
-// vectorBlockCandidates lists a block's vector loads through an address
+// vectorBlockCandidates lists a block's vector accesses through an address
 // the block formed, each with the index it reads resolved to a root index
 // and a constant: the lowering may reach the index through a copy (`mov
 // wJ, wI`, before the late cleanup forwards it) or an offset (`add wJ,
 // wI, #k`), and the instruction that wrote it is the last one before the
 // address that did.
-func vectorBlockCandidates(block []asm.Item) []vectorBlockLoad {
+func vectorBlockCandidates(block []asm.Item, stores bool) []vectorBlockLoad {
 	var out []vectorBlockLoad
 	for at := 1; at < len(block); at++ {
-		dest, addr, isLoad := wholeVectorLoad(block[at])
+		dest, addr, isLoad := wholeVectorAccess(block[at], stores)
 		if !isLoad {
 			continue
 		}
@@ -165,7 +218,7 @@ func vectorBlockCandidates(block []asm.Item) []vectorBlockLoad {
 			if !isIns {
 				break
 			}
-			if !writesReg(ins, cand.idx) {
+			if !writesGeneral(ins, cand.idx) {
 				continue
 			}
 			if dj, src, k, isOffset := indexOffsetOf(block[p]); isOffset && dj == cand.idx {
@@ -175,7 +228,20 @@ func vectorBlockCandidates(block []asm.Item) []vectorBlockLoad {
 			}
 			break
 		}
-		out = append(out, cand)
+		// A resolved offset/copy names the root's value at its definition,
+		// not an unrelated later value in the same physical register.
+		stable := true
+		if cand.idxAt >= 0 {
+			for p := cand.idxAt + 1; p < cand.addrAt; p++ {
+				if ins, ok := block[p].(asm.Instruction); !ok || writesGeneral(ins, cand.idx) {
+					stable = false
+					break
+				}
+			}
+		}
+		if stable {
+			out = append(out, cand)
+		}
 	}
 	return out
 }
@@ -194,10 +260,10 @@ func indexCopyOf(item asm.Item) (dest, src int, ok bool) {
 	return d.Num, s.Num, true
 }
 
-// blockVectorBlock fuses the vector loads of one basic block; live[i] is
+// blockVectorBlock shares addresses within one basic block; live[i] is
 // the set of general registers live after block[i].
-func blockVectorBlock(block []asm.Item, live []uint32) ([]asm.Item, int) {
-	loads := vectorBlockCandidates(block)
+func blockVectorBlock(block []asm.Item, live []uint32, stores bool) ([]asm.Item, int) {
+	loads := vectorBlockCandidates(block, stores)
 	if len(loads) < 2 {
 		return block, 0
 	}
@@ -206,15 +272,35 @@ func blockVectorBlock(block []asm.Item, live []uint32) ([]asm.Item, int) {
 	}
 	removed := map[int]bool{}
 	rewritten := map[int]asm.Instruction{}
+	instruction := func(at int) (asm.Instruction, bool) {
+		if ins, ok := rewritten[at]; ok {
+			return ins, true
+		}
+		ins, ok := block[at].(asm.Instruction)
+		return ins, ok
+	}
 	fused := 0
 	for i := 0; i < len(loads); i++ {
 		a := loads[i]
-		if removed[a.at] || removed[a.addrAt] {
+		if removed[a.at] || removed[a.addrAt] || a.addr == a.base || a.addr == a.idx {
 			continue
 		}
 		for j := i + 1; j < len(loads); j++ {
 			b := loads[j]
+			if _, already := rewritten[b.at]; already {
+				continue
+			}
 			if removed[b.at] || b.base != a.base || b.idx != a.idx || b.shift != a.shift || b.k <= a.k {
+				continue
+			}
+			// Only remove a private index definition after the anchor. An
+			// earlier definition may also contribute to the kept address.
+			if b.idxAt >= 0 && b.idxAt <= a.at {
+				continue
+			}
+			// Bound before shifting so a huge synthetic offset cannot wrap
+			// into an apparently encodable immediate.
+			if b.k-a.k > 65520>>uint(a.shift) {
 				continue
 			}
 			offset := (b.k - a.k) << uint(a.shift)
@@ -226,11 +312,11 @@ func blockVectorBlock(block []asm.Item, live []uint32) ([]asm.Item, int) {
 			// and index adds are this load's own.
 			clean := true
 			for p := a.at + 1; p < b.at; p++ {
-				if p == b.addrAt || p == b.idxAt || removed[p] {
+				if p == b.addrAt || removed[p] {
 					continue
 				}
-				ins, isIns := block[p].(asm.Instruction)
-				if !isIns || writesReg(ins, a.base) || writesReg(ins, a.idx) || writesReg(ins, a.addr) {
+				ins, isIns := instruction(p)
+				if !isIns || writesGeneral(ins, a.base) || writesGeneral(ins, a.idx) || (p != b.idxAt && writesGeneral(ins, a.addr)) {
 					clean = false
 					break
 				}
@@ -244,10 +330,25 @@ func blockVectorBlock(block []asm.Item, live []uint32) ([]asm.Item, int) {
 				continue
 			}
 			if b.idxAt >= 0 {
-				if idxReg, _, _, isOffset := indexOffsetOf(block[b.idxAt]); isOffset && !dead(b.at, idxReg) {
+				idxReg, _, _, isOffset := indexOffsetOf(block[b.idxAt])
+				if !isOffset {
+					idxReg, _, _ = indexCopyOf(block[b.idxAt])
+				}
+				if !dead(b.at, idxReg) {
 					continue
 				}
-				if idxReg, _, isCopy := indexCopyOf(block[b.idxAt]); isCopy && !dead(b.at, idxReg) {
+				// Being dead afterwards does not authorize deleting an
+				// earlier observable use, or a shared address calculation.
+				for p := b.idxAt + 1; p < b.at; p++ {
+					if p == b.addrAt || removed[p] {
+						continue
+					}
+					if ins, ok := instruction(p); !ok || vectorAddressReads(ins, idxReg) {
+						clean = false
+						break
+					}
+				}
+				if !clean {
 					continue
 				}
 			}
@@ -283,3 +384,8 @@ func blockVectorBlock(block []asm.Item, live []uint32) ([]asm.Item, int) {
 func FusedVectorBlocks(fn *asm.Function) int { return fusedVectorBlocks[fn] }
 
 var fusedVectorBlocks = map[*asm.Function]int{}
+
+// SharedVectorAddresses counts late, verifier-gated load/store rewrites.
+func SharedVectorAddresses(fn *asm.Function) int { return sharedVectorAddressCount[fn] }
+
+var sharedVectorAddressCount = map[*asm.Function]int{}

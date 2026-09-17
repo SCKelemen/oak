@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestObservationsInterleaveAndRotate(t *testing.T) {
-	for _, backends := range []int{3, 4, 5} {
+	for _, backends := range []int{3, 4, 5, 6} {
 		for round := 0; round < 4*backends; round++ {
 			seen := map[int]bool{}
 			for offset := 0; offset < 4*backends; offset++ {

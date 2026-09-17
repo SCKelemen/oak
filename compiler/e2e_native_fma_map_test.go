@@ -58,6 +58,9 @@ func TestNativeUnrolledFMAMapsSelected(t *testing.T) {
 		if nativegen.UnrolledMaps(unit) != 1 || model.NativeVerdicts[unit.Name].Kind != asm.VerdictProven {
 			t.Errorf("%s: grouped map not proven/selected\n%s", unit.Name, strings.Join(remarks, "\n"))
 		}
+		if nativegen.SharedVectorAddresses(unit) != 2 {
+			t.Errorf("%s: want shared input and output vector addresses\n%s\n%s", unit.Name, nativegen.Describe(unit), strings.Join(remarks, "\n"))
+		}
 	}
 }
 

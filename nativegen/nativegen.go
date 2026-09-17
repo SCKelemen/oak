@@ -1635,6 +1635,9 @@ type Lane struct {
 	// verifier judge the body, and the search keeps the per-load form
 	// where they refuse it.
 	VectorBlocks bool
+	// ShareVectorAddresses retries address sharing after copy cleanup and
+	// includes stores. The search requires a semantic verdict for this lane.
+	ShareVectorAddresses bool
 	// Cleanup runs the late copy and branch cleanup over the lowered items
 	// on the AArch64 lane (nativegen/cleanup.go): a copy read once by the
 	// next instruction is forwarded, a definition copied once writes its
@@ -1844,6 +1847,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		if lane.Cleanup {
 			// Late copy and branch cleanup (nativegen/cleanup.go).
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
+		}
+		if lane.ShareVectorAddresses {
+			out.Items, sharedVectorAddressCount[out] = shareVectorAddresses(out.Items)
 		}
 		if !lane.Reallocate {
 			return scheduleLane(lane, out)

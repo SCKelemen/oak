@@ -5490,6 +5490,32 @@ percent on a 16 KiB array that fits L1 (0.039–0.042 against
 where a core with less spare issue than an M4 — the RV64 lane, an MCU —
 would feel it.
 
+**Late vector address sharing (2026-09-17, AArch64 lane;
+`share-vector-addresses`).** After late copy cleanup, another candidate
+retries address sharing for `ldr q` and `str q`. Cleanup can remove temporary
+W-register writes that previously prevented retaining an X-register address.
+The second access then uses `[kept_address, #16]`, dropping its private index
+and address adds. Memory accesses remain in their original order; neither
+loads nor stores are moved or combined, and floating arithmetic is unchanged.
+
+This is a separate verifier-gated transform, not an extension of the earlier
+load-only pass's authority. Both use conservative register-version and
+liveness checks: a kept address must not consume its base/root register;
+resolved index roots must still denote the same value; dropped temporaries
+must have no other intervening readers and be dead afterward. Calls, atomics,
+system operations and unknown instructions bound the sharing region. Immediate
+offsets are range-checked before shifting. The candidate still needs ordinary
+seam admission and the search's semantic verdict gate; an unsupported or
+unprofitable form leaves an earlier candidate available. Materialization v10
+keys the new lane flag and changed matcher behavior.
+
+For the two-vector f32/f64 maps, the selected proven main loop has 13 rather
+than 17 instructions, still two loads and two stores. The explicit-FMA body
+shrinks from 244 to 228 encoded bytes with its 144-byte frame unchanged.
+Runtime acceptance uses the same-compiler `native-no-address-sharing` control
+and short-input measurements, recorded in `benchmarks/native/exact_fma/README.md`.
+These static counts alone do not establish a speedup or a claim for RV64.
+
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
 indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
