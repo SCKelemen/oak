@@ -1,0 +1,45 @@
+diff --git a/lowering/lowering.go b/lowering/lowering.go
+index 7c55fd04..6c215a37 100644
+--- a/lowering/lowering.go
++++ b/lowering/lowering.go
+@@ -520,6 +520,40 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
+ 		}
+ 	case *ast.InvocationExpression:
+ 		return lowerInvocationExpression(e, tc)
++	case *ast.ArrayLiteral:
++		// Elements are ordinary value expressions. Keep the optional typed
++		// literal prefix unchanged: it is type syntax, not an index expression.
++		lowered := *e
++		lowered.Elements = make([]ast.Expression, 0, len(e.Elements))
++		for _, element := range e.Elements {
++			lowered.Elements = append(lowered.Elements, lowerExpression(element, tc))
++		}
++		return &lowered
++	case *ast.RecordLiteral:
++		// FieldOrder is authoritative evaluation/source order. Rebuild both
++		// representations with the same lowered values, while retaining legacy
++		// map-only fields without fabricating an order for them.
++		lowered := *e
++		lowered.Fields = make(map[string]ast.Expression, len(e.Fields))
++		lowered.FieldOrder = make([]ast.RecordField, 0, len(e.FieldOrder))
++		ordered := make(map[string]struct{}, len(e.FieldOrder))
++		for _, field := range e.FieldOrder {
++			value := lowerExpression(field.Value, tc)
++			copied := field
++			copied.Value = value
++			lowered.FieldOrder = append(lowered.FieldOrder, copied)
++			ordered[field.Name] = struct{}{}
++			if _, present := e.Fields[field.Name]; present {
++				lowered.Fields[field.Name] = value
++			}
++		}
++		for name, value := range e.Fields {
++			if _, present := ordered[name]; present {
++				continue
++			}
++			lowered.Fields[name] = lowerExpression(value, tc)
++		}
++		return &lowered
+ 	case *ast.VariantExpression:
+ 		// Constructor payloads are ordinary expressions: lower their indexing
+ 		// and calls too, while preserving the variant's resolution identity.

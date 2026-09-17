@@ -2111,6 +2111,57 @@ with reproducible rejected patches for the
 [guarded counted](results/blake3-counted-copy-guarded-rejected-2026-09-17.patch)
 variants against the recorded baseline.
 
+## BLAKE3: stack-only chunk push deferred, 2026-09-17
+
+At baseline `bd89ea49`, closing a chunk copied the entire 1,848-byte state
+into the private push helper's result and then back into the caller. A
+prototype instead borrowed only the private copy's stack, returned its new
+depth and let the caller reset the same scalar fields. Public update value
+semantics, checked accesses and wrapping arithmetic were unchanged.
+
+The two copies disappear: 3,781,008 bytes of logical copy work per complete
+1 MiB hash, not measured hardware traffic. The C update frame shrinks
+**2,112 → 336 bytes**, but its code grows **616 → 684 bytes** and the push
+helper grows **340 → 452 bytes**. Initial input-state copying remains.
+
+| Cohort / run | Baseline ms/MiB | Stack-only ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 1.989 | 1.818 | 0.946 | 13/21 |
+| Native compression fixed / B, reversed | 3.711 | 3.528 | 0.941 | 13/21 |
+| Native compression fixed / C | 2.394 | 2.250 | 1.002 | 10/21 |
+| Pure C / A | 2.681 | 2.223 | 1.014 | 10/21 |
+| Pure C / B, reversed | 2.920 | 2.418 | 0.903 | 14/21 |
+| Pure C / C | 2.536 | 2.286 | 0.940 | 11/21 |
+
+**Deferred, not shipped.** Four paired medians improve, two are roughly
+neutral/slightly worse, and only 71/126 pairs improve. The host's one-minute
+load readings ranged from 85.68 to 146.52. This is a candidate for a quiet-host
+rerun, not a demonstrated runtime win or a precise regression estimate.
+Each run used the same rotating single-thread protocol, 21 samples of 100
+hashes, complete digest checks at fourteen lengths and after every sample,
+and no overlapping builds/tests from this experiment. Native compression
+was freshly proven and byte-identical in the mixed comparison.
+
+The experiment did expose two compiler correctness issues that are fixed:
+literal values were missing recursive lowering, so span/view reads inside
+arrays or records could emit invalid C; and the C `oak_index` macro repeated
+an effectful index expression. Aggregate values now traverse the existing
+checked lowering, and the macro uses `oak_lv_idx` with each argument once.
+Tests retain the evaluation-order case that caught the second issue.
+
+Both timed compilers had the same aggregate-lowering prerequisite; the
+single-evaluation macro fix came **after** those frozen samples. No timings
+here establish a speedup for that compiler fix. The retained hash tests
+freeze the old push helper and cover full state, counter/index wrapping,
+chunk-boundary input aliasing and exact malformed-depth traps. Hash source
+and extraction are restored; the proposed mutable-stack refinement proof
+is deferred with the source optimization.
+
+[All samples, hashes, reproduction steps and verification scope](results/blake3-stack-push-deferred-2026-09-17.json),
+the [source prototype](results/blake3-stack-push-deferred-2026-09-17.patch), and
+its [timed compiler prerequisite](results/blake3-stack-push-lowering-prerequisite-2026-09-17.patch)
+are preserved for a controlled rerun.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
