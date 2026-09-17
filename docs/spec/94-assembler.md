@@ -3947,9 +3947,23 @@ seventh: a bit tested by mask, compare, and branch — `and xT, xS,
 #(1<<k); cmp xT, #0; b.ne L` with xT dead after — is `tbnz xS, #k, L`,
 `tbz` for `b.eq`, refused when the target's block reads the flags; the
 eighth: a zero moved into a register only to be stored is the zero
-register stored; and the branch rule sees through a run of labels —
-`b endif` before `else:` `endif:` is a fall-through. The OS walkers'
-status conditionals and descriptor tests spent these at every level): a copy read once by the next instruction is
+register stored, the scheduler's independent instructions between them
+kept; and the branch rule sees through a run of labels — `b endif` before
+`else:` `endif:` is a fall-through. The OS walkers' status conditionals
+and descriptor tests spent these at every level). Before the rules, and
+alternating with them to a fixpoint, a constant branch fold
+(`nativegen/const_branches.go`): a forward propagation of the constants
+`movz`, `movk`, and moves from the zero register leave in the general
+registers — a label knows a register when every predecessor knows the
+same value, a call forgets the caller-saved ones — folds `cmp wR, #k;
+b.cond L` where R is known (taken: `b L`; not: both go, when no later
+instruction reads the compare's flags), threads `b L` whose target block
+begins with such a compare that the edge's state decides (the block's
+leading moves travel with the jump), and drops the blocks nothing then
+reaches. The walkers' status byte, set to 1 and compared with 1 at each
+level after a conditional clear, keeps no compare on either path:
+`translate` goes from 84 to 78 instructions on the stage2 replica
+(`nativegen/const_branches_test.go`): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
