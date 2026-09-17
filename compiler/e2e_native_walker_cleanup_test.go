@@ -4,7 +4,10 @@ package compiler
 // §9): a Bool materialized only to be branched on becomes the branch on the
 // flags (`cset wN, cond; cbz wN, L` is `b.!cond L`), and a record-span
 // element base with a stride below 2^16 (`movz wT, #2096; umaddl xD, wI,
-// wT, xB`, no movk) is shared like the wide form. Both stay verifier-gated.
+// wT, xB`, no movk) is shared like the wide form, and a span-of-records
+// element indexes by the variable's own register, so a second element
+// through the same index spells the same base and needs no second guard.
+// All stay verifier-gated.
 
 import (
 	"strings"
@@ -31,7 +34,9 @@ status: (va: u64, bound: u64): u8 {
 }
 
 root_pa: (s: [*]Regime, dom: u32): u64 {
-  s[dom].pool_base + u64(s[dom].root) * u64(16384)
+  base: u64 = s[dom].pool_base
+  root: u16 = s[dom].root
+  base + u64(root) * u64(16384)
 }
 
 main: (): i32 {
@@ -84,8 +89,17 @@ func TestE2ENativeWalkerCleanups(t *testing.T) {
 	if n := count(units["status"], "cbz") + count(units["status"], "cbnz"); n != 0 || count(units["status"], "b.") == 0 {
 		t.Fatalf("status: a Bool tested at once is a branch on the flags, got %d cbz/cbnz:\n%s\n%s", n, nativegen.Describe(units["status"]), joined)
 	}
-	if n := count(units["root_pa"], "umaddl"); n != 1 {
-		t.Fatalf("root_pa: one shared element base for the two field reads, got %d umaddl", n)
+	// Both element bases index by dom's own register (no copy), so one
+	// guard serves both reads.
+	if n := count(units["root_pa"], "cmp"); n != 1 {
+		t.Fatalf("root_pa: one guard for two reads through the same index, got %d cmp:\n%s", n, nativegen.Describe(units["root_pa"]))
+	}
+	for _, item := range units["root_pa"].Items {
+		if ins, ok := item.(asm.Instruction); ok && ins.Mnemonic == "umaddl" {
+			if idx, isReg := ins.Operands[1].(asm.Register); !isReg || idx.Num != 2 {
+				t.Fatalf("root_pa: the element base indexes by the parameter's register: %v\n%s", ins, nativegen.Describe(units["root_pa"]))
+			}
+		}
 	}
 	_, code, abnormal := buildAndRunFrom(t, "walker_cleanup", comp)
 	if abnormal || code != 42 {

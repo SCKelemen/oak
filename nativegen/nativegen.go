@@ -905,7 +905,7 @@ func (g *generator) resolvePlace(expr ast.Expression, whole bool) (place, error)
 			// An element of an array or span of records: `pool[i]`.
 			if ident, isIdent := e.Left.(*ast.Identifier); isIdent {
 				if sp, isSpan := g.spans[ident.Value]; isSpan && sp.elemLayout != nil {
-					return g.spanRecordElement(sp, e.Index)
+					return g.spanRecordElement(sp, e.Index, &e.Token)
 				}
 			}
 			base, err := g.resolvePlace(e.Left, false)
@@ -1110,10 +1110,19 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 // checker's span element idiom: the index guarded against the length
 // register, then `add xE, xB, wI, uxtw #s` or `movz`/`umaddl` by the
 // record's stride; the place is read-only through a view.
-func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, error) {
-	r, err := g.guardedIndex(sp, index)
+func (g *generator) spanRecordElement(sp span, index ast.Expression, tok *token.Token) (place, error) {
+	r, err := g.guardedIndexAt(sp, index, tok)
 	if err != nil {
 		return place{}, err
+	}
+	// The index in a variable's own register (the guard compares it
+	// there, and the checker keys its fact on that register): no copy,
+	// so a second element of the same span through the same index spells
+	// the same base — the record-base sharing and the redundant-guard
+	// elision read that — and nothing to release.
+	fixed := r < -1
+	if fixed {
+		r = -r - 2
 	}
 	element, err := g.alloc(scalars["u64"])
 	if err != nil {
@@ -1134,7 +1143,9 @@ func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, err
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(sp.baseReg))
 		g.release(strideReg)
 	}
-	g.release(r)
+	if !fixed {
+		g.release(r)
+	}
 	return place{rec: &recordLocal{layout: sp.elemLayout, inReg: true, reg: element, temps: []int{element}, readOnly: !sp.writable}}, nil
 }
 
