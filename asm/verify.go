@@ -1201,7 +1201,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if t.width > w {
 			return nil
 		}
-		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.selectAtom(): 1}}
 	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
@@ -1381,6 +1381,25 @@ func (t *term) knownBits() int {
 	return t.width
 }
 
+// selectAtom names a memory read as an atom of the linear normal form:
+// the memory and its index in the index's own linear normal form when it
+// has one, so two reads whose index terms differ in spelling but agree
+// modulo the index width — the machine's `49152 * (dom and 0xFFFFFFFF) +
+// (((t#hi shl 16) or t) and 65535) shl 11 + i` and the Oak side's
+// `49152 * dom + (t and 65535) shl 11 + i` for `s[dom].pages[cell(t, i)]`
+// (the OS pilot's get_page_entry) — are one unknown. Indices are
+// compared at their own width, which is the width the element is chosen
+// at, so equal forms read the same element. An index without a form
+// keeps its spelling.
+func (t *term) selectAtom() string {
+	if t.left != nil && t.left.width > 0 {
+		if index := t.left.linearAt(t.left.width); index != nil {
+			return t.name + "[" + index.compact() + "]"
+		}
+	}
+	return t.String()
+}
+
 func (f *linearForm) trim() *linearForm {
 	for name, c := range f.coeffs {
 		if c == 0 {
@@ -1402,6 +1421,30 @@ func (f *linearForm) String() string {
 	}
 	parts = append(parts, strconv.FormatUint(f.constant, 10))
 	return strings.Join(parts, " + ") + fmt.Sprintf(" (mod 2^%d)", f.width)
+}
+
+// compact spells the form without the unit coefficients, the zero
+// constant, and the modulus: `dom` for a parameter index, `49152*dom + i
+// + 2048*t` for a scaled one. It names select atoms, where the width is
+// the index's own.
+func (f *linearForm) compact() string {
+	names := make([]string, 0, len(f.coeffs))
+	for name := range f.coeffs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if f.coeffs[name] == 1 {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%d*%s", f.coeffs[name], name))
+		}
+	}
+	if f.constant != 0 || len(parts) == 0 {
+		parts = append(parts, strconv.FormatUint(f.constant, 10))
+	}
+	return strings.Join(parts, " + ")
 }
 
 func (f *linearForm) equal(g *linearForm) bool {

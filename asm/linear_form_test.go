@@ -1,6 +1,9 @@
 package asm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The linear normal form sees through a low mask that covers the operand's
 // known bits: `u64(index)` over a u16 parameter (`index and 0xFFFF` on the
@@ -56,5 +59,37 @@ func TestLinearFormSeesThroughLowMasks(t *testing.T) {
 	holes := binaryTerm("and", index, constTerm(0xFF00, 64))
 	if holes.linearAt(64) != nil {
 		t.Fatalf("a mask with holes must stay nonlinear")
+	}
+}
+
+// A memory read is an atom of the form named by its memory and its
+// index's own linear normal form, so two reads whose index terms are
+// spelled differently but agree modulo the index width are one unknown:
+// the OS pilot's get_page_entry, `s[dom].pages[cell(t, i)]`, reads at
+// `49152 * dom + (t and 65535) shl 11 + i` on the Oak side and at
+// `49152 * ((dom and 0xFFFFFFFF) and 0xFFFFFFFF) + (((t#hi shl 16) or t)
+// and 65535) shl 11 + i` on the machine's.
+func TestLinearFormNamesSelectsByIndexForm(t *testing.T) {
+	dom, i := paramTerm("dom", 32), paramTerm("i", 32)
+	tbl, hi := paramTerm("t", 16), paramTerm("t#hi", 32)
+	oakIndex := binaryTerm("add", binaryTerm("mul", constTerm(49152, 32), dom),
+		binaryTerm("add", binaryTerm("shl", binaryTerm("and", zeroExtend(tbl, 32), constTerm(65535, 32)), constTerm(11, 32)), i))
+	wideDom := binaryTerm("and", binaryTerm("and", dom, constTerm(0xFFFFFFFF, 32)), constTerm(0xFFFFFFFF, 32))
+	register := binaryTerm("and", binaryTerm("or", binaryTerm("shl", hi, constTerm(16, 32)), zeroExtend(tbl, 32)), constTerm(65535, 32))
+	asmIndex := binaryTerm("add", binaryTerm("mul", constTerm(49152, 32), wideDom),
+		binaryTerm("add", binaryTerm("shl", register, constTerm(11, 32)), i))
+	oak, machine := selectTerm("s.pages", oakIndex, 64), selectTerm("s.pages", asmIndex, 64)
+	l, r := oak.linearAt(64), machine.linearAt(64)
+	if l == nil || r == nil || !l.equal(r) {
+		t.Fatalf("reads at indices equal in linear normal form must be one atom:\n  oak %v\n  asm %v", l, r)
+	}
+	if !strings.Contains(l.String(), "s.pages[49152*dom + i + 2048*t]") {
+		t.Fatalf("the atom is named by the index's form: %v", l)
+	}
+	// An index outside the form keeps its spelling, and a different
+	// index is a different atom.
+	other := selectTerm("s.pages", binaryTerm("add", oakIndex, constTerm(1, 32)), 64)
+	if o := other.linearAt(64); o == nil || o.equal(l) {
+		t.Fatalf("a read at another index must not merge: %v vs %v", o, l)
 	}
 }
