@@ -1394,7 +1394,7 @@ func (t *term) knownBits() int {
 func (t *term) selectAtom() string {
 	if t.left != nil && t.left.width > 0 {
 		if index := t.left.linearAt(t.left.width); index != nil {
-			return t.name + "[" + index.String() + "]"
+			return t.name + "[" + index.compact() + "]"
 		}
 	}
 	return t.String()
@@ -1421,6 +1421,30 @@ func (f *linearForm) String() string {
 	}
 	parts = append(parts, strconv.FormatUint(f.constant, 10))
 	return strings.Join(parts, " + ") + fmt.Sprintf(" (mod 2^%d)", f.width)
+}
+
+// compact spells the form without the unit coefficients, the zero
+// constant, and the modulus: `dom` for a parameter index, `49152*dom + i
+// + 2048*t` for a scaled one. It names select atoms, where the width is
+// the index's own.
+func (f *linearForm) compact() string {
+	names := make([]string, 0, len(f.coeffs))
+	for name := range f.coeffs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if f.coeffs[name] == 1 {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%d*%s", f.coeffs[name], name))
+		}
+	}
+	if f.constant != 0 || len(parts) == 0 {
+		parts = append(parts, strconv.FormatUint(f.constant, 10))
+	}
+	return strings.Join(parts, " + ")
 }
 
 func (f *linearForm) equal(g *linearForm) bool {

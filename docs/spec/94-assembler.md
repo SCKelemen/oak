@@ -3320,7 +3320,7 @@ as `4096*index + pool_base` rather than left as evidence where the
 64-bit sum of two unknowns exceeded the bit-level budget
 (`asm/linear_form_test.go`, `compiler/e2e_native_linear_mask_test.go`).
 A memory read at a symbolic index is an atom of the form named by its
-memory and its index's own normal form, taken at the index's width: the
+memory and its index's own normal form (`s.pages[49152*dom + i + 2048*t]`), taken at the index's width: the
 machine reads `s[dom].pages[cell(t, i)]` (the OS pilot's
 `get_page_entry`) at `49152 * ((dom and 0xFFFFFFFF) and 0xFFFFFFFF) +
 (((t#hi shl 16) or t) and 65535) shl 11 + i`, the Oak side at

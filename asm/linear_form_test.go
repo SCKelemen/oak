@@ -83,7 +83,7 @@ func TestLinearFormNamesSelectsByIndexForm(t *testing.T) {
 	if l == nil || r == nil || !l.equal(r) {
 		t.Fatalf("reads at indices equal in linear normal form must be one atom:\n  oak %v\n  asm %v", l, r)
 	}
-	if !strings.Contains(l.String(), "s.pages[49152*dom + 1*i + 2048*t + 0 (mod 2^32)]") {
+	if !strings.Contains(l.String(), "s.pages[49152*dom + i + 2048*t]") {
 		t.Fatalf("the atom is named by the index's form: %v", l)
 	}
 	// An index outside the form keeps its spelling, and a different
