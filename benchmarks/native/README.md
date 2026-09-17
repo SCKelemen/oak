@@ -161,10 +161,48 @@ roughly 39 cycles on a 4.4 GHz core for those 108 instructions — about
 not short of work to issue; it is waiting.
 
 So the next thing this kernel wants is a scheduler that shortens the
-critical path rather than one that fills slots, and the `stalls` metric
-is the right thing to drive it. It is the same lesson as the chain
-assignment cap below, from the other side: instruction count has stopped
-predicting this backend's speed in either direction.
+critical path rather than one that fills slots. It is the same lesson as
+the chain assignment cap below, from the other side: instruction count
+has stopped predicting this backend's speed in either direction.
+
+### What it is not: false dependencies, 2026-09-17
+
+The obvious suspect was register reuse. Scratch registers are handed out
+last-in-first-out, so a released temporary comes straight back: the
+validator's main loop wrote 24 registers in 108 instructions with 81
+redefinitions, `v16` alone 24 times, and `w9` 73 times over the whole
+unit. Every redefinition is a write-after-write edge and every read
+between them a write-after-read edge, and the scheduler runs after
+allocation, so it cannot break any of them — which looked like the
+reason it removes one stall out of eighteen.
+
+Releasing a vector scratch register to the front of the free list makes
+the pool round-robin instead, and it does what it should to the code:
+the most-written vector register goes from `v16` 35 times to `v29` 16
+times, spread across `v16`–`v31`, at the same number live at once. It
+makes no difference at all to the clock — 0.10 ns a byte either way,
+alternated four times:
+
+| | ns/byte | GB/s |
+| --- | ---: | ---: |
+| last-in-first-out (as it is) | 0.09–0.10 | 9.7–11.1 |
+| round-robin | 0.10 | 9.7–10.2 |
+
+The reason is that this core renames registers in hardware. A
+write-after-write or write-after-read hazard on an architectural
+register costs an out-of-order core nothing, so spreading the
+architectural names spreads nothing real. Only true dependencies —
+a value actually feeding the next instruction — are left, and those the
+allocator cannot move.
+
+Two things follow. Post-allocation scheduling has less to offer on this
+lane than the stall count suggests, since the ordering it is pinned by
+is largely false. And the same change is not pointless everywhere: on a
+genuinely in-order core a write-after-write hazard does cost, so the
+free-list discipline is worth revisiting for the RV64 lane and the MCU
+profile, where it can be measured against a core that has no renamer.
+It was not landed here, having nothing to show on the lane it was
+written for.
 
 Apple arm64, 2026-09-13.
 

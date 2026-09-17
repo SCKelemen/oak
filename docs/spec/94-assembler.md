@@ -7109,6 +7109,31 @@ a larger allowance for a select-heavy obligation, is the next step for
 the family; `fill_chunk`'s nested loops sharing `n` are a different,
 genuine search problem.
 
+**Extern bindings as fresh results (2026-09-17).** A call to an extern
+binding (`oak_host_write: (fd: c.Int64, data: c.Ptr, count: c.Size):
+c.Int64 effects { Host.Write } = c.extern("oak_host_write_call")`,
+docs/spec/92-ffi.md) made every caller trusted at "a call": the write
+family flushes through `host_write_all`, whose loop calls it. The
+lowering now takes such a call, when the binding's effect row is
+declared and every effect is in the `Host` namespace and no parameter
+is a writable span, as a fresh parameter of the result's width with no
+effect on Oak memory (`lowerExternCall`), named by the symbol, the
+outermost inlined callee's call line and the call's sequence within it
+(`extern:oak_host_write_call@47#0`) — the machine side names the same
+call by its `bl`'s line when it summarizes the callee, so the two
+lowerings of one callee body agree. The arguments lower for their traps
+alone (a subslice against its span's length, an element read); their
+values do not reach the result, which the extern decides. The trust
+boundary is the effect row: an extern declared host-only is taken not to
+write Oak memory, as a callee is taken at its Oak body. The backend
+hands the verifier the program's extern bindings (`Function.Externs`,
+beside `Callees`, which holds only functions with bodies).
+`TestE2ENativeExternCallProven` proves a caller of a push and a flush
+through the host; the flush's own unit still stops at the call summary's
+binding of a frame array view with a symbolic length
+(`frameArrayArgument`: "its length is not a constant"), the next gap on
+the write family's path.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

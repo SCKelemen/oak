@@ -34,6 +34,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	var diagnostics []*diagnostic.Diagnostic
 	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
 	functions := map[string]*ast.FunctionStatement{}
+	externs := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
 	templates := map[string]*ast.ADTType{}
@@ -58,6 +59,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			continue
 		}
 		symbols[fn.Name.Value] = true
+		if fn.ExternSymbol != "" {
+			externs[fn.Name.Value] = fn
+		}
 		if fn.ExternSymbol == "" && fn.Receiver == nil && len(fn.TypeParams) == 0 {
 			functions[fn.Name.Value] = fn
 			if nativegen.VectorContract(fn) {
@@ -144,7 +148,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// the seam checker and the verifier judge each, and the cheapest
 		// proven body is kept, else the strongest verdict, the plain lowering
 		// last. A refused or weaker form is reported as set aside.
-		driver := &nativeDriver{source: source, functions: functions, records: records, adts: adts, constants: constants, tc: tc, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
+		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
 		selection, err := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
 		if err != nil {

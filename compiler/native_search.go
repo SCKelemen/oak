@@ -29,6 +29,7 @@ import (
 type nativeDriver struct {
 	source       *ast.FunctionStatement
 	functions    map[string]*ast.FunctionStatement
+	externs      map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
 	records      map[string]*ast.RecordLiteral
 	adts         map[string]*ast.ADTType
 	constants    map[string]asm.Constant
@@ -54,6 +55,7 @@ func (d *nativeDriver) Materialize(c *opt.Candidate) error {
 	// The verifier takes calls to program functions at their Oak bodies
 	// (asm.Function.Callees, docs/spec/94-assembler.md §8).
 	fn.Callees = d.functions
+	fn.Externs = d.externs
 	c.Body = fn
 	if os.Getenv("OAK_NATIVE_DUMP") == "candidates" {
 		// A debugging aid: every candidate body as lowered, before the
