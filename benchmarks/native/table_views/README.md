@@ -138,3 +138,14 @@ raw samples and exact selected bodies. Both-lane unit tests require proof of
 quotient/remainder bodies and composition with source rewrites. ARM64
 end-to-end tests check native/C results, retained zero-divisor/subslice traps
 and the actual grapheme candidate's proof and division-free assembly.
+
+Validation: nativegen, MachineIR and optimizer suites, focused compiler and
+materialization tests, targeted race checks, vet and harness tests pass.
+RV64 source-rewrite, strength, span-local and subslice cross-target tests pass
+with a writable temporary Zig cache. The broader RV64/QEMU sweep did **not**
+complete: its ten-minute suite deadline expired while linking the ADT
+record-ABI fixture through Zig (`runNativeRV64BareWith`, before that QEMU
+invocation). It is not counted as a passing suite; the full repository suite
+was not run. The isolated record/ADT ABI test subsequently passed both
+subtests through QEMU with the temporary cache (48.82 seconds), within its
+separate three-minute deadline.
