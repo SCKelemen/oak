@@ -640,6 +640,23 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## The lane-wise accumulators on the tiled reduction, 2026-09-17 (night)
+
+`tiled` with the head tree against the same tree withholding the lane
+vectorization (`OAK_OPT_SKIP=vectorize-lanes`), three alternated runs of
+three rounds of five samples, 1 MiB, on a host at load average 80–117
+(the ratios within a run hold; the absolute times do not). Checksums
+agree.
+
+| Kernel | oak-native, lanes | oak-native, scalar | native / C, lanes | native / C, scalar |
+| --- | ---: | ---: | ---: | ---: |
+| tiled | 153 / 150 / 212 µs | 238 / 227 / 315 µs | 0.76 / 0.74 / 0.79 (median 0.76×) | 1.20 / 1.05 / 1.20 (median 1.20×) |
+
+The eight accumulators as two `F32x4`: the loop is two vector loads, two
+lane-wise multiplies and adds, and its test, where the scalar loop was
+thirty-four instructions with seven address computations. clang
+half-vectorizes the same loop with shuffles and lands between the two.
+
 ## The ten kernels at the end of the day, 2026-09-17 (evening)
 
 The ten kernels through both backends at `fa7212f8` on the M4 Max at

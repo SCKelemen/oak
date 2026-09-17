@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v27 adds verifier-gated callee-save trimming to v26's composed
-	// late-machine recipe. Preserve every recipe input to avoid
+	// v28 adds verifier-gated empty-frame elision to v27's callee-save
+	// trimming recipe. Preserve every recipe input to avoid
 	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v27")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v28")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -61,6 +61,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
+		{"vectorize-lanes", lane.VectorLanes},
 		{"unroll-small", lane.UnrollSmall},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
@@ -90,6 +91,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
 		{"trim-callee-saves", lane.TrimCalleeSaves},
+		{"elide-empty-frame", lane.ElideEmptyFrame},
 		{"schedule", lane.Schedule},
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},

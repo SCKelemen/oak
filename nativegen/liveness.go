@@ -85,24 +85,50 @@ func mentionIdents(node ast.Node, visit func(string)) {
 	walkValue(reflect.ValueOf(node))
 }
 
+// lastUseOrder groups the names of a last-use map by the statement of
+// their last mention, each group in name order — the pools' order, and so
+// the registers later declarations take, the same in every build of one
+// source. The names are sorted once for the statement list: sorted at
+// every statement they were a twenty-fifth of a native build.
+func lastUseOrder(last map[string]int, statements int) [][]string {
+	names := make([]string, 0, len(last))
+	for name := range last {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	order := make([][]string, statements)
+	for _, name := range names {
+		if i := last[name]; i >= 0 && i < statements {
+			order[i] = append(order[i], name)
+		}
+	}
+	return order
+}
+
 // releaseDead returns the registers and slots of the variables whose last
 // mention was statement i to the pools.
 func (g *generator) releaseDead(last map[string]int, i int) {
 	if len(last) == 0 {
 		return
 	}
-	top := g.scopes[len(g.scopes)-1]
-	// In name order, so the pools' order — and the registers later
-	// declarations take — is the same in every build of one source.
-	names := make([]string, 0, len(last))
-	for name := range last {
-		names = append(names, name)
+	var names []string
+	for name, at := range last {
+		if at == i {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
+	g.releaseNames(names)
+}
+
+// releaseNames returns the named variables' registers and slots to the
+// pools, in the order given.
+func (g *generator) releaseNames(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	top := g.scopes[len(g.scopes)-1]
 	for _, name := range names {
-		if last[name] != i {
-			continue
-		}
 		b, ok := top[name]
 		if !ok || b.freed {
 			continue

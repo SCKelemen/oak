@@ -52,6 +52,7 @@ const (
 	TransformUnrollMaps          = "unroll-vector-maps"
 	TransformVectorFolds         = "vectorize-folds"
 	TransformUnrollConst         = "unroll-constant"
+	TransformVectorLanes         = "vectorize-lanes"
 	TransformUnrollSmall         = "unroll-small"
 	TransformVecBlocks           = "vector-blocks"
 	TransformVectorAddresses     = "share-vector-addresses"
@@ -59,6 +60,7 @@ const (
 	TransformValueSelect         = "value-select"
 	TransformReallocate          = "reallocate"
 	TransformTrimCalleeSaves     = "trim-callee-saves"
+	TransformEmptyFrame          = "elide-empty-frame"
 	TransformSchedule            = "schedule"
 	TransformFuse                = "fuse"
 	TransformFuseExits           = "fuse-exits"
@@ -362,6 +364,18 @@ func Transforms() []opt.Transform {
 			fired:    UnrolledMaps,
 		},
 		&laneTransform{
+			// Lane-wise accumulators (nativegen/vector_lanes.go): a block's
+			// independent accumulators as the lanes of vectors, licensed by
+			// Oak.Lanes.blocks_eq — each lane meets its accumulator's values
+			// in order, so no law of the element type and no fact of the
+			// body is required, and a float accumulator rounds as before.
+			name: TransformVectorLanes, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorLanes },
+			apply:   func(l Lane) Lane { l.VectorLanes = true; return l },
+			fired:   VectorizedLanes,
+		},
+		&laneTransform{
 			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
 			// from zero to a literal bound becomes its trips, the index a
 			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
@@ -482,6 +496,17 @@ func Transforms() []opt.Transform {
 			eligible: func(l Lane) bool { return l.Reallocate },
 			apply:    func(l Lane) Lane { l.TrimCalleeSaves = true; return l },
 			fired:    TrimmedCalleeSaves,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Callee-save trimming can expose a frame with no remaining stack
+			// observer. Remove only its exact adjustment pair and preserve the
+			// trimmed-but-framed candidate until this smaller body proves.
+			name: TransformEmptyFrame, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ElideEmptyFrame },
+			eligible: func(l Lane) bool { return l.TrimCalleeSaves },
+			apply:    func(l Lane) Lane { l.ElideEmptyFrame = true; return l },
+			fired:    ElidedEmptyFrames,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
 			name: TransformCarryIndex, phase: opt.PhaseMachine, proof: opt.Mechanical,
@@ -649,6 +674,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ValueSelect = false
 	lane.Reallocate = false
 	lane.TrimCalleeSaves = false
+	lane.ElideEmptyFrame = false
 	lane.Schedule = false
 	lane.Fuse = false
 	lane.FuseExits = false
@@ -657,6 +683,7 @@ func PlainLane(lane Lane) Lane {
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
 	lane.UnrollConstant = false
+	lane.VectorLanes = false
 	lane.UnrollSmall = false
 	lane.UnrollFills = false
 	lane.NoReductions = true

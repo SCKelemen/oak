@@ -13,10 +13,19 @@ import (
 	"github.com/SCKelemen/oak/scanner"
 )
 
-// Freeze the pre-batched update loop, not a transformation of the current
-// source. Both versions use the actual module's private compression, chunk
-// and stack helpers; this isolates the update-loop change under test.
+// Freeze the pre-batched update loop and original whole-state absorb helper,
+// not transformations of current source. Compression and chunk/stack helpers
+// remain shared; update and ordinary-block state transitions are independent.
 const blake3OriginalUpdateSource = `
+update_test_absorb_original: (state: Blake3State): Blake3State {
+  next: Blake3State = state
+  out: [16]u32 = blake3_compress(next.cv, blake3_words(next.block), next.chunk_counter, u32(64), blake3_start_flag(next))
+  next.cv = blake3_first8(out)
+  next.blocks_compressed = next.blocks_compressed + u32(1)
+  next.block_len = u32(0)
+  next
+}
+
 update_test_original: (state: Blake3State, src: []u8): Blake3State {
   next: Blake3State = state
   i: u32 = 0
@@ -24,7 +33,7 @@ update_test_original: (state: Blake3State, src: []u8): Blake3State {
     next.block_len == u32(64) && next.blocks_compressed == u32(15) ? {
       next = blake3_push_chunk(next, blake3_chunk_cv(next))
     } | {
-      next.block_len == u32(64) ? { next = blake3_absorb_block(next) }
+      next.block_len == u32(64) ? { next = update_test_absorb_original(next) }
     }
     next.block[next.block_len] = src[i]
     next.block_len = next.block_len + u32(1)
@@ -232,6 +241,74 @@ func TestE2EBlake3UpdateDifferential(t *testing.T) {
 	t.Run("interpreter", func(t *testing.T) {
 		if got := interpretChecked(t, source); got != 42 {
 			t.Fatalf("state/digest differential returned %d", got)
+		}
+	})
+}
+
+// The private CV helper must preserve the old transition even for public
+// states outside the normal hash history. In particular, a u32 block count
+// wraps, while all 64 counter bits, buffered bytes and inactive stack words
+// remain unchanged by absorption. The actual update call additionally covers
+// chunk-counter wrapping on the distinct block-15 chunk-completion path.
+func TestE2EBlake3UpdateAbsorbTransition(t *testing.T) {
+	source := blake3UpdateSource(t, `
+update_test_absorb_seed: (blocks: u32, counter: u64, random: Bool): Blake3State {
+  state: Blake3State = update_test_seed(u32(64), blocks)
+  state.chunk_counter = counter
+  block: [64]u8
+  _ = update_test_fill(span(&block), random)
+  state.block = block
+  state
+}
+
+update_test_absorb_case: (blocks: u32, counter: u64, random: Bool): Bool {
+  state: Blake3State = update_test_absorb_seed(blocks, counter, random)
+  old: Blake3State = update_test_absorb_original(state)
+  next: Blake3State = state
+  next.cv = blake3_absorb_cv(next.cv, next.block, next.chunk_counter, blake3_start_flag(next))
+  next.blocks_compressed = next.blocks_compressed + u32(1)
+  next.block_len = u32(0)
+  assert(update_test_same(old, next))
+  assert(next.block_len == u32(0) && next.blocks_compressed == blocks + u32(1) && next.chunk_counter == counter)
+  // Exercise the production branch, not just a test-side reconstruction.
+  input: [1]u8 = [1]u8{ 239 }
+  old_update: Blake3State = update_test_original(state, view(&input))
+  new_update: Blake3State = blake3_update(state, view(&input))
+  assert(update_test_same(old_update, new_update))
+  blocks == u32(15) ? {
+    assert(new_update.chunk_counter == counter + u64(1) && new_update.blocks_compressed == u32(0))
+  } | {
+    assert(new_update.chunk_counter == counter && new_update.blocks_compressed == blocks + u32(1))
+  }
+  assert(new_update.block_len == u32(1))
+  // Reconstruct rather than comparing two potentially aliased snapshots.
+  update_test_same(state, update_test_absorb_seed(blocks, counter, random))
+}
+
+main: (): i32 {
+  blocks: [6]u32 = [6]u32{ 0, 1, 14, 15, 16, 4294967295 }
+  counters: [5]u64 = [5]u64{ 0, 1, 4294967295, 4294967296, 18446744073709551615 }
+  i: u32 = 0
+  while i < u32(6) {
+    j: u32 = 0
+    while j < u32(5) {
+      assert(update_test_absorb_case(blocks[i], counters[j], false))
+      assert(update_test_absorb_case(blocks[i], counters[j], true))
+      j = j + u32(1)
+    }
+    i = i + u32(1)
+  }
+  42
+}
+`)
+	t.Run("c", func(t *testing.T) {
+		if code, abnormal := buildAndRun(t, "blake3_absorb_diff", source); abnormal || code != 42 {
+			t.Fatalf("absorb transition differential: code=%d abnormal=%v", code, abnormal)
+		}
+	})
+	t.Run("interpreter", func(t *testing.T) {
+		if got := interpretChecked(t, source); got != 42 {
+			t.Fatalf("absorb transition differential returned %d", got)
 		}
 	})
 }

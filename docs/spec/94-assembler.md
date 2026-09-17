@@ -1167,6 +1167,19 @@ invalidation, publication, and context synchronization remain open. Sequential
 byte-map updates are not architectural events, and this does not verify the C
 runtime.
 
+The separate `TestSailLemRAMTraces` executable oracle translates the pinned
+official Lem wrapper and runs it against Sail 0.20.2's prompt runtime. It checks
+the exact plain address-then-data request trace, byte layout, and rejection of
+wrong or reordered events; source mutations must compile before failing trace
+assertions. It also pins distinctions needed by any later event bridge:
+`hasTrace` includes failures/exceptions; a false write acknowledgement still
+returns normally; malformed values can fail after the address request; and
+the external interface can preserve undefined data bits or a size/payload
+mismatch. Two calls retain both request pairs. This is a required, separately
+pinned CI oracle, not a kernel proof or an architectural event interpretation.
+Neither normal return nor these two requests establish committed writes,
+atomicity, CAT membership, or page-table publication (§126 records its scope).
+
 A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,
 context-sync and BBM slices, and both cold-entry examples. Each is emitted as a
@@ -5655,6 +5668,25 @@ element term `T[k]` the span reading of the table gives — the same term
 the asm side's load through the table's address yields — for tables of
 at most sixty-four elements.
 
+**Lane-wise accumulators (2026-09-17, AArch64 lane;
+`nativegen/vector_lanes.go`, `spec/lean/Oak/Lanes.lean`, the
+`vectorize-lanes` candidate).** A loop under the slack guard `len(a) >= L
+&& i <= len(a) - L` whose body is `L` statements `acc[k] = acc[k] + E_k`,
+`k` in order, each `E_k` lane 0's expression with every element read moved
+`k` along the index (`a[i + k]`), over spans of one length, invariant
+scalars, and constants, then `i = i + L` — the tiled reduction's shape,
+`acc` an owned array of `L` float elements the body indexes by constants —
+becomes the same loop over `L / lanes` vector accumulators (one to four):
+each gathered from `acc` before the loop (a splat and inserts), each trip
+loading the block's elements as vectors, applying the expression
+lane-wise, and adding each lane to its accumulator, and each lane stored
+back into `acc` after the loop (`extract`), before the remainder loop and
+whatever reads the accumulators. Lane `k` meets exactly the values `acc[k]`
+met, in the same order, so a float accumulator rounds as before; the
+license is `Oak.Lanes.blocks_eq` — the block's statements touch distinct
+lanes, so their order is immaterial and one lane-wise step is all of them
+— and the verifier judges the assembly against the rewritten body.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
@@ -6358,6 +6390,29 @@ The proven `walk_leaf`, `get_root_pa`, and six small accessors account for the
 other 21 instructions. All five OS differential tests pass. Runtime is not
 reported from the loaded host. Exact provenance is in
 `benchmarks/native/results/stage2-callee-save-trim-2026-09-17.json`.
+
+**Empty-frame elision (2026-09-17, AArch64 lane).** Callee-save trimming can
+leave a call-free function with only `sub sp, sp, #frame` and the matching
+`add sp, sp, #frame` observing its old frame. The separate
+`elide-empty-frame` candidate is eligible only after `trim-callee-saves`. It
+requires the exact lowering-generated adjustment at entry and immediately
+before the unique return, equal unshifted immediates, no call, no other
+explicit `sp` operand, no incoming stack arguments, and no frame objects.
+Unknown, mismatched, multi-return, call-bearing, and still-stack-using bodies
+do not transform. A successful rewrite removes exactly the two adjustments
+and changes the declared frame to zero; every other instruction and metadata
+stay fixed.
+
+The transform is non-neutral and **verdict-gated**. Its trimmed-but-framed
+parent remains selectable, and the ordinary seam checker and whole-body
+verifier authorize the frameless body. Materialization v28 keys the new lane
+flag; `OAK_OPT_SKIP=elide-empty-frame` retains the adjustment pair. On the
+stage-2 pilot, six proven getters each lose two instructions and an otherwise
+unused 80-byte frame. Mach-O `__text` and the object both shrink 48 bytes
+(4168→4120 and 5688→5640), all 27 relocations remain, and both artifacts pass
+all five OS differential tests. Runtime is not reported from the loaded host.
+Exact provenance is in
+`benchmarks/native/results/stage2-empty-frame-elision-2026-09-17.json`.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
@@ -7073,13 +7128,101 @@ a read of another, a constant element index, a comparison of two
 elements' fields, and a loop storing through the field, with both
 backends agreeing on the values.
 
-Three shapes remain trusted, and are the next a scene proof will meet:
-an element bound to a local by value (`sf: Surface = s[d].surfaces[i]`),
-whose eight-byte load covers two four-byte leaves and matches none; a
-whole-element assignment, whose `stp` the store path refuses as a pair;
-and a loop bounded by the record's own count field, which is witnessed
-rather than proven because no register is an affine image of the Oak
-counter.
+**An element as a value (2026-09-17).** `sf: Surface = s[d].surfaces[i]`
+binds a whole element to a local, and neither side had it. The machine
+loads the element's eight bytes in one go, which matches no leaf — the
+leaves are its fields. The Oak side stopped earlier still, at the span's
+name: a place is walked down to an aggregate local, and a span parameter
+is not one.
+
+A machine access wider than a leaf is now read as the leaves it covers,
+packed in the little-endian order the load put them in, provided they
+tile the range *exactly* — in whole cells, with nothing left over. A
+partial or straddling access is refused, and so is an element with
+padding: a byte no leaf covers is not a field, the machine loads
+whatever is there, and the two sides would not agree on it. The two
+addressings differ only in where a leaf lives, so the reader takes that
+as a parameter (`leafPlacer`) and serves an element of the span and an
+element of an array field of records alike.
+
+The Oak side builds the element from its type's own shape
+(`recordSpanElementValue`), each leaf read from the memory that holds
+that field across every element, so the value agrees leaf for leaf with
+what the field accesses would have read. The element type's name is now
+kept on the span's model, which is what makes the shape reachable.
+
+**An element assigned as a value (2026-09-17).** The writer's
+counterpart. `s[d] = Box { … }` and `s[d].boxes[i] = Box { … }` were
+refused on both sides: the Oak side resolves an assignment's target to a
+scalar leaf and an aggregate target is none, and the machine side
+refused the `stp` a whole element of four words is spelled with.
+
+The Oak side lowers the assigned expression as an aggregate of the
+element's type and writes each of its scalar leaves to that leaf's own
+memory at the element's index — leaf for leaf the mirror of the read, so
+a value written and read back agrees. The machine side splits a store
+wider than a leaf across the leaves it covers, under the same exact
+tiling the wide read requires, and a pair store writes each of its two
+registers at its own offset through the same splitter. A record whose
+element has padding is still refused in both directions: a byte no leaf
+covers is not a field, and writing through it would put something where
+the Oak side has nothing.
+
+The verdict names the leaves: `proven equal to its Oak body in the span
+memory it writes (r.boxes.x, r.boxes.y)`. A pair store through a span of
+*scalars* remains refused — a span's element memory is one element per
+index, and a pair writes two.
+
+**A loop bounded by a field, and where its coupling stops
+(2026-09-17).** `while i < s[d].count` comes back witnessed rather than
+proven — "no register is an affine image of the loop variable `total` of
+loop 1 at its header" — while the same loop with the bound read into a
+local first,
+
+```
+n: u32 = s[d].count
+while i < n && i < u32(4) { … }
+```
+
+is proven, and is the better code besides, since the load leaves the
+loop. The workaround is therefore no hardship, but the reason is worth
+recording, because it is not the bound and not the counter.
+
+The message is doubly misleading, and the first reading of it here was
+wrong. The search does reach the right pairing: printing every pairing
+it tries shows `i↔r4`, the correct one, offered first at depth 0 — and
+rejected before it recurses, by the pending check on the loop's continue
+conditions. Everything after that is the search working through wrong
+pairings, and the message names the last slot to run out of candidates.
+
+The conditions differ in where they read the bound:
+
+```
+oak: (loop1.i lo ((d lo len(s)) ? loop1.s.count[d] : s.count[d])) and (loop1.i lo 4)
+asm: (loop1.i lo s.count[d]) and (loop1.i lo 4)
+```
+
+The Oak side reads `count` from the loop's *unknown* memory
+`loop1.s.count`, the machine side from the entry memory. Both are
+reading a memory the body never writes — the body writes `xs` — and the
+marker on `count` is dropped afterwards for exactly that reason (§8's
+loop memory markers). The Oak condition has already captured it by
+then.
+
+The asymmetry is an ordering one. The machine side computes its header
+condition *before* the markers are appended (`headerCondition`, then
+`summarizeLoop` marks), so its condition reads the entry memory. The
+Oak side appends the markers first and lowers the condition after, so
+its condition reads the marked memory. Making the Oak side match would
+fix this case in one move, and is not obviously right: a condition that
+reads a memory the body *does* write should see the iteration's memory,
+not the entry's, and that is a question about the machine side's order
+as much as the Oak side's. Marking only the memories the body writes
+would fix it from the other end and needs a conservative walk of the
+body, which no longer exists in the tree.
+
+Either way it is a completeness question, not a soundness one: the
+verdict falls back to evidence, which is what it is for.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
@@ -7545,6 +7688,24 @@ whole value was a parameter kept the renamed temporary;
 `TestE2EInlineLiteralArgumentsIntoRecordLiteral`). Prover build: proven
 538, evidence 100, trusted 329, no disagreement, no body left at a
 record-returning callee; the rows identical.
+
+**Memory-returned calls inside loops (2026-09-17).** The loop's frame
+inventory includes the leaves a callee returns through x8, not just
+explicit SP stores (`addCallResultSlots`). The address is reconstructed
+through 64-bit moves and immediate add/sub instructions in one basic
+block, rooted in SP that the loop never moves or in a loop-invariant
+callee-saved register holding a frame address. This includes the caller's
+own result area. Unknown writes, joins and varying bases are refused;
+the existing exclusions for unions and RV64 memory results remain.
+Explicit and implicit store ranges are split into disjoint pieces before
+they receive fresh loop symbols, so a narrow field overlapping a wider
+spill loses neither value. Bool occupies its four-byte ABI cell; padding
+is carried only where an explicit store reaches it. Each field's header
+and next value still passes the ordinary inductive coupling, using the
+callee's Oak body for the next value. Repeated and conditional calls,
+parked and forwarded result areas, overlapping widths and wrong offsets
+are pinned by `TestVerifyMemoryReturnedCallee`; address invalidation and
+field widths by `TestLoopCallResultAddress` and `TestLoopCallResultSlotWidths`.
 
 **One loop event per site (2026-09-15).** The executor enumerates paths
 by forking at every undecided branch, and every path reaching a loop
@@ -9030,6 +9191,45 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**The bound a conditional gives (2026-09-17).** A store into a frame
+array at a data-dependent index stays a write to the array's slots only
+under a bound on the index: the checker's trap guard (`cmp wI, #K; b.hs
+trap`) gave it (`noteTrapGuard`), and a loop body with such a store keeps
+the slots as loop-carried state. Once the guard is elided under the
+source conditional that proves it (`a.filled < 64 ? { a.block[a.filled]
+= … }`, §9 "Check elision"), the store had no bound and forgot the
+region, so the elided, hoisted forms of the byte-absorber (`feed`,
+`TestNativeShapesForwarding*`) fell to witnessed while the plain form
+proved, and the search kept the plain form. The fork on a conditional
+now records the bound its compare establishes on the side that holds it
+— `cmp wI, #K; b.hs L` bounds wI below K on the fall-through side, `b.lo`
+on the taken side, `b.hi`/`b.ls` below K+1, `bgeu`/`bltu` alike on the
+RV64 lane (`noteBranchBound`) — in straight-line bodies and in loop
+bodies, so the elided form is proven and taken.
+
+The same fact is available inside a loop whose continuing condition
+bounds the index (`while i < n && i < 16`). The indexed-store inventory
+replays a linear, comparison-only header on its private probe state and
+on the iteration state; recognized rotated loops use their matching
+entry/tail test. Each changed slot joins the loop-carried frame before
+the usual coupling proof. Bounds on replaced entry registers are cleared
+when those registers become fresh iteration symbols. Continuing-side
+facts do not escape to the state after the loop. Headers with setup,
+loads, calls or internal forks keep the existing conservative handling,
+as do bodies with calls or inner loops that cannot use the store probe
+(`noteLoopBodyBounds`, `TestVerifyLoopConditionFrameStore`).
+
+A conditional's register fact applies only while the register still
+holds the compared value. Conditional, floating or unknown flags do not
+establish it; a W comparison cannot constrain an X value with unknown
+upper bits. Inclusive bounds never wrap at the operand-width boundary,
+and a later weaker comparison retains the tighter fact. RV64 keeps the
+bound on the original index term when address scaling rewrites its
+register (`TestBranchIndexBound*`, `TestRV64BranchIndexBound`).
+Calls clear bounds on caller-saved registers, including scalar and
+aggregate result registers whose values the summary replaces directly;
+callee-saved facts still hold (`TestCallClearsRegisterBounds`).
 
 **A field's address as an aggregate argument (2026-09-16).** A callee
 taking an owned array or record by reference may receive the address of

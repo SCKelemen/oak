@@ -1600,6 +1600,10 @@ type Lane struct {
 	// (nativegen/unroll_constant.go); the verifier judges the lowering
 	// against the rewritten body.
 	UnrollConstant bool
+	// VectorLanes rewrites the lane-wise accumulator loops over span
+	// parameters into vector accumulators (nativegen/vector_lanes.go); the
+	// verifier judges the lowering against the rewritten body.
+	VectorLanes bool
 	// UnrollSmall is the separately gated constant-trip strategy: a fixed
 	// copy budget and an extra pre-unroll scalar-array placement veto.
 	// It is mutually exclusive with UnrollConstant and runs only on AArch64.
@@ -1757,6 +1761,10 @@ type Lane struct {
 	// by reallocation, together with their matched prologue/epilogue traffic.
 	// It keeps the frame layout fixed and is independently verifier-gated.
 	TrimCalleeSaves bool
+	// ElideEmptyFrame removes the exact stack-adjustment pair left when
+	// callee-save trimming emptied a frame. It refuses every remaining stack
+	// use and is independently verifier-gated.
+	ElideEmptyFrame bool
 	// Fuse folds instruction pairs into the one instruction that does both
 	// (machine.Fuse: a shift into an add's shifted operand, an increment
 	// into a csinc); the candidate search turns it on, the verifier judges.
@@ -1914,7 +1922,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1938,7 +1946,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.LoopResultHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.UnrollFills, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollConstant, lane.UnrollSmall)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.LoopResultHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.UnrollFills, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.VectorLanes, lane.UnrollConstant, lane.UnrollSmall)
 		}
 		if err != nil {
 			return out, err
@@ -1969,6 +1977,17 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 			out.Items, out.Clobbers = trimmed.Items, trimmed.Clobbers
 			trimmedCalleeSaves[out] = sites
 		}
+		if lane.ElideEmptyFrame {
+			if !lane.TrimCalleeSaves {
+				return nil, unsupported("empty-frame elision without callee-save trimming")
+			}
+			elided, frames, err := machine.ElideEmptyFrame(out)
+			if err != nil {
+				return nil, unsupported("%v", err)
+			}
+			out.Items, out.Frame = elided.Items, elided.Frame
+			elidedEmptyFrames[out] = frames
+		}
 		if lane.CarryLoopIndices {
 			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
 		}
@@ -1977,8 +1996,8 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		if lane.TrimCalleeSaves {
-			return nil, unsupported("callee-save trimming is not implemented on the RV64 lane")
+		if lane.TrimCalleeSaves || lane.ElideEmptyFrame {
+			return nil, unsupported("callee-save and empty-frame trimming are not implemented on the RV64 lane")
 		}
 		var out *asm.Function
 		var err error
@@ -2096,7 +2115,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2178,6 +2197,12 @@ func Reallocated(fn *asm.Function) int { return reallocated[fn] }
 func TrimmedCalleeSaves(fn *asm.Function) int { return trimmedCalleeSaves[fn] }
 
 var trimmedCalleeSaves = map[*asm.Function]int{}
+
+// ElidedEmptyFrames reports whether Lane.ElideEmptyFrame removed the exact
+// adjustment pair around an otherwise stack-free body.
+func ElidedEmptyFrames(fn *asm.Function) int { return elidedEmptyFrames[fn] }
+
+var elidedEmptyFrames = map[*asm.Function]int{}
 
 // OptIRLowered reports the generic SSA operations eliminated or hoisted by
 // the optimized CFG selected into fn. Zero means the body came from the
@@ -2267,14 +2292,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, fills bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, constant bool, small bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, fills bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, vlanes bool, constant bool, small bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, constants, tc, true, unroll, fills, vectorize, vmaps, unrollMaps, vfolds, constant, small, strength) {
+	for _, stage := range rewriteStages(fn, functions, constants, tc, true, unroll, fills, vectorize, vmaps, unrollMaps, vfolds, vlanes, constant, small, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -5930,14 +5955,14 @@ func (g *generator) lowerStatementsBefore(stmts []ast.Statement, trailing ast.No
 }
 
 func (g *generator) lowerStatementList(stmts []ast.Statement, functionBody bool, retLabel string, trailing ast.Node) error {
-	lastUse := lastUses(stmts, trailing)
+	release := lastUseOrder(lastUses(stmts, trailing), len(stmts))
 	for i, stmt := range stmts {
 		last := functionBody && i == len(stmts)-1
 		g.line = statementLine(stmt)
 		if err := g.lowerStatement(stmt, last, retLabel); err != nil {
 			return err
 		}
-		g.releaseDead(lastUse, i)
+		g.releaseNames(release[i])
 	}
 	if functionBody && (g.result != nil || g.resultRecord != nil) {
 		if len(stmts) == 0 {

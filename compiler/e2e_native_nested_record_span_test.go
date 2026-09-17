@@ -19,6 +19,29 @@ const nativeNestedRecordSpanProgram = `
 Surface: type = struct { x: u32, y: u32, w: u16, tag: u8 }
 Dom: type = struct { surfaces: [4]Surface, count: u32 }
 
+// An element bound to a local by value: the eight bytes the machine
+// loads cover two four-byte leaves and match none of them, and the span
+// is no aggregate local, so neither side had it. The value is the
+// element's fields read from their own memories. The element must have
+// no padding, since a byte no leaf covers is not a field and the two
+// sides would not agree on it.
+Box: type = struct { x: u32, y: u32 }
+Room: type = struct { boxes: [4]Box, n: u32 }
+
+by_value: (r: [*]Room, d: u32, i: u32): u32 {
+  d < len(r) && i < u32(4) ? { b: Box = r[d].boxes[i]; b.x + b.y } | { u32(0) }
+}
+
+// The writer's counterpart: a whole element assigned, one write per leaf.
+// The element of the span itself, and an element of its array field.
+put_box: (r: [*]Room, d: u32, i: u32, x: u32, y: u32): () {
+  d < len(r) && i < u32(4) ? { r[d].boxes[i] = Box { x: x, y: y } } | { }
+}
+
+put_room_n: (r: [*]Room, d: u32, v: u32): () {
+  d < len(r) ? { r[d].n = v } | { }
+}
+
 get_x: (s: [*]Dom, d: u32, i: u32): u32 {
   d < len(s) && i < u32(4) ? { s[d].surfaces[i].x } | { u32(0) }
 }
@@ -93,9 +116,16 @@ main: (): i32 {
   e: u32 = get_const(s, u32(1))
   // x[0][2] = 2 and y[0][3] = 103, so 2 < 103 is 1.
   f: u32 = overlaps(s, u32(0), u32(2), u32(3))
-  // 12 + 103 + 8 = 123; + 101 = 224; + 1998 = 2222; + 16 = 2238; + 1 = 2239.
-  // 2239 & 255 = 191.
-  i32_bits_u32((a + b + c + e + f) & u32(255))
+  // x[0][1] is 1998 after the scale and y[0][1] is 101, so 2099; count[1] = 4.
+  rooms: [1]Room
+  rooms[u32(0)].boxes[u32(2)].x = u32(70)
+  rooms[u32(0)].boxes[u32(2)].y = u32(5)
+  // Assign a whole element, then read it back by value: 30 + 9 = 39.
+  put_box(span(&rooms), u32(0), u32(3), u32(30), u32(9))
+  g: u32 = by_value(span(&rooms), u32(0), u32(2)) + by_value(span(&rooms), u32(0), u32(3))
+  // 12 + 103 + 8 = 123; + 101 = 224; + 1998 = 2222; + 16 = 2238; + 1 = 2239;
+  // + 75 + 39 = 2353. 2353 & 255 = 49.
+  i32_bits_u32((a + b + c + e + f + g) & u32(255))
 }
 `
 
@@ -109,18 +139,19 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_nested_record_span", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 191 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 191\n%s", code, abnormal, joined)
+	if abnormal || code != 49 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 49\n%s", code, abnormal, joined)
 	}
 	// Every reader is proven at the bit level, and every writer in the leaf
 	// memory it writes — named by the field path, not by the array.
-	for _, fn := range []string{"get_x", "get_y", "get_w", "get_const", "set_x_get_y", "overlaps"} {
+	for _, fn := range []string{"get_x", "get_y", "get_w", "get_const", "set_x_get_y", "overlaps", "by_value"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
 			t.Errorf("%s reads a nested record-span field and must be proven; diagnostics:\n%s", fn, joined)
 		}
 	}
 	for _, want := range []string{
 		"asm unit set_x: proven equal to its Oak body in the span memory it writes (s.surfaces.x)",
+		"asm unit put_box: proven equal to its Oak body in the span memory it writes (r.boxes.x, r.boxes.y)",
 		"asm unit scale_x: proven equal to its Oak body",
 	} {
 		if !strings.Contains(joined, want) {
@@ -130,7 +161,7 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	if strings.Contains(joined, "disagrees") {
 		t.Errorf("a false mismatch over a nested record span:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 191 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 191", code, abnormal)
+	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 49 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 49", code, abnormal)
 	}
 }

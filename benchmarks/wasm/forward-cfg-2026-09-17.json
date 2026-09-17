@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-17",
+  "baseline_commit": "654772017b16f0ece14c7f4e20d762a020e6c98f",
+  "candidate_recipe": "oak.wasm.encode.v6",
+  "host": "shared Darwin/arm64; CPU model unavailable",
+  "engine": {"deno":"2.9.6","v8":"15.0.245.2-rusty","typescript":"6.0.3"},
+  "method": "compiler/wasm_forward_test.go TestWasmForwardTiming; retained baseline bytes; fresh engine per process; caller loop structured in both lanes; compilation and instantiation excluded",
+  "warmup": "20 batches per lane, 8 calls per batch, 10000+j*97 iterations",
+  "calls_per_sample": 8,
+  "iterations": "1000000+j*97",
+  "sample_order": "seven rounds, alternate dispatcher/forward and forward/dispatcher",
+  "checks": "both lanes checked against wrapping-u32 reference result on every call",
+  "caveat": "microbenchmark, not general browser performance; no timing CI gate or formal translation claim",
+  "runs": [
+    {
+      "dispatcher_ms": [48.82783300000003,65.42366699999997,62.399291000000005,50.43695800000006,48.755957999999964,46.66000000000008,53.59058300000004],
+      "forward_ms": [21.356875000000002,21.965499999999963,24.339292,23.153791000000012,22.32341699999995,19.33637500000009,22.046832999999992],
+      "median_ratio": 0.4371166278505529
+    },
+    {
+      "dispatcher_ms": [47.34966700000001,45.580084,66.74883299999999,45.09779200000003,47.17829100000006,69.12629200000003,63.78250000000003],
+      "forward_ms": [19.868291999999997,20.748833999999988,20.712582999999995,20.776208999999994,18.363958000000025,23.23195899999996,23.726125000000025],
+      "median_ratio": 0.43820443341238247
+    },
+    {
+      "dispatcher_ms": [47.065583000000004,48.049041999999986,53.779957999999965,45.61533400000002,57.449208000000056,54.81000000000006,60.13258300000007],
+      "forward_ms": [19.500499999999988,20.190709000000027,19.10929200000004,20.79541599999999,25.026665999999977,26.955125000000066,22.806959000000006],
+      "median_ratio": 0.38667594348065504
+    }
+  ]
+}

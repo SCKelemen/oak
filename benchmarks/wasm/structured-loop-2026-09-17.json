@@ -1,0 +1,48 @@
+{
+  "date": "2026-09-17",
+  "host": "Darwin arm64; CPU model unavailable in sandbox",
+  "engine": {"deno": "2.9.6", "v8": "15.0.245.2-rusty", "typescript": "6.0.3"},
+  "baseline": "specification 4777fef6; saved dispatcher module bytes in compiler/wasm_loop_test.go",
+  "candidate": "oak.wasm.encode.v4; four-block structured loop",
+  "semantics": "u32 sum of 0 through n-1, modulo 2^32; both versions checked against reference results",
+  "method": {
+    "warmup_batches_per_lane": 20,
+    "calls_per_batch": 8,
+    "warmup_iterations_per_call": "10000 + j*97, j=0..7",
+    "timed_iterations_per_call": "1000000 + j*97, j=0..7",
+    "samples_per_lane_per_process": 7,
+    "ordering": "alternating dispatcher/structured then structured/dispatcher",
+    "clock": "performance.now()",
+    "includes": "8 guest calls and result comparisons per sample",
+    "excludes": "Oak compilation, engine module compilation/instantiation, warmup, browser startup/download"
+  },
+  "static_fixtures": [
+    {"name": "counter", "bytes_before": 166, "bytes_after": 103, "instructions_before": 65, "instructions_after": 31},
+    {"name": "sum", "bytes_before": 203, "bytes_after": 140, "instructions_before": 79, "instructions_after": 45},
+    {"name": "swap", "bytes_before": 246, "bytes_after": 185, "instructions_before": 95, "instructions_after": 61},
+    {"name": "gcd", "bytes_before": 183, "bytes_after": 120, "instructions_before": 71, "instructions_after": 37}
+  ],
+  "runs": [
+    {
+      "dispatcher_ms": [17.335875, 16.322082999999992, 18.317999999999998, 31.788416999999995, 28.16387500000002, 13.060374999999993, 13.025708000000009],
+      "structured_ms": [3.1080420000000046, 3.093333000000001, 4.947708000000006, 3.3312080000000037, 3.1247499999999775, 3.0045000000000073, 2.822374999999994],
+      "ratio_of_medians": 0.17928382616972055
+    },
+    {
+      "dispatcher_ms": [51.874708, 36.933583, 16.245834000000002, 14.799832999999978, 14.914333, 20.455208000000027, 61.990166999999985],
+      "structured_ms": [12.458334000000008, 10.42754100000002, 3.183499999999981, 3.144666000000001, 36.815541000000024, 2.8252499999999827, 8.912916999999993],
+      "ratio_of_medians": 0.435728495158787
+    },
+    {
+      "dispatcher_ms": [24.959917000000004, 16.709708000000006, 39.05812499999999, 16.32162500000001, 16.006124999999997, 69.494292, 77.32604199999997],
+      "structured_ms": [2.8285410000000013, 8.313625000000002, 5.219832999999994, 4.347458000000017, 2.8321669999999983, 3.4189169999999933, 33.89362500000004],
+      "ratio_of_medians": 0.1741775824014165
+    },
+    {
+      "dispatcher_ms": [13.103749999999998, 26.496916999999996, 24.7085, 62.639542000000006, 68.65275, 19.825583999999992, 32.911],
+      "structured_ms": [3.130624999999995, 3.1099159999999983, 44.40925, 3.997583999999989, 5.2708749999999895, 4.725582999999972, 3.1051669999999945],
+      "ratio_of_medians": 0.15086977854819825
+    }
+  ],
+  "qualification": "Noisy shared host, four fresh engine processes, one sum microbenchmark. Ratios are structured/dispatcher medians. No general browser/native parity, cold-start, energy, or formal verification claim. No timing threshold in CI. CPU model probe was denied; no inferred hardware model."
+}

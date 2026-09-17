@@ -316,6 +316,33 @@ unreported because the host load averages remained above 40.
 
 [Static observations and provenance](results/stage2-callee-save-trim-2026-09-17.json).
 
+## OS stage-2: elide empty frames, 2026-09-17
+
+The verifier-gated `elide-empty-frame` candidate runs only after callee-save
+trimming. It removes the exact entry/return stack-adjustment pair when the
+body is call-free and has no remaining stack operand, stack argument, or frame
+object. The trimmed-but-framed body remains the fallback, and
+`OAK_OPT_SKIP=elide-empty-frame` produced the same-compiler control. Both
+artifacts used fresh verification with zero of 27 verdicts from cache.
+
+| Proven getter | Instructions | Frame bytes |
+| --- | ---: | ---: |
+| `get_root_pa` | 20 → 18 | 80 → 0 |
+| `get_free_count` | 12 → 10 | 80 → 0 |
+| `get_in_use` | 15 → 13 | 80 → 0 |
+| `get_high_water` | 12 → 10 | 80 → 0 |
+| `get_mapped_pages` | 12 → 10 | 80 → 0 |
+| `get_entry_count` | 15 → 13 | 80 → 0 |
+
+That is 12 selected instructions. Mach-O `__text` and the complete object
+both shrink by 48 bytes (4168→4120 and 5688→5640), while all 27 relocations
+remain. The page walkers keep their existing selected bodies because their
+frames are not empty. Both artifacts pass all five OS differential tests.
+Runtime is intentionally unreported because host load averages remained
+30–73 during final validation.
+
+[Static observations and provenance](results/stage2-empty-frame-elision-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established
@@ -1913,6 +1940,84 @@ the native object, its C companion and the pure-C output are byte-identical
 to the measured candidate artifacts.
 The focused tests, Lean builds, fresh native proof and native artifact
 comparisons passed again after the final rebase onto `cc22121d`.
+
+## BLAKE3: avoid copying the tree stack per block, 2026-09-17
+
+At baseline `4777fef6`, ordinary block absorption passed and returned the
+entire 1,848-byte `Blake3State`, including its untouched 1,728-byte chaining
+stack. The C-compiled update copied that state to a temporary every time.
+The private helper now accepts only the chaining value, block, counter and
+flags, and returns the new chaining value. The same caller branch updates
+`cv`, increments `blocks_compressed` and clears `block_len` locally. Public
+signatures, flags, compression and boundary/trap conditions are unchanged.
+
+The ordinary-block full-state copy disappears. A complete 1 MiB hash has
+15,360 such absorptions, removing 28,385,280 bytes of *logical copy work*;
+that is not a hardware memory-traffic measurement. Initial and chunk-boundary
+state copies remain. The C update symbol shrinks **696 → 616 bytes**, while
+its frame grows **2,096 → 2,112 bytes**. Native compression is byte-identical
+before/after, with all eight result chunks freshly proven at the default
+budget and caching disabled. Both mixed variants link the same native object.
+
+| Cohort / run | Baseline ms/MiB | Narrow helper ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 4.753 | 3.417 | 0.751 | 16/21 |
+| Native compression fixed / B, reversed | 2.937 | 3.108 | 0.865 | 13/21 |
+| Native compression fixed / C | 2.599 | 1.878 | 0.790 | 18/21 |
+| Pure C / A | 4.615 | 4.126 | 0.787 | 17/21 |
+| Pure C / B, reversed | 2.595 | 2.283 | 0.771 | 15/21 |
+| Pure C / C | 5.264 | 4.323 | 0.746 | 16/21 |
+
+The protocol is unchanged: rotating interleaved variants on one thread, one
+warmup each, 21 samples of 100 complete 1 MiB hashes per variant, reversing
+the first two libraries in run B. The third library is the original pure-C
+hash for the mixed cohort and the original native-compressor hash for the
+pure-C cohort. Every digest byte matches at fourteen boundary lengths and
+after every sample. No builds/tests from this experiment overlap timing.
+
+**Retained for a consistent paired runtime improvement**, not for the static
+copy count alone. All six median paired ratios improve: roughly 14–25% less
+elapsed time with native compression fixed, and 21–25% less with pure C.
+The M4 Max was heavily loaded (one-minute boundary readings 43.7–160.5), with
+uncontrolled cores/frequency. In mixed run B, separate medians regress even
+though the paired median improves. This is a noisy trend, not a precise
+speedup guarantee, short-input result or whole-package native comparison.
+
+The C/interpreter differential reference now freezes the old whole-state
+absorb helper as well as the old byte loop. A new 60-case transition matrix
+covers arbitrary block counts, `u32`/`u64` counter wrapping, patterned/random
+blocks, every state field and source immutability; streaming, digest and
+malformed-state tests still pass. The native proof test also still refutes a
+deliberately incorrect compression rotate.
+
+`Oak.Stdlib.Blake3AbsorbLaws` proves the narrowed helper plus caller updates
+equal the frozen prior extracted transition for every state and fuel, and
+pins that replacement to the **actual generated ordinary-full-block branch**
+with its continuation unchanged. Existing guarded batching laws still build.
+This is scoped extraction-level refinement, not whole-update, C `memcpy` or
+source-to-binary correctness.
+
+[All samples, artifact hashes, commands and proof scope](results/blake3-absorb-state-copy-2026-09-17.json).
+After integration onto `62980bc8`, the combined hash/differential/extraction
+and native proof/negative tests passed again, as did all four hash law modules.
+Fresh native emission still proves every compression result chunk; its object,
+C companion and fresh pure-C output match the measured candidate byte-for-byte.
+
+**Loop-bound verifier coverage (2026-09-17).** After the absorption change,
+`blake3_update` still selected its plain body because an indexed store in
+the guard-elided form forgot the neighboring `.stack_len` field. Replaying
+the loop's continuing bounds for its store inventory and iteration recovers
+the optimized selection: **548 to 528 instructions, four guards to one**
+against `2689708f`, which already includes the conditional-bound fix.
+Reduced loop cases now prove; the update itself remains witness-checked on
+307 inputs, with `next.cv[0]` coupling through nested call events unresolved.
+
+This is not a demonstrated runtime gain. With only the update native and
+compression fixed in C, three paired runs give candidate/baseline ratios
+**1.261, 0.987 and 0.898** on the loaded M4 Max. All digest bytes match at
+fourteen boundary lengths and after every sample; assembler, native reference
+and RV64 checks pass. The conflicting timings need a quiet-host follow-up.
+[All samples, selections, hashes and validation](results/blake3-loop-bounds-2026-09-17.json).
 
 ## The refuted kernel
 

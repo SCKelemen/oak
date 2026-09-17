@@ -1,0 +1,51 @@
+{
+  "schema": "oak-loop-call-result-coverage-v1",
+  "date": "2026-09-17",
+  "base_commit": "34f1a40519a5c61875a640c78a02d160591c2589",
+  "change": "Include fixed-address memory-returned call fields in the loop-carried frame inventory, with disjoint ABI-width ranges.",
+  "production_files": [
+    "asm/loops.go",
+    "asm/loop_call_results.go"
+  ],
+  "scope": "Proof coverage and emitted-code selection only. No runtime or compilation timing was measured. The stronger plain-body verdict currently retains more checks; this is not a performance improvement.",
+  "reproduce": [
+    "Use base_commit for before. For after, apply this commit relative to its parent, restricted to production_files, onto base_commit.",
+    "Build each emitter with: go build -o EMITTER ./benchmarks/native/emit",
+    "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_NATIVE_DUMP=1 OAK_OPT_REPORT=1 EMITTER benchmarks/kernels/oak PREFIX > PREFIX.stdout 2> PREFIX.log",
+    "The changed loop summary does not modify the native lowering or admission policy. Search prefers a witness-checked body over a trusted body."
+  ],
+  "observations": {
+    "before": {
+      "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 4 verified; selected elide-guards+hoist-invariants+late-cleanup (trusted, cost 1016657.5; identity 1312595.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: not verified (the result field .stack_len was never stored to the result area) \u2014 trusted per docs/spec/94-assembler.md \u00a75",
+      "cache": "native backend: 0 of 4 verdicts from the verdict cache",
+      "selected_instructions": 537,
+      "selected_guards": 1,
+      "c_sha256": "4597131e2d52bb5201d9670c59807187d77c58d87f683547835d0f2152fd74bd",
+      "object_sha256": "aca434094c0591343f88f397f6c2b767470a147277ba39a4f372d4c6dcbd2dbc"
+    },
+    "after": {
+      "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 3 verified; selected identity (witnessed, cost 1312595.0; identity 1312595.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 305 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+      "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+      "selected_instructions": 547,
+      "selected_guards": 4,
+      "c_sha256": "4597131e2d52bb5201d9670c59807187d77c58d87f683547835d0f2152fd74bd",
+      "object_sha256": "4470716c163a2b0b117cddeed1206fb8834e4cdfc206f64afc91aa4269bb4840"
+    }
+  },
+  "remaining_limits": [
+    "The plain BLAKE3 update body reaches 305 concrete inputs, but the inductive coupling of next.cv[0] in nested call events is not proved.",
+    "Guard-elided forms still lose .stack_len after an indexed store forgets part of the result area.",
+    "Constant aggregate result leaves have a separate loop-coupling limitation. The reduced loop fixtures use changing leaves.",
+    "Calls whose result address cannot be reconstructed within one basic block or from a loop-invariant frame base remain outside this form. RV64 memory-returned calls and union results remain unsupported."
+  ],
+  "baseline_regressions": "=== RUN   TestVerifyMemoryReturnedCallee\n=== RUN   TestVerifyMemoryReturnedCallee/loop_carries_call_result\n    memory_result_test.go:148: want proven, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/conditional_call\n    memory_result_test.go:148: want proven, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/invariant_parked_area\n    memory_result_test.go:148: want proven, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/forwarded_result_area\n    memory_result_test.go:148: want proven, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/overlapping_spill_widths\n    memory_result_test.go:148: want proven, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/wrong_returned_leaf\n=== RUN   TestVerifyMemoryReturnedCallee/different_return_area\n=== RUN   TestVerifyMemoryReturnedCallee/call_address_across_a_join_stays_outside\n    memory_result_test.go:156: want an unresolved call-area address, got witness-checked: asm unit repeat: agrees with its Oak body on 19 concrete inputs (evidence, not proof: no register is an affine image of the loop variable w.a of loop 1 at its header)\n=== RUN   TestVerifyMemoryReturnedCallee/loop_cannot_retain_stale_call_result\n--- FAIL: TestVerifyMemoryReturnedCallee (0.07s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/loop_carries_call_result (0.02s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/conditional_call (0.01s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/invariant_parked_area (0.01s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/forwarded_result_area (0.01s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/overlapping_spill_widths (0.01s)\n    --- PASS: TestVerifyMemoryReturnedCallee/wrong_returned_leaf (0.00s)\n    --- PASS: TestVerifyMemoryReturnedCallee/different_return_area (0.00s)\n    --- FAIL: TestVerifyMemoryReturnedCallee/call_address_across_a_join_stays_outside (0.01s)\n    --- PASS: TestVerifyMemoryReturnedCallee/loop_cannot_retain_stale_call_result (0.00s)\nFAIL\nFAIL\tgithub.com/SCKelemen/oak/asm\t0.952s\nFAIL\n",
+  "validation": {
+    "full_assembler": "ok  \tgithub.com/SCKelemen/oak/asm\t159.628s\n",
+    "integration_base": "6582f62922a44ff61063785dcdcd83a67df7f549",
+    "integrated_loop_call_frame_trap_guard_checks": "ok  \tgithub.com/SCKelemen/oak/asm\t7.236s\n",
+    "integrated_native_checks": "=== RUN   TestE2ENativeBlake3PackageAgreesWithReference\n--- PASS: TestE2ENativeBlake3PackageAgreesWithReference (245.14s)\n=== RUN   TestE2ENativeBlake3CompressionBoundaries\n--- PASS: TestE2ENativeBlake3CompressionBoundaries (85.23s)\n=== RUN   TestE2ENativeGuardedWrites\n--- PASS: TestE2ENativeGuardedWrites (5.54s)\n=== RUN   TestE2ENativeRecordElementFromCall\n--- PASS: TestE2ENativeRecordElementFromCall (1.25s)\n=== RUN   TestE2ENativeRV64UnderQEMU\n--- PASS: TestE2ENativeRV64UnderQEMU (7.87s)\n=== RUN   TestE2ENativeBodies\n--- PASS: TestE2ENativeBodies (4.04s)\n=== RUN   TestE2ENativeSpans\n--- PASS: TestE2ENativeSpans (2.89s)\n=== RUN   TestE2ENativeWideResult\n--- PASS: TestE2ENativeWideResult (1.42s)\n=== RUN   TestNativeBlake3SmallUnrollCandidateProven\n--- PASS: TestNativeBlake3SmallUnrollCandidateProven (9.71s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t364.789s\n",
+    "proof_cache": "OAK_VERIFY_CACHE=0; OAK_VERIFY_BUDGET empty (normal budget)"
+  }
+}
