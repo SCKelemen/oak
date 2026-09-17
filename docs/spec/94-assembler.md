@@ -1129,7 +1129,8 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment contains a RAM selector and the general-register bank. This runtime
+the generated fragment contains a RAM selector, the general-register bank,
+`PSTATE`, and the load/store syndrome register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1153,11 +1154,24 @@ failure, and XZR zero without any bank read. The source width/index domain is
 retained explicitly in the theorems. Its non-SP STR operand adapter composes
 these reads and matches the existing pure request, deriving the X0/XZR and
 X0/X2 pairs from the bank. It is not the original instruction body and makes
-no `Mem` call: SP, PostDecode, syndrome updates, translation, faults, register
+no `Mem` call: SP, PostDecode, the instruction's syndrome call, translation, faults, register
 provenance and architectural events remain open. A checked wrapping-address
 example records the 64-bit arithmetic; it supplies no physical-address
 translation by truncation. Upstream/local source-mutation gates pin the exact
 bank, getter, and overload, and the existing Sail CI builds the proof (§126).
+
+`SyndromeBridge.lean` retains and proves the original syndrome maker/setter,
+with the complete Arm `ProcState` record and actual `PSTATE`/`__LSISyndrome`
+register entries. It proves the six encoded fields for supported sizes and
+registers, EL0/EL1's exact syndrome-only update, EL2/EL3's unchanged full state,
+and missing-PSTATE failure. Original assertions and the undefined initializer
+remain; the proof uses the generated trivial choice source. A dependency-only
+adapter composes the register reads and setter, including the EL2 no-op; it is
+not generated STR execution and makes no `Mem` call. Exception/ESR construction,
+PostDecode, SP/MTE handling, translation/faults, architectural events and
+ordering remain open. Required upstream/local source-mutation gates and
+standard-axiom checks cover the new module. Sail regeneration uses a relative
+temporary input filename to keep assertion locations reproducible (§126).
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model

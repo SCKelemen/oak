@@ -162,6 +162,11 @@ jobs:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailGeneralRegister(Bank|Read)ExactAndMutated$' -count=1 -v
 
+      - name: Check original Arm syndrome declarations and mutation rejection
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailSyndrome(ProcState|Registers|Make|Set)ExactAndMutated$' -count=1 -v
+
   lem-ram-traces:
     name: Arm Lem RAM request traces
     runs-on: ubuntu-24.04
