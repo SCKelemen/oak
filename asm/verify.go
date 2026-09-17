@@ -769,10 +769,15 @@ func flagsCondition(code string, flags *flagsFact) *term {
 // its total evaluation yields. Folding is what lets a counted loop decide
 // its own exit (the counter's comparison becomes a constant) on both sides.
 func cmpTerm(code string, left, right *term) *term {
-	t := &term{kind: termCmp, width: left.width, op: code, left: left, right: right}
 	if left.kind == termConst && right.kind == termConst {
-		return constTerm(t.eval(nil), left.width)
+		// The comparison happens at the operands' width (evalUncached).
+		m := mask(left.width)
+		if conditionHolds(code, left.value&m, right.value&m, left.width) {
+			return constTerm(1, left.width)
+		}
+		return constTerm(0, left.width)
 	}
+	t := &term{kind: termCmp, width: left.width, op: code, left: left, right: right}
 	if right.kind == termConst && right.value == 0 && (code == "eq" || code == "ne") {
 		if distributed, isReduction := zeroTestOfReduction(code, left, left.width); isReduction {
 			return distributed
@@ -893,10 +898,11 @@ func (t *term) declaredWidth() int {
 }
 
 func binaryTerm(op string, left, right *term) *term {
-	t := &term{kind: termBinary, width: left.width, op: op, left: left, right: right}
 	if left.kind == termConst && right.kind == termConst {
-		return constTerm(t.eval(nil), left.width)
+		m := mask(left.width)
+		return constTerm(evalBinary(op, left.value&m, right.value&m, left.width), left.width)
 	}
+	t := &term{kind: termBinary, width: left.width, op: op, left: left, right: right}
 	// Additive identities: x + 0, x - 0, 0 + x are x (at the same width).
 	if right.kind == termConst && right.value == 0 && (op == "add" || op == "sub") && left.width == t.width {
 		return left
@@ -1062,7 +1068,15 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	// its width and modulus); the operation wraps to this term's width.
 	l := memo.eval(t.left, env) & m
 	r := memo.eval(t.right, env) & m
-	switch t.op {
+	return evalBinary(t.op, l, r, t.width)
+}
+
+// evalBinary is a binary operation on operand values already masked to
+// the width, wrapping to the width (the constructors' constant folds
+// call it on the operands' constants without building a node).
+func evalBinary(op string, l, r uint64, width int) uint64 {
+	m := mask(width)
+	switch op {
 	case "add":
 		return (l + r) & m
 	case "sub":
@@ -1074,18 +1088,18 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	case "xor":
 		return (l ^ r) & m
 	case "shl":
-		return (l << (r % uint64(t.width))) & m
+		return (l << (r % uint64(width))) & m
 	case "shr":
-		return (l >> (r % uint64(t.width))) & m
+		return (l >> (r % uint64(width))) & m
 	case "sar":
-		shift := uint(64 - t.width)
-		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
+		shift := uint(64 - width)
+		return uint64(int64(l<<shift)>>shift>>(r%uint64(width))) & m
 	case "mul":
 		return (l * r) & m
 	case "rev", "rev16", "rev32", "rbit", "clz", "cls", "cnt":
-		return evalUnary(t.op, l, t.width) & m
+		return evalUnary(op, l, width) & m
 	}
-	if value, ok := evalBinaryExtra(t.op, l, r, t.width); ok {
+	if value, ok := evalBinaryExtra(op, l, r, width); ok {
 		return value & m
 	}
 	return 0
