@@ -46,9 +46,18 @@ import (
 // cleanupItems applies the rules to a function's items and reports how
 // many instructions it removed.
 func cleanupItems(items []asm.Item) ([]asm.Item, int) {
+	return cleanupItemsWith(items, false)
+}
+
+// cleanupItemsWith is cleanupItems with the zero-store rule (rule 8)
+// enabled: a store of the zero register is the scheduled machine's final
+// spelling, so the rule runs in the post-schedule cleanup only — the
+// register reallocation that follows the early cleanup reads a store's
+// source as an allocatable value and spilled a whole body around one.
+func cleanupItemsWith(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
 	removed := 0
 	for {
-		next, n := cleanupOnce(items)
+		next, n := cleanupOnce(items, zeroStores)
 		if n == 0 {
 			return next, removed
 		}
@@ -276,7 +285,7 @@ func liveAfter(items []asm.Item) []uint32 {
 }
 
 // cleanupOnce applies the rules once, left to right.
-func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
+func cleanupOnce(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
 	after := liveAfter(items)
 	dead := func(i int, reg int) bool { return after[i]&(1<<uint(reg)) == 0 }
 	out := make([]asm.Item, 0, len(items))
@@ -381,7 +390,7 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 			}
 			// Rule 8: a zero moved into a register only to be stored is the
 			// zero register stored (`mov x9, xzr; str x9, [x14]`).
-			if d, s, isMove := isRegisterOrZeroMove(ins); isMove && s.ZeroRegister() && strings.HasPrefix(next.Mnemonic, "str") && len(next.Operands) == 2 && dead(i+1, d.Num) {
+			if d, s, isMove := isRegisterOrZeroMove(ins); isMove && zeroStores && s.ZeroRegister() && strings.HasPrefix(next.Mnemonic, "str") && len(next.Operands) == 2 && dead(i+1, d.Num) {
 				if src, isReg := next.Operands[0].(asm.Register); isReg && src.Num == d.Num && src.Class == d.Class {
 					if mem, isMem := next.Operands[1].(asm.Memory); isMem && !memoryMentions(mem, d.Num) {
 						renamed := next

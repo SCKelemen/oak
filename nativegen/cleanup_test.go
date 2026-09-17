@@ -7,6 +7,18 @@ import (
 	"github.com/SCKelemen/oak/asm"
 )
 
+func postScheduleCleanupText(t *testing.T, body string) (string, int) {
+	t.Helper()
+	unit, errs := asm.ParseUnit("c.oakasm", "f: (a: u32, b: u32) -> u32 = {\n  bind w0 = a\n  bind w1 = b\n  clobber w9, w10, w19\n"+body+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := *unit.Functions[0]
+	fn.Arch = ""
+	n := postScheduleCleanup(&fn)
+	return Describe(&fn), n
+}
+
 func cleanupText(t *testing.T, body string) (string, int) {
 	t.Helper()
 	unit, errs := asm.ParseUnit("c.oakasm", "f: (a: u32, b: u32) -> u32 = {\n  bind w0 = a\n  bind w1 = b\n  clobber w9, w10, w19\n"+body+"\n}\n")
@@ -193,10 +205,14 @@ func TestCleanupLabelRunsBitTestsAndZeroStores(t *testing.T) {
 		t.Fatalf("a target block that reads the flags refuses the fusion:\n%s", out)
 	}
 	out, n = cleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  ret")
+	if n != 0 {
+		t.Fatalf("the early cleanup leaves zero stores to the post-schedule pass (%d removed):\n%s", n, out)
+	}
+	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  ret")
 	if n != 1 || !strings.Contains(out, "str xzr, [x14]") {
 		t.Fatalf("a zero moved only to be stored is the zero register stored (%d removed):\n%s", n, out)
 	}
-	out, n = cleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  add x0, x9, #1\n  ret")
+	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  add x0, x9, #1\n  ret")
 	if strings.Contains(out, "str xzr") {
 		t.Fatalf("a zero read after the store keeps its register:\n%s", out)
 	}
