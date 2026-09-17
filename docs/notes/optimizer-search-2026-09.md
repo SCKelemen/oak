@@ -258,6 +258,17 @@ call's clobber, an elided callee-saved restore — before the liveness and
 the restore rule were added; the checker would have refused the bodies,
 but the pass should not propose them.
 
+The reaching-definition analysis stores immutable, sorted sets of definition
+sites (2026-09-17). Block states share those sets; a definition replaces a
+register's set with a preallocated singleton, and joins reuse equal or empty
+sets while building other unions in new storage. A union never appends into
+either input's storage. This avoids deep-copying per-register maps and
+allocating a map at every assignment, which was costly when `Simplify` rebuilt
+webs after each propagated copy.
+Entry values, unreachable roots, loop back-edges, tied operands, call clobbers,
+web ordering and the cleanup fixpoint are unchanged. Measurements and emitted
+object comparisons are recorded in `benchmarks/native/README.md`.
+
 Second increment: machine-level loop-invariant code motion on the loop
 tree (`machine.HoistInvariants`). Innermost loop first, an instruction
 moves to the loop's unique preheader when it is pure and reads no
