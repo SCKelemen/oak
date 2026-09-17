@@ -3259,6 +3259,70 @@ type coupling struct {
 	ext   string // "" (same width), "zext" or "sext": a 64-bit register carrying a widened 32-bit variable
 }
 
+// preferredSlot names, for a slot that is a run of an array's leaves
+// (`out.at[62..63]`, or `out.at[62]`), the machine frame slot the leaves
+// live in when the pairing is the identity: the result area's slot at the
+// leaf's offset when the array is the record returned through memory
+// (resultArea), else the candidate frame slot whose rank among the
+// candidates' addresses is the leaf's index — the slots of one frame array
+// are contiguous, and the array's leaves are the whole candidate set when
+// they all start at one value. Empty when the slot is no such run or no
+// candidate is a frame slot; a preference only, never a restriction.
+func preferredSlot(s loopSlot, candidates []coupling, resultArea []compositeLeaf) string {
+	open := strings.LastIndexByte(s.name, '[')
+	if open < 0 || !strings.HasSuffix(s.name, "]") {
+		return ""
+	}
+	root, index := s.name[:open], s.name[open+1:len(s.name)-1]
+	if dots := strings.Index(index, ".."); dots >= 0 {
+		index = index[:dots]
+	}
+	start, err := strconv.Atoi(index)
+	if err != nil {
+		return ""
+	}
+	// The candidate frame slots, each once, by address.
+	type frameCandidate struct {
+		addr int64
+		name string
+	}
+	var frames []frameCandidate
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		var addr int64
+		var size int
+		if n, _ := fmt.Sscanf(c.reg, "s%d:%d", &addr, &size); n == 2 && !seen[c.reg] {
+			seen[c.reg] = true
+			frames = append(frames, frameCandidate{addr: addr, name: c.reg})
+		}
+	}
+	if len(frames) == 0 {
+		return ""
+	}
+	// The record returned through memory: the leaf's offset is known.
+	if dot := strings.IndexByte(root, '.'); dot >= 0 && len(resultArea) > 0 {
+		leafName := fmt.Sprintf("%s[%d]", root[dot+1:], start)
+		for _, leaf := range resultArea {
+			if leaf.name == leafName || strings.HasSuffix(leaf.name, "."+leafName) {
+				for _, f := range frames {
+					if f.addr == resultAreaBase+leaf.offset {
+						return f.name
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(frames, func(i, j int) bool { return frames[i].addr < frames[j].addr })
+	per := 1
+	if s.lane > 0 && len(s.locals) > 0 {
+		per = len(s.locals)
+	}
+	if k := start / per; k < len(frames) {
+		return frames[k].name
+	}
+	return ""
+}
+
 // show spells the coupling for the verdict (built only for the couplings
 // chosen: a candidate's offset term may be large).
 func (c coupling) show() string {
@@ -3933,8 +3997,16 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				oakRead = true
 			}
 		}
+		// An array's leaves all start at zero (`out: Bits` before the loop
+		// that fills it), so every slot of the array is a candidate for
+		// every leaf and the search would permute them: the slot at the
+		// leaf's own offset comes first (preferredSlot).
+		preferred := preferredSlot(s, out, exec.resultArea)
 		rank := func(c coupling) int {
 			r := 0
+			if preferred != "" && c.reg == preferred && c.a == 1 && c.b.kind == termConst && c.b.value == 0 {
+				r -= 8
+			}
 			if exitReadAsm[asmEv.freshName(c.reg)] != oakRead {
 				r += 4
 			}

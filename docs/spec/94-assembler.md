@@ -7034,6 +7034,27 @@ declared effects (`Host.Write`) outside Oak memory taken on trust; that
 is the next design, not an increment. `ts_sum` and its kin passed the
 pair load and stop at "a loop whose shape differs between two paths".
 
+**The coupling search takes an array's slots in order (2026-09-17).**
+The largest evidence bucket (67 bodies: "the loop proof's diagram budget
+ran out in the coupling search", "the coupling search exceeded its
+budget") has the `Bits` family at its core: `shift_const`'s loop fills
+`out: Bits`, whose sixty-four leaves all start at zero, so every slot of
+the result area was a candidate for every leaf pair and the search
+permuted thirty-two slots until the budget ended. A slot that is a run
+of an array's leaves now prefers the frame slot at the leaf's own offset
+(`preferredSlot`: the result area's slot at the leaf's offset, else the
+candidate whose rank among the candidates' addresses is the leaf's
+index), and the search takes the identity pairing at depth one. What
+stops `shift_const` after that is the obligation itself: one iteration
+preserving `out.at[0..1]` compares two sixty-four-way selects over the
+record argument (`a.at[i - k]`, `a.at[i + k]`) under `left`, which every
+variable order exceeds at the implication's allowance and the congruence
+rule cannot close (the machine's eight-byte slot pairs pack the halves
+differently from the Oak leaves). Coupling such arrays per element, or
+a larger allowance for a select-heavy obligation, is the next step for
+the family; `fill_chunk`'s nested loops sharing `n` are a different,
+genuine search problem.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
