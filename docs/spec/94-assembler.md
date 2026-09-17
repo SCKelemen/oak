@@ -7269,6 +7269,34 @@ to a cell the loop does not carry is still refused.
 `TestE2ENativeCalleeCellInLoopProven` proves a loop calling a function
 that bumps two package counters.
 
+**Next: a large owned array is a loop memory (design).** What now stops
+the write family (`write_byte`, `txt_open`, `write_u32`: "the coupling
+search exceeded its budget") and the `Bits` family alike is an owned
+array filled in a loop — `write_flush`'s `chunk: [4096]u8`, `out: Bits`'s
+sixty-four words — carried leaf by leaf: the Oak side makes every
+element a loop-carried local (`loopEvent`, `leafRefs`), the machine side
+every frame slot the body's probe touches (`hasIndexedFrameStore`), and
+a coupling over thousands of slots ends in the budget. The design: an
+owned array of integer scalars past `largeArrayElements` (64) is a span
+memory on both sides for the whole body, named by the local. The
+backend records its frame object with the local's name and element
+size (`FrameObject{Offset, Size, Name, Elem}`, carried on
+`asm.Function.FrameObjects`); the executor routes a frame access whose
+sp-relative address falls in the object — `addr + state.disp` against
+the object's offset — to the span model (a load is `element`, a store a
+`spanWrite` at the element index, the prologue's unrolled eight-byte
+zero stores split into element writes of zero), and lists the span among
+the loop's marked memories; the lowering declares the local as a span
+with `tableLens` its length and no aggregate local, its entry element
+zero on both sides (Oak zero-fills, the machine's fill is straight-line
+stores), its stores through `spanAssignment`, and `view(&chunk)` binding
+as the span itself; `decideSpans` skips a local span's final memory,
+which no caller observes — its reads after the loop are selects over the
+loop's unknown memory as a span parameter's are, on both sides. The
+threshold keeps small arrays on the leaf model that proves them today.
+`fill_chunk`'s nested loops sharing one counter are a search problem
+apart from this.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
