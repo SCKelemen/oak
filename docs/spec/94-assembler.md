@@ -7253,6 +7253,22 @@ from trusted to evidence at the extern, and stop now at the loop budgets
 behind `write_flush`'s chunking loops ("more data-dependent loops than
 the verifier's budget", "a call writing package global out_len in a loop").
 
+**A call in a loop body may write the cells the loop carries
+(2026-09-17).** Seven bodies of the write family call `write_flush`,
+which resets `out_len`, from their loops, and the loop summary refused
+"a call writing package global out_len in a loop": the machine side
+listed a loop's carried cells by scanning the body for stores through a
+cell's address (`cellsStoredIn`), the Oak side by the body's own
+assignments (`assignedLocals`), and a callee's stores were invisible to
+both. Each side now walks the callees a body calls (transitively, each
+once) for the cells their Oak bodies assign — `cellsWrittenBy` from the
+`bl`'s resolved callee on the machine side, `cellsAssignedByCalls` over
+`lo.functions` on the Oak side — and carries them; the summarized call's
+stores to a carried cell are the iteration's stores to it, and a store
+to a cell the loop does not carry is still refused.
+`TestE2ENativeCalleeCellInLoopProven` proves a loop calling a function
+that bumps two package counters.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

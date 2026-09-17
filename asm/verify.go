@@ -2108,6 +2108,11 @@ type pathExecutor struct {
 	// reads are the body's reads of span memory through the write log, by
 	// node (spanRead), for the aligned fast path's alignReads.
 	reads map[*term]spanRead
+	// carriedCells are the package cells the loop being summarized
+	// carries (summarizeLoop), which a call in its body may write;
+	// calleeCells memoizes the cells each callee's Oak body assigns.
+	carriedCells map[string]bool
+	calleeCells  map[string][]string
 	// deferMemory asks decideSpans to leave the memory decision of a span
 	// whose logs differ in length to deferredSpans (verifyChunk runs the
 	// body again merging at the joins first, whose logs align).

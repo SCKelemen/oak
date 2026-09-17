@@ -1269,6 +1269,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// symbol at the cell's width, its header value the cell as this path
 	// holds it, paired with the Oak side's cell local like a register.
 	carriedCells := map[string]bool{}
+	x.carriedCells = carriedCells // the calls in the body may write these (summarizeCallInLoop)
 	for _, name := range x.cellsStoredIn(shape) {
 		global := x.globals[name]
 		varName := "global:" + name
@@ -1878,6 +1879,18 @@ func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
 		if !isInstr || len(instr.Operands) == 0 {
 			continue
 		}
+		if (instr.Mnemonic == "bl" || instr.Mnemonic == "call") && x.fn != nil {
+			// A call: the cells the callee's Oak body assigns are stored
+			// in this body as far as the loop is concerned.
+			if sym, isSym := instr.Operands[0].(Symbol); isSym {
+				if callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees); resolved {
+					for _, name := range x.cellsWrittenBy(callee) {
+						stored[name] = true
+					}
+				}
+			}
+			continue
+		}
 		_, isRV64Store := rv64Stores[instr.Mnemonic]
 		if (isStoreMnemonic(instr.Mnemonic) || isRV64Store) && len(instr.Operands) == 2 {
 			if mem, isMem := instr.Operands[1].(Memory); isMem && mem.Index == nil && mem.Offset == 0 {
@@ -1921,12 +1934,66 @@ func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState)
 		return reason, false
 	}
 	// A callee's stores through the caller's spans join the iteration's
-	// write log (the loop's memory); a callee writing package cells is
-	// refused, since the loop summary carries no cells.
-	if name, differs := differingGlobalState(x.globals, cellsBefore, st.globals); differs {
-		return fmt.Sprintf("a call writing package global %s in a loop", name), false
+	// write log (the loop's memory), and its stores to the package cells
+	// the loop carries (cellsStoredIn lists the cells a callee's Oak body
+	// assigns, callee by callee) are the iteration's stores to them; a
+	// store to a cell the loop does not carry is refused.
+	for name, after := range st.globals {
+		before, had := cellsBefore[name]
+		if had && (before == after || equalTerms(before, after)) {
+			continue
+		}
+		if !had {
+			if entry, held := globalStateValue(x.globals, cellsBefore, name); held && (entry == after || equalTerms(entry, after)) {
+				continue
+			}
+		}
+		if !x.carriedCells[name] {
+			return fmt.Sprintf("a call writing package global %s in a loop", name), false
+		}
 	}
 	return "", true
+}
+
+// cellsWrittenBy names the package cells a callee's Oak body assigns,
+// its own callees' included (transitively, each function once): the
+// cells a call in a loop body may write, which the loop then carries.
+func (x *pathExecutor) cellsWrittenBy(callee *ast.FunctionStatement) []string {
+	if x.calleeCells == nil {
+		x.calleeCells = map[string][]string{}
+	}
+	if cells, known := x.calleeCells[callee.Name.Value]; known {
+		return cells
+	}
+	x.calleeCells[callee.Name.Value] = nil // a recursive chain contributes nothing more
+	written := map[string]bool{}
+	if callee.Body != nil {
+		walkASTNodes(callee.Body, func(n ast.Node) {
+			switch e := n.(type) {
+			case *ast.AssignmentStatement:
+				if e.Name != nil {
+					if global, declared := x.globals[e.Name.Value]; declared && !global.Aggregate {
+						written[e.Name.Value] = true
+					}
+				}
+			case *ast.InvocationExpression:
+				if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+					if inner, known := x.fn.Callees[ident.Value]; known && inner != nil && inner.ExternSymbol == "" {
+						for _, name := range x.cellsWrittenBy(inner) {
+							written[name] = true
+						}
+					}
+				}
+			}
+		})
+	}
+	out := make([]string, 0, len(written))
+	for name := range written {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	x.calleeCells[callee.Name.Value] = out
+	return out
 }
 
 // headerPathBudget bounds the paths a loop header's short-circuit
@@ -2834,6 +2901,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// leaf: each lane or element is its own variable (`error[3]`).
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
+	// A call in the body to a function that assigns package cells: the
+	// cells are the caller's locals, so the loop carries them as it
+	// carries a cell the body assigns itself (the machine side lists them
+	// from the callee's body too, cellsStoredIn).
+	lo.cellsAssignedByCalls(loop.Body, assigned, map[string]bool{})
 	declared := map[string]bool{}
 	declaredLocals(loop.Body, declared)
 	// The Oak path condition at the loop (an arm the loop sits in): a call
@@ -3056,6 +3128,38 @@ func leafRefs(v *oakValue, prefix string, into map[string]*oakValue) {
 	for k, elem := range v.elems {
 		leafRefs(elem, fmt.Sprintf("%s[%d]", prefix, k), into)
 	}
+}
+
+// cellsAssignedByCalls adds to into the package cells assigned by the
+// bodies of the program functions the block calls, transitively (each
+// function once): the cells a call in a loop body may write.
+func (lo *oakLowering) cellsAssignedByCalls(node ast.Node, into map[string]bool, seen map[string]bool) {
+	if node == nil {
+		return
+	}
+	walkASTNodes(node, func(n ast.Node) {
+		call, isCall := n.(*ast.InvocationExpression)
+		if !isCall {
+			return
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || seen[ident.Value] {
+			return
+		}
+		callee, known := lo.functions[ident.Value]
+		if !known || callee == nil || callee.Body == nil || callee.ExternSymbol != "" {
+			return
+		}
+		seen[ident.Value] = true
+		walkASTNodes(callee.Body, func(inner ast.Node) {
+			if assign, isAssign := inner.(*ast.AssignmentStatement); isAssign && assign.Name != nil {
+				if _, isCell := lo.cells[assign.Name.Value]; isCell {
+					into[assign.Name.Value] = true
+				}
+			}
+		})
+		lo.cellsAssignedByCalls(callee.Body, into, seen)
+	})
 }
 
 func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
