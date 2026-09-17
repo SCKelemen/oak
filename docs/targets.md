@@ -27,7 +27,7 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 
 | Surface | Current state | What remains |
 | --- | --- | --- |
-| Browser playground | Local prototype hosts the Go compiler and executes `core/wasm32` output in separate workers | Browser automation/CI expansion, incremental editing, capability contracts, proof checker, deployment/security review |
+| Browser playground | Local prototype: bounded reusable Go compiler sessions, source-linked diagnostics and cold/warm timings; disposable `core/wasm32` execution workers; local Chrome smoke and lifecycle unit tests | Browser automation/CI expansion, incremental editing, memory/payload measurements, capability contracts, proof checker, deployment/security review |
 | WASI | Planned; not a registered supported target | Versioned interface/ABI choice, bindings, capabilities, runtime tests, host-contract/refinement work |
 | Component Model / WIT | Planned | Type/resource ownership mapping, adapters, canonical ABI, component artifact and host verification |
 | Metal kernels | Separate constrained kernel output, not an `os/arch` target | Kernel-specific evidence must not be presented as whole-program or GPU-driver verification |

@@ -19,13 +19,15 @@
 
 main: (): u32 = sum(u32(100))</textarea>
     <p id="scope">32-bit and 64-bit integers, Bool, calls and loops. No imports, memory, floats, division or shifts yet. Run calls a zero-argument <code>main</code>.</p>
-    <div class="controls"><button id="compile">Compile only</button><button id="run">Compile &amp; run</button><button id="stop" disabled>Stop</button><button id="download" disabled>Download .wasm</button></div>
+    <div class="controls"><button id="compile" disabled>Compile only</button><button id="run" disabled>Compile &amp; run</button><button id="stop" disabled>Stop</button><button id="download" disabled>Download .wasm</button></div>
   </section>
-  <section><h2>Diagnostics and result</h2><pre id="output" role="status" aria-live="polite">Ready. Compilation and execution run in separate disposable workers.</pre>
+  <section><h2>Diagnostics and result</h2><pre id="output" role="status" aria-live="polite">Ready. The compiler uses a bounded reusable worker; each execution gets a disposable worker.</pre>
+    <ul id="diagnostics" aria-label="Source diagnostics"></ul>
     <h2>Verification boundary</h2><p id="verification">Source not checked. Module not validated. Translation not formally verified.</p>
     <p>Engine validation checks Wasm structure and types, not equivalence to the Oak source. The browser engine and the Go-built compiler remain trusted infrastructure.</p>
     <details><summary>Artifact information</summary><pre id="artifact">No artifact yet.</pre></details>
+    <details><summary>Compiler request timing (milliseconds)</summary><pre id="timing">No current request timing.</pre><p>Cold requests include worker startup. Warm requests reuse only the Go runtime, not compilation state. These are local observations, not a performance guarantee.</p></details>
   </section>
 </main>
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
 </html>

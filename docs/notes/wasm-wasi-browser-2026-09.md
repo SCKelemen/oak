@@ -137,6 +137,22 @@ separate disposable worker runs the final module with an empty import object.
 The page receives diagnostics, typed exports, hashes and bytes; user text is
 rendered with `textContent`, never HTML or JavaScript evaluation.
 
+The loaded Go runtime is reusable, but `playground.Compile` constructs a fresh
+compiler for each source. The worker protocol binds each reply to a monotonic
+request ID and the current worker instance. One request may be active at a time;
+late replies from cancelled workers/requests cannot complete a newer request.
+After 32 completed requests or 60 seconds idle, the worker is recycled. Source
+edits cancel active compilation by termination, retain only an idle runtime,
+and clear old diagnostics/artifacts. Stop discards both workers. Ordinary
+source errors retain the compiler session; protocol/runtime failures discard it.
+
+Structured diagnostics project the existing compiler model into a bounded
+browser DTO (64 diagnostics, 8 KiB messages, code/severity/source and optional
+zero-based UTF-16 range). The page checks the source hash on refusals as well
+as successful emission, validates ranges and offers text-only source navigation.
+Unlocated backend/profile failures do not acquire invented source positions.
+This is request-level reuse, not incremental compilation or persistent caching.
+
 “Compile only” runs no guest code and needs no `main`; it returns the same
 admitted module and pipeline report for inspection/download. Before publishing
 an artifact, the page hashes the actual source/module bytes and compares them
@@ -167,7 +183,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | B0 | Local compiler/editor/runner prototype; cancellation; explicit unverified status | Initial implementation |
 | W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; LEB model theorems and finite Go/Lean pins | Partial; universal production decoder/validator refinement open |
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
-| B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Planned |
+| B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
 | W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Planned |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
@@ -186,3 +202,18 @@ infinite loop after the execution deadline, and clears stale artifacts after
 invalid source. Dedicated CI requires engine tests and browser-compiler builds.
 The first Go compiler payload is approximately 39 MiB uncompressed; no cold
 download/startup baseline or Wasm runtime performance advantage is claimed.
+
+The session increment reports startup, compiler work and request round trip
+separately for cold and warm requests. The Chrome harness records one cold and
+three warm calls, requires one compiler-worker instance, and checks recovery
+after a source error. It imposes no noisy timing threshold and excludes guest
+runtime/hash/engine-validation time from compilation metrics. Such measurements
+do not establish browser memory bounds, network-transfer performance or faster
+generated Wasm. Production payload and memory work remain open.
+
+Session-increment validation (2026-09-17): nine deterministic JavaScript tests
+cover lifecycle, production worker protocol and host-timer receiver safety;
+the Go diagnostic/isolation tests and browser compiler build pass. The first
+expanded Chrome run stalled at startup. The timer-receiver fix is unit-tested,
+but the post-fix Chrome rerun was blocked by local sandbox policy. No successful
+post-fix browser run or measured cold/warm speedup is claimed here.
