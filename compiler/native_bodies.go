@@ -679,6 +679,14 @@ func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constant
 	return globals, aggregates, decls
 }
 
+// ConstantGlobals is the program's folded scalar constants, by name: the
+// package-level declarations the native backend reads as immediate values
+// rather than cells. The prover uses the same set so a theorem naming a
+// constant decides (docs/spec/125-verification.md).
+func ConstantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {
+	return constantGlobals(root, tc)
+}
+
 func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {
 	out := map[string]asm.Constant{}
 	if root == nil || tc == nil {
