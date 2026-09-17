@@ -4514,14 +4514,32 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			if preferred != "" && c.reg == preferred && c.a == 1 && c.b.kind == termConst && c.b.value == 0 {
 				r -= 8
 			}
+			equality := c.a == 1 && c.b.kind == termConst && c.b.value == 0
+			if equality {
+				// An equality whose header is not a constant is the pairing
+				// telling itself (a slot holding the hash's state words
+				// against the words); zero headers tell nothing — every
+				// accumulator starts at zero — so among those the exit-read
+				// parity and the condition decide below.
+				if h := asmEv.header[c.reg]; h != nil && h.kind != termConst {
+					r -= 6
+				}
+			}
 			if exitReadAsm[asmEv.freshName(c.reg)] != oakRead {
 				r += 4
 			}
 			if !inCond[asmEv.freshName(c.reg)] {
 				r += 2
 			}
-			if c.a != 1 || c.b.kind != termConst || c.b.value != 0 {
-				r++
+			switch {
+			case equality:
+			case c.b.kind == termConst:
+				r++ // an image at a constant offset (a counter's address temporary)
+			default:
+				// An image at a symbolic offset — the headers' difference as
+				// a term — is what every wrong pairing looks like; behind any
+				// equality and any in-condition register.
+				r += 3
 			}
 			return r
 		}

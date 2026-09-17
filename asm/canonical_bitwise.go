@@ -14,6 +14,27 @@ func canonicalBitwise(t, left, right *term) *term {
 	if t.op == "and" && right.kind == termConst && left.kind == termBinary && left.op == "and" && left.right != nil && left.right.width == t.width && left.right.kind == termConst && left.right.value == right.value {
 		return left // repeated masks at one width are idempotent
 	}
+	if t.op == "and" && t.width > 0 && t.width <= 64 && right.kind == termConst && isLowOnes(right.value) && significantBits(left) <= lowOnesCount(right.value) {
+		// A low-ones mask covering every significant bit of its operand is
+		// the identity: `h and 0xffffffff` on a 32-bit word read at 64 bits
+		// (the machine's spelling of a word it widened) is the word, as the
+		// Oak side spells it.
+		return left
+	}
+	if t.op == "and" && t.width > 0 && t.width <= 64 && right.kind == termConst && isLowOnes(right.value) && left.kind == termBinary && left.op == "or" && left.left != nil && left.right != nil {
+		// ((lo | (hi << k)) & mask(k)) = lo, when lo < 2^k: the low word of
+		// a packed pair, extracted where the pack was spelled.
+		k := lowOnesCount(right.value)
+		for _, pair := range [][2]*term{{left.left, left.right}, {left.right, left.left}} {
+			lo, shifted := pair[0], pair[1]
+			if lo == nil || shifted == nil || lo.width != t.width || shifted.width != t.width || shifted.kind != termBinary || shifted.op != "shl" || shifted.right == nil || shifted.right.kind != termConst || shifted.right.value != uint64(k) {
+				continue
+			}
+			if significantBits(lo) <= k {
+				return lo
+			}
+		}
+	}
 	if (t.op == "shl" || t.op == "shr" || t.op == "sar") && t.width > 0 && t.width <= 64 && right.kind == termConst && right.value%uint64(t.width) == 0 {
 		return left // shift counts wrap modulo the operation's width
 	}
@@ -47,4 +68,17 @@ func canonicalBitwise(t, left, right *term) *term {
 		return binaryTerm("and", shifted.left, constTerm(mask(t.width-k), t.width))
 	}
 	return nil
+}
+
+// isLowOnes reports a mask of k low one bits (2^k - 1), k ≥ 1.
+func isLowOnes(v uint64) bool { return v != 0 && v&(v+1) == 0 }
+
+// lowOnesCount is k for a mask of k low one bits.
+func lowOnesCount(v uint64) int {
+	k := 0
+	for v != 0 {
+		v >>= 1
+		k++
+	}
+	return k
 }
