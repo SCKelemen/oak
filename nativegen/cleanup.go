@@ -1,6 +1,7 @@
 package nativegen
 
 import (
+	"math/bits"
 	"strings"
 
 	"github.com/SCKelemen/oak/asm"
@@ -311,11 +312,58 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 			removed++
 			continue
 		}
-		// Rule 3: a branch to the label that follows it.
-		if ins.Mnemonic == "b" && i+1 < len(items) {
-			if l, isLabel := items[i+1].(asm.Label); isLabel && branchTarget(ins) == l.Name {
+		// Rule 3: a branch to a label that follows it, through a run of
+		// labels with no instruction between (`b endif` before `else:`
+		// `endif:` — an arm's empty alternative).
+		if ins.Mnemonic == "b" {
+			target := branchTarget(ins)
+			fallsThrough := false
+			for j := i + 1; j < len(items); j++ {
+				l, isLabel := items[j].(asm.Label)
+				if !isLabel {
+					break
+				}
+				if l.Name == target {
+					fallsThrough = true
+					break
+				}
+			}
+			if fallsThrough {
 				removed++
 				continue
+			}
+		}
+		// Rule 9: a Bool materialized only to be selected on. `cset wT,
+		// cond; …; cmp wT, #0; csel wD, wA, wB, ne` reads the flags the
+		// cset read: the select takes cond (`eq` after the compare: its
+		// inverse). The instructions between must not set flags or touch
+		// wT, and wT must be dead after the select.
+		if fused, span, ok := fuseFlagSelect(items, i); ok && dead(i+span-1, fusedRegister(ins)) {
+			for j := i + 1; j < i+span-1; j++ {
+				out = append(out, items[j])
+			}
+			out = append(out, fused)
+			removed += 2
+			i += span
+			continue
+		}
+		if i+2 < len(items) {
+			second, secondOK := items[i+1].(asm.Instruction)
+			third, thirdOK := items[i+2].(asm.Instruction)
+			if secondOK && thirdOK {
+				// Rule 7: a bit tested by mask, compare, and branch —
+				// `and xT, xS, #(1<<k); cmp xT, #0; b.ne L` — is `tbnz xS,
+				// #k, L` (`b.eq`: `tbz`) when xT is dead after the branch,
+				// and the branch's target does not read the flags the
+				// compare set (a block starting with a conditional branch
+				// reuses them). The walkers test a descriptor's valid bit
+				// this way at every level.
+				if fused, ok := fuseBitTest(ins, second, third); ok && dead(i+2, fusedRegister(ins)) && !blockReadsFlags(items, branchTarget(third)) {
+					out = append(out, fused)
+					removed += 2
+					i += 2
+					continue
+				}
 			}
 		}
 		if hasNext {
@@ -330,6 +378,24 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 				removed++
 				i++
 				continue
+			}
+			// Rule 8: a zero moved into a register only to be stored is the
+			// zero register stored (`mov x9, xzr; str x9, [x14]`).
+			if d, s, isMove := isRegisterOrZeroMove(ins); isMove && s.ZeroRegister() && strings.HasPrefix(next.Mnemonic, "str") && len(next.Operands) == 2 && dead(i+1, d.Num) {
+				if src, isReg := next.Operands[0].(asm.Register); isReg && src.Num == d.Num && src.Class == d.Class {
+					if mem, isMem := next.Operands[1].(asm.Memory); isMem && !memoryMentions(mem, d.Num) {
+						renamed := next
+						zero := wr(31)
+						if d.Class == asm.ClassX {
+							zero = xr(31)
+						}
+						renamed.Operands = []asm.Operand{zero, mem}
+						out = append(out, renamed)
+						removed++
+						i++
+						continue
+					}
+				}
 			}
 			// Rule 1: a copy read once by the next instruction.
 			if d, s, isMove := isRegisterMove(ins); isMove && readsGeneral(next, d.Num) && !isCallOrReturn(next) && !writesBackTo(next, d.Num) &&
@@ -359,6 +425,140 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 		out = append(out, ins)
 	}
 	return out, removed
+}
+
+// fuseBitTest reads `and xT, xS, #(1<<k); cmp xT, #0; b.cond L` with cond
+// ne or eq and returns `tbnz xS, #k, L` or `tbz xS, #k, L`.
+func fuseBitTest(mask, compare, branch asm.Instruction) (asm.Instruction, bool) {
+	if mask.Mnemonic != "and" || mask.Cond != "" || len(mask.Operands) != 3 || compare.Mnemonic != "cmp" || len(compare.Operands) != 2 || branch.Mnemonic != "b." || len(branch.Operands) != 1 {
+		return asm.Instruction{}, false
+	}
+	dst, dstOK := generalReg(mask.Operands[0])
+	src, srcOK := generalReg(mask.Operands[1])
+	bit, bitOK := mask.Operands[2].(asm.Immediate)
+	tested, testedOK := generalReg(compare.Operands[0])
+	zero, zeroOK := compare.Operands[1].(asm.Immediate)
+	target, targetOK := branch.Operands[0].(asm.Symbol)
+	if !dstOK || !srcOK || !bitOK || !testedOK || !zeroOK || !targetOK || bit.Shift != 0 || zero.Value != 0 || zero.Shift != 0 {
+		return asm.Instruction{}, false
+	}
+	if dst.Num != tested.Num || dst.Class != tested.Class || dst.Class != src.Class || dst.Num == src.Num || src.ZeroRegister() {
+		return asm.Instruction{}, false
+	}
+	v := uint64(bit.Value)
+	if v == 0 || v&(v-1) != 0 {
+		return asm.Instruction{}, false
+	}
+	k := int64(bits.TrailingZeros64(v))
+	if dst.Class == asm.ClassW && k >= 32 {
+		return asm.Instruction{}, false
+	}
+	mnemonic := ""
+	switch branch.Cond {
+	case "ne":
+		mnemonic = "tbnz"
+	case "eq":
+		mnemonic = "tbz"
+	default:
+		return asm.Instruction{}, false
+	}
+	// The encoding reads a bit below 32 from the W register, above from X.
+	bitReg := xr(src.Num)
+	if k < 32 {
+		bitReg = wr(src.Num)
+	}
+	return asm.Instruction{Mnemonic: mnemonic, Operands: []asm.Operand{bitReg, asm.Immediate{Value: k}, target}, Line: branch.Line}, true
+}
+
+// fuseFlagSelect reads, from the cset at items[i], the shape `cset wT,
+// cond; (moves and constants); cmp wT, #0; csel wD, wA, wB, ne|eq` and
+// returns the select on the cset's condition and the number of items the
+// shape spans. Only `mov`/`movz`/`movk` that neither set flags nor mention
+// wT may lie between.
+func fuseFlagSelect(items []asm.Item, i int) (asm.Instruction, int, bool) {
+	set, ok := items[i].(asm.Instruction)
+	if !ok || set.Mnemonic != "cset" || set.Cond != "" || len(set.Operands) != 2 {
+		return asm.Instruction{}, 0, false
+	}
+	dst, dstOK := generalReg(set.Operands[0])
+	cond, condOK := set.Operands[1].(asm.Condition)
+	if !dstOK || !condOK || dst.Class != asm.ClassW {
+		return asm.Instruction{}, 0, false
+	}
+	j := i + 1
+	for ; j < len(items) && j <= i+3; j++ {
+		ins, isIns := items[j].(asm.Instruction)
+		if !isIns {
+			return asm.Instruction{}, 0, false
+		}
+		if ins.Mnemonic == "cmp" {
+			break
+		}
+		if (ins.Mnemonic != "mov" && ins.Mnemonic != "movz" && ins.Mnemonic != "movk") || readsGeneral(ins, dst.Num) || writesGeneral(ins, dst.Num) {
+			return asm.Instruction{}, 0, false
+		}
+	}
+	if j+1 >= len(items) {
+		return asm.Instruction{}, 0, false
+	}
+	compare, cmpOK := items[j].(asm.Instruction)
+	sel, selOK := items[j+1].(asm.Instruction)
+	if !cmpOK || !selOK || compare.Mnemonic != "cmp" || len(compare.Operands) != 2 || sel.Mnemonic != "csel" || len(sel.Operands) != 4 {
+		return asm.Instruction{}, 0, false
+	}
+	tested, testedOK := generalReg(compare.Operands[0])
+	zero, zeroOK := compare.Operands[1].(asm.Immediate)
+	selCond, selCondOK := sel.Operands[3].(asm.Condition)
+	if !testedOK || !zeroOK || !selCondOK || tested.Num != dst.Num || tested.Class != asm.ClassW || zero.Value != 0 || zero.Shift != 0 {
+		return asm.Instruction{}, 0, false
+	}
+	if readsGeneral(sel, dst.Num) {
+		return asm.Instruction{}, 0, false
+	}
+	code := cond.Code
+	switch selCond.Code {
+	case "ne":
+	case "eq":
+		inverted, known := invertedCondition[code]
+		if !known {
+			return asm.Instruction{}, 0, false
+		}
+		code = inverted
+	default:
+		return asm.Instruction{}, 0, false
+	}
+	fused := sel
+	fused.Operands = append([]asm.Operand(nil), sel.Operands...)
+	fused.Operands[3] = asm.Condition{Code: code}
+	return fused, j + 2 - i, true
+}
+
+// blockReadsFlags reports a label whose block begins with a conditional
+// branch: the flags reach it from a compare before a branch to it, which a
+// fused bit test would no longer set.
+func blockReadsFlags(items []asm.Item, label string) bool {
+	for i, item := range items {
+		if l, isLabel := item.(asm.Label); isLabel && l.Name == label {
+			for j := i + 1; j < len(items); j++ {
+				switch it := items[j].(type) {
+				case asm.Label:
+					continue
+				case asm.Instruction:
+					return it.Mnemonic == "b." || it.Mnemonic == "cset" || it.Mnemonic == "csel" || it.Mnemonic == "csinc" || it.Mnemonic == "cinc"
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// memoryMentions reports a memory operand reading the register.
+func memoryMentions(mem asm.Memory, reg int) bool {
+	if mem.Base.Num == reg && !mem.Base.ZeroRegister() {
+		return true
+	}
+	return mem.Index != nil && mem.Index.Num == reg
 }
 
 // invertedCondition is the AArch64 condition code that holds exactly when

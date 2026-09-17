@@ -3926,11 +3926,17 @@ used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
 when an arm's tail is empty. Under a whole-function liveness of the
 general registers over the item list (blocks at labels and after
 branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
-x0, x1, x8 and the restored callee-saved registers), six block-local
+x0, x1, x8 and the restored callee-saved registers), eight block-local
 rules run to a fixpoint (the sixth: a Bool materialized only to be
 branched on — `cset wN, cond; cbz wN, L` with wN dead after the branch —
-is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the OS
-walkers' status conditionals spent the cset and a register per test): a copy read once by the next instruction is
+is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the
+seventh: a bit tested by mask, compare, and branch — `and xT, xS,
+#(1<<k); cmp xT, #0; b.ne L` with xT dead after — is `tbnz xS, #k, L`,
+`tbz` for `b.eq`, refused when the target's block reads the flags; the
+eighth: a zero moved into a register only to be stored is the zero
+register stored; and the branch rule sees through a run of labels —
+`b endif` before `else:` `endif:` is a fall-through. The OS walkers'
+status conditionals and descriptor tests spent these at every level): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a

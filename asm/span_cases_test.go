@@ -58,6 +58,14 @@ func TestCanonicalLinearRespellsMasksAndForms(t *testing.T) {
 	if c := canonicalLinear(binaryTerm("and", desc, constTerm(4, 64)), map[*term]*term{}); c.kind == termConst {
 		t.Fatalf("a bit the or-constants do not set stays symbolic: %s", c)
 	}
+	// A zero test of a one-bit value is the value or its negation.
+	bit := binaryTerm("and", paramTerm("d", 64), constTerm(1, 64))
+	if c := canonicalLinear(cmpTerm("eq", bit, constTerm(0, 64)), map[*term]*term{}); !equalTerms(c, binaryTerm("xor", truncate(bit, 1), constTerm(1, 1))) {
+		t.Fatalf("(d and 1) eq 0 is (d and 1) xor 1: %s", c)
+	}
+	if c := canonicalLinear(cmpTerm("ne", bit, constTerm(0, 64)), map[*term]*term{}); !equalTerms(c, truncate(bit, 1)) {
+		t.Fatalf("(d and 1) ne 0 is d and 1: %s", c)
+	}
 	// A comparison of two constants is its value, and an equality whose
 	// sides are one term structurally — an index outside the linear form,
 	// `(ipa shr 25) and 1` — is true.

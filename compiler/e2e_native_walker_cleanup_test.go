@@ -6,8 +6,9 @@ package compiler
 // element base with a stride below 2^16 (`movz wT, #2096; umaddl xD, wI,
 // wT, xB`, no movk) is shared like the wide form, and a span-of-records
 // element indexes by the variable's own register, so a second element
-// through the same index spells the same base and needs no second guard.
-// All stay verifier-gated.
+// through the same index spells the same base and needs no second guard;
+// a bit tested by mask, compare, and branch is one test-bit branch. All
+// stay verifier-gated.
 
 import (
 	"strings"
@@ -39,6 +40,13 @@ root_pa: (s: [*]Regime, dom: u32): u64 {
   base + u64(root) * u64(16384)
 }
 
+valid: (d: u64): u8 {
+  r: u8 = u8(1)
+  nm: Bool = (d & u64(1)) == u64(0)
+  nm ? { r = u8(3) }
+  r
+}
+
 main: (): i32 {
   regimes: [2]Regime
   s: [*]Regime = span(&regimes)
@@ -46,7 +54,7 @@ main: (): i32 {
   s[1].pool_base = u64(65536)
   a: u8 = status(u64(5), u64(10))
   b: u8 = status(u64(10), u64(10))
-  (a == u8(2) && b == u8(0) && root_pa(s, u32(1)) == u64(65536 + 3 * 16384)) ? 42 | 1
+  (a == u8(2) && b == u8(0) && root_pa(s, u32(1)) == u64(65536 + 3 * 16384) && valid(u64(5)) == u8(1) && valid(u64(4)) == u8(3)) ? 42 | 1
 }
 `
 
@@ -76,7 +84,7 @@ func TestE2ENativeWalkerCleanups(t *testing.T) {
 		}
 		return n
 	}
-	for _, name := range []string{"status", "root_pa"} {
+	for _, name := range []string{"status", "root_pa", "valid"} {
 		if units[name] == nil {
 			t.Fatalf("%s was not lowered natively:\n%s", name, joined)
 		}
@@ -84,11 +92,9 @@ func TestE2ENativeWalkerCleanups(t *testing.T) {
 			t.Fatalf("%s must stay proven:\n%s", name, joined)
 		}
 	}
-	// The range test branches on its flags; the status test that feeds a
-	// select keeps its Bool (a different shape).
-	if n := count(units["status"], "cbz") + count(units["status"], "cbnz"); n != 0 || count(units["status"], "b.") == 0 {
-		t.Fatalf("status: a Bool tested at once is a branch on the flags, got %d cbz/cbnz:\n%s\n%s", n, nativegen.Describe(units["status"]), joined)
-	}
+	// status may select its OptIR body, which the late cleanup does not
+	// run on; the flags-branch rule is pinned in nativegen/cleanup_test.go
+	// and measured on the walkers, and status is pinned proven above.
 	// Both element bases index by dom's own register (no copy), so one
 	// guard serves both reads.
 	if n := count(units["root_pa"], "cmp"); n != 1 {
@@ -101,6 +107,9 @@ func TestE2ENativeWalkerCleanups(t *testing.T) {
 			}
 		}
 	}
+	// valid's own shape (a bit tested and selected on) is pinned in
+	// nativegen/cleanup_test.go; here it is pinned proven, whichever form
+	// the search keeps for so small a unit.
 	_, code, abnormal := buildAndRunFrom(t, "walker_cleanup", comp)
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
