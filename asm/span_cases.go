@@ -223,8 +223,71 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 			}
 		}
 		left, right := canonicalLinear(t.left, memo), canonicalLinear(t.right, memo)
-		if t.op == "and" && left.kind == termConst && right.kind != termConst {
+		if (t.op == "and" || t.op == "xor") && left.kind == termConst && right.kind != termConst {
 			left, right = right, left // the constant on the right, as the rules below read it
+		}
+		if t.op == "sub" && right.kind == termBinary && (right.op == "shl" || right.op == "mul") {
+			// `x - ((x shr k) shl k)` and `x - ((x shr k) * 2^k)` are the
+			// low k bits of x, `x and (2^k - 1)`: the machine's remainder
+			// by a power of two against the Oak side's mask.
+			inner, count := right.left, right.right
+			if right.op == "mul" && inner.kind == termConst {
+				inner, count = count, inner
+			}
+			k := int64(-1)
+			if count.kind == termConst {
+				if right.op == "shl" {
+					k = int64(count.value)
+				} else if count.value != 0 && count.value&(count.value-1) == 0 {
+					k = int64(bits.TrailingZeros64(count.value))
+				}
+			}
+			if k > 0 && k < int64(t.width) && inner.kind == termBinary && inner.op == "shr" && inner.right.kind == termConst && int64(inner.right.value) == k && equalTerms(inner.left, left) {
+				out = binaryTerm("and", left, constTerm(uint64(1)<<uint(k)-1, t.width))
+				break
+			}
+		}
+		if t.op == "xor" && right.kind == termConst && right.value&mask(t.width) == 1 && t.width == 1 && left.kind == termIte {
+			// A negated one-bit conditional negates its arms: `not (c ? X :
+			// Y)` is `c ? not X : not Y`, the shape a path's facts split on.
+			out = iteTerm(left.cond, binaryTerm("xor", truncate(left.left, 1), constTerm(1, 1)), binaryTerm("xor", truncate(left.right, 1), constTerm(1, 1)))
+			break
+		}
+		if t.op == "xor" && right.kind == termConst {
+			// Two constant xors in a row are one (`(x xor 1) xor 1` is x):
+			// a machine Bool negated back on its path is the Bool.
+			if left.kind == termBinary && left.op == "xor" && left.right.kind == termConst && left.width == t.width {
+				c := (left.right.value ^ right.value) & mask(t.width)
+				if c == 0 {
+					out = left.left
+				} else {
+					out = &term{kind: termBinary, width: t.width, op: "xor", left: left.left, right: constTerm(c, t.width)}
+				}
+				break
+			}
+			if right.value&mask(t.width) == 0 {
+				out = left
+				break
+			}
+		}
+		if t.op == "and" && right.kind == termConst && left.kind == termBinary && left.op == "or" {
+			// A mask every bit of which an or-constant sets is the constant:
+			// `((d or 2) or 1) and 1` is 1 — a descriptor's valid bit read
+			// back from the value that set it.
+			m := right.value & mask(t.width)
+			set := uint64(0)
+			for x := left; x.kind == termBinary && x.op == "or"; x = x.left {
+				if x.right.kind == termConst {
+					set |= x.right.value
+				} else if x.left.kind == termConst {
+					set |= x.left.value
+					break
+				}
+			}
+			if m != 0 && set&m == m {
+				out = constTerm(m, t.width)
+				break
+			}
 		}
 		if t.op == "and" && right.kind == termConst {
 			// A mask of low ones strips what lies above it from an or, a
