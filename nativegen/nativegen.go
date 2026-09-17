@@ -1568,6 +1568,10 @@ type Lane struct {
 	// and the scalar remainder (nativegen/vector_fold.go); the verifier
 	// judges the lowering against the rewritten body.
 	VectorFolds bool
+	// UnrollConstant rewrites the constant-trip loops into their trips
+	// (nativegen/unroll_constant.go); the verifier judges the lowering
+	// against the rewritten body.
+	UnrollConstant bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1815,7 +1819,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1839,7 +1843,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollConstant)
 		}
 		if err != nil {
 			return out, err
@@ -1986,7 +1990,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2132,14 +2136,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, constant bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, strength) {
+	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, constant, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -2153,6 +2157,15 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
+		} else if os.Getenv("OAK_NATIVE_TRACE_STAGES") != "" {
+			// OAK_NATIVE_TRACE_STAGES (default off): which rewritten shape a
+			// lowering refused, and why, before falling back to the shape
+			// before it.
+			names := make([]string, 0, len(stage.sites))
+			for _, site := range stage.sites {
+				names = append(names, site.Rewrite)
+			}
+			fmt.Fprintf(os.Stderr, "// stage fallback in %s after %s: %v\n", fn.Name.Value, strings.Join(names, ", "), err)
 		}
 	}
 	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects)
@@ -3484,6 +3497,11 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			return unsupported("a block whose last statement is not its record result")
 		}
 	}
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		if sa, isScalar := g.scalarArrays[ident.Value]; isScalar {
+			return g.resultScalarArray(sa)
+		}
+	}
 	rec, err := g.recordValueAs(expr, g.resultRecord)
 	if err != nil {
 		return err
@@ -3511,6 +3529,45 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	}
 	for i := 0; i < g.resultRecord.chunks(); i++ {
 		g.emit("ldr", xr(i), g.slotMem(rec.offset+int64(8*i)))
+	}
+	return nil
+}
+
+// resultScalarArray places a scalar-replaced array as the result: each
+// element's hidden local stored at its offset — into the caller's result
+// area when the result is indirect, else into a frame temporary whose
+// chunks then load into x0 (and x1) as a record result's do.
+func (g *generator) resultScalarArray(sa *scalarArray) error {
+	bytes := int64(sa.elem.bits / 8)
+	if bytes*sa.length != g.resultRecord.size {
+		return unsupported("a scalar-replaced array of %d bytes as a %d-byte result", bytes*sa.length, g.resultRecord.size)
+	}
+	_, store := accessPair(bytes)
+	if sa.elem.isFloat {
+		store = "str"
+	}
+	var tmp *recordLocal
+	if !g.resultIndirect {
+		tmp = g.tempRecord(g.resultRecord)
+	}
+	for k := int64(0); k < sa.length; k++ {
+		r, err := g.alloc(sa.elem)
+		if err != nil {
+			return err
+		}
+		g.put(g.loadVar(sa.names[k], r))
+		if g.resultIndirect {
+			g.emit(store, reg(r, sa.elem), asm.Memory{Base: xr(g.resultAreaReg), Offset: k * bytes})
+		} else {
+			g.emit(store, reg(r, sa.elem), g.memOf(tmp.loc().plus(k*bytes)))
+		}
+		g.release(r)
+	}
+	if g.resultIndirect {
+		return nil
+	}
+	for i := 0; i < g.resultRecord.chunks(); i++ {
+		g.emit("ldr", xr(i), g.slotMem(tmp.offset+int64(8*i)))
 	}
 	return nil
 }

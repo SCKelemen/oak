@@ -5413,6 +5413,29 @@ any register holding the same length — the compare reads a copy where a
 slack fact names the primary), for the proven minimum, the element
 region, and the access alike.
 
+**Constant-trip loops (2026-09-17, AArch64 lane;
+`nativegen/unroll_constant.go`, `spec/lean/Oak/ConstantUnroll.lean`, the
+`unroll-constant` candidate).** A loop from zero to a literal bound —
+`round: u32 = 0` then `while round < u32(7) { …; round = round + u32(1) }`,
+the bound at most sixteen, the index written by its step alone, no
+`break` — becomes its trips, flat in the enclosing scope: the kth copy of
+the body with the index the literal `k`, its locals renamed for the trip
+(`g0` to `g0_t3`, one declaration each as the verifier reads a body), a
+conditional on the index folded to the arm it takes, and the index at
+its final value after them. The license is
+`Oak.ConstantUnroll.loop_eq_unrolled`: the loop from zero is the unrolled
+sequence for any body, so no fact of the body is required and the
+verifier proves the straight-line form as it proved the loop. The gain is
+downstream: a frame array the loop indexed by its variable is indexed by
+constants afterward, so the lowering keeps its elements as scalars
+(scalar replacement, whose limit is sixteen elements now and which
+admits the array as the body's result, stored element by element into
+the result area) and the machine passes see registers where they saw a
+frame. The search prices the trips against the loop; where the
+lowering's homes run out and the copies price above the loop's trips
+(a hash compression's sixteen state words with seven rounds), the loop
+stays.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs

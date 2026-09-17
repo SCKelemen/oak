@@ -237,6 +237,7 @@ import Oak.RVWMO
 import Oak.Reduction
 import Oak.Map
 import Oak.Fold
+import Oak.ConstantUnroll
 import Oak.ReadOnlyBorrow
 import Oak.Inlining
 import Oak.SpanForward

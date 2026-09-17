@@ -2,6 +2,7 @@ package machine
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/SCKelemen/oak/asm"
@@ -19,6 +20,16 @@ import (
 // address is never taken (no sp arithmetic reaches it), it lies within
 // the declared frame, and every read is reached by a store — a slot read
 // before any store is the checker's fresh unknown, not a register.
+
+// traceSlots prints one promotion event when OAK_MACHINE_TRACE_SLOTS is
+// set (default off): the escapes and blocked ranges the accesses record,
+// the slots that qualify, and each slot's register or why it kept none.
+func traceSlots(format string, args ...interface{}) {
+	if os.Getenv("OAK_MACHINE_TRACE_SLOTS") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "// slots: "+format+"\n", args...)
+}
 
 // SLOT is the pseudo-class of a frame slot in the web machinery: Num is
 // the slot's byte offset from sp.
@@ -78,6 +89,7 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 	}
 	escaped = loose
 	slots := qualify(accesses, escaped, blocked, fn.Frame)
+	traceSlots("%s: frame %d, %d access(es), escapes %v, blocked %v, %d slot(s) qualify", fn.Name, fn.Frame, len(accesses), escaped, blocked, len(slots))
 	if len(slots) == 0 {
 		return lifted.Asm, 0, nil
 	}
@@ -159,8 +171,10 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 			}
 		}
 		if !ok {
+			traceSlots("slot [sp, #%d]: no register (crossing a call: %v)", w.Reg.Num, crossing)
 			continue
 		}
+		traceSlots("slot [sp, #%d] -> %v", w.Reg.Num, r)
 		for _, d := range w.Defs {
 			d.Instr.Asm = lifted.t.slotCopy(r, regAt(d.Instr.Asm, d.Access), s, true, d.Instr.Asm.Line)
 		}
@@ -213,6 +227,7 @@ func frameAccesses(f *Function) (accesses []slotAccess, escaped []int64, blocked
 						}
 					}
 					escaped = append(escaped, base)
+					traceSlots("escape at %d by %s", base, a.String())
 				}
 			case asm.Memory:
 				if o.Base.Class != asm.ClassSP {
@@ -243,6 +258,7 @@ func frameAccesses(f *Function) (accesses []slotAccess, escaped []int64, blocked
 					blocked = append(blocked, [2]int64{o.Offset, o.Offset + 8})
 					continue
 				}
+				traceSlots("whole frame escapes by %s", a.String())
 				escaped = append(escaped, 0)
 			}
 		}
