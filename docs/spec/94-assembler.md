@@ -3892,8 +3892,11 @@ used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
 when an arm's tail is empty. Under a whole-function liveness of the
 general registers over the item list (blocks at labels and after
 branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
-x0, x1, x8 and the restored callee-saved registers), five block-local
-rules run to a fixpoint: a copy read once by the next instruction is
+x0, x1, x8 and the restored callee-saved registers), six block-local
+rules run to a fixpoint (the sixth: a Bool materialized only to be
+branched on — `cset wN, cond; cbz wN, L` with wN dead after the branch —
+is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the OS
+walkers' status conditionals spent the cset and a register per test): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
@@ -6212,7 +6215,10 @@ with six pairs faster; see
 **Shared record-span bases (2026-09-17, AArch64 lane).** The
 `share-record-bases` machine candidate (`nativegen/record_base_cse.go`)
 recognizes the final scheduled spelling of a wide record-span element base:
-`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`. The
+`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`, and
+the two-instruction spelling of a stride below 2^16 without the `movk` (the
+OS pilots' 2096-byte `Regime`, whose walkers repeated the base four times
+where the wide form never occurred). The
 elided positions may contain nearby independent scheduled instructions; a
 label, branch, call, or any intervening read/write of `wT` refuses the site.
 When one such

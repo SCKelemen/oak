@@ -319,6 +319,18 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 			}
 		}
 		if hasNext {
+			// Rule 6: a Bool materialized only to be branched on. `cset wN,
+			// cond; cbz wN, L` with wN dead after the branch is `b.!cond L`
+			// (`cbnz`: `b.cond L`): the status conditionals of the OS page
+			// walkers, `r = oor ? u8(0) | r`, spent the cset and a register
+			// per test. The flags are the compare's still — nothing between
+			// the two instructions.
+			if fused, ok := fuseFlagBranch(ins, next); ok && dead(i+1, fusedRegister(ins)) {
+				out = append(out, fused)
+				removed++
+				i++
+				continue
+			}
 			// Rule 1: a copy read once by the next instruction.
 			if d, s, isMove := isRegisterMove(ins); isMove && readsGeneral(next, d.Num) && !isCallOrReturn(next) && !writesBackTo(next, d.Num) &&
 				(writesGeneral(next, d.Num) || dead(i+1, d.Num)) &&
@@ -347,6 +359,54 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 		out = append(out, ins)
 	}
 	return out, removed
+}
+
+// invertedCondition is the AArch64 condition code that holds exactly when
+// the given one does not.
+var invertedCondition = map[string]string{
+	"eq": "ne", "ne": "eq", "hs": "lo", "lo": "hs", "cs": "cc", "cc": "cs",
+	"hi": "ls", "ls": "hi", "ge": "lt", "lt": "ge", "gt": "le", "le": "gt",
+	"mi": "pl", "pl": "mi", "vs": "vc", "vc": "vs",
+}
+
+// fuseFlagBranch reads `cset wN, cond` followed by `cbz wN, L` or `cbnz
+// wN, L` and returns the conditional branch on the flags that decides the
+// same: `b.!cond L` for cbz (taken when the Bool is zero, the condition
+// false), `b.cond L` for cbnz. The caller checks that wN is dead after
+// the branch.
+func fuseFlagBranch(set, branch asm.Instruction) (asm.Instruction, bool) {
+	if set.Mnemonic != "cset" || set.Cond != "" || len(set.Operands) != 2 || len(branch.Operands) != 2 {
+		return asm.Instruction{}, false
+	}
+	if branch.Mnemonic != "cbz" && branch.Mnemonic != "cbnz" {
+		return asm.Instruction{}, false
+	}
+	dst, dstOK := generalReg(set.Operands[0])
+	cond, condOK := set.Operands[1].(asm.Condition)
+	tested, testedOK := generalReg(branch.Operands[0])
+	target, targetOK := branch.Operands[1].(asm.Symbol)
+	if !dstOK || !condOK || !testedOK || !targetOK || dst.Num != tested.Num || dst.Class != asm.ClassW || tested.Class != asm.ClassW {
+		return asm.Instruction{}, false
+	}
+	code := cond.Code
+	if branch.Mnemonic == "cbz" {
+		inverted, known := invertedCondition[code]
+		if !known {
+			return asm.Instruction{}, false
+		}
+		code = inverted
+	} else if _, known := invertedCondition[code]; !known {
+		return asm.Instruction{}, false
+	}
+	return asm.Instruction{Mnemonic: "b.", Cond: code, Operands: []asm.Operand{target}, Line: branch.Line}, true
+}
+
+// fusedRegister is the Bool register a fused `cset` wrote.
+func fusedRegister(set asm.Instruction) int {
+	if r, ok := generalReg(set.Operands[0]); ok {
+		return r.Num
+	}
+	return -1
 }
 
 func isCallOrReturn(ins asm.Instruction) bool {
