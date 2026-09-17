@@ -59,6 +59,10 @@ func UnrolledMaps(fn *asm.Function) int { return countSites(fn, "map unrolling",
 // lowering vectorized under Lane.VectorFolds (nativegen/vector_fold.go).
 func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectorization", false) }
 
+// UnrolledConstant reports how many constant-trip loops a lowering
+// unrolled under Lane.UnrollConstant (nativegen/unroll_constant.go).
+func UnrolledConstant(fn *asm.Function) int { return countSites(fn, "constant unrolling", false) }
+
 // StrengthReduced reports how many sites layer A strength-reduced in a
 // body, each decided at the bit level (the strength transform's count,
 // beside the emitter's own).
@@ -78,9 +82,9 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                                           *ast.FunctionStatement
-	tc                                                           *typechecker.TypeChecker
-	expand, unroll, vectorize, maps, unrollMaps, folds, strength bool
+	fn                                                                     *ast.FunctionStatement
+	tc                                                                     *typechecker.TypeChecker
+	expand, unroll, vectorize, maps, unrollMaps, folds, constant, strength bool
 }
 
 var (
@@ -101,22 +105,22 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, strength bool) []rewriteStage {
-	key := stageKey{fn: fn, tc: tc, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, strength: strength}
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, constant, strength bool) []rewriteStage {
+	key := stageKey{fn: fn, tc: tc, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, constant: constant, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, tc, expand, unroll, vectorize, maps, unrollMaps, folds, strength)
+	stages := computeStages(fn, functions, tc, expand, unroll, vectorize, maps, unrollMaps, folds, constant, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
 	return stages
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, tc *typechecker.TypeChecker, expand, unroll, vectorize, maps, unrollMaps, folds, constant, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
@@ -143,6 +147,16 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 		sites = append(sites, RewriteSite{Rewrite: "span forwarding", Law: "Oak.SpanForward.let_forward", Detail: "a span local used once, in the next statement, as a call argument stands for its expression"})
 		body = forwarded
 		push()
+	}
+	// The constant-trip loops as their trips (nativegen/unroll_constant.go):
+	// the loop from zero is the unrolled sequence, whatever the body.
+	if constant {
+		if unrolled, changed := unrollConstantLoops(fn, body); changed {
+			sites = append(sites, RewriteSite{Rewrite: "constant unrolling", Law: "Oak.ConstantUnroll.loop_eq_unrolled", Detail: "a loop from zero to a literal bound, its index written by its step alone, is its trips in order with the index a literal in each; nothing is assumed of the body", Line: fn.Token.Line})
+			body = unrolled
+			judged = true
+			push()
+		}
 	}
 	// The element-wise maps over spans as one vector a trip
 	// (nativegen/vector_map.go): lane-wise semantics alone license it.

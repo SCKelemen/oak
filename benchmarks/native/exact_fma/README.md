@@ -13,12 +13,14 @@ The output path must not already exist. Defaults are 4,096 elements,
 
 Every run compares C (`-O3 -ffp-contract=off -fno-fast-math`), native identity,
 native optimized without `vectorize-maps`, native with only one vector per map
-trip (`unroll-vector-maps` disabled), and fully optimized native code.
+trip (`unroll-vector-maps` disabled), native without late address sharing
+(`share-vector-addresses` disabled), and fully optimized native code.
 Each backend has f32/f64 and strict/explicit-FMA variants. Samples interleave
-all twenty combinations and rotate their starting position. The report keeps
+all twenty-four combinations and rotate their starting position. The report keeps
 observation order, raw elapsed times, result checksums, compiler revision,
 dirty-worktree status, host/load information, native verdicts, assembly, frame
-sizes, encoded sizes, rewrite licenses, and structural instruction/loop metrics. Native identity
+sizes, encoded sizes, rewrite licenses, late address-sharing counts, and
+structural instruction/loop metrics. Native identity
 disables the registry's actual transform names rather than a hard-coded list.
 Temporary builds are removed; the report is retained. Volatile indirect calls
 prevent C from hoisting identical pure calls out of the timed loop.
@@ -57,13 +59,92 @@ are refused, and strict multiplication/addition must remain two operations.
 ## Acceptance
 
 A shorter instruction sequence is not sufficient. Compare elapsed time with
-the same-current-compiler no-map baseline before enabling a rewrite. The dot
+the same-current-compiler control disabling the specific transform before
+enabling a rewrite. The dot
 experiment found safe contraction slower on this M4 Max, so no automatic
 contraction was enabled. Independent FMA maps showed a substantial SIMD gain
 and retained proven native verdicts. Both experiments remain reproducible here.
 Core placement and machine contention are uncontrolled; use the raw samples
 and load metadata when interpreting ratios. C comparison is retained even
 when Oak improves: beating the previous native form is not parity with C.
+
+## Late vector address sharing
+
+`share-vector-addresses` retries address sharing after copy cleanup and
+includes stores. The second vector load and store use their respective
+first addresses at `#16`, removing four index/address adds per two-vector
+trip. It does not reorder memory accesses, change floating operations or
+alter tail handling. This is a separate verifier-gated candidate; the earlier
+`vector-blocks` pass remains load-only. Register versions, private temporary
+uses, W/X aliasing, writeback bases and immediate bounds are checked
+conservatively. Materialization revision v10 includes the new flag.
+
+### Address-sharing measurements: 2026-09-17
+
+Clean revision `5165a82ba17d7f7605590ba605bae3dfca68c814`, M4 Max,
+Apple clang 21.0.0, nine interleaved samples per variant. Each report contains
+six backends and twenty-four variants. All twenty native bodies remain
+`proven`; checksums agree on this benchmark's input family. The no-sharing
+control's assembly is identical to the selected pre-change map assembly at
+`40558540074d9aab2c86a93a5276033c5f7ff844`.
+
+At 4,096 elements × 4,096 calls, median ns/element:
+
+| Map | C | Native no sharing | Native shared addresses | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0507 | 0.0834 | 0.0488 | 41.5% | 0.96× |
+| f32 explicit FMA | 0.0517 | 0.0784 | 0.0537 | 31.5% | 1.04× |
+| f64 strict multiply/add | 0.1457 | 0.1575 | 0.1273 | 19.2% | 0.87× |
+| f64 explicit FMA | 0.1193 | 0.1596 | 0.1240 | 22.3% | 1.04× |
+
+A repeat with longer samples (32,768 calls, still 4,096 elements and nine
+samples per variant) retains the improvement:
+
+| Map | C | Native no sharing | Native shared addresses | Time reduction | Native / C |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| f32 strict multiply/add | 0.0592 | 0.0915 | 0.0634 | 30.7% | 1.07× |
+| f32 explicit FMA | 0.0574 | 0.0955 | 0.0650 | 32.0% | 1.13× |
+| f64 strict multiply/add | 0.1571 | 0.1992 | 0.1476 | 25.9% | 0.94× |
+| f64 explicit FMA | 0.1393 | 0.2032 | 0.1433 | 29.5% | 1.03× |
+
+The explicit-FMA body shrinks from 244 to 228 encoded bytes, with the frame
+unchanged at 144 bytes. The main loop has 13 rather than 17 instructions,
+still two loads and two stores. Strict maps shrink from 248 to 232 bytes and
+retain separate multiply/add roundings. The reports keep the
+[default-duration run](results/map-shared-addresses-m4-max-2026-09-17.json)
+and [longer repeat](results/map-shared-addresses-longer-m4-max-2026-09-17.json),
+including every timing, all controls, assembly and sharing counts.
+
+One-minute host load stayed around 23–26, but timing spreads remain wide.
+The repeat supports a real native-to-native gain; the variation in C ratios
+does not support a general claim of beating C or a quiet-host regression
+guarantee. Explicit FMA remains roughly 3–13% behind C across these runs.
+
+Short-input checks use 1,048,576 calls per sample. Explicit-FMA medians,
+again ns/element:
+
+| Elements | Width | Native no sharing | Native shared addresses | Time change |
+| --- | --- | ---: | ---: | ---: |
+| 7 | f32 | 0.5147 | 0.5097 | −1.0% |
+| 7 | f64 | 0.4827 | 0.5125 | +6.2% |
+| 2 | f32 | 1.4720 | 1.4749 | +0.2% |
+| 2 | f64 | 1.4095 | 1.4081 | −0.1% |
+
+No short-input speedup is claimed: distributions overlap substantially, and
+the seven-element f64 slower median is retained. See the
+[seven-element](results/map-shared-addresses-n7-m4-max-2026-09-17.json) and
+[two-element](results/map-shared-addresses-n2-m4-max-2026-09-17.json) reports,
+which also preserve the strict-map controls.
+
+Validation includes nativegen/machine/opt/harness tests, targeted compiler
+map/fold/unrolling execution and materialization tests, race checks and vet.
+A broader existing test, `TestE2ENativeVectorReduction`, exposed a pre-existing
+two-address sum32 shape during this increment. Replaying the original matcher
+with late sharing disabled produced the same failure: liveness counted a
+paired load's second destination as an input. The subsequent
+[paired-load bookkeeping fix](../paired_loads/README.md) resolves it, and the
+original one-address assertion now passes unchanged. The historical map
+measurements above retain their original compiler revision.
 
 ## Two-vector map candidate
 

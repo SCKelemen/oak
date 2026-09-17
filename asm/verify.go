@@ -1201,7 +1201,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if t.width > w {
 			return nil
 		}
-		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.selectAtom(): 1}}
 	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
@@ -1381,6 +1381,25 @@ func (t *term) knownBits() int {
 	return t.width
 }
 
+// selectAtom names a memory read as an atom of the linear normal form:
+// the memory and its index in the index's own linear normal form when it
+// has one, so two reads whose index terms differ in spelling but agree
+// modulo the index width — the machine's `49152 * (dom and 0xFFFFFFFF) +
+// (((t#hi shl 16) or t) and 65535) shl 11 + i` and the Oak side's
+// `49152 * dom + (t and 65535) shl 11 + i` for `s[dom].pages[cell(t, i)]`
+// (the OS pilot's get_page_entry) — are one unknown. Indices are
+// compared at their own width, which is the width the element is chosen
+// at, so equal forms read the same element. An index without a form
+// keeps its spelling.
+func (t *term) selectAtom() string {
+	if t.left != nil && t.left.width > 0 {
+		if index := t.left.linearAt(t.left.width); index != nil {
+			return t.name + "[" + index.compact() + "]"
+		}
+	}
+	return t.String()
+}
+
 func (f *linearForm) trim() *linearForm {
 	for name, c := range f.coeffs {
 		if c == 0 {
@@ -1402,6 +1421,30 @@ func (f *linearForm) String() string {
 	}
 	parts = append(parts, strconv.FormatUint(f.constant, 10))
 	return strings.Join(parts, " + ") + fmt.Sprintf(" (mod 2^%d)", f.width)
+}
+
+// compact spells the form without the unit coefficients, the zero
+// constant, and the modulus: `dom` for a parameter index, `49152*dom + i
+// + 2048*t` for a scaled one. It names select atoms, where the width is
+// the index's own.
+func (f *linearForm) compact() string {
+	names := make([]string, 0, len(f.coeffs))
+	for name := range f.coeffs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if f.coeffs[name] == 1 {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%d*%s", f.coeffs[name], name))
+		}
+	}
+	if f.constant != 0 || len(parts) == 0 {
+		parts = append(parts, strconv.FormatUint(f.constant, 10))
+	}
+	return strings.Join(parts, " + ")
 }
 
 func (f *linearForm) equal(g *linearForm) bool {
@@ -2059,7 +2102,24 @@ const (
 	// rather than unrolled, so the guards of the loops that do unroll
 	// (at most 64 trips a level) get sixteen paths' worth.
 	guardBudget = 16 * pathBudget
+	// joinedPathBudget bounds the paths of the run that merges at the
+	// joins (executeBodyChunkJoining): a fork whose sides meet again
+	// costs one merged state, not two paths kept to the end, so the
+	// count may run sixteen times as far — a parser's few hundred
+	// sequential conditionals (cnf_ite, peek_precedence, the step_*_p
+	// family) refused "more paths than the verifier's budget" on the
+	// merged run too under the flat budget.
+	joinedPathBudget = 16 * pathBudget
 )
+
+// pathLimit is the run's path budget: the joined run's when the paths
+// merge at their joins.
+func (x *pathExecutor) pathLimit() int {
+	if x.joins != nil {
+		return joinedPathBudget
+	}
+	return pathBudget
+}
 
 // pathExecutor unfolds a body into its paths: a conditional branch forks
 // the state, the taken path continuing at the label under the branch's
@@ -2091,6 +2151,11 @@ type pathExecutor struct {
 	// reads are the body's reads of span memory through the write log, by
 	// node (spanRead), for the aligned fast path's alignReads.
 	reads map[*term]spanRead
+	// carriedCells are the package cells the loop being summarized
+	// carries (summarizeLoop), which a call in its body may write;
+	// calleeCells memoizes the cells each callee's Oak body assigns.
+	carriedCells map[string]bool
+	calleeCells  map[string][]string
 	// deferMemory asks decideSpans to leave the memory decision of a span
 	// whose logs differ in length to deferredSpans (verifyChunk runs the
 	// body again merging at the joins first, whose logs align).
@@ -3086,7 +3151,7 @@ func isFrameMemory(instr Instruction) bool {
 // written), merged across the paths.
 func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, string, bool) {
 	x.paths++
-	if x.paths > pathBudget {
+	if x.paths > x.pathLimit() {
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {
@@ -4760,8 +4825,12 @@ type oakLowering struct {
 	// element counts; a table reads as a span (spans holds its contract)
 	// whose length is the constant (declareTables).
 	tableLens map[string]int64
-	locals    map[string]*oakLocal // statement-body locals, in declaration scope
-	concrete  map[string]uint64    // a witness run: parameters are these constants
+	// declaredTables distinguishes read-only table roots from mutable global
+	// arrays, whose lengths also live in tableLens. Tables may additionally
+	// have Globals entries retained for source declaration provenance.
+	declaredTables map[string]bool
+	locals         map[string]*oakLocal // statement-body locals, in declaration scope
+	concrete       map[string]uint64    // a witness run: parameters are these constants
 	// work counts the loop iterations this lowering has run, its inlined
 	// callees' included (loweringWorkBudget): a body whose unrolled loops
 	// inline callees that unroll their own (the BDD apply's, sixty-four
@@ -6437,10 +6506,11 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 // derived), `w: []T = subslice(v, start, n)` an alias of v's root at the
 // offset start (plus v's) of length n, the C helper's check a trap
 // obligation. The local's reads, writes, and `len` translate to the root
-// (asm/derived_spans.go); a view over an owned array stays outside.
+// (asm/derived_spans.go). Aggregate locals use declareView; a read-only
+// view of a declared constant table uses the table's root and exact length.
 func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, bool) {
 	name := s.Name.Value
-	elem, _, ok := spanShape(s.Type)
+	elem, writable, ok := spanShape(s.Type)
 	if !ok {
 		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
 	}
@@ -6479,6 +6549,20 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	}
 	if src, isIdent := s.Value.(*ast.Identifier); isIdent {
 		return bind(src.Value, lo.spanOffset[src.Value], nil)
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall && !writable {
+		// Tables are already symbolic memories on both sides. This only
+		// names an alias; it grants no authority to an arbitrary pointer,
+		// mutable global, or a parameter/local shadowing the table.
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" {
+			src := addressOfOperand(call)
+			count, isTable := lo.tableLens[src]
+			_, isParam := lo.params[src]
+			_, isAlias := lo.spanAlias[src]
+			if isTable && lo.declaredTables[src] && !isParam && !isAlias && count >= 0 && uint64(count) <= mask(32) {
+				return bind(src, nil, constTerm(uint64(count), 32))
+			}
+		}
 	}
 	sub, isSub := subsliceOf(s.Value)
 	if !isSub {
@@ -7855,6 +7939,10 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 			lo.tableLens = map[string]int64{}
 		}
 		lo.tableLens[name] = table.Size / table.Elem
+		if lo.declaredTables == nil {
+			lo.declaredTables = map[string]bool{}
+		}
+		lo.declaredTables[name] = true
 	}
 }
 
@@ -7930,6 +8018,9 @@ func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
 	if !isIdent || !argIsIdent || fn.Value != "len" {
 		return 0, false
+	}
+	if lo.spanLen[arg.Value] != nil {
+		return 0, false // the derived extent, not the whole root table
 	}
 	length, isTable := lo.tableLens[lo.spanRoot(arg.Value)]
 	return length, isTable
@@ -10548,7 +10639,8 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
 		case termBinary:
-			if t.op == "mul" && left.width == t.width {
+			out = canonicalBitwise(t, left, right)
+			if out == nil && t.op == "mul" && left.width == t.width {
 				switch {
 				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))

@@ -68,6 +68,7 @@ import Oak.Uninterpreted
 import Oak.IntegerDivision
 import Oak.StrengthReduction
 import Oak.KnownBits
+import Oak.BitwiseCanonical
 import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles
@@ -236,6 +237,7 @@ import Oak.RVWMO
 import Oak.Reduction
 import Oak.Map
 import Oak.Fold
+import Oak.ConstantUnroll
 import Oak.ReadOnlyBorrow
 import Oak.Inlining
 import Oak.SpanForward
@@ -246,5 +248,6 @@ import Oak.BlockedFill
 import Oak.PairStoreEffects
 import Oak.RecordArrayRegion
 import Oak.FieldPromotion
+import Oak.LoopArrayHomes
 import Oak.Forwarding
 import Oak.ArrayValues

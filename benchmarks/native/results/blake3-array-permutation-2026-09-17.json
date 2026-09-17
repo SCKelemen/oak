@@ -1,0 +1,345 @@
+{
+  "schema": "oak-blake3-array-permutation-investigation-v1",
+  "date": "2026-09-17",
+  "cpu": "Apple M4 Max",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "compiler_base": "dfd119cd7466d0198869b92fb7f27c6b0d48dc4c",
+  "compiler_after_change": "In-place array-permutation lowering on dfd119cd. Initial measurements used an independent implementation and a per-search materialization recipe version bump; the landed a1783bba lowering reproduces the measured executable byte-for-byte without that recipe bump.",
+  "hash_source_sha256": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+  "runner_source_sha256": "89d24ab549de05b2cd8992bb8fdd13406ea2503772175fbd67cc6cd64fba70c3",
+  "binary_sha256": {
+    "c": "a661a0e03084cb431abc055fa442cc2a56b3c8ff44a29a065c282a159df8f780",
+    "before-full": "2137c44d29c2a0cdb94ff7361555b1b7c0014734ad75d57b4ef33cd45dd11a06",
+    "after-full": "2a0ae1b36c3986d30ea1a48d1b86a267ca28afbfda90d885e704b8f7d08ba5cf"
+  },
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "c_flags": [
+    "-std=c99",
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "size": 1048576,
+  "rounds": 30,
+  "samples": 15,
+  "repeats": 2,
+  "sample_order": "interleaved implementations, rotating first implementation each sample",
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "native_blake3_units": {
+    "before-full": [
+      "hash__blake3_ug",
+      "hash__blake3_upermute",
+      "hash__blake3_ucompress",
+      "hash__blake3_uwords",
+      "hash__blake3_ufirst8",
+      "hash__blake3_uinit",
+      "hash__blake3_ustart_uflag",
+      "hash__blake3_uabsorb_ublock",
+      "hash__blake3_uchunk_ucv",
+      "hash__blake3_uparent_uwords",
+      "hash__blake3_upush_uchunk",
+      "hash__blake3_ufinal",
+      "bench_blake3"
+    ],
+    "after-full": [
+      "hash__blake3_ug",
+      "hash__blake3_upermute",
+      "hash__blake3_ucompress",
+      "hash__blake3_uwords",
+      "hash__blake3_ufirst8",
+      "hash__blake3_uinit",
+      "hash__blake3_ustart_uflag",
+      "hash__blake3_uabsorb_ublock",
+      "hash__blake3_uchunk_ucv",
+      "hash__blake3_uparent_uwords",
+      "hash__blake3_upush_uchunk",
+      "hash__blake3_ufinal",
+      "bench_blake3"
+    ]
+  },
+  "selected_compression": {
+    "before-full": {
+      "frame_bytes": 272,
+      "instructions": 342,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 16,
+        "ldr": 80,
+        "lsr": 1,
+        "mov": 4,
+        "ret": 1,
+        "ror": 32,
+        "stp": 16,
+        "str": 66,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 152
+    },
+    "after-full": {
+      "frame_bytes": 208,
+      "instructions": 334,
+      "mnemonics": {
+        "add": 63,
+        "adrp": 4,
+        "b": 1,
+        "b.hs": 9,
+        "b.lo": 2,
+        "brk": 1,
+        "cmp": 11,
+        "eor": 34,
+        "ldp": 12,
+        "ldr": 80,
+        "lsr": 1,
+        "mov": 4,
+        "ret": 1,
+        "ror": 32,
+        "stp": 12,
+        "str": 66,
+        "sub": 1
+      },
+      "stack_relative_memory_instructions": 144
+    }
+  },
+  "compression_verdict": "Historical dfd119cd comparison: witnessed before and after, with every verifier witness agreeing. Full compression equivalence was subsequently proven by def4003e; that verifier change is not part of these timings.",
+  "boundary_checks": [
+    {
+      "size": 0,
+      "checksum": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    },
+    {
+      "size": 1,
+      "checksum": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65"
+    },
+    {
+      "size": 63,
+      "checksum": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09"
+    },
+    {
+      "size": 64,
+      "checksum": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d"
+    },
+    {
+      "size": 65,
+      "checksum": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735"
+    },
+    {
+      "size": 1023,
+      "checksum": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916"
+    },
+    {
+      "size": 1024,
+      "checksum": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539"
+    },
+    {
+      "size": 1025,
+      "checksum": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b"
+    },
+    {
+      "size": 2048,
+      "checksum": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362"
+    },
+    {
+      "size": 2049,
+      "checksum": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b"
+    },
+    {
+      "size": 3072,
+      "checksum": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183"
+    },
+    {
+      "size": 4096,
+      "checksum": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8"
+    },
+    {
+      "size": 5000,
+      "checksum": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+    },
+    {
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172"
+    }
+  ],
+  "runs": [
+    {
+      "load_average_before": "{ 23.79 36.43 38.24 }",
+      "load_average_after": "{ 24.80 36.22 38.14 }",
+      "results": [
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 2794233.3,
+          "samples": [
+            2794233.3,
+            2828833.3,
+            2748800.0,
+            2707533.3,
+            2636366.7,
+            2936400.0,
+            2976766.7,
+            2417433.3,
+            2874800.0,
+            2868900.0,
+            2378366.7,
+            2551766.7,
+            2600500.0,
+            2844000.0,
+            2818066.7
+          ]
+        },
+        {
+          "impl": "before-permutation",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 5602966.7,
+          "samples": [
+            6019500.0,
+            5849466.7,
+            5639900.0,
+            5320500.0,
+            4964900.0,
+            5602966.7,
+            6242500.0,
+            5135566.7,
+            5327533.3,
+            4652200.0,
+            4392833.3,
+            5200666.7,
+            6178700.0,
+            5625533.3,
+            6102666.7
+          ]
+        },
+        {
+          "impl": "after-permutation",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 5361000.0,
+          "samples": [
+            5552500.0,
+            5517100.0,
+            5642266.7,
+            4980100.0,
+            5266166.7,
+            5002233.3,
+            5845166.7,
+            5036666.7,
+            4585266.7,
+            4303400.0,
+            4636200.0,
+            5433500.0,
+            5361000.0,
+            6016366.7,
+            6202366.7
+          ]
+        }
+      ]
+    },
+    {
+      "load_average_before": "{ 24.80 36.22 38.14 }",
+      "load_average_after": "{ 24.02 35.87 38.01 }",
+      "results": [
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 3005500.0,
+          "samples": [
+            3289133.3,
+            2806666.7,
+            2869900.0,
+            2758600.0,
+            2932566.7,
+            2936700.0,
+            5318600.0,
+            4014133.3,
+            3030500.0,
+            2782266.7,
+            2872633.3,
+            3005500.0,
+            3021533.3,
+            3536166.7,
+            3135300.0
+          ]
+        },
+        {
+          "impl": "before-permutation",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 6686600.0,
+          "samples": [
+            6839166.7,
+            6417433.3,
+            5531100.0,
+            5690700.0,
+            6686600.0,
+            5665233.3,
+            9342800.0,
+            6723166.7,
+            7075800.0,
+            6290166.7,
+            6687400.0,
+            7279433.3,
+            5927300.0,
+            7825500.0,
+            6090133.3
+          ]
+        },
+        {
+          "impl": "after-permutation",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 6109300.0,
+          "samples": [
+            6801933.3,
+            6713266.7,
+            5430033.3,
+            5228966.7,
+            6046866.7,
+            6109300.0,
+            7402566.7,
+            5868266.7,
+            6413066.7,
+            6226500.0,
+            6579433.3,
+            6065000.0,
+            6514566.7,
+            5649500.0,
+            5497900.0
+          ]
+        }
+      ]
+    }
+  ],
+  "landed_implementation_validation": {
+    "commit": "a1783bba00ca5d60d503e7fadfbba368e1b9893f",
+    "base": "dfd119cd7466d0198869b92fb7f27c6b0d48dc4c",
+    "reconstruction": "Apply only nativegen/array_permutation.go and the three-line assignment hook in nativegen/nativegen.go from a1783bba to a git archive of compiler_base; leave all other baseline files unchanged.",
+    "native_build": "OAK_VERIFY_CACHE=0 OAK_NATIVE_DUMP=1 OAK_OPT_REPORT=1 go run ./benchmarks/native/emit benchmarks/kernels/oak OUT/kernels",
+    "runner_build": "cc -std=c99 -O3 -DNDEBUG '-DOAK_IMPL=\"after-permutation\"' -IOUT -o OUT/runner benchmarks/kernels/runner.c OUT/kernels.o -lm",
+    "lowering_source_sha256": "879581e572f696b39fe48fcf228d916dc1612267b3f0cc3394cf1effe61f3290",
+    "measured_native_object_sha256": "1681557222e7e68745a724514e327bcadf776ffc9055c6ccbd1bc0bea4cde165",
+    "landed_native_object_sha256": "1681557222e7e68745a724514e327bcadf776ffc9055c6ccbd1bc0bea4cde165",
+    "measured_runner_sha256": "2a0ae1b36c3986d30ea1a48d1b86a267ca28afbfda90d885e704b8f7d08ba5cf",
+    "landed_runner_sha256": "2a0ae1b36c3986d30ea1a48d1b86a267ca28afbfda90d885e704b8f7d08ba5cf",
+    "native_object_and_runner_byte_identical": true,
+    "generated_c_comparison": "Identical after dropping only // @source: comments containing the checkout path.",
+    "generated_c_without_source_comments_sha256": "dc04228005f13d8259b9f614ab5c0a34fe56b5d75de45723ce06648b540f3dd1",
+    "boundary_checks_repeated": 14,
+    "all_boundary_checks_agree_with_saved_c_control": true,
+    "native_blake3_coverage_unchanged": true
+  }
+}

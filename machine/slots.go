@@ -2,6 +2,7 @@ package machine
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/SCKelemen/oak/asm"
@@ -19,6 +20,16 @@ import (
 // address is never taken (no sp arithmetic reaches it), it lies within
 // the declared frame, and every read is reached by a store — a slot read
 // before any store is the checker's fresh unknown, not a register.
+
+// traceSlots prints one promotion event when OAK_MACHINE_TRACE_SLOTS is
+// set (default off): the escapes and blocked ranges the accesses record,
+// the slots that qualify, and each slot's register or why it kept none.
+func traceSlots(format string, args ...interface{}) {
+	if os.Getenv("OAK_MACHINE_TRACE_SLOTS") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "// slots: "+format+"\n", args...)
+}
 
 // SLOT is the pseudo-class of a frame slot in the web machinery: Num is
 // the slot's byte offset from sp.
@@ -38,9 +49,7 @@ type slotAccess struct {
 // array or record local — by its sp-relative byte offset and size. With
 // the layout known, an address taken at the object's base blocks only the
 // object; without it, everything above the address.
-type FrameObject struct {
-	Offset, Size int64
-}
+type FrameObject = asm.FrameObject
 
 // Promote rewrites the promotable frame slots of a body into registers.
 // It returns the rewritten function (a new value; the input is not
@@ -49,12 +58,30 @@ func Promote(fn *asm.Function) (*asm.Function, int, error) { return PromoteWith(
 
 // PromoteWith is Promote with the lowering's frame layout, when known.
 func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, error) {
+	return promoteWith(fn, objects, true)
+}
+
+func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm.Function, int, error) {
 	lifted, err := Lift(cloneFunction(fn))
 	if err != nil {
 		return nil, 0, err
 	}
 	if fn.Frame <= 0 {
 		return lifted.Asm, 0, nil
+	}
+	var splitWords map[int64]bool
+	if splitPairs {
+		split, words, splitErr := splitFramePairInitializers(lifted, objects)
+		if splitErr != nil {
+			return nil, 0, splitErr
+		}
+		if split != nil {
+			lifted, err = Lift(split)
+			if err != nil {
+				return nil, 0, err
+			}
+			splitWords = words
+		}
 	}
 	accesses, escaped, blocked := frameAccesses(lifted)
 	// An address taken inside a recorded object blocks the object; the
@@ -78,7 +105,11 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 	}
 	escaped = loose
 	slots := qualify(accesses, escaped, blocked, fn.Frame)
+	traceSlots("%s: frame %d, %d access(es), escapes %v, blocked %v, %d slot(s) qualify", fn.Name, fn.Frame, len(accesses), escaped, blocked, len(slots))
 	if len(slots) == 0 {
+		if len(splitWords) != 0 {
+			return promoteWith(fn, objects, false)
+		}
 		return lifted.Asm, 0, nil
 	}
 	// The slots join the web machinery as pseudo-registers: a store
@@ -128,6 +159,7 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 	sort.SliceStable(slotWebs, func(i, j int) bool { return slotWebs[i].From < slotWebs[j].From })
 	taken := map[Reg][]*Web{} // promoted slot webs by their register
 	promoted := 0
+	splitBenefit := false
 	for _, w := range slotWebs {
 		if w.From < 0 || len(w.Uses) == 0 {
 			continue // never read: the store stays (the checker may read it)
@@ -159,8 +191,10 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 			}
 		}
 		if !ok {
+			traceSlots("slot [sp, #%d]: no register (crossing a call: %v)", w.Reg.Num, crossing)
 			continue
 		}
+		traceSlots("slot [sp, #%d] -> %v", w.Reg.Num, r)
 		for _, d := range w.Defs {
 			d.Instr.Asm = lifted.t.slotCopy(r, regAt(d.Instr.Asm, d.Access), s, true, d.Instr.Asm.Line)
 		}
@@ -169,6 +203,12 @@ func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, e
 		}
 		taken[r] = append(taken[r], w)
 		promoted++
+		splitBenefit = splitBenefit || splitWords[int64(w.Reg.Num)]
+	}
+	if len(splitWords) != 0 && !splitBenefit {
+		// Expansion is only preparation for a successful promotion, not
+		// an independently selected code-size increase.
+		return promoteWith(fn, objects, false)
 	}
 	out := lifted.Asm
 	out.Items = lifted.Items()
@@ -213,6 +253,7 @@ func frameAccesses(f *Function) (accesses []slotAccess, escaped []int64, blocked
 						}
 					}
 					escaped = append(escaped, base)
+					traceSlots("escape at %d by %s", base, a.String())
 				}
 			case asm.Memory:
 				if o.Base.Class != asm.ClassSP {
@@ -243,6 +284,7 @@ func frameAccesses(f *Function) (accesses []slotAccess, escaped []int64, blocked
 					blocked = append(blocked, [2]int64{o.Offset, o.Offset + 8})
 					continue
 				}
+				traceSlots("whole frame escapes by %s", a.String())
 				escaped = append(escaped, 0)
 			}
 		}

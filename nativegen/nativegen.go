@@ -1455,6 +1455,11 @@ type generator struct {
 	promotable    map[string][]string
 	promoted      map[string]*promotedRecord
 	promotedCount int
+	// loopArrayHomesEnabled/activeArrayHomes keep selected literal-index
+	// array elements in scalar homes for one loop (loop_array_homes.go).
+	loopArrayHomesEnabled bool
+	activeArrayHomes      map[string]*loopArrayHomeSet
+	arrayHomesCount       int
 	// licmReserve: callee-saved registers held for the loop-invariant pass,
 	// handed back to declarations that would otherwise refuse the body
 	// (reclaimReserve).
@@ -1568,6 +1573,10 @@ type Lane struct {
 	// and the scalar remainder (nativegen/vector_fold.go); the verifier
 	// judges the lowering against the rewritten body.
 	VectorFolds bool
+	// UnrollConstant rewrites the constant-trip loops into their trips
+	// (nativegen/unroll_constant.go); the verifier judges the lowering
+	// against the rewritten body.
+	UnrollConstant bool
 	// NoReductions leaves the plain integer reductions as written
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
@@ -1623,6 +1632,10 @@ type Lane struct {
 	// use (docs/spec/94-assembler.md §9.ad); the checker and the verifier
 	// decide, and the compiler falls back to slots on refusal.
 	VectorHomes bool
+	// LoopArrayHomes keeps selected literal-index u32/u64 array elements in
+	// callee-saved registers for one loop. The verifier judges the machine
+	// candidate against its unchanged Oak reference.
+	LoopArrayHomes bool
 	// MultiplyAdd lowers an integer product and its addend in one
 	// instruction (nativegen/multiply_add.go): madd, msub, mneg where the
 	// lowering emitted a mul and an add, a sub, or a zero and a sub.
@@ -1638,6 +1651,9 @@ type Lane struct {
 	// verifier judge the body, and the search keeps the per-load form
 	// where they refuse it.
 	VectorBlocks bool
+	// ShareVectorAddresses retries address sharing after copy cleanup and
+	// includes stores. The search requires a semantic verdict for this lane.
+	ShareVectorAddresses bool
 	// Cleanup runs the late copy and branch cleanup over the lowered items
 	// on the AArch64 lane (nativegen/cleanup.go): a copy read once by the
 	// next instruction is forwarded, a definition copied once writes its
@@ -1815,7 +1831,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1839,7 +1855,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollConstant)
 		}
 		if err != nil {
 			return out, err
@@ -1847,6 +1863,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		if lane.Cleanup {
 			// Late copy and branch cleanup (nativegen/cleanup.go).
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
+		}
+		if lane.ShareVectorAddresses {
+			out.Items, sharedVectorAddressCount[out] = shareVectorAddresses(out.Items)
 		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
@@ -1985,7 +2004,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2065,9 +2084,10 @@ func recordFrameObjects(fn *asm.Function, objects []machine.FrameObject, slotBas
 	}
 	out := make([]machine.FrameObject, 0, len(objects))
 	for _, obj := range objects {
-		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size})
+		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size, Name: obj.Name, Elem: obj.Elem})
 	}
 	frameObjectsOf[fn] = out
+	fn.FrameObjects = out
 }
 
 var reallocated = map[*asm.Function]int{}
@@ -2131,20 +2151,20 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, constant bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, strength) {
+	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, constant, strength) {
 		if stage.body == fn.Body {
 			break
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, arrayHomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -2152,9 +2172,18 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
+		} else if os.Getenv("OAK_NATIVE_TRACE_STAGES") != "" {
+			// OAK_NATIVE_TRACE_STAGES (default off): which rewritten shape a
+			// lowering refused, and why, before falling back to the shape
+			// before it.
+			names := make([]string, 0, len(stage.sites))
+			for _, site := range stage.sites {
+				names = append(names, site.Rewrite)
+			}
+			fmt.Fprintf(os.Stderr, "// stage fallback in %s after %s: %v\n", fn.Name.Value, strings.Join(names, ", "), err)
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, arrayHomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -2165,8 +2194,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool) (*asm.Function, error) {
-	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, 0, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool) (*asm.Function, error) {
+	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, arrayHomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -2181,7 +2210,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare == 0 && reserve == 0 {
 		return first, nil
 	}
-	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, spare, reserve)
+	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, arrayHomes, reuse, tables, packed, hoist, rotate, vblocks, fuse, selects, spare, reserve)
 	if err != nil {
 		return first, nil
 	}
@@ -2192,8 +2221,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, spare int, reserve int) (*asm.Function, int, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, fuseMultiplies: fuse, valueSelect: selects, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, spare int, reserve int) (*asm.Function, int, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, loopArrayHomesEnabled: arrayHomes, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, fuseMultiplies: fuse, valueSelect: selects, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -2773,6 +2802,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	if g.bottomTested > 0 {
 		rotatedLoops[out] = g.bottomTested
+	}
+	if g.arrayHomesCount > 0 {
+		loopArrayHomesOf[out] = g.arrayHomesCount
 	}
 	return out, g.peakScratch, hoistWanted, nil
 }
@@ -3483,6 +3515,11 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			return unsupported("a block whose last statement is not its record result")
 		}
 	}
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		if sa, isScalar := g.scalarArrays[ident.Value]; isScalar {
+			return g.resultScalarArray(sa)
+		}
+	}
 	rec, err := g.recordValueAs(expr, g.resultRecord)
 	if err != nil {
 		return err
@@ -3510,6 +3547,45 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	}
 	for i := 0; i < g.resultRecord.chunks(); i++ {
 		g.emit("ldr", xr(i), g.slotMem(rec.offset+int64(8*i)))
+	}
+	return nil
+}
+
+// resultScalarArray places a scalar-replaced array as the result: each
+// element's hidden local stored at its offset — into the caller's result
+// area when the result is indirect, else into a frame temporary whose
+// chunks then load into x0 (and x1) as a record result's do.
+func (g *generator) resultScalarArray(sa *scalarArray) error {
+	bytes := int64(sa.elem.bits / 8)
+	if bytes*sa.length != g.resultRecord.size {
+		return unsupported("a scalar-replaced array of %d bytes as a %d-byte result", bytes*sa.length, g.resultRecord.size)
+	}
+	_, store := accessPair(bytes)
+	if sa.elem.isFloat {
+		store = "str"
+	}
+	var tmp *recordLocal
+	if !g.resultIndirect {
+		tmp = g.tempRecord(g.resultRecord)
+	}
+	for k := int64(0); k < sa.length; k++ {
+		r, err := g.alloc(sa.elem)
+		if err != nil {
+			return err
+		}
+		g.put(g.loadVar(sa.names[k], r))
+		if g.resultIndirect {
+			g.emit(store, reg(r, sa.elem), asm.Memory{Base: xr(g.resultAreaReg), Offset: k * bytes})
+		} else {
+			g.emit(store, reg(r, sa.elem), g.memOf(tmp.loc().plus(k*bytes)))
+		}
+		g.release(r)
+	}
+	if g.resultIndirect {
+		return nil
+	}
+	for i := 0; i < g.resultRecord.chunks(); i++ {
+		g.emit("ldr", xr(i), g.slotMem(tmp.offset+int64(8*i)))
 	}
 	return nil
 }
@@ -4266,7 +4342,13 @@ func (g *generator) popScope() {
 // declareArray gives an owned array local its frame storage: whole 8-byte
 // slots, so every element access stays aligned and spills never overlap.
 func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+	before := len(g.frameObjects)
 	arr := g.allocArray(elem, length)
+	if n := len(g.frameObjects); n == before+1 {
+		// The verifier's memory model of a large array wants the local's
+		// name and element size beside the object's extent.
+		g.frameObjects[n-1].Name, g.frameObjects[n-1].Elem = name, int64(elem.bits/8)
+	}
 	g.bindArray(name, arr)
 	return arr
 }
@@ -4308,7 +4390,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		if err != nil {
 			return err
 		}
-		arr := g.allocArray(elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		dst, _ := g.arrayAsRecord(arr)
 		if from.layout != dst.layout {
 			return unsupported("an array local %s initialized from a %s", s.Name.Value, from.layout.name)
@@ -4337,7 +4419,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		return g.declareScalarArray(s, elem, length, literal)
 	}
 	if s.Value == nil {
-		arr := g.declareArray(s.Name.Value, elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		zero, err := g.alloc(scalars["u64"])
 		if err != nil {
 			return err
@@ -4347,12 +4429,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		words := (bytes + 7) / 8
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.zeroPair(zero, g.slotMem(arr.offset+8*w))
+				g.zeroPair(zero, g.memOf(arr.loc().plus(8*w)))
 			} else {
-				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
+				g.emit("str", xr(zero), g.memOf(arr.loc().plus(8*w)))
 			}
 		}
 		g.release(zero)
+		g.bindArray(s.Name.Value, arr)
 		return nil
 	}
 	literal, isLiteral := s.Value.(*ast.ArrayLiteral)
@@ -4364,13 +4447,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	}
 	// The elements evaluate one at a time into storage reserved before the
 	// name is bound (an initializer never sees the array it fills).
-	arr := g.allocArray(elem, length)
+	arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 	for i, element := range literal.Elements {
 		r, err := g.expr(element, &elem)
 		if err != nil {
 			return err
 		}
-		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
+		g.emit(storeOf(elem), reg(r, elem), g.memOf(arr.loc().plus(int64(i)*int64(elem.bits/8))))
 		g.release(r)
 	}
 	g.bindArray(s.Name.Value, arr)
@@ -4511,11 +4594,12 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.promoteFields(name, rec)
 }
 
-// returnSlotLocal names the record local a function builds in its result
-// area: the body's tail is the bare name of a local declared once, at the
-// body's top level, of the result type, not from a literal (a literal
-// fills frame slots), and whose address is never taken — the local then
-// is the area the caller passed in x8, and the return copies nothing.
+// returnSlotLocal selects a record or array local for the result area:
+// the body's tail is its bare name, declared once at the body's top level
+// with the result type, and its address is never taken. Record literals
+// are excluded because their initializer fills frame storage; array
+// literals remain candidates under arrayDeclarationStorage's additional
+// type, extent, and whole-assignment guards.
 func returnSlotLocal(fn *ast.FunctionStatement) string {
 	block, isBlock := fn.Body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
@@ -5863,6 +5947,15 @@ func (g *generator) effect(expr ast.Expression) error {
 }
 
 func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
+	finishHomes := g.beginLoopArrayHomes(loop)
+	homesFinished := false
+	if finishHomes != nil {
+		defer func() {
+			if !homesFinished {
+				finishHomes()
+			}
+		}()
+	}
 	head, end := g.newLabel("loop"), g.newLabel("done")
 	g.label(head)
 	if g.loopHomes != nil {
@@ -5886,6 +5979,10 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 	}
 	g.emit("b", asm.Symbol{Name: head})
 	g.label(end)
+	if finishHomes != nil {
+		finishHomes()
+		homesFinished = true
+	}
 	return nil
 }
 

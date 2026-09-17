@@ -413,6 +413,9 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			if !isIns || removed[j] {
 				continue
 			}
+			if writesBackTo(ins, old) {
+				return false
+			}
 			if readsGeneral(ins, old) && requireClass && !readsOnlyAsClass(ins, old, cls) {
 				return false
 			}
@@ -818,13 +821,17 @@ func branchTarget(ins asm.Instruction) string {
 	return ""
 }
 
-// sourceRegisters lists an instruction's general source registers: every
-// register operand but the destination, memory bases and indices, and
-// extended-register operands.
+func isPairLoad(ins asm.Instruction) bool {
+	return ins.Mnemonic == "ldp" || ins.Mnemonic == "ldpsw"
+}
+
+// sourceRegisters lists general input operands after operand zero (whose
+// read role is handled by readsGeneral). Both pair-load outputs are excluded;
+// an output that also supplies the memory base remains a read via the memory.
 func sourceRegisters(ins asm.Instruction) []asm.Register {
 	var regs []asm.Register
 	for i, operand := range ins.Operands {
-		if i == 0 {
+		if i == 0 || (i == 1 && isPairLoad(ins)) {
 			continue
 		}
 		switch o := operand.(type) {
@@ -863,7 +870,7 @@ func writtenGeneral(ins asm.Instruction) []int {
 		return nil
 	}
 	n := 1
-	if ins.Mnemonic == "ldp" || ins.Mnemonic == "ldpsw" {
+	if isPairLoad(ins) {
 		n = 2
 	}
 	var regs []int
@@ -881,6 +888,17 @@ func writtenGeneral(ins asm.Instruction) []int {
 func writesGeneral(ins asm.Instruction, reg int) bool {
 	for _, r := range writtenGeneral(ins) {
 		if r == reg {
+			return true
+		}
+	}
+	return false
+}
+
+// A writeback address is a tied input/output, not an ordinary read that
+// copy propagation may move to a different physical register.
+func writesBackTo(ins asm.Instruction, reg int) bool {
+	for _, operand := range ins.Operands {
+		if mem, ok := operand.(asm.Memory); ok && mem.Mode != asm.MemOffset && mem.Base.Num == reg {
 			return true
 		}
 	}
@@ -914,7 +932,7 @@ func readsGeneral(ins asm.Instruction, reg int) bool {
 		return false
 	}
 	first, isReg := ins.Operands[0].(asm.Register)
-	if !isReg || first.Num != reg {
+	if !isReg || (first.Class != asm.ClassX && first.Class != asm.ClassW) || first.ZeroRegister() || first.Num != reg {
 		return false
 	}
 	// The first operand is read by stores, compares, branches, and movk.
@@ -937,7 +955,7 @@ func readsOnlyAsClass(ins asm.Instruction, reg int, cls asm.RegClass) bool {
 			return false
 		}
 	}
-	if first, isReg := ins.Operands[0].(asm.Register); isReg && first.Num == reg && readsGeneral(ins, reg) && first.Class != cls {
+	if first, isReg := generalReg(ins.Operands[0]); isReg && first.Num == reg && readsGeneral(ins, reg) && first.Class != cls {
 		return false
 	}
 	return true
@@ -970,10 +988,13 @@ func renameReads(ins asm.Instruction, old int, new asm.Register) asm.Instruction
 	for i, operand := range out.Operands {
 		if i == 0 {
 			// The first operand: renamed only where it is a read.
-			if r, isReg := operand.(asm.Register); isReg && r.Num == old && readsGeneral(ins, old) && !writesGeneral(ins, old) {
+			if r, isReg := generalReg(operand); isReg && r.Num == old && readsGeneral(ins, old) && !writesGeneral(ins, old) {
 				out.Operands[i] = view(r)
 			}
 			continue
+		}
+		if i == 1 && isPairLoad(ins) {
+			continue // The second loaded output must keep its register.
 		}
 		switch o := operand.(type) {
 		case asm.Register:
@@ -1014,6 +1035,9 @@ func registersNamed(items []asm.Item) map[int]bool {
 		}
 		for _, r := range sourceRegisters(ins) {
 			out[r.Num] = true
+		}
+		for _, r := range writtenGeneral(ins) {
+			out[r] = true
 		}
 		if len(ins.Operands) > 0 {
 			if r, isReg := ins.Operands[0].(asm.Register); isReg && (r.Class == asm.ClassX || r.Class == asm.ClassW) {

@@ -555,6 +555,322 @@ the change helps but does not support a precise speedup. The raw samples and
 the invariant machine-shape counts are in
 [`blake3-in-place-permutation-2026-09-17.json`](results/blake3-in-place-permutation-2026-09-17.json).
 
+The full native build also benefits from the permutation change. Two further
+interleaved runs compare C, `dfd119cd`, and that same baseline with only the
+permutation lowering, using fifteen samples of thirty rounds over 1 MiB:
+
+| Run | C ms per 1 MiB | Native before | Native after | Native elapsed-time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2.794 | 5.603 | 5.361 | 4.3% |
+| 2 | 3.006 | 6.687 | 6.109 | 8.6% |
+
+The timed implementation was developed independently of `a1783bba`. Applying
+the landed lowering to the same baseline reproduces the measured native object
+and complete runner byte-for-byte; generated C differs only in source-location
+comments. All samples agree, and a rebuilt runner agrees with C at fourteen
+sizes from empty input through 1 MiB, including block/chunk/tree boundaries.
+Native coverage is unchanged. Load averages were 24–25, core placement was
+uncontrolled, and sample ranges overlap; these medians do not establish a fixed
+speedup. Raw samples and reconstruction hashes:
+[`blake3-array-permutation-2026-09-17.json`](results/blake3-array-permutation-2026-09-17.json).
+
+Regression coverage now proves every permutation of five arbitrary words (120
+orders), mixed cycles at 32/64-bit signed and unsigned widths, and long cycles.
+Gathers and helpers with preceding statements retain snapshot semantics. A
+repeated sixteen-word BLAKE3 permutation loop has a proven native body with one
+message-array home and passes in native and C builds. These timings predate the full
+compression proof described below.
+
+**The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
+runner and package, seven samples of five rounds, 1 MiB per kernel,
+checksums agreeing on every row; the host was loaded again (load
+average 40–50 from another session's test suites), so the ratios are
+the measurement. Raw samples: `results/kernels-m4-max-2026-09-16.json`.
+
+| Kernel | C backend ns/byte | Native ns/byte | Native / C | Native / C on 2026-09-14 |
+| --- | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.160 | 0.162 | 1.01 | 5.7 |
+| `sha256` | 0.714 | 0.707 | 0.99 | 1.00 |
+| `blake3` | 3.211 | 10.117 | 3.15 | 1.54 |
+| `dot` | 0.901 | 1.124 | 1.25 | 3.24 |
+| `sum` | 0.130 | 0.140 | 1.08 | 3.40 |
+| `search` | 11.841 | 12.918 | 1.09 | 1.76 |
+| `page_probe` | 9.681 | 16.084 | 1.66 | 1.93 |
+| `bitmap` | 0.260 | 0.235 | 0.90 | 1.19 |
+| `dispatch` | 10.763 | 9.044 | 0.84 | 0.83 |
+| `tiled` | 0.187 | 0.199 | 1.07 | 2.8 |
+
+The loop kernels closed most of the gap in two days — `sum` and `tiled`
+within ten percent of the C backend, `dot` within a quarter, `crc32c`
+at parity now that the chunk body is proven and the dispatch stays with
+the C backend — and `page_probe` keeps the largest remaining gap of the
+proven bodies. `blake3` went the other way, from 1.5 to 3.2 times the C
+backend, with the same body shapes (the compress body is 530
+instructions at this revision against 519 at the morning's, 156 loads
+and 141 stores around 34 xors and 32 rotates either way) and none of
+the new transforms selected for it (their forms were judged trusted and
+set aside). The runner refused to time the native row between
+825e9e3e (2026-09-15 16:10) and 3d4e7807 (2026-09-16 05:14), where
+its checksum disagreed with the C backend's; the row agreed again and
+ran at 3.4× from c1283ce6 (13:43) through 1fcaba66, and at f4f8c791
+the next morning (the in-place message permutation, a1783bba, among
+the night's changes) `blake3` measures 5.85 ms/op against the C
+backend's 3.48 — 1.68×, the 2026-09-14 ratio again. The commit that
+cost the factor of two in between was not isolated.
+
+**BLAKE3 compression equivalence (2026-09-17).** The selected standard-library
+`hash__blake3_ucompress` now proves all eight returned 64-bit chunks by structural
+equality, at the ordinary verification budget. The comparison canonicalizer
+spells fixed 32/64-bit rotates as shift-and-OR, recovers a packed high word only
+under exact width/count/low-bit bounds, and removes zero-count shifts and
+repeated identical masks. This avoids bit-blasting the entire seven-round hash.
+The selected companion object is byte-for-byte identical before and after this
+verifier change: 330 instructions by the optimization report's count, 144
+stack-relative memory instructions, and a 208-byte frame. No runtime speedup is
+claimed. `TestNativeBlake3CompressionProven` uses the actual library body and
+refutes a changed rotate; `TestE2ENativeBlake3CompressionBoundaries` compares the
+compressor-native path and C against the existing reference at thirteen input
+lengths from 0 to 5000 bytes, including block/chunk/tree boundaries.
+
+`Oak.BitwiseCanonical` proves the normalization algebra, not a refinement of
+the Go canonicalizer or a complete source-to-Arm-ASL execution theorem. The
+surrounding hash API is not claimed fully native or proven, and memory-effect
+admission, ordering/custody requirements, and the downstream compiler pin are
+unchanged. Repeated state traffic and physical message permutations remain
+performance work.
+
+**Exact rotate normalization in the verifier (2026-09-17, baseline
+`40558540`).** A constant 32/64-bit machine rotate now canonicalizes to
+the source's two shifts and or, under the existing
+`Oak.AssemblerSemantics.ror_spelling` law. There is no reassociation or
+numeric relaxation, no raised budget, and no reordered proof stage.
+Independent source/assembly quarter-round fixtures change from witnessed
+to proven by structural equality; a wrong rotate count still refutes.
+
+| Scalar quarter rounds | Before, median Verify time | After | Verdict |
+| --- | ---: | ---: | --- |
+| 1 | 653 ms | 1.64 ms | witnessed → proven |
+| 7 | 706 ms | 9.08 ms | witnessed → proven |
+
+Three one-iteration Go benchmark samples per fixture, parsing outside the
+timer, same base budget. Before/after groups were not interleaved and host
+load/core placement were uncontrolled. Allocation per verification drops
+from roughly 1.34 GB to 0.44/0.70 MB respectively because the whole-word
+bit-level fallback is avoided. These are **verification costs**, not
+application speedups. Full BLAKE3 compression was still witnessed in this
+isolated experiment. The later `def4003e` normalization above supersedes
+its narrower rotate rule; the independent fixtures/benchmark are retained.
+The byte-exact baseline
+overlay, source hashes, protocol, proof scope, and raw benchmark output are
+recorded in
+[`rotate-verifier-2026-09-17.json`](results/rotate-verifier-2026-09-17.json).
+
+**Returned arrays built in the result area (2026-09-17, baseline
+`40558540`).** Eligible integer-array locals now use the caller's result
+buffer directly, avoiding a separate frame array and its final copy.
+Whole-array replacements remain frame-backed, preserving the permutation
+optimization above; caller self-assignment still uses snapshot storage.
+See `docs/spec/94-assembler.md` §9, "Copies at the boundary", for guards
+and proof scope.
+
+Only `hash__blake3_ucompress` was native in these comparisons; the rest
+of the unchanged package used C in both variants. Compression changes
+from 334 to 308 instructions, 208 to 144 frame bytes, and 170 to 162 static
+memory instructions. Stack-relative accesses fall from 144 to 60, but most
+of that is a change of memory base to the result buffer, not eliminated
+loads/stores. Both measured compression bodies were **witnessed**, not
+proven; this historical report predates `def4003e`.
+
+| Interleaved run | Samples × rounds | Before ms / MiB | After | After / before |
+| --- | ---: | ---: | ---: | ---: |
+| A | 15 × 30 | 4.939 | 4.454 | 0.902 |
+| B | 15 × 50 | 4.160 | 4.037 | 0.971 |
+| C | 15 × 50 | 4.801 | 4.842 | 1.008 |
+| D | 21 × 50 | 4.159 | 4.003 | 0.962 |
+
+All full-digest checks agree with the C control, including 13 boundary
+sizes around blocks, chunks and tree merges. Host load and core placement
+were uncontrolled; C overlapped local regression suites and D ran after
+they finished. Three medians improve, one is effectively flat, with
+overlapping sample ranges: a modest gain is plausible, a precise speedup
+is not established. These are not whole-native-suite results or proof of
+parity with C. The final D C control was 3.065 ms/MiB.
+All candidate builds emitted the same compression object, including after
+conservative extent/call-lifetime hardening. Raw samples, binary/source
+hashes, build protocol, counters and proof limits:
+[`blake3-array-result-2026-09-17.json`](results/blake3-array-result-2026-09-17.json).
+
+After integration with `def4003e`, the **same 308-instruction compression
+object is proven for all eight result chunks**, with the result-area
+optimization retained. The real-compressor wrong-rotate test still refutes,
+and native/C boundary tests pass. The object hash is identical to the timed
+candidate; the report records this later integration separately rather than
+relabeling earlier evidence as proof. The broader upstream canonicalizer
+is used directly, without a duplicate rotate rule.
+
+**Frame-pair initializers expose message-word promotion (2026-09-17,
+baseline `4d1bc1dd`).** BLAKE3's message array was initialized with 64-bit
+pair stores, then accessed exclusively as independent 32-bit words. That
+mixed-width initialization alone blocked ordinary frame-slot promotion.
+The allocator can now split eligible pair stores using dead, non-reserved,
+already-clobbered source registers, preserving the source loads and their
+order. Existing dominance, allocation, seam and semantic checks still apply;
+an expansion that promotes none of its exposed words is discarded.
+
+The selected compressor promotes 11 slot webs. Static memory instructions
+fall **162 → 130**, including **60 → 28** SP-relative accesses, with the
+same 144-byte frame. Instructions rise **308 → 311**, and moves rise 4 → 31:
+less memory traffic does not imply an equally large runtime improvement.
+Both bodies are **proven for all eight result chunks** at the normal budget.
+Wrong high-half shifts and a wrong compressor rotate are refuted. Neither
+the verifier nor the source reference changed.
+
+Only compression is native in this comparison; the rest of the hash uses
+the same C code. Complete 1 MiB BLAKE3, median milliseconds on an M4 Max:
+
+| Same-process run | Samples × rounds | Before | After | C control | After / before |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 51 × 10 | 3.412 | 3.342 | 2.554 | 0.979 |
+| B | 101 × 10 | 4.194 | 4.118 | 3.181 | 0.982 |
+| C | 201 × 5 | 3.773 | 3.675 | 2.831 | 0.974 |
+| D, reversed loading/order | 101 × 5 | 3.711 | 3.643 | 2.822 | 0.982 |
+
+These runs use one thread, rotating interleaved calls to distinct local
+libraries, a shared immutable input, one warmup each, and full digest checks
+at block/chunk/tree boundaries and after every sample. Affinity, frequency
+and external host load remain uncontrolled. The medians of within-sample
+after/before ratios show smaller gains in some runs (roughly 1–3%). Earlier
+separate-process repeats were inconsistent: ratios **0.998, 0.851, 1.043**.
+All samples, including those regressions/outliers, are retained in
+[`blake3-frame-pairs-2026-09-17.json`](results/blake3-frame-pairs-2026-09-17.json).
+The same-process repeats support a modest host-specific gain, not a universal
+speedup: this restricted native path remains about 29–32% slower than C.
+The final reserved-register guards and materialization-version update emit
+the **same object bytes** as the timed candidate.
+
+Rechecked after integrating `8204e8a9` (paired-load liveness fixes and
+constant-trip/scalar-array expansion): an upstream-source overlay and the
+rebased candidate emit byte-identical objects to their respective timed
+variants, and both generated C wrappers also match. Both still prove all
+eight chunks. The integrated materialization version is v13, preserving
+upstream's v12 identity change; this later check is recorded separately in
+the raw report.
+
+The diagnostic harness is [blake3_same_process.c](blake3_same_process.c).
+To reproduce on macOS/arm64, save an emitter built with
+`go build -o PATH ./benchmarks/native/emit` at each revision. Run each with
+`OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0`, input
+`benchmarks/kernels/oak`, and separate output prefixes `before`/`after` in a
+fresh temporary directory. Generate the all-C control with
+`go run . build -o PATH/control.c benchmarks/kernels/oak`. With those artifacts
+as absolute paths in a task-specific `bench_dir`, build and run:
+
+```sh
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/before.c" "$bench_dir/before.o" -o "$bench_dir/before.dylib" -lm
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/after.c" "$bench_dir/after.o" -o "$bench_dir/after.dylib" -lm
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/control.c" -o "$bench_dir/control.dylib" -lm
+cc -std=c99 -O3 -Wall -Wextra benchmarks/native/blake3_same_process.c \
+  -o "$bench_dir/same-process"
+"$bench_dir/same-process" "$bench_dir/before.dylib" \
+  "$bench_dir/after.dylib" "$bench_dir/control.dylib" 10 101
+```
+
+Use only locally built, trusted libraries; `dlopen` executes library code.
+Keep default Mach-O two-level namespaces (no interposition/flat namespace).
+For the reverse-order control swap the first two libraries and invert the
+result labels when comparing. The harness checks distinct entry points and
+uses the generated `View`, `Span`, enum-`Bool` ABI. It is a local diagnostic,
+not a portable ABI or a production runtime performance gate.
+
+**Rejected: block-local copy propagation (2026-09-17, baseline
+`efb4a203`).** A prototype admits copies from loop-carried/multiple-definition
+GPR values when every destination read is later in the same basic block and
+the physical source remains unchanged. Tied operands, implicit/nonlocal uses,
+source clobbers, narrowing and reserved registers refuse it. Removing a dead
+callee-saved copy additionally requires a later full overwrite before any
+read, barrier or exit. The existing eight-round simplification limit stays.
+
+This removes six copies from the compressor's seven-round loop:
+**311 → 305 instructions**, **31 → 25 moves**. Memory instructions stay at
+130 (28 SP-relative), and the frame stays 144 bytes. Both source and candidate
+still prove all eight result chunks at the normal budget. Join/loop fixtures,
+wrong-result refutation and the machine suite pass. But the clock does not
+justify shipping it:
+
+| Sequential same-process run | Samples × rounds | Before ms/MiB | After | After / before |
+| --- | ---: | ---: | ---: | ---: |
+| C | 101 × 5 | 4.336 | 4.339 | 1.001 |
+| D, reversed library order | 101 × 5 | 4.367 | 4.747 | 1.087 |
+
+The medians of within-sample after/before ratios are 1.014 and 1.019;
+affinity, frequency and external host load remain uncontrolled. The first
+two exploratory sessions overlapped and are **not acceptance evidence**;
+their raw samples are retained too. C may overlap a small local test run;
+D runs without another local benchmark or compiler test. Every full digest
+agrees at the existing block/chunk/tree boundaries and after every sample.
+Only compression is native here, with the same C wrapper in both variants.
+
+**The prototype is not enabled or compiled into Oak.** The shipping copy pass
+is restored byte-for-byte; no new option or proof-policy change was added.
+The [exact prototype and tests](experiments/local-copy-propagation.patch) are
+an inert, unapplied patch against the named baseline, kept so a later allocator
+or scheduling change can be evaluated without reconstructing this experiment.
+In a disposable checkout of that revision, review the patch, use
+`git apply --check` before applying, then follow the preceding same-process
+build recipe with the baseline and patched emitters. The final safety-tightened
+prototype emits the exact timed object. [All raw samples and artifact hashes](results/blake3-local-copies-rejected-2026-09-17.json)
+record the proof scope, excluded sessions and rejection. The cause of the
+runtime difference is not isolated: fewer moves and smaller code are not, by
+themselves, evidence of a faster implementation.
+
+**Loop-scoped array homes (2026-09-17, isolated at `def4003e`).** The
+`loop-array-homes` AArch64 candidate preloads selected literal-index elements
+of a private frame array, uses scalar registers during one loop, and flushes
+written elements before subsequent memory-based uses. Unlike whole-function
+scalar replacement, a computed index outside the loop does not disqualify the
+array. Selection is deterministic, limited to eight available callee-saved
+homes and owned `[1..64]u32/u64` arrays. Borrowed/escaped/whole-reassigned arrays,
+nested candidate loops, early exits, ordered blocks, and unknown syntax refuse.
+Scalar calls are supported; the home allocator now filters recycled registers
+to x19–x28 rather than assuming its reuse pool contains only callee-saved ones.
+
+In this isolated measurement, six BLAKE3 state elements stay in registers:
+24 fewer stack loads/stores per round. The selected compressor still proves
+all eight result chunks; its frame remains 208 bytes, static instructions fall
+330 → 326, and stack-relative memory instructions 144 → 134. The unchanged
+Oak source remains the verifier reference. The full search regression checks
+nonregression, determinism and retained proof; fixed zero/one/three-trip u32/u64
+fixtures prove, and a transform-isolated runtime comparison exercises dynamic
+trips, scalar calls, conditional writes, and post-loop computed accesses.
+The dynamic nonlinear fixture is witness-checked, not proven. Generic candidate
+admission retains the existing verifier gate; this is not a new proof-only policy.
+
+On the M4 Max, two interleaved nine-sample runs at 1 MiB measured median time
+reductions of 7.1% and 8.8%; the candidate remained 29.2% and 26.8% slower than
+Oak's C backend. At 64 bytes the median reductions were only 0.6% and 2.4%.
+Every sample's checksum agrees. Core placement was uncontrolled and host load
+was substantial, so these are observations, not a portable speedup guarantee or
+the ±8% Zig/Rust/C target. These measurements predate concurrent compiler work;
+the [raw samples, configuration and object hashes](results/blake3-loop-array-homes-2026-09-17.json)
+pin the exact comparison.
+
+After integration onto `8204e8a9`, default search keeps the upstream direct-result
+path: 304 instructions, a 144-byte frame, 60 stack-relative memory instructions,
+and all eight result chunks proven. This is a different object from either timed
+variant above; no timing claim is transferred to it. Its array is in the caller's
+result buffer, which this pass intentionally excludes. The regression permits
+competing candidates to win and checks that offering loop homes does not regress
+the selected compressor. Private-frame fixtures separately require the home
+candidate to fire; result-buffer caching still needs its own justification.
+
+`Oak.LoopArrayHomes` proves preload/read/write/materialize/flush algebra for
+arbitrary selected sets and mixed selected/unselected write traces. It does not
+prove the Go matcher, private provenance, control flow, register allocator, or
+Arm ASL execution. Memory/ordering admission and the downstream pin are unchanged.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

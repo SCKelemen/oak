@@ -1,0 +1,682 @@
+diff --git a/machine/simplify.go b/machine/simplify.go
+--- a/machine/simplify.go
++++ b/machine/simplify.go
+@@ -1,167 +1,251 @@
+-package machine
+-
+-import "fmt"
+-
+-// Global cleanups over the lifted IR, on the webs and the dominator tree
+-// (docs/notes/optimizer-search-2026-09.md §11 "late copy cleanup", Phase
+-// C's first pass): copy propagation, which reads a copied value from its
+-// source wherever the source is unchanged, and dead-code elimination,
+-// which drops an instruction whose every result no one reads when the
+-// instruction does nothing else. Both leave stores, calls, branches,
+-// compares, and anything with a side effect alone; the checker and the
+-// verifier judge the result like any other candidate.
+-
+-// Simplify runs copy propagation and dead-code elimination to a fixpoint
+-// (bounded) and reports how many copies it propagated and instructions it
+-// removed. The function is rewritten in place; its instruction list and
+-// indices are current afterwards.
+-func (f *Function) Simplify() (propagated, eliminated int, err error) {
+-	for round := 0; round < 8; round++ {
+-		webs, werr := f.Webs()
+-		if werr != nil {
+-			return propagated, eliminated, werr
+-		}
+-		f.Liveness(webs)
+-		p := f.propagateCopies(webs)
+-		propagated += p
+-		if p > 0 {
+-			// The webs changed: rebuild before deciding what is dead.
+-			if webs, werr = f.Webs(); werr != nil {
+-				return propagated, eliminated, werr
+-			}
+-		}
+-		e := f.eliminateDead(webs)
+-		eliminated += e
+-		if p == 0 && e == 0 {
+-			return propagated, eliminated, nil
+-		}
+-	}
+-	return propagated, eliminated, nil
+-}
+-
+-// propagateCopies rewrites the reads of a copy's destination to its
+-// source when the source has exactly one definition (so it is unchanged
+-// wherever the destination is read: a use with one reaching definition is
+-// dominated by it), the destination is defined only by the copy, every
+-// read can be respelled (none is a contract's implicit read), and the copy
+-// is as wide as what flows through it. The copy itself is left for
+-// dead-code elimination.
+-func (f *Function) propagateCopies(webs []*Web) int {
+-	siteWeb := map[site]*Web{}
+-	for _, w := range webs {
+-		for _, d := range w.Defs {
+-			if d.Instr != nil {
+-				siteWeb[site{d.Instr, d.Access, true}] = w
+-			}
+-		}
+-		for _, u := range w.Uses {
+-			siteWeb[site{u.Instr, u.Access, false}] = w
+-		}
+-	}
+-	count := 0
+-	for _, ins := range f.Instrs {
+-		if !ins.Copy || len(ins.Defs) != 1 || len(ins.Uses) < 1 {
+-			continue
+-		}
+-		dst, src := siteWeb[site{ins, ins.Defs[0], true}], siteWeb[site{ins, ins.Uses[0], false}]
+-		if dst == nil || src == nil || dst == src || dst.Pinned {
+-			continue
+-		}
+-		if len(dst.Defs) != 1 || len(src.Defs) != 1 || len(dst.Uses) == 0 {
+-			continue
+-		}
+-		if dst.Reg.Class != src.Reg.Class || !copySafe(ins, dst, src) {
+-			continue
+-		}
+-		ok := true
+-		for _, u := range dst.Uses {
+-			if u.Access.Implicit || u.Instr == ins || !src.liveAt(usePos(u.Instr)) {
+-				// The source must still hold its one definition at the
+-				// read: another web of the register (a call's result, a
+-				// later assignment) ends its range before that.
+-				ok = false
+-				break
+-			}
+-		}
+-		if !ok {
+-			continue
+-		}
+-		for _, u := range dst.Uses {
+-			f.t.setRegAt(&u.Instr.Asm, u.Access, src.Reg)
+-		}
+-		// The destination's reads now belong to the source: refresh the
+-		// accesses so a later copy in this round sees them.
+-		for _, u := range dst.Uses {
+-			for k := range u.Instr.Uses {
+-				if u.Instr.Uses[k] == u.Access {
+-					u.Instr.Uses[k].Reg = src.Reg
+-				}
+-			}
+-		}
+-		count++
+-		// One propagation per round per source keeps the bookkeeping
+-		// simple; the next round takes the rest.
+-		break
+-	}
+-	return count
+-}
+-
+-// eliminateDead removes the instructions whose every definition no one
+-// reads, when the instruction is pure on this lane: no store, call,
+-// branch, compare, atomic, or system effect, and no load from anywhere
+-// but the frame.
+-func (f *Function) eliminateDead(webs []*Web) int {
+-	live := map[site]bool{}
+-	for _, w := range webs {
+-		if len(w.Uses) == 0 {
+-			continue
+-		}
+-		for _, d := range w.Defs {
+-			if d.Instr != nil {
+-				live[site{d.Instr, d.Access, true}] = true
+-			}
+-		}
+-	}
+-	removed := 0
+-	for _, b := range f.Blocks {
+-		kept := b.Instrs[:0]
+-		for _, ins := range b.Instrs {
+-			dead := len(ins.Defs) > 0 && f.t.pure(ins.Asm)
+-			for _, d := range ins.Defs {
+-				// A write to a callee-saved or reserved register no one
+-				// reads is a restore, or a save obligation's: it stays.
+-				if d.Implicit || live[site{ins, d, true}] || f.t.calleeSaved(d.Reg) || f.t.reserved(d.Reg) {
+-					dead = false
+-					break
+-				}
+-			}
+-			if dead {
+-				removed++
+-				continue
+-			}
+-			kept = append(kept, ins)
+-		}
+-		b.Instrs = kept
+-	}
+-	if removed > 0 {
+-		f.reindex()
+-	}
+-	return removed
+-}
+-
+-// reindex rebuilds the linear instruction list after removals.
+-func (f *Function) reindex() {
+-	f.Instrs = f.Instrs[:0]
+-	for _, b := range f.Blocks {
+-		for _, ins := range b.Instrs {
+-			ins.Index = len(f.Instrs)
+-			ins.Block = b
+-			f.Instrs = append(f.Instrs, ins)
+-		}
+-	}
+-}
+-
+-// String spells a web for diagnostics.
+-func (w *Web) String() string {
+-	return fmt.Sprintf("%s[%d defs, %d uses, %d–%d]", w.Reg, len(w.Defs), len(w.Uses), w.From, w.To)
+-}
++package machine
++
++import "fmt"
++
++// Global cleanups over the lifted IR, on the webs and the dominator tree
++// (docs/notes/optimizer-search-2026-09.md §11 "late copy cleanup", Phase
++// C's first pass): copy propagation, which reads a copied value from its
++// source wherever the source is unchanged, and dead-code elimination,
++// which drops an instruction whose every result no one reads when the
++// instruction does nothing else. Both leave stores, calls, branches,
++// compares, and anything with a side effect alone; the checker and the
++// verifier judge the result like any other candidate.
++
++// Simplify runs copy propagation and dead-code elimination to a fixpoint
++// (bounded) and reports how many copies it propagated and instructions it
++// removed. The function is rewritten in place; its instruction list and
++// indices are current afterwards.
++func (f *Function) Simplify() (propagated, eliminated int, err error) {
++	for round := 0; round < 8; round++ {
++		webs, werr := f.Webs()
++		if werr != nil {
++			return propagated, eliminated, werr
++		}
++		f.Liveness(webs)
++		p := f.propagateCopies(webs)
++		propagated += p
++		if p > 0 {
++			// The webs changed: rebuild before deciding what is dead.
++			if webs, werr = f.Webs(); werr != nil {
++				return propagated, eliminated, werr
++			}
++		}
++		e := f.eliminateDead(webs)
++		eliminated += e
++		if p == 0 && e == 0 {
++			return propagated, eliminated, nil
++		}
++	}
++	return propagated, eliminated, nil
++}
++
++// propagateCopies rewrites the reads of a copy's destination to its
++// source when the source has exactly one definition (so it is unchanged
++// wherever the destination is read: a use with one reaching definition is
++// dominated by it), the destination is defined only by the copy, every
++// read can be respelled (none is a contract's implicit read), and the copy
++// is as wide as what flows through it. The copy itself is left for
++// dead-code elimination. A separate block-local path admits a loop/join
++// source with several definitions when its physical register is unchanged
++// between the copy and every destination read.
++func (f *Function) propagateCopies(webs []*Web) int {
++	siteWeb := map[site]*Web{}
++	for _, w := range webs {
++		for _, d := range w.Defs {
++			if d.Instr != nil {
++				siteWeb[site{d.Instr, d.Access, true}] = w
++			}
++		}
++		for _, u := range w.Uses {
++			siteWeb[site{u.Instr, u.Access, false}] = w
++		}
++	}
++	count := 0
++	for _, ins := range f.Instrs {
++		if !ins.Copy || len(ins.Defs) != 1 || len(ins.Uses) < 1 {
++			continue
++		}
++		dst, src := siteWeb[site{ins, ins.Defs[0], true}], siteWeb[site{ins, ins.Uses[0], false}]
++		if dst == nil || src == nil || dst == src || dst.Pinned {
++			continue
++		}
++		if len(dst.Defs) != 1 || len(dst.Uses) == 0 {
++			continue
++		}
++		if dst.Reg.Class != src.Reg.Class || !copySafe(ins, dst, src) {
++			continue
++		}
++		ok := len(src.Defs) == 1
++		if ok {
++			for _, u := range dst.Uses {
++				if u.Access.Implicit || u.Instr == ins || !src.liveAt(usePos(u.Instr)) {
++					// The source must still hold its one definition at the
++					// read: another web of the register (a call's result, a
++					// later assignment) ends its range before that.
++					ok = false
++					break
++				}
++			}
++		} else if len(src.Defs) > 1 {
++			ok = f.localCopySourceUnchanged(ins, dst, src)
++		}
++		if !ok {
++			continue
++		}
++		for _, u := range dst.Uses {
++			f.t.setRegAt(&u.Instr.Asm, u.Access, src.Reg)
++		}
++		// The destination's reads now belong to the source: refresh the
++		// accesses so a later copy in this round sees them.
++		for _, u := range dst.Uses {
++			for k := range u.Instr.Uses {
++				if u.Instr.Uses[k] == u.Access {
++					u.Instr.Uses[k].Reg = src.Reg
++				}
++			}
++		}
++		count++
++		// One propagation per round per source keeps the bookkeeping
++		// simple; the next round takes the rest.
++		break
++	}
++	return count
++}
++
++// localCopySourceUnchanged does not choose a reaching definition at a
++// loop/join. Whatever value the source has at this copy, the same register
++// still holds it at every rewritten read in this straight-line block.
++// The caller has checked the copy's width and its destination's sole def.
++func (f *Function) localCopySourceUnchanged(copy *Instr, dst, src *Web) bool {
++	if copy.Block == nil || dst.Reg.Class != GPR || src.Reg.Class != GPR || dst.Reg == src.Reg ||
++		f.t.reserved(dst.Reg) || f.t.reserved(src.Reg) || copy.Defs[0].Lane || copy.Uses[0].Lane {
++		return false
++	}
++	last := copy.Index
++	for _, use := range dst.Uses {
++		if use.Access.Implicit || use.Access.Lane || use.Instr == nil ||
++			use.Instr.Block != copy.Block || use.Instr.Index <= copy.Index {
++			return false
++		}
++		for _, def := range use.Instr.Defs {
++			if !def.Implicit && def.Op == use.Access.Op && def.Part == use.Access.Part {
++				return false // respelling a tied read would also retarget its write
++			}
++		}
++		if use.Instr.Index > last {
++			last = use.Instr.Index
++		}
++	}
++	for _, instruction := range copy.Block.Instrs {
++		if instruction.Index <= copy.Index {
++			continue
++		}
++		if instruction.Index > last {
++			break
++		}
++		if f.t.barrier(instruction) {
++			return false
++		}
++		// The final instruction reads before writing; an independent
++		// destination operand may overwrite the source after that read.
++		if instruction.Index < last {
++			for _, def := range instruction.Defs {
++				if def.Reg == src.Reg {
++					return false // W and X are the same GPR here
++				}
++			}
++		}
++	}
++	return true
++}
++
++// eliminateDead removes the instructions whose every definition no one
++// reads, when the instruction is pure on this lane: no store, call,
++// branch, compare, atomic, or system effect, and no load from anywhere
++// but the frame.
++func (f *Function) eliminateDead(webs []*Web) int {
++	live := map[site]bool{}
++	for _, w := range webs {
++		if len(w.Uses) == 0 {
++			continue
++		}
++		for _, d := range w.Defs {
++			if d.Instr != nil {
++				live[site{d.Instr, d.Access, true}] = true
++			}
++		}
++	}
++	removed := 0
++	for _, b := range f.Blocks {
++		kept := b.Instrs[:0]
++		for _, ins := range b.Instrs {
++			dead := len(ins.Defs) > 0 && f.t.pure(ins.Asm)
++			for _, d := range ins.Defs {
++				// A write to a callee-saved or reserved register no one
++				// reads is a restore, or a save obligation's: it stays.
++				if d.Implicit || live[site{ins, d, true}] || f.t.reserved(d.Reg) ||
++					(f.t.calleeSaved(d.Reg) && !f.overwrittenLocalCopy(ins, d.Reg)) {
++					dead = false
++					break
++				}
++			}
++			if dead {
++				removed++
++				continue
++			}
++			kept = append(kept, ins)
++		}
++		b.Instrs = kept
++	}
++	if removed > 0 {
++		f.reindex()
++	}
++	return removed
++}
++
++// overwrittenLocalCopy distinguishes a dead temporary copy from an ABI
++// restore. Only a full GPR overwrite before any later read or block exit
++// makes the earlier write irrelevant to the callee-saved final value.
++// Other callee-saved instructions and all reserved registers stay protected.
++func (f *Function) overwrittenLocalCopy(copy *Instr, reg Reg) bool {
++	if !copy.Copy || len(copy.Defs) != 1 || copy.Block == nil || reg.Class != GPR ||
++		copy.Defs[0].Lane || f.t.reserved(reg) {
++		return false
++	}
++	for _, instruction := range copy.Block.Instrs {
++		if instruction.Index <= copy.Index {
++			continue
++		}
++		if f.t.barrier(instruction) {
++			return false
++		}
++		for _, use := range instruction.Uses {
++			if use.Reg == reg {
++				return false
++			}
++		}
++		for _, def := range instruction.Defs {
++			if def.Reg == reg {
++				return !def.Implicit && !def.Lane && (def.Bits == 32 || def.Bits == 64)
++			}
++		}
++	}
++	return false
++}
++
++// reindex rebuilds the linear instruction list after removals.
++func (f *Function) reindex() {
++	f.Instrs = f.Instrs[:0]
++	for _, b := range f.Blocks {
++		for _, ins := range b.Instrs {
++			ins.Index = len(f.Instrs)
++			ins.Block = b
++			f.Instrs = append(f.Instrs, ins)
++		}
++	}
++}
++
++// String spells a web for diagnostics.
++func (w *Web) String() string {
++	return fmt.Sprintf("%s[%d defs, %d uses, %d–%d]", w.Reg, len(w.Defs), len(w.Uses), w.From, w.To)
++}
+diff --git a/machine/local_copy_test.go b/machine/local_copy_test.go
+new file mode 100644
+--- /dev/null
++++ b/machine/local_copy_test.go
+@@ -0,0 +1,255 @@
++package machine
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/SCKelemen/oak/asm"
++)
++
++func localCopyJoin(tail ...asm.Item) *asm.Function {
++	items := []asm.Item{
++		ins("cmp", w(2), imm(0)),
++		asm.Instruction{Mnemonic: "b.", Cond: "eq", Operands: []asm.Operand{sym("right")}},
++		ins("add", w(9), w(0), imm(1)),
++		ins("b", sym("join")),
++		label("right"),
++		ins("sub", w(9), w(0), imm(1)),
++		label("join"),
++		ins("mov", w(10), w(9)),
++	}
++	return fn(append(items, tail...)...)
++}
++
++func TestLocalCopyPropagatesJoinedSource(t *testing.T) {
++	f := localCopyJoin(
++		ins("add", w(11), w(10), imm(3)),
++		ins("eor", w(0), w(10), w(11)),
++		ins("add", w(0), w(0), w(9)),
++		ins("ret"),
++	)
++	before := cloneFunction(f)
++	lifted, err := Lift(cloneFunction(f))
++	if err != nil {
++		t.Fatal(err)
++	}
++	webs, err := lifted.Webs()
++	if err != nil {
++		t.Fatal(err)
++	}
++	joined := false
++	for _, web := range webs {
++		joined = joined || web.Reg == (Reg{GPR, 9}) && len(web.Defs) == 2
++	}
++	if !joined {
++		t.Fatal("fixture must exercise a multiple-definition source web")
++	}
++	propagated, eliminated, err := lifted.Simplify()
++	got := text(lifted.Items())
++	if err != nil || propagated != 1 || eliminated != 1 || strings.Contains(got, "mov w10") ||
++		!strings.Contains(got, "add w11, w9, #3") || !strings.Contains(got, "eor w0, w9, w11") {
++		t.Fatalf("propagated %d eliminated %d: %v\n%s", propagated, eliminated, err, got)
++	}
++	if !reflect.DeepEqual(f, before) {
++		t.Fatal("simplification mutated the original function")
++	}
++}
++
++func TestLocalCopyRefusals(t *testing.T) {
++	tests := []struct {
++		name string
++		tail []asm.Item
++	}{
++		{"source-w-clobber", []asm.Item{ins("add", w(9), w(9), imm(1)), ins("add", w(0), w(10), w(9))}},
++		{"source-x-alias-clobber", []asm.Item{ins("add", x(9), x(9), imm(1)), ins("add", w(0), w(10), w(9))}},
++		{"clobber-between-uses", []asm.Item{ins("add", w(11), w(10), imm(3)), ins("add", w(9), w(9), imm(1)), ins("add", w(0), w(10), w(11))}},
++		{"call", []asm.Item{ins("bl", sym("g")), ins("add", w(0), w(10), w(9))}},
++		{"barrier", []asm.Item{ins("dmb", sym("ish")), ins("add", w(0), w(10), w(9))}},
++		{"nonlocal-use", []asm.Item{label("next"), ins("add", w(0), w(10), w(9))}},
++		{"mixed-local-nonlocal", []asm.Item{ins("add", w(11), w(10), imm(3)), label("next"), ins("add", w(0), w(10), w(11))}},
++		{"tied-movk", []asm.Item{ins("movk", w(10), imm(7)), ins("add", w(0), w(10), w(9))}},
++		{"tied-bfi", []asm.Item{ins("bfi", w(10), w(1), imm(4), imm(8)), ins("add", w(0), w(10), w(9))}},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			f := localCopyJoin(append(test.tail, ins("ret"))...)
++			lifted, err := Lift(f)
++			if err != nil {
++				t.Fatal(err)
++			}
++			webs, err := lifted.Webs()
++			if err != nil {
++				t.Fatal(err)
++			}
++			lifted.Liveness(webs)
++			before := text(lifted.Items())
++			if count := lifted.propagateCopies(webs); count != 0 || text(lifted.Items()) != before {
++				t.Fatalf("unsafe propagation %d:\n%s", count, text(lifted.Items()))
++			}
++		})
++	}
++}
++
++func TestLocalCopyKeepsNarrowingAndPinnedCopies(t *testing.T) {
++	for _, kind := range []string{"narrowing", "implicit-result", "reserved-source", "reserved-destination"} {
++		t.Run(kind, func(t *testing.T) {
++			f := localCopyJoin(ins("add", w(0), w(10), w(9)), ins("ret"))
++			switch kind {
++			case "narrowing":
++				f.Items[2] = ins("lsl", x(9), x(0), imm(40))
++				f.Items[5] = ins("lsl", x(9), x(1), imm(40))
++				f.Items[8] = ins("add", x(0), x(10), x(9))
++			case "implicit-result":
++				f.Items[7] = ins("mov", w(0), w(9))
++				f.Items = append(f.Items[:8], ins("ret"))
++			case "reserved-source":
++				f.Items[2] = ins("add", w(8), w(0), imm(1))
++				f.Items[5] = ins("sub", w(8), w(0), imm(1))
++				f.Items[7] = ins("mov", w(10), w(8))
++			case "reserved-destination":
++				f.Items[7] = ins("mov", w(18), w(9))
++				f.Items[8] = ins("add", w(0), w(18), w(9))
++			}
++			lifted, err := Lift(f)
++			if err != nil {
++				t.Fatal(err)
++			}
++			webs, err := lifted.Webs()
++			if err != nil {
++				t.Fatal(err)
++			}
++			lifted.Liveness(webs)
++			if count := lifted.propagateCopies(webs); count != 0 {
++				t.Fatalf("unsafe propagation %d:\n%s", count, text(lifted.Items()))
++			}
++		})
++	}
++}
++
++func TestLocalCopyMayOverwriteSourceAtFinalRead(t *testing.T) {
++	f := localCopyJoin(ins("add", w(9), w(10), imm(3)), ins("add", w(0), w(9), w(1)), ins("ret"))
++	lifted, err := Lift(f)
++	if err != nil {
++		t.Fatal(err)
++	}
++	propagated, _, err := lifted.Simplify()
++	if err != nil || propagated != 1 || !strings.Contains(text(lifted.Items()), "add w9, w9, #3") {
++		t.Fatalf("read-before-write propagation %d: %v\n%s", propagated, err, text(lifted.Items()))
++	}
++}
++
++func TestLocalCopyCalleeSavedOverwrite(t *testing.T) {
++	tests := []struct {
++		name string
++		copy asm.Instruction
++		tail []asm.Item
++		want bool
++	}{
++		{"w-overwrite", ins("mov", w(19), w(9)), []asm.Item{ins("mov", w(19), w(1))}, true},
++		{"x-overwrite", ins("mov", x(19), x(9)), []asm.Item{ins("add", x(19), x(1), imm(1))}, true},
++		{"read-before-overwrite", ins("mov", w(19), w(9)), []asm.Item{ins("add", w(0), w(19), w(1)), ins("mov", w(19), w(1))}, false},
++		{"partial-overwrite", ins("mov", w(19), w(9)), []asm.Item{ins("movk", w(19), imm(7))}, false},
++		{"call-before-overwrite", ins("mov", w(19), w(9)), []asm.Item{ins("bl", sym("g")), ins("mov", w(19), w(1))}, false},
++		{"nonlocal-overwrite", ins("mov", w(19), w(9)), []asm.Item{label("next"), ins("mov", w(19), w(1))}, false},
++		{"return-without-overwrite", ins("mov", w(19), w(9)), nil, false},
++		{"not-a-copy", ins("add", w(19), w(9), imm(1)), []asm.Item{ins("mov", w(19), w(1))}, false},
++		{"reserved", ins("mov", w(18), w(9)), []asm.Item{ins("mov", w(18), w(1))}, false},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			f := fn(append(append([]asm.Item{test.copy}, test.tail...), ins("ret"))...)
++			lifted, err := Lift(f)
++			if err != nil {
++				t.Fatal(err)
++			}
++			copy := lifted.Instrs[0]
++			if got := lifted.overwrittenLocalCopy(copy, copy.Defs[0].Reg); got != test.want {
++				t.Fatalf("overwrite guard = %v, want %v", got, test.want)
++			}
++			webs, err := lifted.Webs()
++			if err != nil {
++				t.Fatal(err)
++			}
++			lifted.eliminateDead(webs)
++			retained := false
++			for _, instruction := range lifted.Instrs {
++				retained = retained || instruction == copy
++			}
++			if retained == test.want {
++				t.Fatalf("copy retained = %v, removal expected = %v\n%s", retained, test.want, text(lifted.Items()))
++			}
++		})
++	}
++}
++
++func TestLocalCopyJoinedSourceProven(t *testing.T) {
++	declaration := optIRRV64Declaration(t, `local_join: (a: u32, unused: u32, flag: Bool): u32 {
++		v: u32 = flag ? a + u32(1) | a - u32(1)
++		(v + u32(3)) ^ v
++	}`)
++	f := localCopyJoin(ins("add", w(11), w(10), imm(3)), ins("eor", w(0), w(11), w(10)), ins("ret"))
++	f.Name, f.Signature, f.Fallback = "local_join", declaration, true
++	f.Bindings = []asm.Binding{{Register: w(0), Param: "a"}, {Register: w(1), Param: "unused"}, {Register: w(2), Param: "flag"}}
++	f.Clobbers = append(f.Clobbers, x(0))
++	allocated, allocation, err := Reallocate(f)
++	if err != nil || allocation.Propagated != 1 {
++		t.Fatalf("reallocation %+v: %v", allocation, err)
++	}
++	for name, body := range map[string]*asm.Function{"original": f, "allocated": allocated} {
++		if findings := asm.Check(body, declaration, nil); len(findings) != 0 {
++			t.Fatalf("%s seam refused: %v", name, findings)
++		}
++		if verdict := asm.Verify(body, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
++			t.Fatalf("%s verdict %s: %s", name, verdict.Kind, verdict.Message)
++		}
++	}
++	wrong := cloneFunction(allocated)
++	for _, item := range wrong.Items {
++		if instruction, ok := item.(asm.Instruction); ok && instruction.Mnemonic == "add" {
++			if immediate, ok := instruction.Operands[2].(asm.Immediate); ok && immediate.Value == 3 {
++				instruction.Operands[2] = imm(4)
++				break
++			}
++		}
++	}
++	if verdict := asm.Verify(wrong, declaration, declaration.Body); verdict.Kind != asm.VerdictMismatch {
++		t.Fatalf("wrong result not refuted: %s: %s", verdict.Kind, verdict.Message)
++	}
++}
++
++func TestLocalCopyLoopSourceProven(t *testing.T) {
++	declaration := optIRRV64Declaration(t, `local_loop: (a: u32): u32 {
++		i: u32 = 0
++		v: u32 = a
++		total: u32 = 0
++		while i < u32(3) {
++			total = total + v
++			v = v + u32(1)
++			i = i + u32(1)
++		}
++		total
++	}`)
++	f := fn(
++		ins("mov", w(9), w(0)), ins("mov", w(11), w(31)), ins("mov", w(12), w(31)),
++		label("loop"), ins("cmp", w(11), imm(3)), asm.Instruction{Mnemonic: "b.", Cond: "hs", Operands: []asm.Operand{sym("done")}},
++		ins("mov", w(10), w(9)), ins("add", w(12), w(12), w(10)),
++		ins("add", w(9), w(9), imm(1)), ins("add", w(11), w(11), imm(1)), ins("b", sym("loop")),
++		label("done"), ins("mov", w(0), w(12)), ins("ret"),
++	)
++	f.Name, f.Signature, f.Fallback = "local_loop", declaration, true
++	f.Bindings = []asm.Binding{{Register: w(0), Param: "a"}}
++	f.Clobbers = append(f.Clobbers, x(0), x(12))
++	allocated, allocation, err := Reallocate(f)
++	if err != nil || allocation.Propagated != 1 {
++		t.Fatalf("reallocation %+v: %v", allocation, err)
++	}
++	for name, body := range map[string]*asm.Function{"original": f, "allocated": allocated} {
++		if findings := asm.Check(body, declaration, nil); len(findings) != 0 {
++			t.Fatalf("%s seam refused: %v", name, findings)
++		}
++		if verdict := asm.Verify(body, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
++			t.Fatalf("%s verdict %s: %s\n%s", name, verdict.Kind, verdict.Message, text(body.Items))
++		}
++	}
++}

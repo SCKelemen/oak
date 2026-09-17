@@ -35,27 +35,30 @@ const (
 
 // Transform names, as the optimization report spells them.
 const (
-	TransformStrength    = "strength-reduce"
-	TransformOptIR       = "optir-emit"
-	TransformElide       = "elide-guards"
-	TransformReuseFlags  = "reuse-flags"
-	TransformHoist       = "hoist-invariants"
-	TransformUnroll      = "unroll-reductions"
-	TransformVectorHomes = "vector-homes"
-	TransformCleanup     = "late-cleanup"
-	TransformVectorize   = "vectorize-reductions"
-	TransformVectorMaps  = "vectorize-maps"
-	TransformUnrollMaps  = "unroll-vector-maps"
-	TransformVectorFolds = "vectorize-folds"
-	TransformVecBlocks   = "vector-blocks"
-	TransformMultiplyAdd = "multiply-add"
-	TransformValueSelect = "value-select"
-	TransformReallocate  = "reallocate"
-	TransformSchedule    = "schedule"
-	TransformFuse        = "fuse"
-	TransformFuseExits   = "fuse-exits"
-	TransformRotate      = "rotate-loops"
-	TransformCarryIndex  = "carry-loop-index"
+	TransformStrength        = "strength-reduce"
+	TransformOptIR           = "optir-emit"
+	TransformElide           = "elide-guards"
+	TransformReuseFlags      = "reuse-flags"
+	TransformHoist           = "hoist-invariants"
+	TransformUnroll          = "unroll-reductions"
+	TransformVectorHomes     = "vector-homes"
+	TransformLoopArrayHomes  = "loop-array-homes"
+	TransformCleanup         = "late-cleanup"
+	TransformVectorize       = "vectorize-reductions"
+	TransformVectorMaps      = "vectorize-maps"
+	TransformUnrollMaps      = "unroll-vector-maps"
+	TransformVectorFolds     = "vectorize-folds"
+	TransformUnrollConst     = "unroll-constant"
+	TransformVecBlocks       = "vector-blocks"
+	TransformVectorAddresses = "share-vector-addresses"
+	TransformMultiplyAdd     = "multiply-add"
+	TransformValueSelect     = "value-select"
+	TransformReallocate      = "reallocate"
+	TransformSchedule        = "schedule"
+	TransformFuse            = "fuse"
+	TransformFuseExits       = "fuse-exits"
+	TransformRotate          = "rotate-loops"
+	TransformCarryIndex      = "carry-loop-index"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -330,6 +333,21 @@ func Transforms() []opt.Transform {
 			fired:   UnrolledMaps,
 		},
 		&laneTransform{
+			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
+			// from zero to a literal bound becomes its trips, the index a
+			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
+			// — nothing of the body is assumed, so no fact is required. What
+			// it buys is downstream: constant indices where the loop's
+			// variable indexed a frame array, so the slot promotion can keep
+			// the array's words in registers. At the head of the loop phase,
+			// so the other loop rewrites see the trips.
+			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UnrollConstant },
+			apply:   func(l Lane) Lane { l.UnrollConstant = true; return l },
+			fired:   UnrolledConstant,
+		},
+		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
 			// parameters — the dot product — computes one vector of element
@@ -378,6 +396,17 @@ func Transforms() []opt.Transform {
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
 		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index u32/u64 array elements live in
+			// callee-saved registers for one loop (loop_array_homes.go).
+			// The full verifier compares the machine candidate with the
+			// unchanged Oak reference; unsupported shapes remain memory-backed.
+			name: TransformLoopArrayHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopArrayHomes },
+			apply:   func(l Lane) Lane { l.LoopArrayHomes = true; return l },
+			fired:   LoopArrayHomes,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
 			// linear scan, its slots moved into registers, its copies
@@ -401,6 +430,17 @@ func Transforms() []opt.Transform {
 		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
+		&gatedTransform{laneTransform: laneTransform{
+			// Copy cleanup exposes private address temporaries. Retry load
+			// sharing and include stores, in place: no memory reordering.
+			// This is a new gated candidate, not more authority for the
+			// earlier load-only vecBlocksTransform.
+			name: TransformVectorAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareVectorAddresses },
+			apply:   func(l Lane) Lane { l.ShareVectorAddresses = true; return l },
+			fired:   SharedVectorAddresses,
+		}},
 	}
 }
 
@@ -478,8 +518,10 @@ func PlainLane(lane Lane) Lane {
 	lane.RotateLoops = false
 	lane.CarryLoopIndices = false
 	lane.VectorHomes = false
+	lane.LoopArrayHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
+	lane.ShareVectorAddresses = false
 	lane.MultiplyAdd = false
 	lane.ValueSelect = false
 	lane.Reallocate = false
@@ -490,6 +532,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorMaps = false
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
+	lane.UnrollConstant = false
 	lane.NoReductions = true
 	return lane
 }

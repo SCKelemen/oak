@@ -1,0 +1,30 @@
+{
+  "schema": "oak-rotate-verifier-benchmark-v1",
+  "date": "2026-09-17",
+  "integration_note": "Historical isolated measurement. Concurrent def4003e superseded this narrow rotate rule with canonicalBitwise and proves full compression; the duplicate production rule was removed on rebase, while the independent quarter-round fixtures and benchmark were retained. Zero/wrapped-count test expectations now follow upstream modulo-width laws. Original hashes/raw output intentionally describe the measured snapshot.",
+  "cpu": "Apple M4 Max",
+  "baseline_revision": "40558540074d9aab2c86a93a5276033c5f7ff844",
+  "baseline_verify_go_sha256": "19b564ff65eb3b2d4a483ea78264ee91fb90f1efc4610255545c40b4572310e0",
+  "candidate_verify_go_sha256": "d0df7dfac7a55b4a2e8ed4530e7f538415a1543a8201be189bc256f56af686c8",
+  "test_sha256": "e4d80ed63f23e5f6507ebc6c611ce53824762882c3024e4c3078ab8eac021411",
+  "change": "Canonicalize ror32/64 with same-width operands and constant count 0<k<w to the exact two-shift/or spelling; no proof-stage reordering, budget increase, or numerical relaxation.",
+  "measurement": {
+    "command": "go test ./asm -run '^$' -bench '^BenchmarkVerifyRotateQuarterRounds$' -benchtime=1x -count=3",
+    "baseline": "Same workspace and test fixture; Go -overlay replaces only asm/verify.go with byte-identical file at baseline_revision.",
+    "timed": "asm.Verify only; parsing and seam checking are outside timer",
+    "budget": "OAK_VERIFY_BUDGET=base",
+    "order": "three baseline iterations per fixture, then three candidate iterations per fixture; not interleaved",
+    "core_affinity": "not controlled",
+    "host_load": "other work present; no application-runtime conclusion"
+  },
+  "proof_scope": {
+    "law": "Oak.AssemblerSemantics.ror_spelling",
+    "fixtures": "One and seven scalar BLAKE3-shaped add/xor/rotate quarter rounds with independently parsed source and assembly; wrong rotation must be refuted.",
+    "before": "VerdictWitnessed",
+    "after": "VerdictProven, structurally identical canonical terms",
+    "full_blake3_compression": "Still VerdictWitnessed; no whole-hash proof claimed.",
+    "production_walker_refinement": "No new universal Go implementation refinement claimed."
+  },
+  "baseline_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/asm\ncpu: Apple M4 Max\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t 653252625 ns/op\t1341677328 B/op\t    3347 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t 612731958 ns/op\t1341661752 B/op\t    3335 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t 777649833 ns/op\t1341666592 B/op\t    3340 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t 705740000 ns/op\t1341942320 B/op\t    4444 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t 661945375 ns/op\t1341937256 B/op\t    4440 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t1015037958 ns/op\t1341937112 B/op\t    4439 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: witness-checked\nPASS\nok  \tgithub.com/SCKelemen/oak/asm\t5.473s\n",
+  "candidate_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/asm\ncpu: Apple M4 Max\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t   1636625 ns/op\t  440952 B/op\t    3106 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: proven\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t   1250875 ns/op\t  440952 B/op\t    3106 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: proven\nBenchmarkVerifyRotateQuarterRounds/1-16  \t       1\t   1794834 ns/op\t  440952 B/op\t    3106 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/1-16\n    rotate_canonical_test.go:143: verdict: proven\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t   9618667 ns/op\t  699256 B/op\t    4302 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: proven\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t   7853291 ns/op\t  699256 B/op\t    4302 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: proven\nBenchmarkVerifyRotateQuarterRounds/7-16  \t       1\t   9075000 ns/op\t  699256 B/op\t    4302 allocs/op\n--- BENCH: BenchmarkVerifyRotateQuarterRounds/7-16\n    rotate_canonical_test.go:143: verdict: proven\nPASS\nok  \tgithub.com/SCKelemen/oak/asm\t1.248s\n"
+}
