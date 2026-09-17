@@ -73,11 +73,7 @@ func TestSimplifyReusesWebsForDCE(t *testing.T) {
 			label("right"), ins("add", w(9), w(2), imm(2)), label("join"),
 			ins("mov", w(10), w(9)), ins("eor", w(0), w(10), w(9)), ins("ret"),
 		), 1},
-		{"self copy after source definitions meet", fn(
-			ins("cbz", w(0), sym("right")), ins("add", w(9), w(1), imm(1)), ins("b", sym("join")),
-			label("right"), ins("add", w(9), w(2), imm(2)), label("join"),
-			ins("mov", w(9), w(9)), ins("eor", w(0), w(9), w(1)), ins("ret"),
-		), simplifyRounds},
+		{"self copy after source definitions meet", selfCopyJoinBody(), 0},
 		{"loop source", fn(
 			ins("add", w(9), w(0), imm(1)), label("loop"), ins("mov", w(10), w(9)),
 			ins("eor", w(0), w(10), w(9)), ins("add", w(9), w(9), imm(1)),
@@ -120,6 +116,84 @@ func TestSimplifyReusesWebsForDCE(t *testing.T) {
 				t.Fatalf("propagated=%d, want %d", p, test.want)
 			}
 		})
+	}
+}
+
+func selfCopyJoinBody() *asm.Function {
+	return fn(
+		ins("cbz", w(0), sym("right")), ins("add", w(9), w(1), imm(1)), ins("b", sym("join")),
+		label("right"), ins("add", w(9), w(2), imm(2)), label("join"),
+		ins("mov", w(9), w(9)), ins("eor", w(0), w(9), w(1)), ins("ret"),
+	)
+}
+
+func TestSimplifyContinuesPastSelfCopy(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body *asm.Function
+		want *asm.Function
+	}{
+		{"arm64", fn(
+			ins("cbz", w(0), sym("right")), ins("add", w(9), w(1), imm(1)), ins("b", sym("join")),
+			label("right"), ins("add", w(9), w(2), imm(2)), label("join"),
+			ins("mov", w(9), w(9)), ins("mov", w(10), w(9)), ins("add", w(0), w(10), w(9)), ins("ret"),
+		), fn(
+			ins("cbz", w(0), sym("right")), ins("add", w(9), w(1), imm(1)), ins("b", sym("join")),
+			label("right"), ins("add", w(9), w(2), imm(2)), label("join"),
+			ins("mov", w(9), w(9)), ins("add", w(0), w(9), w(9)), ins("ret"),
+		)},
+		{"rv64", rvfn(
+			ins("beqz", rx(10), sym("right")), ins("addi", rx(5), rx(11), imm(1)), ins("j", sym("join")),
+			label("right"), ins("addi", rx(5), rx(12), imm(2)), label("join"),
+			ins("mv", rx(5), rx(5)), ins("mv", rx(6), rx(5)), ins("add", rx(10), rx(6), rx(5)), ins("ret"),
+		), rvfn(
+			ins("beqz", rx(10), sym("right")), ins("addi", rx(5), rx(11), imm(1)), ins("j", sym("join")),
+			label("right"), ins("addi", rx(5), rx(12), imm(2)), label("join"),
+			ins("mv", rx(5), rx(5)), ins("add", rx(10), rx(5), rx(5)), ins("ret"),
+		)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, err := Lift(test.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for round := 0; round < 2; round++ {
+				p, e, err := f.Simplify()
+				wantCount := 1 - round
+				if err != nil || p != wantCount || e != wantCount || !reflect.DeepEqual(f.Items(), test.want.Items) {
+					t.Fatalf("round %d: propagated=%d eliminated=%d error=%v\n%s", round, p, e, err, text(f.Items()))
+				}
+			}
+		})
+	}
+}
+
+func TestSimplifyPreservesNarrowingSelfCopy(t *testing.T) {
+	// Writing W9 clears X9's upper half. Skipping a propagation that would
+	// respell its users identically must not delete that write.
+	body := fn(ins("lsl", x(9), x(0), imm(40)), ins("mov", w(9), w(9)),
+		ins("add", x(0), x(9), x(1)), ins("ret"))
+	f, err := Lift(cloneFunction(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, e, err := f.Simplify(); err != nil || p != 0 || e != 0 || !reflect.DeepEqual(f.Items(), body.Items) {
+		t.Fatalf("narrow self-copy changed: propagated=%d eliminated=%d error=%v\n%s", p, e, err, text(f.Items()))
+	}
+	out, _, err := Reallocate(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range out.Items {
+		if move, ok := item.(asm.Instruction); ok && move.Mnemonic == "mov" && len(move.Operands) == 2 {
+			dst, dstOK := move.Operands[0].(asm.Register)
+			src, srcOK := move.Operands[1].(asm.Register)
+			found = found || (dstOK && srcOK && dst.Class == asm.ClassW && src.Class == asm.ClassW)
+		}
+	}
+	if !found {
+		t.Fatalf("allocation lost the narrowing copy:\n%s", text(out.Items))
 	}
 }
 

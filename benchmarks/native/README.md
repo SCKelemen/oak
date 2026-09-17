@@ -1622,6 +1622,38 @@ hash-runtime speedup claimed. Regressions compare the cheaper DCE path against
 fresh analysis across 142 cases. [The measurement record](results/blake3-simplify-cost-2026-09-17.json)
 contains raw samples, per-run load, resource counters, hashes and commands.
 
+### Self-copies no longer exhaust the simplifier (2026-09-17)
+
+After a branch join, a self-copy can have distinct source and destination
+definition webs even though both name the same physical register. Propagation
+respelled its users identically, reported progress, and repeated for all 1,024
+rounds. A useful copy later in the body never got its turn. Regressions reproduced
+this on ARM64 and RV64: 1,024 reported propagations and zero removals.
+
+Propagation now skips these unchanged operand rewrites, so later copies can
+proceed. It retains the self-copy instruction for width-aware cleanup: writing
+`w9` can clear the upper half of `x9`. Tests check later-copy removal, a stable
+second simplification, and preservation of the narrowing write through allocation.
+
+Frozen binaries at `559dae70` and that base plus this fix ran in
+before/after/after/before order, ten samples per variant of three iterations
+each. The new self-copy fixture checks unchanged assembly; the existing control
+checks all 128 useful copies are propagated and removed.
+
+| Fixture | Before ms/op | After ms/op | Before allocations/op | After allocations/op |
+| --- | ---: | ---: | ---: | ---: |
+| Self-copy after a join | 124.981 | 0.061 | 739,420 | 524 |
+| Ordinary 128 copies | 103.923 | 101.027 | 418,126.5 | 418,125.5 |
+
+The saving is specific to the stalled path. A separate BLAKE3 compression-only
+emission pair used 56.33 → 56.50 CPU seconds, essentially unchanged. Wall time
+was 74.60 → 66.99 seconds on the busy shared host; this single observation does
+not establish a BLAKE3 compilation benefit. The emitted C and native object were
+byte-identical, and both runs freshly proved all eight result chunks with the
+normal budget and zero cached verdicts. No experiment builds or tests overlapped
+timing. [The measurement record](results/self-copy-progress-2026-09-17.json)
+includes samples, load, counters, hashes and the pre-fix failures.
+
 ## Reusing allocation proposals, 2026-09-17
 
 The preceding full-unroll runtime improvement made candidate materialization
