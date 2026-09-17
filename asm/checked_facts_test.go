@@ -75,3 +75,47 @@ func containsFinding(findings []string, text string) bool {
 	}
 	return false
 }
+
+// A bound the checker derives from the machine code must not displace a
+// stronger one the typechecker proved (docs/spec/94-assembler.md §7,
+// checker.provenIndexBound). Found by measurement: giving a scaled table
+// index a local bound stopped the proof from being read, and three
+// binary searches kept a guard they had been eliding.
+func TestProvenBoundSurvivesALocalFact(t *testing.T) {
+	declaration := "lookup: (v: []u32, i: u32) -> u32"
+	// The index is `i * 3`, so the checker derives a bound of its own from
+	// the guard on i; the region holds only four elements, so that derived
+	// bound does not admit the access and the proof must be consulted.
+	body := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x11, x13\n  adrl x9, table\n  add x13, x9, #0\n  movz w10, #4\n  cmp w2, w10\n  b.hs short\n  movz w11, #3\n  mul w9, w2, w11\n  ldr w0, [x13, w9, uxtw #2]\n  ret\nshort:\n  mov w0, #0\n  ret"
+	unit, errors := ParseUnit("proven.oakasm", declaration+" = {\n"+body+"\n}\n")
+	if len(errors) != 0 {
+		t.Fatal(errors)
+	}
+	signature, err := parseSignature(declaration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	function := unit.Functions[0]
+	function.Tables = map[string]Table{"table": {Size: 16, Elem: 4}}
+	for index, item := range function.Items {
+		instruction, ok := item.(Instruction)
+		if !ok || instruction.Mnemonic != "ldr" {
+			continue
+		}
+		instruction.CheckedFacts = []CheckedFactRef{{ID: "p", Kind: "index-in-extent", Container: "t", Operand: 1, Extent: 4}}
+		function.Items[index] = instruction
+	}
+	// Without authority the derived bound is all there is, and it does not
+	// reach: `i < 4` scaled by three admits ten elements of a four-element
+	// region.
+	if findings := Check(function, signature, nil); len(findings) == 0 {
+		t.Fatalf("the derived bound alone must not admit the access")
+	}
+	authority := map[string]typechecker.IndexProof{"p": {
+		ID: "p", Proposition: "index-in-extent", Container: "t", Extent: 4,
+		Scope: "proven:1:1", Provenance: "checked", Witness: "Oak.Extents.scaledUnderBound",
+	}}
+	if findings := CheckWithFacts(function, signature, nil, authority); len(findings) != 0 {
+		t.Fatalf("the proof must be read even though the checker holds a fact: %v", findings)
+	}
+}

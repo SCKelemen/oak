@@ -7825,51 +7825,48 @@ Three rules close it, each a generalization of one already there.
   and an offset raises the bound: `wI < B` leaves `wI + j < B + j`. Both
   cap below 2^31, so neither 32-bit result wraps.
 
+**A precedence bug found on the way, and the reason this section is worth
+reading twice.** The typechecker's own proof for an indexed operand
+(`checkedIndexBound`) was consulted only when the checker held no fact of
+its own. That was invisible while the checker had few facts to offer. Give
+a scaled table index a bound of its own and the proof stops being read,
+the weaker local bound is what the access is judged against, and three
+binary searches keep a guard they had been eliding. The fix is that the
+proof is consulted exactly when the checker's own fact does not admit the
+access, so a fact derived from the machine code can never displace a
+stronger one proved upstream (`provenIndexBound`). Being present is not
+enough to be preferred — the first attempt at this fix kept the local
+fact whenever it was a slack fact, and that was still wrong, because the
+rule above produces exactly such a fact where the array paths cannot use
+one at all.
+
 Measured on the stdlib-bearing program against the commit this branch
-merged (`9893f1d5`), with the verdict cache off, in the shipping
-configuration (beam 4):
+merged (`9893f1d5`), with the verdict cache off. Counted over the emitted
+bodies, not over the whole dump, which also holds the refused candidate
+forms:
 
-| | base | after |
-|---|---|---|
-| trap branches emitted | 1682 | **1661** |
-| units proven equal | 337 | **338** |
-| bodies eliding a guard | 64 | **65** |
-| refused elided forms | 300 | **298** |
-| element guards elided | 157 | 156 |
+| | base | rule alone | rule and fix |
+|---|---|---|---|
+| trap branches emitted | 780 | 781 | **777** |
+| instructions emitted | 33366 | 33371 | **33358** |
+| element guards elided | 157 | 156 | **160** |
+| refused candidate forms | 300 | 298 | **292** |
+| units proven equal | 337 | 338 | **338** |
 
-The checker is strictly more precise, and that is the part this section
-claims: run both checkers over one and the same body — the un-hoisted
-form of `grapheme_class` taken from the dump — and this one reports a
-single refusal where the previous one reported three.
+The middle column is why the fix belongs in the same change: the rule on
+its own made the program slightly worse. With both, no body anywhere
+gains a trap branch, two lose them — `normalize_find` from two to none
+and `unicode_lookup` from five to four — and all 314 units keep their
+verdicts.
 
-**The selection does not follow, and the honest reading is that the
-three bodies this rule was written for come out worse.** `grapheme_class`
-and `normalize_props` go from 55 instructions and no trap branch to 59 or
-60 instructions and one; `normalize_compose_pair` from 133 and none to
-137 and two. Two other bodies improve — `normalize_find` from two trap
-branches to none, `unicode_lookup` from five to four — and across the
-program 21 trap branches go. So the aggregate improves while the named
-targets regress.
-
-The cause is not precision and not the beam width. The base compiles a
-form of these bodies in which the loop-invariant `movz wK, #3` is hoisted
-and the loop is bottom-tested, and on that form the checker already
-elided every guard before this rule existed. Admitting more candidates
-changes which bodies survive the search's frontier, and the hoisted form
-is no longer among them; the body that wins instead is cheaper on the
-cost model's reading than the alternatives it was compared against, but
-worse than the body the base found. Widening the beam to eight does not
-recover it, and makes the whole program worse (2111 trap branches against
-1682), because the validation budget is then spent on candidates that do
-not pay.
-
-That is a property of the search rather than of this rule: an admission
-that is strictly better locally can cost a better body globally, because
-the frontier is pruned by cost before validation and a transform that
-would have applied to the pruned parent never fires. Recording it here
-because it will recur with every new fact rule, and because the fix
-belongs to the search — carrying the best body seen for a region
-regardless of frontier churn — not to the checker.
+Where the gain actually falls is worth stating plainly. The three bodies
+this rule was written for elide the same guards they did before: their
+indices were already admitted through the typechecker's proof, and what
+this rule adds there is a second, independent route to the same
+admission. The new elisions are in `normalize_find` and `unicode_lookup`,
+and the eight candidate forms no longer refused are forms the search no
+longer has to work around. The RV64 lane is unchanged on every count, as
+its checker shares none of this machinery.
 
 What stays refused is the read inside the search loop. There the bound
 register is rewritten on the back edge by a conditional select, so no
