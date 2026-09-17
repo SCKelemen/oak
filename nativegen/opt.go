@@ -76,6 +76,9 @@ type laneTransform struct {
 	arches map[string]bool
 	// applied reports whether the configuration already has the transform.
 	applied func(Lane) bool
+	// eligible cheaply rejects a transform before candidate materialization.
+	// Nil means every configuration on the transform's lane is eligible.
+	eligible func(Lane) bool
 	// apply turns the transform on.
 	apply func(Lane) Lane
 	// fired counts the sites the transform changed in a lowered body.
@@ -91,7 +94,7 @@ func (t *laneTransform) Requirements() []opt.Requirement { return t.reqs }
 // lane or when already applied.
 func (t *laneTransform) Apply(c *opt.Candidate) *opt.Candidate {
 	lane, ok := c.Config.(Lane)
-	if !ok || !t.arches[laneArch(lane)] || t.applied(lane) {
+	if !ok || !t.arches[laneArch(lane)] || t.applied(lane) || (t.eligible != nil && !t.eligible(lane)) {
 		return nil
 	}
 	return c.With(t.name, t.apply(lane))
@@ -298,10 +301,11 @@ func Transforms() []opt.Transform {
 			// licensed by Oak.BlockedFill.blocked_fill_eq. The stores remain
 			// scalar; pair-store custody is a separate, unmet obligation.
 			name: TransformUnrollFills, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			arches:  bothLanes,
-			applied: func(l Lane) bool { return l.UnrollFills },
-			apply:   func(l Lane) Lane { l.UnrollFills = true; return l },
-			fired:   UnrolledFills,
+			arches:   bothLanes,
+			applied:  func(l Lane) bool { return l.UnrollFills },
+			eligible: func(l Lane) bool { return l.UnrollFillsEligible },
+			apply:    func(l Lane) Lane { l.UnrollFills = true; return l },
+			fired:    UnrolledFills,
 		},
 		&laneTransform{
 			// Reduction vectorization (nativegen/vector_reduction.go): the

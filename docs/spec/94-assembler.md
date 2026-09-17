@@ -5865,8 +5865,11 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v15 keys
-it independently from private-frame `loop-array-homes`. It remains a
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v20 keys
+it independently from private-frame `loop-array-homes` and records the smaller
+two-result-home budget (the combined frame/result cap remains eight). The
+budget resets per loop and leaves uncached cells on the memory path; it is a
+profitability restriction, not new memory authority. It remains a
 non-neutral, verifier-gated mechanical candidate; generic admission can still
 be Witnessed, so enabling it is not a proof-only compilation policy.
 
@@ -5907,6 +5910,19 @@ C and is Witnessed, not Proven. Opt-in BLAKE3 remains Proven for all eight
 result chunks. Despite a smaller loop, higher stack traffic and inconclusive,
 regressed native timings keep this candidate off by default; the measurements
 are in `benchmarks/native/results/blake3-loop-result-homes-2026-09-17.json`.
+At isolated base `0ee3b6b5`, the subsequent two-home budget preserves all eleven
+BLAKE frame-word promotions and reduces experimental SP-memory instructions
+from 46 to 30, while all eight result chunks still prove. Selected and unselected result
+writes are tested together. The same arbitrary-selected-set Lean law applies;
+no caller/ASL/ordering premises change. Timing remains inconclusive; the
+follow-up sweep is recorded in
+`benchmarks/native/results/blake3-result-home-budget-2026-09-17.json`.
+After integration onto `9530ae6f`, upstream scalar replacement and frame-store
+cleanup win instead: both default and experimental search select the same
+283-instruction, ten-SP-memory-instruction, 160-byte-frame body, Proven for all
+eight chunks, with no result homes. The smaller budget does not replace that
+body. Dedicated computed-post-flush fixtures still require actual result
+homes. Historical timings are not transferred to the integrated object.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array
@@ -6019,12 +6035,13 @@ destinations, unavailable scratches, and undeclared scratches. The compiler
 differential exercises both conditional arms and the invalid-domain trap over
 a record whose stride exceeds sixteen bits.
 
-Native materialization recipe v19 distinguishes the sparse scheduled recipe
-from v17's adjacent-only recipe and composes it with v18's exact local-view
-extent folding. The key also carries `share-record-bases` alongside v16's
-explicit `carry-loop-index` and `elide-redundant-guards` keying. This closes
-the artifact-cache contract for the late candidate; the registry-wide test
-requires every transform switch to change the recipe key.
+Native materialization recipe v20 distinguishes the sparse scheduled recipe
+from v17's adjacent-only recipe and composes it with v19's two-result-home
+budget and v18's exact local-view extent folding. The key also carries
+`share-record-bases` alongside v16's explicit `carry-loop-index` and
+`elide-redundant-guards` keying. This closes the artifact-cache contract for
+the late candidate; the registry-wide test requires every transform switch
+to change the recipe key.
 
 On the actual stage-2 pilot, the three changed selected bodies remain `proven`:
 one base is shared in `map_page` (198→195 instructions), one in `translate`

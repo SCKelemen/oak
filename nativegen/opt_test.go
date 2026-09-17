@@ -265,7 +265,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	if !isGated || !gatedRotate.NeedsVerdict() || !hasShape || neutralRotate.ShapeNeutral() {
 		t.Fatalf("loop rotation must preserve an unrotated fallback until its changed control shape proves")
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollFills: true, Fuse: true, FuseExits: true, Schedule: true})
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollFills: true, UnrollFillsEligible: true, Fuse: true, FuseExits: true, Schedule: true})
 	if PlainLane(Lane{UnrollVectorMaps: true}).UnrollVectorMaps {
 		t.Fatal("plain lane retained map unrolling")
 	}
@@ -296,12 +296,16 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	// The rv64 lane also has verifier-gated OptIR emission, the law-licensed
 	// unrolling, check elision, and layer A's strength reduction
 	// (nativegen/rewrite.go, both lanes).
-	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1}))
+	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UnrollFillsEligible: true}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
 		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformUnrollFills || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
+	}
+	fillUnroll, _ := registry.Lookup(TransformUnrollFills)
+	if fillUnroll.Apply(opt.Identity(PlainLane(Lane{Arch: asm.ArchArm64}))) != nil {
+		t.Fatal("fill unrolling proposed a candidate without a matching source fill")
 	}
 	// Elision refines by the finding's line, once per line.
 	elide, _ := registry.Lookup(TransformElide)

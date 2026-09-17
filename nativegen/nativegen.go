@@ -1604,6 +1604,11 @@ type Lane struct {
 	// UnrollFills rewrites a checked scalar u64 zero-fill loop into four
 	// ordered scalar stores per main trip and the original remainder.
 	UnrollFills bool
+	// UnrollFillsEligible is a cheap search-planning hint computed from the
+	// checked source body. It prevents the candidate search from lowering an
+	// unroll-fills configuration for functions where the exact matcher cannot
+	// fire. It is not proof authority and does not affect lowering by itself.
+	UnrollFillsEligible bool
 	// HoistInvariants runs the loop-invariant code motion pass
 	// (nativegen/licm.go) on the AArch64 lane; the compiler clears it and
 	// lowers again when the checker refuses the hoisted form.

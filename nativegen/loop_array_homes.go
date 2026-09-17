@@ -26,6 +26,10 @@ type loopArrayHomeSet struct {
 var loopArrayHomesOf = map[*asm.Function]int{}
 var loopResultHomesOf = map[*asm.Function]int{}
 
+// Result homes compete with frame-slot promotion for the same register file.
+// This is a profitability budget, not memory or verification authority.
+const loopResultHomeBudget = 2
+
 // LoopArrayHomes counts the element homes introduced by the candidate.
 func LoopArrayHomes(fn *asm.Function) int { return loopArrayHomesOf[fn] }
 
@@ -393,9 +397,13 @@ func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
 	g.pushScope()
 	g.activeArrayHomes = map[string]*loopArrayHomeSet{}
 	var selected []choice
+	resultSelected := 0
 	for _, c := range choices {
 		if len(selected) == 8 {
 			break
+		}
+		if c.arr.resultStorage && resultSelected >= loopResultHomeBudget {
+			continue
 		}
 		hidden := fmt.Sprintf("%s#loop-home-%d", c.name, c.index)
 		if homeMentions(g.fn.Body, hidden) != 0 {
@@ -415,6 +423,7 @@ func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
 		set.homes[c.index] = loopArrayHome{hidden: hidden, written: c.written}
 		selected = append(selected, c)
 		if c.arr.resultStorage {
+			resultSelected++
 			g.resultHomesCount++
 		} else {
 			g.arrayHomesCount++
