@@ -1,0 +1,699 @@
+diff --git a/compiler/native_materialization.go b/compiler/native_materialization.go
+index d40cb2f5..eda12b39 100644
+--- a/compiler/native_materialization.go
++++ b/compiler/native_materialization.go
+@@ -26,10 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
+ 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
+ 	}
+ 	digest := sha256.New()
+-	// v24 adds verifier-gated scalar-global store/load forwarding to v23's
+-	// composed late-machine recipe. Preserve every recipe input to avoid
+-	// reusing another candidate's body.
+-	writeNativeMaterializationPart(digest, "oak.native.materialization.v24")
++	// v25 adds a separate verifier-gated late frame-load forwarding candidate.
++	// Preserve every recipe input to avoid reusing another candidate's body.
++	writeNativeMaterializationPart(digest, "oak.native.materialization.v25")
+ 	writeNativeLane(digest, lane)
+ 	if d.source == nil {
+ 		writeNativeMaterializationPart(digest, "source:nil")
+@@ -78,6 +77,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
+ 		{"share-record-bases", lane.ShareRecordBases},
+ 		{"share-global-addresses", lane.ShareGlobalAddresses},
+ 		{"forward-global-loads", lane.ForwardGlobalLoads},
++		{"forward-frame-loads", lane.ForwardFrameLoads},
+ 		{"vector-blocks", lane.VectorBlocks},
+ 		{"share-vector-addresses", lane.ShareVectorAddresses},
+ 		{"multiply-add", lane.MultiplyAdd},
+diff --git a/compiler/native_materialization_test.go b/compiler/native_materialization_test.go
+index b5c61f97..1ab60fbc 100644
+--- a/compiler/native_materialization_test.go
++++ b/compiler/native_materialization_test.go
+@@ -92,6 +92,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
+ 	changedAddressSharing.ShareVectorAddresses = true
+ 	changedGlobalForwarding := lane(false)
+ 	changedGlobalForwarding.ForwardGlobalLoads = true
++	changedFrameForwarding := lane(false)
++	changedFrameForwarding.ForwardFrameLoads = true
+ 	changedLoopArrayHomes := lane(false)
+ 	changedLoopArrayHomes.LoopArrayHomes = true
+ 	changedLoopResultHomes := lane(false)
+@@ -149,6 +151,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
+ 		{"map-grouping", driver(false), opt.Identity(changedMapGrouping)},
+ 		{"vector-address-sharing", driver(false), opt.Identity(changedAddressSharing)},
+ 		{"global-load-forwarding", driver(false), opt.Identity(changedGlobalForwarding)},
++		{"frame-load-forwarding", driver(false), opt.Identity(changedFrameForwarding)},
+ 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
+ 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
+ 		{"unroll-small", driver(false), opt.Identity(changedUnrollSmall)},
+diff --git a/compiler/native_search.go b/compiler/native_search.go
+index 5bd1b319..1d899a4d 100644
+--- a/compiler/native_search.go
++++ b/compiler/native_search.go
+@@ -237,6 +237,7 @@ var setAside = map[string]string{
+ 	nativegen.TransformRecordBases:        "recomputes its record-span bases",
+ 	nativegen.TransformGlobalAddresses:    "recomputes its scalar-global addresses",
+ 	nativegen.TransformForwardGlobalLoads: "reloads its scalar globals after stores",
++	nativegen.TransformForwardFrameLoads:  "keeps its frame reloads",
+ 	nativegen.TransformSchedule:           "keeps its instruction order",
+ 	nativegen.TransformFuse:               "keeps its instructions apart",
+ 	nativegen.TransformFuseExits:          "keeps its exit tests apart",
+diff --git a/compiler/native_unroll_small_test.go b/compiler/native_unroll_small_test.go
+index b5ec796b..b34aebdf 100644
+--- a/compiler/native_unroll_small_test.go
++++ b/compiler/native_unroll_small_test.go
+@@ -1,6 +1,7 @@
+ package compiler
+ 
+ import (
++	"reflect"
+ 	"strings"
+ 	"testing"
+ 
+@@ -192,6 +193,58 @@ func TestNativeBlake3SmallUnrollCandidateProven(t *testing.T) {
+ 	if proof := driver.Validate(warmFull); proof.Outcome != opt.Proven || !strings.Contains(proof.Message, "all 8 result chunks") || verified != proofs+1 || fromCache != 0 {
+ 		t.Fatalf("reused full candidate did not independently prove all chunks: %+v", proof)
+ 	}
++	// The late forwarding candidate reuses allocation, not a verdict. It
++	// preserves the original full body as a fallback and must prove afresh.
++	forwardLane := fullLane
++	forwardLane.ForwardFrameLoads = true
++	beforeItems := make([]asm.Item, len(fullBody.Items))
++	for i, item := range fullBody.Items {
++		beforeItems[i] = item
++		if instruction, ok := item.(asm.Instruction); ok {
++			instruction.Operands = append([]asm.Operand(nil), instruction.Operands...)
++			instruction.CheckedFacts = append([]asm.CheckedFactRef(nil), instruction.CheckedFacts...)
++			beforeItems[i] = instruction
++		}
++	}
++	forwarded := full.With(nativegen.TransformForwardFrameLoads, forwardLane)
++	if err := driver.Materialize(forwarded); err != nil {
++		t.Fatal(err)
++	}
++	forwardBody := forwarded.Body.(*asm.Function)
++	if nativegen.ForwardedFrameLoads(forwardBody) == 0 || forwardBody.Frame != fullBody.Frame || driver.Key(full) != driver.Key(warmFull) || !reflect.DeepEqual(beforeItems, fullBody.Items) {
++		t.Fatal("forwarding did not fire, changed frame layout, or mutated the fallback")
++	}
++	if findings := driver.Check(forwarded); len(findings) != 0 {
++		t.Fatalf("forwarded frame-load seam refused: %v", findings)
++	}
++	if proof := driver.Validate(forwarded); proof.Outcome != opt.Proven || !strings.Contains(proof.Message, "all 8 result chunks") || proof.Cached {
++		t.Fatalf("frame forwarding must independently prove all chunks: %+v", proof)
++	}
++	if opt.AArch64Costs.Estimate(driver.Measure(forwarded)) >= opt.AArch64Costs.Estimate(driver.Measure(full)) {
++		t.Fatal("frame forwarding did not reduce the full body's estimated cost")
++	}
++	mutatedForwardedRotate := false
++	for i, item := range forwardBody.Items {
++		instruction, ok := item.(asm.Instruction)
++		if !ok || instruction.Mnemonic != "ror" {
++			continue
++		}
++		bad := *forwardBody
++		bad.Items = append([]asm.Item(nil), forwardBody.Items...)
++		instruction.Operands = append([]asm.Operand(nil), instruction.Operands...)
++		rotation := instruction.Operands[2].(asm.Immediate)
++		rotation.Value = (rotation.Value + 1) % 32
++		instruction.Operands[2] = rotation
++		bad.Items[i] = instruction
++		if proof := asm.Verify(&bad, source, verifiedBody(forwardBody, source)); proof.Kind != asm.VerdictMismatch {
++			t.Fatalf("forwarded candidate's incorrect rotate was not refuted: %s", proof.Message)
++		}
++		mutatedForwardedRotate = true
++		break
++	}
++	if !mutatedForwardedRotate {
++		t.Fatal("forwarded fixture contained no rotate to refute")
++	}
+ 
+ 	// Preserve the candidate's legal footprint but alter its computation. The
+ 	// verifier must refute the changed rotate rather than recognize the source
+diff --git a/nativegen/nativegen.go b/nativegen/nativegen.go
+index 73f734cc..0c2eb86a 100644
+--- a/nativegen/nativegen.go
++++ b/nativegen/nativegen.go
+@@ -1670,6 +1670,10 @@ type Lane struct {
+ 	// following a store to the same cell. It runs on the final scheduled form
+ 	// and requires a whole-body verdict.
+ 	ForwardGlobalLoads bool
++	// ForwardFrameLoads replaces exact private-frame reloads with register
++	// copies after allocation and scheduling. The original candidate remains
++	// available; this separate candidate requires a whole-body verdict.
++	ForwardFrameLoads bool
+ 	// GuardLines names source lines whose element accesses keep their
+ 	// guards under ElideProven: the compiler adds the line of an access
+ 	// the checker could not admit and lowers again, so the accesses the
+@@ -2114,9 +2118,22 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
+ 	if lane.ForwardGlobalLoads && lane.Schedule {
+ 		forwardedGlobalLoads[out] = forwardGlobalLoads(out)
+ 	}
++	if lane.ForwardFrameLoads && lane.Schedule && lane.Reallocate {
++		forwarded, n, err := machine.ForwardFrameLoads(out)
++		if err != nil {
++			return nil, unsupported("%v", err)
++		}
++		out.Items = forwarded.Items
++		forwardedFrameLoads[out] = n
++	}
+ 	return out, nil
+ }
+ 
++// ForwardedFrameLoads reports loads replaced by exact-width register copies.
++func ForwardedFrameLoads(fn *asm.Function) int { return forwardedFrameLoads[fn] }
++
++var forwardedFrameLoads = map[*asm.Function]int{}
++
+ // Scheduled reports how many instructions a lowering moved under
+ // Lane.Schedule.
+ func Scheduled(fn *asm.Function) int { return scheduledOf[fn] }
+diff --git a/nativegen/opt.go b/nativegen/opt.go
+index 363526a7..9230ea37 100644
+--- a/nativegen/opt.go
++++ b/nativegen/opt.go
+@@ -66,6 +66,7 @@ const (
+ 	TransformRecordBases        = "share-record-bases"
+ 	TransformGlobalAddresses    = "share-global-addresses"
+ 	TransformForwardGlobalLoads = "forward-global-loads"
++	TransformForwardFrameLoads  = "forward-frame-loads"
+ )
+ 
+ // laneTransform is one of the lane's transforms as a toggle of the Lane
+@@ -507,6 +508,16 @@ func Transforms() []opt.Transform {
+ 			fired:   ForwardedGlobalLoads,
+ 		}},
+ 		multiplyAddTransform,
++		&gatedTransform{laneTransform: laneTransform{
++			// Allocation and scheduling expose short store/reload round trips
++			// even when whole-slot promotion cannot find a register.
++			name: TransformForwardFrameLoads, phase: opt.PhaseMachine, proof: opt.Mechanical,
++			arches:   arm64Only,
++			eligible: func(l Lane) bool { return l.Schedule && l.Reallocate },
++			applied:  func(l Lane) bool { return l.ForwardFrameLoads },
++			apply:    func(l Lane) Lane { l.ForwardFrameLoads = true; return l },
++			fired:    ForwardedFrameLoads,
++		}},
+ 		valueSelectTransform,
+ 		vecBlocksTransform,
+ 		cleanupTransform,
+@@ -601,6 +612,7 @@ func PlainLane(lane Lane) Lane {
+ 	lane.ShareRecordBases = false
+ 	lane.ShareGlobalAddresses = false
+ 	lane.ForwardGlobalLoads = false
++	lane.ForwardFrameLoads = false
+ 	lane.VectorHomes = false
+ 	lane.LoopArrayHomes = false
+ 	lane.LoopResultHomes = false
+diff --git a/nativegen/opt_test.go b/nativegen/opt_test.go
+index 3fbcccdd..e83a578d 100644
+--- a/nativegen/opt_test.go
++++ b/nativegen/opt_test.go
+@@ -256,7 +256,7 @@ func TestFindingLine(t *testing.T) {
+ 
+ func TestTransformsToggleTheLane(t *testing.T) {
+ 	registry := Registry()
+-	if got := len(registry.Transforms()); got != 31 {
++	if got := len(registry.Transforms()); got != 32 {
+ 		t.Fatalf("%d transforms", got)
+ 	}
+ 	rotate, _ := registry.Lookup(TransformRotate)
+@@ -273,6 +273,9 @@ func TestTransformsToggleTheLane(t *testing.T) {
+ 	if PlainLane(Lane{ShareVectorAddresses: true}).ShareVectorAddresses {
+ 		t.Fatal("plain lane retained late address sharing")
+ 	}
++	if PlainLane(Lane{ForwardFrameLoads: true}).ForwardFrameLoads {
++		t.Fatal("plain lane retained late frame forwarding")
++	}
+ 	if plain.LoopRewrites != loopRewrites {
+ 		t.Fatal("plain lane discarded immutable loop-rewrite eligibility")
+ 	}
+@@ -285,7 +288,16 @@ func TestTransformsToggleTheLane(t *testing.T) {
+ 	}
+ 	identity := opt.Identity(plain)
+ 	for _, tr := range registry.Transforms() {
+-		next := tr.Apply(identity)
++		input := identity
++		if tr.Name() == TransformForwardFrameLoads {
++			if tr.Apply(identity) != nil {
++				t.Fatal("frame forwarding applied before allocation and scheduling")
++			}
++			late := plain
++			late.Schedule, late.Reallocate = true, true
++			input = opt.Identity(late)
++		}
++		next := tr.Apply(input)
+ 		if next == nil {
+ 			t.Fatalf("%s did not apply to the arm64 identity", tr.Name())
+ 		}
+@@ -293,6 +305,9 @@ func TestTransformsToggleTheLane(t *testing.T) {
+ 			t.Fatalf("%s applied twice", tr.Name())
+ 		}
+ 		lane := PlainLane(next.Config.(Lane))
++		if lane.ForwardFrameLoads {
++			t.Fatal("plain fallback retained frame forwarding")
++		}
+ 		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.ElideRedundantGuards || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.UnrollConstant || lane.UnrollSmall || lane.UnrollFills || !lane.NoReductions {
+ 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
+ 		}
+diff --git a/machine/frame_forward.go b/machine/frame_forward.go
+new file mode 100644
+--- /dev/null
++++ b/machine/frame_forward.go
+@@ -0,0 +1,156 @@
++package machine
++
++import "github.com/SCKelemen/oak/asm"
++
++// ForwardFrameLoads replaces a same-block plain frame load with a move
++// from the unchanged source of the most recent same-width store. Stores
++// remain in place. This is an untrusted proposal: ordinary seam admission
++// and semantic validation still decide whether its output may be selected.
++// No scheduling, allocation or cleanup follows inside this helper.
++func ForwardFrameLoads(fn *asm.Function) (*asm.Function, int, error) {
++	if fn == nil || (fn.Arch != "" && fn.Arch != asm.ArchArm64) || fn.Frame <= 0 {
++		return fn, 0, nil
++	}
++	out := *fn
++	// Copy every mutable assembly descendant, not the caller's source/ABI
++	// metadata. The same closed payload copier serves allocation proposals.
++	out.Items, out.Clobbers = cloneReallocationPayload(fn.Items, fn.Clobbers)
++	lifted, err := Lift(&out)
++	if err != nil {
++		return nil, 0, err
++	}
++	// frameAccesses/qualify establish private, nonoverlapping, consistent
++	// slots. First reject malformed ranges before their endpoint arithmetic
++	// can overflow, and memory modifiers this older analysis does not read.
++	for _, instruction := range lifted.Instrs {
++		for _, operand := range instruction.Asm.Operands {
++			if memory, ok := operand.(asm.Memory); ok && memory.Base.Class == asm.ClassSP {
++				if memory.Index != nil || memory.Mode != asm.MemOffset || memory.MulVL || memory.Shift != 0 || memory.Extend != "" || memory.Offset < 0 || memory.Offset > fn.Frame {
++					return &out, 0, nil
++				}
++			}
++		}
++	}
++	accesses, escaped, blocked := frameAccesses(lifted)
++	for _, access := range accesses {
++		width := int64(access.bits / 8)
++		if width <= 0 || width > fn.Frame || access.offset < 0 || access.offset > fn.Frame-width {
++			return &out, 0, nil
++		}
++	}
++	for _, extent := range blocked {
++		if extent[0] < 0 || extent[1] < extent[0] || extent[1] > fn.Frame {
++			return &out, 0, nil
++		}
++	}
++	for _, offset := range escaped {
++		if offset < 0 {
++			return &out, 0, nil
++		}
++	}
++	slots := qualify(accesses, escaped, blocked, fn.Frame)
++	forwarded := 0
++	for _, block := range lifted.Blocks {
++		held := map[int64]asm.Register{}
++		killDefinitions := func(instruction *Instr) {
++			for _, definition := range instruction.Defs {
++				for offset, source := range held {
++					if definition.Reg == (Reg{GPR, source.Num}) {
++						delete(held, offset) // W and X views share one physical value
++					}
++				}
++			}
++		}
++		for _, instruction := range block.Instrs {
++			a := instruction.Asm
++			if a.Cond != "" || a.OptIRCallSite != 0 || lifted.t.barrier(instruction) {
++				clear(held)
++				continue
++			}
++			register, offset, store, plain := plainForwardFrameAccess(a, fn.Frame)
++			if s, qualified := slots[offset]; plain && qualified && s.class == GPR && s.bits == viewBits(register) {
++				if store {
++					killDefinitions(instruction)
++					held[offset] = register
++				} else {
++					// Read the old source before the load defines its destination.
++					// In particular, STR W did not clear its source's upper bits,
++					// while LDR W does: MOV wN,wN must not be deleted here.
++					source, available := held[offset]
++					killDefinitions(instruction)
++					if available {
++						a.Mnemonic = "mov"
++						a.Operands = []asm.Operand{register, source}
++						a.CheckedFacts = nil
++						instruction.Asm = a
++						forwarded++
++					}
++				}
++				continue
++			}
++			if frameForwardRegisterOnly(a) {
++				killDefinitions(instruction)
++			} else {
++				// Includes non-frame stores, atomics, unfamiliar operations and
++				// every memory operation outside the exact plain slot vocabulary.
++				clear(held)
++			}
++		}
++	}
++	out.Items = lifted.Items()
++	return &out, forwarded, nil
++}
++
++func plainForwardFrameAccess(a asm.Instruction, frame int64) (asm.Register, int64, bool, bool) {
++	if (a.Mnemonic != "str" && a.Mnemonic != "ldr") || a.Cond != "" || a.OptIRCallSite != 0 || len(a.Operands) != 2 {
++		return asm.Register{}, 0, false, false
++	}
++	register, isRegister := a.Operands[0].(asm.Register)
++	memory, isMemory := a.Operands[1].(asm.Memory)
++	if !isRegister || (register.Class != asm.ClassW && register.Class != asm.ClassX) || register.Num < 0 || register.Num >= 31 || register.Vec != "" || register.Qual != "" ||
++		!isMemory || memory.Base.Class != asm.ClassSP || memory.Index != nil || memory.Mode != asm.MemOffset || memory.MulVL || memory.Shift != 0 || memory.Extend != "" {
++		return asm.Register{}, 0, false, false
++	}
++	width := int64(viewBits(register) / 8)
++	if width > frame || memory.Offset < 0 || memory.Offset > frame-width || memory.Offset%width != 0 || memory.Offset/width > 4095 {
++		return asm.Register{}, 0, false, false
++	}
++	return register, memory.Offset, a.Mnemonic == "str", true
++}
++
++// A closed register-only vocabulary is safer than assuming an unfamiliar
++// mnemonic cannot write memory. The lift supplies all destination aliases;
++// conditions and provenance-marked instructions are rejected by the caller.
++func frameForwardRegisterOnly(a asm.Instruction) bool {
++	switch a.Mnemonic {
++	case "mov", "movz", "movn", "movk", "mvn", "neg", "negs",
++		"add", "adds", "sub", "subs", "cmp", "cmn", "tst",
++		"and", "ands", "orr", "orn", "eor", "eon", "bic", "bics",
++		"lsl", "lsr", "asr", "ror", "lslv", "lsrv", "asrv", "rorv",
++		"extr", "ubfx", "sbfx", "ubfiz", "sbfiz", "bfi", "bfxil",
++		"uxtb", "uxth", "sxtb", "sxth", "sxtw", "clz", "cls", "rbit", "rev", "rev16", "rev32",
++		"mul", "madd", "msub", "mneg", "umull", "smull", "umulh", "smulh", "umaddl", "smaddl", "umsubl", "smsubl", "udiv", "sdiv",
++		"csel", "cset", "csetm", "csinc", "csinv", "csneg", "cneg", "cinc", "cinv", "nop":
++	default:
++		return false
++	}
++	for _, operand := range a.Operands {
++		var register asm.Register
++		switch value := operand.(type) {
++		case asm.Register:
++			register = value
++		case asm.Shifted:
++			register = value.Reg
++		case asm.Extended:
++			register = value.Reg
++		case asm.Immediate, asm.Condition:
++			continue
++		default:
++			return false
++		}
++		if register.Class != asm.ClassW && register.Class != asm.ClassX {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/machine/frame_forward_test.go b/machine/frame_forward_test.go
+new file mode 100644
+--- /dev/null
++++ b/machine/frame_forward_test.go
+@@ -0,0 +1,233 @@
++package machine
++
++import (
++	"reflect"
++	"testing"
++
++	"github.com/SCKelemen/oak/asm"
++)
++
++func frameForwardFixture(source, destination asm.Register, gap ...asm.Item) *asm.Function {
++	items := []asm.Item{ins("str", source, mem(sp(), 16))}
++	items = append(items, gap...)
++	items = append(items, ins("ldr", destination, mem(sp(), 16)), ins("ret"))
++	f := fn(items...)
++	f.Frame = 32
++	return f
++}
++
++func TestForwardFrameLoadsExactWidthAndSelfMoves(t *testing.T) {
++	for _, pair := range [][2]asm.Register{{w(9), w(0)}, {x(9), x(0)}, {w(9), w(9)}, {x(9), x(9)}} {
++		t.Run(pair[0].Text+"-"+pair[1].Text, func(t *testing.T) {
++			f := frameForwardFixture(pair[0], pair[1], ins("add", w(10), w(10), imm(1)))
++			load := f.Items[2].(asm.Instruction)
++			load.Line = 17
++			load.CheckedFacts = []asm.CheckedFactRef{{ID: "load-fact", Operand: 1, Extent: 8}}
++			f.Items[2] = load
++			before := cloneFunction(f)
++			out, count, err := ForwardFrameLoads(f)
++			if err != nil || count != 1 || out == f {
++				t.Fatalf("forwarded=%d: %v", count, err)
++			}
++			want := ins("mov", pair[1], pair[0])
++			want.Line = 17
++			if !reflect.DeepEqual(out.Items[2], want) || !reflect.DeepEqual(out.Items[0], before.Items[0]) || !reflect.DeepEqual(f, before) {
++				t.Fatalf("load, store or source changed unexpectedly:\n%s", text(out.Items))
++			}
++		})
++	}
++}
++
++func TestForwardFrameLoadsLatestStoreAndIndependentSlots(t *testing.T) {
++	f := frameForwardFixture(w(9), w(0), ins("str", w(10), mem(sp(), 20)), ins("str", w(11), mem(sp(), 16)))
++	f.Items = append(f.Items[:len(f.Items)-1], ins("ldr", w(1), mem(sp(), 20)), ins("ldr", w(2), mem(sp(), 16)), ins("ret"))
++	out, count, err := ForwardFrameLoads(f)
++	if err != nil || count != 3 || !reflect.DeepEqual(out.Items[3], ins("mov", w(0), w(11))) ||
++		!reflect.DeepEqual(out.Items[4], ins("mov", w(1), w(10))) || !reflect.DeepEqual(out.Items[5], ins("mov", w(2), w(11))) {
++		t.Fatalf("latest-store forwarding failed: count=%d err=%v\n%s", count, err, text(out.Items))
++	}
++}
++
++func TestForwardFrameLoadsClearsPhysicalAliasesAndBoundaries(t *testing.T) {
++	for _, test := range []struct {
++		name string
++		gap  []asm.Item
++	}{
++		{"w-definition", []asm.Item{ins("mov", w(9), imm(3))}},
++		{"x-definition", []asm.Item{ins("mov", x(9), imm(3))}},
++		{"w-partial-definition", []asm.Item{ins("movk", w(9), imm(3))}},
++		{"x-partial-definition", []asm.Item{ins("bfi", x(9), x(10), imm(8), imm(8))}},
++		{"call", []asm.Item{ins("bl", sym("callee"))}},
++		{"indirect-call", []asm.Item{ins("blr", x(1))}},
++		{"label", []asm.Item{label("next")}},
++		{"branch", []asm.Item{ins("b", sym("next")), label("next")}},
++		{"conditional", []asm.Item{ins("cbz", w(1), sym("next")), label("next")}},
++		{"return", []asm.Item{ins("ret")}},
++		{"trap", []asm.Item{ins("brk", imm(0))}},
++		{"sp-adjustment", []asm.Item{ins("add", sp(), sp(), imm(16))}},
++		{"barrier", []asm.Item{ins("dmb", asm.Option{Name: "ish"})}},
++		{"atomic-store", []asm.Item{ins("stlr", w(0), mem(x(1), 0))}},
++		{"unknown-store", []asm.Item{ins("str", w(0), mem(x(1), 0))}},
++		{"nonframe-load", []asm.Item{ins("ldr", w(10), mem(x(1), 0))}},
++		{"nonplain-frame-pair", []asm.Item{ins("stp", x(10), x(11), mem(sp(), 0))}},
++		{"system-operation", []asm.Item{ins("wfi")}},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			out, count, err := ForwardFrameLoads(frameForwardFixture(w(9), w(0), test.gap...))
++			if err != nil || count != 0 {
++				t.Fatalf("crossed an invalidation: count=%d err=%v\n%s", count, err, text(out.Items))
++			}
++		})
++	}
++	// A call also clears facts when its implicit clobbers spare the source.
++	if _, count, err := ForwardFrameLoads(frameForwardFixture(w(19), w(0), ins("bl", sym("callee")))); err != nil || count != 0 {
++		t.Fatalf("callee-saved source survived a call boundary: %d %v", count, err)
++	}
++}
++
++func TestForwardFrameLoadsRejectsUnqualifiedSlots(t *testing.T) {
++	for _, kind := range []string{"mixed-width", "overlap", "narrow", "escaped", "negative-escape", "index", "pre-index", "post-index", "mul-vl", "shift", "extend", "negative-offset", "outside-frame", "overflow-offset", "unaligned", "unencodable-offset", "vector", "zero-source", "marked-store", "marked-load", "conditional-store", "conditional-load", "malformed-register", "marked-gap"} {
++		t.Run(kind, func(t *testing.T) {
++			f := frameForwardFixture(w(9), w(0))
++			switch kind {
++			case "mixed-width":
++				f.Items[1] = ins("ldr", x(0), mem(sp(), 16))
++			case "overlap":
++				f = frameForwardFixture(w(9), w(0), ins("str", w(10), mem(sp(), 18)))
++			case "narrow":
++				f = frameForwardFixture(w(9), w(0), ins("strb", w(10), mem(sp(), 16)))
++			case "escaped":
++				f = frameForwardFixture(w(9), w(0), ins("add", x(10), sp(), imm(16)))
++			case "negative-escape":
++				f = frameForwardFixture(w(9), w(0), ins("add", x(10), sp(), imm(-16)))
++			case "vector":
++				f = frameForwardFixture(q(9), q(0))
++			case "zero-source":
++				f = frameForwardFixture(w(31), w(0))
++			case "marked-store", "marked-load", "conditional-store", "conditional-load":
++				index := 0
++				if kind == "marked-load" || kind == "conditional-load" {
++					index = 1
++				}
++				instruction := f.Items[index].(asm.Instruction)
++				if kind == "marked-store" || kind == "marked-load" {
++					instruction.OptIRCallSite = 1
++				} else {
++					instruction.Cond = "eq"
++				}
++				f.Items[index] = instruction
++			case "marked-gap":
++				gap := ins("add", w(10), w(10), imm(1))
++				gap.OptIRCallSite = 1
++				f = frameForwardFixture(w(9), w(0), gap)
++			case "malformed-register":
++				reg := w(9)
++				reg.Vec = "4s"
++				f.Items[0] = ins("str", reg, mem(sp(), 16))
++			default:
++				memory := mem(sp(), 16)
++				switch kind {
++				case "index":
++					index := w(1)
++					memory.Index = &index
++				case "pre-index":
++					memory.Mode = asm.MemPreIndex
++				case "post-index":
++					memory.Mode = asm.MemPostIndex
++				case "mul-vl":
++					memory.MulVL = true
++				case "shift":
++					memory.Shift = 2
++				case "extend":
++					memory.Extend = "uxtw"
++				case "negative-offset":
++					memory.Offset = -4
++				case "outside-frame":
++					memory.Offset = 32
++				case "overflow-offset":
++					f.Frame, memory.Offset = 1<<63-1, 1<<63-2
++				case "unaligned":
++					memory.Offset = 17
++				case "unencodable-offset":
++					f.Frame, memory.Offset = 32768, 16384
++				}
++				f.Items[0], f.Items[1] = ins("str", w(9), memory), ins("ldr", w(0), memory)
++			}
++			out, count, err := ForwardFrameLoads(f)
++			if kind == "pre-index" || kind == "post-index" || kind == "mul-vl" {
++				if err == nil || count != 0 {
++					t.Fatalf("unsupported addressing did not refuse the lift: count=%d error=%v", count, err)
++				}
++				return
++			}
++			if err != nil || count != 0 || !reflect.DeepEqual(out, f) {
++				t.Fatalf("unsupported slot changed: count=%d error=%v", count, err)
++			}
++		})
++	}
++}
++
++func TestForwardFrameLoadsSelfMovePreservesZeroExtension(t *testing.T) {
++	declaration := optIRRV64Declaration(t, `narrow: (value: u64): u64 = u64(u32(value))`)
++	f := fn(ins("sub", sp(), sp(), imm(16)), ins("mov", x(9), x(0)),
++		ins("str", w(9), mem(sp(), 0)), ins("ldr", w(9), mem(sp(), 0)),
++		ins("mov", x(0), x(9)), ins("add", sp(), sp(), imm(16)), ins("ret"))
++	f.Name, f.Signature, f.Frame, f.Fallback = "narrow", declaration, 16, true
++	f.Bindings = []asm.Binding{{Register: x(0), Param: "value"}}
++	f.Clobbers = append(f.Clobbers, x(0))
++	out, count, err := ForwardFrameLoads(f)
++	if err != nil || count != 1 || !reflect.DeepEqual(out.Items[3], ins("mov", w(9), w(9))) {
++		t.Fatalf("required self-move was lost: %d %v", count, err)
++	}
++	for index, body := range []*asm.Function{f, out} {
++		if findings := asm.Check(body, declaration, nil); len(findings) != 0 {
++			t.Fatalf("seam refused: %v", findings)
++		}
++		if verdict := asm.Verify(body, declaration, declaration.Body); verdict.Kind != asm.VerdictProven {
++			t.Fatalf("zero-extension body %d was not proven: %s %s", index, verdict.Kind, verdict.Message)
++		}
++	}
++	wrong := cloneFunction(out)
++	wrong.Items = append(wrong.Items[:3], wrong.Items[4:]...)
++	if verdict := asm.Verify(wrong, declaration, declaration.Body); verdict.Kind != asm.VerdictMismatch {
++		t.Fatalf("deleting the W self-move was not refuted: %s %s", verdict.Kind, verdict.Message)
++	}
++	identity := optIRRV64Declaration(t, `narrow: (value: u64): u64 = value`)
++	if verdict := asm.Verify(f, identity, identity.Body); verdict.Kind != asm.VerdictMismatch {
++		t.Fatalf("W store/load falsely preserves the high bits: %s %s", verdict.Kind, verdict.Message)
++	}
++}
++
++func TestForwardFrameLoadsInputIsolationAndBypasses(t *testing.T) {
++	index := w(2)
++	f := frameForwardFixture(w(9), w(0))
++	f.Items = append(f.Items[:2], ins("str", w(1), asm.Memory{Base: x(3), Index: &index}),
++		ins("st1", asm.RegisterList{Regs: []asm.Register{v(0, "4s")}}, mem(x(4), 0)), ins("ret"))
++	store := f.Items[0].(asm.Instruction)
++	store.CheckedFacts = []asm.CheckedFactRef{{ID: "store-fact", Operand: 1}}
++	f.Items[0] = store
++	out, count, err := ForwardFrameLoads(f)
++	if err != nil || count != 1 {
++		t.Fatalf("isolation fixture did not forward: %d %v", count, err)
++	}
++	out.Items[0].(asm.Instruction).Operands[0] = w(12)
++	out.Items[0].(asm.Instruction).CheckedFacts[0].ID = "changed"
++	out.Items[2].(asm.Instruction).Operands[1].(asm.Memory).Index.Num = 13
++	out.Items[3].(asm.Instruction).Operands[0].(asm.RegisterList).Regs[0].Num = 14
++	out.Clobbers[0].Num = 15
++	if f.Items[0].(asm.Instruction).Operands[0].(asm.Register).Num != 9 ||
++		f.Items[0].(asm.Instruction).CheckedFacts[0].ID != "store-fact" || index.Num != 2 ||
++		f.Items[3].(asm.Instruction).Operands[0].(asm.RegisterList).Regs[0].Num != 0 || f.Clobbers[0].Num != 9 {
++		t.Fatal("output retained a mutable assembly alias into its input")
++	}
++	for _, bypass := range []*asm.Function{nil, fn(ins("ret")), {Arch: asm.ArchRV64, Frame: 32}} {
++		got, count, err := ForwardFrameLoads(bypass)
++		if err != nil || count != 0 || got != bypass {
++			t.Fatal("nil/nonframe/non-AArch64 path changed")
++		}
++	}
++	invalid := frameForwardFixture(w(9), w(0), ins("unknown-operation"))
++	if _, _, err := ForwardFrameLoads(invalid); err == nil {
++		t.Fatal("unknown machine instruction did not refuse the lift")
++	}
++}
+diff --git a/nativegen/frame_forward_test.go b/nativegen/frame_forward_test.go
+new file mode 100644
+--- /dev/null
++++ b/nativegen/frame_forward_test.go
+@@ -0,0 +1,39 @@
++package nativegen
++
++import (
++	"testing"
++
++	"github.com/SCKelemen/oak/asm"
++	"github.com/SCKelemen/oak/opt"
++)
++
++func TestFrameForwardingCandidateIsGatedAndSeparate(t *testing.T) {
++	transform, ok := Registry().Lookup(TransformForwardFrameLoads)
++	if !ok {
++		t.Fatal("missing frame-load forwarding candidate")
++	}
++	if gated, ok := transform.(opt.Gated); !ok || !gated.NeedsVerdict() {
++		t.Fatal("frame forwarding must require independent semantic validation")
++	}
++	if neutral, ok := transform.(opt.Neutral); ok && neutral.ShapeNeutral() {
++		t.Fatal("frame forwarding cannot inherit another shape's verdict")
++	}
++	lane := Lane{Arch: asm.ArchArm64, Reallocate: true, Schedule: true}
++	base := opt.Identity(lane)
++	candidate := transform.Apply(base)
++	if candidate == nil || !candidate.Config.(Lane).ForwardFrameLoads || base.Config.(Lane).ForwardFrameLoads {
++		t.Fatal("missing separate candidate or original lane was mutated")
++	}
++	if PlainLane(candidate.Config.(Lane)).ForwardFrameLoads {
++		t.Fatal("identity fallback kept frame forwarding")
++	}
++	for _, unsupported := range []Lane{
++		{Arch: asm.ArchRV64, Reallocate: true, Schedule: true},
++		{Arch: asm.ArchArm64, Reallocate: true},
++		{Arch: asm.ArchArm64, Schedule: true},
++	} {
++		if transform.Apply(opt.Identity(unsupported)) != nil {
++			t.Fatal("offered frame forwarding outside the closed late AArch64 stage")
++		}
++	}
++}

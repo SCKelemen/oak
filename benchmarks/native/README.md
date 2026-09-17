@@ -1660,6 +1660,65 @@ Use
 unset any verifier-budget override, and emit `benchmarks/kernels/oak` into
 distinct output prefixes. Compare both `.o` and `.c` files, not just diagnostics.
 
+## Rejected late frame-load forwarding, 2026-09-17
+
+At `7b46dba9`, a separate proof-gated AArch64 candidate replaced private-frame
+reloads with same-width register moves after scheduling and allocation. It
+retained stores, respected physical-register definitions and block/call/memory
+boundaries, and preserved W self-moves (which clear the upper 32 bits).
+Ordinary search selected it, with **all eight BLAKE3 result chunks freshly
+proven** at the unchanged budget and with verdict caching disabled.
+
+Static metrics looked favorable: **44 fewer loads**, 358 → 314 memory
+instructions, and estimated cost 1973 → 1840. The frame remained 288 bytes;
+the body remained 1175 assembler instructions (1179 encoded). Both native
+objects were linked against the byte-identical baseline C companion. Only
+compression was native, not the whole hash driver.
+
+Three sequential same-process runs used 100 hashes per sample and 21 samples
+per variant, rotating execution order; run B reversed the native library
+arguments. All 32 digest bytes matched the fresh pure-C control at fourteen
+boundary lengths through 1 MiB and after every timed sample. No builds/tests
+from this experiment overlapped timing. The M4 Max was heavily loaded, with
+uncontrolled cores/frequency; one-minute load ranged from 66.6 to 170.1 at run
+boundaries.
+
+| Run | Baseline ms/MiB | Prototype ms/MiB | Median paired ratio | Faster pairs | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 4.240 | 4.893 | 1.094 | 7/21 | 4.733 |
+| B, reversed | 5.093 | 5.386 | 1.075 | 9/21 | 5.458 |
+| C | 5.614 | 5.844 | 0.996 | 11/21 | 5.796 |
+
+**Rejected: no repeatable runtime benefit.** The load reductions and proof
+did not justify a new default. Heavy host noise prevents assigning a precise
+regression percentage or microarchitectural cause, but does not turn these
+results into evidence of a speedup. The production prototype and its search
+option were removed; the preceding shipping optimizer remains unchanged.
+[All samples, hashes and commands](results/blake3-frame-forward-rejected-2026-09-17.json)
+and the [reproducible proposal patch](results/blake3-frame-forward-rejected-2026-09-17.patch)
+are retained, rather than adding an unmeasured optimizer option to maintain.
+The archive targets the measured `7b46dba9` base plus the verifier-only fix
+`be68ec04`, not a later optimizer registry; exact reproduction instructions
+are in the record.
+
+The experiment did expose a verifier soundness bug worth fixing independently:
+zero-extending a previously truncated wide parameter could recover its
+discarded high bits. Thus a W-register write could falsely prove a u64 identity
+claim. The retained fix keeps an explicit mask, preserves original input-width
+provenance, and invalidates older cached verdicts. Regressions prove the actual
+narrowing and refute identity, including a W self-move and frame spill/reload.
+Explicit conversions fuse the required mask so the existing Lean lowering
+representation remains unchanged; the formal model's comment now distinguishes
+its masked law from a general widening theorem. No proof budget, gate or source
+semantics was weakened. This increment claims **no application speedup**.
+
+Full `asm`, `machine`, `nativegen` and `opt` suites and targeted compiler tests
+passed before integration. After rebasing onto `c775cd70`, machine/optimizer
+suites, compiler proof/cache/global-forwarding checks and the exact width/lowering
+regressions passed again. Fresh default emission on the integrated branch
+produced **byte-identical BLAKE3 C and native object files** to the frozen
+baseline and independently proved all eight chunks with no cached verdict.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
