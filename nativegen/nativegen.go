@@ -5951,14 +5951,14 @@ func (g *generator) lowerStatementsBefore(stmts []ast.Statement, trailing ast.No
 }
 
 func (g *generator) lowerStatementList(stmts []ast.Statement, functionBody bool, retLabel string, trailing ast.Node) error {
-	lastUse := lastUses(stmts, trailing)
+	release := lastUseOrder(lastUses(stmts, trailing), len(stmts))
 	for i, stmt := range stmts {
 		last := functionBody && i == len(stmts)-1
 		g.line = statementLine(stmt)
 		if err := g.lowerStatement(stmt, last, retLabel); err != nil {
 			return err
 		}
-		g.releaseDead(lastUse, i)
+		g.releaseNames(release[i])
 	}
 	if functionBody && (g.result != nil || g.resultRecord != nil) {
 		if len(stmts) == 0 {
