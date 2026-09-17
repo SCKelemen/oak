@@ -7119,13 +7119,27 @@ that field across every element, so the value agrees leaf for leaf with
 what the field accesses would have read. The element type's name is now
 kept on the span's model, which is what makes the shape reachable.
 
-One shape remains, and it is the writer's counterpart of this: a
-whole-element *assignment*, whose `stp` the store path still refuses as
-a pair, needing the value split across the leaves it covers. The machine
-half of that is the same tiling; what it waits on is the Oak side, which
-stops before it — `.surfaces is not an array field of s's element` for
-an element of an array field, and `is not a scalar leaf` for an element
-of the span itself.
+**An element assigned as a value (2026-09-17).** The writer's
+counterpart. `s[d] = Box { … }` and `s[d].boxes[i] = Box { … }` were
+refused on both sides: the Oak side resolves an assignment's target to a
+scalar leaf and an aggregate target is none, and the machine side
+refused the `stp` a whole element of four words is spelled with.
+
+The Oak side lowers the assigned expression as an aggregate of the
+element's type and writes each of its scalar leaves to that leaf's own
+memory at the element's index — leaf for leaf the mirror of the read, so
+a value written and read back agrees. The machine side splits a store
+wider than a leaf across the leaves it covers, under the same exact
+tiling the wide read requires, and a pair store writes each of its two
+registers at its own offset through the same splitter. A record whose
+element has padding is still refused in both directions: a byte no leaf
+covers is not a field, and writing through it would put something where
+the Oak side has nothing.
+
+The verdict names the leaves: `proven equal to its Oak body in the span
+memory it writes (r.boxes.x, r.boxes.y)`. A pair store through a span of
+*scalars* remains refused — a span's element memory is one element per
+index, and a pair writes two.
 
 **A loop bounded by a field, and where its coupling stops
 (2026-09-17).** `while i < s[d].count` comes back witnessed rather than

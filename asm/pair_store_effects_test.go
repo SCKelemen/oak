@@ -98,7 +98,10 @@ func TestPair64WriteLogRemainsUnreachableFromInstructions(t *testing.T) {
 	}
 }
 
-func TestPairStoreInstructionPathsRemainRefused(t *testing.T) {
+// A pair store through a record span writes the leaves its two registers
+// cover; through a span of scalars it is still refused, since a span's
+// element memory is one element per index and a pair writes two.
+func TestPairStorePaths(t *testing.T) {
 	generic := verifyCase(t,
 		"zero2: (v: [*]u64) -> ()",
 		"{\n  len(v) >= u32(2) ? {\n    v[u32(0)] = u64(0)\n    v[u32(1)] = u64(0)\n  } | { }\n}",
@@ -131,7 +134,7 @@ func TestPairStoreInstructionPathsRemainRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := Verify(unit.Functions[0], sig, spec.Body)
-	if record.Kind != VerdictTrusted || !strings.Contains(record.Message, "a pair store to a record span") {
-		t.Fatalf("record-span STP must remain refused, got %s: %s", record.Kind, record.Message)
+	if record.Kind != VerdictProven || !strings.Contains(record.Message, "the span memory it writes (pool.first, pool.second)") {
+		t.Fatalf("record-span STP must be proven in the leaves it writes, got %s: %s", record.Kind, record.Message)
 	}
 }
