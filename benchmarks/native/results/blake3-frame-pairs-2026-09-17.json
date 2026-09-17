@@ -1995,5 +1995,28 @@
     },
     "result": "Both native objects and both generated C wrappers are byte-identical to their respective timed variants. Both compiler builds report all eight compression result chunks proven at the ordinary budget. No new timing claim is inferred from emission times, which were measured concurrently.",
     "generated_c_wrapper_sha256": "4e057f67fe3a6e90d9b2c01890a75418a4ea050fb7283fbf36f0f148bd5e2b0e"
+  },
+  "final_rebase": {
+    "upstream_commit": "fba8fda9121f7b4ae7c7b0f0de14362aa96da00e",
+    "candidate_build": {
+      "emission_seconds": 12.874555749993306,
+      "metrics": {
+        "instructions": 311,
+        "stack_accesses": 28,
+        "frame_bytes": 144
+      },
+      "diagnostics": [
+        "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup): 1.96s (proven)",
+        "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+      ],
+      "emitter_sha256": "f1ce6db3a57044db53af1d686a9df6f1e7e73fdaf582a5e22b20fe54905e574a",
+      "object_sha256": "f97be7073bd89985f7922c7663fd99bbb91bda26d004394080db62482fffe584",
+      "runner_sha256": "5acf950109bb0e33f9db6d313779f58d3c52b7e905893e82f6d486eb1711c937",
+      "native_only": [
+        "hash__blake3_ucompress"
+      ]
+    },
+    "result": "After the additional callee-written loop-cell and negative-float-literal fixes, the candidate still proves all eight chunks and emits exactly the timed native object. The selected recipe label now also includes late-cleanup; bytes, static counts and proof grade do not change. No new runtime timing inferred.",
+    "validation": "Full asm/machine/nativegen/opt/optir suites passed after 8204e8a9 integration; broad selected compiler batch completed with one stale upstream diagnostic assertion, independently reproduced with our optimization disabled. Corrected only the expected unsupported-break diagnostic and comment, preserving both strict rejection and ordinary native success assertions. Final rebase passed machine/nativegen plus strict-profile, actual BLAKE3 all-chunk proof, boundary execution and negative-float-literal compiler tests. No claim that all repository tests or remote CI were run."
   }
 }
