@@ -47,6 +47,13 @@ type spanWrite struct {
 	memory string // a loop memory marker's name, "" for a store
 }
 
+// zeroMemory is the marker a zero-filled owned array's log starts with
+// on both sides (declareLocal, the executor's setup): the memory is zero
+// from there, whatever entry element memoryAt is handed, so every
+// comparison, restore and witness evaluation sees the fill without
+// knowing the span (docs/spec/94-assembler.md §9, large arrays).
+const zeroMemory = "zero"
+
 // loopMemoryName is the unknown memory of a span across loop K.
 func loopMemoryName(loop int, span string) string { return fmt.Sprintf("loop%d.%s", loop, span) }
 
@@ -125,6 +132,10 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		form = index.linearAt(32)
 	}
 	for _, w := range log {
+		if w.memory == zeroMemory {
+			value = constTerm(0, base.width) // a zero-filled array: zero from here
+			continue
+		}
 		if w.memory != "" {
 			// A loop memory marker: the element is the unknown memory's,
 			// under the marker's guard when it has one (an inner loop
@@ -561,6 +572,11 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	}
 	sort.Strings(sorted)
 	for _, name := range sorted {
+		if exec.localSpans[name] || lowering.localSpans[name] {
+			// The body's own large array: no caller observes its final
+			// memory; its reads on either side went through the one model.
+			continue
+		}
 		width, isSpan := lowering.spanMemoryWidth(name)
 		if !isSpan {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}

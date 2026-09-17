@@ -50,6 +50,81 @@ main: (): i32 {
 }
 `
 
+// The same flush through a 4096-byte chunk, the prover's write_flush's
+// size: the chunk is a span memory on both sides (largeArrayElements), so
+// the copy loop couples through it and the call summary binds the
+// subslice handed to host_write_all as an alias of the local span; the
+// flush itself proves.
+const nativeExternLargeChunkProgram = `
+import("host")
+
+buf: [16]u8
+pos: u32
+
+push: (b: u8): () {
+  pos < u32(16) ? {
+    buf[pos] = b
+    pos = pos + u32(1)
+  } | { }
+}
+
+flush: (): () {
+  chunk: [4096]u8
+  k: u32 = u32(0)
+  while k < pos {
+    chunk[k] = buf[k]
+    k = k + u32(1)
+  }
+  piece: []u8 = view(&chunk)
+  host.host_write_all(host.host_stdout(), subslice(piece, u32(0), pos)) ? { } | { }
+  pos = u32(0)
+}
+
+emit: (a: u8, b: u8): () {
+  push(a)
+  push(b)
+  flush()
+}
+
+main: (): i32 {
+  emit(u8(72), u8(10))
+  pos == u32(0) ? 42 | 1
+}
+`
+
+func TestE2ENativeExternFlushLargeChunkProven(t *testing.T) {
+	requireArm64Host(t)
+	var infos []string
+	root := writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/externchunk\noak 0.1.0\n",
+		"main.oak": nativeExternLargeChunkProgram,
+	})
+	comp := New().WithPackageDir(root).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
+	stdout, code, abnormal := buildAndRunFrom(t, "native_extern_chunk", comp)
+	joined := strings.Join(infos, "\n")
+	if abnormal || code != 42 {
+		t.Fatalf("extern flush through a large chunk: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
+	}
+	if stdout != "H\n" {
+		t.Errorf("the flush must reach stdout: got %q", stdout)
+	}
+	// emit's summary of flush lowers flush's Oak body with the chunk as a
+	// span memory: the copy loop and host_write_all's loop couple through
+	// it (the prover's write family reaches write_flush the same way).
+	if !strings.Contains(joined, "asm unit emit: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively") {
+		t.Errorf("emit must be proven with flush's chunk as a span memory; diagnostics:\n%s", joined)
+	}
+	// flush itself has a 4192-byte frame, past the native backend's own
+	// limit: the C backend keeps it, as it keeps the prover's write_flush.
+	if !strings.Contains(joined, "flush left to the C backend (a frame of 4192 bytes)") {
+		t.Errorf("flush's frame is past the native backend's limit and must be left to the C backend; diagnostics:\n%s", joined)
+	}
+}
+
 func TestE2ENativeExternCallProven(t *testing.T) {
 	requireArm64Host(t)
 	var infos []string
