@@ -66,6 +66,7 @@ const (
 	TransformRecordBases        = "share-record-bases"
 	TransformGlobalAddresses    = "share-global-addresses"
 	TransformForwardGlobalLoads = "forward-global-loads"
+	TransformGlobalLoadMasks    = "elide-global-load-masks"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -506,6 +507,17 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ForwardGlobalLoads = true; return l },
 			fired:   ForwardedGlobalLoads,
 		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// This stronger spelling composes with scalar-global forwarding.
+			// The verifier, not the matcher, proves that each stored narrow value
+			// was already normalized and therefore needs no mask on reload.
+			name: TransformGlobalLoadMasks, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ElideGlobalLoadMasks },
+			eligible: func(l Lane) bool { return l.ForwardGlobalLoads },
+			apply:    func(l Lane) Lane { l.ElideGlobalLoadMasks = true; return l },
+			fired:    ElidedGlobalLoadMasks,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
@@ -601,6 +613,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ShareRecordBases = false
 	lane.ShareGlobalAddresses = false
 	lane.ForwardGlobalLoads = false
+	lane.ElideGlobalLoadMasks = false
 	lane.VectorHomes = false
 	lane.LoopArrayHomes = false
 	lane.LoopResultHomes = false

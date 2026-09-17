@@ -262,6 +262,31 @@ also establishes no repeatable wall-time win. This increment removes known
 no-op search work and reduces its deterministic materialization count; it does
 not claim measured end-to-end compiler throughput.
 
+## OS stage-2: remove normalized reload masks, 2026-09-17
+
+The parent-gated `elide-global-load-masks` candidate follows
+`forward-global-loads`. It consumes only that pass's exact adjacent narrow
+store/mask spelling; the whole-body verifier decides whether the stored Oak
+value was already normalized, while the masked form remains available as a
+fallback. The same final compiler with
+`OAK_OPT_SKIP=elide-global-load-masks` produced the control. Both full builds
+used fresh verification with zero of 30 verdicts from cache.
+
+| Selected body | Instructions | Stalls | Static cost | Masks → moves / removed | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `check_range` | 46 → 44 | 18 → 16 | 70.0 → 67.0 | 0 / 2 | proven |
+| `map_page` | 159 → 157 | 34 → 32 | 252.5 → 249.5 | 3 / 2 | proven |
+| `unmap_page` | 218 → 216 | 48 → 46 | 347.0 → 344.0 | 4 / 2 | witnessed |
+
+The thirteen masks become seven moves and six deletions. Mach-O `__text` and
+the complete object both shrink by 24 bytes (4600→4576 and 6120→6096), with
+27 relocations unchanged. `unmap_page` retains its pre-existing witnessed
+trap-domain/node-budget result; this transform does not weaken it. Every other
+selected body is unchanged, and all five OS differential tests pass. Runtime
+is intentionally unreported because final-build load averages were 176–214.
+
+[Static observations and provenance](results/stage2-global-load-mask-elision-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

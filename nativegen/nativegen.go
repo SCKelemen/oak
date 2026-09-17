@@ -1670,6 +1670,11 @@ type Lane struct {
 	// following a store to the same cell. It runs on the final scheduled form
 	// and requires a whole-body verdict.
 	ForwardGlobalLoads bool
+	// ElideGlobalLoadMasks proposes the stronger form of narrow scalar-global
+	// forwarding: the mask is a move, or disappears, when the unchanged Oak
+	// body proves the stored value was already normalized to the cell width.
+	// The masked ForwardGlobalLoads form remains a separate fallback.
+	ElideGlobalLoadMasks bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -2113,6 +2118,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	}
 	if lane.ForwardGlobalLoads && lane.Schedule {
 		forwardedGlobalLoads[out] = forwardGlobalLoads(out)
+	}
+	if lane.ElideGlobalLoadMasks && lane.ForwardGlobalLoads && lane.Schedule {
+		elidedGlobalLoadMasks[out] = elideGlobalLoadMasks(out)
 	}
 	return out, nil
 }
