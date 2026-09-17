@@ -32,6 +32,16 @@ by_value: (r: [*]Room, d: u32, i: u32): u32 {
   d < len(r) && i < u32(4) ? { b: Box = r[d].boxes[i]; b.x + b.y } | { u32(0) }
 }
 
+// The writer's counterpart: a whole element assigned, one write per leaf.
+// The element of the span itself, and an element of its array field.
+put_box: (r: [*]Room, d: u32, i: u32, x: u32, y: u32): () {
+  d < len(r) && i < u32(4) ? { r[d].boxes[i] = Box { x: x, y: y } } | { }
+}
+
+put_room_n: (r: [*]Room, d: u32, v: u32): () {
+  d < len(r) ? { r[d].n = v } | { }
+}
+
 get_x: (s: [*]Dom, d: u32, i: u32): u32 {
   d < len(s) && i < u32(4) ? { s[d].surfaces[i].x } | { u32(0) }
 }
@@ -110,9 +120,11 @@ main: (): i32 {
   rooms: [1]Room
   rooms[u32(0)].boxes[u32(2)].x = u32(70)
   rooms[u32(0)].boxes[u32(2)].y = u32(5)
-  g: u32 = by_value(span(&rooms), u32(0), u32(2))
+  // Assign a whole element, then read it back by value: 30 + 9 = 39.
+  put_box(span(&rooms), u32(0), u32(3), u32(30), u32(9))
+  g: u32 = by_value(span(&rooms), u32(0), u32(2)) + by_value(span(&rooms), u32(0), u32(3))
   // 12 + 103 + 8 = 123; + 101 = 224; + 1998 = 2222; + 16 = 2238; + 1 = 2239;
-  // + 75 = 2314. 2314 & 255 = 10.
+  // + 75 + 39 = 2353. 2353 & 255 = 49.
   i32_bits_u32((a + b + c + e + f + g) & u32(255))
 }
 `
@@ -127,8 +139,8 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_nested_record_span", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 10 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 10\n%s", code, abnormal, joined)
+	if abnormal || code != 49 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 49\n%s", code, abnormal, joined)
 	}
 	// Every reader is proven at the bit level, and every writer in the leaf
 	// memory it writes — named by the field path, not by the array.
@@ -139,6 +151,7 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	}
 	for _, want := range []string{
 		"asm unit set_x: proven equal to its Oak body in the span memory it writes (s.surfaces.x)",
+		"asm unit put_box: proven equal to its Oak body in the span memory it writes (r.boxes.x, r.boxes.y)",
 		"asm unit scale_x: proven equal to its Oak body",
 	} {
 		if !strings.Contains(joined, want) {
@@ -148,7 +161,7 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	if strings.Contains(joined, "disagrees") {
 		t.Errorf("a false mismatch over a nested record span:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 10 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 10", code, abnormal)
+	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 49 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 49", code, abnormal)
 	}
 }
