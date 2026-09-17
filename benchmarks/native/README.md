@@ -524,6 +524,32 @@ the change helps but does not support a precise speedup. The raw samples and
 the invariant machine-shape counts are in
 [`blake3-in-place-permutation-2026-09-17.json`](results/blake3-in-place-permutation-2026-09-17.json).
 
+The full native build also benefits from the permutation change. Two further
+interleaved runs compare C, `dfd119cd`, and that same baseline with only the
+permutation lowering, using fifteen samples of thirty rounds over 1 MiB:
+
+| Run | C ms per 1 MiB | Native before | Native after | Native elapsed-time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2.794 | 5.603 | 5.361 | 4.3% |
+| 2 | 3.006 | 6.687 | 6.109 | 8.6% |
+
+The timed implementation was developed independently of `a1783bba`. Applying
+the landed lowering to the same baseline reproduces the measured native object
+and complete runner byte-for-byte; generated C differs only in source-location
+comments. All samples agree, and a rebuilt runner agrees with C at fourteen
+sizes from empty input through 1 MiB, including block/chunk/tree boundaries.
+Native coverage is unchanged. Load averages were 24–25, core placement was
+uncontrolled, and sample ranges overlap; these medians do not establish a fixed
+speedup. Raw samples and reconstruction hashes:
+[`blake3-array-permutation-2026-09-17.json`](results/blake3-array-permutation-2026-09-17.json).
+
+Regression coverage now proves every permutation of five arbitrary words (120
+orders), mixed cycles at 32/64-bit signed and unsigned widths, and long cycles.
+Gathers and helpers with preceding statements retain snapshot semantics. A
+repeated sixteen-word BLAKE3 permutation loop has a proven native body with one
+message-array home and passes in native and C builds. These timings predate the full
+compression proof described below.
+
 **The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
 runner and package, seven samples of five rounds, 1 MiB per kernel,
 checksums agreeing on every row; the host was loaded again (load
