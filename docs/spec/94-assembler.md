@@ -1160,6 +1160,19 @@ eliminating an intermediate BBM break. These width-eight model proofs do not
 establish Go executor/call-summary refinement, actual array placement, storage
 authority, or safe concurrent reordering.
 
+`SpanStateBridge.lean` adds a relation to independently supplied Oak bytes:
+the actual selector register must be initialized and every byte in a bounded,
+aligned physical span must be present and equal. Actual generated wrapper
+calls preserve this relation, individually and across any finite list of
+in-range element stores in source-list order. The proof preserves all other
+runtime fields and exact byte presence outside the span, with no address
+truncation. Kernel examples cover repeated stores, empty and upper-bound
+spans, and failed byte/selector premises. These are supplied physical-region
+and in-range-index premises, not derived source guards or storage authority;
+a negative example shows the bare wrapper can write outside an empty span.
+The relation concerns Lean's runtime, not Lem's tags or undefined bits, and
+does not prove dynamic STR execution, architectural events, or BBM (§126).
+
 Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
 reachability, architectural memory effects, atomicity/non-tearing, unique
 architectural writes, tags/device behavior, CAT membership, completion,
