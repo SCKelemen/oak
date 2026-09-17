@@ -49,9 +49,7 @@ type slotAccess struct {
 // array or record local — by its sp-relative byte offset and size. With
 // the layout known, an address taken at the object's base blocks only the
 // object; without it, everything above the address.
-type FrameObject struct {
-	Offset, Size int64
-}
+type FrameObject = asm.FrameObject
 
 // Promote rewrites the promotable frame slots of a body into registers.
 // It returns the rewritten function (a new value; the input is not

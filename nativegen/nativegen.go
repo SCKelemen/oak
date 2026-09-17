@@ -2079,9 +2079,10 @@ func recordFrameObjects(fn *asm.Function, objects []machine.FrameObject, slotBas
 	}
 	out := make([]machine.FrameObject, 0, len(objects))
 	for _, obj := range objects {
-		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size})
+		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size, Name: obj.Name, Elem: obj.Elem})
 	}
 	frameObjectsOf[fn] = out
+	fn.FrameObjects = out
 }
 
 var reallocated = map[*asm.Function]int{}
@@ -4336,7 +4337,13 @@ func (g *generator) popScope() {
 // declareArray gives an owned array local its frame storage: whole 8-byte
 // slots, so every element access stays aligned and spills never overlap.
 func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+	before := len(g.frameObjects)
 	arr := g.allocArray(elem, length)
+	if n := len(g.frameObjects); n == before+1 {
+		// The verifier's memory model of a large array wants the local's
+		// name and element size beside the object's extent.
+		g.frameObjects[n-1].Name, g.frameObjects[n-1].Elem = name, int64(elem.bits/8)
+	}
 	g.bindArray(name, arr)
 	return arr
 }

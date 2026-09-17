@@ -54,7 +54,7 @@ func TestSplitFramePairInitializersExactSequence(t *testing.T) {
 	pair.Line = 17
 	f.Items[3] = pair
 	before := cloneFunction(f)
-	split, words := splitPairFixture(t, f, []FrameObject{{16, 16}})
+	split, words := splitPairFixture(t, f, []FrameObject{{Offset: 16, Size: 16}})
 	if split == nil || !reflect.DeepEqual(words, map[int64]bool{16: true, 20: true, 24: true, 28: true}) {
 		t.Fatalf("split = %v, words = %v", split, words)
 	}
@@ -92,31 +92,31 @@ func TestSplitFramePairInitializersRefusals(t *testing.T) {
 		layout []FrameObject
 	}{
 		{"no-layout", func(*asm.Function) {}, nil},
-		{"short-object", func(*asm.Function) {}, []FrameObject{{16, 12}}},
-		{"negative-object", func(*asm.Function) {}, []FrameObject{{-16, 48}}},
-		{"outside-frame-object", func(*asm.Function) {}, []FrameObject{{16, 64}}},
-		{"not-clobbered", func(f *asm.Function) { f.Clobbers = []asm.Register{x(11)} }, []FrameObject{{16, 16}}},
-		{"same-register", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(9), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"zero-register", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(31), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"w-pair", func(f *asm.Function) { f.Items[3] = ins("stp", w(9), w(10), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"non-frame-pair", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(10), mem(x(2), 16)) }, []FrameObject{{16, 16}}},
-		{"live-x-source", func(f *asm.Function) { insertPairItems(f, 4, ins("add", x(0), x(9), x(10))) }, []FrameObject{{16, 16}}},
-		{"live-w-source", func(f *asm.Function) { insertPairItems(f, 4, ins("add", w(0), w(9), w(10))) }, []FrameObject{{16, 16}}},
+		{"short-object", func(*asm.Function) {}, []FrameObject{{Offset: 16, Size: 12}}},
+		{"negative-object", func(*asm.Function) {}, []FrameObject{{Offset: -16, Size: 48}}},
+		{"outside-frame-object", func(*asm.Function) {}, []FrameObject{{Offset: 16, Size: 64}}},
+		{"not-clobbered", func(f *asm.Function) { f.Clobbers = []asm.Register{x(11)} }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"same-register", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(9), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"zero-register", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(31), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"w-pair", func(f *asm.Function) { f.Items[3] = ins("stp", w(9), w(10), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"non-frame-pair", func(f *asm.Function) { f.Items[3] = ins("stp", x(9), x(10), mem(x(2), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"live-x-source", func(f *asm.Function) { insertPairItems(f, 4, ins("add", x(0), x(9), x(10))) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"live-w-source", func(f *asm.Function) { insertPairItems(f, 4, ins("add", w(0), w(9), w(10))) }, []FrameObject{{Offset: 16, Size: 16}}},
 		{"live-through-branch", func(f *asm.Function) {
 			insertPairItems(f, 4, ins("cmp", w(2), imm(0)), bcond("eq", "join"),
 				ins("add", w(0), w(9), w(10)), label("join"))
-		}, []FrameObject{{16, 16}}},
+		}, []FrameObject{{Offset: 16, Size: 16}}},
 		{"live-through-backedge", func(f *asm.Function) {
 			insertPairItems(f, 3, label("again"))
 			insertPairItems(f, 12, ins("cmp", w(2), imm(0)), bcond("ne", "again"))
-		}, []FrameObject{{16, 16}}},
-		{"wide-overlap", func(f *asm.Function) { f.Items[4] = ins("ldr", x(0), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"narrow-overlap", func(f *asm.Function) { f.Items[4] = ins("ldrh", w(0), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"pair-overlap", func(f *asm.Function) { f.Items[4] = ins("ldp", w(0), w(11), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"duplicate-store", func(f *asm.Function) { f.Items[4] = ins("stp", x(9), x(10), mem(sp(), 16)) }, []FrameObject{{16, 16}}},
-		{"frame-address", func(f *asm.Function) { f.Items[6] = ins("add", x(0), sp(), imm(16)) }, []FrameObject{{16, 16}}},
-		{"out-of-frame-read", func(f *asm.Function) { f.Items[6] = ins("ldr", w(0), mem(sp(), 64)) }, []FrameObject{{16, 16}}},
-		{"missing-high-word", func(f *asm.Function) { f.Items[9] = ins("mov", w(11), imm(0)) }, []FrameObject{{16, 16}}},
+		}, []FrameObject{{Offset: 16, Size: 16}}},
+		{"wide-overlap", func(f *asm.Function) { f.Items[4] = ins("ldr", x(0), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"narrow-overlap", func(f *asm.Function) { f.Items[4] = ins("ldrh", w(0), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"pair-overlap", func(f *asm.Function) { f.Items[4] = ins("ldp", w(0), w(11), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"duplicate-store", func(f *asm.Function) { f.Items[4] = ins("stp", x(9), x(10), mem(sp(), 16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"frame-address", func(f *asm.Function) { f.Items[6] = ins("add", x(0), sp(), imm(16)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"out-of-frame-read", func(f *asm.Function) { f.Items[6] = ins("ldr", w(0), mem(sp(), 64)) }, []FrameObject{{Offset: 16, Size: 16}}},
+		{"missing-high-word", func(f *asm.Function) { f.Items[9] = ins("mov", w(11), imm(0)) }, []FrameObject{{Offset: 16, Size: 16}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -138,11 +138,11 @@ func TestSplitFramePairInitializersPreservesLiveSource(t *testing.T) {
 	f.Bindings = []asm.Binding{{Register: x(0), Param: "a"}, {Register: x(1), Param: "b"}}
 	f.Clobbers = append(f.Clobbers, x(0))
 	insertPairItems(f, len(f.Items)-2, ins("mov", x(0), x(9)))
-	if split, _ := splitPairFixture(t, f, []FrameObject{{16, 16}}); split != nil {
+	if split, _ := splitPairFixture(t, f, []FrameObject{{Offset: 16, Size: 16}}); split != nil {
 		t.Fatal("a live source was destroyed")
 	}
 	before := cloneFunction(f)
-	promoted, count, err := PromoteWith(f, []FrameObject{{16, 16}})
+	promoted, count, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
 	if err != nil || count != 0 || !reflect.DeepEqual(before, promoted) {
 		t.Fatalf("live-source body changed: promoted %d: %v", count, err)
 	}
@@ -177,7 +177,7 @@ func TestSplitFramePairInitializersRefusesReservedSources(t *testing.T) {
 						t.Fatal("fixture relies on source liveness instead of the reserved-register guard")
 					}
 				}
-				split, words, err := splitFramePairInitializers(lifted, []FrameObject{{16, 16}})
+				split, words, err := splitFramePairInitializers(lifted, []FrameObject{{Offset: 16, Size: 16}})
 				if err != nil || split != nil || len(words) != 0 {
 					t.Fatalf("reserved source admitted: split=%v words=%v error=%v", split, words, err)
 				}
@@ -195,18 +195,18 @@ func TestPromoteSplitFramePairProven(t *testing.T) {
 	f.Bindings = []asm.Binding{{Register: x(0), Param: "a"}, {Register: x(1), Param: "b"}}
 	f.Clobbers = append(f.Clobbers, x(0))
 	before := cloneFunction(f)
-	split, _ := splitPairFixture(t, f, []FrameObject{{16, 16}})
+	split, _ := splitPairFixture(t, f, []FrameObject{{Offset: 16, Size: 16}})
 	if split == nil {
 		t.Fatal("expected pair split")
 	}
-	promoted, count, err := PromoteWith(f, []FrameObject{{16, 16}})
+	promoted, count, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
 	if err != nil || count != 4 {
 		t.Fatalf("promoted %d, error %v", count, err)
 	}
 	if strings.Contains(text(promoted.Items), "[sp,#") {
 		t.Fatalf("word storage survived promotion:\n%s", text(promoted.Items))
 	}
-	reallocated, allocation, err := ReallocateWith(f, []FrameObject{{16, 16}})
+	reallocated, allocation, err := ReallocateWith(f, []FrameObject{{Offset: 16, Size: 16}})
 	if err != nil || allocation.Promoted != 4 {
 		t.Fatalf("reallocated %v: %v", allocation, err)
 	}
@@ -248,11 +248,11 @@ func TestSplitFramePairInitializersEveryWordProven(t *testing.T) {
 			f.Bindings = []asm.Binding{{Register: x(0), Param: "a"}, {Register: x(1), Param: "b"}}
 			f.Clobbers = append(f.Clobbers, x(0))
 			insertPairItems(f, len(f.Items)-2, ins("ldr", w(0), mem(sp(), int64(16+4*index))))
-			split, _ := splitPairFixture(t, f, []FrameObject{{16, 16}})
+			split, _ := splitPairFixture(t, f, []FrameObject{{Offset: 16, Size: 16}})
 			if split == nil {
 				t.Fatal("expected pair split")
 			}
-			allocated, allocation, err := ReallocateWith(f, []FrameObject{{16, 16}})
+			allocated, allocation, err := ReallocateWith(f, []FrameObject{{Offset: 16, Size: 16}})
 			if err != nil || allocation.Promoted != 4 {
 				t.Fatalf("reallocated %v: %v", allocation, err)
 			}
@@ -279,7 +279,7 @@ func TestPromoteSplitFramePairRequiresSplitWordBenefit(t *testing.T) {
 		ins("ldr", w(0), mem(sp(), 32)),
 	}, f.Items[4:]...)...)
 	f.Clobbers = append(f.Clobbers, x(30))
-	objects := []FrameObject{{16, 16}, {32, 4}}
+	objects := []FrameObject{{Offset: 16, Size: 16}, {Offset: 32, Size: 4}}
 	split, _ := splitPairFixture(t, f, objects)
 	if split == nil {
 		t.Fatal("fixture must pass pair splitting before allocation")
