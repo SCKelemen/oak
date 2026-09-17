@@ -677,6 +677,128 @@ candidate; the report records this later integration separately rather than
 relabeling earlier evidence as proof. The broader upstream canonicalizer
 is used directly, without a duplicate rotate rule.
 
+**Frame-pair initializers expose message-word promotion (2026-09-17,
+baseline `4d1bc1dd`).** BLAKE3's message array was initialized with 64-bit
+pair stores, then accessed exclusively as independent 32-bit words. That
+mixed-width initialization alone blocked ordinary frame-slot promotion.
+The allocator can now split eligible pair stores using dead, non-reserved,
+already-clobbered source registers, preserving the source loads and their
+order. Existing dominance, allocation, seam and semantic checks still apply;
+an expansion that promotes none of its exposed words is discarded.
+
+The selected compressor promotes 11 slot webs. Static memory instructions
+fall **162 → 130**, including **60 → 28** SP-relative accesses, with the
+same 144-byte frame. Instructions rise **308 → 311**, and moves rise 4 → 31:
+less memory traffic does not imply an equally large runtime improvement.
+Both bodies are **proven for all eight result chunks** at the normal budget.
+Wrong high-half shifts and a wrong compressor rotate are refuted. Neither
+the verifier nor the source reference changed.
+
+Only compression is native in this comparison; the rest of the hash uses
+the same C code. Complete 1 MiB BLAKE3, median milliseconds on an M4 Max:
+
+| Same-process run | Samples × rounds | Before | After | C control | After / before |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 51 × 10 | 3.412 | 3.342 | 2.554 | 0.979 |
+| B | 101 × 10 | 4.194 | 4.118 | 3.181 | 0.982 |
+| C | 201 × 5 | 3.773 | 3.675 | 2.831 | 0.974 |
+| D, reversed loading/order | 101 × 5 | 3.711 | 3.643 | 2.822 | 0.982 |
+
+These runs use one thread, rotating interleaved calls to distinct local
+libraries, a shared immutable input, one warmup each, and full digest checks
+at block/chunk/tree boundaries and after every sample. Affinity, frequency
+and external host load remain uncontrolled. The medians of within-sample
+after/before ratios show smaller gains in some runs (roughly 1–3%). Earlier
+separate-process repeats were inconsistent: ratios **0.998, 0.851, 1.043**.
+All samples, including those regressions/outliers, are retained in
+[`blake3-frame-pairs-2026-09-17.json`](results/blake3-frame-pairs-2026-09-17.json).
+The same-process repeats support a modest host-specific gain, not a universal
+speedup: this restricted native path remains about 29–32% slower than C.
+The final reserved-register guards and materialization-version update emit
+the **same object bytes** as the timed candidate.
+
+Rechecked after integrating `8204e8a9` (paired-load liveness fixes and
+constant-trip/scalar-array expansion): an upstream-source overlay and the
+rebased candidate emit byte-identical objects to their respective timed
+variants, and both generated C wrappers also match. Both still prove all
+eight chunks. The integrated materialization version is v13, preserving
+upstream's v12 identity change; this later check is recorded separately in
+the raw report.
+
+The diagnostic harness is [blake3_same_process.c](blake3_same_process.c).
+To reproduce on macOS/arm64, save an emitter built with
+`go build -o PATH ./benchmarks/native/emit` at each revision. Run each with
+`OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0`, input
+`benchmarks/kernels/oak`, and separate output prefixes `before`/`after` in a
+fresh temporary directory. Generate the all-C control with
+`go run . build -o PATH/control.c benchmarks/kernels/oak`. With those artifacts
+as absolute paths in a task-specific `bench_dir`, build and run:
+
+```sh
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/before.c" "$bench_dir/before.o" -o "$bench_dir/before.dylib" -lm
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/after.c" "$bench_dir/after.o" -o "$bench_dir/after.dylib" -lm
+cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main \
+  "$bench_dir/control.c" -o "$bench_dir/control.dylib" -lm
+cc -std=c99 -O3 -Wall -Wextra benchmarks/native/blake3_same_process.c \
+  -o "$bench_dir/same-process"
+"$bench_dir/same-process" "$bench_dir/before.dylib" \
+  "$bench_dir/after.dylib" "$bench_dir/control.dylib" 10 101
+```
+
+Use only locally built, trusted libraries; `dlopen` executes library code.
+Keep default Mach-O two-level namespaces (no interposition/flat namespace).
+For the reverse-order control swap the first two libraries and invert the
+result labels when comparing. The harness checks distinct entry points and
+uses the generated `View`, `Span`, enum-`Bool` ABI. It is a local diagnostic,
+not a portable ABI or a production runtime performance gate.
+
+**Loop-scoped array homes (2026-09-17, isolated at `def4003e`).** The
+`loop-array-homes` AArch64 candidate preloads selected literal-index elements
+of a private frame array, uses scalar registers during one loop, and flushes
+written elements before subsequent memory-based uses. Unlike whole-function
+scalar replacement, a computed index outside the loop does not disqualify the
+array. Selection is deterministic, limited to eight available callee-saved
+homes and owned `[1..64]u32/u64` arrays. Borrowed/escaped/whole-reassigned arrays,
+nested candidate loops, early exits, ordered blocks, and unknown syntax refuse.
+Scalar calls are supported; the home allocator now filters recycled registers
+to x19–x28 rather than assuming its reuse pool contains only callee-saved ones.
+
+In this isolated measurement, six BLAKE3 state elements stay in registers:
+24 fewer stack loads/stores per round. The selected compressor still proves
+all eight result chunks; its frame remains 208 bytes, static instructions fall
+330 → 326, and stack-relative memory instructions 144 → 134. The unchanged
+Oak source remains the verifier reference. The full search regression checks
+nonregression, determinism and retained proof; fixed zero/one/three-trip u32/u64
+fixtures prove, and a transform-isolated runtime comparison exercises dynamic
+trips, scalar calls, conditional writes, and post-loop computed accesses.
+The dynamic nonlinear fixture is witness-checked, not proven. Generic candidate
+admission retains the existing verifier gate; this is not a new proof-only policy.
+
+On the M4 Max, two interleaved nine-sample runs at 1 MiB measured median time
+reductions of 7.1% and 8.8%; the candidate remained 29.2% and 26.8% slower than
+Oak's C backend. At 64 bytes the median reductions were only 0.6% and 2.4%.
+Every sample's checksum agrees. Core placement was uncontrolled and host load
+was substantial, so these are observations, not a portable speedup guarantee or
+the ±8% Zig/Rust/C target. These measurements predate concurrent compiler work;
+the [raw samples, configuration and object hashes](results/blake3-loop-array-homes-2026-09-17.json)
+pin the exact comparison.
+
+After integration onto `8204e8a9`, default search keeps the upstream direct-result
+path: 304 instructions, a 144-byte frame, 60 stack-relative memory instructions,
+and all eight result chunks proven. This is a different object from either timed
+variant above; no timing claim is transferred to it. Its array is in the caller's
+result buffer, which this pass intentionally excludes. The regression permits
+competing candidates to win and checks that offering loop homes does not regress
+the selected compressor. Private-frame fixtures separately require the home
+candidate to fire; result-buffer caching still needs its own justification.
+
+`Oak.LoopArrayHomes` proves preload/read/write/materialize/flush algebra for
+arbitrary selected sets and mixed selected/unselected write traces. It does not
+prove the Go matcher, private provenance, control flow, register allocator, or
+Arm ASL execution. Memory/ordering admission and the downstream pin are unchanged.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

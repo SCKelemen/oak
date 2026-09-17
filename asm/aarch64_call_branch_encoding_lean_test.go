@@ -192,6 +192,7 @@ func TestAArch64CallBranchLocalEncodingMatchesLean(t *testing.T) {
 	if err := os.WriteFile(leanPath, []byte(leanSource), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	buildLeanImports(t, lake, leanPath)
 	command := exec.Command(lake, "env", "lean", leanPath)
 	command.Dir = filepath.Join("..", "spec", "lean")
 	if output, err := command.CombinedOutput(); err != nil {

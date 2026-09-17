@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/target"
 )
 
@@ -65,8 +66,9 @@ func TestNativeBlake3CompressionProven(t *testing.T) {
 			}
 		}
 	}
-	if rotateAt < 0 || selected.Frame > 208 || stackMemory > 144 {
-		t.Fatalf("proof must retain the optimized body: rotate=%d frame=%d stack memory=%d", rotateAt, selected.Frame, stackMemory)
+	if rotateAt < 0 || selected.Frame > 144 || stackMemory > 32 || nativegen.PromotedSlots(selected) == 0 {
+		t.Fatalf("proof must retain frame-word promotion: rotate=%d frame=%d stack memory=%d promoted=%d",
+			rotateAt, selected.Frame, stackMemory, nativegen.PromotedSlots(selected))
 	}
 	// Same legal instructions/footprint, wrong rotation: the normalization
 	// must refute a changed computation rather than recognizing a hash name.

@@ -1,0 +1,21 @@
+sum32: (v: []u32): u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < len(v) {
+    acc = acc + v[i]
+    i = i + u32(1)
+  }
+  acc
+}
+
+sum64: (v: []u64): u64 {
+  acc: u64 = u64(0)
+  i: u32 = u32(0)
+  while i < len(v) {
+    acc = acc + v[i]
+    i = i + u32(1)
+  }
+  acc
+}
+
+main: (): i32 = i32(0)

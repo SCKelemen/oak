@@ -139,6 +139,27 @@ two forms; the test asserts the outcome (the locals' slot traffic) rather
 than the mechanism, and the compiler reports promoted slots beside kept
 homes.
 
+Frame-pair initialization increment (2026-09-17): on AArch64,
+`PromoteWith` can expose four word slots hidden by one `stp xA,xB,[sp,#off]`
+inside a known, in-frame object. Both distinct data registers must be dead
+after the store (W/X aliases included), declared clobbered and non-reserved.
+Every other overlapping access must be a plain W32 load/store at one of the
+four aligned word offsets, and all four words must be read. Frame-address
+escapes, overlapping pairs/wide/narrow accesses, malformed layouts and
+unsupported offsets refuse the preparation. Source loads stay in place;
+each low word is stored before its data register is shifted by 32 to expose
+the high word. Ordinary promotion then checks reaching-store availability
+and finds free registers; the final candidate still needs its existing
+seam/semantic admission. With no promoted exposed word, promotion reruns on
+the original body. This is a global no-benefit rollback, not per-pair or
+runtime profitability. The materialization identity changes with this code
+generation policy. Independent word projections and the real seven-round
+BLAKE3 compressor prove through the existing verifier; wrong shifts refute.
+This is translation validation, not a universal formal refinement theorem
+for the Go transform. BLAKE3's static memory count falls 162 to 130, with a
+small measured host-specific gain; the full protocol and mixed initial
+timings are in `benchmarks/native/README.md`.
+
 Two rules this increment forced. A trusted verdict is the absence of a
 check, so when no candidate is judged (the verifier cannot yet follow a
 body — a call returning an array, say) a transform that ships only on a
@@ -399,6 +420,43 @@ time falls eight to twelve percent, from 1.10× the C backend to 1.03× —
 clang's loop is the same shape at sixteen products a trip, and both are
 bound by the one ordered `fadd` an element, so the remaining gap is the
 loop's overhead, not its arithmetic.
+
+### Phase A, constant-trip unrolling — and what blake3 needs (2026-09-17)
+
+`blake3` at 3.35× is the table's largest gap, and its compression body
+is witnessed, so the reallocator and the slot promotion already run on
+it — and leave 152 frame accesses in 343 instructions. The promotion's
+trace (`OAK_MACHINE_TRACE_SLOTS`, added for this) shows why: the state
+array `v` is indexed by the loop variable in the final `while i < 8 {
+v[i] = v[i] ^ v[i + 8] … }`, so its address is taken and its slots are
+blocked as an object; the message array `m` is copied and permuted in
+pairs (`ldp`/`stp`), which a word-slot rule refuses; and `v` is returned
+whole, which copies it out in pairs too. The loop-shaped cause has a
+Layer A answer: `unroll-constant` (`nativegen/unroll_constant.go`,
+`Oak.ConstantUnroll.loop_eq_unrolled`) rewrites a loop from zero to a
+literal bound into its trips — flat, the locals renamed per trip so the
+verifier's one-scope reading holds, the index a literal in each, a
+conditional on the index folded — and scalar replacement was widened to
+sixteen elements and to an array that is the body's result (stored
+element by element into the result area). With both, `bench_blake3`'s
+`push_chunk` and `final` take the unrolled form (trusted bodies, the law
+licensing it), and `compress` lowers unrolled: sixteen state scalars, no
+loop, no frame array. It still loses on cost, 3280 against the loop's
+2221: the plain lowering homes only some of the sixteen scalars in
+registers and parks the rest in slots of their own — 1666 loads and 1386
+stores before the machine passes — and the reallocator and promotion
+bring that to 266 and 378 but leave 394 copies and 1848 instructions,
+against the loop form's 338. The remaining distance is the register
+allocator: the lowering assigns homes as it declares and spills by
+slot per variable, and the machine passes recolor within what it wrote;
+a whole-body allocation over every web with spill code placed by
+liveness would hold the sixteen words and the round's temporaries in
+the twenty-eight registers, as clang does. That is Phase B's next
+increment, and the one the hash table waits on. Two knobs came out of
+this, default off: `OAK_NATIVE_TRACE_STAGES` prints which rewritten
+shape a lowering refused and why before falling back, and
+`OAK_MACHINE_TRACE_SLOTS` prints the promotion's escapes, blocked ranges,
+and each slot's register or refusal.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 

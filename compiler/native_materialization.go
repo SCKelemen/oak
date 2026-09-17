@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v11 adds direct construction of eligible returned integer arrays
-	// in the caller's result area, on top of v10's vector address sharing.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v11")
+	// v14 adds independently keyed loop-local scalar array homes to v13's
+	// frame-pair initializer and W-word promotion recipe.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v14")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -54,6 +54,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-maps", lane.VectorMaps},
 		{"unroll-vector-maps", lane.UnrollVectorMaps},
 		{"vector-folds", lane.VectorFolds},
+		{"unroll-constant", lane.UnrollConstant},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
@@ -63,6 +64,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"rotate-loops", lane.RotateLoops},
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
+		{"loop-array-homes", lane.LoopArrayHomes},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},

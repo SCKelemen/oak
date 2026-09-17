@@ -2102,7 +2102,24 @@ const (
 	// rather than unrolled, so the guards of the loops that do unroll
 	// (at most 64 trips a level) get sixteen paths' worth.
 	guardBudget = 16 * pathBudget
+	// joinedPathBudget bounds the paths of the run that merges at the
+	// joins (executeBodyChunkJoining): a fork whose sides meet again
+	// costs one merged state, not two paths kept to the end, so the
+	// count may run sixteen times as far — a parser's few hundred
+	// sequential conditionals (cnf_ite, peek_precedence, the step_*_p
+	// family) refused "more paths than the verifier's budget" on the
+	// merged run too under the flat budget.
+	joinedPathBudget = 16 * pathBudget
 )
+
+// pathLimit is the run's path budget: the joined run's when the paths
+// merge at their joins.
+func (x *pathExecutor) pathLimit() int {
+	if x.joins != nil {
+		return joinedPathBudget
+	}
+	return pathBudget
+}
 
 // pathExecutor unfolds a body into its paths: a conditional branch forks
 // the state, the taken path continuing at the label under the branch's
@@ -2134,6 +2151,11 @@ type pathExecutor struct {
 	// reads are the body's reads of span memory through the write log, by
 	// node (spanRead), for the aligned fast path's alignReads.
 	reads map[*term]spanRead
+	// carriedCells are the package cells the loop being summarized
+	// carries (summarizeLoop), which a call in its body may write;
+	// calleeCells memoizes the cells each callee's Oak body assigns.
+	carriedCells map[string]bool
+	calleeCells  map[string][]string
 	// deferMemory asks decideSpans to leave the memory decision of a span
 	// whose logs differ in length to deferredSpans (verifyChunk runs the
 	// body again merging at the joins first, whose logs align).
@@ -3129,7 +3151,7 @@ func isFrameMemory(instr Instruction) bool {
 // written), merged across the paths.
 func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, string, bool) {
 	x.paths++
-	if x.paths > pathBudget {
+	if x.paths > x.pathLimit() {
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {

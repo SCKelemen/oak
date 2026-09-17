@@ -42,11 +42,13 @@ const (
 	TransformHoist           = "hoist-invariants"
 	TransformUnroll          = "unroll-reductions"
 	TransformVectorHomes     = "vector-homes"
+	TransformLoopArrayHomes  = "loop-array-homes"
 	TransformCleanup         = "late-cleanup"
 	TransformVectorize       = "vectorize-reductions"
 	TransformVectorMaps      = "vectorize-maps"
 	TransformUnrollMaps      = "unroll-vector-maps"
 	TransformVectorFolds     = "vectorize-folds"
+	TransformUnrollConst     = "unroll-constant"
 	TransformVecBlocks       = "vector-blocks"
 	TransformVectorAddresses = "share-vector-addresses"
 	TransformMultiplyAdd     = "multiply-add"
@@ -330,6 +332,21 @@ func Transforms() []opt.Transform {
 			fired:   UnrolledMaps,
 		},
 		&laneTransform{
+			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
+			// from zero to a literal bound becomes its trips, the index a
+			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
+			// — nothing of the body is assumed, so no fact is required. What
+			// it buys is downstream: constant indices where the loop's
+			// variable indexed a frame array, so the slot promotion can keep
+			// the array's words in registers. At the head of the loop phase,
+			// so the other loop rewrites see the trips.
+			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UnrollConstant },
+			apply:   func(l Lane) Lane { l.UnrollConstant = true; return l },
+			fired:   UnrolledConstant,
+		},
+		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
 			// parameters — the dot product — computes one vector of element
@@ -377,6 +394,17 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
+		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index u32/u64 array elements live in
+			// callee-saved registers for one loop (loop_array_homes.go).
+			// The full verifier compares the machine candidate with the
+			// unchanged Oak reference; unsupported shapes remain memory-backed.
+			name: TransformLoopArrayHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopArrayHomes },
+			apply:   func(l Lane) Lane { l.LoopArrayHomes = true; return l },
+			fired:   LoopArrayHomes,
+		}},
 		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
@@ -481,6 +509,7 @@ func PlainLane(lane Lane) Lane {
 	lane.HoistInvariants = false
 	lane.RotateLoops = false
 	lane.VectorHomes = false
+	lane.LoopArrayHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
 	lane.ShareVectorAddresses = false
@@ -494,6 +523,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorMaps = false
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
+	lane.UnrollConstant = false
 	lane.NoReductions = true
 	return lane
 }

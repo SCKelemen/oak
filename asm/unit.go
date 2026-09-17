@@ -113,6 +113,13 @@ type Function struct {
 	// verdict is relative to it. Set by the native backend; nil leaves
 	// every call opaque (trusted).
 	Callees map[string]*ast.FunctionStatement
+	// FrameObjects are the aggregates the lowering placed in the frame,
+	// by sp-relative byte offset and size (the machine package's slot
+	// promotion reads them), an owned array's with the local's name and
+	// element size for the verifier's memory model of a large array
+	// (docs/spec/94-assembler.md §9). Set by the native backend; nil when
+	// there are none.
+	FrameObjects []FrameObject
 	// Externs are the program's extern bindings (`name: (…): c.T effects
 	// {…} = c.extern("symbol")`), by Oak name, for the verifier's
 	// lowering of a call to one (lowerExternCall): a fresh result under
@@ -464,6 +471,17 @@ type Global struct {
 	// the checker bounds as it bounds a frame array's.
 	Aggregate bool
 	Size      int64
+}
+
+// FrameObject is an aggregate placed in the frame — an array or record
+// local — by its sp-relative byte offset and size. With the layout known,
+// an address taken at the object's base blocks only the object; without
+// it, everything above the address. Name and Elem are set for an owned
+// array of scalars: the local's name and its element size in bytes.
+type FrameObject struct {
+	Offset, Size int64
+	Name         string
+	Elem         int64
 }
 
 // SysReg names a system register operand of mrs/msr.

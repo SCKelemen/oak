@@ -57,6 +57,8 @@ type inlineCandidate struct {
 	// writesThroughParam: an element or field write on a parameter, visible
 	// to the caller when the parameter is a span.
 	writesThroughParam bool
+	// types is the declared type of each local the body introduces.
+	types map[string]ast.Expression
 }
 
 type inliner struct {
@@ -72,6 +74,8 @@ type inliner struct {
 	// checker still sees the argument flow into the refinement (renaming
 	// the parameter to the argument would drop the declared type).
 	refinements map[string]bool
+	// globalTypes is the declared type of every package-level variable.
+	globalTypes map[string]ast.Expression
 	counter     int
 	caller      string
 	applied     map[inlineEdge]int
@@ -110,10 +114,17 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) (
 	if program == nil {
 		return nil
 	}
-	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}, applied: map[inlineEdge]int{}, refinements: map[string]bool{}}
+	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}, applied: map[inlineEdge]int{}, refinements: map[string]bool{}, globalTypes: map[string]ast.Expression{}}
 	for _, stmt := range program.Statements {
-		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Refinement != nil && adt.Name != nil {
-			in.refinements[adt.Name.Value] = true
+		switch decl := stmt.(type) {
+		case *ast.ADTType:
+			if decl.Refinement != nil && decl.Name != nil {
+				in.refinements[decl.Name.Value] = true
+			}
+		case *ast.VariableDeclaration:
+			if decl.Name != nil && decl.Type != nil {
+				in.globalTypes[decl.Name.Value] = decl.Type
+			}
 		}
 	}
 	defer func() { decisions = in.decisions() }()
@@ -175,8 +186,9 @@ func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) (
 			if body == nil || body.Block == nil {
 				continue
 			}
-			scope := &callerScope{declared: map[string]bool{}}
+			scope := &callerScope{declared: map[string]bool{}, types: map[string]ast.Expression{}}
 			collectDeclaredNames(reflect.ValueOf(fn), scope.declared)
+			collectDeclaredTypes(reflect.ValueOf(fn), scope.types)
 			in.inlineBlock(body.Block, scope)
 			if wrapped && (len(body.Block.Statements) != 1 || body.Block.Statements[0].(*ast.ExpressionStatement).Expression != fn.Body) {
 				// An expression body (`f: (...) = expr`) that received hoisted
@@ -299,12 +311,13 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 	if !scalarLocals {
 		return nil
 	}
-	cand := &inlineCandidate{fn: fn, body: body, declared: map[string]bool{}, free: map[string]bool{}, assigned: map[string]bool{}, writtenParams: map[string]bool{}}
+	cand := &inlineCandidate{fn: fn, body: body, declared: map[string]bool{}, free: map[string]bool{}, assigned: map[string]bool{}, writtenParams: map[string]bool{}, types: map[string]ast.Expression{}}
 	params := map[string]bool{}
 	for _, p := range fn.Parameters {
 		params[p.Name.Value] = true
 	}
 	collectDeclaredNames(reflect.ValueOf(body), cand.declared)
+	collectDeclaredTypes(reflect.ValueOf(body), cand.types)
 	for name := range cand.declared {
 		if params[name] {
 			return nil // a parameter redeclared: not a shape the checker accepts anyway
@@ -390,6 +403,10 @@ func inlinableBody(v reflect.Value) bool {
 
 type callerScope struct {
 	declared map[string]bool
+	// types is the declared type of every parameter and annotated local of
+	// the caller, by name; a name it lacks is a pattern binding or a
+	// global, whose type the inliner does not know.
+	types map[string]ast.Expression
 }
 
 // inlineBlock rewrites the statements of one block in place.
@@ -688,7 +705,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 		}
 	}
 	for i, p := range cand.fn.Parameters {
-		if ident, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] {
+		if ident, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] && !in.refinedParameter(p.Type) && in.declaredAs(scope, ident.Value, p.Type) {
 			continue
 		}
 		if !scalarTypeSyntax(p.Type) {
@@ -703,7 +720,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	var stmts []ast.Statement
 	for i, p := range cand.fn.Parameters {
 		arg := call.Arguments[i]
-		if ident, isIdent := arg.(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] && !in.refinedParameter(p.Type) {
+		if ident, isIdent := arg.(*ast.Identifier); isIdent && !cand.assigned[p.Name.Value] && !cand.declared[ident.Value] && !in.refinedParameter(p.Type) && in.declaredAs(scope, ident.Value, p.Type) {
 			rename[p.Name.Value] = ident.Value
 			continue
 		}
@@ -728,9 +745,13 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 		stampSemanticContext(reflect.ValueOf(typ), context)
 		stmts = append(stmts, &ast.VariableDeclaration{Token: call.Token, Name: identifierAt(call.Token, temp), Type: typ, Value: arg})
 		rename[p.Name.Value] = temp
+		scope.types[temp] = typ
 	}
 	for name := range cand.declared {
 		rename[name] = prefix + "l_" + name
+		if typ := cand.types[name]; typ != nil {
+			scope.types[prefix+"l_"+name] = typ
+		}
 	}
 	body := cloneExpression(cand.body).(*ast.BlockExpression)
 	stampSemanticContext(reflect.ValueOf(body), context)
@@ -872,6 +893,48 @@ func collectDeclaredNames(v reflect.Value, into map[string]bool) {
 		}
 		return true
 	})
+}
+
+// collectDeclaredTypes gathers the declared type of every parameter and
+// annotated local in a syntax tree, by name (Oak forbids shadowing, so a
+// name declares once per function). A variadic parameter is left out: the
+// body sees it as a slice of its spelled element type.
+func collectDeclaredTypes(v reflect.Value, into map[string]ast.Expression) {
+	walkSyntax(v, func(node any) bool {
+		switch n := node.(type) {
+		case *ast.FunctionParameter:
+			if n.Name != nil && n.Type != nil && !n.Variadic {
+				into[n.Name.Value] = n.Type
+			}
+		case *ast.VariableDeclaration:
+			if n.Name != nil && n.Type != nil {
+				into[n.Name.Value] = n.Type
+			}
+		}
+		return true
+	})
+}
+
+// declaredAs reports whether the caller's name is declared with exactly
+// the parameter's type spelling — the condition for substituting it for
+// the parameter. The inliner runs before the type checker, so a direct
+// substitution is the one place a call's argument would escape the
+// checker: the merged body reads the caller's variable where the callee
+// declared its parameter, and no seam remains to compare the two types
+// at. Same spelling, same type; anything else — another spelling, a
+// pattern binding or global the inliner has no type for, or a same-shape
+// phantom instantiation (Idx[Thread] for Idx[Timer]) — is bound through a
+// typed temporary, whose declaration the checker types as it would have
+// typed the argument.
+func (in *inliner) declaredAs(scope *callerScope, name string, typ ast.Expression) bool {
+	declared, known := scope.types[name]
+	if !known {
+		declared, known = in.globalTypes[name]
+	}
+	if !known || declared == nil || typ == nil {
+		return false
+	}
+	return declared.String() == typ.String()
 }
 
 // collectReferencedNames gathers every identifier used as a name (not a

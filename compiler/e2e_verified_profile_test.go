@@ -21,10 +21,10 @@ main: (): i32 {
 }
 `
 
-// A loop with a second exit (`break`) is a trusted verdict on both lanes:
-// the loop recognizer takes one exit, so the body unfolds past the path
-// budget (a shift by a non-constant count, the earlier example, is proven
-// since the thirty-fifth increment).
+// A loop with a second exit (`break`) is a trusted verdict on both lanes.
+// The merged-path budget now reaches the unsupported Oak break directly,
+// instead of first exhausting the machine path budget. Either way the
+// strict profile must reject the body, while an ordinary native build links.
 const verifiedProfileHeldProgram = `held: (n: u32): u32 {
   acc: u32 = u32(0)
   i: u32 = u32(0)
@@ -61,7 +61,7 @@ func TestE2EVerifiedProfileRefusesTrustedBodies(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%s: a trusted body linked under the verified profile", tgt)
 		}
-		for _, want := range []string{"verified profile: 1 bodies are not proven", "trusted: more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks) (1): held"} {
+		for _, want := range []string{"verified profile: 1 bodies are not proven", "trusted: the Oak body contains *ast.BreakStatement in a loop body (1): held"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: refusal lacks %q:\n%s", tgt, want, err)
 			}

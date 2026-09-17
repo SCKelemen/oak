@@ -35,10 +35,40 @@ import "sort"
 // equal to it, checker.equalRegister, or the fact dies), at calls — and
 // join the label fixpoint as every register-keyed fact does.
 
-// upperFact: value(reg) <= value(ref) >> shift.
+// upperFact: value(reg) <= value(ref) / div, with div >= 1. A shift of k
+// is the divisor 2^k, which is how every rule here spelled it while the
+// only divisions the checker followed were by powers of two; a `udiv` by a
+// constant that is not one records that constant instead
+// (Oak.Assembler.divided_upper, upper_chain_div).
 type upperFact struct {
-	ref   int
-	shift uint8
+	ref int
+	div int64
+}
+
+// maxUpperDiv caps a chain's divisor. Capping is sound because it weakens
+// the fact: a smaller divisor is a larger quotient, so the bound still
+// holds, and the product cannot wrap.
+const maxUpperDiv = int64(1) << 31
+
+// mkUpper normalizes a divisor, so the zero value and an explicit 1 are
+// the same fact — these structs are compared for equality at the meet and
+// a fact stated two ways would not survive it.
+func mkUpper(ref int, div int64) upperFact {
+	switch {
+	case div < 1:
+		div = 1
+	case div > maxUpperDiv:
+		div = maxUpperDiv
+	}
+	return upperFact{ref: ref, div: div}
+}
+
+// divisor reads a fact's divisor, normalizing the zero value to 1.
+func (u upperFact) divisor() int64 {
+	if u.div < 1 {
+		return 1
+	}
+	return u.div
 }
 
 // midFact: reg = hi - lo (halved at least once when halved), under lo < hi.
@@ -51,20 +81,21 @@ type midFact struct {
 // recorded only after the write of D dropped every fact naming D).
 const maxUpperDepth = 16
 
-// resolveUpper follows the upper chain from n: value(n) <= value(root) >>
-// shift, the shifts summed (saturating at 31 — a w register is 32 bits).
-func (c *checker) resolveUpper(n int) (root int, shift uint8) {
-	root = n
+// resolveUpper follows the upper chain from n: value(n) <= value(root) /
+// div, the divisors multiplied (saturating at maxUpperDiv, which weakens
+// the bound rather than breaking it; Oak.Assembler.upper_chain_div).
+func (c *checker) resolveUpper(n int) (root int, div int64) {
+	root, div = n, 1
 	for depth := 0; depth < maxUpperDepth; depth++ {
 		u, has := c.upper[root]
 		if !has {
 			return
 		}
 		root = u.ref
-		if s := int(shift) + int(u.shift); s > 31 {
-			shift = 31
+		if d := u.divisor(); div > maxUpperDiv/d {
+			div = maxUpperDiv
 		} else {
-			shift = uint8(s)
+			div *= d
 		}
 	}
 	return
@@ -152,26 +183,26 @@ func (c *checker) canonical(n, avoid int) int {
 // rooted resolves the chain from reg and canonicalizes its root for a
 // fact on dest.
 func (c *checker) rooted(reg, dest int) (upperFact, bool) {
-	root, shift := c.resolveUpper(reg)
-	return c.refFor(root, shift, dest)
+	root, div := c.resolveUpper(reg)
+	return c.refFor(root, div, dest)
 }
 
-// refFor names the referent of the bound value <= root >> shift for a
-// fact on dest: the primary length register of a span root holds the
-// length of; else, when root holds a constant no larger than a constant a
-// length register holds, that register (value <= root >> shift <= len >>
-// shift); else root itself, or a register proven equal to it when root is
-// dest. The choice is the same on every path into a label, so the fact
-// survives the meet.
-func (c *checker) refFor(root int, shift uint8, dest int) (upperFact, bool) {
+// refFor names the referent of the bound value <= root / div for a fact
+// on dest: the primary length register of a span root holds the length
+// of; else, when root holds a constant no larger than a constant a length
+// register holds, that register (value <= root / div <= len / div); else
+// root itself, or a register proven equal to it when root is dest. The
+// choice is the same on every path into a label, so the fact survives the
+// meet.
+func (c *checker) refFor(root int, div int64, dest int) (upperFact, bool) {
 	if ref := c.constBoundedLen(root, dest); ref >= 0 {
-		return upperFact{ref: ref, shift: shift}, true
+		return mkUpper(ref, div), true
 	}
 	ref := c.canonical(root, dest)
 	if ref < 0 || ref == dest {
 		return upperFact{}, false
 	}
-	return upperFact{ref: ref, shift: shift}, true
+	return mkUpper(ref, div), true
 }
 
 // constBoundedLen returns the canonical length register whose constant is
@@ -213,7 +244,7 @@ func (c *checker) atMostRef(n, dest int) (upperFact, bool) {
 	for _, fact := range c.spans {
 		if fact.holdsLen(n) {
 			if ref := c.canonical(n, dest); ref >= 0 && ref != dest {
-				return upperFact{ref: ref}, true
+				return mkUpper(ref, 1), true
 			}
 			return upperFact{}, false
 		}
@@ -221,7 +252,7 @@ func (c *checker) atMostRef(n, dest int) (upperFact, bool) {
 	// A constant no larger than a constant a length register holds (the
 	// bound `b = 512` of a search inside a 512-element page).
 	if ref := c.constBoundedLen(n, dest); ref >= 0 {
-		return upperFact{ref: ref}, true
+		return mkUpper(ref, 1), true
 	}
 	return upperFact{}, false
 }
@@ -271,11 +302,87 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 		if m, has := c.mid[src]; has && m.lo != dest.Num && m.hi != dest.Num {
 			newMid = &midFact{lo: m.lo, hi: m.hi, halved: true}
 		}
-		root, shift := c.resolveUpper(src)
-		if s := int(shift) + int(k.Value); s <= 31 {
+		root, div := c.resolveUpper(src)
+		if scale := int64(1) << uint(k.Value); div <= maxUpperDiv/scale {
 			if ref := c.canonical(root, dest.Num); ref >= 0 && ref != dest.Num {
-				newUpper = &upperFact{ref: ref, shift: uint8(s)}
+				u := mkUpper(ref, div*scale)
+				newUpper = &u
 			}
+		}
+	case "udiv":
+		// `udiv wE, wS, wK` with wK holding the constant d: the quotient is
+		// the source's own bound divided by d as well
+		// (Oak.Assembler.divided_upper). The divisor need not be a power of
+		// two — `entries = len(table) / 3` before a binary search over a
+		// three-word table — which is the whole point of carrying a divisor
+		// rather than a shift.
+		if len(regs) != 3 || len(instr.Operands) != 3 || regs[1].Class != ClassW || regs[2].Class != ClassW {
+			return
+		}
+		d, isConst := c.constFacts[regs[2].Num]
+		if !isConst || d < 1 {
+			return
+		}
+		root, div := c.resolveUpper(regs[1].Num)
+		if div > maxUpperDiv/d {
+			return
+		}
+		if u, ok := c.refFor(root, div*d, dest.Num); ok {
+			newUpper = &u
+		}
+	case "mul":
+		// `mul wD, wI, wK` with wK holding the constant k: under wI < wB and
+		// wB <= len / d with k <= d, the k elements from wI·k lie inside the
+		// span (Oak.Assembler.scaled_index_slack) — the slack fact `wD + k
+		// <= len`, which `add wJ, wD, #j` then carries down to the element
+		// wI·k + j for j < k (scaled_index_element). This is the `lsl` rule
+		// below for a scale that is not a power of two.
+		if len(regs) != 3 || len(instr.Operands) != 3 || regs[1].Class != ClassW || regs[2].Class != ClassW {
+			return
+		}
+		for _, pair := range [2][2]int{{regs[1].Num, regs[2].Num}, {regs[2].Num, regs[1].Num}} {
+			index, scale := pair[0], pair[1]
+			k, isConst := c.constFacts[scale]
+			if !isConst || k < 1 {
+				continue
+			}
+			f, has := c.idxFacts[index]
+			if !has {
+				continue
+			}
+			// A constant bound scaled by a constant: wI < U leaves
+			// wI·k <= (U - 1)·k, so wI·k < (U - 1)·k + 1
+			// (Oak.Extents.scaled_under_bound). This is the form a table
+			// read through a global takes, where no register holds a
+			// length and the entry count is itself a constant — the
+			// binary search over `entries = len(table) / 3`.
+			if f.boundReg < 0 && !f.slack && f.bound >= 1 {
+				if f.bound-1 > (maxUpperDiv-1)/k {
+					continue
+				}
+				newIdx = &idxFact{boundReg: -1, bound: (f.bound-1)*k + 1}
+				return
+			}
+			if !atMost(f) {
+				continue
+			}
+			root, div := c.resolveUpper(f.boundReg)
+			if div < k {
+				continue
+			}
+			lanes := int64(1)
+			if f.slack {
+				lanes = f.bound
+			}
+			if lanes <= 0 || lanes > maxUpperDiv/k {
+				continue
+			}
+			u, ok := c.refFor(root, 1, dest.Num)
+			if !ok {
+				continue
+			}
+			newIdx = &idxFact{boundReg: u.ref, bound: lanes * k, slack: true}
+			return
 		}
 	case "lsl":
 		if len(regs) != 2 || len(instr.Operands) != 3 || regs[1].Class != ClassW {
@@ -289,8 +396,8 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 		if !has || !atMost(f) {
 			return
 		}
-		root, shift := c.resolveUpper(f.boundReg)
-		if int(shift) < int(k.Value) {
+		root, div := c.resolveUpper(f.boundReg)
+		if div < int64(1)<<uint(k.Value) {
 			return
 		}
 		ref := c.canonical(root, dest.Num)

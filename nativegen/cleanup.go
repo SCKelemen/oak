@@ -182,7 +182,9 @@ func liveAfter(items []asm.Item) []uint32 {
 		fallthrough_ := true
 		if ins, isIns := items[last].(asm.Instruction); isIns {
 			switch ins.Mnemonic {
-			case "b", "ret", "brk", "eret", "br":
+			case "b":
+				fallthrough_ = ins.Cond != ""
+			case "ret", "brk", "eret", "br":
 				fallthrough_ = false
 			}
 			if isBranchMnemonic(ins.Mnemonic) && ins.Mnemonic != "bl" && ins.Mnemonic != "blr" && ins.Mnemonic != "ret" {
@@ -318,7 +320,7 @@ func cleanupOnce(items []asm.Item) ([]asm.Item, int) {
 		}
 		if hasNext {
 			// Rule 1: a copy read once by the next instruction.
-			if d, s, isMove := isRegisterMove(ins); isMove && readsGeneral(next, d.Num) && !isCallOrReturn(next) &&
+			if d, s, isMove := isRegisterMove(ins); isMove && readsGeneral(next, d.Num) && !isCallOrReturn(next) && !writesBackTo(next, d.Num) &&
 				(writesGeneral(next, d.Num) || dead(i+1, d.Num)) &&
 				(d.Class == asm.ClassX || readsOnlyAsClass(next, d.Num, asm.ClassW)) {
 				renamed := renameReads(next, d.Num, s)
