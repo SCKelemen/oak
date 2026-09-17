@@ -577,7 +577,9 @@ normal eight-byte store parameters, X31-as-zero, and the final official
 but cannot create, each external descriptor occurrence/action witness.
 
 The separate offset-form STP64 increment is deliberately not connected to
-code generation or the semantic verifier. `Oak.AArch64Encoding` pins the
+code generation or the semantic verifier. Production blocked zero fills use
+four ordered scalar stores and the original scalar tail; they do not consume
+this pair-store evidence. `Oak.AArch64Encoding` pins the
 XML-generated `STP_64_ldstpair_off` base/mask and signed scaled `imm7` layout,
 and computes `STP XZR, XZR, [X0]` and `[X0, #16]` as `0xa9007c1f` and
 `0xa9017c1f`. The official-Sail source gate pins the corresponding 64-bit

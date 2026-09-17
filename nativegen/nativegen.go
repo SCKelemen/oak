@@ -1443,6 +1443,11 @@ type generator struct {
 	// guardLines: accesses on these source lines keep their guards even
 	// when proven (Lane.GuardLines, the compiler's per-line fallback).
 	guardLines map[int]bool
+	// fillBlocks are four-store groups whose first synthetic access emitted
+	// a shared slack guard. The next three accesses may omit their individual
+	// guards only in order, over the same span and index home; asm.Check then
+	// independently transports the first guard through each constant add.
+	fillBlocks map[string]fillBlockState
 	// reuseFlags (Lane.ReuseFlags): flagsTo records, per label, the compare
 	// whose conditional branch reaches it — its operands' spelling — or ""
 	// once another kind of transfer does; liveFlags is that compare while
@@ -1506,6 +1511,16 @@ type generator struct {
 	leafPoolBuilt bool
 	leafVecHomes  int
 	rotated       int
+}
+
+type fillBlockState struct {
+	index        string
+	next         int64
+	width        int64
+	baseReg      int
+	lenReg       int
+	elementBytes int
+	addressReg   int
 }
 
 type slotBinding struct {
@@ -1586,6 +1601,9 @@ type Lane struct {
 	// (nativegen/reduction.go): the compiler's second lowering when the
 	// unrolled form did not prove.
 	NoReductions bool
+	// UnrollFills rewrites a checked scalar u64 zero-fill loop into four
+	// ordered scalar stores per main trip and the original remainder.
+	UnrollFills bool
 	// HoistInvariants runs the loop-invariant code motion pass
 	// (nativegen/licm.go) on the AArch64 lane; the compiler clears it and
 	// lowers again when the checker refuses the hoisted form.
@@ -1625,7 +1643,8 @@ type Lane struct {
 	ElideRedundantGuards bool
 	// ShareRecordBases carries one computed record-span element base through
 	// later identical materializations when a declared scratch stays unused.
-	// Selected only when the whole machine body proves.
+	// It composes only with scheduling and is selected only when the whole
+	// machine body proves.
 	ShareRecordBases bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
@@ -1848,7 +1867,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1872,7 +1891,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.LoopResultHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollConstant)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.LoopResultHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.UnrollFills, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollConstant)
 		}
 		if err != nil {
 			return out, err
@@ -1920,7 +1939,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, false, nil, false)
+			template, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, false, false, false, false, nil, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1944,7 +1963,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.VectorMaps, lane.ElideProven, lane.GuardLines, lane.Strength)
+			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.UnrollFills, lane.VectorMaps, lane.ElideProven, lane.GuardLines, lane.Strength)
 		}
 		if err != nil {
 			return nil, err
@@ -2024,7 +2043,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2060,7 +2079,7 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	// Record-base sharing recognizes final adjacent materializations. Running
 	// it after scheduling also prevents the scheduler from shortening or
 	// splitting the deliberately longer-lived carried value.
-	if lane.ShareRecordBases {
+	if lane.ShareRecordBases && lane.Schedule {
 		sharedRecordBases[out] = shareRecordBase(out)
 	}
 	return out, nil
@@ -2176,14 +2195,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, constant bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, fills bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, constant bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, constant, strength) {
+	for _, stage := range rewriteStages(fn, functions, constants, tc, true, unroll, fills, vectorize, vmaps, unrollMaps, vfolds, constant, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -2247,7 +2266,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
 func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, spare int, reserve int) (*asm.Function, int, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, loopArrayHomesEnabled: arrayHomes, loopResultHomesEnabled: resultHomes, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, fuseMultiplies: fuse, valueSelect: selects, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, fillBlocks: map[string]fillBlockState{}, strength: strength, vectorHomes: vhomes, homesUsedV: map[int]bool{}, loopArrayHomesEnabled: arrayHomes, loopResultHomesEnabled: resultHomes, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, bottomTest: rotate, fuseMultiplies: fuse, valueSelect: selects, stackParams: map[string]asm.ArgPlace{}, vecArgs: map[string]int{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -4407,10 +4426,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	if elem.isFloat {
 		g.usedFloat = true
 	}
-	if _, isLiteral := s.Value.(*ast.ArrayLiteral); s.Value != nil && !isLiteral {
+	_, fromIdent := s.Value.(*ast.Identifier)
+	replaceable := !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length)
+	if _, isLiteral := s.Value.(*ast.ArrayLiteral); s.Value != nil && !isLiteral && !(fromIdent && replaceable) {
 		// `state: [8]u32 = h` / `= f(…)`: the value evaluates first (an
 		// initializer never sees the array it fills), then copies into
-		// storage reserved for the name.
+		// storage reserved for the name. A replaceable array initialized
+		// from another array reads its elements instead (below).
 		if _, placeable := fieldRepresentations[elem.name]; !placeable || elem.isBool {
 			return unsupported("an array local initialized from %s", s.Value.String())
 		}
@@ -4430,12 +4452,21 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		g.bindArray(s.Name.Value, arr)
 		return nil
 	}
-	if !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length) {
+	if replaceable {
 		// Every use an element at a literal index: the elements are
 		// scalars in registers (nativegen/scalar_arrays.go).
 		var literal *ast.ArrayLiteral
 		if s.Value != nil {
 			lit, isLiteral := s.Value.(*ast.ArrayLiteral)
+			if source, isIdent := s.Value.(*ast.Identifier); isIdent && !isLiteral {
+				// `m: [16]u32 = block`: the elements read from the source
+				// array one by one, as a literal of its element reads.
+				lit = &ast.ArrayLiteral{Token: s.Token, Type: s.Type}
+				for k := int64(0); k < length; k++ {
+					lit.Elements = append(lit.Elements, &ast.IndexExpression{Token: s.Token, Left: &ast.Identifier{Token: source.Token, Value: source.Value}, Index: &ast.IntegerLiteral{Token: s.Token, Value: k}})
+				}
+				isLiteral = true
+			}
 			if !isLiteral {
 				return unsupported("an array local initialized from %s", s.Value.String())
 			}
@@ -4934,9 +4965,66 @@ func (g *generator) lowerRecordDeclarationInto(s *ast.VariableDeclaration, typeN
 		return unsupported("the %s local %s initialized from a %s", typeName, s.Name.Value, src.layout.name)
 	}
 	rec := g.declareRecord(s.Name.Value, layout)
+	// A return-slot local initialized from a by-reference parameter copies
+	// even where a caller passed one storage as both (destination passing,
+	// aliasSafeCall) and the copy is an identity: the verifier reads the
+	// result area as memory of its own that every field must reach.
 	err = g.copyRecord(rec, src)
 	g.releaseTemps(src.temps)
 	return err
+}
+
+// aliasSafeCall reports that a call's record result may be written into
+// the storage of the variable name while name is also among the call's
+// arguments: the callee never reads a parameter bound to name after it
+// starts writing its result area. A callee that builds its result in a
+// frame local and copies it out at its end writes the area only after
+// every read. A callee that builds its result in place (returnSlotLocal)
+// writes the area from its first statement, so a parameter bound to
+// name must be mentioned exactly once, as the whole initializer of that
+// return-slot local — the copy that is an identity when the two alias,
+// and which the callee skips then (lowerRecordDeclarationInto).
+func (g *generator) aliasSafeCall(call *ast.InvocationExpression, name string) bool {
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return false
+	}
+	callee, known := g.functions[g.calleeName(ident)]
+	if !known || callee == nil || callee.Body == nil || len(callee.Parameters) != len(call.Arguments) {
+		return false
+	}
+	slot := returnSlotLocal(callee)
+	for i, arg := range call.Arguments {
+		if !isName(arg, name) {
+			continue
+		}
+		p := callee.Parameters[i]
+		if p == nil || p.Name == nil {
+			return false
+		}
+		if slot == "" {
+			continue // written only by the copy-out at the end
+		}
+		mentions := 0
+		walk(callee.Body, func(n ast.Node) {
+			if id, isId := n.(*ast.Identifier); isId && id.Value == p.Name.Value {
+				mentions++
+			}
+		})
+		initializer := false
+		if block, isBlock := callee.Body.(*ast.BlockExpression); isBlock && block.Block != nil {
+			for _, stmt := range block.Block.Statements {
+				if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == slot {
+					initializer = isName(decl.Value, p.Name.Value)
+					break
+				}
+			}
+		}
+		if mentions != 1 || !initializer {
+			return false
+		}
+	}
+	return true
 }
 
 // callReturns reports a call to a program function whose declared result
@@ -5799,7 +5887,23 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 		g.declare(s.Name.Value, typ)
 		g.assignVar(s.Name.Value, r)
 	case *ast.AssignmentStatement:
+		if sa, isScalar := g.scalarArrays[s.Name.Value]; isScalar {
+			// `m = [16]u32{ m[2], … }`: a replaced array assigned whole from
+			// a literal, element by element (nativegen/scalar_arrays.go).
+			return g.assignScalarArray(sa, s)
+		}
 		if dst, isRecord := g.records[s.Name.Value]; isRecord {
+			if call, isCall := s.Value.(*ast.InvocationExpression); isCall && dst.layout.size > 16 && !dst.readOnly && !dst.paramRef && g.callReturns(call, dst.layout.name) && g.aliasSafeCall(call, s.Name.Value) {
+				// `next = f(next, …)`: the callee writes its result into
+				// the variable's own storage — no temporary, no copy —
+				// where it cannot observe that the result area is also its
+				// argument (aliasSafeCall; docs/spec/94-assembler.md §9
+				// "Copies at the boundary", destination passing).
+				if _, err := g.callWith(call, dst); err != nil {
+					return err
+				}
+				return g.reloadPromoted(s.Name.Value)
+			}
 			// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
 			from, err := g.recordValueAs(s.Value, dst.layout)
 			if err != nil {
@@ -8487,6 +8591,104 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 	return g.guardedIndexAt(sp, index, nil)
 }
 
+// fillBlockAddressAt lowers the four scalar stores made by unrolledFill from
+// one address. The first store emits the ordinary four-lane slack idiom and
+// derives a 32-byte region; the following stores use immediate offsets inside
+// it. This metadata is a lowering hint, never proof authority: asm.Check must
+// derive the region from the branches and scaled add before admitting a store.
+func (g *generator) fillBlockAddressAt(sp span, index, value ast.Expression, tok token.Token) (asm.Memory, bool, bool, error) {
+	info, marked := rewriteFillBlockIndex(tok)
+	zero, isZero := constantValue(value)
+	valueType, valueErr := g.typeOf(value, nil)
+	if !marked || info.width != 4 || info.offset < 0 || info.offset >= info.width || !sp.writable || sp.elem.bits != 64 || sp.lenReg < 0 || !isZero || zero != 0 || valueErr != nil || valueType.name != "u64" {
+		return asm.Memory{}, false, false, nil
+	}
+	if g.fillBlocks == nil {
+		g.fillBlocks = map[string]fillBlockState{}
+	}
+	if info.offset == 0 {
+		delete(g.fillBlocks, info.group)
+		name, isIdent := index.(*ast.Identifier)
+		typ, err := g.typeOf(index, nil)
+		if err != nil || !isIdent || typ.name != "u32" {
+			return asm.Memory{}, false, false, nil
+		}
+		idx, hasHome := g.indexHome(index)
+		releaseIndex := false
+		if !hasHome {
+			idx, err = g.indexValue(index)
+			if err != nil {
+				return asm.Memory{}, false, true, err
+			}
+			releaseIndex = true
+		}
+		limit, err := g.alloc(scalars["u32"])
+		if err != nil {
+			if releaseIndex {
+				g.release(idx)
+			}
+			return asm.Memory{}, false, true, err
+		}
+		address, err := g.alloc(scalars["u64"])
+		if err != nil {
+			g.release(limit)
+			if releaseIndex {
+				g.release(idx)
+			}
+			return asm.Memory{}, false, true, err
+		}
+		g.usedTrap = true
+		g.emit("cmp", wr(sp.lenReg), imm(info.width))
+		g.branch("lo", g.trap)
+		g.emit("sub", wr(limit), wr(sp.lenReg), imm(info.width))
+		g.emit("cmp", wr(idx), wr(limit))
+		g.branch("hi", g.trap)
+		g.emit("add", xr(address), xr(sp.baseReg), asm.Extended{Reg: wr(idx), Kind: "uxtw", Amount: int64(log2Bytes(sp.elem.bits / 8))})
+		g.release(limit)
+		if releaseIndex {
+			g.release(idx)
+		}
+		g.fillBlocks[info.group] = fillBlockState{
+			index: name.Value, next: 1, width: info.width,
+			baseReg: sp.baseReg, lenReg: sp.lenReg, elementBytes: sp.elem.bits / 8, addressReg: address,
+		}
+		return asm.Memory{Base: xr(address)}, false, true, nil
+	}
+	state, active := g.fillBlocks[info.group]
+	if !active || info.offset != state.next || info.width != state.width || sp.baseReg != state.baseReg || sp.lenReg != state.lenReg || sp.elem.bits/8 != state.elementBytes {
+		if active {
+			g.release(state.addressReg)
+		}
+		delete(g.fillBlocks, info.group)
+		return asm.Memory{}, false, false, nil
+	}
+	add, isAdd := index.(*ast.InfixExpression)
+	base, isBase := func() (*ast.Identifier, bool) {
+		if !isAdd || add.Operator != "+" {
+			return nil, false
+		}
+		id, ok := add.Left.(*ast.Identifier)
+		return id, ok
+	}()
+	offset, isOffset := int64(0), false
+	if isAdd {
+		offset, isOffset = constantValue(add.Right)
+	}
+	if !isBase || base.Value != state.index || !isOffset || offset != info.offset {
+		g.release(state.addressReg)
+		delete(g.fillBlocks, info.group)
+		return asm.Memory{}, false, false, nil
+	}
+	state.next++
+	release := state.next == state.width
+	if state.next == state.width {
+		delete(g.fillBlocks, info.group)
+	} else {
+		g.fillBlocks[info.group] = state
+	}
+	return asm.Memory{Base: xr(state.addressReg), Offset: info.offset * int64(state.elementBytes)}, release, true, nil
+}
+
 // guardedIndexAt is guardedIndex for the access at tok: when the checker
 // proved the index in range (IndexProven) and the lowering elides, the
 // guard is left out and the index is read from the variable's own
@@ -8671,7 +8873,7 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 // load's destination, so it is returned separately).
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *token.Token) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
-	elide := g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok)
+	elide := g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && (g.tc.IndexProven(*tok) || rewriteProvenIndex(*tok))
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
 		// A constant element: its place — rebased through a temporary when
 		// the offset is past the load's immediate (a field far into a large
@@ -8686,15 +8888,19 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 		// A 32-bit index in its own register — a local's home or a
 		// promoted field's (nativegen/fields.go) — is guarded and read
 		// where it lies; no copy, nothing to release (idx is -1).
-		base, err := g.alloc(scalars["u64"])
-		if err != nil {
-			return asm.Memory{}, 0, 0, err
+		base, releaseBase := arr.reg, -1
+		if !arr.inReg || arr.offset != 0 {
+			base, err = g.alloc(scalars["u64"])
+			if err != nil {
+				return asm.Memory{}, 0, 0, err
+			}
+			releaseBase = base
 		}
-		if arr.inReg {
+		if arr.inReg && arr.offset != 0 {
 			if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
 				return asm.Memory{}, 0, 0, err
 			}
-		} else {
+		} else if !arr.inReg {
 			g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 		}
 		if elide {
@@ -8705,7 +8911,7 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 			}
 		}
 		idx := wr(home)
-		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, base, nil
+		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, releaseBase, nil
 	}
 	r, err := g.indexValue(index)
 	if err != nil {
@@ -8762,17 +8968,21 @@ func (g *generator) arrayAddressReg(arr *arrayLocal, r int) (address asm.Memory,
 // constant guard unless the access was elided (arrayAddress).
 func (g *generator) arrayAddressAt(arr *arrayLocal, r int, guard bool) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
-	base, err := g.alloc(scalars["u64"])
-	if err != nil {
-		return asm.Memory{}, 0, 0, err
+	base, releaseBase := arr.reg, -1
+	if !arr.inReg || arr.offset != 0 {
+		base, err = g.alloc(scalars["u64"])
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		releaseBase = base
 	}
-	if arr.inReg {
+	if arr.inReg && arr.offset != 0 {
 		// An array field inside a computed element: its address is the
 		// element's plus the field offset (the checker narrows the region).
 		if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
 			return asm.Memory{}, 0, 0, err
 		}
-	} else {
+	} else if !arr.inReg {
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 	}
 	if guard {
@@ -8781,7 +8991,7 @@ func (g *generator) arrayAddressAt(arr *arrayLocal, r int, guard bool) (address 
 		}
 	}
 	idx := wr(r)
-	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, base, nil
+	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, releaseBase, nil
 }
 
 // callsProgramFunction reports an expression that calls one of the
@@ -9179,6 +9389,24 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 			idxReg = r
 		}
 	}
+	// A synthetic local span over a record field also has an underlying
+	// array, so the ordinary path below deliberately uses the array idiom.
+	// Give a blocked fill its checked 32-byte region first; metadata that
+	// does not revalidate simply falls through to that guarded array path.
+	if _, marked := rewriteFillBlockIndex(s.Target.Token); marked {
+		if sp, spanErr := g.spanOperand(s.Target.Left); spanErr == nil && sp.array == nil {
+			if address, release, handled, err := g.fillBlockAddressAt(sp, s.Target.Index, s.Value, s.Target.Token); handled {
+				if err != nil {
+					return err
+				}
+				g.emit("str", zeroReg(sp.elem), address)
+				if release {
+					g.release(address.Base.Num)
+				}
+				return nil
+			}
+		}
+	}
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
@@ -9194,12 +9422,19 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if arr.readOnly {
 			return unsupported("a store into %s through a view", s.Target.Left.String())
 		}
-		if value < 0 {
+		storeValue := asm.Register{}
+		zero, isZero := constantValue(s.Value)
+		if value < 0 && isZero && zero == 0 && !arr.elem.isFloat && !arr.elem.isVec {
+			storeValue = zeroReg(arr.elem)
+		} else if value < 0 {
 			v, err := g.expr(s.Value, &arr.elem)
 			if err != nil {
 				return err
 			}
 			value = v
+		}
+		if value >= 0 {
+			storeValue = reg(value, arr.elem)
 		}
 		var address asm.Memory
 		var idx, base int
@@ -9211,7 +9446,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if err != nil {
 			return err
 		}
-		g.emitCheckedIndex(&s.Target.Token, arr.length, storeOf(arr.elem), reg(value, arr.elem), address)
+		g.emitCheckedIndex(&s.Target.Token, arr.length, storeOf(arr.elem), storeValue, address)
 		for _, r := range []int{value, idx, base} {
 			if r >= 0 {
 				g.release(r)

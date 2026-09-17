@@ -191,7 +191,7 @@ func (g *rvGenerator) zextRelease(mark int) {
 	}
 }
 
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, vmaps bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, fills bool, vmaps bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -203,13 +203,13 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// lane does.
 	// The element-wise maps vectorize where the lane has V (nativegen/vector_map.go):
 	// the RVV lowering of the simd operations is the AArch64 lane's law.
-	for _, stage := range rewriteStages(fn, functions, tc, false, unroll, false, vmaps && vector, false, false, false, strength) {
+	for _, stage := range rewriteStages(fn, functions, constants, tc, false, unroll, fills, false, vmaps && vector, false, false, false, strength) {
 		if stage.body == fn.Body {
 			break
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, false, elide, guardLines, false); err == nil {
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, false, false, elide, guardLines, false); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}

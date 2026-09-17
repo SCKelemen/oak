@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v16 keys the late carried-index, redundant-guard, and record-base
-	// MachineIR candidates independently. A transform flag omitted here can
-	// incorrectly reuse another candidate's cached body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v16")
+	// v17 adds record-base sharing to v16's explicit carried-index and
+	// redundant-guard recipes. A transform flag omitted here can incorrectly
+	// reuse another candidate's cached body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v17")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -54,6 +54,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-reductions", lane.VectorReductions},
 		{"vector-maps", lane.VectorMaps},
 		{"unroll-vector-maps", lane.UnrollVectorMaps},
+		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
 		{"use-optir", lane.UseOptIR},
@@ -63,12 +64,12 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"elide-proven", lane.ElideProven},
 		{"reuse-flags", lane.ReuseFlags},
 		{"rotate-loops", lane.RotateLoops},
+		{"carry-loop-indices", lane.CarryLoopIndices},
+		{"elide-redundant-guards", lane.ElideRedundantGuards},
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"loop-array-homes", lane.LoopArrayHomes},
 		{"loop-result-homes", lane.LoopResultHomes},
-		{"carry-loop-index", lane.CarryLoopIndices},
-		{"elide-redundant-guards", lane.ElideRedundantGuards},
 		{"share-record-bases", lane.ShareRecordBases},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},

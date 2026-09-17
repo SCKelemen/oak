@@ -82,6 +82,7 @@ func TestShareRecordBaseRefusals(t *testing.T) {
 		"different high":                 strings.Replace(recordBaseAssembly, "  movk w9, #6, lsl #16\n  umaddl x12", "  movk w9, #7, lsl #16\n  umaddl x12", 1),
 		"destination live through label": strings.Replace(recordBaseAssembly, "  add x11, x10, #8", "  b use_base\nuse_base:\n  add x11, x10, #8", 1),
 		"deleted stride stays live":      strings.Replace(recordBaseAssembly, "  str x4, [x12, #16]", "  add w9, w9, #1\n  str x4, [x12, #16]", 1),
+		"machine loop":                   strings.Replace(recordBaseAssembly, "  cmp w2, w1", "loop:\n  cbnz w4, loop\n  cmp w2, w1", 1),
 		"no free scratch":                allScratchUsed,
 	} {
 		t.Run(name, func(t *testing.T) {

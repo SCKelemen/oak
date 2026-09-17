@@ -142,7 +142,7 @@ func TestSplitFramePairInitializersPreservesLiveSource(t *testing.T) {
 		t.Fatal("a live source was destroyed")
 	}
 	before := cloneFunction(f)
-	promoted, count, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
+	promoted, count, _, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
 	if err != nil || count != 0 || !reflect.DeepEqual(before, promoted) {
 		t.Fatalf("live-source body changed: promoted %d: %v", count, err)
 	}
@@ -199,7 +199,7 @@ func TestPromoteSplitFramePairProven(t *testing.T) {
 	if split == nil {
 		t.Fatal("expected pair split")
 	}
-	promoted, count, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
+	promoted, count, _, err := PromoteWith(f, []FrameObject{{Offset: 16, Size: 16}})
 	if err != nil || count != 4 {
 		t.Fatalf("promoted %d, error %v", count, err)
 	}
@@ -284,11 +284,11 @@ func TestPromoteSplitFramePairRequiresSplitWordBenefit(t *testing.T) {
 	if split == nil {
 		t.Fatal("fixture must pass pair splitting before allocation")
 	}
-	want, wantCount, err := promoteWith(f, objects, false)
+	want, wantCount, _, err := promoteWith(f, objects, false)
 	if err != nil || wantCount != 1 {
 		t.Fatalf("baseline promoted %d: %v", wantCount, err)
 	}
-	got, count, err := PromoteWith(f, objects)
+	got, count, _, err := PromoteWith(f, objects)
 	if err != nil || count != wantCount || !reflect.DeepEqual(got, want) {
 		t.Fatalf("unhelpful split was retained: promoted %d: %v\n%s", count, err, text(got.Items))
 	}

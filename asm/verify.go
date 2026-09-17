@@ -6517,6 +6517,43 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	if handled, reason, ok := lo.declareView(s, elem); handled {
 		return reason, ok // a view over an aggregate local (asm/agg_views.go)
 	}
+	if root, indexExpr, path, isField := elementFieldOperand(s.Value); isField {
+		record, isRecordSpan := lo.recordSpans[root]
+		_, shadowed := lo.locals[root]
+		if !isRecordSpan || shadowed {
+			return fmt.Sprintf("the span local %s over %s, which is not an unshadowed record span", name, root), false
+		}
+		field, isArray := record.arrayNamed(path)
+		if !isArray {
+			return fmt.Sprintf("the span local %s: %s is not an array field of %s's element", name, path, root), false
+		}
+		if int(elem)*8 != field.first.width {
+			return fmt.Sprintf("the span local %s over %s with %d-bit elements where %d-bit ones are declared", name, path, field.first.width, elem*8), false
+		}
+		index, reason, ok := lo.lower(indexExpr, 32)
+		if !ok {
+			return reason, false
+		}
+		if lo.concrete != nil {
+			lo.addTrap(cmpTerm("hs", index, lo.spanLenTerm(root, 32)))
+			if lo.witnessTrapped {
+				return fmt.Sprintf("the span local %s indexes past len(%s) on this input", name, root), false
+			}
+		}
+		delete(lo.locals, name)
+		delete(lo.views, name)
+		lo.spans[name] = spanContract{elemWidth: field.first.width, signed: strings.HasPrefix(typeText(s.Type.(*ast.IndexExpression).Left), "i")}
+		if lo.spanAlias == nil {
+			lo.spanAlias = map[string]string{}
+		}
+		if lo.spanOffset == nil {
+			lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+		}
+		lo.spanAlias[name] = lo.spanRoot(root) + path
+		lo.spanOffset[name] = binaryTerm("mul", index, constTerm(uint64(field.length), 32))
+		lo.spanLen[name] = constTerm(uint64(field.length), 32)
+		return "", true
+	}
 	bind := func(src string, offset, length *term) (string, bool) {
 		delete(lo.views, name)
 		contract, isSpan := lo.spans[src]

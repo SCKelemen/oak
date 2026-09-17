@@ -1147,6 +1147,17 @@ translation, fault-free access, architectural or external memory effect, CAT
 event or edge, visibility, completion, or page-table publication. Ordinary
 `STP` is neither a store-release operation nor a barrier. In particular, live
 PTE break/make publication remains on the existing scalar `STR` path.
+Production native candidate search may instead block an exact checked `u64(0)`
+fill four ways while keeping four ordered scalar `STR` instructions and the
+original less-than-four-word tail. The matcher requires a checked `u32`
+unit-stride induction, a pure affine unit-stride address, and a `u64` zero
+store. A direct span uses the emitted `len >= 4; i <= len - 4` slack guard to
+derive one 32-byte region; the assembler checker independently validates the
+four scalar offsets. A span over a record array field retains an individual
+field-bound guard on every store. Folded bounds are checked `u32` compiler
+constants, are keyed into rewrite-cache identity, and are ignored when a
+parameter or local shadows the global. The semantic verifier judges the
+blocked body, and candidate search ships it only after a proved verdict.
 `Oak.BlockedFill.blocked_fill_eq` discharges one source-level algebraic
 prerequisite: in the total word-memory model, `k` four-word blocks expressed as
 two `storePair` operations each, followed by the `n % 4` scalar tail, have the
@@ -1178,8 +1189,8 @@ and a four-cell loop bound keep all four words in the field and below the
 32-bit index modulus. Its `quad_writes_eq_fillWords_four` composes that bound
 with the staged pair-write final-state law. The declaration lookup itself is
 not formalized, and neither predicate grants instruction admission or custody.
-A future lowering still needs trap preservation, verifier support,
-scalar-tail lowering, and explicit
+A future **pair-store** lowering still needs trap preservation, verifier
+support, and explicit
 ordinary private-memory authority proving the storage has not yet been
 published—never a live descriptor-update protocol.
 
@@ -5445,6 +5456,48 @@ lowering's homes run out and the copies price above the loop's trips
 (a hash compression's sixteen state words with seven rounds), the loop
 stays.
 
+**Dead frame stores and copies through redefined sources (2026-09-17,
+`machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion
+qualifies — plain loads and stores of one width, its address never taken,
+inside the declared frame, not a callee-save — has no reader but those
+accesses, so a store no load reaches is dead and goes with the promotion,
+whether or not the slot is ever loaded (`Allocation.DeadStores`). Copy
+propagation reads a copied value at its source not only where the source
+has one definition and is live, but where the read sits in the copy's own
+block with no redefinition of the source between them (no instruction
+defining the register, no call); the simplifier's fixpoint runs to a
+thousand and twenty-four rounds, one copy a round, ending at the first
+round that changes nothing.
+
+**Scalar replacement widened (2026-09-17, `nativegen/scalar_arrays.go`).**
+A replaceable array may be initialized from another array (its elements
+read one by one), returned as the body's result (stored element by
+element into the result area), and assigned whole from an array literal
+of its length — a permutation of its own elements realized cycle by cycle
+in two scratch registers, any other literal of at most eight elements
+evaluated first then assigned. The expanded helper's block around such a
+literal is read through. The inliner substitutes a constant-index read of
+the caller's owned array for a scalar parameter the callee never assigns
+when the callee has no writable span, in place of a declared copy.
+
+**Destination passing and in-place expansion (2026-09-17,
+`nativegen/nativegen.go` `aliasSafeCall`, `nativegen/inline.go`
+`expandInPlace`).** An assignment `v = f(…, v, …)` whose callee returns a
+record larger than sixteen bytes passes `v`'s own storage as the result
+area when the callee cannot observe that the area is also its argument:
+a callee that copies its result out only at its end, or one that builds
+its result in place and reads the parameter bound to `v` exactly once, as
+the whole initializer of its return-slot local. The callee's copy from
+the parameter into the result area is kept even where it is an identity
+(the verifier reads the result area as memory every field must reach).
+When such a callee is expanded at the assignment, the expansion runs the
+body on `v`: the return-slot local is renamed to `v`, its declaration from
+the parameter and the trailing result are dropped as identities, and no
+other argument may mention `v`. The source and the expansion compute the
+same values (the inliner's substitution, `Oak.Inlining.eval_subst`, with
+two identity copies removed), so the verifier judges the body as the
+copy form's.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
@@ -5947,30 +6000,34 @@ to a declared caller-saved scratch and later local reads use that carried
 value. Calls delimit the region. The scratch must be absent from the whole
 function suffix; a later stride temporary must be dead after the deleted
 multiply; and every replaced destination must be local to its straight-line
-region. The pass deliberately leaves interleaved materializations alone.
+region. A cyclic machine CFG is outside this late pass; loop optimization keeps
+its separate proof and profitability path. The pass deliberately leaves
+interleaved materializations alone.
 
-This changes no load, store, guard, branch, or arithmetic result. It runs
-after scheduling so scheduling cannot lengthen or split its new live range,
-and it is a non-neutral **verdict-gated** candidate: only the unchanged
+This changes no load, store, guard, branch, or arithmetic result. It composes
+only with the scheduler and runs after it, so an unscheduled parent cannot win
+by acquiring the sharing flag and scheduling cannot lengthen or split the new
+live range. It is a non-neutral **verdict-gated** candidate: only the unchanged
 whole-body verifier can authorize it. Unit refusals cover non-dominance,
 changed base/index, calls, different stride words, live deleted temporaries,
 cross-boundary destinations, unavailable scratches, and undeclared
 scratches. The compiler differential exercises both conditional arms and the
 invalid-domain trap over a record whose stride exceeds sixteen bits.
 
-Native materialization recipe v16 also keys `carry-loop-index`,
-`elide-redundant-guards`, and `share-record-bases` explicitly. This closes the
-artifact-cache contract for the three late candidates; the registry-wide test
+Native materialization recipe v17 adds `share-record-bases` to v16's explicit
+`carry-loop-index` and `elide-redundant-guards` keying. This closes the
+artifact-cache contract for the late candidate; the registry-wide test
 requires every transform switch to change the recipe key.
 
-On the actual stage-2 pilot, all selected bodies remain `proven` and share 1
-base in `alloc_table` (114→111 instructions), 2 in `map_page` (200→194), 5 in
-`reset` (107→92), 2 in `translate` (116→110), and 3 in `unmap_page` (333→330).
-All five OS differential tests pass. Seven alternating pairs on a non-isolated
-M4 Max improve translation in every pair: the median paired ratio is 0.933
-(6.7% lower), with separate medians 4.38→4.09 ns/op. Decoder-cycle timings
-are mixed (4 of 7 faster; median paired ratio 0.988), so no precise decoder
-speedup is claimed. Raw timings and provenance are in
+On the actual stage-2 pilot, the three changed selected bodies remain `proven`:
+one base is shared in `map_page` (198→195 instructions), one in `translate`
+(114→111), and five in scheduled `unmap_page` (287→272). The cyclic
+`alloc_table` and `reset` keep their baseline proven candidates (173 and 160
+instructions). All five OS differential tests pass. Seven alternating pairs
+on a non-isolated M4 Max improve translation in every pair: the median paired
+ratio is 0.940 (6.0% lower), with separate medians 4.36→4.07 ns/op.
+Decoder-cycle timings are neutral/mixed (4 of 7 faster; median paired ratio
+0.998), so no decoder speedup is claimed. Raw timings and provenance are in
 `benchmarks/native/results/stage2-record-base-cse-m4-max-2026-09-17.json`.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose

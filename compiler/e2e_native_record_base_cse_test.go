@@ -65,6 +65,9 @@ func TestE2ENativeRecordBaseCSE(t *testing.T) {
 	if nativegen.SharedRecordBases(selected) == 0 {
 		t.Fatalf("the proven record base must be shared:\n%s", nativegen.Describe(selected))
 	}
+	if nativegen.Scheduled(selected) == 0 {
+		t.Fatalf("record-base sharing must retain its scheduled parent:\n%s", nativegen.Describe(selected))
+	}
 	_, code, abnormal := buildAndRunFrom(t, "record_base_cse", comp)
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit=(%d, abnormal=%v), want 42", code, abnormal)

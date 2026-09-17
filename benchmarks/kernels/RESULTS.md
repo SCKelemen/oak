@@ -640,6 +640,25 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## blake3 through the day, 2026-09-17
+
+Single harness runs of `blake3` (two rounds of five samples, 1 MiB) at
+each step, on a host whose load average ran between twenty and fifty;
+every row's checksums agree. The morning table's 3.35× was the plain
+lowering's frame traffic in a witnessed body the machine passes could
+not repair.
+
+| Step | oak-native / C |
+| --- | ---: |
+| morning table (frame arrays, three state copies per block) | 3.35× |
+| dead frame stores, copy propagation through redefined sources, message array scalar-replaced | 2.03× |
+| destination passing and in-place expansion of `absorb_block` | 1.32× |
+
+The remaining gap is the state copies inside `push_chunk` (once per
+sixteen blocks) and `final`, and the verdicts on `update` and
+`push_chunk` (trusted: frame slots written at overlapping addresses in a
+loop body), which keep the machine passes off them.
+
 ## The fold vectorization on the dot product, 2026-09-16 (night)
 
 `dot` with the head tree against the same tree withholding the fold

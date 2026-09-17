@@ -11,12 +11,18 @@ import "fmt"
 // compares, and anything with a side effect alone; the checker and the
 // verifier judge the result like any other candidate.
 
+// simplifyRounds bounds the fixpoint: one copy propagates a round (the
+// webs are rebuilt between), so a body with hundreds of promoted slot
+// reads needs hundreds of rounds; the loop ends at the first round that
+// changes nothing.
+const simplifyRounds = 1024
+
 // Simplify runs copy propagation and dead-code elimination to a fixpoint
 // (bounded) and reports how many copies it propagated and instructions it
 // removed. The function is rewritten in place; its instruction list and
 // indices are current afterwards.
 func (f *Function) Simplify() (propagated, eliminated int, err error) {
-	for round := 0; round < 8; round++ {
+	for round := 0; round < simplifyRounds; round++ {
 		webs, werr := f.Webs()
 		if werr != nil {
 			return propagated, eliminated, werr
@@ -67,7 +73,7 @@ func (f *Function) propagateCopies(webs []*Web) int {
 		if dst == nil || src == nil || dst == src || dst.Pinned {
 			continue
 		}
-		if len(dst.Defs) != 1 || len(src.Defs) != 1 || len(dst.Uses) == 0 {
+		if len(dst.Defs) != 1 || len(dst.Uses) == 0 {
 			continue
 		}
 		if dst.Reg.Class != src.Reg.Class || !copySafe(ins, dst, src) {
@@ -75,10 +81,25 @@ func (f *Function) propagateCopies(webs []*Web) int {
 		}
 		ok := true
 		for _, u := range dst.Uses {
-			if u.Access.Implicit || u.Instr == ins || !src.liveAt(usePos(u.Instr)) {
+			if u.Access.Implicit || u.Instr == ins {
+				ok = false
+				break
+			}
+			if len(src.Defs) == 1 {
 				// The source must still hold its one definition at the
 				// read: another web of the register (a call's result, a
 				// later assignment) ends its range before that.
+				if !src.liveAt(usePos(u.Instr)) {
+					ok = false
+					break
+				}
+				continue
+			}
+			// A source defined more than once (a loop-carried value, a
+			// promoted slot written each round) still holds the copied
+			// value at a read in the copy's own block that nothing between
+			// the two redefines.
+			if !f.holdsBetween(src.Reg, ins, u.Instr) {
 				ok = false
 				break
 			}
@@ -104,6 +125,28 @@ func (f *Function) propagateCopies(webs []*Web) int {
 		break
 	}
 	return count
+}
+
+// holdsBetween reports that register r, read by the copy at from, is
+// not written between from and to: to follows from in the same block, and
+// no instruction strictly between them defines r (explicitly or as a
+// call's clobber).
+func (f *Function) holdsBetween(r Reg, from, to *Instr) bool {
+	if from.Block == nil || from.Block != to.Block || to.Index <= from.Index {
+		return false
+	}
+	for i := from.Index + 1; i < to.Index; i++ {
+		ins := f.Instrs[i]
+		if ins.Call {
+			return false
+		}
+		for _, d := range ins.Defs {
+			if d.Reg == r {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // eliminateDead removes the instructions whose every definition no one

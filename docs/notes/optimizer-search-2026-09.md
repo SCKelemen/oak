@@ -481,6 +481,110 @@ shape a lowering refused and why before falling back, and
 `OAK_MACHINE_TRACE_SLOTS` prints the promotion's escapes, blocked ranges,
 and each slot's register or refusal.
 
+### Phase B, the hash body's state in registers (2026-09-17)
+
+What the unrolled `compress` showed was not the loop's fault. Its
+lowered body, before the machine passes, had 1666 loads and 1386 stores
+for sixteen state scalars; the reallocator and the slot promotion took
+that to 266 and 378, and a count over the result said what was left:
+219 of the 324 stores were overwritten before any load — the lowering
+writes a variable's frame home on every assignment, and the reads never
+came back to it — and all 208 loads were the message words, copied in
+pairs at entry and permuted through a temporary each round. Three
+repairs, none of them the unrolling:
+
+- **Dead frame stores** (`machine/slots.go`). A qualified slot — plain
+  accesses of one width, its address never taken, inside the frame, not
+  a callee-save — whose store no load reaches is dead: nothing else can
+  read its bytes, and the frame dies at return. The promotion removes
+  such stores (`Allocation.DeadStores`); a slot never loaded qualifies
+  for exactly this. The simplifier's test that pinned a dead vector
+  store as staying now pins it going.
+- **Copy propagation through redefined sources** (`machine/simplify.go`).
+  A promoted slot read became `mov w23, w14; add w5, w5, w23`, and
+  propagation refused it because `w14` — a state word, written every
+  round — has more than one definition. The value at the read is the
+  copy's when nothing between them in the block redefines the source
+  (`holdsBetween`); that is the check now, and the fixpoint's bound rose
+  from eight rounds to a thousand and twenty-four, one copy a round,
+  ending at the first round that changes nothing. `compress`'s unrolled
+  form went from 1558 instructions to 1171.
+- **Scalar replacement of the message array**
+  (`nativegen/scalar_arrays.go`). `m` was declared from the block
+  parameter and reassigned whole by the expanded permutation, both of
+  which kept it an array. A replaceable array now initializes from
+  another array by reading its elements, and takes a whole assignment
+  from a literal of its length — the expanded helper's block around the
+  literal read through — lowered as a parallel assignment: a permutation
+  of its own elements cycle by cycle with two scratch registers
+  (`permuteScalarArray`, the frame version's walk over hidden locals),
+  any other literal of at most eight elements evaluated first. The
+  inliner substitutes a constant-index read of the caller's owned array
+  for a scalar parameter the callee never assigns, so `g`'s six arguments
+  are reads, not copies.
+
+`compress` in its loop form went from 343 instructions and 152 frame
+accesses to 287 and ten, priced 1509 against 2221 this morning, and it is
+proven now (the verifier's own morning). The unrolled form lost its
+purpose there — thirty-two scalars exceed the lowering's homes and the
+spills price it above the loop — and the search keeps the loop, which is
+the point of pricing both. `bench_blake3` on the harness, one run under a
+load average of fifty: 2.03× the C backend, from 3.35×, checksums
+agreeing. The next bodies are `final` (188 frame accesses in 537
+instructions) and `push_chunk` (88 in 619).
+
+### The record that traveled by value (2026-09-17)
+
+With the state words in registers, `blake3_update` at 1452 instructions
+was the body to read, and its per-block path was two copies of the whole
+`Blake3State` — some 1.6 KB, the chaining-value stack most of it — for
+every 64 input bytes: `next = blake3_absorb_block(next)`, the callee
+expanded in place, had become `inl_next = next; …; next = inl_next`, four
+hundred pair loads and stores each way around a compression that is a
+few hundred instructions itself. The source is the functional style the
+library writes in (`next: Blake3State = state; …; next`), and the C
+backend pays for none of it because clang inlines the step and drops the
+copies. Two changes give the native lane the same:
+
+- **Destination passing** (`nativegen/nativegen.go`, `aliasSafeCall`).
+  `v = f(…, v, …)` with `f` returning a large record through x8 passes
+  `v`'s own storage as the result area — no temporary, no copy at the
+  caller — where `f` cannot observe that its result area is also its
+  argument: either `f` builds its result in a frame local and copies it
+  out only at its end, after every read of the parameter, or it builds in
+  place (the return-slot local) and the parameter bound to `v` is
+  mentioned exactly once, as the whole initializer of that local — a copy
+  that is an identity when the two alias. The callee's copy stays even
+  then: skipping it on a runtime `x0 == x8` test left the verifier
+  reading result fields "never stored to the result area" and, on a
+  witness that aliased the parameter block with the frame, a
+  disagreement — the result area is memory of its own in its model, and
+  the skip is not expressible there. `blake3_push_chunk`, not expanded
+  (it loops), is called this way.
+- **In-place expansion** (`nativegen/inline.go`, `expandInPlace`). When
+  such a callee is expanded, `v = f(…, v, …)` splices `f`'s body run on
+  `v` itself: the return-slot local renamed to `v`, its declaration from
+  the parameter dropped (an identity copy), the trailing result dropped
+  (an identity assignment), the other parameters bound as an expansion
+  binds them, and no other argument allowed to mention `v` (a bound
+  argument evaluates before the body, a substituted one would read the
+  body's writes). What remains reads and writes `v` where `f` read and
+  wrote its copy, and since `f` never read the parameter again, the
+  values are the same — the substitution the inliner already stands on,
+  with two identities removed. `blake3_update`'s per-block path lost both
+  copies; the body is 524 instructions.
+
+`bench_blake3` on the harness, checksums agreeing: 1.32× the C backend,
+from 2.03× an hour before and 3.35× in the morning table, under a load
+average near twenty. The per-byte loop that remains is nine instructions
+a byte with one bounds guard, the C backend's shape; the rest of the
+distance is the state copies that remain inside the callees that are not
+expanded (`push_chunk` once per sixteen blocks, `final` once) and the
+verdicts: `update` and `push_chunk` are trusted (frame slots written at
+overlapping addresses in a loop body, the destination-passed call writing
+the variable's region the loop also writes), so the machine passes do not
+run on them.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

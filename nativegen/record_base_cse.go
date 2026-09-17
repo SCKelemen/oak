@@ -28,7 +28,7 @@ func shareRecordBase(fn *asm.Function) int {
 	}
 	items := fn.Items
 	succ, ok := itemSuccessors(items)
-	if !ok {
+	if !ok || itemCFGHasCycle(succ) {
 		return 0
 	}
 	live := liveAfter(items)
@@ -84,6 +84,33 @@ func shareRecordBase(fn *asm.Function) int {
 		return len(group) - 1
 	}
 	return 0
+}
+
+func itemCFGHasCycle(succ [][]int) bool {
+	state := make([]uint8, len(succ))
+	var visit func(int) bool
+	visit = func(at int) bool {
+		if state[at] == 1 {
+			return true
+		}
+		if state[at] == 2 {
+			return false
+		}
+		state[at] = 1
+		for _, next := range succ[at] {
+			if visit(next) {
+				return true
+			}
+		}
+		state[at] = 2
+		return false
+	}
+	for at := range succ {
+		if state[at] == 0 && visit(at) {
+			return true
+		}
+	}
+	return false
 }
 
 func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, bool) {
