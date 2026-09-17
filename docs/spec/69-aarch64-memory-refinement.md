@@ -474,8 +474,22 @@ verifier's decided subset: its verdict remains **trusted**, not proven.
 Dynamic PC/object trace extraction, reachability and effects of the official
 ASL calls after the selected external `write_ram` arguments, and every
 instruction-to-action classification remain
-compiler/execution-refinement premises. There is not yet a Darwin/Mach-O
-object oracle or a privileged Apple EL2 execution gate.
+compiler/execution-refinement premises.
+
+The Darwin/ARM64 Mach-O path now has an independent exact-object regression
+gate in `compiler/e2e_native_macho_ordering_test.go`. It cross-emits eleven
+single-leaf objects: the six barriers, VMALLS12E1IS, the context-sync and BBM
+slices, and both cold-entry examples. Each whole instruction section must
+match its expected words, including the BBM guard and trailing trap. The oracle
+requires an ARM64 relocatable object, one external section-defined entry at
+the section start, and no text relocations; it does not infer Mach-O function
+lengths from `RET` or discard unexpected padding. Negative tests reject changed
+metadata, extra symbols, relocations, and altered/missing/reordered instructions.
+The BBM body remains trusted and the strict verified profile must refuse its
+object on both freestanding ELF and Darwin Mach-O. These checks need neither
+Clang nor an Apple host and never execute privileged instructions. They provide
+source-to-relocatable-byte evidence, not final linked-image correctness or a
+privileged Apple EL2 execution gate.
 
 The two official catalogue tests validate generic pinned CAT BBM ordering and
 diagnostic behavior only. Their maintenance instruction is stage-1

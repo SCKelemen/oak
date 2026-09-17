@@ -1124,8 +1124,15 @@ returns. Descriptor/PA/default-RAM provenance, translation correctness,
 successful ASL memory or external RAM effects, byte placement/atomicity,
 unique writes, tags/device
 behavior, CAT membership, completion, invalidation, publication, and context
-synchronization remain open. No Darwin/Mach-O object oracle or privileged
-Apple EL2 execution gate exists yet.
+synchronization remain open. A Darwin/ARM64 Mach-O regression oracle now checks
+the complete instruction sections of the six barrier leaves, TLBI leaf,
+context-sync and BBM slices, and both cold-entry examples. Each is emitted as a
+single-leaf object with no text relocations; no function extent is guessed from
+Mach-O symbols or `RET`. Mutants cover metadata, relocations, and instruction
+order/content, including the BBM guard and trailing trap. The strict verified
+profile still rejects the BBM object on both ELF and Mach-O. This is static
+source-to-object evidence, not a linked-image proof or privileged Apple EL2
+execution gate (`compiler/e2e_native_macho_ordering_test.go`).
 
 The adjacent **offset-form STP64 slice is formal evidence only**. The
 XML-generated row `STP_64_ldstpair_off` has base `0xa9000000`, mask
