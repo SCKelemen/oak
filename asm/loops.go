@@ -4324,8 +4324,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				for _, a := range signs {
 					var b *term
 					switch {
-					case a == 1 && equalTerms(hr, hx):
-						b = constTerm(0, hr.width) // equality: the header values are one term
+					case a == 1 && headersEqual(hr, hx, widthOfName):
+						b = constTerm(0, hr.width) // equality: the header values are one value
 					case a == 1:
 						// The offset in its canonical spelling: the two
 						// headers may be one value spelled apart (`start
@@ -7567,6 +7567,33 @@ func collectConstantsVisited(t *term, seen map[uint64]bool, into *[]uint64, visi
 
 // couplingValuations is the number of valuations tried before a diagram.
 const couplingValuations = 80
+
+// headersEqual reports two header values that are one value: the same
+// term, the same term once canonical, or — for small terms — equal at the
+// bit level. A slot holding two 32-bit words is spelled `h0 or (h1 shl
+// 32)` by the machine and `(h0 and 0xffffffff) or ((h1 and 0xffffffff) shl
+// 32)` by the Oak pack of the lanes; read as different terms, the pairing
+// was offered only as an affine image with a symbolic offset, behind every
+// wrong pairing's refutation, and the coupling search spent its budget
+// (hash.sha256_update; docs/spec/94-assembler.md §9 "Loop invariants").
+func headersEqual(hr, hx *term, widthOf func(string) int) bool {
+	if equalTerms(hr, hx) {
+		return true
+	}
+	cr, cx := canonical(hr), canonical(hx)
+	if equalTerms(cr, cx) {
+		return true
+	}
+	if termSize(cr, map[*term]int{})+termSize(cx, map[*term]int{}) > headerEqualityTermLimit {
+		return false
+	}
+	holds, decided := impliesEqual(constTerm(1, 1), cr, cx, widthOf)
+	return decided && holds
+}
+
+// headerEqualityTermLimit bounds the header terms a bit-level equality
+// decision is tried on when spelling them apart is all that separates them.
+const headerEqualityTermLimit = 192
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 1024
