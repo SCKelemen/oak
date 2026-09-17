@@ -17,7 +17,8 @@ type recordBaseSite struct {
 //
 //	movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB
 //
-// Independent scheduled instructions may remain between those three
+// or, for a stride below 2^16, the two instructions without the movk.
+// Independent scheduled instructions may remain between those
 // instructions. A control boundary or any intervening mention of wT refuses
 // the site. The first result is retargeted to a declared caller-saved scratch
 // register unused for the whole region; later identical triples disappear and
@@ -95,7 +96,10 @@ func shareRecordBaseWith(fn *asm.Function, existingDestinationOnly bool) int {
 			}
 		}
 		for _, site := range group[1:] {
-			remove[site.start], remove[site.middle], remove[site.def] = true, true, true
+			remove[site.start], remove[site.def] = true, true
+			if site.middle >= 0 {
+				remove[site.middle] = true
+			}
 			for _, use := range site.uses {
 				out[use] = renameReads(out[use].(asm.Instruction), site.dest.Num, carrier)
 			}
@@ -191,18 +195,27 @@ func recordBaseAt(items []asm.Item, live []uint32, succ [][]int, start int, allo
 		return recordBaseSite{}, false
 	}
 	b := items[middle].(asm.Instruction)
-	if b.Mnemonic != "movk" || b.Cond != "" || len(b.Operands) != 2 {
-		return recordBaseSite{}, false
-	}
-	strideB, strideBOK := generalReg(b.Operands[0])
-	high, highOK := b.Operands[1].(asm.Immediate)
-	if !strideBOK || !highOK || strideB.Class != asm.ClassW || strideA.Num != strideB.Num ||
-		high.Shift != 16 || high.Value < 0 || high.Value > 0xffff {
-		return recordBaseSite{}, false
-	}
-	def, ok := nextGeneralRegisterMention(items, middle+1, start+recordBaseMaterializationSpan, strideA.Num)
-	if !ok {
-		return recordBaseSite{}, false
+	var high asm.Immediate
+	def := middle
+	if b.Mnemonic == "movk" {
+		if b.Cond != "" || len(b.Operands) != 2 {
+			return recordBaseSite{}, false
+		}
+		strideB, strideBOK := generalReg(b.Operands[0])
+		highB, highOK := b.Operands[1].(asm.Immediate)
+		if !strideBOK || !highOK || strideB.Class != asm.ClassW || strideA.Num != strideB.Num ||
+			highB.Shift != 16 || highB.Value < 0 || highB.Value > 0xffff {
+			return recordBaseSite{}, false
+		}
+		high = highB
+		if def, ok = nextGeneralRegisterMention(items, middle+1, start+recordBaseMaterializationSpan, strideA.Num); !ok {
+			return recordBaseSite{}, false
+		}
+	} else {
+		// A stride below 2^16 has no movk: the OS pilots' Regime is 2096
+		// bytes, `movz wT, #2096; umaddl xD, wI, wT, xB`, and the site is
+		// the two instructions.
+		middle = -1
 	}
 	c := items[def].(asm.Instruction)
 	if c.Mnemonic != "umaddl" || c.Cond != "" || len(c.Operands) != 4 {
