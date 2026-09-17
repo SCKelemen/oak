@@ -89,3 +89,52 @@ The [primary report](results/table-views-m4-max-2026-09-17.json) and
 raw samples, verdicts, selected assembly and provenance. Focused verifier and
 compiler tests, their race checks, nativegen/MachineIR/optimizer suites, vet
 and benchmark-harness tests pass; the full repository suite was not run.
+
+## Exact extent folding: 2026-09-17
+
+This is a separate before/after comparison, not an update to the historical
+table above. Clean baseline `d735d322aa483cff5a4f91caf8d641fd1a437a82` versus
+clean candidate `eec594520f2b1c49702fdee11a03b49703874a96` on the same M4 Max,
+using the unchanged protocol, fixture, runner and C flags. Both reports retain
+all nine samples per backend/distribution and the exact binary provenance.
+
+The shared native recognizer folds u32 `len(named_view) / constant` and
+`% constant` only when the recorded view extent agrees with its owned-array
+or table extent. It does not fold dynamic spans, subslices, effectful
+expressions, nested conversions or zero divisors. It uses the existing
+`Strength` candidate, with no new default switch or verifier relaxation.
+RV64 retains emitter reductions after source rewriting, as ARM64 already did.
+
+For this lookup, `4893 / 3` becomes `1631`. That also allows the existing
+checker-fact guard elimination to remove the remaining in-loop bounds check.
+The selected body drops from **43 to 38 instructions**, its loop from **12 to
+10**; the 80-byte frame and five load/store instructions are unchanged. Counts
+are emitted instructions, excluding bind/clobber/frame directives. Before,
+identity and after are all inductively proven; all independent oracle and
+cross-backend checksum checks pass. These counts explain the candidate, not
+its wall-clock profitability.
+
+Medians in ns/lookup:
+
+| Distribution | C | Native before | Native identity | Native after | Change | Repeat before / after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ASCII | 34.95 | 41.44 | 71.46 | 38.14 | −8.0% | 61.62 / 38.61 |
+| Unicode | 38.33 | 34.13 | 57.55 | 32.49 | −4.8% | 38.09 / 34.47 |
+| Boundaries | 32.16 | 43.08 | 66.98 | 40.33 | −6.4% | 41.44 / 40.65 |
+
+Every distribution's median decreases in both runs, but this host is **not
+quiet**. One-minute load rose from 154 to 156 in the first run and 176 to 187
+in the repeat, with other compiler/test jobs active (including our broader
+RV64 test command). The repeat changes vary from −37.3% for ASCII to −1.9%
+for boundaries, and timing ranges overlap substantially. The first run's C
+Unicode median is itself distorted enough to appear slower than native.
+These measurements are directionally encouraging, **not a reliable speedup
+estimate, C-parity claim or regression gate**. Repeat on a quiet host before
+using them as such; no throughput claim is made for RV64.
+
+The [first report](results/extent-fold-m4-max-2026-09-17.json) and
+[repeat report](results/extent-fold-repeat-m4-max-2026-09-17.json) include the
+raw samples and exact selected bodies. Both-lane unit tests require proof of
+quotient/remainder bodies and composition with source rewrites. ARM64
+end-to-end tests check native/C results, retained zero-divisor/subslice traps
+and the actual grapheme candidate's proof and division-free assembly.
