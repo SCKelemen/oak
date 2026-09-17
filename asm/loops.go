@@ -1359,6 +1359,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		writtenSpans = append(writtenSpans, name)
 	}
 	sort.Strings(writtenSpans)
+	// The machine side of the same rule: a body with no store and no call
+	// leaves the memories alone, and marking one would make its reads
+	// disagree with the Oak side's, which marks only what its body can
+	// write. The scan fails closed.
+	if shape.bodyStart >= 0 && shape.bodyStart <= shape.bodyEnd && shape.bodyEnd <= len(x.fn.Items) && !itemsMayStore(x.fn.Items[shape.bodyStart:shape.bodyEnd]) {
+		writtenSpans = nil
+	}
 	for _, span := range writtenSpans {
 		storedSpans[span] = true
 	}
@@ -3052,9 +3059,20 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// function's `[*]T` parameters): inside an inlined or summarized
 	// callee the names in scope are aliases of them, so the marker is
 	// keyed by the root, as the write logs are.
+	// A body that cannot store through a span leaves every span memory as
+	// it found it, so marking one says something false about it: the
+	// condition and the body's reads, lowered below, would see the loop's
+	// unknown memory where the machine side sees the entry memory, and
+	// the two would not agree though nothing wrote it. The markers are
+	// dropped again once the body has stored nothing, but the terms have
+	// captured them by then. The walk fails closed: anything it does not
+	// recognize marks everything, as before.
 	storedSpans := make([]string, 0, len(lo.writableSpans))
 	contracts := map[string]spanContract{}
 	for span := range lo.writableSpans {
+		if !bodyMayStore(loop.Body) {
+			break
+		}
 		arg, reason, isRecord := lo.recordSpanAtRoot(span)
 		if reason != "" {
 			return reason, false
@@ -3196,6 +3214,109 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// bodyMayStore reports whether a loop body could write through a span.
+// It fails closed: an index assignment, a call other than a conversion
+// or `len` — whose callee may store through a span it was passed — or
+// any form it does not enumerate answers yes, so the marker set only
+// shrinks where nothing can write.
+func bodyMayStore(body *ast.BlockStatement) bool {
+	stores := false
+	var expr func(ast.Expression)
+	var block func(*ast.BlockStatement)
+	var stmt func(ast.Statement)
+	expr = func(e ast.Expression) {
+		if stores || e == nil {
+			return
+		}
+		switch v := e.(type) {
+		case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.Boolean:
+		case *ast.PrefixExpression:
+			expr(v.Right)
+		case *ast.InfixExpression:
+			expr(v.Left)
+			expr(v.Right)
+		case *ast.IndexExpression:
+			expr(v.Left)
+			expr(v.Index)
+		case *ast.MatchExpression:
+			expr(v.Scrutinee)
+			for _, arm := range v.Arms {
+				expr(arm.Body)
+			}
+		case *ast.BlockExpression:
+			block(v.Block)
+		case *ast.InvocationExpression:
+			ident, isIdent := v.Function.(*ast.Identifier)
+			if !isIdent {
+				stores = true
+				return
+			}
+			_, _, isConversion := contractBits(&ast.Identifier{Value: ident.Value})
+			if !isConversion && ident.Value != "len" {
+				stores = true
+				return
+			}
+			for _, arg := range v.Arguments {
+				expr(arg)
+			}
+		default:
+			stores = true
+		}
+	}
+	stmt = func(st ast.Statement) {
+		if stores || st == nil {
+			return
+		}
+		switch v := st.(type) {
+		case *ast.AssignmentStatement:
+			expr(v.Value)
+		case *ast.VariableDeclaration:
+			expr(v.Value)
+		case *ast.ExpressionStatement:
+			expr(v.Expression)
+		case *ast.WhileStatement:
+			expr(v.Condition)
+			block(v.Body)
+		default:
+			stores = true
+		}
+	}
+	block = func(b *ast.BlockStatement) {
+		if stores || b == nil {
+			return
+		}
+		for _, st := range b.Statements {
+			stmt(st)
+		}
+	}
+	block(body)
+	return stores
+}
+
+// itemsMayStore reports whether a stretch of machine items could write
+// memory: any store, and any call, whose callee may store through a
+// span it was passed. Anything that is not an instruction or a label
+// answers yes.
+func itemsMayStore(items []Item) bool {
+	for _, item := range items {
+		ins, isIns := item.(Instruction)
+		if !isIns {
+			if _, isLabel := item.(Label); isLabel {
+				continue
+			}
+			return true
+		}
+		if strings.HasPrefix(ins.Mnemonic, "st") || strings.HasPrefix(ins.Mnemonic, "sw") || strings.HasPrefix(ins.Mnemonic, "sd") || strings.HasPrefix(ins.Mnemonic, "sb") || strings.HasPrefix(ins.Mnemonic, "sh") {
+			return true
+		}
+		switch ins.Mnemonic {
+		case "bl", "blr", "jal", "jalr", "call", "brk", "svc", "dc", "ic", "tlbi", "msr":
+			return true
+		}
+	}
+	return false
 }
 
 // leafRefs lists an aggregate's scalar leaves by access path, as leafTerms

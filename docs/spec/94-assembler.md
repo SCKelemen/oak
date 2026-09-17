@@ -7202,6 +7202,29 @@ is proven, and is the better code besides, since the load leaves the
 loop. The workaround is therefore no hardship, but the reason is worth
 recording, because it is not the bound and not the counter.
 
+**Fixed 2026-09-17: a loop marks what it can write.** Both sides now
+decide the marker set before anything reads it, from a walk that fails
+closed — the Oak side over the body's statements, answering yes to an
+index assignment, a call that is not a conversion or `len`, or any form
+it does not enumerate; the machine side over the body's items, answering
+yes to any store, any call, and anything that is not an instruction or a
+label. A body that can write nothing marks nothing, both sides read the
+entry memory for a memory that genuinely does not change, and the loop
+above is proven by coupling. A body that does write is unchanged: the
+marker goes on, and the verdict still names the memory.
+
+The two attempts that did not work are worth keeping. Lowering the Oak
+condition before marking, to match the machine side's order, makes both
+sides read the entry memory even for a memory the body *does* write,
+which is wrong and would hide the case rather than expose it. And
+lifting the guard into a separate path through `loopEvent` — rather
+than leaving the one path and only skipping the marker set's population
+— silently dropped the header's trap domain, because the condition must
+be lowered before the loop event is pushed for a trap in it to belong
+to the header. The minimal edit was the safe one.
+
+What follows is the diagnosis that led there.
+
 The message is doubly misleading, and the first reading of it here was
 wrong. The search does reach the right pairing: printing every pairing
 it tries shows `i↔r4`, the correct one, offered first at depth 0 — and
@@ -7235,8 +7258,11 @@ as much as the Oak side's. Marking only the memories the body writes
 would fix it from the other end and needs a conservative walk of the
 body, which no longer exists in the tree.
 
-Either way it is a completeness question, not a soundness one: the
-verdict falls back to evidence, which is what it is for.
+Both are completeness questions, not soundness ones: the verdict falls
+back to evidence, which is what it is for. Pinned:
+`compiler/e2e_native_loop_bound_field_test.go` — the read-only loop
+bounded by a field proven by coupling, the storing loop still proven in
+the memory it writes, and both backends agreeing on the values.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
