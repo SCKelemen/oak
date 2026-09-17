@@ -7021,8 +7021,17 @@ name it.
 Pinned: `compiler/e2e_native_nested_record_span_test.go` — every field of
 an element read and proven at the bit level, narrow fields among them, a
 store proven in `s.surfaces.x` by name, a write to one field followed by
-a read of another, a constant element index, and a loop storing through
-the field, with both backends agreeing on the values.
+a read of another, a constant element index, a comparison of two
+elements' fields, and a loop storing through the field, with both
+backends agreeing on the values.
+
+Three shapes remain trusted, and are the next a scene proof will meet:
+an element bound to a local by value (`sf: Surface = s[d].surfaces[i]`),
+whose eight-byte load covers two four-byte leaves and matches none; a
+whole-element assignment, whose `stp` the store path refuses as a pair;
+and a loop bounded by the record's own count field, which is witnessed
+rather than proven because no register is an affine image of the Oak
+counter.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
