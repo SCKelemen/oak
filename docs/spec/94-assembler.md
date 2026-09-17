@@ -9895,3 +9895,21 @@ first would be a bug of the same family as this section's, the second a
 gap of the §9.al family. Deciding it needs the reallocated body of one
 case read against its original, which is the next piece of work, and it
 should be done before either class is called out of subset.
+
+One hypothesis is already ruled out, which narrows that work. The obvious
+candidate was that reallocation renames the web holding a parameter and
+leaves the body's `bind` behind, so the entry register is never written.
+It does not: `Web.pin` pins any web with a def whose instruction is nil —
+"holds a value at entry" — and pins a call's arguments, results and
+clobbers besides, so the registers the ABI delivers keep their colours
+(`machine/webs.go`). Whatever loses the written set, it is not the entry
+binding.
+
+The case to start from, read off the dump of `buffer_read_into`: the
+refusal is a `cmp w10, #1` at a label whose only visible predecessor is a
+branch two instructions after `ldr w10, [sp, #104]` writes it. Either
+that label has a second predecessor arriving without the write, in which
+case the checker is right and the renaming has moved a read above its
+def, or the written set is lost at that label for another reason.
+Reading the label's arrivals in the reallocated body against the original
+settles it in one pass.
