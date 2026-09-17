@@ -6270,6 +6270,34 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
+**Post-schedule cleanup (2026-09-17, AArch64 lane).** Scheduling and the final
+scalar-global passes above can expose copies after the ordinary late cleanup
+has run. The separate `post-schedule-cleanup` candidate reruns the same
+block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
+rule: the five rules, whole-function general-register liveness, control-flow
+boundaries, and refusal conditions specified by "Late copy and branch cleanup"
+remain unchanged. The candidate is eligible only after scheduling and
+normalized scalar-global forwarding, so unrelated functions do not acquire a
+second no-op search branch. Its pre-cleanup parent remains selectable.
+
+The rerun is non-neutral and **verdict-gated**. The seam checker checks the
+rewritten machine body, and the unchanged whole-body verifier remains the
+authority for selection; the cleanup equalities do not promote a witnessed
+body. Materialization v26 keys the new lane flag, and
+`OAK_OPT_SKIP=post-schedule-cleanup` retains the final copies.
+
+On the stage-2 pilot, selected `map_page` removes three instructions
+(157→154, static cost 249.5→246.5) and `unmap_page` removes four
+(216→212, 344→340); `check_range` has no site and remains unchanged. The
+current stricter verifier reports the two loop bodies as `witnessed` because
+their existing root trap-domain obligations are not proven, independently of
+this cleanup. The same-compiler disabled control establishes a 28-byte
+Mach-O `__text` reduction (4420→4392), a 32-byte object reduction after
+alignment (5944→5912), and 27 unchanged relocations. All five OS differential
+tests pass. Runtime is not reported from the heavily loaded host; static
+provenance is in
+`benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with

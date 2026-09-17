@@ -1726,6 +1726,11 @@ type Lane struct {
 	// the verifier judge the cleaned body; the compiler keeps the
 	// uncleaned lowering where they refuse it.
 	Cleanup bool
+	// PostScheduleCleanup reruns the same block-local copy and branch cleanup
+	// after scheduling and the final global-address/forwarding passes. It is a
+	// separate candidate so the pre-schedule and uncleaned forms remain
+	// available to the whole-body verifier.
+	PostScheduleCleanup bool
 	// Globals are the program's mutable top-level scalars a body may
 	// address (docs/spec/94-assembler.md §9, the OS pilot's N3), by Oak
 	// name with their storage width; the generator records the ones a body
@@ -2121,6 +2126,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	}
 	if lane.ElideGlobalLoadMasks && lane.ForwardGlobalLoads && lane.Schedule {
 		elidedGlobalLoadMasks[out] = elideGlobalLoadMasks(out)
+	}
+	if lane.PostScheduleCleanup && lane.Schedule {
+		postScheduledCleanup[out] = postScheduleCleanup(out)
 	}
 	return out, nil
 }

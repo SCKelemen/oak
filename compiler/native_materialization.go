@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v25 adds verifier-gated narrow scalar-global mask elision to v24's
+	// v26 adds verifier-gated post-schedule cleanup to v25's
 	// composed late-machine recipe. Preserve every recipe input to avoid
 	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v25")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v26")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -86,6 +86,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},
 		{"cleanup", lane.Cleanup},
+		{"post-schedule-cleanup", lane.PostScheduleCleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
 		{"schedule", lane.Schedule},

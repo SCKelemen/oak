@@ -287,6 +287,33 @@ is intentionally unreported because final-build load averages were 176–214.
 
 [Static observations and provenance](results/stage2-global-load-mask-elision-2026-09-17.json).
 
+## OS stage-2: clean final scheduled copies, 2026-09-17
+
+The verifier-gated `post-schedule-cleanup` candidate reruns the established
+block-local copy/branch cleanup after scheduling and the final scalar-global
+passes. It introduces no new rewrite rule. The same final compiler with
+`OAK_OPT_SKIP=post-schedule-cleanup` produced the control; both artifacts used
+fresh verification.
+
+| Selected body | Instructions | Stalls | Static cost | Cleanup sites | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `check_range` | 44 → 44 | 16 → 16 | 67.0 → 67.0 | 0 | proven |
+| `map_page` | 157 → 154 | 32 → 32 | 249.5 → 246.5 | 3 | witnessed |
+| `unmap_page` | 216 → 212 | 46 → 46 | 344.0 → 340.0 | 5 | witnessed |
+
+The selected bodies lose seven instructions in total. The unmap transform
+reports five locally removed sites, while the selected-body delta is four
+because candidate composition changes relative to its disabled fallback.
+Mach-O `__text` shrinks 4420→4392 bytes, and object alignment makes the full
+object shrink 5944→5912 bytes; all 27 relocations remain. The current stricter
+verifier leaves the two loop bodies witnessed on their existing root
+trap-domain obligations, not because cleanup weakened them. Every other
+selected body is unchanged, and all five OS differential tests pass. Runtime
+is intentionally unreported because the host load average exceeded 50 during
+final validation.
+
+[Static observations and provenance](results/stage2-post-schedule-cleanup-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
