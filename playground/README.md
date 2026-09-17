@@ -54,6 +54,8 @@ Tests:
 
 ```sh
 OAK_REQUIRE_WASM_TESTS=1 go test ./compiler -run '^TestWasm' -count=1
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno go test ./compiler ./wasm/check -run '^TestWasm' -count=1
+go test -race ./internal/wasmtest -count=1
 go test ./playground -count=1
 node --test playground/compiler-session_test.mjs
 deno run --allow-read --allow-write=/tmp --allow-net=127.0.0.1 --allow-run playground/browser_test.ts /path/to/chrome
@@ -69,6 +71,16 @@ timing races; they also run with `deno test --allow-read` in place of Node.
 CI requires engine execution, session unit tests and browser builds; smoke CI is
 still planned. The initial Go compiler module is approximately 39 MiB
 uncompressed on the development build: deployment size is not optimized yet.
+
+`OAK_WASM_TEST_ENGINE=node|deno` explicitly selects the executable on `PATH`.
+It skips only the redundant `--version` discovery probe, not any Wasm test or
+result check. Invalid/missing explicit engines fail even in optional mode;
+semantic test failures never cause fallback to another engine. Without this
+setting, the shared test helper tries Node then Deno with three-second probes,
+retaining bounded process diagnostics on failure. CI explicitly selects its
+installed Node. The scalar and byte-validator execution deadlines remain 20
+and 30 seconds; output-pipe cleanup has a separate one-second bound. This
+selection concerns test infrastructure, not Oak target selection or proof status.
 
 The session increment's nine JavaScript tests and Go diagnostic/isolation tests
 pass. Its expanded Chrome smoke test still needs a post-fix rerun: the first

@@ -24,9 +24,12 @@ jobs:
       - name: Test actual Wasm bytes with an independent engine
         env:
           OAK_REQUIRE_WASM_TESTS: '1'
+          OAK_WASM_TEST_ENGINE: node
         run: go test -race . ./wasm/... ./playground ./compiler ./target ./toolchain ./optir -run 'Test(BuildWasm|Wasm|Compile|LEB|FailClosedCFG|Spellings|ResolveOrder|TargetDescription|Emission|SnapshotCFG|OptIRGraphSnapshot)' -count=1
       - name: Test bounded browser compiler sessions
         run: node --test playground/compiler-session_test.mjs
+      - name: Test fail-closed engine selection
+        run: go test -race ./internal/wasmtest -count=1
       - name: Fuzz bounded byte validation
         run: go test ./wasm/check -run '^$' -fuzz '^FuzzWasmValidate$' -fuzztime=20s -parallel=2
       - name: Build the locally hosted browser compiler

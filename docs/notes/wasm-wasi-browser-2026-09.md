@@ -217,3 +217,20 @@ the Go diagnostic/isolation tests and browser compiler build pass. The first
 expanded Chrome run stalled at startup. The timer-receiver fix is unit-tested,
 but the post-fix Chrome rerun was blocked by local sandbox policy. No successful
 post-fix browser run or measured cold/warm speedup is claimed here.
+
+Independent-engine test infrastructure now shares `internal/wasmtest` across
+scalar execution and decoded-byte conformance. `OAK_WASM_TEST_ENGINE=node|deno`
+selects a known executable explicitly; this avoids version-probe flakiness but
+does not skip execution or replace its result. Automatic discovery retains
+three-second Node/Deno probes and reports bounded startup errors. Required or
+explicitly selected missing engines fail closed; no semantic failure falls back
+to another engine. CI selects Node deliberately. Engine execution is still
+conformance evidence, not source-to-Wasm refinement or browser-host validation.
+
+With Deno explicitly selected (2026-09-17), the actual scalar/loop/Bool execution
+and integer-operation conformance tests pass. The independent byte-validator
+comparison covers 4,683 cases, with all 91 Oak-accepted cases also accepted by
+the engine. Seven engine-selection unit tests cover explicit selection,
+automatic fallback, cancellation/whitelisting, diagnostic retention, required
+versus optional policy, bounded output and invalid command refusal. This closes
+the opaque engine-discovery failure, not the separate Chrome rerun gap above.
