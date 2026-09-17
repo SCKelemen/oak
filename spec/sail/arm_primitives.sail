@@ -1851,3 +1851,47 @@ function cbz32_condition_pure (Rt, rt_value) = {
                              else slice(rt_value, 0, 32);
     operand1 == Zeros(32)
 }
+
+/* BRK / SEE 1747. These are pure decoder fields and the selected components
+ * of AArch64_SoftwareBreakpoint's TakeException arguments. They erase BTI,
+ * PostDecode and exception-entry effects. Supplied current_el, EL2Enabled,
+ * HCR_EL2, MDCR_EL2 and ThisInstrAddr values have no proved state provenance.
+ * The 25-bit syndrome is not a packed ESR, and the complete ExceptionRecord
+ * (including its Exception_SoftwareBreakpoint tag) is not reconstructed. */
+struct BRKDecode = {
+  encoding_valid : bool,
+  immediate : bits(16)
+}
+
+val decode64_brk_pure : bits(32) -> BRKDecode
+
+function decode64_brk_pure (op_code) = {
+    let immediate : bits(16) = slice(op_code, 5, 16);
+    let encoding_valid : bool = (op_code & 0xFFE0001F) == 0xD4200000;
+    struct { encoding_valid = encoding_valid, immediate = immediate }
+}
+
+struct SoftwareBreakpointArguments = {
+  target_el : bits(2),
+  syndrome : bits(25),
+  preferred_exception_return : bits(64),
+  vect_offset : int
+}
+
+val software_breakpoint_arguments_pure :
+    (bits(16), bits(2), bool, bits(64), bits(64), bits(64)) -> SoftwareBreakpointArguments
+
+function software_breakpoint_arguments_pure
+    (immediate, current_el, el2_enabled, hcr_el2, mdcr_el2, this_instr_addr) = {
+    let route_to_el2 = (el2_enabled & (current_el == 0b00 | current_el == 0b01)) &
+                      (slice(hcr_el2, 27, 1) == 0b1 | slice(mdcr_el2, 8, 1) == 0b1);
+    let target_el = if UInt(current_el) > UInt(0b01) then current_el
+                    else if route_to_el2 then 0b10 else 0b01;
+    let syndrome : bits(25) = Zeros(9) @ immediate;
+    struct {
+      target_el = target_el,
+      syndrome = syndrome,
+      preferred_exception_return = this_instr_addr,
+      vect_offset = 0
+    }
+}

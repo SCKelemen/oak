@@ -156,6 +156,18 @@ structure CBZ32Decode where
   offset : (BitVec 64)
   deriving BEq, Inhabited, Repr
 
+structure BRKDecode where
+  encoding_valid : Bool
+  immediate : (BitVec 16)
+  deriving BEq, Inhabited, Repr
+
+structure SoftwareBreakpointArguments where
+  target_el : (BitVec 2)
+  syndrome : (BitVec 25)
+  preferred_exception_return : (BitVec 64)
+  vect_offset : Int
+  deriving BEq, Inhabited, Repr
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 
