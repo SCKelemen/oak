@@ -1147,6 +1147,17 @@ translation, fault-free access, architectural or external memory effect, CAT
 event or edge, visibility, completion, or page-table publication. Ordinary
 `STP` is neither a store-release operation nor a barrier. In particular, live
 PTE break/make publication remains on the existing scalar `STR` path.
+Production native candidate search may instead block an exact checked `u64(0)`
+fill four ways while keeping four ordered scalar `STR` instructions and the
+original less-than-four-word tail. The matcher requires a checked `u32`
+unit-stride induction, a pure affine unit-stride address, and a `u64` zero
+store. A direct span uses the emitted `len >= 4; i <= len - 4` slack guard to
+derive one 32-byte region; the assembler checker independently validates the
+four scalar offsets. A span over a record array field retains an individual
+field-bound guard on every store. Folded bounds are checked `u32` compiler
+constants, are keyed into rewrite-cache identity, and are ignored when a
+parameter or local shadows the global. The semantic verifier judges the
+blocked body, and candidate search ships it only after a proved verdict.
 `Oak.BlockedFill.blocked_fill_eq` discharges one source-level algebraic
 prerequisite: in the total word-memory model, `k` four-word blocks expressed as
 two `storePair` operations each, followed by the `n % 4` scalar tail, have the
@@ -1178,8 +1189,8 @@ and a four-cell loop bound keep all four words in the field and below the
 32-bit index modulus. Its `quad_writes_eq_fillWords_four` composes that bound
 with the staged pair-write final-state law. The declaration lookup itself is
 not formalized, and neither predicate grants instruction admission or custody.
-A future lowering still needs trap preservation, verifier support,
-scalar-tail lowering, and explicit
+A future **pair-store** lowering still needs trap preservation, verifier
+support, and explicit
 ordinary private-memory authority proving the storage has not yet been
 published—never a live descriptor-update protocol.
 

@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v15 adds independently keyed loop-local result-array homes to v14's
-	// private-array homes, frame-pair initializer, and W-word promotion recipe.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v15")
+	// v16 adds the carried-loop-index and redundant-guard machine recipes to
+	// v15's independently keyed result-array and private-array homes.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v16")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -53,6 +53,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-reductions", lane.VectorReductions},
 		{"vector-maps", lane.VectorMaps},
 		{"unroll-vector-maps", lane.UnrollVectorMaps},
+		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
 		{"use-optir", lane.UseOptIR},
@@ -62,6 +63,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"elide-proven", lane.ElideProven},
 		{"reuse-flags", lane.ReuseFlags},
 		{"rotate-loops", lane.RotateLoops},
+		{"carry-loop-indices", lane.CarryLoopIndices},
+		{"elide-redundant-guards", lane.ElideRedundantGuards},
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"loop-array-homes", lane.LoopArrayHomes},

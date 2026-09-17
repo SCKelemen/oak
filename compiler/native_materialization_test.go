@@ -86,6 +86,10 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedLoopArrayHomes.LoopArrayHomes = true
 	changedLoopResultHomes := lane(false)
 	changedLoopResultHomes.LoopResultHomes = true
+	changedCarryLoopIndices := lane(false)
+	changedCarryLoopIndices.CarryLoopIndices = true
+	changedRedundantGuards := lane(false)
+	changedRedundantGuards.ElideRedundantGuards = true
 	changedDriver := driver(false)
 	changedDeclarations := driver(false)
 	changedDeclarations.declarations += "Other: type = OtherValue\n"
@@ -134,6 +138,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"vector-address-sharing", driver(false), opt.Identity(changedAddressSharing)},
 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
+		{"carry-loop-indices", driver(false), opt.Identity(changedCarryLoopIndices)},
+		{"elide-redundant-guards", driver(false), opt.Identity(changedRedundantGuards)},
 		{"declarations", changedDeclarations, opt.Identity(lane(false))},
 		{"checker", changedChecker, opt.Identity(lane(false))},
 		{"source", changedSource, opt.Identity(lane(false))},

@@ -618,14 +618,16 @@ address and zero at that address plus eight. This does not enable codegen or
 verifier support. The tuple proves neither request occurrence nor ordering,
 atomicity/non-tearing, translation or effects, CAT events, visibility,
 completion, or PTE publication; ordinary `STP` is not a release or a barrier.
-Live descriptors stay on scalar stores. `Oak.BlockedFill.blocked_fill_eq` now
-proves the algebraic source law: two abstract pair stores per four-word block
-plus the less-than-four scalar tail have the same final total word memory as
-the original scalar fill. That result does not prove bounds, trap or partial-
-write preservation, alias/observer exclusion, or machine effects. A future
-blocked-fill lowering therefore remains conditional on full bounds/provenance
-and verifier support, scalar-tail lowering, and private/unpublished ordinary-
-memory authority.
+Live descriptors stay on scalar stores. `Oak.BlockedFill.blocked_fill_eq`
+proves the algebraic source law, and production candidate search now uses its
+four-word grouping without using `STP`: four ordered scalar zero stores per
+main trip plus the original less-than-four-word tail. Direct spans share an
+emitted four-word slack guard that the assembler checker re-derives; record
+array fields keep per-store bounds guards. The semantic verifier judges the
+rewritten body before selection. The theorem still does not authorize pair
+stores: a future `STP` lowering remains conditional on private/unpublished
+ordinary-memory custody and the other bounds, trap, effect, and observer
+obligations above.
 
 The checker's existing slack-region decision now has the matching narrow
 writable-pair theorem: `span_element_then_pair64_store` turns an admitted
