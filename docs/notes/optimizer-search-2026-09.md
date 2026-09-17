@@ -291,10 +291,13 @@ now unread. Its source remains read by the still-present copy, and the
 transferred uses reach the source's existing definitions. DCE therefore uses
 the original webs with that destination excluded. All other definitions keep
 their original read/unread status. A self-copy can have distinct webs for the
-same physical register; that case retains the fresh-analysis path. Each next
-round rebuilds webs and liveness, preserving the propagation order and
-1,024-round limit. Regression cases compare complete assembly and cleanup
-counts with the full-rebuild algorithm across branches, loops, register reuse,
+same physical register. Propagation skips it: respelling its uses changes
+nothing, so reporting progress would consume all 1,024 rounds and starve later
+copies. The instruction remains for width-aware cleanup, since a narrow
+self-copy can clear upper bits. Each next round rebuilds webs and liveness;
+the 1,024-round limit remains a bound on actual changes. Regressions compare
+complete assembly and cleanup counts with the full-rebuild algorithm across
+branches, loops, register reuse,
 calls, width restrictions, tied operands, restores and RV64 copies.
 
 Second increment: machine-level loop-invariant code motion on the loop

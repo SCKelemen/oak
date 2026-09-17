@@ -68,3 +68,19 @@ func BenchmarkSimplifyCopies(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkSimplifySelfCopy(b *testing.B) {
+	body := selfCopyJoinBody()
+	want := text(body.Items)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f, err := Lift(cloneFunction(body))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := f.Simplify(); err != nil || text(f.Items()) != want {
+			b.Fatalf("self-copy changed assembly: %v\n%s", err, text(f.Items()))
+		}
+	}
+}

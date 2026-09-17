@@ -29,18 +29,8 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 		}
 		f.Liveness(webs)
 		copyDst := f.propagateCopy(webs)
-		copied := copyDst != nil
-		if copied {
+		if copyDst != nil {
 			propagated++
-			copy := copyDst.Defs[0].Instr
-			if copy.Defs[0].Reg == copy.Uses[0].Reg {
-				// A self-copy can have distinct source and destination webs.
-				// Respelled reads still reach its definition in that case.
-				if webs, werr = f.Webs(); werr != nil {
-					return propagated, eliminated, werr
-				}
-				copyDst = nil
-			}
 		}
 		// Only the copy's destination became unread. The source is still
 		// read by the copy, and every transferred read reaches its existing
@@ -48,7 +38,7 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 		// ranges, widths and pinning are rebuilt at the next round.
 		e := f.eliminateDead(webs, copyDst)
 		eliminated += e
-		if !copied && e == 0 {
+		if copyDst == nil && e == 0 {
 			return propagated, eliminated, nil
 		}
 	}
@@ -60,10 +50,10 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 // the destination is defined only by the copy, every
 // read can be respelled (none is a contract's implicit read), and the copy
 // is as wide as what flows through it. It returns the destination web, or nil
-// if nothing propagated. When the physical source and destination differ,
-// the destination is now unread: DCE may use the original webs excluding it.
-// A self-copy needs fresh webs even for DCE. The copy itself is left for
-// elimination; further propagation always needs fresh webs.
+// if nothing propagated. The physical source and destination always differ,
+// so the destination is now unread: DCE may use the original webs excluding
+// it. The copy itself is left for elimination; further propagation always
+// needs fresh webs.
 func (f *Function) propagateCopy(webs []*Web) *Web {
 	siteWeb := map[site]*Web{}
 	for _, w := range webs {
@@ -78,6 +68,13 @@ func (f *Function) propagateCopy(webs []*Web) *Web {
 	}
 	for _, ins := range f.Instrs {
 		if !ins.Copy || len(ins.Defs) != 1 || len(ins.Uses) < 1 {
+			continue
+		}
+		if ins.Defs[0].Reg == ins.Uses[0].Reg {
+			// Distinct webs can name the same physical register. Respellings
+			// would change nothing and could consume every fixpoint round,
+			// starving later copies. Keep the instruction: a narrow self-copy
+			// can still clear upper bits, so only width-aware removal is safe.
 			continue
 		}
 		dst, src := siteWeb[site{ins, ins.Defs[0], true}], siteWeb[site{ins, ins.Uses[0], false}]
