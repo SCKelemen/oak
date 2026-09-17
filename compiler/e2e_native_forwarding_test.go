@@ -131,3 +131,30 @@ func TestNativeShapesForwarding(t *testing.T) {
 		t.Errorf("the `filled == 64` test must compare the register the increment was stored from:\n%s", fmt.Sprint(body))
 	}
 }
+
+// With the element guard elided under the conditional that proves it
+// (`a.filled < u32(64) ? { a.block[a.filled] = … }`), the store at a
+// data-dependent index has no trap guard before it; the branch of the
+// conditional records the same bound (noteBranchBound), so the frame
+// array stays a memory the loop carries and the hoisted, bottom-tested
+// form of feed is proven rather than falling back to the plain form
+// (docs/spec/94-assembler.md §9 "Check elision", the bound a conditional
+// gives).
+func TestNativeShapesForwardingElidedFormProven(t *testing.T) {
+	var infos []string
+	comp := New().WithSource("forward.oak", nativeForwardingProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
+	if _, err := comp.Check().Get(); err != nil {
+		t.Fatalf("check: %v\n%s", err, strings.Join(infos, "\n"))
+	}
+	joined := strings.Join(infos, "\n")
+	if strings.Contains(joined, "feed keeps its element guards") || strings.Contains(joined, "feed keeps its loop invariants in place") {
+		t.Errorf("the elided, hoisted form of feed must be proven and taken:\n%s", joined)
+	}
+	if !strings.Contains(joined, "feed: 2 element guard(s) elided") || !strings.Contains(joined, "asm unit feed: proven equal") {
+		t.Errorf("feed must elide its guards and stay proven; diagnostics:\n%s", joined)
+	}
+}
