@@ -29,7 +29,13 @@ RUST_KERNELS = ["crc32c", "sha256", "dot", "sum", "search", "page_probe", "bitma
 
 
 def capture(args, cwd=None):
-    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+    """A tool's version line for the report, or a note when the tool is
+    missing or cannot start (the twin's compiler is a reference, not a
+    requirement)."""
+    try:
+        return subprocess.check_output(args, cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as err:
+        return f"unavailable ({err})"
 
 
 def cpu_model():
@@ -95,13 +101,21 @@ def main():
         subprocess.run(["go", "run", "./benchmarks/native/emit", str(HERE / "oak"), str(native / "kernels")], cwd=ROOT, check=True, stderr=subprocess.DEVNULL)
         subprocess.run([args.cc, "-std=c99", *flags, "-DOAK_IMPL=\"oak-native\"", "-I" + str(native), "-o", str(build / "oak-native-runner"), str(HERE / "runner.c"), str(native / "kernels.o"), "-lm"], check=True)
         subprocess.run(["go", "build", "-o", str(build / "go-runner"), "."], cwd=HERE / "go", check=True)
-        subprocess.run(["rustc", "-O", "-o", str(build / "rust-runner"), str(HERE / "rust" / "main.rs")], check=True)
+        # The Rust twin is a reference, not a requirement: a toolchain that
+        # cannot build it (a rustc linked against a newer LLVM than the one
+        # installed aborts at startup) drops its rows with a notice.
+        rust_runner = build / "rust-runner"
+        try:
+            subprocess.run(["rustc", "-O", "-o", str(rust_runner), str(HERE / "rust" / "main.rs")], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as err:
+            print(f"rust twin skipped: {err}", file=sys.stderr)
+            rust_runner = None
         for kernel in args.kernels:
             runs = [[str(build / "oak-runner"), kernel], [str(build / "oak-native-runner"), kernel]]
             for impl in GO_IMPLS.get(kernel, []):
                 runs.append([str(build / "go-runner"), impl, kernel])
-            if kernel in RUST_KERNELS:
-                runs.append([str(build / "rust-runner"), kernel])
+            if kernel in RUST_KERNELS and rust_runner is not None:
+                runs.append([str(rust_runner), kernel])
             try:
                 results.extend(sample_kernel(runs, args.size, args.rounds, args.samples))
             except ValueError as err:

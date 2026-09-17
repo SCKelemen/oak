@@ -1,6 +1,9 @@
 package optir
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Project lowers structured OptIR to a canonical CFG/SSA view. It validates
 // the structured input first and independently verifies the result before
@@ -66,6 +69,17 @@ func project(function Function, metadata StructuredRegionMemoryMetadata, validat
 				return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: structured memory metadata names an operation outside the function")
 			}
 		}
+		// Nested regions are visited depth first, while newBlock allocates outer
+		// joins/else blocks before their nested arms. Return metadata in CFG site
+		// order, just like the independent authority-bound projection. Only the
+		// record list moves: operation identities, effects and execution do not.
+		sort.Slice(p.memory.Operations, func(i, j int) bool {
+			a, b := p.memory.Operations[i].Site, p.memory.Operations[j].Site
+			if a.Block != b.Block {
+				return a.Block < b.Block
+			}
+			return a.Index < b.Index
+		})
 		if _, err := AnalyzeRegionMemorySSA(p.cfg, p.memory); err != nil {
 			return CFG{}, RegionMemoryMetadata{}, fmt.Errorf("optir: projected region memory is invalid: %w", err)
 		}

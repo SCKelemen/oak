@@ -640,6 +640,51 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## The lane-wise accumulators on the tiled reduction, 2026-09-17 (night)
+
+`tiled` with the head tree against the same tree withholding the lane
+vectorization (`OAK_OPT_SKIP=vectorize-lanes`), three alternated runs of
+three rounds of five samples, 1 MiB, on a host at load average 80–117
+(the ratios within a run hold; the absolute times do not). Checksums
+agree.
+
+| Kernel | oak-native, lanes | oak-native, scalar | native / C, lanes | native / C, scalar |
+| --- | ---: | ---: | ---: | ---: |
+| tiled | 153 / 150 / 212 µs | 238 / 227 / 315 µs | 0.76 / 0.74 / 0.79 (median 0.76×) | 1.20 / 1.05 / 1.20 (median 1.20×) |
+
+The eight accumulators as two `F32x4`: the loop is two vector loads, two
+lane-wise multiplies and adds, and its test, where the scalar loop was
+thirty-four instructions with seven address computations. clang
+half-vectorizes the same loop with shuffles and lands between the two.
+
+## The ten kernels at the end of the day, 2026-09-17 (evening)
+
+The ten kernels through both backends at `fa7212f8` on the M4 Max at
+load average 12–16, two alternated rounds of five samples, 1 MiB per
+kernel; every row's checksums agree. The Rust twin's rows are absent: the
+host's rustc is linked against a newer LLVM than the one installed and
+aborts at startup, which the harness now reports and skips.
+
+| Kernel | C backend | oak-native | native / C |
+| --- | ---: | ---: | ---: |
+| dispatch | 6,909 µs | 5,549 µs | 0.80× |
+| sum | 82.5 µs | 82.5 µs | 1.00× |
+| bitmap | 133.5 µs | 133.5 µs | 1.00× |
+| sha256 | 438.5 µs | 444.5 µs | 1.01× |
+| crc32c | 101.5 µs | 109.5 µs | 1.08× |
+| dot | 579 µs | 626 µs | 1.08× |
+| tiled | 125.5 µs | 135.0 µs | 1.08× |
+| blake3 | 1,893 µs | 2,075 µs | 1.10× |
+| page_probe | 6,166 µs | 6,767 µs | 1.10× |
+| search | 5,685 µs | 6,780 µs | 1.19× |
+
+Against the morning table: `blake3` from 3.35× (the state words in
+registers, the record copies gone), `sha256` from 1.11× (the same dead
+frame stores and copy propagation, and the day's constant folding
+upstream), `dot` from 1.31× (the fold vectorization), `search` and
+`page_probe` from 1.31× and 1.36× (the pair and exit fusions). Every
+kernel is within a fifth of the C backend and one is ahead of it.
+
 ## blake3 through the day, 2026-09-17
 
 Single harness runs of `blake3` (two rounds of five samples, 1 MiB) at

@@ -460,14 +460,10 @@ pub blake3_init: (): Blake3State {
 
 blake3_start_flag: (state: Blake3State): u32 = state.blocks_compressed == u32(0) ? { BLAKE3_CHUNK_START } | { u32(0) }
 
-// Compress one full buffered block of the current chunk.
-blake3_absorb_block: (state: Blake3State): Blake3State {
-  next: Blake3State = state
-  out: [16]u32 = blake3_compress(next.cv, blake3_words(next.block), next.chunk_counter, u32(64), blake3_start_flag(next))
-  next.cv = blake3_first8(out)
-  next.blocks_compressed = next.blocks_compressed + u32(1)
-  next.block_len = u32(0)
-  next
+// Compress a full buffered block without passing the untouched tree stack.
+blake3_absorb_cv: (cv: [8]u32, block: [64]u8, counter: u64, flags: u32): [8]u32 {
+  out: [16]u32 = blake3_compress(cv, blake3_words(block), counter, u32(64), flags)
+  blake3_first8(out)
 }
 
 // Finish the current chunk into its chaining value (no root flag).
@@ -524,7 +520,11 @@ pub blake3_update: (state: Blake3State, src: []u8): Blake3State {
     next.block_len == u32(64) && next.blocks_compressed == u32(15) ? {
       next = blake3_push_chunk(next, blake3_chunk_cv(next))
     } | {
-      next.block_len == u32(64) ? { next = blake3_absorb_block(next) }
+      next.block_len == u32(64) ? {
+        next.cv = blake3_absorb_cv(next.cv, next.block, next.chunk_counter, blake3_start_flag(next))
+        next.blocks_compressed = next.blocks_compressed + u32(1)
+        next.block_len = u32(0)
+      }
     }
     next.block[next.block_len] = src[i]
     next.block_len = next.block_len + u32(1)

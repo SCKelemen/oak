@@ -1,0 +1,449 @@
+{
+  "schema": "oak-blake3-loop-bounds-v1",
+  "date": "2026-09-17",
+  "base_commit": "e58ef7201ebeec03a06255cb21ebe1c14e2167e8",
+  "companion_change": "2b069edca94bc9eeaad016eebdd7d9dc1e4ffd08",
+  "change": "Retain unsigned branch bounds on the valid side; replay linear loop tests for the indexed frame-store inventory and iteration, with stale-register and width checks.",
+  "production_files": [
+    "asm/loops.go",
+    "asm/verify.go",
+    "asm/loop_index_bounds.go"
+  ],
+  "scope": "Native update only, with compression and the remaining BLAKE3 functions compiled as C. A witness-checked update is not a proof of the complete function.",
+  "observations": {
+    "before": {
+      "selection": "analysis  search             74 candidate(s) considered, 74 lowered, 3 verified; selected identity (witnessed, cost 1312595.0; identity 1312595.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 305 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+      "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+      "instructions": 547,
+      "guards": 4,
+      "c_sha256": "4597131e2d52bb5201d9670c59807187d77c58d87f683547835d0f2152fd74bd",
+      "object_sha256": "4470716c163a2b0b117cddeed1206fb8834e4cdfc206f64afc91aa4269bb4840",
+      "library_sha256": "86a8a5f6e358afa9c9a758616540fd91f9aaa0a66a7d8ce7269234e16fb6123c"
+    },
+    "after": {
+      "selection": "analysis  search             74 candidate(s) considered, 74 lowered, 3 verified; selected elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+trim-callee-saves+late-cleanup (witnessed, cost 906060.0; identity 1312595.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 307 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+      "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+      "instructions": 523,
+      "guards": 1,
+      "c_sha256": "4597131e2d52bb5201d9670c59807187d77c58d87f683547835d0f2152fd74bd",
+      "object_sha256": "f5e89c3d3ec976a426d7674f8f530e3e54bbf0d94e1e6b3dc346dbd858fd95d2",
+      "library_sha256": "8a5b22321fe93d0fe64f1e104ba0038b931cbfe6624511b9b76d123fbd1f207a"
+    }
+  },
+  "reproduce": [
+    "Build the before emitter at base_commit. For after, apply the conditional companion change and the production-file changes in this commit onto that base. The baseline-frame-tests overlay uses the companion commit loop summarizer to isolate the added header replay.",
+    "go build -o EMITTER ./benchmarks/native/emit",
+    "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_NATIVE_DUMP=1 OAK_OPT_REPORT=1 EMITTER benchmarks/kernels/oak PREFIX > PREFIX.stdout 2> PREFIX.log",
+    "Generate the C BLAKE3 control with OAK_NATIVE_ONLY=__no_native_functions__. Link its object too: the package has explicit CRC/SHA assembly, unrelated to the timed BLAKE3 path.",
+    "cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main PREFIX.c PREFIX.o -o PREFIX.dylib -lm",
+    "cc -std=c99 -O3 -Wall -Wextra benchmarks/native/blake3_same_process.c -o SAME_PROCESS",
+    "Run SAME_PROCESS with absolute before, after and control library paths, then reverse before/after. Keep builds/tests from this experiment outside the timing interval.",
+    "The integrated comparison uses integration_base before and the same source with both bounds commits after. No hashing-source or native-lowering changes differ within either pair."
+  ],
+  "baseline_frame_regressions": "=== RUN   TestVerifyLoopConditionFrameStore\n=== RUN   TestVerifyLoopConditionFrameStore/words/top\n    loop_index_bounds_test.go:48: bounded loop store: witness-checked: asm unit fill: agrees with its Oak body on 361 concrete inputs (evidence, not proof: no register is an affine image of the loop variable tail[0..7] of loop 1 at its header)\n=== RUN   TestVerifyLoopConditionFrameStore/words/rotated\n    loop_index_bounds_test.go:48: bounded loop store: witness-checked: asm unit fill: agrees with its Oak body on 361 concrete inputs (evidence, not proof: no register is an affine image of the loop variable tail[0..7] of loop 1 at its header)\n=== RUN   TestVerifyLoopConditionFrameStore/bytes/top\n    loop_index_bounds_test.go:48: bounded loop store: witness-checked: asm unit fill: agrees with its Oak body on 361 concrete inputs (evidence, not proof: no register is an affine image of the loop variable tail[0..7] of loop 1 at its header)\n=== RUN   TestVerifyLoopConditionFrameStore/bytes/rotated\n    loop_index_bounds_test.go:48: bounded loop store: witness-checked: asm unit fill: agrees with its Oak body on 361 concrete inputs (evidence, not proof: no register is an affine image of the loop variable tail[0..7] of loop 1 at its header)\n--- FAIL: TestVerifyLoopConditionFrameStore (0.13s)\n    --- FAIL: TestVerifyLoopConditionFrameStore/words/top (0.03s)\n    --- FAIL: TestVerifyLoopConditionFrameStore/words/rotated (0.02s)\n    --- FAIL: TestVerifyLoopConditionFrameStore/bytes/top (0.03s)\n    --- FAIL: TestVerifyLoopConditionFrameStore/bytes/rotated (0.04s)\nFAIL\nFAIL\tgithub.com/SCKelemen/oak/asm\t0.949s\nFAIL\n",
+  "validation": {
+    "full_assembler": "ok  \tgithub.com/SCKelemen/oak/asm\t165.440s\n",
+    "branch_and_loop_regressions": "=== RUN   TestBranchIndexBound\n=== RUN   TestBranchIndexBound/below_fallthrough\n=== RUN   TestBranchIndexBound/below_taken\n=== RUN   TestBranchIndexBound/carry_alias\n=== RUN   TestBranchIndexBound/carry_set_alias\n=== RUN   TestBranchIndexBound/inclusive_fallthrough\n=== RUN   TestBranchIndexBound/inclusive_taken\n=== RUN   TestBranchIndexBound/opposite_hs\n=== RUN   TestBranchIndexBound/opposite_lo\n=== RUN   TestBranchIndexBound/opposite_hi\n=== RUN   TestBranchIndexBound/opposite_ls\n=== RUN   TestBranchIndexBound/signed\n=== RUN   TestBranchIndexBound/empty_side\n=== RUN   TestBranchIndexBound/wide\n=== RUN   TestBranchIndexBound/upper_half_unknown\n=== RUN   TestBranchIndexBound/stale_index\n=== RUN   TestBranchIndexBound/unchanged_value\n=== RUN   TestBranchIndexBound/new_flags\n=== RUN   TestBranchIndexBound/conditional_compare\n=== RUN   TestBranchIndexBound/tightest_bound\n--- PASS: TestBranchIndexBound (0.00s)\n    --- PASS: TestBranchIndexBound/below_fallthrough (0.00s)\n    --- PASS: TestBranchIndexBound/below_taken (0.00s)\n    --- PASS: TestBranchIndexBound/carry_alias (0.00s)\n    --- PASS: TestBranchIndexBound/carry_set_alias (0.00s)\n    --- PASS: TestBranchIndexBound/inclusive_fallthrough (0.00s)\n    --- PASS: TestBranchIndexBound/inclusive_taken (0.00s)\n    --- PASS: TestBranchIndexBound/opposite_hs (0.00s)\n    --- PASS: TestBranchIndexBound/opposite_lo (0.00s)\n    --- PASS: TestBranchIndexBound/opposite_hi (0.00s)\n    --- PASS: TestBranchIndexBound/opposite_ls (0.00s)\n    --- PASS: TestBranchIndexBound/signed (0.00s)\n    --- PASS: TestBranchIndexBound/empty_side (0.00s)\n    --- PASS: TestBranchIndexBound/wide (0.00s)\n    --- PASS: TestBranchIndexBound/upper_half_unknown (0.00s)\n    --- PASS: TestBranchIndexBound/stale_index (0.00s)\n    --- PASS: TestBranchIndexBound/unchanged_value (0.00s)\n    --- PASS: TestBranchIndexBound/new_flags (0.00s)\n    --- PASS: TestBranchIndexBound/conditional_compare (0.00s)\n    --- PASS: TestBranchIndexBound/tightest_bound (0.00s)\n=== RUN   TestBranchIndexBoundOverflow\n--- PASS: TestBranchIndexBoundOverflow (0.00s)\n=== RUN   TestRV64BranchIndexBound\n--- PASS: TestRV64BranchIndexBound (0.00s)\n=== RUN   TestVerifyLoopConditionFrameStore\n=== RUN   TestVerifyLoopConditionFrameStore/words/rotated\n=== RUN   TestVerifyLoopConditionFrameStore/words/top\n=== RUN   TestVerifyLoopConditionFrameStore/bytes/top\n=== RUN   TestVerifyLoopConditionFrameStore/bytes/rotated\n--- PASS: TestVerifyLoopConditionFrameStore (0.19s)\n    --- PASS: TestVerifyLoopConditionFrameStore/words/rotated (0.06s)\n    --- PASS: TestVerifyLoopConditionFrameStore/words/top (0.05s)\n    --- PASS: TestVerifyLoopConditionFrameStore/bytes/top (0.04s)\n    --- PASS: TestVerifyLoopConditionFrameStore/bytes/rotated (0.04s)\n=== RUN   TestLoopBodyBoundsStayPrivate\n=== RUN   TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done\n=== RUN   TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done_mov_w10,_#0\n=== RUN   TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done_b.lo_internal\n--- PASS: TestLoopBodyBoundsStayPrivate (0.00s)\n    --- PASS: TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done (0.00s)\n    --- PASS: TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done_mov_w10,_#0 (0.00s)\n    --- PASS: TestLoopBodyBoundsStayPrivate/cmp_w9,_#16_b.hs_done_b.lo_internal (0.00s)\nPASS\nok  \tgithub.com/SCKelemen/oak/asm\t0.994s\n",
+    "proof_cache": "Disabled; normal verifier budget.",
+    "integrated_loop_frame_call_checks": "ok  \tgithub.com/SCKelemen/oak/asm\t1.183s\n",
+    "integrated_native_checks": "=== RUN   TestE2ENativeBlake3PackageAgreesWithReference\n--- PASS: TestE2ENativeBlake3PackageAgreesWithReference (217.29s)\n=== RUN   TestNativeShapesForwardingBases\n--- PASS: TestNativeShapesForwardingBases (0.07s)\n=== RUN   TestNativeShapesForwarding\n--- PASS: TestNativeShapesForwarding (0.15s)\n=== RUN   TestNativeShapesForwardingElidedFormProven\n--- PASS: TestNativeShapesForwardingElidedFormProven (0.19s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t219.014s\n",
+    "native_checks_before_rebase": "=== RUN   TestE2ENativeBlake3PackageAgreesWithReference\n--- PASS: TestE2ENativeBlake3PackageAgreesWithReference (317.80s)\n=== RUN   TestE2ENativeBlake3CompressionBoundaries\n--- PASS: TestE2ENativeBlake3CompressionBoundaries (53.96s)\n=== RUN   TestNativeShapesForwardingBases\n--- PASS: TestNativeShapesForwardingBases (0.07s)\n=== RUN   TestNativeShapesForwarding\n--- PASS: TestNativeShapesForwarding (0.20s)\n=== RUN   TestNativeShapesForwardingElidedFormProven\n--- PASS: TestNativeShapesForwardingElidedFormProven (0.24s)\n=== RUN   TestE2ENativeGuardedWrites\n--- PASS: TestE2ENativeGuardedWrites (5.22s)\n=== RUN   TestE2ENativeRV64UnderQEMU\n--- PASS: TestE2ENativeRV64UnderQEMU (9.09s)\n=== RUN   TestE2ENativeSpans\n--- PASS: TestE2ENativeSpans (2.63s)\n=== RUN   TestE2ENativeWideResult\n--- PASS: TestE2ENativeWideResult (1.09s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t391.603s\n",
+    "final_loop_frame_call_checks": "ok  \tgithub.com/SCKelemen/oak/asm\t1.044s\n",
+    "call_bound_regressions": "=== RUN   TestCallClearsRegisterBounds\n=== RUN   TestCallClearsRegisterBounds/arm64/discard\n=== RUN   TestCallClearsRegisterBounds/arm64/scalar\n=== RUN   TestCallClearsRegisterBounds/arm64/pair\n=== RUN   TestCallClearsRegisterBounds/arm64/vector\n=== RUN   TestCallClearsRegisterBounds/rv64/discard\n=== RUN   TestCallClearsRegisterBounds/rv64/scalar\n=== RUN   TestCallClearsRegisterBounds/rv64/pair\n=== RUN   TestCallClearsRegisterBounds/rv64/vector\n--- PASS: TestCallClearsRegisterBounds (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/arm64/discard (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/arm64/scalar (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/arm64/pair (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/arm64/vector (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/rv64/discard (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/rv64/scalar (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/rv64/pair (0.00s)\n    --- PASS: TestCallClearsRegisterBounds/rv64/vector (0.00s)\nPASS\nok  \tgithub.com/SCKelemen/oak/asm\t1.149s\n",
+    "second_rebase_assembler": "ok  \tgithub.com/SCKelemen/oak/asm\t105.758s\n",
+    "second_rebase_native_forwarding_and_records": "=== RUN   TestNativeShapesForwardingBases\n--- PASS: TestNativeShapesForwardingBases (0.14s)\n=== RUN   TestNativeShapesForwarding\n--- PASS: TestNativeShapesForwarding (0.14s)\n=== RUN   TestNativeShapesForwardingElidedFormProven\n--- PASS: TestNativeShapesForwardingElidedFormProven (0.15s)\n=== RUN   TestE2ENativeNestedRecordSpan\n--- PASS: TestE2ENativeNestedRecordSpan (6.86s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t8.605s\n",
+    "conditional_rebase_scope": "Intermediate rebase onto 2689708f: the companion change landed as 9db8ba8b and the duplicate was dropped. At that point the tested assembler/nativegen/hash production files were unchanged. Later changes and their validation are recorded separately.",
+    "native_call_checks_after_invalidation": "=== RUN   TestNativeShapesForwardingBases\n--- PASS: TestNativeShapesForwardingBases (0.06s)\n=== RUN   TestNativeShapesForwarding\n--- PASS: TestNativeShapesForwarding (0.16s)\n=== RUN   TestNativeShapesForwardingElidedFormProven\n--- PASS: TestNativeShapesForwardingElidedFormProven (0.16s)\n=== RUN   TestE2ENativeRV64UnderQEMU\n--- PASS: TestE2ENativeRV64UnderQEMU (8.66s)\n=== RUN   TestE2ENativeWideResult\n--- PASS: TestE2ENativeWideResult (1.66s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t11.935s\n",
+    "publication_full_assembler": "ok  \tgithub.com/SCKelemen/oak/asm\t114.658s\n",
+    "publication_scope": "Integrated record-span writes, BDD zero-slot tables and later documentation onto 65477201. Final call-bound invalidation includes all return paths. Full assembler suite passes; fresh uncached native selection and its C/object bytes match the prior validated and timed candidate. No repeat timings were needed for identical artifacts.",
+    "final_native_forwarding_and_vector_checks": "=== RUN   TestNativeShapesForwardingBases\n--- PASS: TestNativeShapesForwardingBases (0.05s)\n=== RUN   TestNativeShapesForwarding\n--- PASS: TestNativeShapesForwarding (0.14s)\n=== RUN   TestNativeShapesForwardingElidedFormProven\n--- PASS: TestNativeShapesForwardingElidedFormProven (0.20s)\n=== RUN   TestE2ENativeVectorLanes\n--- PASS: TestE2ENativeVectorLanes (2.88s)\nPASS\nok  \tgithub.com/SCKelemen/oak/compiler\t4.741s\n",
+    "final_integration_scope": "Rebased onto 0b59c95f (vector-lane accumulators). The full-tested assembler sources and hash source are byte-for-byte unchanged. Forwarding/vector native checks pass; fresh uncached update selection has the same verdict and identical C/object bytes as the reference-tested and timed candidate."
+  },
+  "remaining_limits": [
+    "Both absorption implementations still cannot couple next.cv[0] through nested call events.",
+    "Loop test replay is limited to linear comparison-only headers and the existing ARM frame-store probe; calls, inner loops, setup and internal header branches keep conservative handling.",
+    "The selected update is witness-checked, not proven. Runtime validation and instruction counts do not strengthen that verdict."
+  ],
+  "integration_base": "2bc9a867dae4dbd83d353492e4ab0a042ee76529",
+  "integrated_observations": {
+    "before": {
+      "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 3 verified; selected identity (witnessed, cost 1313107.0; identity 1313107.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 305 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+      "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+      "instructions": 548,
+      "guards": 4,
+      "c_sha256": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+      "o_sha256": "7e3ee898510f390539c1c213d9d7dade1e9ef4ab1737d5e27844c318f75b1725",
+      "dylib_sha256": "77e1bc80d3f2d927a7ebccffff4aba4c11a432a989555a9368cde3ff796f42f5"
+    },
+    "after": {
+      "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 3 verified; selected elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup (witnessed, cost 906834.0; identity 1313107.0)",
+      "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 307 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+      "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+      "instructions": 528,
+      "guards": 1,
+      "c_sha256": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+      "o_sha256": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+      "dylib_sha256": "8c1a52809162d2cd03d041f84b1dd30da65fc4930276e5b70a50171a0625562e"
+    }
+  },
+  "runtime": {
+    "decision": "No reliable runtime gain established. Paired medians range from 1.261 (slower) to 0.898 (faster), while the shared host load changes substantially. Retain this as proof coverage and selection recovery, not a demonstrated performance improvement.",
+    "scope": "Integrated comparison at 2bc9a867; only blake3_update is native. C compression and the remaining BLAKE3 bodies are identical within each pair.",
+    "protocol": "Existing same-process harness unchanged; one thread, rotating interleaved variants, reversed library order in B, 1 MiB, 21 samples. A/B use 30 rounds, C uses 100. No builds/tests from this experiment overlapped timing. CPU affinity and host load uncontrolled.",
+    "validation": "Every digest byte matched the C control at 14 boundary lengths (0 through 1 MiB) and after every timed sample. Reference-digest checks are recorded separately in validation.",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101), arm64-apple-darwin25.3.0",
+    "harness_sha256": "6b5ad95417d3498dd6bcc8f9440ce5bfc3457180dbd444a5d0c49d0ef981a692",
+    "control_sha256": {
+      "c": "7ecbb6d1ba3bd66419fc79d9b669b5559bd5114ad5a222dda0cea20ee62a7056",
+      "o": "41355c0462fb80fda71228a1d00b17394ff20383ef7d51e6ad70cc02209ebeea",
+      "dylib": "098d58580fc3f34817b5e51c0b4aed35c0dd3d5c90225a985d0468394d8323b3"
+    },
+    "load_readings": {
+      "load-after-A.txt": "21:53  up 5 days, 15:58, 21 users, load averages: 104.08 108.79 108.28",
+      "load-after-B.txt": "21:54  21 users, load averages: 105.13 108.43 108.16",
+      "load-after-C.txt": "21:55  21 users, load averages: 65.59 96.52 103.73",
+      "load-before-A.txt": "21:53  up 5 days, 15:58, 21 users, load averages: 106.31 109.44 108.48",
+      "load-before-C.txt": "21:55  up 5 days, 16 hrs, 21 users, load averages: 87.82 103.28 106.28"
+    },
+    "runs": [
+      {
+        "name": "A",
+        "library_order": [
+          "baseline",
+          "candidate",
+          "c-control"
+        ],
+        "before_median_ns_byte": 2.794202136993408,
+        "after_median_ns_byte": 3.71459321975708,
+        "control_median_ns_byte": 2.4804432868957518,
+        "ratio_of_medians": 1.3293931640013785,
+        "median_paired_ratio": 1.2609008689764813,
+        "raw": {
+          "schema": "oak-same-process-blake3-v1",
+          "size": 1048576,
+          "rounds": 30,
+          "samples": 21,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+          "results": [
+            {
+              "impl": "before",
+              "samples": [
+                2929933.3,
+                2826666.7,
+                2452833.3,
+                2751166.7,
+                3855266.7,
+                2361433.3,
+                3209233.3,
+                2554033.3,
+                5468666.7,
+                1955933.3,
+                3600766.7,
+                3723833.3,
+                5725333.3,
+                2080733.3,
+                3442000.0,
+                2344766.7,
+                2525966.7,
+                3014366.7,
+                3129466.7,
+                7550500.0,
+                2596466.7
+              ]
+            },
+            {
+              "impl": "after",
+              "samples": [
+                4895600.0,
+                3895033.3,
+                3441100.0,
+                2543800.0,
+                7443966.7,
+                2977533.3,
+                6060766.7,
+                2035033.3,
+                6112733.3,
+                1792233.3,
+                3350566.7,
+                3526433.3,
+                2364333.3,
+                4140466.7,
+                4216166.7,
+                2412133.3,
+                3611866.7,
+                5938933.3,
+                5157200.0,
+                4402533.3,
+                7236766.7
+              ]
+            },
+            {
+              "impl": "c-control",
+              "samples": [
+                1753200.0,
+                2413200.0,
+                1737866.7,
+                4116533.3,
+                3210533.3,
+                1710800.0,
+                1598466.7,
+                3231133.3,
+                2600933.3,
+                3704966.7,
+                2036133.3,
+                3941033.3,
+                1570700.0,
+                3802133.3,
+                2446566.7,
+                1571133.3,
+                10098333.3,
+                3860233.3,
+                4042366.7,
+                1943566.7,
+                4300733.3
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "B",
+        "library_order": [
+          "candidate",
+          "baseline",
+          "c-control"
+        ],
+        "before_median_ns_byte": 2.8038978576660156,
+        "after_median_ns_byte": 2.7398109436035156,
+        "control_median_ns_byte": 2.082856464385986,
+        "ratio_of_medians": 0.9771436345702527,
+        "median_paired_ratio": 0.9867284131314495,
+        "raw": {
+          "schema": "oak-same-process-blake3-v1",
+          "size": 1048576,
+          "rounds": 30,
+          "samples": 21,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+          "results": [
+            {
+              "impl": "before",
+              "samples": [
+                2626000.0,
+                1873766.7,
+                2028033.3,
+                2223033.3,
+                2305466.7,
+                2948166.7,
+                3066833.3,
+                2501600.0,
+                5227266.7,
+                2856266.7,
+                3811533.3,
+                1902800.0,
+                4946566.7,
+                2023233.3,
+                4264033.3,
+                2872900.0,
+                4087566.7,
+                5690900.0,
+                3330033.3,
+                1791466.7,
+                3002733.3
+              ]
+            },
+            {
+              "impl": "after",
+              "samples": [
+                2337800.0,
+                4543633.3,
+                3955766.7,
+                2252933.3,
+                5806633.3,
+                2494933.3,
+                2940100.0,
+                4739433.3,
+                6384633.3,
+                3689066.7,
+                2833333.3,
+                3427200.0,
+                2224133.3,
+                2660266.7,
+                2585400.0,
+                3641900.0,
+                3211766.7,
+                4866766.7,
+                2808900.0,
+                2678866.7,
+                2350033.3
+              ]
+            },
+            {
+              "impl": "c-control",
+              "samples": [
+                2192566.7,
+                2313500.0,
+                5332566.7,
+                1657066.7,
+                1567800.0,
+                1800000.0,
+                1859466.7,
+                1768666.7,
+                2240300.0,
+                2785600.0,
+                1885433.3,
+                2335633.3,
+                1599300.0,
+                1932600.0,
+                3655666.7,
+                3642933.3,
+                7305733.3,
+                3265433.3,
+                1588533.3,
+                2184033.3,
+                1597900.0
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "C",
+        "library_order": [
+          "baseline",
+          "candidate",
+          "c-control"
+        ],
+        "before_median_ns_byte": 2.27508544921875,
+        "after_median_ns_byte": 1.9625186920166016,
+        "control_median_ns_byte": 1.6341114044189453,
+        "ratio_of_medians": 0.8626131790744467,
+        "median_paired_ratio": 0.8980663111523302,
+        "raw": {
+          "schema": "oak-same-process-blake3-v1",
+          "size": 1048576,
+          "rounds": 100,
+          "samples": 21,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+          "results": [
+            {
+              "impl": "before",
+              "samples": [
+                1997640.0,
+                2684610.0,
+                2505460.0,
+                3400830.0,
+                2581100.0,
+                2133660.0,
+                2128510.0,
+                2156500.0,
+                3673300.0,
+                2705650.0,
+                2267890.0,
+                2385600.0,
+                2223560.0,
+                2192850.0,
+                2465110.0,
+                2378440.0,
+                2677350.0,
+                2071660.0,
+                2894180.0,
+                2544540.0,
+                2311630.0
+              ]
+            },
+            {
+              "impl": "after",
+              "samples": [
+                1867840.0,
+                3697640.0,
+                1987790.0,
+                2356350.0,
+                2432340.0,
+                1685470.0,
+                2083380.0,
+                1936680.0,
+                2523120.0,
+                1876080.0,
+                2057850.0,
+                2153740.0,
+                1899340.0,
+                1970670.0,
+                2322590.0,
+                1726490.0,
+                2089290.0,
+                1909580.0,
+                2123300.0,
+                1924810.0,
+                2134140.0
+              ]
+            },
+            {
+              "impl": "c-control",
+              "samples": [
+                1888700.0,
+                1696900.0,
+                1713490.0,
+                3826090.0,
+                1642810.0,
+                1605610.0,
+                1748880.0,
+                1556370.0,
+                1772070.0,
+                3246420.0,
+                1800760.0,
+                1876050.0,
+                1704370.0,
+                1527140.0,
+                3129230.0,
+                1510790.0,
+                1521860.0,
+                1566760.0,
+                1869980.0,
+                2980690.0,
+                1691830.0
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "host_cpu": "Apple M4 Max"
+  },
+  "final_base": "0b59c95fa3b4d2f6b42889ac02908f34fc5416fc",
+  "baseline_call_bound_regressions": "=== RUN   TestCallClearsRegisterBounds\n=== RUN   TestCallClearsRegisterBounds/arm64/discard\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[0:16 1:16 9:16 17:16 19:16 30:16]\n=== RUN   TestCallClearsRegisterBounds/arm64/scalar\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[0:16 1:16 9:16 17:16 19:16 30:16]\n=== RUN   TestCallClearsRegisterBounds/arm64/pair\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[0:16 1:16 9:16 17:16 19:16 30:16]\n=== RUN   TestCallClearsRegisterBounds/arm64/vector\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[0:16 1:16 9:16 17:16 19:16 30:16]\n=== RUN   TestCallClearsRegisterBounds/rv64/discard\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[1:16 5:16 8:16 10:16 11:16 17:16 28:16]\n=== RUN   TestCallClearsRegisterBounds/rv64/scalar\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[1:16 5:16 8:16 10:16 11:16 17:16 28:16]\n=== RUN   TestCallClearsRegisterBounds/rv64/pair\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[1:16 5:16 8:16 10:16 11:16 17:16 28:16]\n=== RUN   TestCallClearsRegisterBounds/rv64/vector\n    call_bounds_test.go:66: only the preserved register may retain a bound: map[1:16 5:16 8:16 10:16 11:16 17:16 28:16]\n--- FAIL: TestCallClearsRegisterBounds (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/arm64/discard (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/arm64/scalar (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/arm64/pair (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/arm64/vector (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/rv64/discard (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/rv64/scalar (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/rv64/pair (0.00s)\n    --- FAIL: TestCallClearsRegisterBounds/rv64/vector (0.00s)\nFAIL\nFAIL\tgithub.com/SCKelemen/oak/asm\t1.061s\nFAIL\n",
+  "call_bound_correction": "Call summaries clear bounds on discarded caller-saved registers and use bound-invalidating writes for scalar and aggregate results. Eight ARM64/RV64 regressions cover discard, scalar, pair and vector-returning paths; preserved-register and immutable-term facts remain valid.",
+  "conditional_parent_observation": {
+    "base": "2689708fbeb3644b53a518164a1bb115c563775b",
+    "scope": "Includes the now-upstream conditional companion change, without this commit.",
+    "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 3 verified; selected identity (witnessed, cost 1313107.0; identity 1313107.0)",
+    "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 305 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+    "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+    "c_sha256": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "o_sha256": "7e3ee898510f390539c1c213d9d7dade1e9ef4ab1737d5e27844c318f75b1725",
+    "matches_timed_baseline": true
+  },
+  "publication_observation": {
+    "base": "0b59c95fa3b4d2f6b42889ac02908f34fc5416fc",
+    "selection": "analysis  search             75 candidate(s) considered, 75 lowered, 3 verified; selected elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup (witnessed, cost 906834.0; identity 1313107.0)",
+    "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 307 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+    "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+    "c_sha256": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "o_sha256": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "matches_tested_and_timed_candidate": true
+  },
+  "pre_vector_integration_observation": {
+    "base": "654772017b16f0ece14c7f4e20d762a020e6c98f",
+    "selection": "analysis  search             73 candidate(s) considered, 73 lowered, 3 verified; selected elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup (witnessed, cost 906834.0; identity 1313107.0)",
+    "verdict": "native backend: asm unit hash__blake3_uupdate: agrees with its Oak body on 307 concrete inputs (evidence, not proof: one iteration of loop 3 was not proven to preserve next.cv[0] = next.cv[0] + (state.cv[0] sub loop1.next.cv[0]) (a valuation refutes it, as every other pairing of next.cv[0]))",
+    "cache": "native backend: 0 of 3 verdicts from the verdict cache",
+    "c_sha256": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "o_sha256": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "matches_tested_and_timed_candidate": true
+  }
+}

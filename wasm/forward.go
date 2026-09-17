@@ -1,0 +1,90 @@
+package wasm
+
+import (
+	"fmt"
+
+	"github.com/SCKelemen/oak/optir"
+)
+
+// Forward scopes reserve one control frame for the function and one for an
+// operation's signed-division if or a terminator's conditional. The independent
+// scalar byte validator caps the total at 128; deeper CFGs retain dispatch.
+const maxForwardBlocks = 127
+
+// forwardBody maps a topological CFG schedule to nested forward labels:
+//
+//	block label C
+//	  block label B
+//	    A
+//	  end
+//	  B
+//	end
+//	C
+//
+// Each source block is emitted exactly once. A branch exits scopes to reach its
+// target, never executes skipped blocks, and never needs a program counter.
+// The caller obtains order from optir.AcyclicOrder after CFG/type validation.
+func (f *function) forwardBody(b *binary, order []optir.BlockID, functions map[string]*function) error {
+	positions := make(map[optir.BlockID]int, len(order))
+	for i, id := range order {
+		positions[id] = i
+	}
+	for i := len(order) - 1; i > 0; i-- {
+		b.op(0x02, 0x40) // empty block: values cross edges through SSA locals
+	}
+	for i, id := range order {
+		if i > 0 {
+			b.op(0x0b) // target label: the preceding scope has ended
+		}
+		block, ok := f.lookupBlock(id)
+		if !ok {
+			return fmt.Errorf("forward schedule names missing block %d", id)
+		}
+		if err := f.operations(b, block, functions); err != nil {
+			return err
+		}
+		edge := func(e optir.Edge, conditional bool) error {
+			target, ok := positions[e.Target]
+			if !ok || target <= i {
+				return fmt.Errorf("non-forward edge %d -> %d", id, e.Target)
+			}
+			f.edgeValues(b, e)
+			if target == i+1 && !conditional {
+				return nil // unconditional fallthrough to the next label
+			}
+			depth := target - i - 1
+			if conditional {
+				depth++ // also exit the selected if/else arm
+			}
+			b.op(0x0c)
+			b.u(uint64(depth))
+			return nil
+		}
+		switch t := block.Terminator; t.Kind {
+		case optir.TerminatorReturn:
+			f.returnValue(b, t)
+			if i != len(order)-1 {
+				b.op(0x0f) // early return must skip remaining blocks
+			}
+		case optir.TerminatorBranch:
+			if err := edge(t.True, false); err != nil {
+				return err
+			}
+		case optir.TerminatorCondBranch:
+			f.get(b, t.Condition)
+			b.op(0x04, 0x40)
+			if err := edge(t.True, true); err != nil {
+				return err
+			}
+			b.op(0x05)
+			if err := edge(t.False, true); err != nil {
+				return err
+			}
+			b.op(0x0b)
+		default:
+			return fmt.Errorf("unsupported forward terminator %s", t.Kind)
+		}
+	}
+	b.op(0x0b) // final returning block leaves the function result on the stack
+	return nil
+}

@@ -1,0 +1,97 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T19:10:59Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "6582f62922a44ff61063785dcdcd83a67df7f549",
+  "candidate": "baseline plus the trim-callee-saves-parented, verifier-gated AArch64 elide-empty-frame transform and native materialization-v28 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=elide-empty-frame",
+  "os_revision": "9a18df020896a55c4caf085414009c7a8f4066b3",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "6996538e9bfd39c897d8999f8bd58148b2fa76845b056054efd2b67144ee6cdb",
+  "object_sha256": {
+    "baseline": "1fe4008ec7a7b32297efdff328169b2fb87fa6c9ac727f3a17490cb2b2190fc3",
+    "candidate": "81df154d6ba9ea14b2f556821932b6131d61eaf8bc9c2d0ceddb1abd2e4018f1"
+  },
+  "object_bytes": {
+    "baseline": 5688,
+    "candidate": 5640,
+    "delta": -48
+  },
+  "text_bytes": {
+    "baseline": 4168,
+    "candidate": 4120,
+    "delta": -48
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "oak": [
+      "build",
+      "-native",
+      "-verify-fresh",
+      "-opt-report"
+    ],
+    "baseline_opt_skip": "elide-empty-frame",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0
+  },
+  "changed_selected_bodies": {
+    "get_root_pa": { "instructions_before": 20, "instructions_after": 18, "frame_before": 80, "frame_after": 0, "verdict": "proven" },
+    "get_free_count": { "instructions_before": 12, "instructions_after": 10, "frame_before": 80, "frame_after": 0, "verdict": "proven" },
+    "get_in_use": { "instructions_before": 15, "instructions_after": 13, "frame_before": 80, "frame_after": 0, "verdict": "proven" },
+    "get_high_water": { "instructions_before": 12, "instructions_after": 10, "frame_before": 80, "frame_after": 0, "verdict": "proven" },
+    "get_mapped_pages": { "instructions_before": 12, "instructions_after": 10, "frame_before": 80, "frame_after": 0, "verdict": "proven" },
+    "get_entry_count": { "instructions_before": 15, "instructions_after": 13, "frame_before": 80, "frame_after": 0, "verdict": "proven" }
+  },
+  "unchanged_hot_bodies": {
+    "walk_leaf": { "instructions": 132, "verdict": "proven" },
+    "map_page": { "instructions": 149, "verdict": "witnessed" },
+    "unmap_page": { "instructions": 202, "verdict": "witnessed" },
+    "translate": { "instructions": 88, "verdict": "proven" }
+  },
+  "summary": {
+    "selected_instructions_removed": 12,
+    "text_bytes_removed": 48,
+    "object_bytes_removed": 48,
+    "interpretation": "Each selected call-free getter loses only its equal entry/return stack adjustments; its declared frame becomes zero and every other instruction remains fixed."
+  },
+  "freestanding_elf_cross_check": {
+    "baseline_object_sha256": "2a46cdb13ec584aac94e5977b7b9dc5ca3c444942000c1eff2bbb8f961f501f6",
+    "candidate_object_sha256": "36334005ccef92420742e9e883770fc960ff98351637f559f4406848d63c9a94",
+    "object_bytes_before": 8512,
+    "object_bytes_after": 8472,
+    "text_bytes_before": 4168,
+    "text_bytes_after": 4120,
+    "text_relocations_before": 27,
+    "text_relocations_after": 27,
+    "verdict_cache_hits": "0 of 27 in both builds",
+    "note": "The debug-bearing ELF object shrinks by 40 bytes because its debug string/line sections change by four bytes; executable text still shrinks by the exact 48-byte instruction delta."
+  },
+  "differential_tests": {
+    "baseline_passed": 5,
+    "candidate_passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load averages ranged from 30 to 73 during final validation"
+  }
+}

@@ -1117,6 +1117,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 		}
 	}
+	if reason, ok := x.addCallResultSlots(shape, state, writtenSlots); !ok {
+		return nil, reason, false
+	}
 	ev := &loopEvent{index: eventIndex, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: state.pathCondition(), at: shape.header}
 	if n := len(x.loopStack); n > 0 {
 		ev.parent = x.loopStack[n-1]
@@ -1195,6 +1198,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.fresh[name] = fresh
 	}
 	for _, reg := range regs {
+		// Entry-path facts constrain the entry value, not the fresh value
+		// of an arbitrary iteration. The loop's own tests re-establish
+		// any bound its body may use.
+		delete(freshState.bounds, reg)
 		name := fmt.Sprintf("r%d", reg)
 		width := 64
 		if allW[reg] {
@@ -1237,8 +1244,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// the slots' symbols exist, and every slot it changes or creates joins
 	// the loop-carried slots at its width (a body with inner loops or
 	// calls is not probed: the probe would summarize them a second time).
-	if x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape) {
+	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape)
+	if probeFrameStores {
 		probe := freshState.clone()
+		x.noteLoopBodyBounds(shape, probe)
 		if ends, _, ok := x.runBody(shape, probe, nil); ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
@@ -1373,6 +1382,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	bodyStart := freshState.clone()
 	for reg, value := range headerValues {
 		bodyStart.regs[reg] = value
+	}
+	if probeFrameStores {
+		x.noteLoopBodyBounds(shape, bodyStart)
 	}
 	ends, reason, ok := x.runBody(shape, bodyStart, &ev.bodyTrap)
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]
@@ -2704,6 +2716,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 				takenState.assume(taken, fork, true)
 				bindZeroTest(instr, takenState, true)
 				bindZeroTest(instr, st, false)
+				noteBranchBound(instr, takenState, st)
 				st.assume(notTaken, fork, false)
 				if join, hasJoin := x.bodyJoins()[pc]; hasJoin && target > pc && join > pc && join < shape.bodyEnd && (cur.group == nil || join <= cur.group.join) {
 					// Both sides run to the join and park there.
@@ -2940,6 +2953,13 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// leaf: each lane or element is its own variable (`error[3]`).
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
+	// The field paths the body assigns inside each aggregate (`next.h`,
+	// `next.block` for `next.block[i] = …`): only the leaves under one are
+	// carried; a field the loop never writes (`next.filled`, read in the
+	// condition) keeps its header value and needs no machine image
+	// (docs/spec/94-assembler.md §9 "Loop invariants", the carried leaves).
+	assignedPaths := map[string][]string{}
+	assignedFieldPaths(loop.Body, assignedPaths)
 	// A call in the body to a function that assigns package cells: the
 	// cells are the caller's locals, so the loop carries them as it
 	// carries a cell the body assigns itself (the machine side lists them
@@ -2962,13 +2982,19 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	}
 	sort.Strings(carried)
 	aggregates := map[string]bool{}
+	// uncarried: the leaves of a carried aggregate the body never assigns,
+	// with the term each held at the header; they must hold it still after
+	// the body (checked below), else the event fails closed.
+	uncarried := map[string]*term{}
 	for _, name := range carried {
 		if view, isView := lo.views[name]; isView {
-			// A store through a view: its owner is the carried aggregate.
+			// A store through a view: its owner is the carried aggregate,
+			// whole (the view reaches any of its leaves).
 			if aggregates[view.owner] {
 				continue
 			}
 			name = view.owner
+			assignedPaths[name] = []string{name}
 		}
 		local, isLocal := lo.locals[name]
 		if !isLocal {
@@ -2990,6 +3016,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			}
 			sort.Strings(paths)
 			for _, path := range paths {
+				if !underAssignedPath(path, assignedPaths[name]) {
+					uncarried[path] = leaves[path].scalar // a leaf the loop never writes keeps its header value
+					continue
+				}
 				leaf := leaves[path]
 				ev.vars = append(ev.vars, path)
 				ev.width[path] = leaf.typ.width
@@ -3156,6 +3186,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		leafRefs(lo.locals[name].agg, name, leaves)
 		for path, leaf := range leaves {
 			if _, carried := ev.fresh[path]; !carried {
+				if header, known := uncarried[path]; known && header == leaf.scalar {
+					continue // never assigned: the header value stands, as on the machine side
+				}
 				return fmt.Sprintf("the aggregate %s changed shape across the loop", name), false
 			}
 			ev.next[path] = leaf.scalar
@@ -3238,6 +3271,83 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 			}
 		}
 	}
+}
+
+// assignedFieldPaths collects, for each local a loop body assigns into, the
+// access paths of the assignments: the local itself for `r = …`, `r.f` for
+// `r.f = …` and for `r.f[i] = …` (the element index is dynamic: the whole
+// field), `r.f.g` through nested fields — the same scopes assignedLocals
+// walks (nested loops, the arms of statement conditionals).
+func assignedFieldPaths(body *ast.BlockStatement, into map[string][]string) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.Statements {
+		switch s := stmt.(type) {
+		case *ast.AssignmentStatement:
+			into[s.Name.Value] = append(into[s.Name.Value], s.Name.Value)
+		case *ast.IndexAssignmentStatement:
+			if root, path := indexFieldPath(s.Target); root != "" {
+				into[root] = append(into[root], path)
+			}
+		case *ast.WhileStatement:
+			assignedFieldPaths(s.Body, into)
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						assignedFieldPaths(block.Block, into)
+					}
+				}
+			}
+		}
+	}
+}
+
+// indexFieldPath is the root local of an assignment target and the static
+// field path from it: `r.f.g` for `r.f.g = …`, `r.f` for `r.f[i] = …` and
+// for `r.f[i].x = …` (past an element index the path is the array field).
+func indexFieldPath(e ast.Expression) (root string, path string) {
+	var chain []*ast.IndexExpression
+	for e != nil {
+		switch n := e.(type) {
+		case *ast.Identifier:
+			root = n.Value
+			e = nil
+		case *ast.IndexExpression:
+			chain = append(chain, n)
+			e = n.Left
+		default:
+			return "", ""
+		}
+	}
+	if root == "" {
+		return "", ""
+	}
+	path = root
+	for k := len(chain) - 1; k >= 0; k-- {
+		field, isField := chain[k].Index.(*ast.Identifier)
+		if !chain[k].Dot || !isField {
+			break // an element index: the whole array field from here
+		}
+		path += "." + field.Value
+	}
+	return root, path
+}
+
+// underAssignedPath reports a leaf path (`next.h[3]`, `next.filled`) that
+// one of the assigned paths covers: equal to it, or extending it by a field
+// or an element.
+func underAssignedPath(leaf string, assigned []string) bool {
+	for _, path := range assigned {
+		if leaf == path {
+			return true
+		}
+		if strings.HasPrefix(leaf, path) && (leaf[len(path)] == '.' || leaf[len(path)] == '[') {
+			return true
+		}
+	}
+	return false
 }
 
 // indexRootIdent is the local an index chain `a[i].f[j]` starts from.
@@ -4717,7 +4827,16 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if trace {
 			fmt.Fprintf(os.Stderr, "verify %s: finite result theorem not applicable (oak width %d, asm width %d)\n  oak: %s\n  asm: %s\n", fn.Name, a.width, b.width, spineOf(a, 6), spineOf(b, 6))
 		}
-		return implies(premise, a, b)
+		if equal, decided := implies(premise, a, b); decided {
+			return equal, true
+		}
+		// Undecided at the bit level: one term once pruned under the
+		// case's facts and respelled (the call summary's conditional
+		// result against the Oak side's status chain).
+		if sameUnderFacts(premise, a, b) {
+			return true, true
+		}
+		return false, false
 	}
 	for k := range asmTerms {
 		// Every word of the result (one for a scalar) is checked under
@@ -4998,6 +5117,15 @@ func refineReachFactorUnder(prefix, factor *term) *term {
 	return canonical(pruneUnderFacts(prefix, []*term{factor})[0])
 }
 
+// sameUnderFacts reports two terms that are one term once each is pruned
+// under the premise's facts and respelled to its linear normal forms
+// (asm/span_cases.go canonicalLinear, to a fixpoint).
+func sameUnderFacts(premise, a, b *term) bool {
+	pruned := pruneUnderFacts(premise, []*term{a, b})
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	return equalTerms(respell(canonicalMemo(pruned[0], cmemo, cbool)), respell(canonicalMemo(pruned[1], cmemo, cbool)))
+}
+
 // coupledWrites checks that one iteration of loop k stores alike on both
 // sides: through the same spans, the same number of times, each store's
 // index and value proven equal under the coupling and the body premise
@@ -5033,10 +5161,21 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 					return fmt.Sprintf("store %d of loop %d through %s: an inner loop's memory on one side only", i+1, k+1, span), false
 				}
 			} else {
-				if equal, decided := implies(premise, truncate(o.index, 32), substitute(truncate(a.index, 32), sigma)); !decided || !equal {
-					return fmt.Sprintf("store %d of loop %d through %s: the indices were not proven equal", i+1, k+1, span), false
+				oakIndex, asmIndex := truncate(o.index, 32), substitute(truncate(a.index, 32), sigma)
+				if equal, decided := implies(premise, oakIndex, asmIndex); !decided || !equal {
+					// Not decided at the bit level: the two indices pruned
+					// under the premise's facts and respelled (the span
+					// case split's canonicalLinear) may be one term — the
+					// machine's index through a call summary's result,
+					// `((free_count ne 0) ? free_stack[…] : 0) or (hi shl
+					// 16)) and 65535`, against the Oak side's `free_stack[…]
+					// and 65535` where the premise holds the branch.
+					if !sameUnderFacts(premise, oakIndex, asmIndex) {
+						return fmt.Sprintf("store %d of loop %d through %s: the indices were not proven equal", i+1, k+1, span), false
+					}
 				}
-				if equal, decided := implies(premise, truncate(o.value, elemWidth), substitute(truncate(a.value, elemWidth), sigma)); !decided || !equal {
+				oakValue, asmValue := truncate(o.value, elemWidth), substitute(truncate(a.value, elemWidth), sigma)
+				if equal, decided := implies(premise, oakValue, asmValue); (!decided || !equal) && !sameUnderFacts(premise, oakValue, asmValue) {
 					return fmt.Sprintf("store %d of loop %d through %s: the values were not proven equal", i+1, k+1, span), false
 				}
 			}
@@ -5047,7 +5186,8 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 			if ag == nil {
 				ag = always
 			}
-			if equal, decided := implies(premise, truncate(og, 1), substitute(truncate(ag, 1), sigma)); !decided || !equal {
+			oakGuard, asmGuard := truncate(og, 1), substitute(truncate(ag, 1), sigma)
+			if equal, decided := implies(premise, oakGuard, asmGuard); (!decided || !equal) && !sameUnderFacts(premise, oakGuard, asmGuard) {
 				return fmt.Sprintf("store %d of loop %d through %s: the conditions were not proven equal", i+1, k+1, span), false
 			}
 		}
@@ -6083,6 +6223,53 @@ func maskedZeroTestRelation(a, b *term) int {
 	return -1
 }
 
+// zeroTestOf reports a fact `(Y eq 0)` (1) or `(Y ne 0)` (-1) whose Y,
+// read at one bit, is the value asked about; 0 otherwise.
+func zeroTestOf(fact, value *term, cmemo map[*term]*term, cbool map[*term]bool) int {
+	if fact.kind != termCmp || (fact.op != "eq" && fact.op != "ne") || fact.right.kind != termConst || fact.right.value != 0 {
+		return 0
+	}
+	if !equalTerms(canonicalMemo(truncate(fact.left, 1), cmemo, cbool), value) {
+		return 0
+	}
+	if fact.op == "eq" {
+		return 1
+	}
+	return -1
+}
+
+// conditionOfConstantCompare reads `(c ? A : B) eq K` and `(c ? A : B) ne
+// K`, A, B, K constants with exactly one arm equal to K, as the condition
+// c (holds) or its negation (!holds): the shape a status code takes on
+// both sides (`(un ? 4 : 0) eq 0` on the Oak side, the machine's
+// `((cond) ? 1 : 0) eq 0` for a materialized Bool).
+func conditionOfConstantCompare(t *term) (cond *term, holds bool, ok bool) {
+	if t == nil || t.kind != termCmp || (t.op != "eq" && t.op != "ne") {
+		return nil, false, false
+	}
+	ite, k := t.left, t.right
+	if ite.kind != termIte {
+		ite, k = t.right, t.left
+	}
+	if ite.kind != termIte || k.kind != termConst || ite.left.kind != termConst || ite.right.kind != termConst {
+		return nil, false, false
+	}
+	m := mask(ite.width)
+	a, b, key := ite.left.value&m, ite.right.value&m, k.value&m
+	switch {
+	case a == key && b != key:
+		holds = true
+	case b == key && a != key:
+		holds = false
+	default:
+		return nil, false, false
+	}
+	if t.op == "ne" {
+		holds = !holds
+	}
+	return ite.cond, holds, true
+}
+
 // pruneUnderFacts rewrites terms using only direct Boolean facts in a
 // premise. It is deliberately independent of the bit-level solver: a large
 // post-case premise can exceed the pruning diagram's budget even though one
@@ -6103,7 +6290,18 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 			return
 		}
 		if t.kind != termConst {
-			facts = append(facts, canonicalMemo(truncate(t, 1), cmemo, cbool))
+			fact := canonicalMemo(truncate(t, 1), cmemo, cbool)
+			facts = append(facts, fact)
+			// A comparison of a two-constant conditional is a fact about
+			// its condition: the machine's `((c ? 1 : 0) eq 0)` is `not c`,
+			// the Oak side's `((c ? 4 : 0) ne 0)` is `c`.
+			if cond, holds, ok := conditionOfConstantCompare(fact); ok {
+				if holds {
+					facts = append(facts, canonicalMemo(truncate(cond, 1), cmemo, cbool))
+				} else {
+					facts = append(facts, canonicalMemo(notTerm(truncate(cond, 1)), cmemo, cbool))
+				}
+			}
 		}
 	}
 	collectFacts(premise)
@@ -6133,6 +6331,12 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 					result = knownTruth{value: true, known: true}
 				case complementary(normalized, fact):
 					result = knownTruth{value: false, known: true}
+				case zeroTestOf(fact, normalized, cmemo, cbool) == 1:
+					// `(Y eq 0)` decides the one-bit value Y itself, which
+					// the Oak side reads as a Boolean (`(d and 1) xor 1`).
+					result = knownTruth{value: false, known: true}
+				case zeroTestOf(fact, normalized, cmemo, cbool) == -1:
+					result = knownTruth{value: true, known: true}
 				case maskedZeroTestRelation(normalized, fact) == 1:
 					result = knownTruth{value: true, known: true}
 				case maskedZeroTestRelation(normalized, fact) == -1:
@@ -6140,6 +6344,15 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 				}
 				if result.known {
 					break
+				}
+			}
+		}
+		if !result.known {
+			// `((c ? 4 : 0) eq 0)` is decided by c, whatever the facts say
+			// about the comparison's own spelling.
+			if cond, holds, ok := conditionOfConstantCompare(normalized); ok {
+				if value, known := truthUnderFacts(cond); known {
+					result = knownTruth{value: value == holds, known: true}
 				}
 			}
 		}

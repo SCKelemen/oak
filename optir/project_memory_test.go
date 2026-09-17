@@ -6,6 +6,56 @@ import (
 	"testing"
 )
 
+func TestProjectWithCheckedMemoryNestedSites(t *testing.T) {
+	var records []CheckedMemoryAccessRecord
+	var stores []*Operation
+	for i := 0; i < 3; i++ {
+		record := checkedMemoryRecord(t, Source{Context: "nested.oak", Line: i + 1, Column: 1}, "global:state", MemoryWrite, "u32", true)
+		records = append(records, record)
+		stores = append(stores, &Operation{Code: OpStoreRegion, Operands: []ValueID{3}, Effects: []Effect{EffectWriteMemory}, Source: record.Source, MemoryAccessID: record.ID})
+	}
+	read := checkedMemoryRecord(t, Source{Context: "nested.oak", Line: 4, Column: 1}, "global:state", MemoryRead, "u32", false)
+	records = append(records, read)
+	load := &Operation{Code: OpLoadRegion, Results: []Value{value(6, "u32", "loaded")}, Effects: []Effect{EffectReadMemory}, Source: read.Source, MemoryAccessID: read.ID}
+	arm := func(store *Operation) Region { return Region{Nodes: []Node{{Operation: store}}, Yield: []ValueID{3}} }
+	inner := &If{Condition: 2, Results: []Value{value(4, "u32", "inner")}, Then: arm(stores[0]), Else: arm(stores[1])}
+	outer := &If{Condition: 1, Results: []Value{value(5, "u32", "outer")},
+		Then: Region{Nodes: []Node{{If: inner}}, Yield: []ValueID{4}}, Else: arm(stores[2])}
+	function := Function{Name: "nested", Parameters: []Value{value(1, TypeBool, "p"), value(2, TypeBool, "q"), value(3, "u32", "v")}, Results: []Type{"u32"},
+		Body: Region{Nodes: []Node{{If: outer}, {Operation: load}}, Yield: []ValueID{6}}}
+	authority, err := NewCheckedMemoryAuthority(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, projection, err := ProjectWithCheckedMemory(function, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckedMemoryProjection(cfg, authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	// DFS visits the inner stores (blocks 4,5), outer else (2), then tail (3).
+	// Metadata must use CFG site order without moving any actual operation.
+	want := []struct {
+		block  BlockID
+		record CheckedMemoryAccessRecord
+	}{{2, records[2]}, {3, read}, {4, records[0]}, {5, records[1]}}
+	if len(projection.Metadata.Operations) != len(want) {
+		t.Fatal("lost memory site")
+	}
+	for i, w := range want {
+		metadata := projection.Metadata.Operations[i]
+		op := cfg.Blocks[w.block].Operations[0]
+		if metadata.Site != (OperationSite{Block: w.block, Index: 0}) || len(metadata.Accesses) != 1 || metadata.Accesses[0].Kind != w.record.Kind || op.MemoryAccessID != w.record.ID || op.Source != w.record.Source {
+			t.Fatalf("memory binding moved: %+v / %+v", metadata, op)
+		}
+	}
+	cfg.Blocks[4].Operations[0].MemoryAccessID = records[1].ID
+	if _, err := ProjectCheckedMemory(cfg, authority); err == nil {
+		t.Fatal("normalization licensed forged site identity")
+	}
+}
+
 func TestProjectWithRegionMemoryTracksExactStructuredOperations(t *testing.T) {
 	thenStore := &Operation{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}
 	elseStore := &Operation{Code: OpStoreRegion, Operands: []ValueID{2}, Effects: []Effect{EffectWriteMemory}}

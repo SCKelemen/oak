@@ -110,6 +110,7 @@ type Function struct {
 	Instrs []*Instr // every instruction in linear order
 	labels map[string]*Block
 	t      *target
+	regs   []instrRegs // the instructions' registers during a scheduling (Schedule)
 }
 
 // shape is an instruction's register semantics: the operands it writes,
