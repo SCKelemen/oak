@@ -217,6 +217,9 @@ func elementParam(name string) (span string, k uint64, ok bool) {
 // record's scalar leaves, offsets relative to the element, names starting
 // with the dot (`.f`, `.a.b`, `.buf[2]`).
 type recordSpanArg struct {
+	// elem is the element type's name, so the Oak side can build the
+	// element as a value from the type's shape (recordSpanElementValue).
+	elem              string
 	size              int64
 	leaves            []compositeLeaf
 	leavesByPlace     map[recordSpanLeafPlace]int
@@ -377,7 +380,9 @@ func recordSpanOf(comps map[string]Composite, typ ast.Expression) (arg recordSpa
 	if !ok {
 		return recordSpanArg{}, reason, true, false
 	}
-	return newRecordSpanArg(comp.Size, leaves), "", true, true
+	arg = newRecordSpanArg(comp.Size, leaves)
+	arg.elem = name
+	return arg, "", true, true
 }
 
 // leafAt is the leaf at an offset with a width in bytes (a Bool leaf is
@@ -388,6 +393,46 @@ func (arg recordSpanArg) leafAt(offset, size int64) (compositeLeaf, bool) {
 		return compositeLeaf{}, false
 	}
 	return arg.leaves[at], true
+}
+
+// leafStartingAt is the leaf whose cell begins at an offset, with the
+// cell's size in bytes: the places are keyed by both, so the cell sizes
+// a layout uses are tried in turn.
+func (arg recordSpanArg) leafStartingAt(offset int64) (compositeLeaf, int64, bool) {
+	for _, cell := range [...]int64{1, 2, 4, 8} {
+		if leaf, ok := arg.leafAt(offset, cell); ok {
+			return leaf, cell, true
+		}
+	}
+	return compositeLeaf{}, 0, false
+}
+
+// tileLeaves lists the leaves whose cells tile [offset, offset+size)
+// exactly, each with its own offset. An access wider than one leaf — the
+// eight bytes of a two-word record read as a value, or the pair a
+// whole-element assignment stores — is that element's fields side by
+// side, and is modeled as them. A range the leaves do not cover exactly,
+// in whole cells and with nothing left over, is refused: a partial or
+// straddling access is not a field access and must not be read as one.
+func (arg recordSpanArg) tileLeaves(offset, size int64) ([]compositeLeaf, []int64, bool) {
+	if size <= 0 || size > 8 {
+		return nil, nil, false
+	}
+	var leaves []compositeLeaf
+	var cells []int64
+	for at := offset; at < offset+size; {
+		leaf, cell, found := arg.leafStartingAt(at)
+		if !found || cell <= 0 || at+cell > offset+size {
+			return nil, nil, false
+		}
+		leaves = append(leaves, leaf)
+		cells = append(cells, at-offset)
+		at += cell
+	}
+	if len(leaves) < 2 {
+		return nil, nil, false // one leaf is the ordinary case
+	}
+	return leaves, cells, true
 }
 
 // arrayFieldAt is the array field starting at an offset — its leaf-name
@@ -710,6 +755,62 @@ func (x *pathExecutor) recordSpanStore(instr Instruction, mem Memory, base *term
 // a scalar leaf at the offset, or — with a register index — an element of
 // an array field, the select over `v.f` at the linear index i*N + j.
 // Reports whether the load was through a record span.
+// leafPlacer says where a leaf of the addressed element lives: its
+// memory, the name the Oak side gives it, and the index within that
+// memory. The two addressings differ only here — an element of the span
+// indexes by the element, and an element of an array field of records by
+// the linear index over both — so the wide read and write take it as a
+// parameter rather than knowing either.
+type leafPlacer func(compositeLeaf) (memory, leafName string, index *term, ok bool)
+
+// spanLeafPlacer places a leaf of the span's element at index.
+func spanLeafPlacer(arg recordSpanArg, span string, index *term) leafPlacer {
+	return func(leaf compositeLeaf) (string, string, *term, bool) {
+		memory, name, at := arg.leafMemory(span, index, leaf)
+		return memory, name, at, true
+	}
+}
+
+// arrayLeafPlacer places a leaf of element elem of an array field of
+// records, in record record: the leaf's name carries the element the
+// layout enumerated, and the symbolic index replaces it.
+func arrayLeafPlacer(arg recordSpanArg, span string, record, elem *term) leafPlacer {
+	return func(leaf compositeLeaf) (string, string, *term, bool) {
+		prefix, _, length, isElement := arg.arrayElementLeaf(leaf)
+		if !isElement {
+			return "", "", nil, false
+		}
+		linear := binaryTerm("add", binaryTerm("mul", truncate(record, 32), constTerm(uint64(length), 32)), truncate(elem, 32))
+		return span + prefix, prefix, linear, true
+	}
+}
+
+// recordSpanWideValue reads an access wider than one leaf as the leaves
+// it covers, packed in layout order: the little-endian byte order the
+// machine loaded them in.
+func (x *pathExecutor) recordSpanWideValue(arg recordSpanArg, span string, place leafPlacer, offset, size int64, state *symbolicState) (*term, int, bool) {
+	leaves, at, tiled := arg.tileLeaves(offset, size)
+	if !tiled {
+		return nil, 0, false
+	}
+	width := int(size) * 8
+	var value *term
+	for i, leaf := range leaves {
+		memory, leafName, idx, okPlace := place(leaf)
+		if !okPlace {
+			return nil, 0, false
+		}
+		part := memoryAt(state.writes[memory], idx, recordFieldTerm(span, idx, leafName, leaf.width, x.concrete))
+		shifted := binaryTerm("shl", zeroExtend(part, width), constTerm(uint64(at[i]*8), width))
+		if value == nil {
+			value = shifted
+			continue
+		}
+		value = binaryTerm("or", value, shifted)
+	}
+	return value, width, value != nil
+}
+
 func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memory, base *term, state *symbolicState) (handled bool, reason string, ok bool) {
 	if len(x.recordSpans) == 0 || mem.Mode != MemOffset {
 		return false, "", false
@@ -730,6 +831,11 @@ func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memo
 		}
 		leaf, isLeaf := arg.leafAt(at, size)
 		if !isLeaf {
+			// Wider than one leaf: the element's fields side by side.
+			if packed, _, isWide := x.recordSpanWideValue(arg, nested, arrayLeafPlacer(arg, nested, record, elem), at, size, state); isWide {
+				state.write(dest, zeroExtend(packed, widthOf(dest.Class)))
+				return true, "", true
+			}
 			return true, fmt.Sprintf("a %d-byte load at offset %d of a %s element, which is no field", size, at, nested), false
 		}
 		linear := binaryTerm("add", binaryTerm("mul", truncate(record, 32), constTerm(uint64(length), 32)), truncate(elem, 32))
@@ -765,6 +871,12 @@ func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memo
 	} else {
 		leaf, isLeaf := arg.leafAt(offset, size)
 		if !isLeaf {
+			// Wider than one leaf: the fields it covers, side by side.
+			if packed, w, isWide := x.recordSpanWideValue(arg, span, spanLeafPlacer(arg, span, index), offset, size, state); isWide {
+				state.write(dest, zeroExtend(packed, widthOf(dest.Class)))
+				_ = w
+				return true, "", true
+			}
 			return true, fmt.Sprintf("a %d-byte load at offset %d of a %s element, which is no field", size, offset, span), false
 		}
 		leafWidth, signed = leaf.width, leaf.signed
@@ -5936,6 +6048,16 @@ func (lo *oakLowering) readPlace(expr ast.Expression) (*oakValue, string, bool) 
 }
 
 func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, string, bool) {
+	if index, isIndex := expr.(*ast.IndexExpression); isIndex && read {
+		// A whole element of a record span read as a value: the span is
+		// no aggregate local, so the walk below would stop at its name.
+		if value, reason, handled, ok := lo.recordSpanElementValue(index); handled {
+			if !ok {
+				return nil, reason, false
+			}
+			return value, "", true
+		}
+	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		local, isLocal := lo.locals[e.Value]
@@ -5999,6 +6121,98 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 		return base.elems[k], "", true
 	}
 	return nil, fmt.Sprintf("%T as a place", expr), false
+}
+
+// recordSpanElementValue reads a whole element of a record span, or of
+// an array field of records inside one, as a value: `s[d]` and
+// `s[d].surfaces[i]`, the shape a body takes when it binds one to a
+// local. The leaves come from the element type's own shape, each read
+// from the memory that holds that field across every element, so the
+// value agrees leaf for leaf with what a field access would have read.
+// A path that names a scalar leaf is not this case and is left to the
+// ordinary reader.
+func (lo *oakLowering) recordSpanElementValue(e *ast.IndexExpression) (value *oakValue, reason string, handled, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return nil, "", false, false
+	}
+	root, path, arrayIndex, at, okPath := recordSpanPathOf(e)
+	if !okPath {
+		return nil, "", false, false
+	}
+	arg, isRecord := lo.recordSpans[root.Value]
+	if !isRecord {
+		return nil, "", false, false
+	}
+	if _, isLocal := lo.locals[root.Value]; isLocal {
+		return nil, "", false, false
+	}
+	if _, isLeaf := arg.leafNamed(path); isLeaf {
+		return nil, "", false, false // a scalar field: the ordinary reader
+	}
+	elemType, okType := lo.namedType(arg.elem)
+	if !okType {
+		return nil, "", false, false
+	}
+	// Down the path to the type the access names.
+	typ := elemType
+	for _, field := range strings.Split(strings.TrimPrefix(path, "."), ".") {
+		if field == "" {
+			continue
+		}
+		if typ.kind != oakRecord {
+			return nil, "", false, false
+		}
+		next, found := (*oakType)(nil), false
+		for _, f := range typ.fields {
+			if f.name == field {
+				next, found = f.typ, true
+				break
+			}
+		}
+		if !found {
+			return nil, "", false, false
+		}
+		typ = next
+	}
+	idx, reason, okIdx := lo.lower(at.Index, 32)
+	if !okIdx {
+		return nil, reason, true, false
+	}
+	span := lo.spanRoot(root.Value)
+	if lo.concrete != nil {
+		lo.addTrap(cmpTerm("hs", idx, lo.spanLenTerm(root.Value, 32)))
+		if lo.witnessTrapped {
+			return nil, fmt.Sprintf("an index past len(%s) on this input", root.Value), true, false
+		}
+	}
+	if arrayIndex != nil {
+		if typ.kind != oakArray || typ.elem == nil {
+			return nil, "", false, false
+		}
+		j, reason, okJ := lo.lower(arrayIndex, 32)
+		if !okJ {
+			return nil, reason, true, false
+		}
+		if j.kind == termConst && int64(j.value) >= typ.length {
+			return nil, fmt.Sprintf("an index past the %d elements of %s", typ.length, path), true, false
+		}
+		idx = binaryTerm("add", binaryTerm("mul", idx, constTerm(uint64(typ.length), 32)), j)
+		typ = typ.elem
+	} else if typ.kind == oakArray {
+		return nil, "", false, false // the array itself, not an element
+	}
+	if typ.kind == oakScalar {
+		return nil, "", false, false
+	}
+	agg, okAgg := aggregateFrom(typ, path, func(name string, leaf *oakType) *term {
+		memory := span + name
+		entry := recordFieldTerm(span, idx, name, leaf.width, lo.concrete != nil)
+		return lo.noteRead(memory, len(lo.writes[memory]), idx, memoryAt(lo.writes[memory], idx, entry))
+	})
+	if !okAgg {
+		return nil, fmt.Sprintf("%s as a value", e.String()), true, false
+	}
+	return agg, "", true, true
 }
 
 // elementUnderIndex reads an array element at a symbolic index: the

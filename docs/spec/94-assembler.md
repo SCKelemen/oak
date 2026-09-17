@@ -7073,13 +7073,35 @@ a read of another, a constant element index, a comparison of two
 elements' fields, and a loop storing through the field, with both
 backends agreeing on the values.
 
-Three shapes remain trusted, and are the next a scene proof will meet:
-an element bound to a local by value (`sf: Surface = s[d].surfaces[i]`),
-whose eight-byte load covers two four-byte leaves and matches none; a
-whole-element assignment, whose `stp` the store path refuses as a pair;
-and a loop bounded by the record's own count field, which is witnessed
-rather than proven because no register is an affine image of the Oak
-counter.
+**An element as a value (2026-09-17).** `sf: Surface = s[d].surfaces[i]`
+binds a whole element to a local, and neither side had it. The machine
+loads the element's eight bytes in one go, which matches no leaf — the
+leaves are its fields. The Oak side stopped earlier still, at the span's
+name: a place is walked down to an aggregate local, and a span parameter
+is not one.
+
+A machine access wider than a leaf is now read as the leaves it covers,
+packed in the little-endian order the load put them in, provided they
+tile the range *exactly* — in whole cells, with nothing left over. A
+partial or straddling access is refused, and so is an element with
+padding: a byte no leaf covers is not a field, the machine loads
+whatever is there, and the two sides would not agree on it. The two
+addressings differ only in where a leaf lives, so the reader takes that
+as a parameter (`leafPlacer`) and serves an element of the span and an
+element of an array field of records alike.
+
+The Oak side builds the element from its type's own shape
+(`recordSpanElementValue`), each leaf read from the memory that holds
+that field across every element, so the value agrees leaf for leaf with
+what the field accesses would have read. The element type's name is now
+kept on the span's model, which is what makes the shape reachable.
+
+Two shapes remain trusted, and are the next a scene proof will meet: a
+whole-element *assignment*, whose `stp` the store path still refuses as
+a pair — the writer's counterpart of this, needing the value split
+across the leaves it covers — and a loop bounded by the record's own
+count field, which is witnessed rather than proven because no register
+is an affine image of the Oak counter.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
