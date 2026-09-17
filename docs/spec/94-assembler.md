@@ -9201,7 +9201,7 @@ as the Oak pack of the two lanes — one value, two terms — so
 `sha256_update`'s slots were offered only as images with a symbolic
 offset, behind every wrong pairing's refutation, and the search spent its
 budget. Two headers are now one value when they are the same term, the
-same canonical term, or — for terms under forty-eight nodes — equal at
+same canonical term, or — for terms under 192 nodes — equal at
 the bit level (`headersEqual`); the pairing is then the equality it is,
 first in line.
 

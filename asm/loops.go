@@ -7472,7 +7472,7 @@ func headersEqual(hr, hx *term, widthOf func(string) int) bool {
 
 // headerEqualityTermLimit bounds the header terms a bit-level equality
 // decision is tried on when spelling them apart is all that separates them.
-const headerEqualityTermLimit = 48
+const headerEqualityTermLimit = 192
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 1024
