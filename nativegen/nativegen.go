@@ -6752,6 +6752,15 @@ var floatIntrinsicOps = map[string]string{
 }
 
 func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if k, ok := g.extentQuotient(e, typ); ok {
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		g.constant(r, k, typ)
+		g.reduced++
+		return r, nil
+	}
 	if !g.rvLane {
 		// The rv64 lane hooks the same recognizer in its own infix
 		// (rvFusedWordLoad); this emission is the AArch64 idiom.

@@ -225,11 +225,29 @@ invocation, 2^20 elements, best of seven rounds of two hundred calls:
 | `sum_ab` | 0.150 | 0.152 | 0.425 |
 | `xor_mask` | 0.022 ns/byte | 0.023 | 0.412 |
 
-Four to five times over the scalar loops, parity with the C backend on
-the two-span zip and the byte mask, and fifteen to twenty-four percent
-behind it on the three single-span maps. Runs on this machine move by
-that much between invocations, so the three-row shape matters more than
-any one number: read it as parity on two and a real gap on three.
+Four to five times over the scalar loops. That much is solid; the
+native-against-C column is not, and the row above overstated it.
+
+**The noise floor, measured.** Ten runs of one binary on one kernel,
+`add_k`, at 2^12 elements on this machine at load 59:
+
+```
+0.065 0.077 0.063 0.131 0.120 0.083 0.065 0.067 0.072 0.079
+0.067 0.068 0.063 0.070 0.063 0.066 0.065 0.067 0.073 0.081
+```
+
+The same code, twice as slow at the top of the range as at the bottom,
+and a 32 percent spread even discarding the two outliers. A difference
+of fifteen to twenty-four percent from a single invocation is therefore
+not a result. Take the table as parity within the noise on all five, and
+the four-to-five-times over the scalar loops — an order of magnitude
+clear of the floor — as the only claim it supports.
+
+The lesson generalizes to everything timed here at these sizes: alternate
+the binaries inside one invocation, repeat, and treat anything under a
+third as unresolved until the machine is quiet. The rows above that
+report a factor of two or more are safe; the ones that report tens of
+percent from a single run are not.
 
 Where the gap is, in `add_k`:
 
@@ -246,10 +264,19 @@ clang                                 native
                                         ...
 ```
 
+The disassembly below still stands as a description of what the two
+backends emit, and the instruction difference is real whatever the clock
+says here. What is not established is the size of its cost.
+
 Two things the native form does not do. It forms an address per access —
 an index add and an address add for every load and every store — where
 one base and an immediate offset would serve, which is what the
-`vector-blocks` transform exists for and it reports no site here. And it
+`vector-blocks` transform exists for and it does fire on these loops — the fused
+`[base, #0x10]` form is in the emitted code — but only for some of the
+pairs: the rest are refused because the lowering reuses one general
+register as both a block address and an index (`x10` holding the address
+while `mov w10, w6` writes the same register's W view), and the
+transform will not fuse across a write to the address it keeps. And it
 has no paired vector load: clang moves 64 bytes in two `ldp q` with the
 pointer advanced by the post-index, where the native form issues four
 loads and four address computations. `ldp` is modeled for X and W

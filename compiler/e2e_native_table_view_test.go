@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 const nativeTableViewProgram = `
@@ -84,6 +85,16 @@ func TestE2ENativeGraphemeTableViewProven(t *testing.T) {
 	if verdict, ok := model.NativeVerdicts["grapheme_class"]; !ok || verdict.Kind != asm.VerdictProven {
 		t.Fatalf("grapheme_class not proven: %+v", verdict)
 	}
+	for _, body := range model.AsmFunctions {
+		if body.Name == "grapheme_class" {
+			text := nativegen.Describe(body)
+			if strings.Contains(text, "udiv ") {
+				t.Fatalf("known table extent still divided at runtime:\n%s", text)
+			}
+			return
+		}
+	}
+	t.Fatal("missing selected grapheme_class body")
 }
 
 func TestE2ENativeTableViewExecution(t *testing.T) {

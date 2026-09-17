@@ -209,7 +209,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		}
 		expanded := *fn
 		expanded.Body = stage.body
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, false, false, elide, guardLines, false); err == nil {
+		if out, err := compileRV64Body(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, elide, guardLines, strength); err == nil {
 			if stage.judged {
 				out.Body = stage.body
 			}
@@ -222,6 +222,12 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			fmt.Fprintf(os.Stderr, "// rv64 stage of %s (%d rewrite site(s)) did not lower: %v\n", fn.Name.Value, len(stage.sites), err)
 		}
 	}
+	return compileRV64Body(fn, functions, records, adts, constants, tc, softFloat, tables, globals, vector, elide, guardLines, strength)
+}
+
+// Lower one already-rewritten body without running Layer A again. Keep the
+// emitter's strength reductions enabled independently of source rewriting.
+func compileRV64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	g.vector = vector
@@ -1728,6 +1734,17 @@ func pick(wide bool, full, w string) string {
 }
 
 func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if k, ok := g.extentQuotient(e, typ); ok {
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		if err := g.constant(r, k, typ); err != nil {
+			return 0, err
+		}
+		g.reduced++
+		return r, nil
+	}
 	if w, isWord := g.recognizeWordAssembly(e, typ); isWord {
 		return g.rvFusedWordLoad(w, typ) // nativegen/word_fusion.go
 	}
