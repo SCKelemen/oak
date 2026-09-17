@@ -9199,6 +9199,12 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 				return contract.elemWidth, contract.signed, true
 			}
 		}
+		// A field of a record span's element: the leaf's own contract, so
+		// a comparison of two of them has a width (`s[d].a[i].x <
+		// s[d].a[j].x`, the overlap test of a scene).
+		if width, signed, isLeaf := lo.recordSpanLeafContract(e); isLeaf {
+			return width, signed, true
+		}
 	case *ast.InfixExpression:
 		if w, s, ok := lo.operandContract(e.Left); ok {
 			return w, s, true
@@ -10572,24 +10578,20 @@ type recordSpanPlace struct {
 	width                  int
 }
 
-func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSpanPlace, handled bool, reason string, ok bool) {
-	if len(lo.recordSpans) == 0 {
-		return recordSpanPlace{}, false, "", false
-	}
-	// Outside in: each level is a field (`.f`) or an array index (`[j]`),
-	// down to the span's own `root[i]`. The field names build the leaf
-	// path and the one array index is the element's, so `v[i].a[j]` and
-	// `v[i].a[j].f` both resolve — the latter to the leaf memory `v.a.f`,
-	// the field across every element of every record's array
-	// (recordSpanArrayElement).
-	var arrayIndex ast.Expression
-	path := ""
+// recordSpanPathOf walks `v[i].f…[j].g…` outside in: each level is a
+// field (`.f`) or an array index (`[j]`), down to the span's own
+// `root[i]`. The field names build the leaf path and the one array index
+// is the element's, so `v[i].a[j]` and `v[i].a[j].f` both resolve — the
+// second to the leaf `.a.f`, the field across every element
+// (recordSpanArrayElement). An array of arrays is refused: the leaves do
+// not name it. The returned expression is the span's own index level.
+func recordSpanPathOf(e *ast.IndexExpression) (root *ast.Identifier, path string, arrayIndex ast.Expression, at *ast.IndexExpression, ok bool) {
 	cur := e
 	for {
 		if cur.Dot {
 			field, isName := cur.Index.(*ast.Identifier)
 			if !isName {
-				return recordSpanPlace{}, false, "", false
+				return nil, "", nil, nil, false
 			}
 			path = "." + field.Value + path
 		} else {
@@ -10597,21 +10599,66 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 				break // the span's own index
 			}
 			if arrayIndex != nil {
-				return recordSpanPlace{}, false, "", false // an array of arrays
+				return nil, "", nil, nil, false
 			}
 			arrayIndex = cur.Index
 		}
 		next, isIndex := cur.Left.(*ast.IndexExpression)
 		if !isIndex {
-			return recordSpanPlace{}, false, "", false
+			return nil, "", nil, nil, false
 		}
 		cur = next
 	}
 	if cur.Dot {
-		return recordSpanPlace{}, false, "", false
+		return nil, "", nil, nil, false
 	}
 	root, isIdent := cur.Left.(*ast.Identifier)
 	if !isIdent {
+		return nil, "", nil, nil, false
+	}
+	return root, path, arrayIndex, cur, true
+}
+
+// recordSpanLeafContract is the width and signedness of the leaf a
+// record-span access names, without lowering anything: operandContract
+// asks before the body is lowered, and recordSpanPlaceOf lowers the index
+// and records the out-of-range trap, which asking twice would record
+// twice.
+func (lo *oakLowering) recordSpanLeafContract(e *ast.IndexExpression) (width int, signed, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return 0, false, false
+	}
+	root, path, arrayIndex, _, okPath := recordSpanPathOf(e)
+	if !okPath {
+		return 0, false, false
+	}
+	arg, isRecord := lo.recordSpans[root.Value]
+	if !isRecord {
+		return 0, false, false
+	}
+	if _, isLocal := lo.locals[root.Value]; isLocal {
+		return 0, false, false
+	}
+	if arrayIndex != nil {
+		field, found := arg.arrayNamed(path)
+		if !found {
+			return 0, false, false
+		}
+		return field.first.width, field.first.signed, true
+	}
+	leaf, found := arg.leafNamed(path)
+	if !found {
+		return 0, false, false
+	}
+	return leaf.width, leaf.signed, true
+}
+
+func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSpanPlace, handled bool, reason string, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return recordSpanPlace{}, false, "", false
+	}
+	root, path, arrayIndex, cur, okPath := recordSpanPathOf(e)
+	if !okPath {
 		return recordSpanPlace{}, false, "", false
 	}
 	arg, isRecord := lo.recordSpans[root.Value]
