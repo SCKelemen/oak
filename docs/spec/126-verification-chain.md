@@ -818,12 +818,47 @@ data can fail after the read and address request. Compiled Sail-source mutants
 that bypass the read, duplicate the write, or change address/data must fail
 trace assertions, not merely fail to build.
 
-No register-state interpreter supplies these responses yet. An unanswered
-Lem read is pending, unlike Lean's missing-register error; an accepted response
-does not prove initialization, width, or state provenance. This oracle adds
-neither a Lean/Lem refinement proof nor instruction-to-wrapper reachability,
-architectural write commitment, CAT events, atomicity, or BBM publication.
-The strict verified profile remains unchanged.
+Prompt matching alone does not supply a register-state interpreter. An
+unanswered Lem read is pending, unlike Lean's missing-register error; an
+accepted response does not prove initialization, width, or state provenance.
+This oracle adds neither a Lean/Lem refinement proof nor
+instruction-to-wrapper reachability, architectural write commitment, CAT
+events, atomicity, or BBM publication. The strict verified profile is unchanged.
+
+`TestSailLemStateReplay` now exercises Sail's own `emitEventS` and `runTraceS`
+with the **generated** `register_accessors` and a supplied generated register
+state. Both original runtime files (`sail2_state_lifting.lem` and
+`sail2_state_monad.lem`) are checksum-pinned. The general `liftState` function
+cannot be translated to OCaml because it uses the unbounded `universal` set;
+the test extracts only the original imports and independent trace-replay
+definitions, unchanged, and translates the whole state-monad support file.
+It neither substitutes a `Choose` implementation nor checks `liftState`.
+
+The state oracle requires both `runTrace = Some (Done ())` and a successful
+`runTraceS`. It checks exact little-endian byte-map contents and presence,
+untouched bytes outside the write, register preservation, and generic runtime
+tag updates. Runtime source mutations that ignore selector equality, accept
+false write acknowledgements, drop bytes, or preserve tags must still compile,
+pass the prompt checks, and then fail a state assertion. The tests expose why
+neither replayer alone is sufficient: prompt matching accepts a state-inconsistent
+selector or false acknowledgement; state replay accepts missing/reordered
+address requests or an altered write kind. It also processes an injected
+register write that the actual wrapper never requests. The conjunction rejects
+these cases and an erased first write in a two-call trace, even though the
+two-call and last-call-only replays have equal complete final model states.
+
+The remaining state relation is deliberately not claimed. Lem's plain write
+clears its **generic runtime tag map** to `B0` over the declared range; the
+pinned Lean `SequentialState.tags` is just `Unit`. Lean's tag-preservation
+footprint is not a proof of this Lem tag effect, and neither is an Arm MTE
+allocation-tag model. Lem bytes can also contain undefined bits that Lean's
+`BitVec 8` cannot directly represent. Even the generated Lem register record
+can hold a malformed-length bit list: both replayers accept a matching
+malformed selector. Consistency with supplied model state proves neither
+well-formed initialization nor architectural provenance. This is executable
+evidence for the selected wrapper/state interface, not a kernel-checked
+Lean/Lem state refinement, allocation/ownership authority, dynamic ASL trace,
+concurrent ordering, completion, or page-table publication.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is

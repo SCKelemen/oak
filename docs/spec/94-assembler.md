@@ -1190,9 +1190,23 @@ names and wrong register-value constructors are tested separately, as are
 pending reads and failed traces. The generated selector conversion checks
 its value constructor but not its bit-list length. Two calls retain both
 selector reads and both request pairs, including with different responses.
-This remains an executable oracle without a register-state interpreter,
-Lean/Lem proof, or architectural event interpretation; it cannot establish
-selector initialization/provenance or justify BBM optimization (§126).
+Prompt matching alone supplies no register-state interpretation, Lean/Lem
+proof, or architectural event interpretation; it cannot establish selector
+initialization/provenance or justify BBM optimization (§126).
+
+`TestSailLemStateReplay` separately executes the original Sail trace-state
+replayer with the generated register accessors. Its test predicate requires
+both a normally returning prompt trace and successful state replay: the
+former alone accepts inconsistent selector replies, while the latter alone
+forgets address-request order and write kind. The oracle checks exact byte
+contents/presence, frame preservation, register consistency, false-acknowledgement
+rejection, and generic runtime tags. Compiled runtime mutations must pass the
+prompt harness and fail state assertions. This uses an exact source extraction
+of `emitEventS`/`runTraceS`, not the general `liftState` interpreter, whose
+unbounded choice cannot be translated to OCaml. It also pins a state-model
+gap: Lem plain writes clear a bit-valued tag map, whereas Lean's pinned `tags`
+field is only `Unit`. No full-state refinement, Arm MTE semantics, well-formed
+initialization, architectural provenance, or BBM publication follows (§126).
 
 A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,

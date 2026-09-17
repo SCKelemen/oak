@@ -23,6 +23,8 @@ name: Formal Verification (Sail)
 #     against the pinned Sail prompt runtime; request traces, NOT CAT effects
 #     and generate the audited __WriteMemory declarations through Sail's Lem
 #     backend, preserving the selector read before the memory requests
+#     and replay those requests using Sail's original register/memory state
+#     functions; neither replay alone certifies execution or Arm ordering
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -203,10 +205,10 @@ jobs:
         with:
           go-version: '1.27.1'
 
-      - name: Execute RAM and generated register-wrapper traces and reject mutants
+      - name: Check RAM, generated wrapper, and model-state replay with mutants
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run '^TestSail(LemRAMTraces|LemWriteMemoryTraces|MemoryEffectFragmentExactAndMutated)$' -count=1 -v -timeout=10m
+        run: go test ./asm -run '^TestSail(LemRAMTraces|LemWriteMemoryTraces|LemStateReplay|MemoryEffectFragmentExactAndMutated)$' -count=1 -v -timeout=10m
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

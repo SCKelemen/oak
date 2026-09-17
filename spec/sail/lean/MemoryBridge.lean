@@ -15,6 +15,10 @@ model, preserving byte presence separately from a total observation.
 The footprint is a sequential byte-map update, not an Arm/CAT event, an
 atomicity claim, or a proof of the C runtime. Reaching this wrapper from STR
 still requires the external alignment/translation/fault/MMIO premises.
+The pinned runtime's `tags` field is `Unit`. Its preservation below says
+nothing about the generic bit-valued tag map in Sail's Lem state runtime,
+which plain writes update, or about architectural allocation tags. The
+`TestSailLemStateReplay` oracle records that separate model boundary.
 -/
 
 namespace Oak.SailBridge.SequentialRAM
