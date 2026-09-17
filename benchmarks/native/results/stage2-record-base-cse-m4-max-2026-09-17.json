@@ -1,0 +1,85 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T09:45:38Z",
+  "host": "Apple M4 Max",
+  "load_before": "13.72 12.66 18.43",
+  "load_after": "12.51 12.43 17.82",
+  "baseline_revision": "32b8a19e202184aa33cf44889f84213a889348f7",
+  "candidate": "baseline plus proof-gated nativegen share-record-bases transform and native materialization-v16 cache-key closure; checker and verifier semantics unchanged",
+  "baseline_configuration": "same candidate compiler, OAK_OPT_SKIP=share-record-bases",
+  "os_revision": "d071f564f5e5b407b1cb74c64148c850caddcd24",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "harness": "SCKelemen/os pilots/oak/stage2_bench.zig",
+  "harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "object_sha256": {
+    "baseline": "70a145af302d1ca686078aaf66fd03bbe80714d2da3f5cbaa1b8fc8233cc804b",
+    "candidate": "2c64472ca4c764ad1ec84a6acb394377153d06fffd3d045d8ac1d0323f534adb"
+  },
+  "build": {
+    "oak": ["build", "-native"],
+    "baseline_opt_skip": "share-record-bases",
+    "verify_fresh": true,
+    "zig_version": "0.16.0",
+    "zig_flags": ["-O", "ReleaseFast", "-lc"],
+    "shim_flags": ["-std=c11", "-O2"]
+  },
+  "protocol": {
+    "rounds": 7,
+    "order": "baseline,candidate on even rounds; candidate,baseline on odd rounds",
+    "translate_operations": 20000000,
+    "decoder_cycles": 2000000,
+    "within_binary_order": "Zig translate, Oak translate, Zig decoder cycle, Oak decoder cycle",
+    "warmups": "one full run per binary before samples",
+    "compiler_builds_during_samples": false,
+    "test_suites_during_samples": false,
+    "host_isolated": false
+  },
+  "selected_bodies": {
+    "alloc_table": {"baseline_instructions": 114, "candidate_instructions": 111, "record_bases_shared": 1, "baseline_verdict": "proven", "candidate_verdict": "proven"},
+    "map_page": {"baseline_instructions": 200, "candidate_instructions": 194, "record_bases_shared": 2, "baseline_verdict": "proven", "candidate_verdict": "proven"},
+    "reset": {"baseline_instructions": 107, "candidate_instructions": 92, "record_bases_shared": 5, "baseline_verdict": "proven", "candidate_verdict": "proven"},
+    "translate": {"baseline_instructions": 116, "candidate_instructions": 110, "record_bases_shared": 2, "baseline_verdict": "proven", "candidate_verdict": "proven"},
+    "unmap_page": {"baseline_instructions": 333, "candidate_instructions": 330, "record_bases_shared": 3, "baseline_verdict": "proven", "candidate_verdict": "proven"}
+  },
+  "summary": {
+    "baseline_median_translate_ns": 4.38,
+    "candidate_median_translate_ns": 4.09,
+    "median_paired_translate_ratio": 0.9330254041570438,
+    "translate_pairs_faster": 7,
+    "baseline_median_cycle_ns": 590.6,
+    "candidate_median_cycle_ns": 584.8,
+    "median_paired_cycle_ratio": 0.9884862851337621,
+    "cycle_pairs_faster": 4,
+    "pairs": [
+      {"round": 0, "cycle_ratio": 0.8922770456634997, "translate_ratio": 0.9383561643835617},
+      {"round": 1, "cycle_ratio": 1.0066918325326013, "translate_ratio": 0.9425287356321839},
+      {"round": 2, "cycle_ratio": 1.0096685082872927, "translate_ratio": 0.9330254041570438},
+      {"round": 3, "cycle_ratio": 1.0519144532597449, "translate_ratio": 0.9292237442922375},
+      {"round": 4, "cycle_ratio": 0.9668199737187911, "translate_ratio": 0.9380733944954127},
+      {"round": 5, "cycle_ratio": 0.9884862851337621, "translate_ratio": 0.925},
+      {"round": 6, "cycle_ratio": 0.7360777875994444, "translate_ratio": 0.7865384615384615}
+    ],
+    "interpretation": "All selected bodies are smaller and proven. Translation improved in all seven pairs; the median paired ratio is 0.933 (6.7% lower), with separate medians 4.38 to 4.09 ns/op. Decoder cycle is noisier: four of seven pairs improved, median paired ratio 0.988, and separate medians 590.6 to 584.8 ns/cycle; no precise decoder-cycle speedup is claimed."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": ["map/translate/unmap round trip", "unaligned and out-of-range rejection", "pool exhaustion", "shadow-model PRNG operations", "three isolated regimes"]
+  },
+  "samples": [
+    {"round": 0, "variant": "baseline", "exit_code": 0, "translate_ns": 4.38, "cycle_ns": 652.6, "zig_translate_ns": 1.03, "zig_cycle_ns": 312.9},
+    {"round": 0, "variant": "record-base", "exit_code": 0, "translate_ns": 4.11, "cycle_ns": 582.3, "zig_translate_ns": 1.16, "zig_cycle_ns": 314.2},
+    {"round": 1, "variant": "record-base", "exit_code": 0, "translate_ns": 4.10, "cycle_ns": 586.7, "zig_translate_ns": 1.04, "zig_cycle_ns": 330.8},
+    {"round": 1, "variant": "baseline", "exit_code": 0, "translate_ns": 4.35, "cycle_ns": 582.8, "zig_translate_ns": 1.02, "zig_cycle_ns": 324.0},
+    {"round": 2, "variant": "baseline", "exit_code": 0, "translate_ns": 4.33, "cycle_ns": 579.2, "zig_translate_ns": 1.11, "zig_cycle_ns": 329.2},
+    {"round": 2, "variant": "record-base", "exit_code": 0, "translate_ns": 4.04, "cycle_ns": 584.8, "zig_translate_ns": 1.03, "zig_cycle_ns": 330.4},
+    {"round": 3, "variant": "record-base", "exit_code": 0, "translate_ns": 4.07, "cycle_ns": 609.9, "zig_translate_ns": 1.13, "zig_cycle_ns": 308.6},
+    {"round": 3, "variant": "baseline", "exit_code": 0, "translate_ns": 4.38, "cycle_ns": 579.8, "zig_translate_ns": 1.07, "zig_cycle_ns": 319.2},
+    {"round": 4, "variant": "baseline", "exit_code": 0, "translate_ns": 4.36, "cycle_ns": 608.8, "zig_translate_ns": 1.15, "zig_cycle_ns": 320.0},
+    {"round": 4, "variant": "record-base", "exit_code": 0, "translate_ns": 4.09, "cycle_ns": 588.6, "zig_translate_ns": 1.02, "zig_cycle_ns": 370.4},
+    {"round": 5, "variant": "record-base", "exit_code": 0, "translate_ns": 4.07, "cycle_ns": 583.8, "zig_translate_ns": 1.02, "zig_cycle_ns": 338.6},
+    {"round": 5, "variant": "baseline", "exit_code": 0, "translate_ns": 4.40, "cycle_ns": 590.6, "zig_translate_ns": 1.03, "zig_cycle_ns": 343.1},
+    {"round": 6, "variant": "baseline", "exit_code": 0, "translate_ns": 5.20, "cycle_ns": 791.9, "zig_translate_ns": 1.45, "zig_cycle_ns": 512.0},
+    {"round": 6, "variant": "record-base", "exit_code": 0, "translate_ns": 4.09, "cycle_ns": 582.9, "zig_translate_ns": 1.02, "zig_cycle_ns": 323.8}
+  ]
+}

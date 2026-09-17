@@ -5937,6 +5937,42 @@ the complete decoder cycle at a median paired ratio of 0.984 (1.6% lower),
 with six pairs faster; see
 `benchmarks/native/results/stage2-redundant-guards-m4-max-2026-09-17.json`.
 
+**Shared record-span bases (2026-09-17, AArch64 lane).** The
+`share-record-bases` machine candidate (`nativegen/record_base_cse.go`)
+recognizes the final scheduled spelling of a wide record-span element base:
+`movz wT, #lo; movk wT, #hi, lsl #16; umaddl xD, wI, wT, xB`. When one such
+definition dominates later identical definitions, and neither the span base
+nor its index changes on any path between them, the first result is retargeted
+to a declared caller-saved scratch and later local reads use that carried
+value. Calls delimit the region. The scratch must be absent from the whole
+function suffix; a later stride temporary must be dead after the deleted
+multiply; and every replaced destination must be local to its straight-line
+region. The pass deliberately leaves interleaved materializations alone.
+
+This changes no load, store, guard, branch, or arithmetic result. It runs
+after scheduling so scheduling cannot lengthen or split its new live range,
+and it is a non-neutral **verdict-gated** candidate: only the unchanged
+whole-body verifier can authorize it. Unit refusals cover non-dominance,
+changed base/index, calls, different stride words, live deleted temporaries,
+cross-boundary destinations, unavailable scratches, and undeclared
+scratches. The compiler differential exercises both conditional arms and the
+invalid-domain trap over a record whose stride exceeds sixteen bits.
+
+Native materialization recipe v16 also keys `carry-loop-index`,
+`elide-redundant-guards`, and `share-record-bases` explicitly. This closes the
+artifact-cache contract for the three late candidates; the registry-wide test
+requires every transform switch to change the recipe key.
+
+On the actual stage-2 pilot, all selected bodies remain `proven` and share 1
+base in `alloc_table` (114→111 instructions), 2 in `map_page` (200→194), 5 in
+`reset` (107→92), 2 in `translate` (116→110), and 3 in `unmap_page` (333→330).
+All five OS differential tests pass. Seven alternating pairs on a non-isolated
+M4 Max improve translation in every pair: the median paired ratio is 0.933
+(6.7% lower), with separate medians 4.38→4.09 ns/op. Decoder-cycle timings
+are mixed (4 of 7 faster; median paired ratio 0.988), so no precise decoder
+speedup is claimed. Raw timings and provenance are in
+`benchmarks/native/results/stage2-record-base-cse-m4-max-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with

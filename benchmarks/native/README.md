@@ -131,6 +131,35 @@ isolated-host throughput bound.
 
 [Raw observations and provenance](results/stage2-redundant-guards-m4-max-2026-09-17.json).
 
+## OS stage-2: share record-span element bases, 2026-09-17
+
+Against `32b8a19e`, the proof-gated `share-record-bases` candidate retains
+one computation of `span_base + domain * record_stride` in an otherwise
+unused caller-saved register and redirects later local field-address uses to
+it. The exact baseline was rebuilt with the candidate compiler and
+`OAK_OPT_SKIP=share-record-bases`; its object hash is identical to the prior
+guard-elision object. No memory access moves or disappears, and every selected
+body remains `proven` by the unchanged verifier.
+
+| Selected body | Before | After | Bases shared |
+| --- | ---: | ---: | ---: |
+| `alloc_table` | 114 | 111 | 1 |
+| `map_page` | 200 | 194 | 2 |
+| `reset` | 107 | 92 | 5 |
+| `translate` | 116 | 110 | 2 |
+| `unmap_page` | 333 | 330 | 3 |
+
+The unchanged OS source and harness passed all five differential tests. Seven
+pairs alternated which binary ran first after one warmup each, with no builds
+or tests during sampling. On the non-isolated M4 Max, translation improved in
+all seven pairs: separate medians were **4.38 → 4.09 ns/op**, and the median
+paired candidate/baseline ratio was **0.933** (6.7% lower). Decoder-cycle
+results were noisier: 4 of 7 improved, separate medians 590.6 → 584.8
+ns/cycle, median paired ratio 0.988. No precise decoder-cycle speedup is
+claimed.
+
+[Raw observations and provenance](results/stage2-record-base-cse-m4-max-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

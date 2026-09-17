@@ -1623,6 +1623,10 @@ type Lane struct {
 	// when an earlier guard dominates it and its operands stay unchanged.
 	// Selected only when the whole machine body proves.
 	ElideRedundantGuards bool
+	// ShareRecordBases carries one computed record-span element base through
+	// later identical materializations when a declared scratch stays unused.
+	// Selected only when the whole machine body proves.
+	ShareRecordBases bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -2045,15 +2049,20 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 		out.Items = fused.Items
 		fusedExitsOf[out] = n
 	}
-	if !lane.Schedule {
-		return out, nil
+	if lane.Schedule {
+		scheduled, moved, err := machine.Schedule(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		out.Items = scheduled.Items
+		scheduledOf[out] = moved
 	}
-	scheduled, moved, err := machine.Schedule(out)
-	if err != nil {
-		return nil, unsupported("%v", err)
+	// Record-base sharing recognizes final adjacent materializations. Running
+	// it after scheduling also prevents the scheduler from shortening or
+	// splitting the deliberately longer-lived carried value.
+	if lane.ShareRecordBases {
+		sharedRecordBases[out] = shareRecordBase(out)
 	}
-	out.Items = scheduled.Items
-	scheduledOf[out] = moved
 	return out, nil
 }
 
