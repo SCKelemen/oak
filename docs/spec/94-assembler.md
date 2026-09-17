@@ -7561,6 +7561,30 @@ threshold keeps small arrays on the leaf model that proves them today.
 `fill_chunk`'s nested loops sharing one counter are a search problem
 apart from this.
 
+**Landed (2026-09-17).** The design above is in: `largeArrayElements`
+(64) decides on both sides; the machine routes a frame access inside a
+named object to the span (`frameSpanAccess`: the element index from the
+byte offset, plus the register index when scaled by the element size and
+bounded by the checker; a pair load or store is two elements; the fill's
+wider zero stores split; any other width is refused), lists the span
+among a loop's marked memories, and binds a callee's span argument that
+is a view or subslice of the array as an alias of the span with the
+argument's length (`summarizeCall`); the lowering declares the local as a
+span with no aggregate local (`declareLocal`, `tableLens` its length,
+`localSpanWidths` outliving an inlined callee's scope) and binds
+`view(&chunk)` to it. A zero-filled array's log starts with the marker
+`zero` on both sides, which `memoryAt` reads as "zero from here", so every
+comparison, restore and witness evaluation sees the fill without knowing
+the span. A local span's final memory is left undecided in `decideSpans`
+and after the loops (no caller observes it; its reads went through the
+one model). `TestE2ENativeLargeArrayLoopsProven` proves a 256-byte
+array filled in one loop and summed in another;
+`TestE2ENativeExternFlushLargeChunkProven` proves a caller of the
+prover's flush shape — a 4096-byte chunk copied in a loop, viewed,
+subsliced and handed through `host_write_all` to the extern — with both
+loops coupled through the chunk, while the flush itself, a 4192-byte
+frame, stays with the C backend by the native backend's own limit.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
