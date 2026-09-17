@@ -903,11 +903,10 @@ func (f *spanFact) dropLen(n int) {
 	}
 	delete(f.lenRegs, n)
 	// The proven minimum is a fact about the span's length, which no
-	// register write changes; it lapses only when no register holds the
-	// length any more, since nothing could then be compared against it.
-	if len(f.lenRegs) == 0 {
-		f.hasMin = false
-	}
+	// register write changes, so it is kept even when no register holds
+	// the length any more: an index fact re-keyed to the span
+	// (lenOfSpan) is still compared against it, and that comparison is
+	// what a slack guard needs to be exact.
 	if f.lenReg == n {
 		f.lenReg = -1
 		for reg := range f.lenRegs {
@@ -960,7 +959,19 @@ type idxFact struct {
 	// wrapped unless len >= K, whatever the access then reads
 	// (Oak.Assembler.slack_guard). Zero for a plain fact.
 	need int64
+	// spanBase names the span whose length bounds this register, when
+	// boundReg is lenOfSpan: the register that held the length was reused
+	// after the guard, but the fact is about the span, which its base
+	// register still identifies (Oak.Assembler.slack_survives_len). Zero
+	// and unread otherwise, so facts stated two ways still meet.
+	spanBase int
 }
+
+// lenOfSpan is the bound of an index fact whose length register is gone
+// but whose span remains. The allocator reuses a length register freely
+// once the guard has been taken, which cost the reads after it their
+// elision until the fact could outlive the register.
+const lenOfSpan = -2
 
 // condFact: wB = 1 when `cond` held of the compare `cmp` and 0 otherwise
 // (`cset wB, cond` right after the compare), so a later `cbz wB` /
@@ -2335,7 +2346,7 @@ func (c *checker) instruction(instr Instruction) bool {
 						}
 					}
 				} else if f, has := c.idxFacts[src.Num]; has && f.slack && f.bound > k.Value {
-					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true, need: f.need}
+					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true, need: f.need, spanBase: f.spanBase}
 				} else if has && instr.Mnemonic == "add" && f.boundReg < 0 && !f.slack && f.bound > 0 && f.bound <= maxUpperDiv-k.Value {
 					// A constant bound raised by the offset: wI < B leaves
 					// wI + j < B + j, the second and third words of a table
@@ -2661,18 +2672,44 @@ func (c *checker) forgetRegisterFacts(num int) {
 	// its place as the bound of the facts naming it; without one they die.
 	equal := c.equalRegister(num)
 	delete(c.spans, num)
+	// The spans this register measured, read before dropLen forgets it.
+	// Exactly one is required to re-key a fact to a span: were two spans
+	// to share the register, the fact would name no single length.
+	measured, ambiguous := -1, false
+	for base, fact := range c.spans {
+		if fact.lenRegs[num] {
+			if measured >= 0 {
+				ambiguous = true
+			}
+			measured = base
+		}
+	}
 	for _, fact := range c.spans {
 		fact.dropLen(num)
 	}
+	// A fact re-keyed to a span dies with that span's base register: a
+	// span later bound at the same register is a different span.
 	delete(c.idxFacts, num)
+	for index, fact := range c.idxFacts {
+		if fact.boundReg == lenOfSpan && fact.spanBase == num {
+			delete(c.idxFacts, index)
+		}
+	}
 	for index, fact := range c.idxFacts {
 		if fact.boundReg != num {
 			continue
 		}
-		if equal >= 0 && equal != index {
+		switch {
+		case equal >= 0 && equal != index:
 			fact.boundReg = equal
 			c.idxFacts[index] = fact
-		} else {
+		case measured >= 0 && !ambiguous && measured != index:
+			// No register holds the length any more, but the span does:
+			// the fact is about the span's length, not about the register
+			// that happened to carry it.
+			fact.boundReg, fact.spanBase = lenOfSpan, measured
+			c.idxFacts[index] = fact
+		default:
 			delete(c.idxFacts, index)
 		}
 	}
@@ -3604,17 +3641,43 @@ func (c *checker) calleeSavedGuards() (idx map[int]idxFact, slack map[int]slackF
 		}
 		return -1, false
 	}
+	// spanOfLen names the one span the bound register measures, when there
+	// is exactly one: a fact about that length is a fact about that span,
+	// and a callee-saved base still names it after the call even when no
+	// register holds the length any more (Oak.Assembler.slack_survives_len).
+	spanOfLen := func(bound int) (int, bool) {
+		base, found := -1, false
+		for candidate, fact := range c.spans {
+			if !fact.holdsLen(bound) {
+				continue
+			}
+			if found {
+				return -1, false // two spans: the fact names no single length
+			}
+			base, found = candidate, true
+		}
+		return base, found
+	}
 	idx = map[int]idxFact{}
 	for reg, fact := range c.idxFacts {
 		if !kept(reg) {
 			continue
 		}
 		if fact.boundReg < 0 {
-			idx[reg] = fact
+			// An immediate bound, or a bound already re-keyed to a span,
+			// which survives with the span itself.
+			if fact.boundReg != lenOfSpan || kept(fact.spanBase) {
+				idx[reg] = fact
+			}
 			continue
 		}
 		if bound, ok := survivingLen(fact.boundReg); ok {
 			fact.boundReg = bound
+			idx[reg] = fact
+			continue
+		}
+		if base, ok := spanOfLen(fact.boundReg); ok && kept(base) {
+			fact.boundReg, fact.spanBase = lenOfSpan, base
 			idx[reg] = fact
 		}
 	}
@@ -3742,7 +3805,10 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		// not wrap): the whole access lies inside the span.
 		lanes := size / fact.elem
 		switch {
-		case bound.boundReg < 0 || !c.boundsLen(fact, bound.boundReg):
+		case bound.boundReg == lenOfSpan && bound.spanBase != mem.Base.Num:
+			c.errorf(instr.Line, "%s: %s is guarded against the length of the span at x%d, not the one this access goes through", instr.Mnemonic, index.Text, bound.spanBase)
+			return
+		case bound.boundReg != lenOfSpan && (bound.boundReg < 0 || !c.boundsLen(fact, bound.boundReg)):
 			c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
 			return
 		case bound.bound < lanes:
@@ -3767,6 +3833,21 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 	case !guarded:
 		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
 		return
+	case bound.boundReg == lenOfSpan && bound.spanBase != mem.Base.Num:
+		// The fact names another span's length; this access goes through a
+		// different base, so it proves nothing here.
+		c.errorf(instr.Line, "%s: %s is guarded against the length of the span at x%d, not the one this access goes through", instr.Mnemonic, index.Text, bound.spanBase)
+		return
+	case bound.slack && bound.need > 0 && bound.boundReg == lenOfSpan && (!fact.hasMin || fact.minLen < bound.need):
+		// The same side condition as below, restated for a fact whose
+		// length register is gone: the subtraction that made the slack
+		// register wrapped unless the span's minimum covers it
+		// (Oak.Assembler.slack_survives_len).
+		c.errorf(instr.Line, "%s: the slack guard needs len >= %d proven first (`cmp wL, #%d; b.lo <trap>`)", instr.Mnemonic, bound.need, bound.need)
+		return
+	case bound.boundReg == lenOfSpan:
+		// index < len, or wI + K <= len with the minimum established
+		// above: the span the fact names is the one being accessed.
 	case bound.slack && bound.need > 0 && bound.boundReg >= 0 && c.boundsLen(fact, bound.boundReg) && (!fact.hasMin || fact.minLen < bound.need):
 		// The slack fact wI + K <= len is exact only under len >= K: the
 		// subtraction that made the slack register may have wrapped.

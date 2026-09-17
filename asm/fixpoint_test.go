@@ -30,12 +30,23 @@ func TestGuardFixpoint(t *testing.T) {
 	if findings := checkBody(t, decl, outerGuard); len(findings) != 0 {
 		t.Fatalf("the outer guard must survive the loop header: %v", findings)
 	}
-	// Writing the length register on the back edge kills the fact at the
-	// header: the merge of (len >= 4) with (nothing) is nothing.
-	killed := strings.Replace(outerGuard, "  add w9, w9, #1\n", "  add w9, w9, #1\n  add w1, w1, #0\n", 1)
-	findings := checkBody(t, decl, killed)
-	if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "proven minimum length is 0") {
-		t.Fatalf("a back edge without the fact must drop it at the header, got: %v", findings)
+	// Writing the length register on the back edge does not kill the
+	// proven minimum: `len(v) >= 4` is a fact about the span's memory,
+	// which no register write changes, and the span is still the one the
+	// base register names (docs/spec/94-assembler.md §9.al). It is carried
+	// by both predecessors, so the meet keeps it.
+	killed := strings.Replace(outerGuard, "  add w9, w9, #1\n", "  add w9, w9, #1\n  mov w1, #0\n", 1)
+	if findings := checkBody(t, decl, killed); len(findings) != 0 {
+		t.Fatalf("the proven minimum outlives its length register: %v", findings)
+	}
+	// A register-keyed fact is dropped, though: an index guarded against
+	// the length register proves nothing at the header when the back edge
+	// arrives without it, and no span-keyed reading replaces it, because
+	// the index itself is rewritten there.
+	bound := "  bind x0, w1 = v\n  bind w2 = i\n  clobber w9, w10\n  cmp w2, w1\n  b.hs short\nloop:\n  ldr w10, [x0, w2, uxtw #2]\n  mov w2, #7\n  b loop\nshort:\n  mov w0, #0\n  ret"
+	findings := checkBody(t, "bounded: (v: []u32, i: u32) -> u32", bound)
+	if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "index guard") {
+		t.Fatalf("a rewritten index must lose its guard at the header, got: %v", findings)
 	}
 	// Two predecessors with different bounds meet at the smaller one.
 	meet := "  bind x0, w1 = v\n  bind w2 = pick\n  cmp w2, #0\n  b.eq wide\n  cmp w1, #2\n  b.lo short\n  b join\nwide:\n  cmp w1, #8\n  b.lo short\njoin:\n  ldr w0, [x0, #4]\n  ret\nshort:\n  mov w0, #0\n  ret"

@@ -337,3 +337,63 @@ func TestCheckerSearchLoopCeiling(t *testing.T) {
 		})
 	}
 }
+
+// A slack fact outlives the register that held the span's length
+// (docs/spec/94-assembler.md §9.al): the allocator reuses a length
+// register freely once the guard has been taken, and the fact is about
+// the span, which its base register still identifies. The reject cases
+// are the point of this test: the side condition the slack guard needs
+// must survive the re-keying too.
+func TestCheckerSlackOutlivesLengthRegister(t *testing.T) {
+	decl := "read: (v: []u8, i: u32) -> u32"
+	symbols := map[string]bool{"helper": true}
+	epilogue := "\ntrap:\n  brk #1"
+	// len >= 4 proven, then i <= len - 4, then every register holding the
+	// length is reused.
+	guard := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x11\n  cmp w1, #4\n  b.lo trap\n  mov w9, w1\n  sub w9, w9, #4\n  cmp w2, w9\n  b.hi trap\n  mov w9, #0\n  mov w1, #0\n"
+	accepts := []struct{ name, body string }{
+		{"the element at the index, after the length register is reused",
+			guard + "  ldrb w0, [x0, w2, uxtw]\n  ret" + epilogue},
+		{"the third element of the run the slack leaves",
+			guard + "  add w10, w2, #3\n  ldrb w0, [x0, w10, uxtw]\n  ret" + epilogue},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("outlive.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+				t.Fatalf("must pass: %v", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, body, want string }{
+		{"without the proven minimum the subtraction may have wrapped",
+			"  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10\n  mov w9, w1\n  sub w9, w9, #4\n  cmp w2, w9\n  b.hi trap\n  mov w9, #0\n  mov w1, #0\n  ldrb w0, [x0, w2, uxtw]\n  ret" + epilogue,
+			"len >= 4 proven first"},
+		{"an element past the run the slack leaves",
+			guard + "  add w10, w2, #4\n  ldrb w0, [x0, w10, uxtw]\n  ret" + epilogue,
+			"without a dominating index guard"},
+		{"the fact dies with the base register that named the span",
+			guard + "  mov x0, #0\n  ldrb w0, [x0, w2, uxtw]\n  ret" + epilogue,
+			""},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("outlive.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			sig, _ := parseSignature(decl)
+			findings := Check(unit.Functions[0], sig, symbols)
+			if len(findings) == 0 {
+				t.Fatalf("must be refused")
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, findings)
+			}
+		})
+	}
+}

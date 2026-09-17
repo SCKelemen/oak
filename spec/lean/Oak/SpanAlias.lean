@@ -78,11 +78,12 @@ def insertSorted (n : Reg) : List Reg → List Reg
   | [] => [n]
   | x :: xs => if n ≤ x then n :: x :: xs else x :: insertSorted n xs
 
-/-- `spanFact.dropLen`: the register no longer holds the length; the proven
-    minimum lapses when no register does. -/
+/-- `spanFact.dropLen`: the register no longer holds the length. The proven
+    minimum is kept: it is a fact about the span's length in memory, which
+    `SpanMeans` states without reference to any register, so no register
+    write can falsify it (docs/spec/94-assembler.md §9.al). -/
 def SpanFact.dropLen (f : SpanFact) (n : Reg) : SpanFact :=
-  let regs := f.lenRegs.filter (fun l => l != n)
-  { f with lenRegs := regs, hasMin := f.hasMin && !regs.isEmpty }
+  { f with lenRegs := f.lenRegs.filter (fun l => l != n) }
 
 /-- `fact.lenRegs[n] = true`. -/
 def SpanFact.addLen (f : SpanFact) (n : Reg) : SpanFact :=
@@ -228,10 +229,13 @@ theorem mem_dropLen {f : SpanFact} {n l : Reg} (h : l ∈ (f.dropLen n).lenRegs)
   rw [List.mem_filter] at h
   exact ⟨h.1, bne_iff_ne.mp h.2⟩
 
-theorem hasMin_dropLen {f : SpanFact} {n : Reg} (h : (f.dropLen n).hasMin = true) : f.hasMin = true := by
-  unfold SpanFact.dropLen at h
-  simp only [Bool.and_eq_true] at h
-  exact h.1
+theorem hasMin_dropLen {f : SpanFact} {n : Reg} : (f.dropLen n).hasMin = f.hasMin := by
+  unfold SpanFact.dropLen
+  rfl
+
+theorem minLen_dropLen {f : SpanFact} {n : Reg} : (f.dropLen n).minLen = f.minLen := by
+  unfold SpanFact.dropLen
+  rfl
 
 theorem mem_addLen {f : SpanFact} {n l : Reg} (h : l ∈ (f.addLen n).lenRegs) : l = n ∨ l ∈ f.lenRegs := by
   unfold SpanFact.addLen at h
@@ -266,7 +270,9 @@ theorem spanMeans_dropLen {W : World} {σ σ' : RegFile} {d b : Reg} {f : SpanFa
   · intro l hl
     obtain ⟨hl, hne⟩ := mem_dropLen hl
     rw [w_eq_of_eq (hw l hne)]; exact hlen l hl
-  · intro hm; exact hmin (hasMin_dropLen hm)
+  · intro hm
+    rw [minLen_dropLen]
+    exact hmin (hasMin_dropLen.symm.trans hm)
 
 theorem idxMeans_of_writesOnly {σ σ' : RegFile} {d i : Reg} {g : IdxFact}
     (hw : WritesOnly σ σ' d) (hi : i ≠ d) (hg : g.boundReg ≠ (d : Int)) (h : IdxMeans σ i g) : IdxMeans σ' i g := by
@@ -576,7 +582,7 @@ example : lookupReg (movX st0 1 0).regions 2 = some ⟨24, false⟩ := by decide
 example : lookupReg (movX st0 1 0).idx 3 = some ⟨5, 0, false⟩ := by decide
 example : lookupReg (movX st0 1 0).idx 4 = some ⟨-1, 16, false⟩ := by decide
 example : lookupReg (movX st0 1 0).idx 6 = some ⟨5, 2, true⟩ := by decide
-example : lookupReg (movX st1 5 9).spans 0 = some ⟨1, false, false, 4, []⟩ := by decide
+example : lookupReg (movX st1 5 9).spans 0 = some ⟨1, false, true, 4, []⟩ := by decide
 example : lookupReg (movX st1 5 9).spans 5 = none := by decide
 example : lookupReg (movX st1 5 9).regions 5 = none := by decide
 example : lookupReg (movX st1 5 9).idx 5 = none := by decide
