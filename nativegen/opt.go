@@ -42,6 +42,7 @@ const (
 	TransformHoist           = "hoist-invariants"
 	TransformUnroll          = "unroll-reductions"
 	TransformVectorHomes     = "vector-homes"
+	TransformLoopArrayHomes  = "loop-array-homes"
 	TransformCleanup         = "late-cleanup"
 	TransformVectorize       = "vectorize-reductions"
 	TransformVectorMaps      = "vectorize-maps"
@@ -394,6 +395,17 @@ func Transforms() []opt.Transform {
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
 		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index u32/u64 array elements live in
+			// callee-saved registers for one loop (loop_array_homes.go).
+			// The full verifier compares the machine candidate with the
+			// unchanged Oak reference; unsupported shapes remain memory-backed.
+			name: TransformLoopArrayHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopArrayHomes },
+			apply:   func(l Lane) Lane { l.LoopArrayHomes = true; return l },
+			fired:   LoopArrayHomes,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
 			// linear scan, its slots moved into registers, its copies
@@ -497,6 +509,7 @@ func PlainLane(lane Lane) Lane {
 	lane.HoistInvariants = false
 	lane.RotateLoops = false
 	lane.VectorHomes = false
+	lane.LoopArrayHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
 	lane.ShareVectorAddresses = false

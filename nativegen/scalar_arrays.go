@@ -84,6 +84,9 @@ func elementName(name string, k int64) string { return fmt.Sprintf("%s#%d", name
 // scalarElement recognizes `name[k]` over a replaced array at a constant
 // index: the hidden local's name.
 func (g *generator) scalarElement(e *ast.IndexExpression) (string, scalar, bool) {
+	if hidden, elem, found := g.loopArrayElement(e); found {
+		return hidden, elem, true
+	}
 	if e == nil || e.Dot {
 		return "", scalar{}, false
 	}

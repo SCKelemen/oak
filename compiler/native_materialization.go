@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v13 exposes eligible frame X-pair initializers to W-word promotion,
-	// on top of v12's paired-load/tied-operand and fallthrough corrections.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v13")
+	// v14 adds independently keyed loop-local scalar array homes to v13's
+	// frame-pair initializer and W-word promotion recipe.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v14")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -64,6 +64,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"rotate-loops", lane.RotateLoops},
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
+		{"loop-array-homes", lane.LoopArrayHomes},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},
