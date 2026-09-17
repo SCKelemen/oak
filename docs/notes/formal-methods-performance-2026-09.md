@@ -391,6 +391,64 @@ built diagrams. Because both engines changed identically, `oak prove
 | `BenchmarkTheoremsLattice` (largest diagram) | 0.96 s (1,482,423 nodes) | 0.54–0.64 s (1,340,606 nodes) |
 | `BenchmarkBDDAdd64` | 0.9–1.1 ms | 0.61 ms |
 
+## 4h. Eighth increment landed: the native build's fixed costs (2026-09-16/17)
+
+A profile of the CRC/SHA program's native build (`compiler.EmitNative`
+over `crcShaProgram`, verdict cache off) found the time outside
+bit-blasting in costs paid once per candidate, per implication, or per
+statement that could be paid once per pass:
+
+- **Implications decided once per proof** (`asm/loops.go`,
+  `nodeBudget.decided`). The congruence rule descends both sides by
+  operand pairs and the sides are DAGs, so a shared pair was decided
+  once per parent: `crc32c_chunk`'s decision made half a million
+  implications in 150 s without finishing; decided once each it is
+  proven in 7 s. A body's decision takes a loop proof's node allowance
+  (it is one decision where a loop proof spreads its allowance over a
+  coupling's implications).
+- **The checker's fingerprint once per lowering pass**
+  (`compiler/native_bodies.go`). `MaterializationKey` hashed
+  `NativeLoweringFingerprint()` — every position-keyed fact in the
+  program — into every candidate's key: 20 s of 434.
+- **Constant folds without a node or a memo** (`asm/verify.go`). The
+  constructors folded two constants by building the node and evaluating
+  it through a fresh memo map; the comparison folds through
+  `conditionHolds`, the binary operation through `evalBinary`: `cmpTerm`
+  8.4 s → 2.0 s in the profile of one body's candidates.
+- **The diagram's tables mark an empty slot with zero** (`asm/bdd.go`).
+  The -1 sentinel filled every entry at allocation and at every doubling
+  — twelve seconds of an early profile in the four diagrams every
+  implication builds.
+- **The machine passes over slices instead of maps** (`machine/`). The
+  simplifier recomputes webs and liveness after every propagated copy,
+  and the region scheduler asks dependence for every pair; the state
+  those passes held in maps of maps, cloned per block per iteration, or
+  built per pair, is now sorted site slices per register (webs), bitsets
+  over the webs (liveness), an index by instruction position
+  (`propagateCopy`, `eliminateDead`), and registers precomputed once per
+  scheduling (`dependence`). `releaseDead` sorted every name of a
+  statement list's last-use map at every statement; the names sort once.
+  Each change emits a byte-identical object for `benchmarks/kernels/oak`.
+
+| Micro-benchmark (synthetic three-loop nest, twenty registers) | Before | After |
+| --- | ---: | ---: |
+| `Webs` | 5.6 ms, 18,360 allocs | 0.24 ms, 1,872 allocs |
+| `Liveness` | 0.4 ms, 163 KB | 0.08 ms, 59 KB |
+| `Simplify` (one round) | 0.65 ms, 942 KB | 0.55 ms, 700 KB |
+| `Schedule` | 9 ms, 79,336 allocs | 0.5 ms, 3,013 allocs |
+
+| CRC/SHA native build, quiet host | 2026-09-16 | 2026-09-17 |
+| --- | ---: | ---: |
+| Wall time | 356 s | 290 s |
+| `machine.ReallocateWith` (cumulative) | 115 s | 1.8 s |
+| `machine.Schedule` (cumulative) | 19.5 s | 15 s → removed after |
+| `MaterializationKey` (cumulative) | 23.7 s | 2.7 s |
+
+What the profile leaves is the blasting itself (`bdd.apply`, 38 percent),
+the implication prover (9 percent), the memo table's growth (5 percent —
+only a bounded, lossy computed table would remove it, at the price of
+hit rate), and the witness valuations (5 percent).
+
 ## 5. What carries over from the codec track, unchanged
 
 The discipline is the same one that took the derived JSON decoder from
