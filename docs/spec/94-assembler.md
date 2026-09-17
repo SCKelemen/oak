@@ -9395,6 +9395,21 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**Probing a body that calls (2026-09-17).** The slots a store at a
+data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its
+guard) are found by running the body once on the fresh register state
+(the probe of `summarizeLoop`); a body with a call was not probed, since
+the probe would have summarized the call — its loops, its cells — a
+second time. `sha256_update`'s byte loop calls the block compression
+when the block fills, so its 64-byte block was never loop-carried on the
+machine side, the Oak chunks `next.block[0..7]…` had no image, and the
+coupling search spent its budget on affine pairings. The probe now runs
+in a probing mode where a call clobbers the caller-saved registers and
+binds its results afresh, summarizing nothing (`pathExecutor.probing`);
+bodies with inner loops are still not probed. The slots a callee writes
+through an address it was handed are not discovered by the probe — the
+summary proper lists them — so the discovery is conservative.
+
 **Header values spelled apart (2026-09-17).** A coupling candidate is an
 equality when the two sides' header values are one term, else an affine
 image with the headers' difference as its offset, tried after every
