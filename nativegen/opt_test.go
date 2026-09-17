@@ -188,6 +188,60 @@ func TestMetricsBoundsRemainderLoops(t *testing.T) {
 	}
 }
 
+func TestConstantLoopTripsThroughSlackTemporary(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Class: asm.ClassW, Num: n} }
+	imm := func(v int64) asm.Immediate { return asm.Immediate{Value: v} }
+	items := []asm.Item{
+		ins("mov", w(3), w(31)),
+		asm.Label{Name: "loop_1"},
+		ins("movz", w(10), imm(128)),
+		ins("cmp", w(10), imm(4)),
+		asm.Instruction{Mnemonic: "b", Cond: "lo", Operands: []asm.Operand{asm.Symbol{Name: "done_2"}}},
+		ins("movz", w(10), imm(128)),
+		ins("sub", w(10), w(10), imm(4)),
+		ins("cmp", w(3), w(10)),
+		asm.Instruction{Mnemonic: "b", Cond: "hi", Operands: []asm.Operand{asm.Symbol{Name: "done_2"}}},
+		ins("add", w(3), w(3), imm(4)),
+		ins("b", asm.Symbol{Name: "loop_1"}),
+		asm.Label{Name: "done_2"},
+		ins("ret"),
+	}
+	if got := constantLoopTrips(items, 1, 10, 3, 4, map[string]int{"loop_1": 1, "done_2": 11}); got != 32 {
+		t.Fatalf("trips = %d, want 32", got)
+	}
+}
+
+func TestConstantLoopTripsThroughHoistedSlackTemporary(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Class: asm.ClassW, Num: n} }
+	imm := func(v int64) asm.Immediate { return asm.Immediate{Value: v} }
+	items := []asm.Item{
+		ins("mov", w(3), w(31)),
+		ins("movz", w(13), imm(128)),
+		ins("sub", w(16), w(13), imm(4)),
+		asm.Label{Name: "loop_1"},
+		ins("cmp", w(3), w(16)),
+		asm.Instruction{Mnemonic: "b", Cond: "hi", Operands: []asm.Operand{asm.Symbol{Name: "done_2"}}},
+		ins("add", w(3), w(3), imm(4)),
+		ins("b", asm.Symbol{Name: "loop_1"}),
+		asm.Label{Name: "done_2"},
+		ins("ret"),
+	}
+	labels := map[string]int{"loop_1": 3, "done_2": 8}
+	if got := constantLoopTrips(items, 3, 7, 3, 4, labels); got != 32 {
+		t.Fatalf("hoisted trips = %d, want 32", got)
+	}
+	written := append([]asm.Item(nil), items...)
+	written[6] = ins("add", w(16), w(16), imm(1))
+	if got := constantLoopTrips(written, 3, 7, 3, 4, labels); got != 0 {
+		t.Fatalf("loop-written bound yielded %d trips", got)
+	}
+	calling := append([]asm.Item(nil), items...)
+	calling[6] = ins("bl", asm.Symbol{Name: "callee"})
+	if got := constantLoopTrips(calling, 3, 7, 3, 4, labels); got != 0 {
+		t.Fatalf("call-clobbered bound yielded %d trips", got)
+	}
+}
+
 func TestFindingLine(t *testing.T) {
 	if line, ok := FindingLine("count_hits:12: element access not admitted"); !ok || line != 12 {
 		t.Fatalf("got %d %v", line, ok)
@@ -205,7 +259,13 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	if got := len(registry.Transforms()); got != 26 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, Fuse: true, FuseExits: true, Schedule: true})
+	rotate, _ := registry.Lookup(TransformRotate)
+	gatedRotate, isGated := rotate.(opt.Gated)
+	neutralRotate, hasShape := rotate.(opt.Neutral)
+	if !isGated || !gatedRotate.NeedsVerdict() || !hasShape || neutralRotate.ShapeNeutral() {
+		t.Fatalf("loop rotation must preserve an unrotated fallback until its changed control shape proves")
+	}
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollFills: true, Fuse: true, FuseExits: true, Schedule: true})
 	if PlainLane(Lane{UnrollVectorMaps: true}).UnrollVectorMaps {
 		t.Fatal("plain lane retained map unrolling")
 	}
@@ -216,7 +276,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	if gated, ok := sharing.(opt.Gated); !ok || !gated.NeedsVerdict() {
 		t.Fatal("late address sharing must require a semantic verdict")
 	}
-	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.CarryLoopIndices || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.ShareVectorAddresses || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.UnrollConstant || plain.UnrollFills || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -229,7 +289,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.Cleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.UnrollConstant || lane.UnrollFills || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
@@ -239,7 +299,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
+		if applied != (tr.Name() == TransformOptIR || tr.Name() == TransformUnroll || tr.Name() == TransformUnrollFills || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate || tr.Name() == TransformSchedule) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}

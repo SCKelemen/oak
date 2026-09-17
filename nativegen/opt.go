@@ -41,6 +41,7 @@ const (
 	TransformReuseFlags      = "reuse-flags"
 	TransformHoist           = "hoist-invariants"
 	TransformUnroll          = "unroll-reductions"
+	TransformUnrollFills     = "unroll-fills"
 	TransformVectorHomes     = "vector-homes"
 	TransformLoopArrayHomes  = "loop-array-homes"
 	TransformLoopResultHomes = "loop-result-homes"
@@ -291,6 +292,17 @@ func Transforms() []opt.Transform {
 			fired:   Unrolled,
 		},
 		&laneTransform{
+			// Scalar blocked zero fills (nativegen/fill_unroll.go): four
+			// ordered u64 stores per main trip and the original remainder,
+			// licensed by Oak.BlockedFill.blocked_fill_eq. The stores remain
+			// scalar; pair-store custody is a separate, unmet obligation.
+			name: TransformUnrollFills, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  bothLanes,
+			applied: func(l Lane) bool { return l.UnrollFills },
+			apply:   func(l Lane) Lane { l.UnrollFills = true; return l },
+			fired:   UnrolledFills,
+		},
+		&laneTransform{
 			// Reduction vectorization (nativegen/vector_reduction.go): the
 			// four accumulators as the lanes of fixed vectors — two
 			// simd.U64x2 or one simd.U32x4 — under the same license
@@ -373,7 +385,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.HoistInvariants = true; return l },
 			fired:   Hoisted,
 		},
-		&laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// Bottom-tested loops (nativegen/rotate.go; §9 "Bottom-tested
 			// loops"): a loop over a conjunction of simple tests runs its
 			// test at the tail as a conditional back edge, one branch an
@@ -385,7 +397,7 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.RotateLoops },
 			apply:   func(l Lane) Lane { l.RotateLoops = true; return l },
 			fired:   RotatedLoops,
-		},
+		}},
 		&laneTransform{
 			// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
 			// calling function's vector locals in v16–v31, saved around a
@@ -554,6 +566,7 @@ func PlainLane(lane Lane) Lane {
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
 	lane.UnrollConstant = false
+	lane.UnrollFills = false
 	lane.NoReductions = true
 	return lane
 }
@@ -803,6 +816,9 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		m.LoopStalls += body.Stalls
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
 			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
+				// The recurrence web is also the best identity for the
+				// cost-only constant-bound fallback below.
+				indices[k] = sh.Index.Reg.Num
 				// The analysis found the index: its stride and bound
 				// replace the heuristic's; a loop it could not read keeps
 				// the heuristic's reading.
@@ -812,9 +828,181 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				}
 			}
 		}
+		if body.MaxTrips == 0 && body.Stride > 0 && indices[k] >= 0 {
+			body.MaxTrips = constantLoopTrips(fn.Items, loop.from, loop.to, indices[k], body.Stride, labelAt)
+		}
 		m.LoopBodies = append(m.LoopBodies, body)
 	}
 	return m
+}
+
+// constantLoopTrips recovers a cost-only bound from the generator's closed
+// unsigned exit shapes when recurrence analysis leaves a computed constant
+// in a temporary. It grants no checker or verifier authority.
+func constantLoopTrips(items []asm.Item, from, to, index, stride int, labels map[string]int) int {
+	start, known := constantRegisterBefore(items, from, index, 0)
+	if !known || start < 0 || stride <= 0 {
+		return 0
+	}
+	for i := from + 1; i < to; i++ {
+		cmp, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction || cmp.Mnemonic != "cmp" || len(cmp.Operands) != 2 {
+			continue
+		}
+		left, isRegister := cmp.Operands[0].(asm.Register)
+		if !isRegister || left.Num != index || (left.Class != asm.ClassW && left.Class != asm.ClassX) {
+			continue
+		}
+		branch, isBranch := items[i+1].(asm.Instruction)
+		if !isBranch || (branch.Mnemonic != "b" && branch.Mnemonic != "b.") || (branch.Cond != "hs" && branch.Cond != "hi") {
+			continue
+		}
+		target, exists := labels[branchTarget(branch)]
+		if !exists || (target >= from && target <= to) {
+			continue
+		}
+		bound, known := constantLoopBound(items, from, to, i, cmp.Operands[1], left.Class)
+		if !known || bound < start {
+			continue
+		}
+		delta := bound - start
+		step := int64(stride)
+		var trips int64
+		if branch.Cond == "hi" {
+			trips = delta/step + 1
+		} else if delta > 0 {
+			trips = (delta + step - 1) / step
+		}
+		if trips > 0 && trips <= 1<<31 {
+			return int(trips)
+		}
+	}
+	return 0
+}
+
+// constantLoopBound resolves a compare operand at the branch, then permits
+// one cost-only look through the loop header for an invariant register. The
+// latter is fail closed: a definition anywhere in the loop, or a call that
+// may clobber an implicit caller-saved register, leaves the trip count unknown.
+func constantLoopBound(items []asm.Item, from, to, at int, operand asm.Operand, class asm.RegClass) (int64, bool) {
+	if value, known := constantOperandBefore(items, at, operand, class, 0); known {
+		return value, true
+	}
+	reg, isRegister := operand.(asm.Register)
+	if !isRegister || reg.Class != class {
+		return 0, false
+	}
+	for i := from; i <= to && i < len(items); i++ {
+		ins, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction {
+			continue
+		}
+		if isCall(asm.ArchArm64, ins) || writesGeneral(ins, reg.Num) {
+			return 0, false
+		}
+	}
+	return constantRegisterBefore(items, from, reg.Num, 0)
+}
+
+func constantOperandBefore(items []asm.Item, at int, operand asm.Operand, class asm.RegClass, depth int) (int64, bool) {
+	switch value := operand.(type) {
+	case asm.Immediate:
+		if value.Shift != 0 {
+			return 0, false
+		}
+		return value.Value, value.Value >= 0
+	case asm.Register:
+		if value.Class != class {
+			return 0, false
+		}
+		return constantRegisterBefore(items, at, value.Num, depth)
+	default:
+		return 0, false
+	}
+}
+
+// constantRegisterBefore follows only a nearest straight-line W/X
+// definition. Labels and control or memory instructions terminate the walk;
+// arithmetic that would wrap is refused rather than modeled.
+func constantRegisterBefore(items []asm.Item, at, register, depth int) (int64, bool) {
+	if depth > 4 {
+		return 0, false
+	}
+	for i := at - 1; i >= 0; i-- {
+		if _, isLabel := items[i].(asm.Label); isLabel {
+			return 0, false
+		}
+		ins, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction {
+			return 0, false
+		}
+		if isCall("arm64", ins) || isLoad("arm64", ins) || isStore("arm64", ins) {
+			return 0, false
+		}
+		if isBranch("arm64", ins) {
+			// A conditional branch before this point either exits or falls
+			// through without changing a register. Along the only path that
+			// reaches `at`, its value is preserved. An unconditional edge can
+			// introduce a join the linear scan cannot model.
+			if ins.Cond == "" {
+				return 0, false
+			}
+			continue
+		}
+		if !writesGeneral(ins, register) {
+			continue
+		}
+		if len(ins.Operands) < 2 {
+			return 0, false
+		}
+		destination, ok := ins.Operands[0].(asm.Register)
+		if !ok || destination.Num != register || (destination.Class != asm.ClassW && destination.Class != asm.ClassX) {
+			return 0, false
+		}
+		limit := int64(^uint32(0))
+		if destination.Class == asm.ClassX {
+			limit = int64(^uint64(0) >> 1)
+		}
+		switch ins.Mnemonic {
+		case "mov":
+			source, ok := ins.Operands[1].(asm.Register)
+			if !ok || source.Class != destination.Class {
+				return 0, false
+			}
+			if source.ZeroRegister() {
+				return 0, true
+			}
+			return constantRegisterBefore(items, i, source.Num, depth+1)
+		case "movz":
+			immediate, ok := ins.Operands[1].(asm.Immediate)
+			if !ok || immediate.Value < 0 || immediate.Shift < 0 || immediate.Shift > 48 {
+				return 0, false
+			}
+			value := immediate.Value << immediate.Shift
+			return value, value >= 0 && value <= limit
+		case "add", "sub":
+			if len(ins.Operands) != 3 {
+				return 0, false
+			}
+			source, ok := ins.Operands[1].(asm.Register)
+			if !ok || source.Class != destination.Class {
+				return 0, false
+			}
+			base, known := constantRegisterBefore(items, i, source.Num, depth+1)
+			immediate, isImmediate := ins.Operands[2].(asm.Immediate)
+			if !known || !isImmediate || immediate.Value < 0 || immediate.Shift != 0 {
+				return 0, false
+			}
+			value := base + immediate.Value
+			if ins.Mnemonic == "sub" {
+				value = base - immediate.Value
+			}
+			return value, value >= 0 && value <= limit
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // isCompare reports an instruction that compares registers for a branch:
