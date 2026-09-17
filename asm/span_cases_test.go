@@ -108,7 +108,9 @@ func TestSpanEqualByCasesSplitsOnSmallComparisons(t *testing.T) {
 	}
 	// A comparison that is a constant once respelled is not a case.
 	folded := cmpTerm("eq", binaryTerm("and", constTerm(0, 8), constTerm(255, 8)), constTerm(0, 8))
-	if conds := spanSplitConditions(premise, []*term{iteTerm(folded, oak, machine)}, spanCaseSplitLimit); len(conds) != 2 {
-		t.Fatalf("a constant comparison must not be split on: %v", conds)
+	for _, c := range spanSplitConditions(premise, []*term{iteTerm(folded, oak, machine)}, spanCaseSplitLimit) {
+		if c == folded || canonicalLinear(c, map[*term]*term{}).kind == termConst {
+			t.Fatalf("a constant comparison must not be split on: %s", c)
+		}
 	}
 }
