@@ -82,44 +82,49 @@ func (f *Function) Webs() ([]*Web, error) {
 			addEntry(d.Reg, d.Bits)
 		}
 	}
-	defSite := make(map[*Instr]int, len(f.Instrs)) // first definition site per instruction
-	for _, ins := range f.Instrs {
-		defSite[ins] = len(sites)
+	// An instruction's definitions are consecutive sites from its base.
+	defBase := make([]int, len(f.Instrs))
+	for i, ins := range f.Instrs {
+		defBase[ins.Index] = len(sites)
+		if ins.Index != i {
+			return nil, fmt.Errorf("machine: instruction %d indexed %d", i, ins.Index)
+		}
 		for _, d := range ins.Defs {
 			sites = append(sites, site{Instr: ins, Access: d, Def: true})
 		}
 	}
-	// Reaching sets are sorted and immutable. Transfers replace a register's
-	// whole set, and joins allocate only when the sets differ. States can
-	// therefore share their sets without a deep copy at every block or a
-	// singleton allocation at every definition. Simplify rebuilds these webs
-	// after each propagated copy, making those allocations particularly costly.
-	singletons := make([]int, len(sites))
-	for i := range singletons {
-		singletons[i] = i
+	// single[i] is the set of the one site i, shared: sets are never
+	// changed in place.
+	single := make([][]int, len(sites))
+	for i := range single {
+		single[i] = []int{i}
 	}
-	type rd map[Reg][]int
-	clone := func(s rd) rd {
-		out := make(rd, len(s))
-		for r, set := range s {
-			out[r] = set
-		}
-		return out
-	}
+	// Reaching definitions per block, per register, as sorted sets of
+	// site indices. A register's index is its entry site's (the entry
+	// sites are the first len(entry) sites, one per register, in the
+	// order the registers were met), so a state is a slice with one set
+	// per register, and the sets are never changed in place (a
+	// definition replaces its register's set, a merge builds a new one).
+	// Nearly every set is one site; the maps of maps this held — cloned
+	// once per block per iteration, by the simplifier's every round —
+	// were a fifteenth of a native build. The states live in buffers
+	// allocated once here.
+	nregs := len(entry)
+	type rd [][]int
 	in := make([]rd, len(f.Blocks))
 	out := make([]rd, len(f.Blocks))
-	through := func(b *Block, state rd) rd {
-		state = clone(state)
+	for i := range f.Blocks {
+		in[i], out[i] = make(rd, nregs), make(rd, nregs)
+	}
+	scratch := make(rd, nregs)
+	// through runs the block's definitions over a copy of state in dst.
+	through := func(b *Block, state, dst rd) {
+		copy(dst, state)
 		for _, ins := range b.Instrs {
 			for k, d := range ins.Defs {
-				s := defSite[ins] + k
-				state[d.Reg] = singletons[s : s+1]
+				dst[entry[d.Reg]] = single[defBase[ins.Index]+k]
 			}
 		}
-		return state
-	}
-	for i := range f.Blocks {
-		in[i], out[i] = rd{}, rd{}
 	}
 	changed := true
 	for iter := 0; changed; iter++ {
@@ -128,25 +133,29 @@ func (f *Function) Webs() ([]*Web, error) {
 		}
 		changed = false
 		for i, b := range f.Blocks {
-			merged := rd{}
+			merged := in[i]
+			for r := range merged {
+				merged[r] = nil
+			}
 			if i == 0 || len(b.Preds) == 0 {
 				// The entry holds every register's entry value; so, as far
 				// as the lift can tell, does a block the flow never
 				// reaches. A loop whose header is the entry block merges
 				// its back edges below as well.
-				for r, s := range entry {
-					merged[r] = singletons[s : s+1]
+				for r := range merged {
+					merged[r] = single[r]
 				}
 			}
 			for _, p := range b.Preds {
 				for r, set := range out[p.Index] {
-					merged[r] = mergeReachingSites(merged[r], set)
+					if set != nil {
+						merged[r] = mergeReachingSites(merged[r], set)
+					}
 				}
 			}
-			in[i] = merged
-			next := through(b, in[i])
-			if !sameRD(next, out[i]) {
-				out[i] = next
+			through(b, merged, scratch)
+			if !sameRD(scratch, out[i]) {
+				copy(out[i], scratch)
 				changed = true
 			}
 		}
@@ -165,18 +174,23 @@ func (f *Function) Webs() ([]*Web, error) {
 		return x
 	}
 	union := func(a, b int) { parent[find(a)] = find(b) }
-	useOf := map[int][]site{} // root → uses (filled after unions settle)
 	type pendingUse struct {
-		s     site
-		first int
+		s    site
+		defs []int
+	}
+	type reachingOperand struct {
+		access Access
+		site   int
 	}
 	var uses []pendingUse
+	var reaching []reachingOperand // an instruction's use operands → one definition reaching each
+	state := scratch
 	for i, b := range f.Blocks {
-		state := clone(in[i])
+		copy(state, in[i])
 		for _, ins := range b.Instrs {
-			reaching := map[Access]int{} // a use's operand → one definition reaching it
+			reaching = reaching[:0]
 			for _, u := range ins.Uses {
-				set := state[u.Reg]
+				set := state[entry[u.Reg]]
 				if len(set) == 0 {
 					// A read of a register nothing defined, not even at
 					// entry: the entry set covers every register, so this
@@ -187,28 +201,32 @@ func (f *Function) Webs() ([]*Web, error) {
 				for _, k := range set[1:] {
 					union(first, k)
 				}
-				reaching[u] = first
-				uses = append(uses, pendingUse{site{Instr: ins, Access: u}, first})
+				reaching = append(reaching, reachingOperand{u, first})
+				uses = append(uses, pendingUse{site{Instr: ins, Access: u}, set})
 			}
 			for k, d := range ins.Defs {
 				// An operand both read and written (an accumulating form, a
 				// lane insertion) is one register: its definition joins the
 				// web it reads.
 				if !d.Implicit {
-					if from, ok := reaching[d]; ok {
-						union(defSite[ins]+k, from)
+					for _, r := range reaching {
+						if r.access == d {
+							union(defBase[ins.Index]+k, r.site)
+							break
+						}
 					}
 				}
-				s := defSite[ins] + k
-				state[d.Reg] = singletons[s : s+1]
+				state[entry[d.Reg]] = single[defBase[ins.Index]+k]
 			}
 		}
 	}
+	// root → uses, filled now that the unions have settled.
+	useOf := make([][]site, len(sites))
 	for _, pu := range uses {
-		root := find(pu.first)
+		root := find(pu.defs[0])
 		useOf[root] = append(useOf[root], pu.s)
 	}
-	webOf := map[int]*Web{}
+	webOf := make([]*Web, len(sites))
 	var webs []*Web
 	for i, s := range sites {
 		root := find(i)
@@ -224,7 +242,9 @@ func (f *Function) Webs() ([]*Web, error) {
 		w.Defs = append(w.Defs, s)
 	}
 	for root, us := range useOf {
-		webOf[root].Uses = append(webOf[root].Uses, us...)
+		if len(us) > 0 {
+			webOf[root].Uses = append(webOf[root].Uses, us...)
+		}
 	}
 	for _, w := range webs {
 		w.pin(f.t)
@@ -262,13 +282,12 @@ func mergeReachingSites(a, b []int) []int {
 	return append(merged, b[j:]...)
 }
 
-func sameRD(a, b map[Reg][]int) bool {
+func sameRD(a, b [][]int) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for r, sa := range a {
-		sb, ok := b[r]
-		if !ok || !slices.Equal(sa, sb) {
+	for i := range a {
+		if !slices.Equal(a[i], b[i]) {
 			return false
 		}
 	}
