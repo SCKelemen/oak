@@ -5668,6 +5668,25 @@ element term `T[k]` the span reading of the table gives — the same term
 the asm side's load through the table's address yields — for tables of
 at most sixty-four elements.
 
+**Lane-wise accumulators (2026-09-17, AArch64 lane;
+`nativegen/vector_lanes.go`, `spec/lean/Oak/Lanes.lean`, the
+`vectorize-lanes` candidate).** A loop under the slack guard `len(a) >= L
+&& i <= len(a) - L` whose body is `L` statements `acc[k] = acc[k] + E_k`,
+`k` in order, each `E_k` lane 0's expression with every element read moved
+`k` along the index (`a[i + k]`), over spans of one length, invariant
+scalars, and constants, then `i = i + L` — the tiled reduction's shape,
+`acc` an owned array of `L` float elements the body indexes by constants —
+becomes the same loop over `L / lanes` vector accumulators (one to four):
+each gathered from `acc` before the loop (a splat and inserts), each trip
+loading the block's elements as vectors, applying the expression
+lane-wise, and adding each lane to its accumulator, and each lane stored
+back into `acc` after the loop (`extract`), before the remainder loop and
+whatever reads the accumulators. Lane `k` meets exactly the values `acc[k]`
+met, in the same order, so a float accumulator rounds as before; the
+license is `Oak.Lanes.blocks_eq` — the block's statements touch distinct
+lanes, so their order is immaterial and one lane-wise step is all of them
+— and the verifier judges the assembly against the rewritten body.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
