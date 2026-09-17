@@ -99,6 +99,38 @@ regression from these noisy observations.
 
 [Raw observations and provenance](results/stage2-affine-index-m4-max-2026-09-17.json).
 
+## OS stage-2: eliminate dominated span guards, 2026-09-17
+
+Against `23d355a6`, the proof-gated `elide-redundant-guards` candidate
+removes a repeated `cmp wIndex, wLength; b.hs trap` only when an identical
+earlier trap guard dominates it, neither operand changes on any path, and
+the removed comparison's flags are dead. Calls delimit the analysis. The
+first guard still traps before every effect on invalid inputs, and no
+memory operation moves or disappears. The unchanged verifier proves each
+selected body.
+
+| Selected body | Before | After | Guard pairs removed |
+| --- | ---: | ---: | ---: |
+| `alloc_table` | 128 | 114 | 7 |
+| `map_page` | 210 | 200 | 5 |
+| `unmap_page` | 339 | 333 | 3 |
+| `translate` | 120 | 116 | 2 |
+
+The actual OS pilot and harness (`37ba2112`, same build settings as the
+preceding stage-2 measurements) passed all five differential tests. After
+one warmup per binary, seven pairs alternated which binary ran first; no
+compiler build or test suite ran during the samples. The non-isolated M4
+Max load average was roughly 16–17 at the start/end.
+
+Decoder-cycle medians were **594.1 → 585.8 ns/cycle**. Six of seven pairs
+improved; the median paired candidate/baseline ratio was **0.984** (1.6%
+lower). Translation medians were 4.40 → 4.38 ns/op, with four of seven
+pairs improving and a median paired ratio of 0.993. The decoder result is
+a modest measured gain consistent with the smaller proven bodies, not an
+isolated-host throughput bound.
+
+[Raw observations and provenance](results/stage2-redundant-guards-m4-max-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

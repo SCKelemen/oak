@@ -1619,6 +1619,10 @@ type Lane struct {
 	// CarryLoopIndices replaces recomputed base+i indices in scalar fills
 	// with a carried index and modular endpoint. Selected only when proven.
 	CarryLoopIndices bool
+	// ElideRedundantGuards removes an identical repeated trapping span guard
+	// when an earlier guard dominates it and its operands stay unchanged.
+	// Selected only when the whole machine body proves.
+	ElideRedundantGuards bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -1890,6 +1894,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		}
 		if lane.CarryLoopIndices {
 			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
+		}
+		if lane.ElideRedundantGuards {
+			out.Items, redundantGuards[out] = elideRedundantGuards(out.Items)
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:

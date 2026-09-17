@@ -5908,6 +5908,35 @@ See `benchmarks/native/results/stage2-affine-index-m4-max-2026-09-17.json`
 for raw timings and provenance. Static work removed is not a measured
 whole-OS timing claim.
 
+**Dominated span guards (2026-09-17, AArch64 lane).** The
+`elide-redundant-guards` machine candidate
+(`nativegen/redundant_guards.go`) recognizes adjacent `cmp wI, wL; b.hs
+trap` pairs whose target label immediately traps. It removes a later pair
+only when the earlier identical pair dominates it in the item-level CFG,
+both registers are unchanged on every path between them, no call lies on
+such a path, and no reachable instruction consumes the later comparison's
+flags before overwriting them. `asm.ReadsFlags` exposes the parser's exact
+NZCV-read classification so the transform does not maintain a second
+instruction list. Unknown direct targets refuse the pass.
+
+The first guard remains. An invalid index therefore traps there before any
+effect, as it did before; a path reaching a removed guard has already
+established the same unsigned bound. No load or store is removed, widened,
+reordered, or moved. This is a **verdict-gated** candidate and adds no
+checker or verifier rule: only a whole body the existing verifier proves
+can select it. Unit refusals cover non-dominance, either operand changing
+on one arm, calls, live flags, a different comparison/target, and a target
+that does not trap. The compiler differential covers both branch arms and
+the invalid-domain trap.
+
+On the actual stage-2 pilot, the selected `proven` bodies remove 7 guard
+pairs from `alloc_table` (128→114 instructions), 5 from `map_page`
+(210→200), 3 from `unmap_page` (339→333), and 2 from `translate` (120→116).
+All five OS differential tests pass. Seven alternating M4 Max pairs measure
+the complete decoder cycle at a median paired ratio of 0.984 (1.6% lower),
+with six pairs faster; see
+`benchmarks/native/results/stage2-redundant-guards-m4-max-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with

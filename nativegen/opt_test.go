@@ -202,7 +202,7 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 25 {
+	if got := len(registry.Transforms()); got != 26 {
 		t.Fatalf("%d transforms", got)
 	}
 	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, Fuse: true, FuseExits: true, Schedule: true})
