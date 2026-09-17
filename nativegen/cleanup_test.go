@@ -7,6 +7,18 @@ import (
 	"github.com/SCKelemen/oak/asm"
 )
 
+func postScheduleCleanupText(t *testing.T, body string) (string, int) {
+	t.Helper()
+	unit, errs := asm.ParseUnit("c.oakasm", "f: (a: u32, b: u32) -> u32 = {\n  bind w0 = a\n  bind w1 = b\n  clobber w9, w10, w19\n"+body+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := *unit.Functions[0]
+	fn.Arch = ""
+	n := postScheduleCleanup(&fn)
+	return Describe(&fn), n
+}
+
 func cleanupText(t *testing.T, body string) (string, int) {
 	t.Helper()
 	unit, errs := asm.ParseUnit("c.oakasm", "f: (a: u32, b: u32) -> u32 = {\n  bind w0 = a\n  bind w1 = b\n  clobber w9, w10, w19\n"+body+"\n}\n")
@@ -165,5 +177,65 @@ func TestCleanupFusesFlagBranches(t *testing.T) {
 	out, n = cleanupText(t, "  cmp w2, w1\n  cset w5, hs\n  add w0, w0, #1\n  cbz w5, skip\nskip:\n  ret")
 	if n != 0 {
 		t.Fatalf("an instruction between the cset and the branch refuses the fusion (%d removed):\n%s", n, out)
+	}
+}
+
+// Rule 3 through a run of labels, rule 7 (a masked bit compared and
+// branched on is a test-bit branch), and rule 8 (a zero moved only to be
+// stored is the zero register stored), each with its refusal.
+func TestCleanupLabelRunsBitTestsAndZeroStores(t *testing.T) {
+	out, n := cleanupText(t, "  cmp w2, w1\n  b.lo else_4\n  mov w4, wzr\n  b endif_5\nelse_4:\nendif_5:\n  mov w0, w4\n  ret")
+	if n != 1 || strings.Contains(out, "b endif_5") {
+		t.Fatalf("a branch to a label reached through a run of labels falls through (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  and x9, x7, #1\n  cmp x9, #0\n  b.ne else_8\n  mov w4, wzr\nelse_8:\n  mov w0, w4\n  ret")
+	if n != 2 || !strings.Contains(out, "tbnz w7, #0, else_8") || strings.Contains(out, "cmp x9") {
+		t.Fatalf("a masked bit compared and branched on is tbnz (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  and x9, x7, #4\n  cmp x9, #0\n  b.eq skip\n  mov w4, wzr\nskip:\n  mov w0, w4\n  ret")
+	if n != 2 || !strings.Contains(out, "tbz w7, #2, skip") {
+		t.Fatalf("b.eq on the masked bit is tbz (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  and x9, x7, #1\n  cmp x9, #0\n  b.ne else_8\n  mov x0, x9\n  ret\nelse_8:\n  mov w0, w4\n  ret")
+	if n != 0 {
+		t.Fatalf("a masked value read after the branch keeps its compare (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  and x9, x7, #1\n  cmp x9, #0\n  b.ne else_8\n  mov w4, wzr\n  ret\nelse_8:\n  b.eq done\n  mov w0, w4\ndone:\n  ret")
+	if strings.Contains(out, "tbnz") {
+		t.Fatalf("a target block that reads the flags refuses the fusion:\n%s", out)
+	}
+	out, n = cleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  ret")
+	if n != 0 {
+		t.Fatalf("the early cleanup leaves zero stores to the post-schedule pass (%d removed):\n%s", n, out)
+	}
+	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  ret")
+	if n != 1 || !strings.Contains(out, "str xzr, [x14]") {
+		t.Fatalf("a zero moved only to be stored is the zero register stored (%d removed):\n%s", n, out)
+	}
+	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  add x0, x9, #1\n  ret")
+	if strings.Contains(out, "str xzr") {
+		t.Fatalf("a zero read after the store keeps its register:\n%s", out)
+	}
+}
+
+// Rule 9: a Bool materialized only to be selected on selects on the
+// cset's condition; a read of the Bool after the select, or a flag-setting
+// instruction between, keeps the shape.
+func TestCleanupFusesFlagSelects(t *testing.T) {
+	out, n := cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  movz w9, #3\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  ret")
+	if n != 2 || !strings.Contains(out, "csel w0, w9, w2, eq") || strings.Contains(out, "cset") {
+		t.Fatalf("the select reads the compare's flags (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, lo\n  cmp w3, #0\n  csel w0, w9, w2, eq\n  ret")
+	if n != 2 || !strings.Contains(out, "csel w0, w9, w2, hs") {
+		t.Fatalf("eq after the compare is the inverted condition (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  add w0, w0, w3\n  ret")
+	if strings.Contains(out, "csel w0, w9, w2, eq") {
+		t.Fatalf("a Bool read after the select keeps its cset:\n%s", out)
+	}
+	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  add w9, w9, #1\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  ret")
+	if strings.Contains(out, "csel w0, w9, w2, eq") {
+		t.Fatalf("an arithmetic instruction between refuses the fusion:\n%s", out)
 	}
 }
