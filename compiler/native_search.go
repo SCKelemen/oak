@@ -27,15 +27,18 @@ import (
 // nativeDriver lowers, keys, measures, checks, and verifies one function's
 // candidates.
 type nativeDriver struct {
-	source       *ast.FunctionStatement
-	functions    map[string]*ast.FunctionStatement
-	externs      map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
-	records      map[string]*ast.RecordLiteral
-	adts         map[string]*ast.ADTType
-	constants    map[string]asm.Constant
-	tc           *typechecker.TypeChecker
-	symbols      map[string]bool
-	declarations string
+	// The allocation proposal cache lives for this function's search only.
+	// It neither caches a verdict nor skips candidate admission.
+	compileSession nativegen.CompileSession
+	source         *ast.FunctionStatement
+	functions      map[string]*ast.FunctionStatement
+	externs        map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
+	records        map[string]*ast.RecordLiteral
+	adts           map[string]*ast.ADTType
+	constants      map[string]asm.Constant
+	tc             *typechecker.TypeChecker
+	symbols        map[string]bool
+	declarations   string
 	// tcFingerprint is tc.NativeLoweringFingerprint(), taken once for the
 	// lowering pass: the checker's facts are fixed after checking, and the
 	// fingerprint hashes every position-keyed one in the program — taken
@@ -53,7 +56,7 @@ type nativeDriver struct {
 // Materialize lowers the candidate's lane configuration.
 func (d *nativeDriver) Materialize(c *opt.Candidate) error {
 	lane := c.Config.(nativegen.Lane)
-	fn, err := nativegen.CompileFor(lane, d.source, d.functions, d.records, d.adts, d.constants, d.tc)
+	fn, err := d.compileSession.CompileFor(lane, d.source, d.functions, d.records, d.adts, d.constants, d.tc)
 	if err != nil {
 		return err
 	}
@@ -206,37 +209,39 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 // setAside spells, in the compiler's established phrasing, that a
 // transform's form was tried and not kept.
 var setAside = map[string]string{
-	nativegen.TransformStrength:           "keeps its plain arithmetic",
-	nativegen.TransformOptIR:              "keeps its direct lowering",
-	nativegen.TransformElide:              "keeps its element guards",
-	nativegen.TransformReuseFlags:         "repeats its compares",
-	nativegen.TransformHoist:              "keeps its loop invariants in place",
-	nativegen.TransformRotate:             "keeps its top-tested loops",
-	nativegen.TransformUnroll:             "keeps its plain reduction",
-	nativegen.TransformUnrollFills:        "keeps its scalar fill loop",
-	nativegen.TransformVectorHomes:        "keeps its vector slots",
-	nativegen.TransformLoopArrayHomes:     "keeps its loop array elements in memory",
-	nativegen.TransformLoopResultHomes:    "keeps its loop result elements in memory",
-	nativegen.TransformCleanup:            "keeps its copies",
-	nativegen.TransformVectorize:          "keeps its scalar reduction",
-	nativegen.TransformVectorMaps:         "keeps its scalar map",
-	nativegen.TransformUnrollMaps:         "keeps one vector per map trip",
-	nativegen.TransformVectorFolds:        "keeps its scalar fold",
-	nativegen.TransformUnrollConst:        "keeps its constant-trip loops",
-	nativegen.TransformUnrollSmall:        "keeps its small constant-trip loops",
-	nativegen.TransformVecBlocks:          "addresses each vector load",
-	nativegen.TransformVectorAddresses:    "keeps separate vector access addresses",
-	nativegen.TransformMultiplyAdd:        "keeps its multiply and add apart",
-	nativegen.TransformValueSelect:        "branches around its conditional",
-	nativegen.TransformReallocate:         "keeps its register assignment",
-	nativegen.TransformCarryIndex:         "recomputes its loop index",
-	nativegen.TransformRedundantGuards:    "keeps its repeated span guards",
-	nativegen.TransformRecordBases:        "recomputes its record-span bases",
-	nativegen.TransformGlobalAddresses:    "recomputes its scalar-global addresses",
-	nativegen.TransformForwardGlobalLoads: "reloads its scalar globals after stores",
-	nativegen.TransformSchedule:           "keeps its instruction order",
-	nativegen.TransformFuse:               "keeps its instructions apart",
-	nativegen.TransformFuseExits:          "keeps its exit tests apart",
+	nativegen.TransformStrength:            "keeps its plain arithmetic",
+	nativegen.TransformOptIR:               "keeps its direct lowering",
+	nativegen.TransformElide:               "keeps its element guards",
+	nativegen.TransformReuseFlags:          "repeats its compares",
+	nativegen.TransformHoist:               "keeps its loop invariants in place",
+	nativegen.TransformRotate:              "keeps its top-tested loops",
+	nativegen.TransformUnroll:              "keeps its plain reduction",
+	nativegen.TransformUnrollFills:         "keeps its scalar fill loop",
+	nativegen.TransformVectorHomes:         "keeps its vector slots",
+	nativegen.TransformLoopArrayHomes:      "keeps its loop array elements in memory",
+	nativegen.TransformLoopResultHomes:     "keeps its loop result elements in memory",
+	nativegen.TransformCleanup:             "keeps its copies",
+	nativegen.TransformPostScheduleCleanup: "keeps its post-schedule copies",
+	nativegen.TransformVectorize:           "keeps its scalar reduction",
+	nativegen.TransformVectorMaps:          "keeps its scalar map",
+	nativegen.TransformUnrollMaps:          "keeps one vector per map trip",
+	nativegen.TransformVectorFolds:         "keeps its scalar fold",
+	nativegen.TransformUnrollConst:         "keeps its constant-trip loops",
+	nativegen.TransformUnrollSmall:         "keeps its small constant-trip loops",
+	nativegen.TransformVecBlocks:           "addresses each vector load",
+	nativegen.TransformVectorAddresses:     "keeps separate vector access addresses",
+	nativegen.TransformMultiplyAdd:         "keeps its multiply and add apart",
+	nativegen.TransformValueSelect:         "branches around its conditional",
+	nativegen.TransformReallocate:          "keeps its register assignment",
+	nativegen.TransformCarryIndex:          "recomputes its loop index",
+	nativegen.TransformRedundantGuards:     "keeps its repeated span guards",
+	nativegen.TransformRecordBases:         "recomputes its record-span bases",
+	nativegen.TransformGlobalAddresses:     "recomputes its scalar-global addresses",
+	nativegen.TransformForwardGlobalLoads:  "reloads its scalar globals after stores",
+	nativegen.TransformGlobalLoadMasks:     "keeps narrow scalar-global reload masks",
+	nativegen.TransformSchedule:            "keeps its instruction order",
+	nativegen.TransformFuse:                "keeps its instructions apart",
+	nativegen.TransformFuseExits:           "keeps its exit tests apart",
 }
 
 // setAsideReasons reads, from the function's remarks, the transforms the

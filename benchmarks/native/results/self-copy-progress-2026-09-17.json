@@ -1,0 +1,137 @@
+{
+  "schema": "oak-self-copy-progress-v1",
+  "date": "2026-09-17",
+  "base_commit": "559dae7046145ddb5b5ddbc91a019457bbec3762",
+  "change": "Skip copy propagation when the source and destination name the same physical register. Rewriting identical operands is not progress. Retain the instruction for width-aware cleanup; do not delete narrowing self-copies.",
+  "measurement_source": "Frozen baseline at base_commit and candidate at that base plus this commit's machine/simplify.go change. Both test binaries include the new benchmark and test fixture files, which were added before freezing the baseline. Only benchmark functions were run for timing.",
+  "scope": "A pathological simplifier stall and an ordinary 128-copy control. BLAKE3 emission is a separate single before/after observation, not an established general compiler speedup. No hash-runtime timing or speedup claim; generated C and the native object are identical.",
+  "platform": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS arm64",
+    "go": "go version go1.27.1 darwin/arm64",
+    "limitations": "Busy shared host with uncontrolled frequency and scheduling. Load sampled per invocation. No builds or tests from this experiment overlapped timing. Only one before/after BLAKE3 emission pair; no confidence interval or general wall-time multiplier."
+  },
+  "bug_reproduction": {
+    "description": "Both pre-fix target regressions exhausted 1024 rounds while leaving a later useful copy unchanged. These failures were intentional pre-fix observations. The narrowing self-copy regression passed before and after.",
+    "raw_pre_fix_regressions": "=== RUN   TestSimplifyContinuesPastSelfCopy\n=== RUN   TestSimplifyContinuesPastSelfCopy/arm64\n    simplify_test.go:164: round 0: propagated=1024 eliminated=0 error=<nil>\n        cbz w0, right\n        add w9, w1, #1\n        b join\n        right:\n        add w9, w2, #2\n        join:\n        mov w9, w9\n        mov w10, w9\n        add w0, w10, w9\n        ret\n=== RUN   TestSimplifyContinuesPastSelfCopy/rv64\n    simplify_test.go:164: round 0: propagated=1024 eliminated=0 error=<nil>\n        beqz a0, right\n        addi t0, a1, #1\n        j join\n        right:\n        addi t0, a2, #2\n        join:\n        mv t0, t0\n        mv t1, t0\n        add a0, t1, t0\n        ret\n--- FAIL: TestSimplifyContinuesPastSelfCopy (0.30s)\n    --- FAIL: TestSimplifyContinuesPastSelfCopy/arm64 (0.10s)\n    --- FAIL: TestSimplifyContinuesPastSelfCopy/rv64 (0.20s)\n=== RUN   TestSimplifyPreservesNarrowingSelfCopy\n--- PASS: TestSimplifyPreservesNarrowingSelfCopy (0.00s)\nFAIL\nFAIL\tgithub.com/SCKelemen/oak/machine\t1.767s\nFAIL\n"
+  },
+  "microbenchmarks": {
+    "protocol": "Sequential before-a, after-a, after-b, before-b; five samples of three iterations per benchmark in each invocation, ten samples per variant. Each iteration clones and lifts its fixture. The self-copy fixture requires unchanged assembly; the control requires exactly 128 propagated and eliminated copies.",
+    "command": "BINARY -test.run '^$' -test.bench '^BenchmarkSimplify(SelfCopy|Copies)$' -test.benchmem -test.benchtime=3x -test.count=5",
+    "medians": {
+      "BenchmarkSimplifyCopies": {
+        "before": {
+          "ns_per_op": 103922750.0,
+          "bytes_per_op": 109234216.0,
+          "allocations_per_op": 418126.5
+        },
+        "after": {
+          "ns_per_op": 101027042.0,
+          "bytes_per_op": 109232882.0,
+          "allocations_per_op": 418125.5
+        }
+      },
+      "BenchmarkSimplifySelfCopy": {
+        "before": {
+          "ns_per_op": 124980951.0,
+          "bytes_per_op": 142067458.0,
+          "allocations_per_op": 739420.0
+        },
+        "after": {
+          "ns_per_op": 60770.5,
+          "bytes_per_op": 81792.0,
+          "allocations_per_op": 524.0
+        }
+      }
+    },
+    "samples": [
+      {
+        "run": "before-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16      \t       3\t  86761764 ns/op\t109236248 B/op\t  418129 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t  75366111 ns/op\t109232429 B/op\t  418122 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t  95236903 ns/op\t109236301 B/op\t  418129 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 100869181 ns/op\t109239677 B/op\t  418131 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 105464014 ns/op\t109232509 B/op\t  418123 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 114579875 ns/op\t142066989 B/op\t  739416 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 122494986 ns/op\t142067389 B/op\t  739420 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 116012181 ns/op\t142067458 B/op\t  739420 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 125880722 ns/op\t142067917 B/op\t  739424 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 136640611 ns/op\t142067458 B/op\t  739420 allocs/op\nPASS\n",
+        "load_before": "{ 69.54 76.12 61.32 }",
+        "load_after": "{ 69.42 75.99 61.36 }"
+      },
+      {
+        "run": "after-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16      \t       3\t  82221056 ns/op\t109241792 B/op\t  418137 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 139983556 ns/op\t109233026 B/op\t  418127 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 119622708 ns/op\t109232738 B/op\t  418125 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 114547944 ns/op\t109236317 B/op\t  418129 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 125106597 ns/op\t109232728 B/op\t  418124 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t    166347 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     66472 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     77833 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     67444 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     66333 ns/op\t   81792 B/op\t     524 allocs/op\nPASS\n",
+        "load_before": "{ 69.42 75.99 61.36 }",
+        "load_after": "{ 69.42 75.99 61.36 }"
+      },
+      {
+        "run": "after-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16      \t       3\t  90176430 ns/op\t109239725 B/op\t  418132 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t  92939514 ns/op\t109232504 B/op\t  418123 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t  91052195 ns/op\t109232589 B/op\t  418124 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t  97305306 ns/op\t109236013 B/op\t  418126 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 104748778 ns/op\t109232584 B/op\t  418123 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     53736 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     55208 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     47208 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     44708 ns/op\t   81792 B/op\t     524 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t     42708 ns/op\t   81792 B/op\t     524 allocs/op\nPASS\n",
+        "load_before": "{ 69.42 75.99 61.36 }",
+        "load_after": "{ 67.14 75.41 61.24 }"
+      },
+      {
+        "run": "before-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16      \t       3\t 102381486 ns/op\t109232861 B/op\t  418127 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 111649333 ns/op\t109236141 B/op\t  418127 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 128205708 ns/op\t109232770 B/op\t  418125 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 126035625 ns/op\t109234416 B/op\t  418126 allocs/op\nBenchmarkSimplifyCopies-16      \t       3\t 110264236 ns/op\t109234016 B/op\t  418122 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 129276278 ns/op\t142069024 B/op\t  739420 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 105674806 ns/op\t142067026 B/op\t  739416 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 124266583 ns/op\t142067746 B/op\t  739422 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 125695319 ns/op\t142066952 B/op\t  739416 allocs/op\nBenchmarkSimplifySelfCopy-16    \t       3\t 189174708 ns/op\t142068794 B/op\t  739426 allocs/op\nPASS\n",
+        "load_before": "{ 67.14 75.41 61.24 }",
+        "load_after": "{ 70.97 76.06 61.56 }"
+      }
+    ],
+    "fixture_hashes": {
+      "machine/simplify_test.go": "f8992a20e468bc176d4e07b8143e4bfd335b004b0924627c043398752f0f94b4",
+      "machine/webs_benchmark_test.go": "03997ef44ba7f77612374ec9725855139789753ec8bb5a1dc3bd2047f7d1b7e9"
+    }
+  },
+  "emission": {
+    "protocol": "After all microbenchmarks completed, run before then after as separate non-overlapping emitter processes. time -l includes checking, search, proof and C/object writing; excludes C compilation, linking and application execution. CPU is user plus system and can exceed wall time for parallel Go work.",
+    "command": "/usr/bin/time -l env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_OPT_BEAM= OAK_NATIVE_DUMP= OAK_MACHINE_TRACE_SLOTS= OAK_OPT_REPORT=1 OAK_NATIVE_TIMING=1 BINARY benchmarks/kernels/oak OUTPUT_PREFIX",
+    "samples": [
+      {
+        "run": "before",
+        "wall_seconds": 74.6,
+        "user_seconds": 54.89,
+        "system_seconds": 1.44,
+        "cpu_seconds": 56.33,
+        "load_before": "{ 70.97 76.06 61.56 }",
+        "load_after": "{ 84.51 79.58 64.13 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 1.20s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "74.60 real        54.89 user         1.44 sys\n           563544064  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               56954  page reclaims\n                   3  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                9181  signals received\n                 587  voluntary context switches\n              192672  involuntary context switches\n        438320733720  instructions retired\n        134993288477  cycles elapsed\n           550814704  peak memory footprint"
+      },
+      {
+        "run": "after",
+        "wall_seconds": 66.99,
+        "user_seconds": 54.94,
+        "system_seconds": 1.56,
+        "cpu_seconds": 56.5,
+        "load_before": "{ 84.51 79.58 64.13 }",
+        "load_after": "{ 88.64 81.15 65.82 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 1.51s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "66.99 real        54.94 user         1.56 sys\n           578519040  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               43084  page reclaims\n                   2  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                8822  signals received\n                 633  voluntary context switches\n              218629  involuntary context switches\n        439020102563  instructions retired\n        134390099914  cycles elapsed\n           566232048  peak memory footprint"
+      }
+    ],
+    "native_object_sha256_both": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "c_sha256_both": "e1b40f6f997ab361fd5f8d399f5ac21b2b5877ad205beff10ec5e3c695fcfb47"
+  },
+  "source_hashes": {
+    "stdlib/hash.oak": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+    "stdlib/hash.arm64.oakasm": "0d9c1ca0d3ef7bc76aff022b350b163cc8bfe40b84a5c16990f8a6c75f1f063c",
+    "benchmarks/kernels/oak/kernels.oak": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+    "benchmarks/kernels/oak/oak.mod": "8edc5ce544cb3088cd5be5fd22ce8f38e0f993cbf8b5f31af019af90d2e9a494",
+    "benchmarks/native/emit/main.go": "219d2a6899c3d4901150ada2d4a73e9ff30e661076604257ca08a10e2a02f10c"
+  },
+  "artifact_hashes": {
+    "before-machine.test": "96d9b83f0ab6962c1675f8f0da1aff213beab9e5a393b78429c3de946aa57ce0",
+    "after-machine.test": "934e69a8e3bb0a9d32a36c2050893c3c3e11f7d4bec38c9fb55b3ac7d85f2b41",
+    "before-emit": "1d7be939487bcf9f2af21a63ca3a6b978a77e3567ec866ba5625f9b72d7a64db",
+    "after-emit": "2584b972b4c7d7a3c59c2acf8524cd28b5e66a641a181501b683485566438ca3",
+    "production.patch": "8c6bc61032dfcb6cf04e1e6c250d141a422eb7800744ba0cd67f3232f34710b7"
+  },
+  "reproduction": [
+    "Start at base_commit. Copy this commit's machine/simplify_test.go and machine/webs_benchmark_test.go into the baseline checkout, leaving production code unchanged. Build go test -c ./machine and go build ./benchmarks/native/emit into an unused scratch directory.",
+    "Apply only this commit's machine/simplify.go change and freeze the after binaries. Run the benchmark command with before/after/after/before binaries, retaining raw samples and sysctl -n vm.loadavg before and after each invocation.",
+    "Run the emission command before then after with distinct prefixes, fresh verdicts and the normal proof budget. Preserve stdout, stderr, time counters and load; compare .c and .o bytes and require all eight result chunks freshly Proven. Keep experiment builds/tests outside timings."
+  ]
+}

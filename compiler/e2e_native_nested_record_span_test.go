@@ -43,6 +43,15 @@ set_x_get_y: (s: [*]Dom, d: u32, i: u32, v: u32): u32 {
 
 // A constant element index, and the record's own scalar field beside the
 // array.
+// Two elements of the same array field compared: neither operand is a
+// parameter, so the comparison had no width and the body was trusted.
+// It is the shape an overlap test takes.
+overlaps: (s: [*]Dom, d: u32, i: u32, j: u32): u32 {
+  d < len(s) && i < u32(4) && j < u32(4) ? {
+    s[d].surfaces[i].x < s[d].surfaces[j].y ? u32(1) | u32(0)
+  } | { u32(0) }
+}
+
 get_const: (s: [*]Dom, d: u32): u32 {
   d < len(s) ? { s[d].surfaces[2].x + s[d].count } | { u32(0) }
 }
@@ -82,9 +91,11 @@ main: (): i32 {
   c: u32 = get_x(s, u32(0), u32(1))
   // get_const(1) = x[1][2] + count[1] = 12 + 4 = 16.
   e: u32 = get_const(s, u32(1))
-  // 12 + 103 + 8 = 123; + 101 = 224; + 1998 = 2222; + 16 = 2238.
-  // 2238 & 255 = 190.
-  i32_bits_u32((a + b + c + e) & u32(255))
+  // x[0][2] = 2 and y[0][3] = 103, so 2 < 103 is 1.
+  f: u32 = overlaps(s, u32(0), u32(2), u32(3))
+  // 12 + 103 + 8 = 123; + 101 = 224; + 1998 = 2222; + 16 = 2238; + 1 = 2239.
+  // 2239 & 255 = 191.
+  i32_bits_u32((a + b + c + e + f) & u32(255))
 }
 `
 
@@ -98,12 +109,12 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_nested_record_span", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 190 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 190\n%s", code, abnormal, joined)
+	if abnormal || code != 191 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 191\n%s", code, abnormal, joined)
 	}
 	// Every reader is proven at the bit level, and every writer in the leaf
 	// memory it writes — named by the field path, not by the array.
-	for _, fn := range []string{"get_x", "get_y", "get_w", "get_const", "set_x_get_y"} {
+	for _, fn := range []string{"get_x", "get_y", "get_w", "get_const", "set_x_get_y", "overlaps"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
 			t.Errorf("%s reads a nested record-span field and must be proven; diagnostics:\n%s", fn, joined)
 		}
@@ -119,7 +130,7 @@ func TestE2ENativeNestedRecordSpan(t *testing.T) {
 	if strings.Contains(joined, "disagrees") {
 		t.Errorf("a false mismatch over a nested record span:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 190 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 190", code, abnormal)
+	if _, code, abnormal := buildAndRunFrom(t, "native_nested_record_span_c", New().WithSource("nested_span.oak", nativeNestedRecordSpanProgram)); abnormal || code != 191 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 191", code, abnormal)
 	}
 }

@@ -292,6 +292,54 @@ theorem scaled_index_run (i len k j w : Nat) (hslack : i * k + k ≤ len) (hj : 
     i * k + j + w ≤ len := by
   omega
 
+/-! ### A ceiling that survives a loop (docs/spec/94-assembler.md §9.ak)
+
+A binary search rewrites its bound register on the back edge, so the
+register holds no constant at the loop header and only a fact both
+predecessors state survives the meet. These three carry the ceiling
+across it. -/
+
+/-- **The midpoint through a division** (`udiv wT, wT, wD` with `wD` a
+    constant `d ≥ 2`): the generator spells `(hi - lo) / 2` as a division
+    rather than a shift, and the quotient is still below the difference, so
+    the midpoint stays below `hi`. Generalizes `midpoint_below_shift`. -/
+theorem midpoint_below_div (lo hi d : Nat) (h : lo < hi) (hd : 2 ≤ d) :
+    lo + (hi - lo) / d < hi := by
+  have h1 : (hi - lo) / d ≤ (hi - lo) / 2 := Nat.div_le_div_left hd (by decide)
+  have h2 : (hi - lo) / 2 < hi - lo := Nat.div_lt_self (by omega) (by decide)
+  omega
+
+/-- **The transitive ceiling** (`checker.constBound`): an index below a
+    register that is itself below `K` is below `K - 1`, since the register
+    is at most `K - 1` and the index is strictly below it. Stated for
+    `2 ≤ K`, which is what the checker requires before it subtracts. -/
+theorem transitive_const_bound (i b K : Nat) (hi : i < b) (hb : b < K) (hK : 2 ≤ K) :
+    i < K - 1 := by
+  omega
+
+/-- **The select of two ceilings** (`csel wD, wA, wB, cond`): the result is
+    one of its arms, so it is below the larger ceiling. This is what a
+    search's bound register carries across its back edge. -/
+theorem select_const_bound (a b Ka Kb : Nat) (ha : a < Ka) (hb : b < Kb) :
+    a < max Ka Kb ∧ b < max Ka Kb := by
+  constructor
+  · exact Nat.lt_of_lt_of_le ha (Nat.le_max_left Ka Kb)
+  · exact Nat.lt_of_lt_of_le hb (Nat.le_max_right Ka Kb)
+
+/-- The whole chain of the binary search, as the checker reads it: the
+    midpoint of a search bounded by `entries = len / k` scaled back by `k`
+    with an offset below `k` lands inside the table. -/
+theorem search_midpoint_in_table (lo hi entries len k j d : Nat)
+    (hlo : lo < hi) (hhi : hi ≤ entries) (hd : 2 ≤ d) (hk : 1 ≤ k)
+    (hentries : entries * k ≤ len) (hj : j < k) :
+    (lo + (hi - lo) / d) * k + j < len := by
+  have hmid : lo + (hi - lo) / d < hi := midpoint_below_div lo hi d hlo hd
+  have h1 : (lo + (hi - lo) / d) + 1 ≤ entries := by omega
+  have h2 : ((lo + (hi - lo) / d) + 1) * k ≤ entries * k := Nat.mul_le_mul_right k h1
+  have h3 : ((lo + (hi - lo) / d) + 1) * k = (lo + (hi - lo) / d) * k + k := by
+    rw [Nat.add_mul, Nat.one_mul]
+  omega
+
 /-! ### If-conversion (nativegen/select.go, docs/spec/94-assembler.md §9)
 
 A conditional chain over one comparison lowers as one compare and a select

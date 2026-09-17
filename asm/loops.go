@@ -715,6 +715,11 @@ type loopEvent struct {
 	width  map[string]int
 	cond   *term            // continue condition over the fresh symbols (1/0)
 	next   map[string]*term // value after one iteration, over the fresh symbols
+	// Trap conditions are not transition premises. Header traps must be
+	// justified even on the exiting iteration; body traps only while the
+	// source continues. nil is false. Nested events own their own traps.
+	headerTrap *term
+	bodyTrap   *term
 	// floats marks the Oak side's f32/f64 locals: only they pair with a
 	// vector register half or an RV64 f register zero-extended.
 	floats map[string]bool
@@ -761,7 +766,20 @@ func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s"
 // under this condition. nil means the condition is constant true. The second
 // result fails closed when an entry value or memory cannot be reconstructed.
 func (ev *loopEvent) entryCondition() (*term, bool) {
-	if ev.cond == nil {
+	entry, valid := ev.entryPredicate(ev.cond)
+	if !valid {
+		return nil, false
+	}
+	if entry == nil || (entry.kind == termConst && entry.value&1 == 1) {
+		return nil, true
+	}
+	return entry, true
+}
+
+// entryPredicate instantiates a Boolean over this iteration's fresh state
+// at the saved entry values and memories, without any exit assumptions.
+func (ev *loopEvent) entryPredicate(predicate *term) (*term, bool) {
+	if predicate == nil {
 		return nil, true
 	}
 	sigma := map[string]*term{}
@@ -772,14 +790,11 @@ func (ev *loopEvent) entryCondition() (*term, bool) {
 		}
 		sigma[fresh.name] = header
 	}
-	entry := truncate(substitute(ev.cond, sigma), 1)
+	entry := truncate(substitute(predicate, sigma), 1)
 	valid := true
 	entry = restoreLoopEntryMemories(entry, ev, map[*term]*term{}, &valid)
 	if !valid {
 		return nil, false
-	}
-	if entry.kind == termConst && entry.value&1 == 1 {
-		return nil, true
 	}
 	return entry, true
 }
@@ -802,10 +817,12 @@ func guardMarker(log []*spanWrite, cond *term) {
 }
 
 // substituteAll rewrites every term of the event under sigma: the
-// condition, the header and next values, and the stores. The memo is
+// condition, traps, the header and next values, and the stores. The memo is
 // shared across the terms (and across events): a subterm is rewritten once.
 func (ev *loopEvent) substituteAll(sigma map[string]*term, memo map[*term]*term) {
 	ev.cond = substituteMemo(ev.cond, sigma, memo)
+	ev.headerTrap = substituteMemo(ev.headerTrap, sigma, memo)
+	ev.bodyTrap = substituteMemo(ev.bodyTrap, sigma, memo)
 	if ev.reached != nil {
 		ev.reached = substituteMemo(ev.reached, sigma, memo)
 	}
@@ -1222,7 +1239,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// calls is not probed: the probe would summarize them a second time).
 	if x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape) {
 		probe := freshState.clone()
-		if ends, _, ok := x.runBody(shape, probe); ok {
+		if ends, _, ok := x.runBody(shape, probe, nil); ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
 					before, held := state.frame[addr]
@@ -1290,7 +1307,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
-	cond, fallThroughStates, reason, ok := x.headerCondition(shape, freshState)
+	cond, fallThroughStates, reason, ok := x.headerCondition(shape, freshState, &ev.headerTrap)
 	if !ok {
 		return nil, reason, false
 	}
@@ -1357,7 +1374,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for reg, value := range headerValues {
 		bodyStart.regs[reg] = value
 	}
-	ends, reason, ok := x.runBody(shape, bodyStart)
+	ends, reason, ok := x.runBody(shape, bodyStart, &ev.bodyTrap)
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]
 	if !ok {
 		return nil, reason + " (in a loop body)", false
@@ -1621,6 +1638,8 @@ func exitReadSymbols(events []*loopEvent, results ...*term) map[string]bool {
 		mentioned := map[string]bool{}
 		collectParams(ev.cond, mentioned)
 		collectParams(ev.reached, mentioned)
+		collectParams(ev.headerTrap, mentioned)
+		collectParams(ev.bodyTrap, mentioned)
 		for _, t := range ev.header {
 			collectParams(t, mentioned)
 		}
@@ -1722,7 +1741,7 @@ func (ev *loopEvent) mentionsElsewhere(name string) bool {
 		}
 		return walk(t.cond) || walk(t.left) || walk(t.right)
 	}
-	if walk(ev.cond) {
+	if walk(ev.cond) || walk(ev.headerTrap) || walk(ev.bodyTrap) {
 		return true
 	}
 	for other, next := range ev.next {
@@ -1789,6 +1808,8 @@ func mergeLoopEvents(cond *term, fresh, prior *loopEvent) (*loopEvent, string, b
 		merged.next[name] = select_(fresh.next[name], prior.next[name])
 	}
 	merged.cond = select_(fresh.cond, prior.cond)
+	merged.headerTrap = iteTerm(cond, trapOrFalse(fresh.headerTrap), trapOrFalse(prior.headerTrap))
+	merged.bodyTrap = iteTerm(cond, trapOrFalse(fresh.bodyTrap), trapOrFalse(prior.bodyTrap))
 	if equalLoopWrites(fresh.writes, prior.writes) {
 		// Both paths ran the same iteration stores. The event's reached
 		// condition below already restricts their proof obligations to the
@@ -2008,11 +2029,11 @@ const headerPathBudget = 16
 
 // headerCondition is the loop's continue condition over the fresh state:
 // the disjunction, over the header's paths, of "this path is taken and no
-// exit test on it is taken". A guard's branch is skipped (its taken path
-// traps, as the Oak side's element read does), an exit branch narrows the
+// exit test on it is taken". A guard's taken path is recorded separately
+// for trap-domain admission; an exit branch narrows the
 // path to its fall-through, a forward branch to a label inside the header
 // forks, a load reads the span as the executor does.
-func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*term, []*symbolicState, string, bool) {
+func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState, traps **term) (*term, []*symbolicState, string, bool) {
 	type headerPath struct {
 		pc    int
 		seg   int // the segment pc lies in
@@ -2050,6 +2071,11 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 				continue
 			}
 			if isGuardBranch(x.items, x.labels, instr) {
+				taken, reason, ok := branchCondition(instr, st)
+				if !ok {
+					return nil, nil, reason, false
+				}
+				recordLoopTrap(traps, cond, taken)
 				pc++
 				continue
 			}
@@ -2472,7 +2498,7 @@ const bodyPathBudget = 64
 
 // runBody executes a loop body from its first instruction to the back edge
 // along every path.
-func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd, string, bool) {
+func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **term) ([]bodyEnd, string, bool) {
 	// A fork whose two sides meet again inside the body (their immediate
 	// post-dominator, joinPoints) runs each side to the join, where the
 	// paths park; the parked states merge into one continuation (the
@@ -2582,6 +2608,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				return false, ""
 			}
 			if isTrapBlock(x.items, target) {
+				recordLoopTrap(traps, cond, constTerm(1, 1))
 				dropped = true
 				return true, ""
 			}
@@ -2651,6 +2678,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					continue
 				}
 				if isTrapBlock(x.items, target) || x.trapAhead(target, st, instr) {
+					recordLoopTrap(traps, cond, branch)
 					// The trap arm delivers no result; the body continues on
 					// the fall-through path, outside the trapping inputs —
 					// under the index bound the guard establishes. The same
@@ -2901,6 +2929,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		}
 		return "more data-dependent loops than the verifier's budget", false
 	}
+	// Do not let a hypothetical trap in a nested iteration justify an
+	// unrelated trap in its parent or in code outside the loop.
+	outerTraps := lo.traps
+	lo.traps = nil
+	defer func() { lo.traps = outerTraps }()
 	// The loop-carried locals are those the body assigns and that exist
 	// before the loop; a local declared inside the body is the body's own.
 	// An aggregate local (a vector, an owned array) is carried leaf by
@@ -3034,6 +3067,8 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if !ok {
 		return reason, false
 	}
+	ev.headerTrap = disjoinTraps(lo.traps)
+	lo.traps = nil
 	ev.cond = truncate(cond, 1)
 	entryCond, entryKnown := ev.entryCondition()
 	if !entryKnown {
@@ -3056,9 +3091,18 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
+	ev.bodyTrap = disjoinTraps(lo.traps)
+	lo.traps = nil
 	lo.loopStack = lo.loopStack[:len(lo.loopStack)-1]
 	if !ok {
 		return reason, false
+	}
+	if lo.trapDomainTracked {
+		// A peeled guard may be justified by the source's actual first
+		// iteration, never by an arbitrary hypothetical later iteration.
+		if trap, known := firstIterationTrap(ev, lo.loopBase+len(lo.loops)); known {
+			outerTraps = append(outerTraps, trap)
+		}
 	}
 	// The iteration's stores, for the coupling proof; past the loop the
 	// span's contents are the marker's unknown memory.
@@ -4500,6 +4544,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence(fmt.Sprintf("the conditions for reaching loop %d were not proven equal", k+1))
 		}
 	}
+	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, implies); !ok {
+		return evidence(reason)
+	}
 	// The iterations' stores: each event's two sides store through the
 	// same spans, the same number of times, at indices and values proven
 	// equal under the coupling and the body's premise, under equal guards;
@@ -5525,6 +5572,8 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 	for _, side := range [][]*loopEvent{asmLoops, oakLoops} {
 		for _, ev := range side {
 			count(ev.cond)
+			count(ev.headerTrap)
+			count(ev.bodyTrap)
 			for _, name := range ev.vars {
 				count(ev.header[name])
 				count(ev.next[name])

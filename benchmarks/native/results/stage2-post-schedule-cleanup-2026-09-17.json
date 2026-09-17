@@ -1,0 +1,100 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T16:39:05Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "af3167e886dcc3dc701f0d2b8d2ab99fc28db7ca",
+  "candidate": "baseline plus the scheduler-parented, normalized-forwarding-parented, verifier-gated nativegen post-schedule-cleanup transform and native materialization-v26 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=post-schedule-cleanup",
+  "os_revision": "03b872f0b62fb10e90e6b0cd2b6e657e83a85252",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "benchmark_harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "2f9f4fe9d7a28073297d0dcd2d918b73e2bfd5c3d4f287c85378dc50fb66ec3e",
+  "object_sha256": {
+    "baseline": "7cbb0e6ebcbdc138b89c257e21b8d2ca1a84198024f5296041e9f6ffa194a04e",
+    "candidate": "6d6a1b2cee293dde55aae10e28d62a7768087b58cb58137de932455ba0d4240d"
+  },
+  "object_bytes": {
+    "baseline": 5944,
+    "candidate": 5912,
+    "delta": -32
+  },
+  "text_bytes": {
+    "baseline": 4420,
+    "candidate": 4392,
+    "delta": -28
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "oak": ["build", "-native", "-verify-fresh", "-opt-report"],
+    "baseline_opt_skip": "post-schedule-cleanup",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0
+  },
+  "selected_bodies": {
+    "check_range": {
+      "instructions_before": 44,
+      "instructions_after": 44,
+      "loads": 4,
+      "stalls_before": 16,
+      "stalls_after": 16,
+      "static_cost_before": 67.0,
+      "static_cost_after": 67.0,
+      "cleanup_sites": 0,
+      "instructions_removed": 0,
+      "candidate_verdict": "proven"
+    },
+    "map_page": {
+      "instructions_before": 157,
+      "instructions_after": 154,
+      "loads": 15,
+      "stalls_before": 32,
+      "stalls_after": 32,
+      "static_cost_before": 249.5,
+      "static_cost_after": 246.5,
+      "cleanup_sites": 3,
+      "instructions_removed": 3,
+      "candidate_verdict": "witnessed",
+      "verdict_note": "root trap-domain obligation around the loops is not proven"
+    },
+    "unmap_page": {
+      "instructions_before": 216,
+      "instructions_after": 212,
+      "loads": 21,
+      "stalls_before": 46,
+      "stalls_after": 46,
+      "static_cost_before": 344.0,
+      "static_cost_after": 340.0,
+      "cleanup_sites": 5,
+      "instructions_removed": 4,
+      "candidate_verdict": "witnessed",
+      "verdict_note": "existing node/trap-domain limitation; five local cleanup sites compose to a selected-body delta of four against the disabled fallback"
+    }
+  },
+  "summary": {
+    "cleanup_sites": 8,
+    "selected_instructions_removed": 7,
+    "text_bytes_removed": 28,
+    "object_bytes_removed": 32,
+    "interpretation": "The final cleanup removes three selected map_page instructions and four selected unmap_page instructions. check_range has no site. The stricter current verifier leaves both changed loop bodies witnessed on existing trap-domain obligations."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": ["map/translate/unmap round trip", "unaligned and out-of-range rejection", "pool exhaustion", "shadow-model PRNG operations", "three isolated regimes"]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load averages exceeded 50 during final validation"
+  }
+}

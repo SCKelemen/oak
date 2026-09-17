@@ -4,7 +4,7 @@ Snapshot: 2026-09-17. This is a capability map, not a benchmark ranking or a
 claim that every program on a target is verified. Supported spellings are
 defined by `target.Supported`; detailed proof coverage is in
 [STATUS](spec/STATUS.md), [native semantics](spec/94-assembler.md), and
-[Wasm scalar v0](spec/91-wasm.md).
+[Wasm scalar v1](spec/91-wasm.md).
 
 Distinguish **implementation**, **execution tests**, **formal models/properties**,
 **implementation refinement**, and **performance measurements**. A per-body
@@ -21,13 +21,13 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 | `darwin/amd64`, `linux/amd64`, `freestanding/amd64` | C backend/external compiler; platform-dependent execution/cross-build tests | Shared frontend proof work applies where stated. No Oak amd64 native semantic-verification lane or complete C→machine proof | External C compiler performs machine optimization; no Oak-native amd64 optimization claim |
 | `freestanding/arm` | C/external compiler; Cortex-M emulator fixtures (STM32-class direction) | Shared frontend/data-model work, not verified ARM32 instruction lowering or arbitrary STM32 hardware | External C compiler; MCU runtime/code-size/power benchmarking still needed |
 | `freestanding/riscv32` | C/external compiler; RV32 emulator fixtures | Shared frontend/data-model work, not an Oak RV32 native verifier | External C compiler; no mature RV32 hardware performance suite |
-| `core/wasm32` | Experimental direct scalar OptIR→Wasm; independent bounded Go byte/type validator and engine execution tests | LEB prefix model theorems and finite production/Lean pins; full decoder/validator and translation refinement open. Verified-only mode refuses | Raw CFG dispatch baseline; no Wasm optimization or performance-parity claim |
+| `core/wasm32` | Experimental direct scalar OptIR→Wasm, including 32/64-bit division/remainder with Oak trap/overflow behavior; independent bounded Go byte/type validator and engine execution tests | LEB prefix model theorems and finite production/Lean pins; full decoder/validator and translation refinement open. Verified-only mode refuses | Raw CFG dispatch baseline; no Wasm optimization or performance-parity claim |
 
 ## Embeddings and adjacent outputs
 
 | Surface | Current state | What remains |
 | --- | --- | --- |
-| Browser playground | Local prototype hosts the Go compiler and executes `core/wasm32` output in separate workers | Browser automation/CI expansion, incremental editing, capability contracts, proof checker, deployment/security review |
+| Browser playground | Local prototype: bounded reusable Go compiler sessions, source-linked diagnostics and cold/warm timings; disposable `core/wasm32` execution workers; local Chrome smoke and lifecycle unit tests | Browser automation/CI expansion, incremental editing, memory/payload measurements, capability contracts, proof checker, deployment/security review |
 | WASI | Planned; not a registered supported target | Versioned interface/ABI choice, bindings, capabilities, runtime tests, host-contract/refinement work |
 | Component Model / WIT | Planned | Type/resource ownership mapping, adapters, canonical ABI, component artifact and host verification |
 | Metal kernels | Separate constrained kernel output, not an `os/arch` target | Kernel-specific evidence must not be presented as whole-program or GPU-driver verification |

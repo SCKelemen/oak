@@ -9,6 +9,7 @@ const profile = await Deno.makeTempDir({
 const files = new Set([
   "index.html",
   "app.js",
+  "compiler-session.js",
   "compiler-worker.js",
   "run-worker.js",
   "style.css",
@@ -74,6 +75,7 @@ try {
     socket!.onerror = reject;
   });
   let next = 0;
+  const pageErrors: unknown[] = [];
   type Reply = { result?: { value?: unknown }; exceptionDetails?: unknown };
   const pending = new Map<
     number,
@@ -81,6 +83,9 @@ try {
   >();
   socket.onmessage = (event) => {
     const reply = JSON.parse(event.data);
+    if (reply.method === "Runtime.exceptionThrown" && pageErrors.length < 16) {
+      pageErrors.push(reply.params?.exceptionDetails);
+    }
     const p = pending.get(reply.id);
     if (p) {
       pending.delete(reply.id);
@@ -119,19 +124,30 @@ try {
     ) throw Error("Unexpected evaluation result");
     return value ?? "";
   };
+  await call("Runtime.enable");
   await call("Page.navigate", { url: "http://127.0.0.1:" + server.addr.port });
   for (let i = 0; i < 100; i++) {
-    if (await evaluate("!!document.getElementById('run')")) break;
+    if (await evaluate("!!document.getElementById('run')?.onclick")) break;
     await sleep(100);
+  }
+  if (!await evaluate("!!document.getElementById('run')?.onclick")) {
+    throw Error(
+      "Browser app did not initialize: " +
+        JSON.stringify(pageErrors).slice(0, 8192),
+    );
   }
   // Retain one real compiler response to test report corruption independently
   // of the compiler. The wrapper observes messages but does not alter them.
   await evaluate(`
     globalThis.realWorker = Worker;
+    globalThis.workerProtocol = 'oak.compiler-worker.v1';
+    globalThis.compilerWorkers = 0;
+    globalThis.initialSource = document.getElementById('source').value;
     globalThis.compiledFixture = null;
     globalThis.Worker = class extends realWorker {
       constructor(...args) {
         super(...args);
+        if (String(args[0]).endsWith('compiler-worker.js')) compilerWorkers++;
         this.addEventListener('message', ({data}) => {
           if (data.kind === 'compiled' && !data.response.error && !compiledFixture) {
             globalThis.compiledFixture = structuredClone(data.response);
@@ -150,7 +166,10 @@ try {
     await sleep(300);
   }
   if (output !== "Result: 4950") {
-    throw Error("Initial example failed: " + output);
+    throw Error(
+      "Initial example failed: " + output + "; page exceptions: " +
+        JSON.stringify(pageErrors).slice(0, 8192),
+    );
   }
   if (
     !String(
@@ -173,16 +192,91 @@ try {
   ) {
     throw Error("Missing emission DAG provenance");
   }
+  const coldTiming = String(
+    await evaluate("document.getElementById('timing').textContent"),
+  );
+  const warmTimings = [];
+  // Actual sequential calls through the same Go runtime; record observations,
+  // not a flaky wall-clock speed threshold.
+  for (let request = 0; request < 3; request++) {
+    await evaluate("document.getElementById('compile').click()");
+    for (let i = 0; i < 100; i++) {
+      if (await evaluate("!document.getElementById('compile').disabled")) break;
+      await sleep(100);
+    }
+    const timing = String(
+      await evaluate("document.getElementById('timing').textContent"),
+    );
+    const parsed = JSON.parse(timing);
+    if (
+      !parsed.reusedCompiler || parsed.startupMs !== 0 ||
+      !await evaluate("compilerWorkers === 1") ||
+      await evaluate("document.getElementById('download').disabled")
+    ) {
+      throw Error("Warm request reloaded compiler or lost artifact: " + timing);
+    }
+    warmTimings.push(parsed);
+  }
+  console.log(
+    "PASS: one compiler worker serves cold and three warm requests",
+    JSON.stringify({ cold: JSON.parse(coldTiming), warm: warmTimings }),
+  );
+  await evaluate(`
+    document.getElementById('source').value = '/* 😀 */ main: (): i32 = missing()';
+    document.getElementById('source').dispatchEvent(new Event('input'));
+    document.getElementById('compile').click();
+  `);
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate("!document.getElementById('compile').disabled")) break;
+    await sleep(100);
+  }
+  if (
+    !await evaluate("!!document.querySelector('#diagnostics button')") ||
+    !await evaluate("document.getElementById('download').disabled")
+  ) {
+    throw Error("Missing structured diagnostic or invalid-source cleanup");
+  }
+  await evaluate(
+    "[...document.querySelectorAll('#diagnostics button')].find(b => b.textContent.includes('missing')).click()",
+  );
+  if (
+    !await evaluate(
+      "document.getElementById('source').selectionStart === document.getElementById('source').value.indexOf('missing')",
+    )
+  ) {
+    throw Error("Diagnostic did not navigate to UTF-16 source location");
+  }
+  await evaluate(`
+    document.getElementById('source').value = initialSource;
+    document.getElementById('source').dispatchEvent(new Event('input'));
+    document.getElementById('run').click();
+  `);
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate("!document.getElementById('run').disabled")) break;
+    await sleep(100);
+  }
+  if (
+    !await evaluate(
+      "compilerWorkers === 1 && document.getElementById('output').textContent === 'Result: 4950' && document.getElementById('diagnostics').children.length === 0",
+    )
+  ) {
+    throw Error("Source error polluted or discarded warm compiler session");
+  }
+  console.log(
+    "PASS: UTF-16 diagnostic navigation and corrected source reuse isolated compilation state",
+  );
   // Both report hashes agree with each other but not the actual valid module.
   // A string-to-string report check alone would accept this stale evidence.
   await evaluate(`
+    // Explicitly reset the idle real session before installing the test worker.
+    document.getElementById('stop').dispatchEvent(new Event('click'));
     globalThis.Worker = class {
-      constructor() { queueMicrotask(() => this.onmessage?.({data:{kind:'ready'}})); }
-      postMessage() {
+      constructor() { queueMicrotask(() => this.onmessage?.({data:{protocol:workerProtocol,kind:'ready'}})); }
+      postMessage({id}) {
         const response = structuredClone(compiledFixture);
         response.moduleSHA256 = '0'.repeat(64);
         response.module.byteValidation.sha256 = response.moduleSHA256;
-        queueMicrotask(() => this.onmessage?.({data:{kind:'compiled',response}}));
+        queueMicrotask(() => this.onmessage?.({data:{protocol:workerProtocol,id,kind:'compiled',response,compileMs:0}}));
       }
       terminate() {}
     };
@@ -214,8 +308,8 @@ try {
       pendingDigests.push(() => realDigest(...args).then(resolve, reject));
     });
     globalThis.Worker = class {
-      constructor() { queueMicrotask(() => this.onmessage?.({data:{kind:'ready'}})); }
-      postMessage() { queueMicrotask(() => this.onmessage?.({data:{kind:'compiled',response:structuredClone(compiledFixture)}})); }
+      constructor() { queueMicrotask(() => this.onmessage?.({data:{protocol:workerProtocol,kind:'ready'}})); }
+      postMessage({id}) { queueMicrotask(() => this.onmessage?.({data:{protocol:workerProtocol,id,kind:'compiled',response:structuredClone(compiledFixture),compileMs:0}})); }
       terminate() {}
     };
     document.getElementById('compile').click();
@@ -229,6 +323,7 @@ try {
   }
   await evaluate(`
     document.getElementById('source').dispatchEvent(new Event('input'));
+    document.getElementById('stop').dispatchEvent(new Event('click'));
     crypto.subtle.digest = realDigest;
     globalThis.Worker = realWorker;
     pendingDigests.forEach((release) => release());

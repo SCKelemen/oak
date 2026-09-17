@@ -1,0 +1,194 @@
+{
+  "schema": "oak-webs-compilation-cost-v1",
+  "date": "2026-09-17",
+  "base_commit": "8c30d7b660f05645c76ef5f61b6fe7d8178e94dc",
+  "change": "Immutable sorted reaching-definition sets, shared singleton storage, a flat first-definition-site index, and one representative definition per pending use. CFG iteration, web ordering, copy-propagation order, search policy and proof gates are unchanged.",
+  "scope": "Compiler analysis and emission costs. No runtime speedup is claimed: generated C and the native BLAKE3 compression object are byte-identical.",
+  "platform": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS arm64",
+    "go_version": "go version go1.27.1 darwin/arm64",
+    "limitations": "Shared host heavily loaded, with uncontrolled frequency and scheduling. No builds or tests from this task overlapped timed runs. Full emission has only one before/after observation and is not a controlled compiler-speed estimate. CPU time and allocation counts are reported separately from wall time."
+  },
+  "microbenchmarks": {
+    "source": "machine/webs_benchmark_test.go",
+    "source_sha256": "ad9e00fb1257f26b4a4ecba46f781b0d23ab00df52b2282ea6bfc10b3d856522",
+    "protocol": "Frozen test binaries; sequential before-a, after-a, after-b, before-b process order. Each invocation uses five samples of three iterations per workload, giving ten samples per implementation. Webs excludes fixture lifting; SimplifyCopies includes lifting a cloned fixture and checks exactly 128 propagated and eliminated copies on every iteration.",
+    "command": "BINARY -test.run ^$ -test.bench ^(BenchmarkWebs|BenchmarkSimplifyCopies)$ -test.benchmem -test.benchtime=3x -test.count=5",
+    "load_before": "{ 105.90 85.49 67.76 }",
+    "load_after": "{ 97.91 85.51 68.46 }",
+    "summaries": {
+      "BenchmarkWebs/straight": {
+        "before": {
+          "ns_per_op": 12929229.0,
+          "bytes_per_op": 7264474.0,
+          "allocations_per_op": 42962.0
+        },
+        "after": {
+          "ns_per_op": 5349007.0,
+          "bytes_per_op": 4457066.5,
+          "allocations_per_op": 13612.0
+        },
+        "after_over_before": {
+          "ns_per_op": 0.4137143057795635,
+          "bytes_per_op": 0.6135429075800946,
+          "allocations_per_op": 0.3168381360271868
+        }
+      },
+      "BenchmarkWebs/blocks": {
+        "before": {
+          "ns_per_op": 23261479.5,
+          "bytes_per_op": 13255581.0,
+          "allocations_per_op": 86119.5
+        },
+        "after": {
+          "ns_per_op": 9217270.5,
+          "bytes_per_op": 6843616.0,
+          "allocations_per_op": 15820.0
+        },
+        "after_over_before": {
+          "ns_per_op": 0.3962460986198234,
+          "bytes_per_op": 0.5162818589392649,
+          "allocations_per_op": 0.183698233268888
+        }
+      },
+      "BenchmarkWebs/loop": {
+        "before": {
+          "ns_per_op": 11296479.0,
+          "bytes_per_op": 8786650.0,
+          "allocations_per_op": 53929.0
+        },
+        "after": {
+          "ns_per_op": 6752347.5,
+          "bytes_per_op": 5063741.0,
+          "allocations_per_op": 14177.0
+        },
+        "after_over_before": {
+          "ns_per_op": 0.5977391273865069,
+          "bytes_per_op": 0.5762993860003528,
+          "allocations_per_op": 0.2628826790780471
+        }
+      },
+      "BenchmarkSimplifyCopies": {
+        "before": {
+          "ns_per_op": 469226291.5,
+          "bytes_per_op": 267107207.5,
+          "allocations_per_op": 1532974.0
+        },
+        "after": {
+          "ns_per_op": 277427333.5,
+          "bytes_per_op": 178340733.0,
+          "allocations_per_op": 587662.0
+        },
+        "after_over_before": {
+          "ns_per_op": 0.5912442216593057,
+          "bytes_per_op": 0.6676747313155149,
+          "allocations_per_op": 0.38334766277836413
+        }
+      }
+    },
+    "samples": [
+      {
+        "run": "before-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkWebs/straight-16     \t       3\t   4928528 ns/op\t 7266210 B/op\t   42964 allocs/op\nBenchmarkWebs/straight-16     \t       3\t  13613278 ns/op\t 7266290 B/op\t   42965 allocs/op\nBenchmarkWebs/straight-16     \t       3\t  18156917 ns/op\t 7264474 B/op\t   42962 allocs/op\nBenchmarkWebs/straight-16     \t       3\t  12744778 ns/op\t 7264400 B/op\t   42962 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   9311153 ns/op\t 7264474 B/op\t   42962 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  65300264 ns/op\t13255464 B/op\t   86119 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  14408833 ns/op\t13257274 B/op\t   86121 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  15815208 ns/op\t13255544 B/op\t   86119 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  30454486 ns/op\t13255538 B/op\t   86119 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  26611056 ns/op\t13255618 B/op\t   86120 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  14811708 ns/op\t 8786634 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  14135458 ns/op\t 8786752 B/op\t   53930 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  10048986 ns/op\t 8786746 B/op\t   53930 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   9538750 ns/op\t 8786597 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   7538195 ns/op\t 8786704 B/op\t   53930 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 469402778 ns/op\t267107213 B/op\t 1532974 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 477638458 ns/op\t267108896 B/op\t 1532975 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 553163875 ns/op\t267106866 B/op\t 1532971 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 420004417 ns/op\t267107202 B/op\t 1532974 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 408741111 ns/op\t267106104 B/op\t 1532964 allocs/op\nPASS\n"
+      },
+      {
+        "run": "after-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkWebs/straight-16     \t       3\t  11753833 ns/op\t 4457085 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   7424417 ns/op\t 4457048 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   6680222 ns/op\t 4458826 B/op\t   13614 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   5242055 ns/op\t 4457048 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   9941625 ns/op\t 4457085 B/op\t   13612 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   6225389 ns/op\t 6843653 B/op\t   15820 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   9347805 ns/op\t 6845469 B/op\t   15823 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   4950625 ns/op\t 6843653 B/op\t   15820 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  16636569 ns/op\t 6843616 B/op\t   15820 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   9532875 ns/op\t 6843504 B/op\t   15819 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   6202306 ns/op\t 5063741 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   4303278 ns/op\t 5063741 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   7302389 ns/op\t 5063853 B/op\t   14178 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   4123014 ns/op\t 5063704 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   5679028 ns/op\t 5063704 B/op\t   14177 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 275201736 ns/op\t178343640 B/op\t  587662 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 364347028 ns/op\t178342624 B/op\t  587666 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 250780208 ns/op\t178340845 B/op\t  587664 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 246696778 ns/op\t178340914 B/op\t  587664 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 427803944 ns/op\t178340354 B/op\t  587659 allocs/op\nPASS\n"
+      },
+      {
+        "run": "after-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkWebs/straight-16     \t       3\t   5364597 ns/op\t 4457048 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   5333417 ns/op\t 4457048 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   3302722 ns/op\t 4457048 B/op\t   13612 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   3050264 ns/op\t 4458901 B/op\t   13615 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   5194986 ns/op\t 4457197 B/op\t   13613 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  34464389 ns/op\t 6843616 B/op\t   15820 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  22591472 ns/op\t 6847088 B/op\t   15823 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   9086736 ns/op\t 6843546 B/op\t   15819 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   6810611 ns/op\t 6843504 B/op\t   15819 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t   6293097 ns/op\t 6843541 B/op\t   15819 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  10630292 ns/op\t 5063741 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   3175000 ns/op\t 5063704 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   7335875 ns/op\t 5063816 B/op\t   14178 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  12129861 ns/op\t 5063704 B/op\t   14177 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   8605806 ns/op\t 5063741 B/op\t   14177 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 284328153 ns/op\t178340813 B/op\t  587663 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 263304056 ns/op\t178340653 B/op\t  587662 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 279652931 ns/op\t178340450 B/op\t  587661 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 291651458 ns/op\t178340162 B/op\t  587657 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 259075833 ns/op\t178340264 B/op\t  587658 allocs/op\nPASS\n"
+      },
+      {
+        "run": "before-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkWebs/straight-16     \t       3\t  13113680 ns/op\t 7264405 B/op\t   42962 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   7197347 ns/op\t 7264512 B/op\t   42963 allocs/op\nBenchmarkWebs/straight-16     \t       3\t   8205111 ns/op\t 7264442 B/op\t   42962 allocs/op\nBenchmarkWebs/straight-16     \t       3\t  13695583 ns/op\t 7264474 B/op\t   42962 allocs/op\nBenchmarkWebs/straight-16     \t       3\t  15784847 ns/op\t 7264400 B/op\t   42962 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  14118667 ns/op\t13257461 B/op\t   86123 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  10491597 ns/op\t13257237 B/op\t   86121 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  19911903 ns/op\t13259010 B/op\t   86123 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  52871083 ns/op\t13255538 B/op\t   86119 allocs/op\nBenchmarkWebs/blocks-16       \t       3\t  33922653 ns/op\t13255501 B/op\t   86119 allocs/op\nBenchmarkWebs/loop-16         \t       3\t   5297250 ns/op\t 8786602 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  14538111 ns/op\t 8786634 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  10038153 ns/op\t 8786597 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  12543972 ns/op\t 8786666 B/op\t   53929 allocs/op\nBenchmarkWebs/loop-16         \t       3\t  26276069 ns/op\t 8786704 B/op\t   53930 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 421072361 ns/op\t267107432 B/op\t 1532976 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 516215305 ns/op\t267108418 B/op\t 1532985 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 473135569 ns/op\t267107474 B/op\t 1532976 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 442410250 ns/op\t267106984 B/op\t 1532972 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 469049805 ns/op\t267106210 B/op\t 1532965 allocs/op\nPASS\n"
+      }
+    ]
+  },
+  "emission": {
+    "protocol": "Frozen emitters, one baseline run and one candidate run, timed with /usr/bin/time -l. Repeated microbenchmarks and builds between these runs were completed before candidate emission. All eight result chunks freshly Proven under the normal decision budget, with the verification cache disabled.",
+    "environment": {
+      "OAK_NATIVE_ONLY": "hash__blake3_ucompress",
+      "OAK_NATIVE_UNROLL_SMALL": "0",
+      "OAK_NATIVE_LOOP_RESULT_HOMES": "0",
+      "OAK_VERIFY_CACHE": "0",
+      "OAK_VERIFY_BUDGET": "",
+      "OAK_OPT_SKIP": "",
+      "OAK_NATIVE_DUMP": "",
+      "OAK_OPT_REPORT": "1",
+      "OAK_NATIVE_TIMING": "1"
+    },
+    "samples": {
+      "before": {
+        "wall_seconds": 398.44,
+        "user_seconds": 262.01,
+        "system_seconds": 13.23,
+        "cpu_seconds": 275.24,
+        "reported_resources": {
+          "maximum resident set size": 572096512,
+          "page reclaims": 475913,
+          "page faults": 5,
+          "swaps": 0,
+          "instructions retired": 2310337525862,
+          "cycles elapsed": 671502053003,
+          "peak memory footprint": 567067656
+        },
+        "load_before": "{ 92.96 73.35 52.59 }",
+        "load_after": "{ 72.18 72.25 60.01 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 2.40s (proven)",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+        ],
+        "raw_time_output": "398.44 real       262.01 user        13.23 sys\n           572096512  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n              475913  page reclaims\n                   5  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n               61774  signals received\n                4027  voluntary context switches\n             1382301  involuntary context switches\n       2310337525862  instructions retired\n        671502053003  cycles elapsed\n           567067656  peak memory footprint",
+        "emitter_sha256": "fb4fad480d73c7c043f55f1301cebc313a54b28d8e32ec5af9e8fd285e0d2058",
+        "benchmark_binary_sha256": "a89d7a9144011e3b7e7b8eb503ef16a606d164b7df9376da74b8360e332a2565"
+      },
+      "after": {
+        "wall_seconds": 479.1,
+        "user_seconds": 188.45,
+        "system_seconds": 15.95,
+        "cpu_seconds": 204.39999999999998,
+        "reported_resources": {
+          "maximum resident set size": 589168640,
+          "page reclaims": 767133,
+          "page faults": 1,
+          "swaps": 0,
+          "instructions retired": 1704957238328,
+          "cycles elapsed": 518029416003,
+          "peak memory footprint": 581796872
+        },
+        "load_before": "{ 101.03 87.93 70.48 }",
+        "load_after": "{ 170.08 149.19 110.61 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 2.07s (proven)",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+        ],
+        "raw_time_output": "479.10 real       188.45 user        15.95 sys\n           589168640  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n              767133  page reclaims\n                   1  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n               54621  signals received\n                3713  voluntary context switches\n             1201979  involuntary context switches\n       1704957238328  instructions retired\n        518029416003  cycles elapsed\n           581796872  peak memory footprint",
+        "emitter_sha256": "e5638f618f1344d6e9f99adfaedc1acd0501ccddd77a839fe0f986bad3379976",
+        "benchmark_binary_sha256": "0e2a35ea4ec0b01a936ccb2e91580c83e6de0ab2a0a357ce1f364b56429fffba"
+      }
+    },
+    "after_over_before": {
+      "wall_seconds": 1.2024395141050097,
+      "cpu_seconds": 0.7426246185147507
+    },
+    "identical_c_sha256": "e1b40f6f997ab361fd5f8d399f5ac21b2b5877ad205beff10ec5e3c695fcfb47",
+    "identical_native_object_sha256": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "source_sha256_unchanged_from_baseline": {
+      "stdlib/hash.oak": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+      "stdlib/hash.arm64.oakasm": "0d9c1ca0d3ef7bc76aff022b350b163cc8bfe40b84a5c16990f8a6c75f1f063c",
+      "benchmarks/kernels/oak/kernels.oak": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+      "benchmarks/kernels/oak/oak.mod": "8edc5ce544cb3088cd5be5fd22ce8f38e0f993cbf8b5f31af019af90d2e9a494",
+      "benchmarks/native/emit/main.go": "219d2a6899c3d4901150ada2d4a73e9ff30e661076604257ca08a10e2a02f10c"
+    },
+    "baseline_webs_source_sha256": "9162d2a43b577b0f775dc54425b1c4e4965a756b8281336515a92fc527de0ea5",
+    "candidate_webs_source_sha256": "f5ee35587e148c5f3d6b4f1623e0a7b3a4984fc55a7dbe30d96a12a3497c1f1b"
+  },
+  "reproduction": [
+    "Build benchmarks/native/emit at base_commit and at that base with this commit's machine/webs.go change, keeping source inputs identical. Freeze both binaries before timing.",
+    "Build the same machine/webs_benchmark_test.go fixture into a test binary for each implementation. Run the recorded microbenchmark command in before/after/after/before order.",
+    "With the recorded emission environment, run /usr/bin/time -l EMITTER benchmarks/kernels/oak OUTPUT_PREFIX. Capture stdout, stderr and load snapshots; compare OUTPUT_PREFIX.c and OUTPUT_PREFIX.o byte for byte.",
+    "Use a quiet host and additional alternating emission runs before treating wall-time differences as a stable build-speed estimate."
+  ]
+}

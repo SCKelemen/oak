@@ -532,15 +532,25 @@ argument construction with mutation tests. The pure projection is not a full
 exception record, ESR encoding, BTI/PostDecode execution, exception entry,
 handler model, or proof of the runtime's non-resuming trap contract.
 
-Separately, the native verifier's non-loop trap exclusion now requires a
+Separately, the native verifier's trap exclusion now requires a
 symbolic implication from machine traps to collected source traps, without
 assuming the machine-returning domain. This closes the unsampled-extra-trap
-admission counterexample at `b = 1234`; unproved obligations stay evidence
-and are refused by the strict profile. `Oak.TrapDomainAdmission` proves the
+admission counterexamples at `b = 1234` and loop iteration 1234; unproved
+obligations stay evidence and are refused by the strict profile.
+`Oak.TrapDomainAdmission` proves the
 logical admission rule under explicit collector-soundness and observation
 equality premises, not the Go implementation or Arm exception execution.
-Summarized-loop trap obligations remain open; this gate is not a complete
-source-to-ASL proof or a memory-ordering proof.
+Summarized loops retain separate header/body predicates and root traps:
+header checks apply even on exit, body checks require source continuation,
+and hypothetical nested states do not leak into parent scopes. Valid
+peeled guards use only first-iteration source traps projected at exact
+saved entry values/memories, guarded by source continuation; unknown
+projections fail closed. After coupling, the gate
+uses source-only reach conditions, never machine-return exclusions or loop
+exit facts. Lean proves the phase rule and finite-prefix composition under
+explicit collector/coupling and reachability assumptions; implementation
+soundness and termination remain separate. This conservative gate is not
+a complete source-to-ASL proof or a memory-ordering proof.
 Explicit target-lane `.oakasm` verdicts now participate in that profile and
 its callee-dependency closure; a unit without an Oak fallback remains
 trusted and cannot pass strict admission.
@@ -691,14 +701,47 @@ translation, fault, exclusive, MTE, trickbox/counter routing, `aset__Mem`, and
 and selected no-device forwarding wrapper. A further generated pure projection
 selects `(56, 8, defaultRAM, ZeroExtend(PA), data)` at the external `write_ram`
 boundary, retaining zero for break and the same endian-dependent make data.
-This is not route/call-reachability or memory-effect evidence.
+This pure projection is not route/call-reachability or memory-effect evidence.
 Occurrence-level decorators retain an external route predicate indexed by the
 same event, virtual address, endian result, PA, and data; extraction returns it
 and the original descriptor occurrence unchanged.
+
+A separate effectful seam, `spec/sail/lean/MemoryBridge.lean`, now proves the
+mechanically generated no-device `__WriteRAM` wrapper's normal return against
+the pinned Sail Lean runtime's actual `write_ram`. For arbitrary prior memory,
+it writes exactly eight consecutive bytes, least-significant byte first,
+preserves memory outside that footprint, and leaves every non-memory state
+field unchanged. A generic runtime theorem also covers arbitrary register and
+choice-state types, beyond the generated fragment's single RAM-selector register.
+The selected break/make projections compose with this effect, including Arm's
+pre-call endian conversion; a 52-bit PA plus seven cannot wrap the 56-bit call
+address. This runtime ignores the RAM selector, as another theorem explicitly
+records: the byte map provides no RAM-namespace provenance or storage custody.
+Exact-source/mutation gates pin the external binding and forwarding body, plus
+the separate Lem backend's `Write_plain` requests. Those requests are not
+release writes, and no Lean-to-Lem/CAT refinement is established here.
+
+The next effectful layer retains the exact `__WriteMemory` wrapper, the actual
+`__defaultRAM : bits(56)` register, and the official no-device trace helper in
+the generated Sail fragment. Its execution now has a complete sequential case
+split: an initialized register entry yields the eight-byte update with the
+same frame/state preservation; a missing entry returns Sail's `Unreachable`
+runtime error with the entire state unchanged. Success is equivalent to the
+presence of that entry. Thus the lower runtime's ignored selector does not
+justify bypassing the wrapper's register read. The selected break/make
+projections compose with this wrapper under both endian choices and an actual
+register-lookup premise. No initialization is silently supplied, and the one
+modeled register is not the complete architectural register bank. This error
+is not an Arm Data Abort. Exact-source/mutation checks retain the register,
+write/trace/return order, and no-op trace body, including its continuation
+lines. A no-device trace is not architectural write-event evidence.
+
 Alignment, normal fault-free translation and PA/default-RAM provenance,
-special-route exclusion, wrapper/external return, RAM mutation, byte placement,
-atomicity/non-tearing, unique writes, CAT event/tag identity,
-visibility, completion, and publication remain open.
+special-route exclusion, dynamic instruction-to-wrapper reachability, and
+architectural RAM effects remain open. The sequential byte updates prove
+neither atomicity/non-tearing nor architectural event count/identity, CAT
+membership, visibility, completion, or publication. The C runtime and Arm's
+concurrent memory model are outside this new theorem's semantics.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is

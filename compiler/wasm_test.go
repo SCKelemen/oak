@@ -5,19 +5,18 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SCKelemen/oak/internal/wasmtest"
 	"github.com/SCKelemen/oak/target"
 )
 
 // A JS engine independently decodes, validates and executes actual output bytes.
 // These tests are conformance evidence, not formal refinement certificates.
 func TestWasmScalarExecution(t *testing.T) {
-	runtime, runtimeArgs := wasmTestRuntime(t)
+	engine := wasmtest.Require(t)
 	const source = `
 add: (x: u32, y: u32): u32 = x + y
 wide: (x: u64, y: u64): u64 = x * y
@@ -82,42 +81,17 @@ let trapped=false;try{e.choose(2,3,7)}catch(x){trapped=x instanceof WebAssembly.
 for(let n=0;n<100;n++){equal(e.sum(n),n*(n-1)/2);equal(e.swap(n),n%2?21:12);}
 const bad=Uint8Array.from(b);bad[0]=1;if(WebAssembly.validate(bad))throw Error("bad magic accepted");
 if(WebAssembly.validate(b.subarray(0,b.length-1)))throw Error("truncation accepted");`
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	args := append(runtimeArgs, script, base64.StdEncoding.EncodeToString(module.Bytes))
-	if out, err := exec.CommandContext(ctx, runtime, args...).CombinedOutput(); err != nil {
+	if out, err := engine.Command(ctx, script, base64.StdEncoding.EncodeToString(module.Bytes)).CombinedOutput(); err != nil {
 		t.Fatalf("Wasm engine: %v\n%s", err, out)
 	}
-}
-
-func wasmTestRuntime(t *testing.T) (string, []string) {
-	t.Helper()
-	for _, name := range []string{"node", "deno"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		err = exec.CommandContext(ctx, path, "--version").Run()
-		cancel()
-		if err == nil {
-			if name == "deno" {
-				return path, []string{"eval"}
-			}
-			return path, []string{"-e"}
-		}
-	}
-	if os.Getenv("OAK_REQUIRE_WASM_TESTS") == "1" {
-		t.Fatal("OAK_REQUIRE_WASM_TESTS=1: no working Node or Deno")
-	}
-	t.Skip("a working Node or Deno is required for independent Wasm execution")
-	return "", nil
 }
 
 // Exercise every binary opcode across both widths and signedness, comparing
 // actual engine results against mathematical BigInt operations modulo 2^width.
 func TestWasmIntegerOperations(t *testing.T) {
-	runtime, runtimeArgs := wasmTestRuntime(t)
+	engine := wasmtest.Require(t)
 	ops := []struct{ name, token, result string }{
 		{"add", "+", ""}, {"sub", "-", ""}, {"mul", "*", ""},
 		{"and", "&", ""}, {"or", "|", ""}, {"xor", "^", ""},
@@ -155,10 +129,9 @@ if((cmp?got:BigInt(got))!==want)throw Error(name+"("+a+","+b+"): "+got+" != "+wa
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	args := append(runtimeArgs, script.String(), base64.StdEncoding.EncodeToString(module.Bytes))
-	if out, err := exec.CommandContext(ctx, runtime, args...).CombinedOutput(); err != nil {
+	if out, err := engine.Command(ctx, script.String(), base64.StdEncoding.EncodeToString(module.Bytes)).CombinedOutput(); err != nil {
 		t.Fatalf("Wasm integer operations: %v\n%s", err, out)
 	}
 }
@@ -167,7 +140,7 @@ func TestWasmRefusals(t *testing.T) {
 	for _, source := range []string{
 		"main: (): f32 = f32(1)",
 		"main: (): u8 = u8(1)",
-		"main: (x: u32): u32 = x / u32(3)",
+		"main: (x: u16): u16 = x / u16(3)",
 		"main: (x: u32): u32 = x >> u32(1)",
 		"main: (x: i32): i32 = x & i32(1)",
 		"main: (): u32 { a: [2]u32; a[0] }",

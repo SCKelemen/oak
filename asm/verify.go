@@ -1913,7 +1913,12 @@ func zeroExtend(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value&mask(t.width), width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
+		// A view narrower than the declared input has already discarded
+		// bits. Widening the parameter node itself would recover those bits
+		// from the input environment, so preserve the truncation as a mask.
+		if t.declaredWidth() <= t.width {
+			return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
+		}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
@@ -5149,8 +5154,8 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
-	// trapDomainTracked collects source traps for the independent,
-	// non-loop machine-trap admission check. Unlike trapsTracked, it
+	// trapDomainTracked collects source traps for the independent
+	// machine-trap admission checks. Unlike trapsTracked, it
 	// retains the assembler lowering's loop and value policies.
 	trapDomainTracked bool
 	// witnessTrapped: in a witness run (concrete), a trap condition held
@@ -5163,8 +5168,8 @@ type oakLowering struct {
 	witnessMemo mapMemo
 	// machineTrap is the asm side's trap condition (pathExecutor.trap):
 	// the inputs on which the machine trapped leave the value/effect
-	// comparison domain. Non-loop proofs must separately justify this
-	// exclusion in verifyTrapDomain; it is not a premise of that check.
+	// comparison domain. Proofs separately justify this exclusion in
+	// verifyTrapDomain or decideLoopTrapDomains; it is not their premise.
 	machineTrap *term
 	// shiftGuardMax: the executor's largest trap bound over the register
 	// count shifts it ran (pathNotes); a variable shift count lowers only
@@ -5790,8 +5795,8 @@ func negatedCmp(c *term) *term {
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
 // never elided; here the decider proves it cannot fire); under the
-// assembler verifier's value/effect lowering it is a no-op. The separate
-// non-loop trap-domain lowering records it to justify excluding machine
+// assembler verifier's value/effect lowering it has no value effect.
+// Trap-domain collection records it to justify excluding machine
 // trap inputs; sampled agreement alone cannot justify that exclusion.
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -9194,6 +9199,12 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 				return contract.elemWidth, contract.signed, true
 			}
 		}
+		// A field of a record span's element: the leaf's own contract, so
+		// a comparison of two of them has a width (`s[d].a[i].x <
+		// s[d].a[j].x`, the overlap test of a scene).
+		if width, signed, isLeaf := lo.recordSpanLeafContract(e); isLeaf {
+			return width, signed, true
+		}
 	case *ast.InfixExpression:
 		if w, s, ok := lo.operandContract(e.Left); ok {
 			return w, s, true
@@ -9544,6 +9555,9 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
+	// Loop admission needs path-conditioned source traps in the root,
+	// header, and body scopes, not just concrete witness runs.
+	lowering.trapDomainTracked = len(exec.loops) != 0
 	if exec.notes != nil {
 		lowering.shiftGuardMax = exec.notes.shiftGuardMax
 	}
@@ -10564,24 +10578,20 @@ type recordSpanPlace struct {
 	width                  int
 }
 
-func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSpanPlace, handled bool, reason string, ok bool) {
-	if len(lo.recordSpans) == 0 {
-		return recordSpanPlace{}, false, "", false
-	}
-	// Outside in: each level is a field (`.f`) or an array index (`[j]`),
-	// down to the span's own `root[i]`. The field names build the leaf
-	// path and the one array index is the element's, so `v[i].a[j]` and
-	// `v[i].a[j].f` both resolve — the latter to the leaf memory `v.a.f`,
-	// the field across every element of every record's array
-	// (recordSpanArrayElement).
-	var arrayIndex ast.Expression
-	path := ""
+// recordSpanPathOf walks `v[i].f…[j].g…` outside in: each level is a
+// field (`.f`) or an array index (`[j]`), down to the span's own
+// `root[i]`. The field names build the leaf path and the one array index
+// is the element's, so `v[i].a[j]` and `v[i].a[j].f` both resolve — the
+// second to the leaf `.a.f`, the field across every element
+// (recordSpanArrayElement). An array of arrays is refused: the leaves do
+// not name it. The returned expression is the span's own index level.
+func recordSpanPathOf(e *ast.IndexExpression) (root *ast.Identifier, path string, arrayIndex ast.Expression, at *ast.IndexExpression, ok bool) {
 	cur := e
 	for {
 		if cur.Dot {
 			field, isName := cur.Index.(*ast.Identifier)
 			if !isName {
-				return recordSpanPlace{}, false, "", false
+				return nil, "", nil, nil, false
 			}
 			path = "." + field.Value + path
 		} else {
@@ -10589,21 +10599,66 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 				break // the span's own index
 			}
 			if arrayIndex != nil {
-				return recordSpanPlace{}, false, "", false // an array of arrays
+				return nil, "", nil, nil, false
 			}
 			arrayIndex = cur.Index
 		}
 		next, isIndex := cur.Left.(*ast.IndexExpression)
 		if !isIndex {
-			return recordSpanPlace{}, false, "", false
+			return nil, "", nil, nil, false
 		}
 		cur = next
 	}
 	if cur.Dot {
-		return recordSpanPlace{}, false, "", false
+		return nil, "", nil, nil, false
 	}
 	root, isIdent := cur.Left.(*ast.Identifier)
 	if !isIdent {
+		return nil, "", nil, nil, false
+	}
+	return root, path, arrayIndex, cur, true
+}
+
+// recordSpanLeafContract is the width and signedness of the leaf a
+// record-span access names, without lowering anything: operandContract
+// asks before the body is lowered, and recordSpanPlaceOf lowers the index
+// and records the out-of-range trap, which asking twice would record
+// twice.
+func (lo *oakLowering) recordSpanLeafContract(e *ast.IndexExpression) (width int, signed, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return 0, false, false
+	}
+	root, path, arrayIndex, _, okPath := recordSpanPathOf(e)
+	if !okPath {
+		return 0, false, false
+	}
+	arg, isRecord := lo.recordSpans[root.Value]
+	if !isRecord {
+		return 0, false, false
+	}
+	if _, isLocal := lo.locals[root.Value]; isLocal {
+		return 0, false, false
+	}
+	if arrayIndex != nil {
+		field, found := arg.arrayNamed(path)
+		if !found {
+			return 0, false, false
+		}
+		return field.first.width, field.first.signed, true
+	}
+	leaf, found := arg.leafNamed(path)
+	if !found {
+		return 0, false, false
+	}
+	return leaf.width, leaf.signed, true
+}
+
+func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSpanPlace, handled bool, reason string, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return recordSpanPlace{}, false, "", false
+	}
+	root, path, arrayIndex, cur, okPath := recordSpanPathOf(e)
+	if !okPath {
 		return recordSpanPlace{}, false, "", false
 	}
 	arg, isRecord := lo.recordSpans[root.Value]
@@ -10636,6 +10691,14 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 			return recordSpanPlace{}, true, fmt.Sprintf("%s is not an array field of %s's element", path, root.Value), false
 		}
 		length, elemLeaf := field.length, field.first
+		if lo.concrete != nil || lo.trapDomainTracked {
+			// The array field has its own bound, distinct from the
+			// enclosing record span's length and the flattened index.
+			lo.addTrap(cmpTerm("hs", j, constTerm(uint64(length), 32)))
+			if lo.witnessTrapped {
+				return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s on this input", length, path), false
+			}
+		}
 		if j.kind == termConst && int64(j.value) >= length {
 			return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s", length, path), false
 		}

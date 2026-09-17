@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v24 adds verifier-gated scalar-global store/load forwarding to v23's
+	// v26 adds verifier-gated post-schedule cleanup to v25's
 	// composed late-machine recipe. Preserve every recipe input to avoid
 	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v24")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v26")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -78,6 +78,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"share-record-bases", lane.ShareRecordBases},
 		{"share-global-addresses", lane.ShareGlobalAddresses},
 		{"forward-global-loads", lane.ForwardGlobalLoads},
+		{"elide-global-load-masks", lane.ElideGlobalLoadMasks},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},
@@ -85,6 +86,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"fuse", lane.Fuse},
 		{"fuse-exits", lane.FuseExits},
 		{"cleanup", lane.Cleanup},
+		{"post-schedule-cleanup", lane.PostScheduleCleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
 		{"schedule", lane.Schedule},

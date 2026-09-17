@@ -1,0 +1,412 @@
+{
+  "schema": "oak-native-runtime-experiment-v1",
+  "date": "2026-09-17",
+  "status": "rejected; no production transform or new optimization default retained",
+  "experiment": "Late exact-width AArch64 private-frame load forwarding",
+  "baseline_commit": "7b46dba9e4b8132236603d53cf2065860934d387",
+  "retained_verifier_fix_commit": "be68ec04a23bc3ed107057b6b263a8760a903e2d",
+  "production_validation": {
+    "integrated_upstream": "c775cd70034c041f7ea9c96f238bcea9cc9e6ed9",
+    "full_suites_before_integration": "go test ./asm ./machine ./nativegen ./opt -count=1 -timeout=10m: all passed; targeted compiler proof, fallback and cache tests passed",
+    "after_integration": "machine/nativegen/opt suites and compiler proof/cache/global-forwarding checks passed; exact width-view and lowerT rendering regressions passed",
+    "fresh_emission": "all 8 result chunks proven at default budget, 0 of 1 verdicts from cache",
+    "output": "integrated native object and C companion are byte-identical to the frozen baseline hashes below; no prototype transform retained"
+  },
+  "scope": "Full 1 MiB BLAKE3 hash with only hash__blake3_ucompress native; identical C companion for both native variants; fresh pure-C control.",
+  "decision": "44 fewer loads and lower estimated cost did not produce a repeatable runtime improvement. Median paired ratios were 1.094,1.075,0.996. Heavy shared-host load prevents a precise regression claim, but the candidate fails the runtime acceptance criterion. Keep the previous shipping body, archive the proposal, retain the independently discovered verifier soundness fix.",
+  "prototype": {
+    "archive": "blake3-frame-forward-rejected-2026-09-17.patch",
+    "sha256": "26497e7e7b4026505bf1a66dbb53b2527bf6b8f92dd42ef018528c13450aacee",
+    "description": "Separate non-neutral gated forward-frame-loads candidate after scheduling/allocation/cleanup; exact plain same-block W/X slot accesses, private nonoverlapping consistent-width slots, source-definition invalidation, no calls/unknown memory/escaping slots; stores and W self-moves retained.",
+    "timed_verifier": "Included zeroExtend truncated-parameter explicit-mask correction and verdict-cache invalidation. Timed before the follow-on fused extendTerm normalization that preserves the existing lowerT representation. The archive contains only the optimizer proposal/tests, not the verifier fix, and applies to the retained fixed production code.",
+    "selected": "unroll-constant+schedule+reallocate+forward-frame-loads",
+    "fresh_verdict": "proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+    "cache": "0 of 1 verdicts from cache",
+    "allocation_reuse": {
+      "hits": 19,
+      "requests": 23,
+      "entries": 4,
+      "canonical_payload_bytes": 1204729
+    },
+    "considered": 76,
+    "lowered": 76,
+    "verified": 1
+  },
+  "static_metrics": {
+    "baseline": {
+      "assembler_instructions": 1175,
+      "encoded_instructions": 1179,
+      "frame_bytes": 288,
+      "loads": 219,
+      "stores": 139,
+      "stack_memory_instructions": 306,
+      "estimated_cost": 1973
+    },
+    "prototype": {
+      "assembler_instructions": 1175,
+      "encoded_instructions": 1179,
+      "frame_bytes": 288,
+      "loads": 175,
+      "stores": 139,
+      "stack_memory_instructions": 262,
+      "estimated_cost": 1840
+    },
+    "interpretation": "Counts include the whole loop-free compressor, not hardware counters. No frame-size or code-size reduction."
+  },
+  "verification": {
+    "semantics": "Exact equivalence, no floating-point relaxation, unchanged proof budget, OAK_VERIFY_CACHE=0.",
+    "correctness": "All 32 digest bytes agree with pure C at lengths 0,1,63,64,65,1023,1024,1025,2048,2049,3072,4096,5000,1048576, and after every timed sample.",
+    "negative_tests": "Original/forwarded W narrowing sequences prove; removing W self-move or claiming identity refutes. Wrong BLAKE3 rotate refutes after forwarding.",
+    "found_bug": "zeroExtend formerly widened a parameter truncated below its original declaration without retaining its mask; this could falsely prove identity for a W write under a u64 source contract. Fixed independently, cached verdict namespace invalidated. Explicit conversion mask fusion preserves the unchanged Lean rendering pins; no Lean theorem changed."
+  },
+  "host": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.3.1 (a), build 25D771280a",
+    "cc": "Apple clang 21.0.0 (clang-2100.1.1.101)",
+    "limitations": "Shared, heavily loaded host; cores, frequency, thermal state and unrelated activity uncontrolled. No builds/tests from this experiment overlapped runtime sampling."
+  },
+  "protocol": {
+    "timer": "CLOCK_MONOTONIC, nanoseconds per 1 MiB hash",
+    "rounds_per_sample": 100,
+    "samples_per_variant_per_run": 21,
+    "runs": 3,
+    "warmup": "one hash per variant",
+    "order": "rotating interleaved variants on one thread, distinct RTLD_LOCAL libraries; run B swaps the first two libraries",
+    "warning": "The raw harness labels before/after identify argument positions. They are intentionally reversed in run B; normalized summary fields correct for that order."
+  },
+  "artifacts_sha256": {
+    "stdlib/hash.oak": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+    "benchmarks/kernels/oak/kernels.oak": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+    "benchmarks/native/blake3_same_process.c": "6b5ad95417d3498dd6bcc8f9440ce5bfc3457180dbd444a5d0c49d0ef981a692",
+    "baseline.object": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "prototype.object": "141f13b7847f91236e6274065c9f01e3fe12f97d08b20ae7efbf0d766cb911a9",
+    "identical_native_companion.c": "4e057f67fe3a6e90d9b2c01890a75418a4ea050fb7283fbf36f0f148bd5e2b0e",
+    "c_control.c": "d04a5bacd951d73ec15fd16a86d859bfd17f726f3cb41f9ba3e2064957783994",
+    "baseline.dylib": "5bc7136e7344a10ce245f8780ba5e50929e75f9c5142b825d7e37dacf25102dd",
+    "prototype.dylib": "af428344b738aefe41f6d8f8d27a5f5da1be9885f6ff2078f760e57ac220d809",
+    "c_control.dylib": "0452312a6027214a737d4873308397ef1657becb232d2bad424431a9e7fa7bd7",
+    "harness": "76311298277475d9a2ab059f4c13ed764c6ef1f259446db1412059ef917a50d1",
+    "baseline.emitter": "af5a2d4e01d949dbe037c2ae07c61d03e96bf5f0cd84835ae9a50f8760625519",
+    "timed_prototype.emitter": "1fcaa8e2c03998242c06cbc69aeff1c464bc67ab3652daee385098d79747014c"
+  },
+  "reproduction": [
+    "Build baseline emitter from 7b46dba9. To reproduce the prototype, start from that same base, cherry-pick verifier fix be68ec04a23bc3ed107057b6b263a8760a903e2d, then apply the archived patch. The archive targets the measured base, not later optimizer registries; it is data, not an enabled compiler pass. Compare the emitted object hash before timing. The retained fix also includes the follow-on explicit-conversion shape normalization described above.",
+    "go build -o OUT/emit ./benchmarks/native/emit",
+    "env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_NATIVE_TIMING=1 OAK_NATIVE_DUMP=1 OAK_OPT_REPORT=1 OUT/emit benchmarks/kernels/oak OUT/variant",
+    "Compare native companions byte-for-byte; link both objects against the same baseline.c: cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main baseline.c variant.o -o variant.dylib",
+    "Fresh pure-C control: go run . build -o OUT/control.c benchmarks/kernels/oak; cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main OUT/control.c -o OUT/control.dylib",
+    "cc -std=c99 -O3 -Wall -Wextra -Werror benchmarks/native/blake3_same_process.c -o OUT/same-process",
+    "Pause this experiment's builds/tests. Invoke OUT/same-process with absolute baseline/prototype/control dylib paths and 100 21; repeat with first two paths swapped; repeat original order. Preserve all runs, not only favorable samples."
+  ],
+  "runs": [
+    {
+      "run": "A",
+      "native_library_order": [
+        "baseline",
+        "prototype"
+      ],
+      "one_minute_load_start": 170.06,
+      "one_minute_load_end": 150.54,
+      "baseline_median_ns": 4239850,
+      "prototype_median_ns": 4893290,
+      "c_median_ns": 4732610,
+      "ratio_of_medians": 1.1541186598582498,
+      "median_paired_ratio": 1.0935673120239433,
+      "pairs_faster": 7,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              3862460,
+              4166330,
+              5143430,
+              5731950,
+              3634630,
+              3761580,
+              3982310,
+              3672010,
+              4044090,
+              3570360,
+              7139700,
+              3559990,
+              4239850,
+              6968140,
+              4751550,
+              3789280,
+              4836310,
+              4593970,
+              4644870,
+              5966000,
+              5009810
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              4223860,
+              4935810,
+              3481690,
+              4902640,
+              5786150,
+              3178800,
+              4134260,
+              3870830,
+              3823950,
+              5495030,
+              4225130,
+              4967210,
+              4425790,
+              7973150,
+              5932170,
+              4893290,
+              3578930,
+              6352300,
+              7530520,
+              3628010,
+              7516040
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              3357310,
+              3336150,
+              4012240,
+              3939270,
+              5718160,
+              3517810,
+              5547100,
+              5648450,
+              4732610,
+              3316710,
+              3565600,
+              4942070,
+              4665280,
+              5080720,
+              5571380,
+              7146290,
+              3883510,
+              4198670,
+              5544320,
+              5070460,
+              5458580
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "run": "B-reversed",
+      "native_library_order": [
+        "prototype",
+        "baseline"
+      ],
+      "one_minute_load_start": 126.36,
+      "one_minute_load_end": 99.5,
+      "baseline_median_ns": 5092940,
+      "prototype_median_ns": 5385860,
+      "c_median_ns": 5457590,
+      "ratio_of_medians": 1.0575149128008576,
+      "median_paired_ratio": 1.0751976108542978,
+      "pairs_faster": 9,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              4147980,
+              5910880,
+              5385860,
+              5106870,
+              4373780,
+              4502420,
+              4209900,
+              4586750,
+              6956580,
+              6880030,
+              5564920,
+              4229440,
+              4830590,
+              7456860,
+              7202240,
+              6925150,
+              7255700,
+              7800650,
+              4565120,
+              6022750,
+              4890360
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              3750650,
+              5059860,
+              6550050,
+              4410240,
+              3737660,
+              4682530,
+              6854970,
+              4265960,
+              7103900,
+              4680730,
+              4458310,
+              6248920,
+              5230580,
+              6391160,
+              7991070,
+              6383400,
+              4375430,
+              5092940,
+              6185230,
+              5829670,
+              4939240
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              8024280,
+              5126730,
+              6199240,
+              4289240,
+              5263350,
+              5086770,
+              4985510,
+              5481620,
+              5432630,
+              5207930,
+              6038630,
+              5457590,
+              4799990,
+              3807920,
+              7000440,
+              7295920,
+              7215760,
+              6055150,
+              5744720,
+              6834490,
+              5027190
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "run": "C",
+      "native_library_order": [
+        "baseline",
+        "prototype"
+      ],
+      "one_minute_load_start": 74.82,
+      "one_minute_load_end": 66.58,
+      "baseline_median_ns": 5613660,
+      "prototype_median_ns": 5843870,
+      "c_median_ns": 5795600,
+      "ratio_of_medians": 1.0410088961568744,
+      "median_paired_ratio": 0.9962810510537579,
+      "pairs_faster": 11,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              5143460,
+              5318750,
+              7614510,
+              5027750,
+              4284270,
+              7249620,
+              3827640,
+              4621510,
+              4583020,
+              8828420,
+              9065260,
+              6926950,
+              7278570,
+              7135630,
+              6535790,
+              5789600,
+              5297990,
+              5439950,
+              8986410,
+              5141200,
+              5613660
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              4278340,
+              5435620,
+              6727430,
+              5677900,
+              4540170,
+              5843870,
+              4364070,
+              6610760,
+              7727880,
+              12251630,
+              6415190,
+              5010000,
+              5149560,
+              6727570,
+              8720020,
+              3746240,
+              6054560,
+              3615170,
+              8952990,
+              6311520,
+              5446860
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              5074950,
+              5445020,
+              7557750,
+              4887830,
+              5795600,
+              3788860,
+              8195180,
+              4462960,
+              6831130,
+              8540410,
+              5614390,
+              8945260,
+              9164790,
+              4383550,
+              4852360,
+              6364690,
+              7012770,
+              7382630,
+              5062500,
+              5984570,
+              5547310
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -2801,8 +2801,21 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Shift >= 0 && imm.Shift < 32 && imm.Shift%16 == 0 {
 			value, known = imm.Value<<uint(imm.Shift), true
 		}
-		if src, isReg := instr.Operands[1].(Register); isReg && src.ZeroRegister() {
-			value, known = 0, true
+		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
+			switch {
+			case src.ZeroRegister():
+				value, known = 0, true
+			default:
+				// A copy of a register holding a constant carries the bound
+				// as the immediate form does. A search's bound register is
+				// initialized this way (`hi = entries`), and without the
+				// bound here nothing survives the loop header's meet: the
+				// back edge writes the register, so its constant is gone
+				// and only a fact both sides state can be kept.
+				if k, isConst := c.constFacts[src.Num]; isConst && k >= 0 {
+					value, known = k, true
+				}
+			}
 		}
 		if known {
 			c.constFacts[dest.Num] = value
@@ -3269,8 +3282,10 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
-		if !guarded {
-			bound, guarded = c.checkedIndexBound(instr, mem, index, extent.size/size, extent.source)
+		if !guarded || bound.boundReg >= 0 || !regionAdmits(extent, isStore, 0, size, &bound) {
+			if proof, proven := c.provenIndexBound(instr, mem, index, extent.size/size, extent.source, guarded); proven {
+				bound, guarded = proof, true
+			}
 		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the array's index", instr.Mnemonic, index.Text, index.Text)
@@ -3332,8 +3347,11 @@ func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, 
 			return
 		}
 		bound, guarded := c.idxFacts[index.Num]
-		if !guarded && base >= 0 && size > 0 && base <= c.fn.Frame {
-			bound, guarded = c.checkedIndexBound(instr, mem, index, (c.fn.Frame-base)/size, "")
+		admitted := guarded && bound.boundReg < 0 && frameArrayAdmits(c.fn.Frame, base, 0, size, &bound)
+		if !admitted && base >= 0 && size > 0 && base <= c.fn.Frame {
+			if proof, proven := c.provenIndexBound(instr, mem, index, (c.fn.Frame-base)/size, "", guarded); proven {
+				bound, guarded = proof, true
+			}
 		}
 		if !guarded || bound.boundReg >= 0 {
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the frame array's index", instr.Mnemonic, index.Text, index.Text)
@@ -3713,8 +3731,10 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		return
 	}
 	bound, guarded := c.idxFacts[index.Num]
-	if !guarded && fact.hasMin && fact.elem > 0 {
-		bound, guarded = c.checkedIndexBound(instr, mem, index, fact.minLen, "")
+	if (!guarded || !bound.slack) && fact.hasMin && fact.elem > 0 {
+		if proof, proven := c.provenIndexBound(instr, mem, index, fact.minLen, "", guarded); proven {
+			bound, guarded = proof, true
+		}
 	}
 	if guarded && bound.slack && size > fact.elem && size%fact.elem == 0 && int64(1)<<uint(mem.Shift) == fact.elem {
 		// A vector access of size/elem elements at wI under wI + K <= len,
@@ -3769,6 +3789,32 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 			c.write(instr, reg)
 		}
 	}
+}
+
+// provenIndexBound reads the typechecker's proof for this operand, and is
+// consulted even when the checker already holds a fact of its own, so that
+// a bound derived from the machine code never displaces a stronger one
+// proved upstream (docs/spec/94-assembler.md §7). Measured the hard way:
+// a new fact rule gave a scaled table index a bound of its own, the proof
+// stopped being read because a fact was present, and three binary searches
+// kept a guard they had been eliding.
+//
+// The caller consults it exactly when its own fact does not admit the
+// access, so a fact that happens to be present can never cost an
+// admission. Being present is not enough: the rule that exposed this gave
+// the index a slack fact bounded by a register, which the array paths
+// cannot use at all.
+//
+// When the checker has its own fact the lookup is speculative, so a
+// malformed reference reports nothing here and is left to the path that
+// has no fact to fall back on.
+func (c *checker) provenIndexBound(instr Instruction, mem Memory, index Register, capacity int64, source string, speculative bool) (idxFact, bool) {
+	before := len(c.errors)
+	proof, proven := c.checkedIndexBound(instr, mem, index, capacity, source)
+	if !proven && speculative {
+		c.errors = c.errors[:before]
+	}
+	return proof, proven
 }
 
 // checkedIndexBound resolves an instruction-local index-in-extent reference.

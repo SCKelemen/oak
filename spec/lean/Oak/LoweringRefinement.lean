@@ -674,8 +674,12 @@ def truncate (t : Term) (w : Nat) : Term :=
   | .cmp code _ l r => .cmp code w l r
   | _ => .bin .and w t (.const (mask w) w)
 
-/-- `zeroExtend(t, width)`: the narrow computation's wrap is kept by masking
-to its own width. -/
+/-- The lowering's width adapter. Computed terms retain their own-width mask.
+The parameter case is used under `extendTerm`'s explicit low-bit mask;
+`zeroExtend_masked_eval` states that scoped law. It is not an unconditional
+zero-extension theorem for a previously truncated parameter. The general Go
+helper preserves such truncations explicitly using declared-width provenance;
+Go `extendTerm` fuses that mask with its own to retain this lowering shape. -/
 def zeroExtend (t : Term) (w : Nat) : Term :=
   if t.width = w then t else
   match t with
