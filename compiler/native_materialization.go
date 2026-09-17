@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v20 composes v19's two-result-home budget with sparse scheduled
-	// record-base sharing and v18's exact local-view extent folding. Preserve
-	// every explicit recipe input to avoid reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v20")
+	// v21 composes v20's constant-unroll name guards with sparse scheduled
+	// record-base sharing, v19's result-home budget, and v18's extent folding.
+	// Preserve every recipe input to avoid reusing another candidate's body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v21")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")

@@ -1,0 +1,476 @@
+{
+  "schema": "oak-selective-unroll-rejected-v1",
+  "date": "2026-09-17",
+  "base_commit": "d735d322aa483cff5a4f91caf8d641fd1a437a82",
+  "decision": "Reject bounded-unroll profitability policy: no repeatable runtime gain. Retain only generated-name safety guards.",
+  "scope": "BLAKE3 compression native; surrounding hash implementation compiled from unchanged C companion. Not a whole-native suite or source-to-executable proof.",
+  "platform": {
+    "os": "macOS 26.3.1(a), Darwin25.3.0 arm64",
+    "affinity": "uncontrolled",
+    "frequency": "uncontrolled",
+    "load_context": "Heavy shared-host load; observed1-minute loads114.46,154.26,123.16 during experiment setup, not per-sample measurements."
+  },
+  "protocol": {
+    "harness": "benchmarks/native/blake3_same_process.c",
+    "rounds_samples": [
+      [
+        30,
+        15
+      ],
+      [
+        100,
+        21
+      ],
+      [
+        100,
+        21
+      ]
+    ],
+    "execution": "Three sequential, non-overlapping runs; no agent compiler tests or builds during timings. Rotating variants within each run; run b reverses library order. Raw before/after labels follow library order, not logical baseline/candidate.",
+    "boundary_lengths": [
+      0,
+      1,
+      63,
+      64,
+      65,
+      1023,
+      1024,
+      1025,
+      2048,
+      2049,
+      3072,
+      4096,
+      5000,
+      1048576
+    ],
+    "boundary_check": "All32 digest bytes compared to C at each boundary and after each timed sample.",
+    "cc_flags": [
+      "-dynamiclib",
+      "-std=c99",
+      "-O3",
+      "-DNDEBUG",
+      "-Dmain=oak_unused_main"
+    ],
+    "source_reference": "Existing Oak.ConstantUnroll.loop_eq_unrolled instances plus normal nativeDriver.Check/Validate. The real partial-unroll candidate, not the ordinary fallback, was measured."
+  },
+  "baseline": {
+    "emission_seconds": 65.82558083400363,
+    "metrics": {
+      "instructions": 287,
+      "stack_accesses": 10,
+      "frame_bytes": 160
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+reallocate+late-cleanup): 0.60s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "c0d3d0448762a6b84c48678029e2f06df34de33d4697609dde1bccb5ab162c10",
+    "object_sha256": "ff7329aacc06b5dfef28c05dd99ddc5980dd97c88250f8324d0490135df44c33",
+    "runner_sha256": "cb02767848053ab6c118654bdb299c3d839ae983a4056e102a4d79cfeda4c0a2",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "existing_loop_result_homes_opt_in": {
+    "emission_seconds": 93.16569720802363,
+    "metrics": {
+      "instructions": 287,
+      "stack_accesses": 10,
+      "frame_bytes": 160
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+reallocate+late-cleanup): 2.03s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "c0d3d0448762a6b84c48678029e2f06df34de33d4697609dde1bccb5ab162c10",
+    "object_sha256": "ff7329aacc06b5dfef28c05dd99ddc5980dd97c88250f8324d0490135df44c33",
+    "runner_sha256": "ea16dd04db05e7f815234866815ebd0fc86426d3431b6fa2482220d1473b6a99",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "prototype_default_selection": {
+    "emission_seconds": 119.01035312504973,
+    "metrics": {
+      "instructions": 299,
+      "stack_accesses": 10,
+      "frame_bytes": 160
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (reallocate+late-cleanup): 2.13s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "d4cb70da38a10f5a5fa59a0150e832ed01997b87102969e0a83c480c0b436991",
+    "object_sha256": "06d14a845d75d414cca38f363fc463b5f898c6a4e475f292fb746c31e7dc068f",
+    "runner_sha256": "58eed5e780a12e2cb8ca6e410676b89d819b76ea8f70c45d560bad4d8f54600a",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "direct_candidate": {
+    "Candidate": "unroll-constant+reallocate+hoist-invariants+late-cleanup",
+    "Metrics": {
+      "Instructions": 336,
+      "Branches": 4,
+      "Loads": 72,
+      "Stores": 51,
+      "Calls": 0,
+      "Multiplies": 0,
+      "Divides": 0,
+      "Guards": 0,
+      "Loops": 1,
+      "Stalls": 148,
+      "LoopInstructions": 235,
+      "LoopBranches": 4,
+      "LoopLoads": 31,
+      "LoopStores": 19,
+      "LoopGuards": 0,
+      "LoopStalls": 85,
+      "LoopBodies": [
+        {
+          "Instructions": 235,
+          "Branches": 4,
+          "Loads": 31,
+          "Stores": 19,
+          "Guards": 0,
+          "Stalls": 85,
+          "Stride": 1,
+          "MaxTrips": 0,
+          "Depth": 0,
+          "Outer": 0
+        }
+      ]
+    },
+    "Frame": 288,
+    "PromotedSlots": 142,
+    "Unrolled": 1,
+    "Verdict": "proven",
+    "Proof": "asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+    "Verified": 1,
+    "CacheHits": 0,
+    "ExplicitUnits": 2,
+    "MaterializedAs": "main",
+    "encoded_instructions": 340,
+    "object_sha256": "227a2c0c45f5a8dc92aeb30e40bc0986353f26a11b4184268fdfe00aa4f4ff60"
+  },
+  "hashes": {
+    "baseline_dylib": "76268254fda6299b7dfe76185aa0c3f0338d7e7e2e07b9b1875c9b0f6134136b",
+    "candidate_dylib": "43941134983bbda77f1834191c0c8b774ca83d1413963861f676b5f240c53dbb",
+    "c_control_dylib": "bbb81b927542993f986f64d87d34ead6f90243c41bcd2d02e7d71e1315db8efd",
+    "c_control_source": "d04a5bacd951d73ec15fd16a86d859bfd17f726f3cb41f9ba3e2064957783994",
+    "shared_native_c_companion": "4e057f67fe3a6e90d9b2c01890a75418a4ea050fb7283fbf36f0f148bd5e2b0e",
+    "harness": "6b5ad95417d3498dd6bcc8f9440ce5bfc3457180dbd444a5d0c49d0ef981a692",
+    "archived_patch": "93b0c8c93825dd3071faf789754ead69810c81a8e1828bcf2695c3133f2e30e3"
+  },
+  "runs": [
+    {
+      "id": "a",
+      "order": [
+        "baseline",
+        "candidate",
+        "c-control"
+      ],
+      "baseline_ns": 6040166.7,
+      "candidate_ns": 6252733.3,
+      "c_control_ns": 4909700,
+      "candidate_over_baseline": 1.0351921744146564,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 30,
+        "samples": 15,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              5875033.3,
+              16377400,
+              9404633.3,
+              9499066.7,
+              7896333.3,
+              9187900,
+              9391000,
+              5307633.3,
+              6040166.7,
+              5411533.3,
+              4932600,
+              7582000,
+              5581466.7,
+              4890366.7,
+              4977833.3
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              7086166.7,
+              5688933.3,
+              7299833.3,
+              4923000,
+              5896800,
+              8474066.7,
+              8015900,
+              6252733.3,
+              7804700,
+              5806600,
+              4528300,
+              7203700,
+              5092133.3,
+              7657266.7,
+              5754300
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              4018100,
+              5190266.7,
+              6751700,
+              8856966.7,
+              8752300,
+              8658633.3,
+              5459900,
+              3863400,
+              4909700,
+              3898266.7,
+              4626133.3,
+              3506633.3,
+              5149766.7,
+              3883666.7,
+              3414666.7
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "order": [
+        "candidate",
+        "baseline",
+        "c-control"
+      ],
+      "baseline_ns": 6181520,
+      "candidate_ns": 7034790,
+      "c_control_ns": 4782240,
+      "candidate_over_baseline": 1.138035628777388,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              4537910,
+              4949100,
+              5890520,
+              6580100,
+              5178160,
+              6373540,
+              6377990,
+              7492600,
+              8671210,
+              6570230,
+              7953560,
+              10268470,
+              6275250,
+              9170550,
+              8626610,
+              7034790,
+              7659100,
+              7446430,
+              5647310,
+              8788130,
+              8988380
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              5939640,
+              5132020,
+              5078140,
+              6168650,
+              6181520,
+              5006740,
+              6743700,
+              5839020,
+              5553010,
+              6440830,
+              6556200,
+              8970140,
+              6703850,
+              7019520,
+              10119920,
+              7310820,
+              6139300,
+              6851840,
+              5395010,
+              5565360,
+              7982440
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              3963130,
+              4001150,
+              4103100,
+              3596290,
+              4844470,
+              4729790,
+              4782240,
+              6351920,
+              5055960,
+              4126960,
+              5140850,
+              5009170,
+              4585370,
+              5748340,
+              4487920,
+              6390530,
+              4086310,
+              4591700,
+              6247770,
+              5108180,
+              6743370
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "order": [
+        "baseline",
+        "candidate",
+        "c-control"
+      ],
+      "baseline_ns": 6579740,
+      "candidate_ns": 7323110,
+      "c_control_ns": 5731820,
+      "candidate_over_baseline": 1.1129786283348582,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              5282410,
+              6499930,
+              5608480,
+              5017930,
+              7381970,
+              6515360,
+              11839380,
+              5619000,
+              7204670,
+              6528390,
+              7020590,
+              7040950,
+              16582380,
+              7531420,
+              7031990,
+              6185130,
+              5753470,
+              5970600,
+              6579740,
+              9320550,
+              10312110
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              5081530,
+              5935130,
+              5730270,
+              6129540,
+              8602240,
+              11010090,
+              5474640,
+              9889120,
+              6381560,
+              4938380,
+              6668090,
+              8443350,
+              9676140,
+              9439160,
+              7877020,
+              7993890,
+              6887520,
+              5884240,
+              10244730,
+              7323110,
+              13093640
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              4240670,
+              5100000,
+              7356300,
+              6606890,
+              7401510,
+              11902010,
+              4663160,
+              4305890,
+              3848120,
+              5731820,
+              5297650,
+              7083000,
+              9925460,
+              8063640,
+              7396100,
+              5842800,
+              4510120,
+              4224710,
+              4113120,
+              3842440,
+              7612750
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "restored_name_guards": {
+    "emission_seconds": 76.35378537501674,
+    "metrics": {
+      "instructions": 287,
+      "stack_accesses": 10,
+      "frame_bytes": 160
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+reallocate+late-cleanup): 0.85s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "cfedaf456326888089ccc41a93fee254c00c4369d5488b719cee2c540a3d779f",
+    "object_sha256": "ff7329aacc06b5dfef28c05dd99ddc5980dd97c88250f8324d0490135df44c33",
+    "runner_sha256": "63fab88d142c1a833178fccdfadadb14fd14caeb6d5a7b0f6e86031561874f39",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ],
+    "scope": "Final retained guards on d735d322 before integrating subsequent upstream commits.",
+    "object_matches_baseline": true
+  },
+  "followup": "Cost-only metrics miss the direct candidate's stack-carried fixed7-trip induction, applying default256 loopweight. Fixing that estimate is not evidence this candidate is faster; no such change was implemented.",
+  "limitations": [
+    "High host load prevents clean absolute/regression claims.",
+    "Baseline/current compressor selection differs from older published snapshots.",
+    "No claim of whole-frontend or final-linked-executable formal closure.",
+    "No performance acceptance from static instruction/memory counts alone."
+  ]
+}
