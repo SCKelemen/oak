@@ -51,34 +51,35 @@ type slotAccess struct {
 // object; without it, everything above the address.
 type FrameObject = asm.FrameObject
 
-// Promote rewrites the promotable frame slots of a body into registers.
-// It returns the rewritten function (a new value; the input is not
-// modified) and how many slots moved, or the lift's error.
-func Promote(fn *asm.Function) (*asm.Function, int, error) { return PromoteWith(fn, nil) }
+// Promote rewrites the promotable frame slots of a body into registers
+// and removes the stores to qualified slots nothing reads. It returns the
+// rewritten function (a new value; the input is not modified), how many
+// slots moved, how many dead stores went, or the lift's error.
+func Promote(fn *asm.Function) (*asm.Function, int, int, error) { return PromoteWith(fn, nil) }
 
 // PromoteWith is Promote with the lowering's frame layout, when known.
-func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, error) {
+func PromoteWith(fn *asm.Function, objects []FrameObject) (*asm.Function, int, int, error) {
 	return promoteWith(fn, objects, true)
 }
 
-func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm.Function, int, error) {
+func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm.Function, int, int, error) {
 	lifted, err := Lift(cloneFunction(fn))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if fn.Frame <= 0 {
-		return lifted.Asm, 0, nil
+		return lifted.Asm, 0, 0, nil
 	}
 	var splitWords map[int64]bool
 	if splitPairs {
 		split, words, splitErr := splitFramePairInitializers(lifted, objects)
 		if splitErr != nil {
-			return nil, 0, splitErr
+			return nil, 0, 0, splitErr
 		}
 		if split != nil {
 			lifted, err = Lift(split)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, 0, err
 			}
 			splitWords = words
 		}
@@ -110,7 +111,7 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 		if len(splitWords) != 0 {
 			return promoteWith(fn, objects, false)
 		}
-		return lifted.Asm, 0, nil
+		return lifted.Asm, 0, 0, nil
 	}
 	// The slots join the web machinery as pseudo-registers: a store
 	// defines, a load uses.
@@ -128,7 +129,7 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 	}
 	webs, err := lifted.Webs()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	lifted.Liveness(webs)
 	var calls []int
@@ -160,9 +161,24 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 	taken := map[Reg][]*Web{} // promoted slot webs by their register
 	promoted := 0
 	splitBenefit := false
+	dead := map[*Instr]bool{}
 	for _, w := range slotWebs {
+		if w.From >= 0 && len(w.Uses) == 0 && !isSaveSlot(lifted, w) {
+			// A qualified slot's store no load reaches is dead: the slot's
+			// address is never taken and nothing else reads its bytes (the
+			// lowering wrote a variable's home the reads never came back
+			// to). The stores go; the register they read stays live for
+			// its other readers.
+			for _, d := range w.Defs {
+				if d.Instr != nil {
+					dead[d.Instr] = true
+				}
+			}
+			traceSlots("slot [sp, #%d]: %d dead store(s)", w.Reg.Num, len(w.Defs))
+			continue
+		}
 		if w.From < 0 || len(w.Uses) == 0 {
-			continue // never read: the store stays (the checker may read it)
+			continue
 		}
 		uninitialized := false
 		for _, d := range w.Defs {
@@ -210,6 +226,18 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 		// an independently selected code-size increase.
 		return promoteWith(fn, objects, false)
 	}
+	if len(dead) > 0 {
+		for _, b := range lifted.Blocks {
+			kept := b.Instrs[:0]
+			for _, ins := range b.Instrs {
+				if !dead[ins] {
+					kept = append(kept, ins)
+				}
+			}
+			b.Instrs = kept
+		}
+		lifted.reindex()
+	}
 	out := lifted.Asm
 	out.Items = lifted.Items()
 	if promoted > 0 {
@@ -225,7 +253,7 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 			}
 		}
 	}
-	return out, promoted, nil
+	return out, promoted, len(dead), nil
 }
 
 // frameAccesses finds every access to the frame: the plain loads and
@@ -301,7 +329,7 @@ type slot struct {
 
 // qualify keeps the slots every access agrees on, that overlap nothing
 // else, whose address is not taken, within the frame, with at least one
-// store and one load.
+// store — a slot never loaded qualifies so its stores are seen dead.
 func qualify(accesses []slotAccess, escaped []int64, blocked [][2]int64, frame int64) map[int64]slot {
 	minEscaped := int64(-1)
 	for _, e := range escaped {
@@ -317,19 +345,17 @@ func qualify(accesses []slotAccess, escaped []int64, blocked [][2]int64, frame i
 	out := map[int64]slot{}
 	for offset, list := range byOffset {
 		first := list[0]
-		ok, stores, loads := true, 0, 0
+		ok, stores := true, 0
 		for _, a := range list {
 			if a.bits != first.bits || a.class != first.class {
 				ok = false
 			}
 			if a.store {
 				stores++
-			} else {
-				loads++
 			}
 		}
 		size := int64(first.bits / 8)
-		if !ok || stores == 0 || loads == 0 || offset < 0 || offset+size > frame {
+		if !ok || stores == 0 || offset < 0 || offset+size > frame {
 			continue
 		}
 		if minEscaped >= 0 && offset+size > minEscaped {

@@ -12,6 +12,10 @@ import (
 	"github.com/SCKelemen/oak/scanner"
 )
 
+// objects counts the frame arrays the lowering leaves: an array whose
+// every use is a constant-index element, a permutation of itself, or the
+// body's result is scalar-replaced (nativegen/scalar_arrays.go) and
+// leaves none; the proof is over the same values either way.
 func verifyArrayPermutation(t *testing.T, source string, objects int) {
 	t.Helper()
 	p := parser.New(layout.New(scanner.New(source)))
@@ -61,7 +65,7 @@ func TestArrayPermutationAllFiveWordOrders(t *testing.T) {
 				elements = append(elements, fmt.Sprintf("a[%d]", k))
 			}
 			source := "shuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = [5]u32{ " + strings.Join(elements, ", ") + " }\n  a\n}\n"
-			t.Run(fmt.Sprint(order), func(t *testing.T) { verifyArrayPermutation(t, source, 1) })
+			t.Run(fmt.Sprint(order), func(t *testing.T) { verifyArrayPermutation(t, source, 0) })
 			return
 		}
 		for k := at; k < len(order); k++ {
@@ -77,7 +81,7 @@ func TestArrayPermutationIntegerWidths(t *testing.T) {
 	for _, typ := range []string{"u32", "i32", "u64", "i64"} {
 		t.Run(typ, func(t *testing.T) {
 			source := fmt.Sprintf("shuffle: (input: [5]%[1]s): [5]%[1]s {\n  a: [5]%[1]s = input\n  a = [5]%[1]s{ a[4], a[3], a[1], a[2], a[0] }\n  a\n}\n", typ)
-			verifyArrayPermutation(t, source, 1)
+			verifyArrayPermutation(t, source, 0)
 		})
 	}
 }
@@ -98,19 +102,19 @@ func TestArrayPermutationLongCycles(t *testing.T) {
 func TestArrayPermutationRepeatedReadsKeepSnapshot(t *testing.T) {
 	// A gather is not a permutation. Keep the temporary: writing a[0]
 	// before evaluating the second read would lose input[0].
-	verifyArrayPermutation(t, "shuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = [5]u32{ a[1], a[0], a[0], a[3], a[4] }\n  a\n}\n", 2)
+	verifyArrayPermutation(t, "shuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = [5]u32{ a[1], a[0], a[0], a[3], a[4] }\n  a\n}\n", 0)
 }
 
 func TestArrayPermutationOtherArrayUsesNormalAssignment(t *testing.T) {
-	verifyArrayPermutation(t, "shuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = [5]u32{ input[4], input[3], input[2], input[1], input[0] }\n  a\n}\n", 2)
+	verifyArrayPermutation(t, "shuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = [5]u32{ input[4], input[3], input[2], input[1], input[0] }\n  a\n}\n", 0)
 }
 
 func TestArrayPermutationPreservesHelperStatements(t *testing.T) {
-	verifyArrayPermutation(t, "reverse: (input: [5]u32): [5]u32 {\n  b: [5]u32 = input\n  b[0] = u32(99)\n  [5]u32{ b[4], b[3], b[2], b[1], b[0] }\n}\n\nshuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = reverse(a)\n  a\n}\n", 3)
+	verifyArrayPermutation(t, "reverse: (input: [5]u32): [5]u32 {\n  b: [5]u32 = input\n  b[0] = u32(99)\n  [5]u32{ b[4], b[3], b[2], b[1], b[0] }\n}\n\nshuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = reverse(a)\n  a\n}\n", 2)
 }
 
 func TestArrayPermutationExpandedHelper(t *testing.T) {
-	verifyArrayPermutation(t, "reverse: (a: [5]u32): [5]u32 = [5]u32{ a[4], a[3], a[2], a[1], a[0] }\n\nshuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = reverse(a)\n  a\n}\n", 1)
+	verifyArrayPermutation(t, "reverse: (a: [5]u32): [5]u32 = [5]u32{ a[4], a[3], a[2], a[1], a[0] }\n\nshuffle: (input: [5]u32): [5]u32 {\n  a: [5]u32 = input\n  a = reverse(a)\n  a\n}\n", 0)
 }
 
 func TestArrayPermutationRefusesUnprovenShapes(t *testing.T) {

@@ -4398,10 +4398,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	if elem.isFloat {
 		g.usedFloat = true
 	}
-	if _, isLiteral := s.Value.(*ast.ArrayLiteral); s.Value != nil && !isLiteral {
+	_, fromIdent := s.Value.(*ast.Identifier)
+	replaceable := !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length)
+	if _, isLiteral := s.Value.(*ast.ArrayLiteral); s.Value != nil && !isLiteral && !(fromIdent && replaceable) {
 		// `state: [8]u32 = h` / `= f(…)`: the value evaluates first (an
 		// initializer never sees the array it fills), then copies into
-		// storage reserved for the name.
+		// storage reserved for the name. A replaceable array initialized
+		// from another array reads its elements instead (below).
 		if _, placeable := fieldRepresentations[elem.name]; !placeable || elem.isBool {
 			return unsupported("an array local initialized from %s", s.Value.String())
 		}
@@ -4421,12 +4424,21 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		g.bindArray(s.Name.Value, arr)
 		return nil
 	}
-	if !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length) {
+	if replaceable {
 		// Every use an element at a literal index: the elements are
 		// scalars in registers (nativegen/scalar_arrays.go).
 		var literal *ast.ArrayLiteral
 		if s.Value != nil {
 			lit, isLiteral := s.Value.(*ast.ArrayLiteral)
+			if source, isIdent := s.Value.(*ast.Identifier); isIdent && !isLiteral {
+				// `m: [16]u32 = block`: the elements read from the source
+				// array one by one, as a literal of its element reads.
+				lit = &ast.ArrayLiteral{Token: s.Token, Type: s.Type}
+				for k := int64(0); k < length; k++ {
+					lit.Elements = append(lit.Elements, &ast.IndexExpression{Token: s.Token, Left: &ast.Identifier{Token: source.Token, Value: source.Value}, Index: &ast.IntegerLiteral{Token: s.Token, Value: k}})
+				}
+				isLiteral = true
+			}
 			if !isLiteral {
 				return unsupported("an array local initialized from %s", s.Value.String())
 			}
@@ -4925,9 +4937,66 @@ func (g *generator) lowerRecordDeclarationInto(s *ast.VariableDeclaration, typeN
 		return unsupported("the %s local %s initialized from a %s", typeName, s.Name.Value, src.layout.name)
 	}
 	rec := g.declareRecord(s.Name.Value, layout)
+	// A return-slot local initialized from a by-reference parameter copies
+	// even where a caller passed one storage as both (destination passing,
+	// aliasSafeCall) and the copy is an identity: the verifier reads the
+	// result area as memory of its own that every field must reach.
 	err = g.copyRecord(rec, src)
 	g.releaseTemps(src.temps)
 	return err
+}
+
+// aliasSafeCall reports that a call's record result may be written into
+// the storage of the variable name while name is also among the call's
+// arguments: the callee never reads a parameter bound to name after it
+// starts writing its result area. A callee that builds its result in a
+// frame local and copies it out at its end writes the area only after
+// every read. A callee that builds its result in place (returnSlotLocal)
+// writes the area from its first statement, so a parameter bound to
+// name must be mentioned exactly once, as the whole initializer of that
+// return-slot local — the copy that is an identity when the two alias,
+// and which the callee skips then (lowerRecordDeclarationInto).
+func (g *generator) aliasSafeCall(call *ast.InvocationExpression, name string) bool {
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return false
+	}
+	callee, known := g.functions[g.calleeName(ident)]
+	if !known || callee == nil || callee.Body == nil || len(callee.Parameters) != len(call.Arguments) {
+		return false
+	}
+	slot := returnSlotLocal(callee)
+	for i, arg := range call.Arguments {
+		if !isName(arg, name) {
+			continue
+		}
+		p := callee.Parameters[i]
+		if p == nil || p.Name == nil {
+			return false
+		}
+		if slot == "" {
+			continue // written only by the copy-out at the end
+		}
+		mentions := 0
+		walk(callee.Body, func(n ast.Node) {
+			if id, isId := n.(*ast.Identifier); isId && id.Value == p.Name.Value {
+				mentions++
+			}
+		})
+		initializer := false
+		if block, isBlock := callee.Body.(*ast.BlockExpression); isBlock && block.Block != nil {
+			for _, stmt := range block.Block.Statements {
+				if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == slot {
+					initializer = isName(decl.Value, p.Name.Value)
+					break
+				}
+			}
+		}
+		if mentions != 1 || !initializer {
+			return false
+		}
+	}
+	return true
 }
 
 // callReturns reports a call to a program function whose declared result
@@ -5790,7 +5859,23 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 		g.declare(s.Name.Value, typ)
 		g.assignVar(s.Name.Value, r)
 	case *ast.AssignmentStatement:
+		if sa, isScalar := g.scalarArrays[s.Name.Value]; isScalar {
+			// `m = [16]u32{ m[2], … }`: a replaced array assigned whole from
+			// a literal, element by element (nativegen/scalar_arrays.go).
+			return g.assignScalarArray(sa, s)
+		}
 		if dst, isRecord := g.records[s.Name.Value]; isRecord {
+			if call, isCall := s.Value.(*ast.InvocationExpression); isCall && dst.layout.size > 16 && !dst.readOnly && !dst.paramRef && g.callReturns(call, dst.layout.name) && g.aliasSafeCall(call, s.Name.Value) {
+				// `next = f(next, …)`: the callee writes its result into
+				// the variable's own storage — no temporary, no copy —
+				// where it cannot observe that the result area is also its
+				// argument (aliasSafeCall; docs/spec/94-assembler.md §9
+				// "Copies at the boundary", destination passing).
+				if _, err := g.callWith(call, dst); err != nil {
+					return err
+				}
+				return g.reloadPromoted(s.Name.Value)
+			}
 			// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
 			from, err := g.recordValueAs(s.Value, dst.layout)
 			if err != nil {

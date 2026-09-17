@@ -5445,6 +5445,48 @@ lowering's homes run out and the copies price above the loop's trips
 (a hash compression's sixteen state words with seven rounds), the loop
 stays.
 
+**Dead frame stores and copies through redefined sources (2026-09-17,
+`machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion
+qualifies — plain loads and stores of one width, its address never taken,
+inside the declared frame, not a callee-save — has no reader but those
+accesses, so a store no load reaches is dead and goes with the promotion,
+whether or not the slot is ever loaded (`Allocation.DeadStores`). Copy
+propagation reads a copied value at its source not only where the source
+has one definition and is live, but where the read sits in the copy's own
+block with no redefinition of the source between them (no instruction
+defining the register, no call); the simplifier's fixpoint runs to a
+thousand and twenty-four rounds, one copy a round, ending at the first
+round that changes nothing.
+
+**Scalar replacement widened (2026-09-17, `nativegen/scalar_arrays.go`).**
+A replaceable array may be initialized from another array (its elements
+read one by one), returned as the body's result (stored element by
+element into the result area), and assigned whole from an array literal
+of its length — a permutation of its own elements realized cycle by cycle
+in two scratch registers, any other literal of at most eight elements
+evaluated first then assigned. The expanded helper's block around such a
+literal is read through. The inliner substitutes a constant-index read of
+the caller's owned array for a scalar parameter the callee never assigns
+when the callee has no writable span, in place of a declared copy.
+
+**Destination passing and in-place expansion (2026-09-17,
+`nativegen/nativegen.go` `aliasSafeCall`, `nativegen/inline.go`
+`expandInPlace`).** An assignment `v = f(…, v, …)` whose callee returns a
+record larger than sixteen bytes passes `v`'s own storage as the result
+area when the callee cannot observe that the area is also its argument:
+a callee that copies its result out only at its end, or one that builds
+its result in place and reads the parameter bound to `v` exactly once, as
+the whole initializer of its return-slot local. The callee's copy from
+the parameter into the result area is kept even where it is an identity
+(the verifier reads the result area as memory every field must reach).
+When such a callee is expanded at the assignment, the expansion runs the
+body on `v`: the return-slot local is renamed to `v`, its declaration from
+the parameter and the trailing result are dropped as identities, and no
+other argument may mention `v`. The source and the expansion compute the
+same values (the inliner's substitution, `Oak.Inlining.eval_subst`, with
+two identity copies removed), so the verifier judges the body as the
+copy form's.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs

@@ -17,6 +17,9 @@ type Allocation struct {
 	// the webs that changed register; Coalesced the copies removed because
 	// their source and destination share a register.
 	Promoted, Propagated, Eliminated, Hoisted, Renamed, Coalesced int
+	// DeadStores counts the stores to qualified frame slots no load
+	// reached, removed with the promotion (Promote).
+	DeadStores int
 	// Pool lists the registers allocation may use: the ones the lowering
 	// already wrote (so every callee-saved one among them is saved and
 	// restored by the prologue and epilogue as emitted).
@@ -41,7 +44,7 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) { return R
 // ReallocateWith is Reallocate with the lowering's frame layout, when
 // known (PromoteWith).
 func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Allocation, error) {
-	promotedFn, promoted, err := PromoteWith(fn, objects)
+	promotedFn, promoted, deadStores, err := PromoteWith(fn, objects)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -71,7 +74,7 @@ func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Al
 	}
 	lifted.Liveness(webs)
 	t := lifted.t
-	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, Propagated: propagated, Eliminated: eliminated, Hoisted: hoisted}
+	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, DeadStores: deadStores, Propagated: propagated, Eliminated: eliminated, Hoisted: hoisted}
 	for _, ins := range lifted.Instrs {
 		for _, d := range ins.Defs {
 			if !d.Implicit && !t.reserved(d.Reg) {
@@ -339,5 +342,5 @@ func (u *uncolorable) Error() string {
 
 // Sites is how many sites reallocation changed in all.
 func (a *Allocation) Sites() int {
-	return a.Promoted + a.Propagated + a.Eliminated + a.Hoisted + a.Renamed + a.Coalesced
+	return a.Promoted + a.DeadStores + a.Propagated + a.Eliminated + a.Hoisted + a.Renamed + a.Coalesced
 }

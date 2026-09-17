@@ -57,7 +57,16 @@ func scalarReplaceable(fn *ast.FunctionStatement, name string, length int64) boo
 			}
 		case *ast.AssignmentStatement:
 			if e.Name != nil && e.Name.Value == name {
-				ok = false // the whole array assigned
+				// The whole array assigned: admitted from an array literal
+				// of its length (a permutation, `m = [16]u32{ m[2], … }`),
+				// lowered as a parallel assignment of the elements
+				// (assignScalarArray); anything else keeps the array.
+				lit, isLiteral := arrayLiteralOf(e.Value)
+				if !isLiteral || int64(len(lit.Elements)) != length {
+					ok = false
+				} else if _, isPermutation := permutationSources(name, length, lit); !isPermutation && length > scalarAssignLimit {
+					ok = false // too many values to hold at once
+				}
 			}
 		case *ast.IndexExpression:
 			if ident, isIdent := e.Left.(*ast.Identifier); isIdent && ident.Value == name && !e.Dot {
@@ -177,4 +186,115 @@ func resultIdentifier(body ast.Expression) (string, bool) {
 		return "", false
 	}
 	return ident.Value, true
+}
+
+// assignScalarArray lowers `name = [N]T{ e0, …, eN-1 }` over a replaced
+// array as a parallel assignment: every element expression evaluates
+// first (a permutation reads the elements it overwrites), then each
+// hidden local takes its value.
+func (g *generator) assignScalarArray(sa *scalarArray, s *ast.AssignmentStatement) error {
+	lit, isLiteral := arrayLiteralOf(s.Value)
+	if !isLiteral || int64(len(lit.Elements)) != sa.length {
+		return unsupported("an assignment to the scalar-replaced array %s from %s", s.Name.Value, s.Value.String())
+	}
+	if source, isPermutation := permutationSources(s.Name.Value, sa.length, lit); isPermutation {
+		return g.permuteScalarArray(sa, source)
+	}
+	values := make([]int, sa.length)
+	for k := range lit.Elements {
+		r, err := g.expr(lit.Elements[k], &sa.elem)
+		if err != nil {
+			return err
+		}
+		values[k] = r
+	}
+	for k, r := range values {
+		g.assignVar(sa.names[k], r)
+		g.killLoopFacts(sa.names[k])
+	}
+	return nil
+}
+
+// scalarAssignLimit bounds the elements a whole assignment from a general
+// literal holds in scratch registers at once; a permutation of the
+// array's own elements needs two, whatever its length.
+const scalarAssignLimit = 8
+
+// permutationSources reads a literal over the array's own elements at
+// distinct constant indices — `[16]u32{ m[2], m[6], … }` — as the source
+// index of each destination.
+func permutationSources(name string, length int64, lit *ast.ArrayLiteral) ([]int64, bool) {
+	source := make([]int64, length)
+	seen := make([]bool, length)
+	for destination, element := range lit.Elements {
+		index, isIndex := element.(*ast.IndexExpression)
+		if !isIndex || index.Dot || !isName(index.Left, name) {
+			return nil, false
+		}
+		at, isConst := constantValue(index.Index)
+		if !isConst || at < 0 || at >= length || seen[at] {
+			return nil, false
+		}
+		source[destination] = at
+		seen[at] = true
+	}
+	return source, true
+}
+
+// permuteScalarArray realizes new[i] = old[source[i]] over the hidden
+// locals cycle by cycle: the cycle's first value saved in one scratch,
+// each element then taking the next's, the last taking the saved one —
+// two scratch registers, whatever the length; fixed points need nothing.
+func (g *generator) permuteScalarArray(sa *scalarArray, source []int64) error {
+	visited := make([]bool, len(source))
+	for start := range source {
+		if visited[start] {
+			continue
+		}
+		visited[start] = true
+		next := int(source[start])
+		if next == start {
+			continue
+		}
+		saved, err := g.alloc(sa.elem)
+		if err != nil {
+			return err
+		}
+		g.put(g.loadVar(sa.names[start], saved))
+		current := start
+		for next != start {
+			work, err := g.alloc(sa.elem)
+			if err != nil {
+				return err
+			}
+			g.put(g.loadVar(sa.names[next], work))
+			g.assignVar(sa.names[current], work)
+			g.killLoopFacts(sa.names[current])
+			current = next
+			visited[current] = true
+			next = int(source[current])
+		}
+		g.assignVar(sa.names[current], saved)
+		g.killLoopFacts(sa.names[current])
+	}
+	return nil
+}
+
+// arrayLiteralOf reads an array literal, bare or as the one expression of
+// a block — the shape an expanded helper leaves (`m = blake3_permute(m)`
+// becomes `m = { [16]u32{ m[2], … } }`).
+func arrayLiteralOf(value ast.Expression) (*ast.ArrayLiteral, bool) {
+	if lit, isLiteral := value.(*ast.ArrayLiteral); isLiteral {
+		return lit, true
+	}
+	block, isBlock := value.(*ast.BlockExpression)
+	if !isBlock || block.Block == nil || len(block.Block.Statements) != 1 {
+		return nil, false
+	}
+	es, isExpr := block.Block.Statements[0].(*ast.ExpressionStatement)
+	if !isExpr || es.Discard {
+		return nil, false
+	}
+	lit, isLiteral := es.Expression.(*ast.ArrayLiteral)
+	return lit, isLiteral
 }
