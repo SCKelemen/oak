@@ -981,6 +981,12 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if x.arch == ArchRV64 {
 		resultRegs = []int{10, 11}
 	}
+	// … unless the body reads the result register before it writes it:
+	// then the header's value flows into the iteration and the register
+	// carries a loop variable — `state` in w0 through crc32c_update's
+	// chunk call, the call's argument and its result, with no move
+	// between the iterations once the registers are reallocated.
+	callCarried := x.callCarriedResults(shape, resultRegs)
 	for at := shape.header + 1; at < shape.bodyEnd; at++ {
 		instr, isInstr := x.items[at].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
@@ -988,6 +994,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
 			for _, reg := range resultRegs {
+				if width, carried := callCarried[reg]; carried {
+					if !written[reg] {
+						allW[reg] = width == 32
+					}
+					written[reg] = true
+					continue
+				}
 				headerWritten[reg] = true
 			}
 			continue
@@ -2274,6 +2287,86 @@ func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
 		}
 	}
 	return false
+}
+
+// callCarriedResults finds the result registers of the body's summarized
+// calls that the body reads before it writes them (a call reads its
+// argument registers; an ordinary instruction its source operands and
+// memory bases), with the callee's result width: the value at the header
+// reaches the iteration, so the register carries a loop variable rather
+// than a temporary the call leaves. A call the summary cannot resolve
+// claims nothing.
+func (x *pathExecutor) callCarriedResults(shape loopShape, resultRegs []int) map[int]int {
+	carried := map[int]int{}
+	writtenSoFar := map[int]bool{}
+	readFirst := map[int]bool{}
+	noteRead := func(reg Register) {
+		if reg.Class != ClassV && !reg.ZeroRegister() && !writtenSoFar[reg.Num] {
+			readFirst[reg.Num] = true
+		}
+	}
+	argBase := 0
+	if x.arch == ArchRV64 {
+		argBase = 10
+	}
+	for at := shape.bodyStart; at < shape.bodyEnd; at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
+			sym, isSym := instr.Operands[0].(Symbol)
+			if !isSym || x.fn == nil {
+				return nil
+			}
+			callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+			if !resolved {
+				return nil
+			}
+			var classes []ArgClass
+			for _, arg := range classifyArguments(callee.Parameters, x.fn.Composites) {
+				if arg.problem != "" || arg.param.Variadic {
+					return nil
+				}
+				if arg.kind == argVector && x.arch == ArchRV64 {
+					continue
+				}
+				classes = append(classes, arg.class)
+			}
+			places, _ := LayoutArguments(classes, x.fn.PackedStackArgs)
+			for _, place := range places {
+				if place.OnStack || place.Vector {
+					continue
+				}
+				for k := 0; k < place.Regs; k++ {
+					noteRead(Register{Class: ClassX, Num: argBase + place.Reg + k})
+				}
+			}
+			width, _, ok := contractBits(callee.ReturnType)
+			for _, reg := range resultRegs {
+				if readFirst[reg] && ok && width > 0 && !writtenSoFar[reg] {
+					carried[reg] = width
+				}
+				writtenSoFar[reg] = true
+			}
+			continue
+		}
+		reads := instr.Operands
+		writes := false
+		if !(isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic)) {
+			reads = instr.Operands[1:]
+			writes = true
+		}
+		for _, reg := range registerOperands(reads) {
+			noteRead(reg)
+		}
+		if writes {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class != ClassV && !dest.ZeroRegister() {
+				writtenSoFar[dest.Num] = true
+			}
+		}
+	}
+	return carried
 }
 
 // hasInnerLoop reports a recognized inner loop exit inside the body.

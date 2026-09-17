@@ -7181,6 +7181,22 @@ carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
 
+**A call's result register as a loop variable (2026-09-18).** The
+result registers of a summarized call were temporaries without
+exception, and a value that travels through the call's argument and
+result register with no move between the iterations was therefore no
+loop variable at all: `crc32c_update` with its registers reallocated
+keeps `state` in w0 into `crc32c_chunk` and out of it, the summarizer
+read the header's value for w0 at every iteration, `state` had no
+pairing, and every optimized form of the body was set aside as
+witnessed while the identity was kept. A call's result register the
+body reads before it writes — a call reads its argument registers, an
+instruction its sources and memory bases (`callCarriedResults`) — is
+now a loop-carried register at the callee's result width; one the body
+consumes stays a temporary. The rotated, fused, scheduled, reallocated
+form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
+Pinned: `compiler/e2e_native_call_result_carried_test.go`.
+
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
 refused, and with the loops themselves recognized it was the largest
