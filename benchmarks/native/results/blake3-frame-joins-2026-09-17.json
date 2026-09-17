@@ -1,0 +1,97 @@
+{
+  "date": "2026-09-17",
+  "baseline_commit": "98faccd3",
+  "integration_parent": "1e94d351",
+  "scope": "BLAKE3 update only native, cache disabled, standard production proof and search budgets. No runtime timing claim.",
+  "diagnosis": {
+    "function": "hash__blake3_uupdate",
+    "loop_event": 1,
+    "fields": "next.cv[0..7]",
+    "result_area_base": 1099511627776,
+    "field_offsets_bytes": [0, 4, 8, 12, 16, 20, 24, 28],
+    "header_fields_known": 8,
+    "body_end_fields_known_before": 0,
+    "cause": "The push_chunk call summary writes 4-byte cv leaves, while the other arm copies 8-byte words. mergeTwo retained only equal-address, equal-width frame slots, losing all eight common fields. bodyEnd.valueOfVar then substituted the fresh header value for each absent slot, so invariant pruning removed the changed fields.",
+    "baseline_diagnostic_example": [
+      "CV inventory event=1 name=s1099511627776:4 bound=true value=state.cv[0]",
+      "CV next event=1 name=s1099511627776:4 fresh=true header=false value=loop1.s1099511627776:4",
+      "CV end event=1 name=s1099511627776:4 end=0 known=false unknown=<nil> value=<nil>"
+    ],
+    "fix": "Intersect disjoint sorted byte ranges at joins, select each common piece under the branch condition, and refuse a loop summary when a carried frame value is absent. Gaps remain unknown; invalid or overlapping incoming frame layouts do not merge."
+  },
+  "coupling_preparation": {
+    "issue": "Restoring changed fields exposed repeated substitution and dependency walks through large call-result expressions at intervening search depths.",
+    "fix": "Cache machine-symbol dependencies of source terms and coupling replacements. Defer preliminary valuations until both sets are paired; retain the post-substitution dependency check and all complete candidate proofs.",
+    "semantics": "Substitution replaces a parameter once. Dependency checks inspect replacement names without recursively substituting them. Rolled-back pairings are checked against the current substitution map.",
+    "stopped_experiments": [
+      "The initial frame-only emission was stopped after more than ten minutes in repeated coupling preparation.",
+      "Caching only raw source dependencies still repeated work when a replacement introduced another unpaired symbol; the superseded runs were stopped."
+    ],
+    "final_emission_before_last_rebase": "Completed successfully with the normal witness verdict and unchanged native object.",
+    "final_emission_wall_seconds": 160.57,
+    "timing_scope": "One final compiler-emission run after integration, under concurrent host load; not a runtime benchmark or a controlled compile-time comparison."
+  },
+  "reduced_regression": {
+    "test": "TestVerifyLoopMixedFrameStoreWidths",
+    "before": "Witness evidence on 152 inputs; no preserving pairing for the high word.",
+    "after": "Proven.",
+    "wrong_narrow_arm_after": "Mismatch."
+  },
+  "selection": {
+    "candidates_considered": 75,
+    "verified_candidates": 3,
+    "selected": "elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup",
+    "instructions": 528,
+    "guards": 1,
+    "cost": 906834,
+    "identity_cost": 1313107,
+    "verdict": "witnessed",
+    "agreeing_inputs": 307,
+    "reason": "the coupling search exceeded its budget"
+  },
+  "artifacts": {
+    "baseline.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "baseline.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "after.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "after.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "publish.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "publish.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "c_companion_difference": "The integrated aggregate-indexing fix 5520c96a changes oak_index and aggregate initializer reads; the native update object is unchanged."
+  },
+  "validation": [
+    {
+      "check": "New mixed-width frame tests against baseline",
+      "result": "Fail as expected: common bytes disappear, a lost slot reads its old header value, and the reduced loop is witnessed rather than proven."
+    },
+    {
+      "check": "Frame intersection, dependency replacement and loop tests",
+      "result": "Pass (3.175s), including reversed arms, gaps, unaligned intersections, invalid layouts, lost-slot refusal, wrong-value refutation and substitution rollback."
+    },
+    {
+      "check": "Complete assembler and machine suites after the final cache refinement, based on aabdefe1",
+      "result": "Pass: asm 138.365s, machine 1.786s; cache disabled and normal budgets."
+    },
+    {
+      "check": "Native BLAKE3/reference, compression proof, record loops, aggregate indexing, vector fold and RV64 integration",
+      "result": "Pass (328.168s). Native package/reference 301.92s, compressor proof 9.46s, RV64 under QEMU executed and passed in 6.24s. All selected tests ran."
+    },
+    {
+      "check": "Rebased onto 69b644b6 record-base rescheduling",
+      "result": "Transform and carrier tests pass (nativegen 0.836s). Compiler materialization, record-base execution/trap and compressor proof checks pass (19.883s); compressor proof 13.87s."
+    },
+    {
+      "check": "Cache-off emission after integration of 69b644b6",
+      "result": "Pass (146.59s wall time). The selection, cost, witness count and verdict are unchanged. Both final C and object match the preceding emission byte-for-byte; the native object also matches the original baseline."
+    },
+    {
+      "check": "Rebased onto 1e94d351 after concurrent Sail and native cleanup changes",
+      "result": "Native cleanup, record-base and redundant-guard tests pass (nativegen 0.824s). Compiler cleanup, walker, redundant-guard, if-conversion, record-base and compressor proof checks pass (35.109s). RV64 memory cleanup checks also execute under QEMU; compressor proof 9.63s. Final cache-off update emission passes in 160.57s, preserving the selection, witness verdict and exact publish.c/publish.o bytes."
+    }
+  ],
+  "commands": {
+    "build": "go build -p 1 -o <emit> ./benchmarks/native/emit",
+    "emit": "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_REPORT=1 <emit> benchmarks/kernels/oak <output>",
+    "asm_suite": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./asm ./machine -count=1 -timeout=15m",
+    "compiler_checks": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./compiler -run '^(TestE2ENativeBlake3PackageAgreesWithReference|TestNativeBlake3CompressionProven|TestE2ENativeRecordFieldLoop|TestE2ENativeLoopBoundByAField|TestE2ENativeRecordLoopStoresProven|TestE2ENativeRV64UnderQEMU|TestE2EAggregateLiteralIndexesLowerRecursively|TestE2EAggregateLiteralDynamicIndexTraps|TestE2ENativeVectorFold)$' -count=1 -timeout=20m -v"
+  }
+}

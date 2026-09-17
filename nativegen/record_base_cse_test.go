@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/opt"
 )
 
@@ -118,6 +119,52 @@ func TestReuseRecordBaseDestination(t *testing.T) {
 	next := transform.Apply(opt.Identity(parent))
 	if next == nil || !next.Config.(Lane).ReuseRecordBaseDestinations || PlainLane(next.Config.(Lane)).ReuseRecordBaseDestinations {
 		t.Fatal("record-base carrier candidate toggle or identity fallback")
+	}
+
+	reschedule, found := Registry().Lookup(TransformRecordBaseSchedule)
+	if !found {
+		t.Fatal("missing record-base carrier rescheduling candidate")
+	}
+	if gated, ok := reschedule.(opt.Gated); !ok || !gated.NeedsVerdict() {
+		t.Fatal("record-base carrier rescheduling must require a semantic verdict")
+	}
+	if reschedule.Apply(identity) != nil {
+		t.Fatal("record-base carrier rescheduling applied without its parents")
+	}
+	parent.RescheduleRecordBaseCarriers = false
+	parent.ReuseRecordBaseDestinations = true
+	next = reschedule.Apply(opt.Identity(parent))
+	if next == nil || !next.Config.(Lane).RescheduleRecordBaseCarriers || PlainLane(next.Config.(Lane)).RescheduleRecordBaseCarriers {
+		t.Fatal("record-base carrier rescheduling toggle or identity fallback")
+	}
+}
+
+func TestRescheduleForFewerStalls(t *testing.T) {
+	body := `
+  ldr w9, [x0]
+  add w10, w9, #1
+  add w11, w1, #2
+  add w12, w2, #3
+  str w11, [x0, #8]
+  cmp w10, w12
+  b.hs done
+  ret
+done:
+  ret`
+	fn := recordBaseFunction(t, body, "x9, x10, x11, x12")
+	beforeStalls, _ := machine.StallEstimate(fn)
+	if moved, err := rescheduleForFewerStalls(fn); err != nil || moved == 0 {
+		t.Fatalf("moved %d: %v", moved, err)
+	}
+	afterStalls, _ := machine.StallEstimate(fn)
+	if afterStalls >= beforeStalls {
+		t.Fatalf("stalls %d -> %d:\n%s", beforeStalls, afterStalls, Describe(fn))
+	}
+
+	neutral := recordBaseFunction(t, "  mov x0, x0\n  ret", "x0")
+	before := Describe(neutral)
+	if moved, err := rescheduleForFewerStalls(neutral); err != nil || moved != 0 || Describe(neutral) != before {
+		t.Fatalf("neutral schedule moved %d: %v\n%s", moved, err, Describe(neutral))
 	}
 }
 

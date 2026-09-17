@@ -1501,8 +1501,14 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
+		if merged == nil {
+			return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
+		}
 		for i := len(ends) - 2; i >= 0; i-- {
 			value := ends[i].valueOfVar(name, freshState)
+			if value == nil {
+				return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
+			}
 			if equalTerms(value, merged) {
 				continue // the same value on both paths: no select
 			}
@@ -2232,10 +2238,10 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	default:
 		size := int64(8)
 		fmt.Sscanf(name, "s%d:%d", &addr, &size)
-		if value, ok := e.state.loadSlot(addr, size); ok {
-			return value
-		}
-		value, _ := header.loadSlot(addr, size)
+		// Every body path started with the fresh header frame. Absence
+		// now means the bytes were lost, not that no store occurred; an
+		// old header value would invent an invariant for changed memory.
+		value, _ := e.state.loadSlot(addr, size)
 		return value
 	}
 }
@@ -4407,21 +4413,27 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		return out, taken
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	asmSymbols := map[string]bool{}
+	for _, ev := range asmLoops {
+		for name := range ev.width {
+			asmSymbols[ev.freshName(name)] = true
+		}
+	}
 	// resolved: the term mentions no asm loop symbol still to be coupled.
 	resolved := func(t *term) bool {
 		mentioned := map[string]bool{}
 		collectParams(t, mentioned)
 		for name := range mentioned {
-			var k int
-			var reg string
-			if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
-				if _, isAsm := asmLoops[k-1].width[reg]; isAsm && sigma[name] == nil {
-					return false
-				}
+			if asmSymbols[name] && sigma[name] == nil {
+				return false
 			}
 		}
 		return true
 	}
+	// Defer unresolved early valuations before rebuilding large call
+	// results. Include dependencies introduced by the chosen replacements;
+	// pairing every raw name need not resolve the substituted expression.
+	dependenciesOf := couplingDependencies{symbols: asmSymbols}
 	// verified: the slots whose one-iteration obligation a valuation pass
 	// has already checked under the current choices (pendingRefuted).
 	verified := map[string]bool{}
@@ -4470,14 +4482,20 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// the asm side mentions only coupled symbols).
 	preservation := func(s loopSlot, c coupling) (premise, next, asmNext *term, isResolved bool) {
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
+		if !dependenciesOf.ready(asmEv.next[c.reg], sigma) {
+			return nil, nil, nil, false
+		}
 		asmNext = substitute(asmEv.next[c.reg], sigma)
+		if !resolved(asmNext) {
+			return nil, nil, nil, false
+		}
 		next = widen(substitute(s.pack(oakEv.next), sigma), c.ext, asmEv.width[c.reg])
 		if c.a == 1 {
 			next = binaryTerm("add", next, c.b)
 		} else {
 			next = binaryTerm("sub", c.b, next)
 		}
-		return bodyPremise(s.event, sigma, true), next, asmNext, resolved(asmNext)
+		return bodyPremise(s.event, sigma, true), next, asmNext, true
 	}
 	// pendingRefuted prunes the search: the one-iteration obligation of a
 	// chosen slot, and an event's continue-condition agreement, are checked
@@ -4507,6 +4525,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			newly = append(newly, s.key)
 		}
 		for k := range oakLoops {
+			if !dependenciesOf.ready(asmLoops[k].cond, sigma) {
+				continue
+			}
 			asmCond := substitute(asmLoops[k].cond, sigma)
 			if resolved(asmCond) && refutedByCoupling(bodyPremise(k, sigma, false), substitute(oakLoops[k].cond, sigma), asmCond, widthOfName, &couplingWork) {
 				if trace {
