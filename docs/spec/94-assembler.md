@@ -9192,6 +9192,19 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**Header values spelled apart (2026-09-17).** A coupling candidate is an
+equality when the two sides' header values are one term, else an affine
+image with the headers' difference as its offset, tried after every
+equality. A frame slot holding two 32-bit words reads `h0 or (h1 shl 32)`
+on the machine and `(h0 and 0xffffffff) or ((h1 and 0xffffffff) shl 32)`
+as the Oak pack of the two lanes — one value, two terms — so
+`sha256_update`'s slots were offered only as images with a symbolic
+offset, behind every wrong pairing's refutation, and the search spent its
+budget. Two headers are now one value when they are the same term, the
+same canonical term, or — for terms under forty-eight nodes — equal at
+the bit level (`headersEqual`); the pairing is then the equality it is,
+first in line.
+
 **The carried leaves of a record (2026-09-17).** A loop that assigned
 into a record local carried every leaf of the record as a loop variable,
 the fields it never wrote included: `sha256_update`'s whole-block loop
