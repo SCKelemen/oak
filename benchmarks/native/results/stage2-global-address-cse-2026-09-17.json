@@ -1,0 +1,62 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T11:43:38Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "c212716fb59d5ccc94fe783a8ef7b08dad2a8fba",
+  "candidate": "baseline plus the scheduler-constrained, acyclic, proof-gated nativegen share-global-addresses transform and native materialization-v22 cache-key closure; checker and verifier semantics unchanged",
+  "baseline_configuration": "same candidate compiler, OAK_OPT_SKIP=share-global-addresses",
+  "os_revision": "c44958a73a54b55639f8d1ce62041963d57ff8e4",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "benchmark_harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "object_sha256": {
+    "baseline": "7bf4d85b13e25b5df6cff852bb76bf64af4fc12031c9b4d458cd7c9db0534004",
+    "candidate": "4148a140faf46bce23df97d337bab61c9095552e55934d266d4e424d1dcb5b38"
+  },
+  "object_bytes": {
+    "baseline": 7224,
+    "candidate": 6264,
+    "delta": -960
+  },
+  "text_bytes": {
+    "baseline": 5064,
+    "candidate": 4744,
+    "delta": -320
+  },
+  "relocation_entries": {
+    "baseline": 108,
+    "candidate": 28,
+    "delta": -80,
+    "entry_bytes": 8,
+    "byte_delta": -640
+  },
+  "build": {
+    "oak": ["build", "-native"],
+    "baseline_opt_skip": "share-global-addresses",
+    "verify_fresh": true
+  },
+  "selected_bodies": {
+    "check_range": {"baseline_instructions": 66, "candidate_instructions": 50, "global_addresses_shared": 8, "candidate_verdict": "proven"},
+    "map_page": {"baseline_instructions": 192, "candidate_instructions": 166, "global_addresses_shared": 13, "candidate_verdict": "proven"},
+    "translate": {"baseline_instructions": 111, "candidate_instructions": 107, "global_addresses_shared": 2, "candidate_verdict": "proven"},
+    "unmap_page": {"baseline_instructions": 263, "candidate_instructions": 229, "global_addresses_shared": 17, "candidate_verdict": "proven"}
+  },
+  "summary": {
+    "global_addresses_shared": 40,
+    "instructions_removed": 80,
+    "interpretation": "Four smaller selected bodies are proven by the unchanged verifier. The object reduction is exactly 320 text bytes plus 640 relocation bytes. Runtime is deliberately unreported because host load remained above 40."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": ["map/translate/unmap round trip", "unaligned and out-of-range rejection", "pool exhaustion", "shadow-model PRNG operations", "three isolated regimes"]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load remained above 40 after verification and linking"
+  }
+}

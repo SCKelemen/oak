@@ -5464,9 +5464,9 @@ cannot freshen the inner expansion's newly generated locals. These are
 conservative name-safety refusals, not a change to the unroll law or the
 verification gate. The native/C regression cases cover nested loops and
 successive loops reusing a scoped local name.
-Materialization recipe v21 includes these refusals and retains sparse
-record-base sharing, v19's result-home budget, v18's extent folding, and the
-explicit lane flags.
+Materialization recipe v22 includes these refusals and retains scalar-global
+and sparse record-base sharing, v19's result-home budget, v18's extent
+folding, and the explicit lane flags.
 
 **Dead frame stores and copies through redefined sources (2026-09-17,
 `machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion
@@ -5877,7 +5877,7 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v21 keys
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v22 keys
 it independently from private-frame `loop-array-homes` and records the smaller
 two-result-home budget (the combined frame/result cap remains eight). The
 budget resets per loop and leaves uncached cells on the memory path; it is a
@@ -6047,10 +6047,10 @@ destinations, unavailable scratches, and undeclared scratches. The compiler
 differential exercises both conditional arms and the invalid-domain trap over
 a record whose stride exceeds sixteen bits.
 
-Native materialization recipe v21 distinguishes the sparse scheduled recipe
+Native materialization recipe v22 distinguishes the sparse scheduled recipe
 from v17's adjacent-only recipe and composes it with v20's constant-unroll
 name guards, v19's two-result-home budget, and v18's exact local-view extent
-folding. The key also carries
+folding and adds the scalar-global address candidate. The key also carries
 `share-record-bases` alongside v16's explicit `carry-loop-index` and
 `elide-redundant-guards` keying. This closes the artifact-cache contract for
 the late candidate; the registry-wide test requires every transform switch
@@ -6076,6 +6076,34 @@ Mach-O `__text`; the object is 160 bytes smaller after alignment); every
 selected body remains `proven`, and all five OS differential tests pass. No
 follow-on runtime claim is attached because the
 available host was heavily loaded during the attempted measurement.
+
+**Shared scalar-global addresses (2026-09-17, AArch64 lane).** The
+`share-global-addresses` machine candidate (`nativegen/global_address_cse.go`)
+recognizes a declared non-aggregate package global's exact address pair,
+`adrp xA, G; ...; add xA, xA, :lo12:G`, after scheduling. Nearby independent
+instructions may be interleaved; a label, branch, call, or intervening mention
+of `xA` refuses the pair. When the completed first pair dominates later pairs
+for the same symbol, and every path between them is call-free, the first pair
+is retargeted to an otherwise-unused declared caller-saved scratch. Later
+pairs disappear and their block-local address reads use the carried value.
+
+The scratch is absent from the whole function suffix, every replaced address
+dies at its next control boundary or definition, unresolved CFG targets and
+cyclic CFGs refuse the pass, and a call always ends a group. The pass may start
+a new group after the call. It does not share aggregate-global addresses and
+does not move, combine, or remove any load or store. It runs after scheduling,
+composes after record-base sharing, and is a non-neutral **verdict-gated**
+candidate; the ordinary checker and unchanged whole-body verifier remain the
+only authority for selection. Materialization v22 keys the new lane flag.
+
+On the stage-2 pilot, selected `proven` bodies share eight addresses in
+`check_range` (66→50 instructions), thirteen in `map_page` (192→166), two in
+`translate` (111→107), and seventeen in `unmap_page` (263→229). The other
+selected bodies are unchanged. Forty removed address pairs are 80 instructions
+(320 bytes of Mach-O `__text`) and 80 relocation entries (640 bytes), shrinking
+the object from 7224 to 6264 bytes. All five OS differential tests pass. Runtime
+is not reported from the loaded host; static provenance is in
+`benchmarks/native/results/stage2-global-address-cse-2026-09-17.json`.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple

@@ -179,6 +179,30 @@ passing. No new runtime result is recorded: the attempted run saw load
 averages above 100 and was discarded. Static provenance is recorded in
 [the sparse-schedule result](results/stage2-record-base-sparse-2026-09-17.json).
 
+## OS stage-2: share scalar-global addresses, 2026-09-17
+
+The proof-gated `share-global-addresses` candidate retains one exact
+`adrp`/`add :lo12:` address for a declared scalar package global on each
+call-free dominated region. It runs after scheduling, refuses cyclic CFGs,
+uses only an otherwise-unused declared caller-saved scratch, and leaves every
+global load/store in place. The same candidate compiler with
+`OAK_OPT_SKIP=share-global-addresses` produced the control.
+
+| Selected body | Before | After | Addresses shared |
+| --- | ---: | ---: | ---: |
+| `check_range` | 66 | 50 | 8 |
+| `map_page` | 192 | 166 | 13 |
+| `translate` | 111 | 107 | 2 |
+| `unmap_page` | 263 | 229 | 17 |
+
+All four selected bodies remain `proven`; every other selected body is
+unchanged, and all five OS differential tests pass. Removing 40 address pairs
+removes 80 instructions (320 bytes of Mach-O `__text`) and 80 relocation
+entries (640 bytes), shrinking the object **7224 → 6264 bytes**. Runtime is not
+reported because host load remained above 40 after verification and linking.
+
+[Static observations and provenance](results/stage2-global-address-cse-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
@@ -1038,7 +1062,7 @@ before considering default promotion. The downstream pin is unchanged.
 
 **Result-home register budget follow-up (2026-09-17).** The experimental
 candidate now caps result homes at **two per loop**, independently of private
-frame homes (the combined cap stays eight). Integrated materialization v21
+frame homes (the combined cap stays eight). Integrated materialization v22
 records the new recipe alongside upstream extent folding, sparse record-base
 sharing, and late-machine flags. It still
 requires the same alias, trap and verifier checks and is

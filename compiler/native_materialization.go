@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v21 composes v20's constant-unroll name guards with sparse scheduled
-	// record-base sharing, v19's result-home budget, and v18's extent folding.
-	// Preserve every recipe input to avoid reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v21")
+	// v22 adds scalar-global address sharing to v21's explicit late-machine
+	// recipe. Preserve every recipe input to avoid reusing another candidate's
+	// body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v22")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -71,6 +71,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"loop-array-homes", lane.LoopArrayHomes},
 		{"loop-result-homes", lane.LoopResultHomes},
 		{"share-record-bases", lane.ShareRecordBases},
+		{"share-global-addresses", lane.ShareGlobalAddresses},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},

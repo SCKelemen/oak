@@ -1651,6 +1651,10 @@ type Lane struct {
 	// It composes only with scheduling and is selected only when the whole
 	// machine body proves.
 	ShareRecordBases bool
+	// ShareGlobalAddresses carries one exact adrp/add address of a declared
+	// scalar package global through later materializations on call-free paths.
+	// It composes only with scheduling and requires a whole-body verdict.
+	ShareGlobalAddresses bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -2087,6 +2091,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	// deliberately longer-lived carried value.
 	if lane.ShareRecordBases && lane.Schedule {
 		sharedRecordBases[out] = shareRecordBase(out)
+	}
+	if lane.ShareGlobalAddresses && lane.Schedule {
+		sharedGlobalAddresses[out] = shareGlobalAddresses(out)
 	}
 	return out, nil
 }

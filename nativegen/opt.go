@@ -63,6 +63,7 @@ const (
 	TransformCarryIndex      = "carry-loop-index"
 	TransformRedundantGuards = "elide-redundant-guards"
 	TransformRecordBases     = "share-record-bases"
+	TransformGlobalAddresses = "share-global-addresses"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -469,6 +470,13 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.ShareRecordBases = true; return l },
 			fired:   SharedRecordBases,
 		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformGlobalAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareGlobalAddresses },
+			apply:   func(l Lane) Lane { l.ShareGlobalAddresses = true; return l },
+			fired:   SharedGlobalAddresses,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
@@ -562,6 +570,7 @@ func PlainLane(lane Lane) Lane {
 	lane.CarryLoopIndices = false
 	lane.ElideRedundantGuards = false
 	lane.ShareRecordBases = false
+	lane.ShareGlobalAddresses = false
 	lane.VectorHomes = false
 	lane.LoopArrayHomes = false
 	lane.LoopResultHomes = false

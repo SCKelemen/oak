@@ -130,7 +130,7 @@ func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, b
 	if !strideAOK || !lowOK || strideA.Class != asm.ClassW || low.Shift != 0 || low.Value < 0 || low.Value > 0xffff {
 		return recordBaseSite{}, false
 	}
-	middle, ok := nextRecordBaseMention(items, start+1, start+recordBaseMaterializationSpan, strideA.Num)
+	middle, ok := nextGeneralRegisterMention(items, start+1, start+recordBaseMaterializationSpan, strideA.Num)
 	if !ok {
 		return recordBaseSite{}, false
 	}
@@ -144,7 +144,7 @@ func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, b
 		high.Shift != 16 || high.Value < 0 || high.Value > 0xffff {
 		return recordBaseSite{}, false
 	}
-	def, ok := nextRecordBaseMention(items, middle+1, start+recordBaseMaterializationSpan, strideA.Num)
+	def, ok := nextGeneralRegisterMention(items, middle+1, start+recordBaseMaterializationSpan, strideA.Num)
 	if !ok {
 		return recordBaseSite{}, false
 	}
@@ -168,10 +168,10 @@ func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, b
 	return recordBaseSite{start: start, middle: middle, def: def, stride: strideA, dest: dest, index: index, base: base, low: low, high: high, uses: uses, localUseBoundary: boundary}, true
 }
 
-// nextRecordBaseMention finds the next read or write of reg without crossing
-// a label, branch, or call. The caller then checks that the mention is the
-// required next instruction of the materialization.
-func nextRecordBaseMention(items []asm.Item, from, through, reg int) (int, bool) {
+// nextGeneralRegisterMention finds the next read or write of reg without
+// crossing a label, branch, or call. The caller checks the exact instruction
+// which is allowed to make that mention.
+func nextGeneralRegisterMention(items []asm.Item, from, through, reg int) (int, bool) {
 	if through >= len(items) {
 		through = len(items) - 1
 	}
