@@ -51,6 +51,7 @@ const (
 	TransformVectorMaps          = "vectorize-maps"
 	TransformUnrollMaps          = "unroll-vector-maps"
 	TransformVectorFolds         = "vectorize-folds"
+	TransformUnrollFolds         = "unroll-vector-folds"
 	TransformUnrollConst         = "unroll-constant"
 	TransformVectorLanes         = "vectorize-lanes"
 	TransformUnrollSmall         = "unroll-small"
@@ -68,6 +69,8 @@ const (
 	TransformCarryIndex          = "carry-loop-index"
 	TransformRedundantGuards     = "elide-redundant-guards"
 	TransformRecordBases         = "share-record-bases"
+	TransformRecordBaseCarriers  = "reuse-record-base-carriers"
+	TransformRecordBaseSchedule  = "reschedule-record-base-carriers"
 	TransformGlobalAddresses     = "share-global-addresses"
 	TransformForwardGlobalLoads  = "forward-global-loads"
 	TransformGlobalLoadMasks     = "elide-global-load-masks"
@@ -418,6 +421,18 @@ func Transforms() []opt.Transform {
 			fired:    VectorizedFolds,
 		},
 		&laneTransform{
+			// Fold unrolling (nativegen/vector_fold.go): two vectors of
+			// element values a trip in a vectorized fold, the lanes still
+			// added in element order — the same law, Oak.Fold.blocked_eq, over
+			// each loop; proposed only where a fold site exists.
+			name: TransformUnrollFolds, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollVectorFolds },
+			eligible: func(l Lane) bool { return l.LoopRewrites.VectorFold },
+			apply:    func(l Lane) Lane { l.UnrollVectorFolds = true; return l },
+			fired:    UnrolledFolds,
+		},
+		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
 			// peeling (nativegen/licm.go; §9 "Loop invariants"): machine
 			// shape only, judged by the checker and the verifier.
@@ -528,6 +543,22 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.ShareRecordBases },
 			apply:   func(l Lane) Lane { l.ShareRecordBases = true; return l },
 			fired:   SharedRecordBases,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRecordBaseCarriers, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ReuseRecordBaseDestinations },
+			eligible: func(l Lane) bool { return l.Schedule && l.ShareRecordBases },
+			apply:    func(l Lane) Lane { l.ReuseRecordBaseDestinations = true; return l },
+			fired:    ReusedRecordBaseDestinations,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRecordBaseSchedule, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.RescheduleRecordBaseCarriers },
+			eligible: func(l Lane) bool { return l.Schedule && l.ShareRecordBases && l.ReuseRecordBaseDestinations },
+			apply:    func(l Lane) Lane { l.RescheduleRecordBaseCarriers = true; return l },
+			fired:    RescheduledRecordBaseCarriers,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
 			name: TransformGlobalAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
@@ -660,6 +691,8 @@ func PlainLane(lane Lane) Lane {
 	lane.CarryLoopIndices = false
 	lane.ElideRedundantGuards = false
 	lane.ShareRecordBases = false
+	lane.ReuseRecordBaseDestinations = false
+	lane.RescheduleRecordBaseCarriers = false
 	lane.ShareGlobalAddresses = false
 	lane.ForwardGlobalLoads = false
 	lane.ElideGlobalLoadMasks = false
@@ -684,6 +717,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorFolds = false
 	lane.UnrollConstant = false
 	lane.VectorLanes = false
+	lane.UnrollVectorFolds = false
 	lane.UnrollSmall = false
 	lane.UnrollFills = false
 	lane.NoReductions = true

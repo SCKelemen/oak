@@ -25,6 +25,19 @@ const maxForwardBlocks = 127
 // target, never executes skipped blocks, and never needs a program counter.
 // The caller obtains order from optir.AcyclicOrder after CFG/type validation.
 func (f *function) forwardBody(b *binary, order []optir.BlockID, functions map[string]*function) error {
+	if err := f.forwardRegion(b, order, functions, nil, true); err != nil {
+		return err
+	}
+	b.op(0x0b) // function end returns the final block's result
+	return nil
+}
+
+// forwardRegion also permits transfers to explicit enclosing labels. Each exit
+// depth is measured just outside this region's forward scopes; an edge adds the
+// still-open scopes and its own conditional label. No other target is allowed.
+// A returning region leaves a result on the stack only at the end of a function;
+// inside a loop, every return must explicitly leave the function instead.
+func (f *function) forwardRegion(b *binary, order []optir.BlockID, functions map[string]*function, exits map[optir.BlockID]int, returnAtEnd bool) error {
 	positions := make(map[optir.BlockID]int, len(order))
 	for i, id := range order {
 		positions[id] = i
@@ -45,16 +58,27 @@ func (f *function) forwardBody(b *binary, order []optir.BlockID, functions map[s
 		}
 		edge := func(e optir.Edge, conditional bool) error {
 			target, ok := positions[e.Target]
-			if !ok || target <= i {
-				return fmt.Errorf("non-forward edge %d -> %d", id, e.Target)
-			}
-			f.edgeValues(b, e)
-			if target == i+1 && !conditional {
-				return nil // unconditional fallthrough to the next label
-			}
 			depth := target - i - 1
+			if ok {
+				if target <= i {
+					return fmt.Errorf("non-forward edge %d -> %d", id, e.Target)
+				}
+			} else {
+				outer, allowed := exits[e.Target]
+				if !allowed || outer < 0 || outer > 127 {
+					return fmt.Errorf("unbound region exit %d -> %d", id, e.Target)
+				}
+				depth = len(order) - i - 1 + outer
+			}
 			if conditional {
 				depth++ // also exit the selected if/else arm
+			}
+			if depth > 127 {
+				return fmt.Errorf("region branch depth exceeds scalar profile")
+			}
+			f.edgeValues(b, e)
+			if ok && target == i+1 && !conditional {
+				return nil // unconditional fallthrough to the next label
 			}
 			b.op(0x0c)
 			b.u(uint64(depth))
@@ -63,7 +87,7 @@ func (f *function) forwardBody(b *binary, order []optir.BlockID, functions map[s
 		switch t := block.Terminator; t.Kind {
 		case optir.TerminatorReturn:
 			f.returnValue(b, t)
-			if i != len(order)-1 {
+			if i != len(order)-1 || !returnAtEnd {
 				b.op(0x0f) // early return must skip remaining blocks
 			}
 		case optir.TerminatorBranch:
@@ -85,6 +109,5 @@ func (f *function) forwardBody(b *binary, order []optir.BlockID, functions map[s
 			return fmt.Errorf("unsupported forward terminator %s", t.Kind)
 		}
 	}
-	b.op(0x0b) // final returning block leaves the function result on the stack
 	return nil
 }

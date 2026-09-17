@@ -144,14 +144,20 @@ theorem subslice_len_fits (v : View) (start n : Nat) (hg : start + n ≤ v.len) 
 
 ```c
 static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
-#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+#define oak_index(base, len, i) ((base)[oak_lv_idx((u64)(i), (u64)(len))])
 static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 ```
 
-An owned array's length is its static `N`; the read macro guards with
-`(u64)i < (u64)len`, the lvalue and store helpers with the negation, so the
-three are the view index guard at `start = 0`. -/
+An owned array's length is its static `N`. The read macro now uses the
+lvalue helper: it traps on `i >= len` and returns the unchanged index
+otherwise. `owned_store_guard_iff` identifies that admission with `i < len`,
+so reads, lvalues and stores still use the view guard at `start = 0`.
+
+Each read-macro operand occurs once. That syntactic property is pinned by
+the emitted-text tests and exercised by an effectful-index regression (and
+its old-macro mutant). The model below covers the checked numeric result;
+it does not formalize C expression evaluation or pointer semantics. -/
 
 /-- `(u64)(i) < (u64)(len)`: the read proceeds. -/
 def ownedIndexGuard (len i : Nat) : Bool := decide (i < len)
@@ -167,6 +173,22 @@ theorem owned_store_guard_iff (len i : Nat) : (!decide (i ≥ len)) = ownedIndex
     simp [h, hn]
   · have hge : i ≥ len := Nat.not_lt.mp h
     simp [h, hge]
+
+/-- The numeric result of `oak_lv_idx`: a trap or the original index. -/
+def ownedCheckedIndex (len i : Nat) : Option Nat :=
+  if i ≥ len then none else some i
+
+theorem owned_checked_index_some_iff (len i result : Nat) :
+    ownedCheckedIndex len i = some result ↔ i < len ∧ i = result := by
+  unfold ownedCheckedIndex
+  by_cases h : i ≥ len
+  · simp [h, Nat.not_lt.mpr h]
+  · simp [h, Nat.lt_of_not_ge h]
+
+theorem owned_checked_index_none_iff (len i : Nat) :
+    ownedCheckedIndex len i = none ↔ i ≥ len := by
+  unfold ownedCheckedIndex
+  by_cases h : i ≥ len <;> simp [h]
 
 /-- An owned array is the view of itself at offset zero: its guard is the
     view guard. -/

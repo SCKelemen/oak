@@ -81,8 +81,8 @@ func TestSailMemoryEffectFragmentExactAndMutated(t *testing.T) {
 	}
 }
 
-func TestSailLemWriteMemoryTraces(t *testing.T) {
-	oracle := newSailLemOracle(t)
+func checkedSailMemoryFragment(t *testing.T, oracle sailLemOracle) string {
+	t.Helper()
 	version, err := oracle.run(t, "", oracle.sail, "--version")
 	if err != nil || !strings.HasPrefix(string(version), "Sail 0.20.2 (") {
 		t.Fatalf("write-memory export requires pinned Sail 0.20.2: %v\n%s", err, version)
@@ -128,6 +128,12 @@ func TestSailLemWriteMemoryTraces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return fragment
+}
+
+func TestSailLemWriteMemoryTraces(t *testing.T) {
+	oracle := newSailLemOracle(t)
+	fragment := checkedSailMemoryFragment(t, oracle)
 	harness, err := os.ReadFile(filepath.Join("..", "spec", "sail", "lem", "write_memory_trace_test.ml"))
 	if err != nil {
 		t.Fatal(err)

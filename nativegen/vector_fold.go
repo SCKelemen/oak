@@ -54,8 +54,10 @@ type foldLoop struct {
 }
 
 // vectorizeFolds returns the body with its lane-wise float reductions
-// vectorized, and whether any was.
-func vectorizeFolds(fn *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+// vectorized, and whether any was. With unroll, the main loop takes two
+// vectors of elements a trip, a one-vector loop cleaning up before the
+// scalar remainder (Lane.UnrollVectorFolds).
+func vectorizeFolds(fn *ast.FunctionStatement, body ast.Expression, unroll bool) (ast.Expression, bool) {
 	block, isBlock := body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil {
 		return body, false
@@ -90,7 +92,7 @@ func vectorizeFolds(fn *ast.FunctionStatement, body ast.Expression) (ast.Express
 			switch s := stmt.(type) {
 			case *ast.WhileStatement:
 				if f, ok := recognizeFold(s, prev, types, spans, equal, body); ok {
-					out = append(out, vectorizedFold(f)...)
+					out = append(out, vectorizedFold(f, unroll)...)
 					changed = true
 					prev = stmt
 					continue
@@ -205,9 +207,11 @@ func recognizeFold(loop *ast.WhileStatement, prev ast.Statement, types map[strin
 	if !m.laneWise(elem, types) {
 		return foldLoop{}, false
 	}
-	// Fresh names for the splats and the block's vector.
-	if mentionsName(body, foldVectorName(acc)) {
-		return foldLoop{}, false
+	// Fresh names for the splats and the blocks' vectors.
+	for _, name := range []string{foldVectorName(acc), foldVectorName(acc) + "0", foldVectorName(acc) + "1"} {
+		if mentionsName(body, name) {
+			return foldLoop{}, false
+		}
 	}
 	for _, name := range m.scalars {
 		if mentionsName(body, name+"_v") {
@@ -231,8 +235,11 @@ func recognizeFold(loop *ast.WhileStatement, prev ast.Statement, types map[strin
 	return foldLoop{mapLoop: m, acc: acc, accFirst: accFirst}, true
 }
 
-// vectorizedFold spells the rewrite for one recognized loop.
-func vectorizedFold(f foldLoop) []ast.Statement {
+// vectorizedFold spells the rewrite for one recognized loop: with unroll,
+// a two-vector loop first, then the one-vector loop, then the remainder —
+// each loop the blocked fold of Oak.Fold.blocked_eq over what the loops
+// before it left, the lanes added in element order throughout.
+func vectorizedFold(f foldLoop, unroll bool) []ast.Statement {
 	m := f.mapLoop
 	tok := m.loop.Token
 	ident := func(name string) *ast.Identifier { return &ast.Identifier{Token: tok, Value: name} }
@@ -258,18 +265,34 @@ func vectorizedFold(f foldLoop) []ast.Statement {
 	for k, c := range m.constants {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: ident(m.constantName(k)), Type: vecType(), Value: simd("splat", c.arg)})
 	}
-	guard := infix(infix(length(), ">=", u32(m.lanes)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(m.lanes))))
-	main := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}
-	block := foldVectorName(f.acc)
-	main.Body.Statements = append(main.Body.Statements, &ast.VariableDeclaration{Token: tok, Name: ident(block), Type: vecType(), Value: m.vectorExpr(m.value, tok)})
-	for k := int64(0); k < m.lanes; k++ {
-		lane := simd("extract", ident(block), u32(k))
-		value := infix(ident(f.acc), "+", lane)
-		if !f.accFirst {
-			value = infix(lane, "+", ident(f.acc))
+	vectorLoop := func(groups int64) *ast.WhileStatement {
+		stride := groups * m.lanes
+		guard := infix(infix(length(), ">=", u32(stride)), "&&", infix(ident(m.idx), "<=", infix(length(), "-", u32(stride))))
+		loop := &ast.WhileStatement{Token: tok, Condition: guard, Body: &ast.BlockStatement{Token: tok}}
+		for group := int64(0); group < groups; group++ {
+			var at ast.Expression = ident(m.idx)
+			if group != 0 {
+				at = infix(ident(m.idx), "+", u32(group*m.lanes))
+			}
+			block := foldVectorName(f.acc)
+			if groups > 1 {
+				block += itoa(int(group))
+			}
+			loop.Body.Statements = append(loop.Body.Statements, &ast.VariableDeclaration{Token: tok, Name: ident(block), Type: vecType(), Value: m.vectorExprAt(m.value, tok, at)})
+			for k := int64(0); k < m.lanes; k++ {
+				lane := simd("extract", ident(block), u32(k))
+				value := infix(ident(f.acc), "+", lane)
+				if !f.accFirst {
+					value = infix(lane, "+", ident(f.acc))
+				}
+				loop.Body.Statements = append(loop.Body.Statements, &ast.AssignmentStatement{Token: tok, Name: ident(f.acc), Value: value})
+			}
 		}
-		main.Body.Statements = append(main.Body.Statements, &ast.AssignmentStatement{Token: tok, Name: ident(f.acc), Value: value})
+		loop.Body.Statements = append(loop.Body.Statements, &ast.AssignmentStatement{Token: tok, Name: ident(m.idx), Value: infix(ident(m.idx), "+", u32(stride))})
+		return loop
 	}
-	main.Body.Statements = append(main.Body.Statements, &ast.AssignmentStatement{Token: tok, Name: ident(m.idx), Value: infix(ident(m.idx), "+", u32(m.lanes))})
-	return append(out, main, m.loop)
+	if unroll {
+		out = append(out, vectorLoop(2))
+	}
+	return append(out, vectorLoop(1), m.loop)
 }

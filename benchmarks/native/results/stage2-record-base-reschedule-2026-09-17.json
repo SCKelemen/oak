@@ -1,0 +1,123 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T21:24:49Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "9bf7d95f6a71a0ade0607a423b6bbc2b29d7cfbe",
+  "candidate": "baseline plus the reuse-record-base-carriers-parented, verifier-gated AArch64 reschedule-record-base-carriers transform, strict stall-profitability guard, and native materialization-v30 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=reschedule-record-base-carriers",
+  "os_revision": "c8761ab93ef529d0bd294341dc010e746b8b8627",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "8cdb51b25f9ca53b918699adc2273bd28a2161eea0db67647e007eef8faedc48",
+  "object_sha256": {
+    "baseline": "579ecc9ff0dd598514938116d1566c07237d28e3cdc5d363e6aa35661edd641d",
+    "candidate": "99777c91f728c3821ca44e9bce38d1060dcfca8b4979af09b0713d21f24c8f43"
+  },
+  "object_bytes": {
+    "baseline": 5672,
+    "candidate": 5672,
+    "delta": 0
+  },
+  "text_bytes": {
+    "baseline": 4148,
+    "candidate": 4148,
+    "delta": 0
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "oak": ["build", "-native", "-verify-fresh", "-opt-report"],
+    "baseline_opt_skip": "reschedule-record-base-carriers",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "selected_bodies": {
+    "free_table": {
+      "instructions_before": 26,
+      "instructions_after": 26,
+      "multiplies_before": 2,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 9,
+      "estimated_stalls_after": 9,
+      "static_cost_before": 44.0,
+      "static_cost_after": 44.0,
+      "rescheduled_instructions": 0,
+      "verdict": "proven"
+    },
+    "translate": {
+      "instructions_before": 85,
+      "instructions_after": 85,
+      "multiplies_before": 2,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 15,
+      "estimated_stalls_after": 14,
+      "static_cost_before": 123.5,
+      "static_cost_after": 123.0,
+      "rescheduled_instructions": 3,
+      "verdict": "proven",
+      "proof": "bit-level, 1905704 BDD nodes, control bits first"
+    },
+    "unmap_page": {
+      "instructions_before": 181,
+      "instructions_after": 181,
+      "multiplies_before": 2,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 52,
+      "estimated_stalls_after": 51,
+      "static_cost_before": 294.0,
+      "static_cost_after": 293.5,
+      "rescheduled_instructions": 7,
+      "verdict": "proven",
+      "proof": "bit-level, 1906094 BDD nodes, control bits first"
+    },
+    "walk_leaf": {
+      "instructions_before": 129,
+      "instructions_after": 129,
+      "multiplies_before": 6,
+      "multiplies_after": 6,
+      "estimated_stalls_before": 19,
+      "estimated_stalls_after": 19,
+      "static_cost_before": 211.5,
+      "static_cost_after": 211.5,
+      "rescheduled_instructions": 0,
+      "verdict": "proven",
+      "interpretation": "the scheduler found a two-instruction reorder, but the strict profitability guard retained the byte-stable parent"
+    }
+  },
+  "summary": {
+    "selected_instructions_removed": 0,
+    "selected_multiplies_removed": 0,
+    "text_bytes_removed": 0,
+    "object_bytes_removed": 0,
+    "selected_bodies_with_lower_stall_estimate": 2,
+    "estimated_stalls_removed": 2,
+    "interpretation": "Late record-base carrier reuse exposed the final dependence graph; rescheduling hides one modeled load-use stall in each changed body without changing instruction vocabulary or artifact size."
+  },
+  "differential_tests": {
+    "baseline_passed": 5,
+    "candidate_passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "final host load averages were 46.58, 51.77, and 57.35, so no samples were taken"
+  }
+}

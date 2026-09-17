@@ -543,6 +543,52 @@ Not on the list, by doctrine: any transform the source did not license
 assumptions), any change in meaning or visible cost, and any flag that
 answers a benchmark instead of an expressiveness gap.
 
+### The verifier's reach on the kernels (2026-09-17, evening)
+
+Every kernel unit's verdict was read off a fresh verification of
+`benchmarks/kernels/oak` (`WithVerifyFresh`, the trace under
+`OAK_VERIFY_TRACE=1` with `go test -v`), and the witnessed ones traced to
+their first unproven step. Three closed today, each a small rule:
+
+- the bound a conditional gives (#573): a store at a data-dependent index
+  under an elided guard keeps the frame array a loop-carried memory;
+- the carried leaves of a record (#579): a loop carries only the record
+  leaves it assigns — `bench_blake3` from witnessed to proven;
+- header values spelled apart (#583): a slot's packed pair and the Oak
+  pack of its lanes make an equality candidate.
+
+What remains, in order of what it would prove:
+
+1. **A bound the invariant gives.** `sha256_update`'s byte loop stores
+   `next.block[next.filled] = src[i]` with its guard elided under the
+   typechecker's proof of `filled < 64` (the field's refinement, kept by
+   the reset at 64). The summarizer takes an index bound from a trap
+   guard or a conditional's compare only; with neither it forgets the
+   block's region, the block's slots are not loop-carried on the machine
+   side, and the Oak chunks `next.block[0..7]…` have no image — the
+   coupling search walks affine pairings until the work meter ends it.
+   The fix is a bound from the loop's own invariant and the parameters'
+   refinements (the domain premise), established for the store's index
+   term the way `loop1.j ls n` is for a counter: prove
+   `premise → index < N` once at the store, then write the slots under
+   it. Proves `sha256_update` and every absorber with a reset counter.
+2. **One loop reached on two paths.** `sha256_final`'s fill loop follows
+   the `filled > 56` arm; the arm holds a loop and a call, and the two
+   paths do not merge at the fill loop's header, so the machine records
+   the loop twice (reached under the arm, reached without it) against
+   the Oak side's one event and the coupling pairs events by index —
+   "the conditions for reaching loop 2 were not proven equal". The join
+   at a loop header (or the arm's post-dominator being the peeled test
+   of a bottom-tested loop) needs to merge the states before the loop
+   is summarized once.
+3. **`bench_search`'s coupling order.** The `found` flag pairs with `lo`'s
+   register first (both zero at the header, both Bool-shaped), and the
+   search ends on a wrong image of `hits`; the exit-read preference
+   should weigh the register the inner loop's exit test reads.
+4. **`bench_tiled`'s vector lanes.** `acc[2..3]` has no affine image at
+   its header: the lane pair lives across a vector register's halves the
+   candidates do not enumerate.
+
 ## Measurement discipline
 
 `benchmarks/native/emit` and `run.sh` build every kernel through both

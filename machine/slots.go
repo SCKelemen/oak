@@ -248,9 +248,26 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 			}
 		}
 		for r := range taken {
-			if !declared[r] && !lifted.t.calleeSaved(r) {
-				out.Clobbers = append(out.Clobbers, lifted.t.clobber(r))
+			if declared[r] {
+				continue
 			}
+			// A callee-saved register promotion takes is declared on the
+			// AArch64 lane, where the checker requires the declaration and
+			// refused every form that wrote one without it. Promotion takes
+			// such a register only when the prologue saves it
+			// (slotRegister), so the declaration is the truth about the
+			// body and the checker's other rule — save before writing — is
+			// met. The exemption this narrows assumed the register was
+			// already declared, which the epilogue's restore made look
+			// true: the restore writes it, so it counted as written and
+			// therefore as saved, while the lowering's declaration never
+			// named it (docs/spec/94-assembler.md §9.am). The RV64 checker
+			// takes the opposite convention and refuses a callee-saved
+			// clobber outright, so that lane keeps the exemption.
+			if lifted.t.calleeSaved(r) && lifted.t.arch != "arm64" {
+				continue
+			}
+			out.Clobbers = append(out.Clobbers, lifted.t.clobber(r))
 		}
 	}
 	return out, promoted, len(dead), nil

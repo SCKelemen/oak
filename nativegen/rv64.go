@@ -203,7 +203,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// lane does.
 	// The element-wise maps vectorize where the lane has V (nativegen/vector_map.go):
 	// the RVV lowering of the simd operations is the AArch64 lane's law.
-	for _, stage := range rewriteStages(fn, functions, constants, tc, false, unroll, fills, false, vmaps && vector, false, false, false, false, false, strength) {
+	for _, stage := range rewriteStages(fn, functions, constants, tc, false, unroll, fills, false, vmaps && vector, false, false, false, false, false, false, strength) {
 		if stage.body == fn.Body {
 			break
 		}

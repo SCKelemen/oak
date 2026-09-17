@@ -1,0 +1,113 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T20:58:14Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "494281176827713b93981e85a72273dcb1c3a4fa",
+  "candidate": "baseline plus the share-record-bases-parented, verifier-gated AArch64 reuse-record-base-carriers transform and native materialization-v29 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=reuse-record-base-carriers",
+  "os_revision": "b54011cb9fc75efe576ea7ef70edd22ad9b532a7",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "fc2053d865df605d1a222114afc1b5987c739cd8862a9efc6ad08104f0266b98",
+  "object_sha256": {
+    "baseline": "0bf1097a7d3baf4c1d68a5ef2776920cfc4b82bc3c0b71757cef372695a7470e",
+    "candidate": "579ecc9ff0dd598514938116d1566c07237d28e3cdc5d363e6aa35661edd641d"
+  },
+  "object_bytes": {
+    "baseline": 5792,
+    "candidate": 5672,
+    "delta": -120
+  },
+  "text_bytes": {
+    "baseline": 4268,
+    "candidate": 4148,
+    "delta": -120
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "oak": ["build", "-native", "-verify-fresh", "-opt-report"],
+    "baseline_opt_skip": "reuse-record-base-carriers",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "free_table": {
+      "instructions_before": 29,
+      "instructions_after": 26,
+      "multiplies_before": 3,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 9,
+      "estimated_stalls_after": 9,
+      "record_base_carriers": 1,
+      "verdict": "proven"
+    },
+    "translate": {
+      "instructions_before": 88,
+      "instructions_after": 85,
+      "multiplies_before": 3,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 12,
+      "estimated_stalls_after": 15,
+      "record_base_carriers": 1,
+      "verdict": "proven",
+      "proof": "bit-level, 1905704 BDD nodes, control bits first"
+    },
+    "unmap_page": {
+      "instructions_before": 202,
+      "instructions_after": 181,
+      "multiplies_before": 9,
+      "multiplies_after": 2,
+      "estimated_stalls_before": 46,
+      "estimated_stalls_after": 52,
+      "record_base_carriers": 7,
+      "verdict": "proven",
+      "proof": "bit-level, 1906094 BDD nodes, control bits first"
+    },
+    "walk_leaf": {
+      "instructions_before": 132,
+      "instructions_after": 129,
+      "multiplies_before": 7,
+      "multiplies_after": 6,
+      "estimated_stalls_before": 16,
+      "estimated_stalls_after": 19,
+      "record_base_carriers": 1,
+      "verdict": "proven"
+    }
+  },
+  "summary": {
+    "record_base_carriers": 10,
+    "selected_instructions_removed": 30,
+    "selected_multiplies_removed": 10,
+    "text_bytes_removed": 120,
+    "object_bytes_removed": 120,
+    "interpretation": "Each retained base replaces one later movz/movk/umaddl triple with the already-live first destination; guards, branches, loads, stores, and relocations remain."
+  },
+  "differential_tests": {
+    "baseline_passed": 5,
+    "candidate_passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load averages ranged from 79 to 113 during final validation, so no samples were taken"
+  }
+}
