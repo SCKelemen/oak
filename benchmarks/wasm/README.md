@@ -85,3 +85,31 @@ shared joins and early returns. Depth-limit, lazy trapping calls, Unit results,
 signed overflow and Bool guards are tested separately. The extension remains
 untrusted lowering with independent byte validation, not formal source-to-bytes
 verification.
+
+## Pre-test loops with acyclic bodies
+
+`compiler/wasm_region_loop_test.go` retains dispatcher bytes from `bd89ea49`
+and compares them with v7 region-loop lowering. Conditional and nested-body
+modules shrink 342→251 and 436→312 bytes; instruction counts fall 144→93 and
+191→122. Normal tests execute both versions against independent wrapping-u32
+oracles and cover zero trips and boundary values.
+
+```sh
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
+  go test ./compiler -run '^TestWasmRegionLoopTiming$' -count=3 -v
+```
+
+The nested-body benchmark uses the same fresh-process, dual-lane warmup, seven
+alternating samples and eight roughly one-million-iteration calls. Compilation
+and instantiation are excluded; every result is checked. Six local processes
+gave median region-loop/dispatcher ratios from 0.021 to 0.121. Several individual
+samples were extreme outliers in both lanes, so this evidence only says that the
+dispatcher was consistently slower for this kernel on this Deno/V8 setup. It is
+not a stable speedup estimate, a Chrome result or a timing CI gate. [Raw samples](region-loop-2026-09-17.json)
+retain every observation.
+
+Raw-CFG tests additionally cover multiple latches, loop exit edges, early
+returns, shuffled block storage, inverted header polarity and the 124/125-block
+depth boundary. Effect tests cover lazy trapping calls, Unit results, entry/
+header/exit operations, signed overflow, zero-trip bodies and nested-loop
+dispatcher fallback. None grants formal source-to-Wasm equivalence.

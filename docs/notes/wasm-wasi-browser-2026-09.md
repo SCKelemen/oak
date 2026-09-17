@@ -189,7 +189,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, four-block loops/conditionals and bounded general acyclic CFGs; executable baseline/size gates and preliminary warmed V8 sum/helper-call timings. General loop structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, bounded acyclic CFGs, simple loops and one pre-test loop with an acyclic body; executable baseline/size gates and preliminary warmed V8 timings. Nested/irreducible loop structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -296,5 +296,14 @@ The [samples and caveats](../../benchmarks/wasm/README.md#acyclic-forward-cfgs)
 are retained. A nested-call test also fixed shared structured-memory metadata
 ordering: exact site sorting now precedes the unchanged identity/authority
 comparison. Encoding is v6, scalar/check profiles remain v1, and source-to-bytes
-verification remains open. Next control-flow work is composition with general
-loops, not another whole-function diamond shape.
+verification remains open.
+
+Region-loop increment (2026-09-17): one pre-test loop now composes the same
+forward scheduler for a bounded acyclic body. Conditional/nested branches,
+shared joins, multiple latches, breaks and early returns can execute without a
+program-counter dispatcher. The whole CFG must be covered; nested/irreducible
+cycles and bodies above 124 blocks fall back. Exact phi copies and effect gates
+are shared with existing paths. Two fixtures shrink 342→251 and 436→312 bytes,
+and lose 51/69 Wasm instructions. Six very noisy local V8 runs all favored the
+new code, but are retained only as preliminary evidence. Encoding is v7; the
+scalar/check profile and lack of source-to-bytes proof authority are unchanged.
