@@ -4694,6 +4694,21 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
+	searchStopped := func() bool {
+		switch {
+		case budget.remaining <= 0:
+			failure = "the loop proof's diagram budget ran out in the coupling search"
+		case budget.calls > implicationCallLimit:
+			failure = "the loop proof's implication budget ran out in the coupling search"
+		case couplingWork <= 0:
+			failure = "the coupling search exceeded its valuation work budget"
+		case visited > searchBudget:
+			failure = "the coupling search exceeded its budget"
+		default:
+			return false
+		}
+		return true
+	}
 	// The search is conflict-directed: a failure below returns the depths
 	// its refutation depended on, and a level whose choice is not among
 	// them passes the failure up without trying its other candidates (the
@@ -4702,11 +4717,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
-		if couplingWork <= 0 {
-			visited = searchBudget + 1
-		}
-		if visited > searchBudget {
-			failure = "the coupling search exceeded its budget"
+		if searchStopped() {
 			return false, nil
 		}
 		if i == len(slots) {
@@ -4793,11 +4804,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
-			if couplingWork <= 0 {
-				visited = searchBudget + 1
-			}
-			if visited > searchBudget {
-				failure = "the coupling search exceeded its budget"
+			if searchStopped() {
 				return false, nil
 			}
 			if !conflict[i] {
@@ -6210,6 +6217,9 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
 	a, b = pushNarrowArithmetic(a), pushNarrowArithmetic(b)
 	a, b = normalizeLowMaskChain(a), normalizeLowMaskChain(b)
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
+		return true, true
+	}
 	boolean := map[*term]bool{}
 	if premise.kind != termConst && booleanValued(a, boolean) && booleanValued(b, boolean) {
 		// A post-case premise often states the small guards whose conjunction
@@ -6233,7 +6243,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
 		}
 	}
-	if equalTerms(a, b) {
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
 		return true, true // the same term on both sides: no diagram needed
 	}
 	if equalReductions(a, b) {

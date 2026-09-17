@@ -2131,6 +2131,23 @@ object is byte-identical to `98faccd3`; this finding does not establish a
 runtime gain. [The evidence record](results/blake3-frame-joins-2026-09-17.json)
 records the diagnosis, artifact comparison and validation.
 
+**The update proves (2026-09-18).** With the frame fields restored, the
+search finds all eight chaining-value pairings on its first attempt. The
+remaining obstacle was the proof of `next.cv[0]`: its two canonical graphs
+differed only at 64 byte parameters, read through 32-bit and eight-bit
+views of the same eight-bit declarations. Recognizing that equality
+structurally proves the full update's **four nested loops under the normal
+budgets**. The search validates its first candidate instead of spending
+three validations on witness evidence.
+
+The equality fix alone retains **528 instructions and one guard**, with
+the same object bytes. After integrating the late-cleanup changes in
+`127d358e`, the proven update has **527 instructions and one guard**.
+This closes the update's proof gap without establishing a runtime gain.
+The [evidence record](results/blake3-declared-equality-2026-09-18.json)
+includes the reduced regression, width-sensitive negative cases, artifact
+hashes and integration checks.
+
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 
 At baseline `65477201`, the existing guarded input loop becomes `memcpy`

@@ -1,0 +1,139 @@
+{
+  "date": "2026-09-18",
+  "baseline_commit": "31df236c",
+  "analysis_parent": "d5ad24f5",
+  "integration_parent": "127d358e",
+  "scope": "BLAKE3 update only native, standard production proof/search budgets and cache disabled. No runtime benchmark or runtime speedup claim.",
+  "diagnosis": {
+    "loop_slots": 650,
+    "loop_events": 4,
+    "first_attempt_cv_identity_pairings": 8,
+    "first_failed_preservation": "loop 1, next.cv[0] paired with s1099511627776:4",
+    "diagram_budget_after_first_failure": -9,
+    "search_visits_before": 1025,
+    "valuation_work_remaining_before": 37000497,
+    "misleading_final_reason_before": "the coupling search exceeded its budget",
+    "captured_dag_nodes": 6482,
+    "canonical_structural_differences": {
+      "count": 64,
+      "kind": "Same-name parameter leaves only",
+      "parameters": "loop1.next.block[0..63]",
+      "oak_use_width": 32,
+      "machine_use_width": 8,
+      "declared_width_both_sides": 8
+    }
+  },
+  "fix": {
+    "equality": "Memoize structural term pairs and allow same-name parameter views retaining the same declared bits. Keep all enclosing operation widths; require equal operand widths for comparisons and float operations, and strict equality under quantifiers. Do not rewrite terms or alter global structural identity.",
+    "termination": "Stop coupling search when its shared diagram, implication, valuation-work or candidate budget is exhausted, preserving the specific cause. Previously a depleted diagram budget could be hidden by later candidate-budget exhaustion.",
+    "budgets_changed": false
+  },
+  "reduced_regression": {
+    "test": "TestImpliesEqualDeclaredByteViewsInSharedDAG",
+    "proof_budget": 2000,
+    "before": "Undecided; remaining budget -1965.",
+    "after": "Proven.",
+    "negative_cases": [
+      "One changed output bit is refuted.",
+      "Truncation of a declared u32 to eight bits remains distinct.",
+      "Signed comparisons at eight and 32 bits remain distinct.",
+      "Float operand widths retain their interpretation.",
+      "A quantifier's bound name cannot use an external declaration it shadows.",
+      "Unknown or invalid declaration widths cannot justify a width relaxation."
+    ]
+  },
+  "selection_after_fix": {
+    "candidates_considered": 75,
+    "verified_candidates_before": 3,
+    "verified_candidates_after": 1,
+    "selected": "elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup",
+    "instructions": 528,
+    "guards": 1,
+    "cost": 906834,
+    "identity_cost": 1313107,
+    "verdict_before": "witnessed",
+    "verdict_after": "proven",
+    "nested_loops_proven": 4
+  },
+  "selection_after_integration": {
+    "parent": "127d358e",
+    "verdict": "proven",
+    "nested_loops_proven": 4,
+    "verified_candidates": 1,
+    "instructions": 527,
+    "branches": 13,
+    "guards": 1,
+    "cost": 906578,
+    "difference": "The concurrent late-cleanup change removes one branch; the equality fix alone preserves the original object."
+  },
+  "artifacts": {
+    "baseline.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "baseline.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "after.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "after.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "final.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "final.o": "b6498036cec987a13bc0c2e4486f7945e06d6440caa2717124dd427f3ea6dbf6",
+    "land.c": "830ebef24f0b589b361ac7a5d00823d7bea14d2512dd78316ab781e0a36b6f5e",
+    "land.o": "b6498036cec987a13bc0c2e4486f7945e06d6440caa2717124dd427f3ea6dbf6"
+  },
+  "emission_wall_seconds": {
+    "instrumented_baseline": 177.19,
+    "after_fix": 78.99,
+    "after_integration": 73.76,
+    "caveat": "Single runs under concurrent host load; the baseline includes compact diagnostic instrumentation. These are not controlled compile-time comparisons or hash runtime measurements.",
+    "after_final_rebase": 52.4
+  },
+  "validation": [
+    {
+      "check": "Reduced shared-DAG equality against the baseline",
+      "result": "Fails as expected, while width-sensitive negative cases pass."
+    },
+    {
+      "check": "New and existing implication tests",
+      "result": "Pass (0.843s). Final declared-width and quantifier-memo checks pass (0.861s)."
+    },
+    {
+      "check": "Complete assembler and machine suites on d5ad24f5 plus the equality fix",
+      "result": "Pass: asm 267.183s, machine 1.894s."
+    },
+    {
+      "check": "Native BLAKE3/reference, compressor proof, record loops, vector fold and RV64 execution",
+      "result": "Pass (516.275s); BLAKE3 package/reference 458.17s, RV64 under QEMU 17.55s."
+    },
+    {
+      "check": "Complete assembler and machine suites after integrating 127d358e, including the quantifier memo refinement",
+      "result": "Pass: asm 258.953s, machine 1.893s."
+    },
+    {
+      "check": "Final update emission after integration",
+      "result": "Proven across four nested loops in 73.76s wall time, cache disabled and unchanged proof budgets. The concurrent cleanup removes one branch; final selection is 527 instructions and one guard."
+    },
+    {
+      "check": "Integrated nativegen cleanup, record carriers and call graph checks",
+      "result": "Pass (0.854s)."
+    },
+    {
+      "check": "Integrated compiler absorber calls, compressor proof, record loops, cleanup checks, vector fold and RV64 under QEMU",
+      "result": "All selected checks pass except the initial BLAKE3 proof assertion, which used the wrong diagnostic prefix and was corrected. The compiler run took 585.507s; RV64 execution passed in 12.45s."
+    },
+    {
+      "check": "Corrected full BLAKE3 update proof assertion and native/C reference digests on 16 KiB and 128 KiB inputs",
+      "result": "Pass: package test 445.96s, compiler process 447.690s. The complete update must report proven equal; cache disabled and unchanged proof budgets."
+    },
+    {
+      "check": "Focused loop, call graph and call-result tests after rebasing onto 13fd91d6",
+      "result": "Pass: asm 6.976s, nativegen 4.776s, compiler 42.927s. Includes the new call-result-carried loop regression and native absorber execution."
+    },
+    {
+      "check": "Final update emission after rebasing onto 13fd91d6",
+      "result": "Proven across four nested loops in 52.40s wall time with cache disabled and unchanged proof budgets. C and native object SHA256 match the tested integrated artifacts exactly."
+    }
+  ],
+  "commands": {
+    "build": "go build -p 1 -o <emit> ./benchmarks/native/emit",
+    "emit": "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_REPORT=1 <emit> benchmarks/kernels/oak <output>",
+    "asm_suite": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./asm ./machine -count=1 -timeout=15m",
+    "proof_and_reference": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./compiler -run '^TestE2ENativeBlake3PackageAgreesWithReference$' -count=1 -timeout=20m -v"
+  },
+  "landing_parent": "13fd91d6"
+}

@@ -8009,6 +8009,28 @@ still faces the same guard and preservation implications under the same
 budgets. This avoids rebuilding a large unresolved expression at each
 intervening search depth.
 
+**Declared-width equality through shared terms (2026-09-18).** The restored
+BLAKE3 chaining-value slots all find their identity pairings. The first
+preservation implication still exhausted the diagram budget: its canonical
+terms differed only at the 64 block bytes, read at 32 bits on the Oak side
+and eight on the machine side, with the same eight-bit declarations.
+`equalTermsAtDeclaredWidths` checks the shared term pairs structurally,
+allowing same-name parameter views only when they retain the same declared
+bits. It leaves every operation's result width intact. Comparisons and
+float operations also require equal operand widths; quantifiers use strict
+structural equality because a bound name may shadow the declaration.
+The rule neither rewrites terms nor changes global structural identity.
+
+`TestImpliesEqualDeclaredByteViewsInSharedDAG` proves the reduced shared
+arithmetic graph within 2,000 proof nodes, where the previous decider ran
+out. Changed output bits, discarded high bits, signed comparisons, float
+conversions, unknown bounds and quantifier shadowing remain distinct. The
+full update now proves all four nested loops within the normal budgets.
+The search also stops when its shared diagram or implication allowance
+runs out, preserving that cause instead of continuing until the candidate
+limit hides it. The equality rule alone leaves the native update unchanged;
+measurements and validation are in `benchmarks/native/results/blake3-declared-equality-2026-09-18.json`.
+
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine
 trapped, on the claim that Oak traps there too, on the same guard; the
