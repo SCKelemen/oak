@@ -532,6 +532,19 @@ argument construction with mutation tests. The pure projection is not a full
 exception record, ESR encoding, BTI/PostDecode execution, exception entry,
 handler model, or proof of the runtime's non-resuming trap contract.
 
+Separately, the native verifier's non-loop trap exclusion now requires a
+symbolic implication from machine traps to collected source traps, without
+assuming the machine-returning domain. This closes the unsampled-extra-trap
+admission counterexample at `b = 1234`; unproved obligations stay evidence
+and are refused by the strict profile. `Oak.TrapDomainAdmission` proves the
+logical admission rule under explicit collector-soundness and observation
+equality premises, not the Go implementation or Arm exception execution.
+Summarized-loop trap obligations remain open; this gate is not a complete
+source-to-ASL proof or a memory-ordering proof.
+Explicit target-lane `.oakasm` verdicts now participate in that profile and
+its callee-dependency closure; a unit without an Oak fallback remains
+trusted and cannot pass strict admission.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

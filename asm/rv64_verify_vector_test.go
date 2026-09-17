@@ -36,6 +36,14 @@ func TestRV64VerifyVector(t *testing.T) {
   vmv.x.s a0, v0
 `
 	tail := "trap:\n  ebreak"
+	// The RV64 ABI sign-extends a u32 parameter to XLEN. Comparing that
+	// raw register as an unsigned index adds traps for valid high indices.
+	if v := rv64Verify(t, decl, oak, head+"  slli a0, a0, 48\n  srli a0, a0, 48\n  ret\n"+tail); v.Kind != VerdictWitnessed {
+		t.Fatalf("a raw sign-extended index must not prove: %s: %s", v.Kind, v.Message)
+	}
+	head = strings.Replace(head, "  sub t2, t1, t0\n", "  sub t2, t1, t0\n  slli t3, a2, 32\n  srli t3, t3, 32\n", 1)
+	head = strings.Replace(head, "bltu t2, a2, trap", "bltu t2, t3, trap", 1)
+	head = strings.Replace(head, "add t3, a0, a2", "add t3, a0, t3", 1)
 	if v := rv64Verify(t, decl, oak, head+"  slli a0, a0, 48\n  srli a0, a0, 48\n  ret\n"+tail); v.Kind != VerdictProven {
 		t.Fatalf("the zero mask must be proven, got %s: %s", v.Kind, v.Message)
 	}
@@ -252,7 +260,13 @@ func TestRV64VerifyFloatVector(t *testing.T) {
 	}
 	// insert at lane 1 through vid/vmseq/vfmerge, read back at lane 1.
 	insert := "  fmv.w.x ft0, zero\n  vid.v v11\n  li t6, 1\n  vmseq.vx v0, v11, t6\n  vfmerge.vfm v8, v8, ft0, v0\n  vslidedown.vi v11, v8, 1\n  vfmv.f.s fa0, v11\n  ret\n"
-	if v := rv64Verify(t, "set1: (a: []f32, b: []f32) -> f32", "simd.extract_f32x4(simd.insert_f32x4(simd.load_f32x4(a, u32(0)), 1, 0.0), 1)", head+insert+tail); v.Kind != VerdictProven {
+	insertSource := "simd.extract_f32x4(simd.insert_f32x4(simd.load_f32x4(a, u32(0)), 1, 0.0), 1)"
+	if v := rv64Verify(t, "set1: (a: []f32, b: []f32) -> f32", insertSource, head+insert+tail); v.Kind != VerdictWitnessed {
+		t.Fatalf("guarding an unused span must not prove: %s: %s", v.Kind, v.Message)
+	}
+	insertHead := strings.Replace(head, "  bltu t2, t0, trap\n", "", 1)
+	insertHead = strings.Replace(insertHead, "  vle32.v v9, (a2)\n", "", 1)
+	if v := rv64Verify(t, "set1: (a: []f32, b: []f32) -> f32", insertSource, insertHead+insert+tail); v.Kind != VerdictProven {
 		t.Fatalf("insert through vid/vmseq/vfmerge must be proven, got %s: %s", v.Kind, v.Message)
 	}
 	// reduce_add as the pairwise tree through two slide-and-add steps.

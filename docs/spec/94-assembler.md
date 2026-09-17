@@ -7003,7 +7003,47 @@ body store a mismatch, a result after the loop, a store before the loop
 read after it, and the differing store before the loop refuted) and
 `compiler/e2e_native_loop_stores_test.go` (a loop storing through a
 callee, both lanes).
-**Asserts under the verifier (2026-09-14).** A body with an `assert`, or
+**Independent trap-domain admission (2026-09-17).** The historical
+trap exclusion below was insufficient: Oak `rare(b) = b` and assembly
+that returns `b` except for `BRK` at `b = 1234` received a proven verdict
+because the concrete trap witnesses never reached that input. Non-loop
+scalar, aggregate, vector, and unit-memory proofs now require a separate
+obligation in `asm/trap_domain.go`: on well-typed inputs, a machine trap
+implies a collected Oak trap. Crucially, this obligation does **not**
+assume the machine does not trap. A fresh source lowering records
+path-conditioned asserts, division/shift traps, and supported array/span
+bounds; SIMD end-index checks widen before addition to avoid u32 wrap.
+An unsupported lowering, unproved implication, or exhausted decision
+budget cannot produce `Proven`; it remains labelled evidence. Concrete
+trap mismatches are still early refutations. The verdict-cache namespace
+changes so old admissions are not reused.
+
+`Oak.TrapDomainAdmission.admit_on_source_returns` proves the admission rule
+assuming the collected predicates are sound and the value/effect equality
+holds on the machine-returning domain. It is not a formal verification of
+the Go collector or decider. The rule is one-way partial correctness:
+source-trapping inputs do not acquire a result/effect obligation, and it
+does not equate trap kinds or effects before trapping. Summarized loops
+retain the existing coupling contract; their per-iteration trap-domain
+obligations remain open. Architectural exception entry, handler
+non-resumption, and concurrent memory ordering are separate obligations.
+Regressions include unseen and misplaced traps, matching guards, span
+reads/writes, vector returns, SIMD index overflow, and strict-profile
+refusal before ELF or Mach-O emission.
+
+Explicit `.oakasm` units now retain their verdicts in `NativeVerdicts`
+alongside compiler-generated bodies. Previously those verdicts were only
+diagnostics and the strict profile could omit them. The profile now also
+refuses an explicit unit without an Oak fallback specification and rejects
+callers whose conditional proofs depend on an unproved explicit unit.
+Ordinary non-strict emission still permits labelled evidence or trust.
+The stricter trap check also rejects fixtures that compare unspecified
+AArch64 u8 upper-register bits, compare a sign-extended RV64 u32 index at
+XLEN without zero-extension, or unnecessarily guard an unused source span.
+Corrected fixtures normalize the count/index or remove the unused access;
+the old forms remain negative regressions.
+
+**Asserts under the verifier (2026-09-14, historical).** A body with an `assert`, or
 a call to a unit callee whose body asserts (`text_require`), was trusted:
 the Oak lowering refused the assert wherever traps are not tracked, and
 the assembler verifier's lowering does not track them — it has no
@@ -7013,7 +7053,9 @@ on which every guard holds. An assert is therefore a no-op on the Oak
 side of the verifier: the trapping inputs are outside the equivalence on
 both sides, exactly as an element guard's or a divisor's are. The
 theorem decider's reading (a trap obligation to prove impossible) is
-unchanged. Proven bodies rose to 201 on AArch64 and 179 on RV64; the
+unchanged. This exclusion now requires the independent non-loop admission
+obligation above; witness agreement alone is insufficient. Proven bodies
+at that historical increment rose to 201 on AArch64 and 179 on RV64; the
 asserting callees that remain trusted do so for their span arguments,
 not their asserts. Pinned: `compiler/e2e_native_assert_callee_test.go`
 (a body with an assert, a caller of an asserting unit callee; both

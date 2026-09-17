@@ -205,9 +205,9 @@ type SemanticModel struct {
 	// object and the executable carry them in their read-only data.
 	NativeData []asm.DataSymbol
 	// NativeVerdicts are the verifier's verdicts for the natively lowered
-	// bodies, by Oak name; NativeFallbacks names each body the native
-	// backend left to the C backend with the reason. The verified profile
-	// reads both (verifiedProfile).
+	// bodies and explicit target-lane asm units, by Oak name. NativeFallbacks
+	// names each body the native backend left to C with the reason. The
+	// verified profile reads both (verifiedProfile).
 	NativeVerdicts  map[string]asm.Verdict
 	NativeFallbacks map[string]string
 	// Optimizations records passed, missed, and analyzed candidates with their
@@ -489,7 +489,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// Imported library packages contribute their embedded units.
 			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
 		}
-		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
+		asmFunctions, asmVerdicts, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
 		var native nativeLowering
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
@@ -580,6 +580,15 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			}
 		}
 
+		// Explicit units are emitted natively too. Dropping their verdicts
+		// would let an unproved unit (or one without an Oak specification)
+		// bypass the verified profile and its callee-dependency closure.
+		if native.Verdicts == nil {
+			native.Verdicts = map[string]asm.Verdict{}
+		}
+		for name, verdict := range asmVerdicts {
+			native.Verdicts[name] = verdict
+		}
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: native.Data, NativeVerdicts: native.Verdicts, NativeFallbacks: native.Fallbacks, Optimizations: optimizations}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)

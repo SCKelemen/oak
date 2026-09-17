@@ -73,10 +73,9 @@ type pathEffects struct {
 	cells  map[string]*term
 	writes map[string][]*spanWrite
 	// trap is the 1-bit condition under which the machine path traps
-	// (brk): nil when no path from here does. The equivalence holds on
-	// the inputs where the machine does not trap — where Oak traps too,
-	// on the same guard — so the decision conjoins its negation to the
-	// input domain (oakLowering.domainCondition).
+	// (brk): nil when no path from here does. Value/effect equality is
+	// checked where the machine does not trap (oakLowering.domainCondition).
+	// Non-loop proofs separately justify that exclusion in verifyTrapDomain.
 	trap *term
 }
 
@@ -503,7 +502,7 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 		return reason, false
 	}
 	root := lo.spanRoot(name)
-	if lo.concrete != nil {
+	if lo.concrete != nil || lo.trapDomainTracked {
 		// Past the span's own length: Oak traps on this input (noted by
 		// the witness run under the path).
 		lo.addTrap(cmpTerm("hs", index, lo.witnessBound(name)))

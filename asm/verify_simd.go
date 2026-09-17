@@ -370,10 +370,11 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 		return nil, reason, false
 	}
 	root := lo.spanRoot(name)
-	if lo.concrete != nil {
-		// The vector reaching past the length: Oak traps on this input
-		// (noted by the witness run under the path).
-		lo.addTrap(cmpTerm("hi", binaryTerm("add", at, constTerm(uint64(shape.Lanes), 32)), lo.witnessBound(name)))
+	if lo.concrete != nil || lo.trapDomainTracked {
+		// Widen before adding: a u32 index near its maximum must not wrap
+		// back inside the span when the vector's lane count is added.
+		end := binaryTerm("add", zeroExtend(at, 64), constTerm(uint64(shape.Lanes), 64))
+		lo.addTrap(cmpTerm("hi", end, zeroExtend(lo.witnessBound(name), 64)))
 		if lo.witnessTrapped {
 			return nil, fmt.Sprintf("a vector load past len(%s) on this input", name), false
 		}
@@ -464,10 +465,9 @@ func (lo *oakLowering) simdStore(call *ast.InvocationExpression) (handled bool, 
 		return true, reason, false
 	}
 	root := lo.spanRoot(ident.Value)
-	if lo.concrete != nil {
-		// The vector reaching past the length: Oak traps on this input
-		// (noted by the witness run under the path).
-		lo.addTrap(cmpTerm("hi", binaryTerm("add", index, constTerm(uint64(len(lanes)), 32)), lo.witnessBound(ident.Value)))
+	if lo.concrete != nil || lo.trapDomainTracked {
+		end := binaryTerm("add", zeroExtend(index, 64), constTerm(uint64(len(lanes)), 64))
+		lo.addTrap(cmpTerm("hi", end, zeroExtend(lo.witnessBound(ident.Value), 64)))
 		if lo.witnessTrapped {
 			return true, fmt.Sprintf("a vector store past len(%s) on this input", ident.Value), false
 		}

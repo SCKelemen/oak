@@ -6,6 +6,7 @@ import Oak.OptIRCallSummaryCertificate
 import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
+import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.ObjectRelocation
 import Oak.Kernel

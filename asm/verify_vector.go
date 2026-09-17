@@ -1027,6 +1027,7 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 		}
 		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
 		verdict = verdictWithCallees(verdict, exec.summarized)
+		verdict = verifyTrapDomain(fn, sig, oakBody, exec, verdict)
 		if verdict.Kind == VerdictMismatch {
 			return verdict
 		}

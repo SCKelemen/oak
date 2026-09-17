@@ -19,8 +19,9 @@ import (
 // diagnostic in the "asm" phase: a body-less declaration with no unit, a
 // unit function with no declaration, a signature mismatch, or any checker
 // finding rejects the compilation.
-func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*diagnostic.Diagnostic) {
+func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, map[string]asm.Verdict, []*diagnostic.Diagnostic) {
 	var diagnostics []*diagnostic.Diagnostic
+	verdicts := map[string]asm.Verdict{}
 	report := func(format string, args ...interface{}) {
 		diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "asm", fmt.Sprintf(format, args...)))
 	}
@@ -160,11 +161,14 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			// labeled information.
 			if len(findings) == 0 && fn.Fallback && decl.Body != nil {
 				verdict := asm.Verify(fn, decl, decl.Body)
+				verdicts[fn.Name] = verdict
 				if verdict.Kind == asm.VerdictMismatch {
 					report("%s: %s", unitText.Path, verdict.Message)
 				} else {
 					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "asm", verdict.Message))
 				}
+			} else if len(findings) == 0 {
+				verdicts[fn.Name] = asm.Verdict{Kind: asm.VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (no Oak fallback body) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 			}
 			functions = append(functions, fn)
 		}
@@ -175,5 +179,5 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			report("function %s is declared without a definition and no asm unit provides its body (docs/spec/94-assembler.md)", name)
 		}
 	}
-	return functions, diagnostics
+	return functions, verdicts, diagnostics
 }

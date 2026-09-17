@@ -22,6 +22,12 @@ func TestVerifyVariableShift(t *testing.T) {
 		t.Fatalf("a right shift against lsl must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 	byte := "  bind w0 = x\n  bind w1 = n\n  clobber x9, x10, x1\n  frame 80\n  sub sp, sp, #80\nhead_1:\n  mov w9, w0\n  mov w10, w1\n  cmp w10, #8\n  b.hs trap_3\n  lsl w9, w9, w10\n  and w9, w9, #255\n  mov w0, w9\nret_2:\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1"
+	// AAPCS64 leaves the bits above the u8 parameter unspecified. A
+	// full-register guard can trap even for n=0 if those bits are nonzero.
+	if v := verifyCase(t, "shl8: (x: u8, n: u8) -> u8", "x << n", byte); v.Kind != VerdictWitnessed {
+		t.Fatalf("a guard on unspecified upper bits must not prove: %s: %s", v.Kind, v.Message)
+	}
+	byte = strings.Replace(byte, "mov w10, w1", "and w10, w1, #255", 1)
 	if v := verifyCase(t, "shl8: (x: u8, n: u8) -> u8", "x << n", byte); v.Kind != VerdictProven {
 		t.Fatalf("shl8 must be proven, got %s: %s", v.Kind, v.Message)
 	}

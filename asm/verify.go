@@ -4845,8 +4845,8 @@ func (lo *oakLowering) lowerVariableShift(e *ast.InfixExpression, op string, lef
 	if !isScalar || signed {
 		return nil, "a non-constant shift count of a signed operand", false
 	}
-	if lo.concrete != nil {
-		// A witness run: a count at the width is Oak trapping on this
+	if lo.concrete != nil || lo.trapDomainTracked {
+		// A count at the width is Oak trapping on this
 		// input (on this path), and the run stops there.
 		lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), right.width)))
 		if lo.witnessTrapped {
@@ -4992,6 +4992,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// trapDomainTracked collects source traps for the independent,
+	// non-loop machine-trap admission check. Unlike trapsTracked, it
+	// retains the assembler lowering's loop and value policies.
+	trapDomainTracked bool
 	// witnessTrapped: in a witness run (concrete), a trap condition held
 	// on the input — Oak traps there (addTrap). The witness comparisons
 	// skip such an input, and the machine trapping on an input without it
@@ -5001,8 +5005,9 @@ type oakLowering struct {
 	// trap evaluations (the path conditions and indices repeat).
 	witnessMemo mapMemo
 	// machineTrap is the asm side's trap condition (pathExecutor.trap):
-	// the inputs on which the machine trapped — where Oak traps too, on
-	// the same guard — leave the input domain (domainCondition).
+	// the inputs on which the machine trapped leave the value/effect
+	// comparison domain. Non-loop proofs must separately justify this
+	// exclusion in verifyTrapDomain; it is not a premise of that check.
 	machineTrap *term
 	// shiftGuardMax: the executor's largest trap bound over the register
 	// count shifts it ran (pathNotes); a variable shift count lowers only
@@ -5628,8 +5633,9 @@ func negatedCmp(c *term) *term {
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
 // never elided; here the decider proves it cannot fire); under the
-// assembler verifier it is a no-op, the trapping inputs being outside
-// the equivalence on both sides.
+// assembler verifier's value/effect lowering it is a no-op. The separate
+// non-loop trap-domain lowering records it to justify excluding machine
+// trap inputs; sampled agreement alone cannot justify that exclusion.
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -5638,7 +5644,7 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 	if fn, isIdent := call.Function.(*ast.Identifier); !isIdent || fn.Value != "assert" {
 		return "", false, false
 	}
-	if !lo.trapsTracked {
+	if !lo.trapsTracked && !lo.trapDomainTracked {
 		// The assembler verifier's side: a failed assert traps, and the
 		// executor drops a trapping path from its fork (a `brk` delivers
 		// no result), so the equivalence is over the inputs on which the
@@ -5668,9 +5674,7 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 	if !ok {
 		return reason, true, false
 	}
-	if lo.trapsTracked {
-		lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
-	}
+	lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
 	return "", true, true
 }
 
@@ -5878,8 +5882,9 @@ func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
 	}
 }
 
-// domainCondition is the 1-bit term "every union tag parameter holds one
-// of its variants' values", or nil when the parameters have no unions.
+// domainCondition restricts value/effect comparisons to well-typed union
+// tags and, when set, the machine-returning domain. The independent trap
+// implication uses a fresh lowering with machineTrap nil.
 func (lo *oakLowering) domainCondition() *term {
 	var cond *term
 	if lo.machineTrap != nil {
@@ -6656,7 +6661,7 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 		if !ok {
 			return reason, false
 		}
-		if lo.concrete != nil {
+		if lo.concrete != nil || lo.trapDomainTracked {
 			lo.addTrap(cmpTerm("hs", index, lo.spanLenTerm(root, 32)))
 			if lo.witnessTrapped {
 				return fmt.Sprintf("the span local %s indexes past len(%s) on this input", name, root), false
@@ -7399,8 +7404,9 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 			entry = constTerm(0, contract.elemWidth)
 		} else if lo.concrete != nil {
 			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
-			// Past the length, Oak traps on this input (a witness run
-			// notes it; the value stands in for nothing).
+		}
+		if lo.concrete != nil || lo.trapDomainTracked {
+			// Bounds belong to the source, including zero-filled spans.
 			lo.addTrap(cmpTerm("hs", constTerm(k, 32), lo.witnessBound(index.Left.(*ast.Identifier).Value)))
 			if lo.witnessTrapped {
 				return nil, contract, fmt.Sprintf("an index past len(%s) on this input", span), false
@@ -7420,7 +7426,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !ok {
 		return nil, spanContract{}, reason, false
 	}
-	if lo.concrete != nil {
+	if lo.concrete != nil || lo.trapDomainTracked {
 		// Past the span's own length (a derived span's, when derived):
 		// Oak traps on this input, which the witness run notes (addTrap)
 		// under the path; the value then stands in for nothing.
@@ -7832,7 +7838,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 						if !ok {
 							return nil, reason, false
 						}
-						if lo.concrete != nil {
+						if lo.concrete != nil || lo.trapDomainTracked {
 							lo.addTrap(cmpTerm("hs", idx, lo.spanLenTerm(root, 32)))
 						}
 						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
@@ -8696,7 +8702,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				}
 				return adaptWidth(binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), w)), width), "", true
 			}
-			if lo.trapsTracked {
+			if lo.trapsTracked || lo.trapDomainTracked {
 				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
 			}
 			if lo.concrete != nil {
@@ -8747,7 +8753,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return lo.lowerVariableShift(e, op, left, right, width)
 		}
-		if (op == "shl" || op == "shr") && right.kind == termConst && right.value >= uint64(width) && lo.concrete != nil {
+		if (op == "shl" || op == "shr") && right.kind == termConst && right.value >= uint64(width) && (lo.concrete != nil || lo.trapDomainTracked) {
 			// Oak traps at the width: on a witness input the constant
 			// count says so if the path is live; a dead arm's count (the
 			// other arm's arithmetic, `(k - 8) * 8` under `k < 8`) traps
@@ -9313,8 +9319,13 @@ func describeEnvSorted(env map[string]uint64) string {
 
 // verifyChunk is Verify for one result chunk (0 for a scalar or a
 // one-chunk record).
-func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
+func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) (result Verdict) {
 	verdict, exec := verifyChunkJoining(fn, sig, oakBody, chunk, false)
+	// Also covers a deferred span-memory decision: no later Proven return
+	// may bypass the independent trap-domain obligation.
+	defer func() {
+		result = verifyTrapDomain(fn, sig, oakBody, exec, result)
+	}()
 	if verdict.Kind == VerdictWitnessed && strings.Contains(verdict.Message, "(the span ") {
 		// The span memories were not proven equal with every path run to
 		// its end: a store past a conditional is then logged once per path
@@ -9332,7 +9343,8 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify %s: the span memories were not proven; running again merging at the joins\n", fn.Name)
 		}
-		if joined, _ := verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
+		if joined, joinedExec := verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
+			exec = joinedExec
 			return joined
 		}
 		if exec != nil && exec.deferredSpans != nil {
@@ -9389,8 +9401,9 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// claim that Oak traps there too. Witness inputs check the claim: an
 	// input on which the machine traps and the Oak body yields a value is
 	// a mismatch (a speculated arm whose guard trapped, say), not an
-	// exclusion. A body with data-dependent loops runs every witness
-	// input in verifyLoops, where the same check applies.
+	// exclusion. Surviving non-loop proofs also require verifyTrapDomain's
+	// independent symbolic implication. A body with data-dependent loops
+	// runs every witness input in verifyLoops, where the same check applies.
 	trapClaim := func() (Verdict, bool) {
 		if exec.trap == nil || len(exec.loops) > 0 || len(lowering.loops) > 0 {
 			return Verdict{}, false
@@ -10437,7 +10450,7 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 		return recordSpanPlace{}, true, reason, false
 	}
 	span := lo.spanRoot(root.Value)
-	if lo.concrete != nil {
+	if lo.concrete != nil || lo.trapDomainTracked {
 		// Past the span's length: Oak traps on this input (noted by the
 		// witness run under the path).
 		lo.addTrap(cmpTerm("hs", idx, lo.spanLenTerm(root.Value, 32)))
