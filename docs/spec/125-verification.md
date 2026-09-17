@@ -824,7 +824,10 @@ In order of payoff, each reusing a surface that exists:
   964 of its functions lowered to machine code the seam checker
   admits and the Oak assembler encodes, 573 of them proven equal to
   their Oak bodies (193 evidence, 198 trusted, no disagreement, the
-  plain bodies tallied with the optimizer's transforms skipped) — their results, the package cells they write, and,
+  plain bodies tallied with the optimizer's transforms skipped; 951
+  identity forms at 62ce8b44, 573 proven, 212 evidence, 166 trusted,
+  the independent trap-domain obligations of 2026-09-17 decided end
+  by end, `94-assembler.md` §9) — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its
   caller through the call summary since the twenty-ninth (and a record

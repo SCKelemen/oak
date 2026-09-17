@@ -8386,7 +8386,14 @@ the registers, frame, globals, and write logs of one joined state): a
 merge past it is refused as "the paths merged at their joins exceed
 the verifier's term budget" rather than grown, and `emit_header`, whose
 merged run had passed twenty gigabytes under `joinedPathBudget`, is
-trusted in five seconds.
+trusted in five seconds. Tallied on the plain bodies: the two
+obligations had taken the prover's build from 574 proven, 218
+evidence, 172 trusted (9eca941a) to 535, 250, 166 of 951 identity
+forms at 40e4c2f7, `unmap_page` and `map_page` among the fallen on the
+OS pilot; the per-end decision and the fact-pruned respelling that
+followed it (`sourceTrapOnPath`, below) bring it to 573, 212, 166 at
+62ce8b44, and both walkers are fully proven again (stage2 twenty of
+twenty, addr_space twenty-nine of twenty-nine).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
