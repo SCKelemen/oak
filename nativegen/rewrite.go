@@ -69,6 +69,9 @@ func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectori
 // unrolled under Lane.UnrollConstant (nativegen/unroll_constant.go).
 func UnrolledConstant(fn *asm.Function) int { return countSites(fn, "constant unrolling", false) }
 
+// UnrolledSmall counts bodies selectively unrolled under Lane.UnrollSmall.
+func UnrolledSmall(fn *asm.Function) int { return countSites(fn, "small constant unrolling", false) }
+
 // StrengthReduced reports how many sites layer A strength-reduced in a
 // body, each decided at the bit level (the strength transform's count,
 // beside the emitter's own).
@@ -88,10 +91,10 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                                                            *ast.FunctionStatement
-	tc                                                                            *typechecker.TypeChecker
-	constants                                                                     string
-	expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, strength bool
+	fn                                                                                   *ast.FunctionStatement
+	tc                                                                                   *typechecker.TypeChecker
+	constants                                                                            string
+	expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool
 }
 
 var (
@@ -103,6 +106,9 @@ var (
 type rewriteStage struct {
 	body  ast.Expression
 	sites []RewriteSite
+	// scalarEligibilityReference preserves pre-unroll scalar-array eligibility. It is
+	// only an extra placement refusal, never a lowering or verifier body.
+	scalarEligibilityReference ast.Expression
 	// judged marks a stage whose body the verifier must judge in place of
 	// the source: a rewrite beyond substitution changed what the
 	// instructions compute the same value from.
@@ -112,19 +118,19 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, strength bool) []rewriteStage {
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool) []rewriteStage {
 	constantKey := ""
 	if fills {
 		constantKey = rewriteConstantsKey(constants)
 	}
-	key := stageKey{fn: fn, tc: tc, constants: constantKey, expand: expand, unroll: unroll, fills: fills, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, constant: constant, strength: strength}
+	key := stageKey{fn: fn, tc: tc, constants: constantKey, expand: expand, unroll: unroll, fills: fills, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, constant: constant, small: small, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, constants, tc, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, strength)
+	stages := computeStages(fn, functions, constants, tc, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
@@ -148,10 +154,11 @@ func rewriteConstantsKey(constants map[string]asm.Constant) string {
 	return out.String()
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
+	var scalarEligibilityReference ast.Expression
 	// judged: a stage is the verifier's reference once a rewrite beyond
 	// substitution changed what the instructions compute the same value
 	// from; an expansion alone leaves the source as the reference (the
@@ -159,7 +166,7 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	judged := false
 	push := func() {
 		copied := append([]RewriteSite(nil), sites...)
-		stages = append([]rewriteStage{{body: body, sites: copied, judged: judged}}, stages...)
+		stages = append([]rewriteStage{{body: body, sites: copied, judged: judged, scalarEligibilityReference: scalarEligibilityReference}}, stages...)
 	}
 	if expand {
 		if inlined := inlineBody(fn, functions); inlined != body {
@@ -181,6 +188,16 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	if constant {
 		if unrolled, changed := unrollConstantLoops(fn, body); changed {
 			sites = append(sites, RewriteSite{Rewrite: "constant unrolling", Law: "Oak.ConstantUnroll.loop_eq_unrolled", Detail: "a loop from zero to a literal bound, its index written by its step alone, is its trips in order with the index a literal in each; nothing is assumed of the body", Line: fn.Token.Line})
+			body = unrolled
+			judged = true
+			push()
+		}
+	}
+	if small {
+		beforeUnroll := cloneNode(body).(ast.Expression)
+		if unrolled, changed := unrollSmallConstantLoops(fn, body); changed {
+			scalarEligibilityReference = beforeUnroll
+			sites = append(sites, RewriteSite{Rewrite: "small constant unrolling", Law: "Oak.ConstantUnroll.loop_eq_unrolled", Detail: "constant trips in order within a fixed copy budget; pre-unroll scalar-array eligibility may only refuse new scalar homes", Line: fn.Token.Line})
 			body = unrolled
 			judged = true
 			push()

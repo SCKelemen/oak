@@ -256,7 +256,7 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 28 {
+	if got := len(registry.Transforms()); got != 29 {
 		t.Fatalf("%d transforms", got)
 	}
 	rotate, _ := registry.Lookup(TransformRotate)

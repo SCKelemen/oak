@@ -5508,9 +5508,39 @@ cannot freshen the inner expansion's newly generated locals. These are
 conservative name-safety refusals, not a change to the unroll law or the
 verification gate. The native/C regression cases cover nested loops and
 successive loops reusing a scoped local name.
-Materialization recipe v21 includes these refusals and retains sparse
+Materialization recipe v22 includes these refusals and retains sparse
 record-base sharing, v19's result-home budget, v18's extent folding, and the
 explicit lane flags.
+
+An independent experimental **`unroll-small`** strategy uses the same matcher
+and `Oak.ConstantUnroll.loop_eq_unrolled` license, but spends at most 512
+expression-walker nodes multiplied by trip count across accepted loops in
+one body. This is a copy-cost heuristic, not a bound on the entire output
+AST. A large refused loop does not prevent a later small loop from expanding.
+All generated-name refusals above still apply. Full `unroll-constant` keeps
+its original policy; the two strategies cannot be combined in one lane.
+
+Small unrolling additionally preserves pre-unroll scalar-array eligibility
+as a **placement-only veto**. The rewritten function must pass the ordinary
+scalar-replacement check, and an immutable snapshot taken after helper
+expansion and span forwarding must independently admit the same array.
+Missing, ambiguous, or mismatched original declarations refuse scalar homes.
+The snapshot is never the lowering or verifier body, nor authority for an
+access: both lowering passes still use the actual rewritten body, and the
+native verifier judges that body under the ordinary source-rewrite license.
+Earlier stage fallbacks have no veto. This lets a small final loop disappear
+without forcing newly constant-indexed result state into registers and
+displacing the already scalarized message state.
+
+The compiler offers this separate AArch64 candidate only with
+`OAK_NATIVE_UNROLL_SMALL=1`; `OAK_OPT_SKIP=unroll-small` overrides it.
+Materialization v22 and the rewrite-stage cache distinguish the strategy.
+The candidate requires an independent semantic verdict, cannot inherit a
+shape-neutral verdict, and never changes the verified profile's proven-only
+requirement. BLAKE3's candidate is proven for all eight result words, but its
+loaded-host timings are provisional; ordinary builds remain unchanged pending
+broader measurement. See the benchmark record linked from
+`benchmarks/native/README.md`.
 
 **Dead frame stores and copies through redefined sources (2026-09-17,
 `machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion

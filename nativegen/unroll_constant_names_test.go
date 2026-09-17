@@ -39,6 +39,9 @@ func TestUnrollConstantNamesSmallAndImmutable(t *testing.T) {
 	if !reflect.DeepEqual(first, second) || !reflect.DeepEqual(fn.Body, before) {
 		t.Fatal("unrolling is nondeterministic or mutated its source")
 	}
+	if small, smallChanged := unrollSmallConstantLoops(fn, fn.Body); !smallChanged || !reflect.DeepEqual(small, first) {
+		t.Fatal("small strategy changed the full strategy's fresh-name behavior")
+	}
 	declarations := map[string]int{}
 	walk(first, func(node ast.Node) {
 		if declaration, ok := node.(*ast.VariableDeclaration); ok {
@@ -103,6 +106,9 @@ func TestUnrollConstantNamesKeepOuterAfterInnerExpansion(t *testing.T) {
 	if !reflect.DeepEqual(got, again) {
 		t.Fatal("nested expansion is nondeterministic")
 	}
+	if small, smallChanged := unrollSmallConstantLoops(fn, fn.Body); !smallChanged || !reflect.DeepEqual(small, got) {
+		t.Fatal("small strategy lost the nested generated-name guard")
+	}
 }
 
 func TestUnrollConstantNamesKeepLaterGeneratedCollision(t *testing.T) {
@@ -142,5 +148,8 @@ func TestUnrollConstantNamesKeepLaterGeneratedCollision(t *testing.T) {
 	again, _ := unrollConstantLoops(fn, fn.Body)
 	if !reflect.DeepEqual(got, again) {
 		t.Fatal("generated-name reservation is nondeterministic")
+	}
+	if small, smallChanged := unrollSmallConstantLoops(fn, fn.Body); !smallChanged || !reflect.DeepEqual(small, got) {
+		t.Fatal("small strategy lost the sequential generated-name guard")
 	}
 }

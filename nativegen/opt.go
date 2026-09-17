@@ -51,6 +51,7 @@ const (
 	TransformUnrollMaps      = "unroll-vector-maps"
 	TransformVectorFolds     = "vectorize-folds"
 	TransformUnrollConst     = "unroll-constant"
+	TransformUnrollSmall     = "unroll-small"
 	TransformVecBlocks       = "vector-blocks"
 	TransformVectorAddresses = "share-vector-addresses"
 	TransformMultiplyAdd     = "multiply-add"
@@ -361,11 +362,23 @@ func Transforms() []opt.Transform {
 			// the array's words in registers. At the head of the loop phase,
 			// so the other loop rewrites see the trips.
 			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
-			arches:  arm64Only,
-			applied: func(l Lane) bool { return l.UnrollConstant },
-			apply:   func(l Lane) Lane { l.UnrollConstant = true; return l },
-			fired:   UnrolledConstant,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollConstant },
+			eligible: func(l Lane) bool { return !l.UnrollSmall },
+			apply:    func(l Lane) Lane { l.UnrollConstant = true; return l },
+			fired:    UnrolledConstant,
 		},
+		&gatedTransform{laneTransform: laneTransform{
+			// The same exact loop law with a bounded copy policy and a
+			// placement-only veto. Keep the full strategy as an alternative,
+			// never combine their rewrite or cache identities.
+			name: TransformUnrollSmall, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollSmall },
+			eligible: func(l Lane) bool { return !l.UnrollConstant },
+			apply:    func(l Lane) Lane { l.UnrollSmall = true; return l },
+			fired:    UnrolledSmall,
+		}},
 		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
@@ -579,6 +592,7 @@ func PlainLane(lane Lane) Lane {
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
 	lane.UnrollConstant = false
+	lane.UnrollSmall = false
 	lane.UnrollFills = false
 	lane.NoReductions = true
 	return lane
