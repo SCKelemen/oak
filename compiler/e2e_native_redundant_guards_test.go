@@ -63,8 +63,11 @@ func TestE2ENativeRedundantGuards(t *testing.T) {
 		t.Fatalf("the proven redundant guards must be removed:\n%s", nativegen.Describe(selected))
 	}
 	description := nativegen.Describe(selected)
-	if strings.Count(description, "b.hs trap_") != 2 {
-		t.Fatalf("one original guard and one differently allocated copy guard must remain:\n%s", description)
+	// Every element indexes by dom's own register (spanRecordElement takes
+	// the fixed-register path), so the one original guard dominates the
+	// rest; a copied index once kept a second, differently allocated guard.
+	if strings.Count(description, "b.hs trap_") != 1 {
+		t.Fatalf("one original guard must remain:\n%s", description)
 	}
 	_, code, abnormal := buildAndRunFrom(t, "redundant_guards", comp)
 	if abnormal || code != 42 {
