@@ -159,6 +159,26 @@ ns/cycle, median paired ratio 0.998. No decoder-cycle speedup is claimed.
 
 [Raw observations and provenance](results/stage2-record-base-cse-m4-max-2026-09-17.json).
 
+The follow-on matcher also preserves nearby independent instructions which
+the scheduler places between `movz`, `movk`, and `umaddl`. Against the same
+byte-identical disabled baseline, the current proven bodies are:
+
+| Selected body | Before | After | Bases shared |
+| --- | ---: | ---: | ---: |
+| `alloc_table` | 173 | 173 | 0 |
+| `free_table` | 32 | 29 | 1 |
+| `map_page` | 198 | 192 | 2 |
+| `reset` | 160 | 160 | 0 |
+| `translate` | 114 | 111 | 1 |
+| `unmap_page` | 287 | 263 | 8 |
+| `walk_leaf` | 145 | 142 | 1 |
+
+That is 39 instructions removed (156 bytes of Mach-O `__text`; the object is
+160 bytes smaller after alignment), with all five OS differential tests still
+passing. No new runtime result is recorded: the attempted run saw load
+averages above 100 and was discarded. Static provenance is recorded in
+[the sparse-schedule result](results/stage2-record-base-sparse-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

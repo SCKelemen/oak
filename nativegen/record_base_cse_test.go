@@ -68,22 +68,54 @@ func TestShareRecordBase(t *testing.T) {
 	}
 }
 
+func TestShareRecordBasePreservesScheduledInterleaving(t *testing.T) {
+	body := strings.Replace(recordBaseAssembly,
+		"  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x10, w2, w9, x0",
+		"  movz w9, #16384\n  add x11, x0, #0\n  movk w9, #6, lsl #16\n  orr w1, w1, w1\n  umaddl x10, w2, w9, x0", 1)
+	body = strings.Replace(body,
+		"  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x12, w2, w9, x0",
+		"  movz w9, #16384\n  str x4, [x0]\n  movk w9, #6, lsl #16\n  add x11, x11, #0\n  umaddl x12, w2, w9, x0", 1)
+	fn := recordBaseFunction(t, body, "x4, x9, x10, x11, x12, x17, x0")
+	if n := shareRecordBase(fn); n != 1 {
+		t.Fatalf("shared %d interleaved bases, want one:\n%s", n, Describe(fn))
+	}
+	text := Describe(fn)
+	for _, kept := range []string{"add x11, x0, #0", "orr w1, w1, w1", "str x4, [x0]", "add x11, x11, #0"} {
+		if !strings.Contains(text, kept) {
+			t.Fatalf("scheduled instruction %q was not preserved:\n%s", kept, text)
+		}
+	}
+	if strings.Count(text, "umaddl") != 1 || !strings.Contains(text, "umaddl x17, w2, w9, x0") ||
+		!strings.Contains(text, "str x4, [x17, #16]") {
+		t.Fatalf("interleaved record base was not carried in x17:\n%s", text)
+	}
+}
+
 func TestShareRecordBaseRefusals(t *testing.T) {
 	allScratchUsed := recordBaseAssembly
 	for _, reg := range []string{"x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17"} {
 		allScratchUsed = strings.Replace(allScratchUsed, "  mov x0, x4", "  add "+reg+", "+reg+", #0\n  mov x0, x4", 1)
 	}
+	tooWide := strings.Repeat("  orr w4, w4, w4\n", recordBaseMaterializationSpan)
 	for name, body := range map[string]string{
-		"one site":                       strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x12, w2, w9, x0\n", "", 1),
-		"index changes":                  strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add w2, w2, #1\n", 1),
-		"base changes":                   strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add x0, x0, #8\n", 1),
-		"call between":                   strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  bl helper\n", 1),
-		"different low":                  strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x12", "  movz w9, #8\n  movk w9, #6, lsl #16\n  umaddl x12", 1),
-		"different high":                 strings.Replace(recordBaseAssembly, "  movk w9, #6, lsl #16\n  umaddl x12", "  movk w9, #7, lsl #16\n  umaddl x12", 1),
-		"destination live through label": strings.Replace(recordBaseAssembly, "  add x11, x10, #8", "  b use_base\nuse_base:\n  add x11, x10, #8", 1),
-		"deleted stride stays live":      strings.Replace(recordBaseAssembly, "  str x4, [x12, #16]", "  add w9, w9, #1\n  str x4, [x12, #16]", 1),
-		"machine loop":                   strings.Replace(recordBaseAssembly, "  cmp w2, w1", "loop:\n  cbnz w4, loop\n  cmp w2, w1", 1),
-		"no free scratch":                allScratchUsed,
+		"one site":                        strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x12, w2, w9, x0\n", "", 1),
+		"index changes":                   strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add w2, w2, #1\n", 1),
+		"base changes":                    strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add x0, x0, #8\n", 1),
+		"call between":                    strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  bl helper\n", 1),
+		"different low":                   strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x12", "  movz w9, #8\n  movk w9, #6, lsl #16\n  umaddl x12", 1),
+		"different high":                  strings.Replace(recordBaseAssembly, "  movk w9, #6, lsl #16\n  umaddl x12", "  movk w9, #7, lsl #16\n  umaddl x12", 1),
+		"destination live through label":  strings.Replace(recordBaseAssembly, "  add x11, x10, #8", "  b use_base\nuse_base:\n  add x11, x10, #8", 1),
+		"deleted stride stays live":       strings.Replace(recordBaseAssembly, "  str x4, [x12, #16]", "  add w9, w9, #1\n  str x4, [x12, #16]", 1),
+		"stride read before movk":         strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9", "  movz w9, #16384\n  add w4, w9, #0\n  movk w9", 1),
+		"stride write before movk":        strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9", "  movz w9, #16384\n  add w9, w4, #0\n  movk w9", 1),
+		"stride read before umaddl":       strings.Replace(recordBaseAssembly, "  movk w9, #6, lsl #16\n  umaddl x12", "  movk w9, #6, lsl #16\n  add w4, w9, #0\n  umaddl x12", 1),
+		"branch inside materialization":   strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9", "  movz w9, #16384\n  b materialization_tail\nmaterialization_tail:\n  movk w9", 1),
+		"input changes inside later site": strings.Replace(recordBaseAssembly, "skip:\n  movz w9, #16384", "skip:\n  movz w9, #16384\n  add w2, w2, #1", 1),
+		"materialization too wide":        strings.Replace(recordBaseAssembly, "  movz w9, #16384\n  movk w9", "  movz w9, #16384\n"+tooWide+"  movk w9", 1),
+		"stride aliases index":            strings.ReplaceAll(recordBaseAssembly, "w9", "w2"),
+		"stride aliases base":             strings.ReplaceAll(recordBaseAssembly, "w9", "w0"),
+		"machine loop":                    strings.Replace(recordBaseAssembly, "  cmp w2, w1", "loop:\n  cbnz w4, loop\n  cmp w2, w1", 1),
+		"no free scratch":                 allScratchUsed,
 	} {
 		t.Run(name, func(t *testing.T) {
 			fn := recordBaseFunction(t, body, "x4, x9, x10, x11, x12, x13, x14, x15, x16, x17, x0")

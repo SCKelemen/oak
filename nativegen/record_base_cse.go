@@ -3,25 +3,27 @@ package nativegen
 import "github.com/SCKelemen/oak/asm"
 
 type recordBaseSite struct {
-	start, def       int
-	stride, dest     asm.Register
-	index, base      asm.Register
-	low, high        asm.Immediate
-	uses             []int
-	localUseBoundary int
+	start, middle, def int
+	stride, dest       asm.Register
+	index, base        asm.Register
+	low, high          asm.Immediate
+	uses               []int
+	localUseBoundary   int
 }
 
 // shareRecordBase eliminates repeated materializations of one record-span
 // element base after register allocation:
 //
-//	movz wT, #lo; movk wT, #hi, lsl #16; umaddl xD, wI, wT, xB
+//	movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB
 //
-// The first result is retargeted to a declared caller-saved scratch register
-// unused for the whole region; later identical triples disappear and their
-// block-local reads use that result. The first definition must dominate every
-// replacement, index/base must be unchanged on every path, and calls delimit
-// the region. A destination live past a control boundary refuses its site.
-// The whole candidate remains verifier-gated.
+// Independent scheduled instructions may remain between those three
+// instructions. A control boundary or any intervening mention of wT refuses
+// the site. The first result is retargeted to a declared caller-saved scratch
+// register unused for the whole region; later identical triples disappear and
+// their block-local reads use that result. The first definition must dominate
+// every replacement, index/base must be unchanged on every path, and calls
+// delimit the region. A destination live past a control boundary refuses its
+// site. The whole candidate remains verifier-gated.
 func shareRecordBase(fn *asm.Function) int {
 	if fn == nil || (fn.Arch != "" && fn.Arch != asm.ArchArm64) {
 		return 0
@@ -43,8 +45,8 @@ func shareRecordBase(fn *asm.Function) int {
 		group := []recordBaseSite{first}
 		for _, site := range sites[firstIndex+1:] {
 			same := sameRecordBase(first, site)
-			dominates := itemDominates(succ, first.def, site.start)
-			stable := guardOperandsStable(items, succ, first.def+1, site.start, first.index.Num, first.base.Num)
+			dominates := itemDominates(succ, first.def, site.def)
+			stable := guardOperandsStable(items, succ, first.def+1, site.def, first.index.Num, first.base.Num)
 			strideDead := live[site.def]&(1<<uint(site.stride.Num)) == 0
 			if !same || !dominates || !stable || !strideDead {
 				continue
@@ -70,7 +72,7 @@ func shareRecordBase(fn *asm.Function) int {
 			out[use] = renameReads(out[use].(asm.Instruction), first.dest.Num, scratch)
 		}
 		for _, site := range group[1:] {
-			remove[site.start], remove[site.start+1], remove[site.def] = true, true, true
+			remove[site.start], remove[site.middle], remove[site.def] = true, true, true
 			for _, use := range site.uses {
 				out[use] = renameReads(out[use].(asm.Instruction), site.dest.Num, scratch)
 			}
@@ -113,34 +115,76 @@ func itemCFGHasCycle(succ [][]int) bool {
 	return false
 }
 
+// The scheduler only moves nearby independent instructions into these
+// materializations. Keeping the recognition window small avoids turning this
+// local cleanup into unbounded instruction search.
+const recordBaseMaterializationSpan = 6
+
 func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, bool) {
 	a, okA := items[start].(asm.Instruction)
-	b, okB := items[start+1].(asm.Instruction)
-	c, okC := items[start+2].(asm.Instruction)
-	if !okA || !okB || !okC || a.Mnemonic != "movz" || b.Mnemonic != "movk" || c.Mnemonic != "umaddl" ||
-		a.Cond != "" || b.Cond != "" || c.Cond != "" || len(a.Operands) != 2 || len(b.Operands) != 2 || len(c.Operands) != 4 {
+	if !okA || a.Mnemonic != "movz" || a.Cond != "" || len(a.Operands) != 2 {
 		return recordBaseSite{}, false
 	}
 	strideA, strideAOK := generalReg(a.Operands[0])
+	low, lowOK := a.Operands[1].(asm.Immediate)
+	if !strideAOK || !lowOK || strideA.Class != asm.ClassW || low.Shift != 0 || low.Value < 0 || low.Value > 0xffff {
+		return recordBaseSite{}, false
+	}
+	middle, ok := nextRecordBaseMention(items, start+1, start+recordBaseMaterializationSpan, strideA.Num)
+	if !ok {
+		return recordBaseSite{}, false
+	}
+	b := items[middle].(asm.Instruction)
+	if b.Mnemonic != "movk" || b.Cond != "" || len(b.Operands) != 2 {
+		return recordBaseSite{}, false
+	}
 	strideB, strideBOK := generalReg(b.Operands[0])
+	high, highOK := b.Operands[1].(asm.Immediate)
+	if !strideBOK || !highOK || strideB.Class != asm.ClassW || strideA.Num != strideB.Num ||
+		high.Shift != 16 || high.Value < 0 || high.Value > 0xffff {
+		return recordBaseSite{}, false
+	}
+	def, ok := nextRecordBaseMention(items, middle+1, start+recordBaseMaterializationSpan, strideA.Num)
+	if !ok {
+		return recordBaseSite{}, false
+	}
+	c := items[def].(asm.Instruction)
+	if c.Mnemonic != "umaddl" || c.Cond != "" || len(c.Operands) != 4 {
+		return recordBaseSite{}, false
+	}
 	dest, destOK := generalReg(c.Operands[0])
 	index, indexOK := generalReg(c.Operands[1])
 	strideC, strideCOK := generalReg(c.Operands[2])
 	base, baseOK := generalReg(c.Operands[3])
-	low, lowOK := a.Operands[1].(asm.Immediate)
-	high, highOK := b.Operands[1].(asm.Immediate)
-	if !strideAOK || !strideBOK || !destOK || !indexOK || !strideCOK || !baseOK || !lowOK || !highOK ||
-		strideA.Class != asm.ClassW || strideB.Class != asm.ClassW || strideC.Class != asm.ClassW || index.Class != asm.ClassW ||
-		dest.Class != asm.ClassX || base.Class != asm.ClassX || strideA.Num != strideB.Num || strideA.Num != strideC.Num ||
-		low.Shift != 0 || low.Value < 0 || low.Value > 0xffff || high.Shift != 16 || high.Value < 0 || high.Value > 0xffff ||
-		dest.Num == index.Num || dest.Num == base.Num {
+	if !destOK || !indexOK || !strideCOK || !baseOK || strideC.Class != asm.ClassW || index.Class != asm.ClassW ||
+		dest.Class != asm.ClassX || base.Class != asm.ClassX || strideA.Num != strideC.Num ||
+		strideA.Num == index.Num || strideA.Num == base.Num || dest.Num == index.Num || dest.Num == base.Num {
 		return recordBaseSite{}, false
 	}
-	uses, boundary, ok := localDefinitionUses(items, live, start+2, dest.Num)
+	uses, boundary, ok := localDefinitionUses(items, live, def, dest.Num)
 	if !ok || len(uses) == 0 {
 		return recordBaseSite{}, false
 	}
-	return recordBaseSite{start: start, def: start + 2, stride: strideA, dest: dest, index: index, base: base, low: low, high: high, uses: uses, localUseBoundary: boundary}, true
+	return recordBaseSite{start: start, middle: middle, def: def, stride: strideA, dest: dest, index: index, base: base, low: low, high: high, uses: uses, localUseBoundary: boundary}, true
+}
+
+// nextRecordBaseMention finds the next read or write of reg without crossing
+// a label, branch, or call. The caller then checks that the mention is the
+// required next instruction of the materialization.
+func nextRecordBaseMention(items []asm.Item, from, through, reg int) (int, bool) {
+	if through >= len(items) {
+		through = len(items) - 1
+	}
+	for i := from; i <= through; i++ {
+		ins, isIns := items[i].(asm.Instruction)
+		if !isIns || isBranchMnemonic(ins.Mnemonic) {
+			return 0, false
+		}
+		if readsGeneral(ins, reg) || writesGeneral(ins, reg) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func localDefinitionUses(items []asm.Item, live []uint32, def, reg int) ([]int, int, bool) {

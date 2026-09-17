@@ -2076,9 +2076,10 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 		out.Items = scheduled.Items
 		scheduledOf[out] = moved
 	}
-	// Record-base sharing recognizes final adjacent materializations. Running
-	// it after scheduling also prevents the scheduler from shortening or
-	// splitting the deliberately longer-lived carried value.
+	// Record-base sharing recognizes final local materializations, including
+	// nearby independent instructions interleaved by this scheduler. Running it
+	// afterward also prevents scheduling from shortening or splitting the
+	// deliberately longer-lived carried value.
 	if lane.ShareRecordBases && lane.Schedule {
 		sharedRecordBases[out] = shareRecordBase(out)
 	}

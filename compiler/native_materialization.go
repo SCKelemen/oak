@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v17 adds record-base sharing to v16's explicit carried-index and
-	// redundant-guard recipes. A transform flag omitted here can incorrectly
-	// reuse another candidate's cached body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v17")
+	// v18 broadens v17's adjacent record-base recipe to scheduled, locally
+	// interleaved materializations. A transform flag or recipe change omitted
+	// here can incorrectly reuse another candidate's cached body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v18")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")

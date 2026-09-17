@@ -5993,31 +5993,37 @@ with six pairs faster; see
 **Shared record-span bases (2026-09-17, AArch64 lane).** The
 `share-record-bases` machine candidate (`nativegen/record_base_cse.go`)
 recognizes the final scheduled spelling of a wide record-span element base:
-`movz wT, #lo; movk wT, #hi, lsl #16; umaddl xD, wI, wT, xB`. When one such
+`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`. The
+elided positions may contain nearby independent scheduled instructions; a
+label, branch, call, or any intervening read/write of `wT` refuses the site.
+When one such
 definition dominates later identical definitions, and neither the span base
 nor its index changes on any path between them, the first result is retargeted
 to a declared caller-saved scratch and later local reads use that carried
 value. Calls delimit the region. The scratch must be absent from the whole
 function suffix; a later stride temporary must be dead after the deleted
 multiply; and every replaced destination must be local to its straight-line
-region. A cyclic machine CFG is outside this late pass; loop optimization keeps
-its separate proof and profitability path. The pass deliberately leaves
-interleaved materializations alone.
+region. The stride cannot alias the index or base through its W/X view. A
+cyclic machine CFG is outside this late pass; loop optimization keeps its
+separate proof and profitability path.
 
 This changes no load, store, guard, branch, or arithmetic result. It composes
 only with the scheduler and runs after it, so an unscheduled parent cannot win
 by acquiring the sharing flag and scheduling cannot lengthen or split the new
 live range. It is a non-neutral **verdict-gated** candidate: only the unchanged
 whole-body verifier can authorize it. Unit refusals cover non-dominance,
-changed base/index, calls, different stride words, live deleted temporaries,
-cross-boundary destinations, unavailable scratches, and undeclared
-scratches. The compiler differential exercises both conditional arms and the
-invalid-domain trap over a record whose stride exceeds sixteen bits.
+changed base/index (including inside a sparse site), calls and control
+boundaries, different stride words, intervening stride uses/definitions,
+over-wide sparse sites, W/X aliasing, live deleted temporaries, cross-boundary
+destinations, unavailable scratches, and undeclared scratches. The compiler
+differential exercises both conditional arms and the invalid-domain trap over
+a record whose stride exceeds sixteen bits.
 
-Native materialization recipe v17 adds `share-record-bases` to v16's explicit
-`carry-loop-index` and `elide-redundant-guards` keying. This closes the
-artifact-cache contract for the late candidate; the registry-wide test
-requires every transform switch to change the recipe key.
+Native materialization recipe v18 distinguishes the sparse scheduled recipe
+from v17's adjacent-only recipe. The key also carries `share-record-bases`
+alongside v16's explicit `carry-loop-index` and `elide-redundant-guards`
+keying. This closes the artifact-cache contract for the late candidate; the
+registry-wide test requires every transform switch to change the recipe key.
 
 On the actual stage-2 pilot, the three changed selected bodies remain `proven`:
 one base is shared in `map_page` (198→195 instructions), one in `translate`
@@ -6029,6 +6035,16 @@ ratio is 0.940 (6.0% lower), with separate medians 4.36→4.07 ns/op.
 Decoder-cycle timings are neutral/mixed (4 of 7 faster; median paired ratio
 0.998), so no decoder speedup is claimed. Raw timings and provenance are in
 `benchmarks/native/results/stage2-record-base-cse-m4-max-2026-09-17.json`.
+
+The subsequent sparse-schedule extension, against the same byte-identical
+disabled baseline, shares one base in `free_table` (32→29 instructions), one
+in `walk_leaf` (145→142), two in `map_page` (198→192), one in `translate`
+(114→111), and eight in `unmap_page` (287→263). `alloc_table` and `reset`
+remain 173 and 160 instructions. This removes 39 instructions (156 bytes of
+Mach-O `__text`; the object is 160 bytes smaller after alignment); every
+selected body remains `proven`, and all five OS differential tests pass. No
+follow-on runtime claim is attached because the
+available host was heavily loaded during the attempted measurement.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
