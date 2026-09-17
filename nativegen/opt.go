@@ -718,7 +718,13 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		return m
 	}
 	labelAt := map[string]int{}
+	instructionAt := make([]int, len(fn.Items))
+	instructionCount := 0
 	for i, item := range fn.Items {
+		instructionAt[i] = instructionCount
+		if _, ok := item.(asm.Instruction); ok {
+			instructionCount++
+		}
 		if label, ok := item.(asm.Label); ok {
 			labelAt[label.Name] = i
 		}
@@ -879,6 +885,12 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				if sh.MaxTrips > 0 {
 					body.MaxTrips = sh.MaxTrips
 				}
+				// Natural-loop evidence must cover this exact measured range,
+				// not another backedge sharing its header or a lexical range
+				// containing blocks outside the analyzed loop.
+				if exactLoopMetricRange(sh, instructionAt[loop.from], instructionAt[loop.to]) {
+					body.ExactTrips = sh.ExactTrips
+				}
 			}
 		}
 		if body.MaxTrips == 0 && body.Stride > 0 && indices[k] >= 0 {
@@ -887,6 +899,26 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		m.LoopBodies = append(m.LoopBodies, body)
 	}
 	return m
+}
+
+func exactLoopMetricRange(shape *machine.LoopShape, first, last int) bool {
+	if shape == nil || shape.ExactTrips <= 0 || shape.Loop == nil || len(shape.Loop.Latches) != 1 || first > last {
+		return false
+	}
+	latch := shape.Loop.Latches[0]
+	if len(latch.Instrs) == 0 || latch.Instrs[len(latch.Instrs)-1].Index != last {
+		return false
+	}
+	indices := map[int]bool{}
+	for _, block := range shape.Loop.Blocks {
+		for _, instruction := range block.Instrs {
+			if instruction.Index < first || instruction.Index > last || indices[instruction.Index] {
+				return false
+			}
+			indices[instruction.Index] = true
+		}
+	}
+	return len(indices) == last-first+1
 }
 
 // constantLoopTrips recovers a cost-only bound from the generator's closed

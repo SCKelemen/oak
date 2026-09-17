@@ -62,6 +62,7 @@ func TestNativeBlake3LoopResultHomesExperiment(t *testing.T) {
 	var first *asm.Function
 	for attempt := 0; attempt < 2; attempt++ {
 		t.Setenv("OAK_NATIVE_LOOP_RESULT_HOMES", []string{"0", "1"}[attempt])
+		t.Logf("result-home search attempt %d (enabled=%s)", attempt, []string{"0", "1"}[attempt])
 		model, err := comp.SemanticModel().Get()
 		if err != nil {
 			t.Fatal(err)
@@ -82,22 +83,10 @@ func TestNativeBlake3LoopResultHomesExperiment(t *testing.T) {
 		if attempt == 0 && nativegen.LoopResultHomes(selected) != 0 {
 			t.Fatal("result homes fired without experimental opt-in")
 		}
-		stackMemory := 0
-		for _, item := range selected.Items {
-			if ins, ok := item.(asm.Instruction); ok && (strings.HasPrefix(ins.Mnemonic, "ld") || strings.HasPrefix(ins.Mnemonic, "st")) {
-				for _, operand := range ins.Operands {
-					if mem, ok := operand.(asm.Memory); ok && mem.Base.Class == asm.ClassSP {
-						stackMemory++
-					}
-				}
-			}
-		}
-		// Upstream scalar replacement now beats both old result-home forms.
-		// Do not force a previously measured candidate over that better body.
-		if selected.Frame > 160 || stackMemory > 10 || nativegen.PromotedSlots(selected) == 0 || nativegen.Metrics(selected).Instructions > 283 {
-			t.Fatalf("result-home pressure regression: frame=%d SP-memory=%d promoted=%d metrics=%s",
-				selected.Frame, stackMemory, nativegen.PromotedSlots(selected), nativegen.Metrics(selected))
-		}
+		// A fully unrolled candidate may supersede the old result-home forms;
+		// otherwise require the original rolled profile. The dedicated result
+		// fixtures separately require the experimental transform to fire.
+		requireNativeBlake3StrongProfile(t, selected)
 		if first != nil && nativegen.LoopResultHomes(selected) == 0 && (first.Frame != selected.Frame || !reflect.DeepEqual(first.Items, selected.Items)) {
 			t.Fatal("offering an unused result-home experiment changed the default body")
 		}

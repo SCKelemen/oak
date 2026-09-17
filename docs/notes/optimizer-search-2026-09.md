@@ -88,6 +88,24 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   first thing the report found: without the stride the static count
   priced the unrolled reduction above the plain loop, and the search
   would have verified the plain loop first.
+- Positive **exact** trip counts are distinct from upper bounds
+  (`machine.LoopShape.ExactTrips`, `opt.LoopMetrics.ExactTrips`). A closed
+  AArch64 CFG/induction recognizer covers top-tested unsigned literal exits
+  and bottom-tested unsigned literal backedges. It requires a unique
+  preheader/latch, a dominating constant start, one same-width positive
+  increment, no alternate entry or exit, and no residual cycle after removing
+  the backedge; the final increment must not wrap. Calls, terminal/system
+  effects, uncertain starts, and unsupported predicates refuse the hint.
+  The positive count is per **entered** loop, not a function-execution count.
+  `nativegen.Metrics` copies it only when the complete natural-loop instruction
+  set equals the measured lexical range. Exact counts are charged directly,
+  without halving, stride division, or the unknown-loop cap. Unknown cases
+  retain the previous `MaxTrips` heuristic. These are cost hints only; no
+  checker or verifier consumes them as proof authority. Search metrics and
+  cost artifact recipes are v3. This correction lets the existing full-unroll,
+  scheduling and allocation candidates beat BLAKE3's previously underpriced
+  seven-round/eight-tail loops; measured results and the increased emission
+  cost are recorded in `benchmarks/native/README.md`.
 - `compiler/native_search.go` and `compiler/native_bodies.go` — the
   hand-written fallback ladder (elide, then hoist, then reuse, then
   strength, then the plain reduction) is replaced by one search per

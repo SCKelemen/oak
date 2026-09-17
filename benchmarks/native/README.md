@@ -1375,6 +1375,84 @@ companion using `cc -dynamiclib -std=c99 -O3 -DNDEBUG
 paths to `blake3_same_process.c` with `100 21`. Broader quiet-host and selection
 measurements remain necessary before enabling this strategy by default.
 
+### Exact trip costing selects faster full unrolling (2026-09-17)
+
+At `65070a4b`, the cost model still charged BLAKE3's fixed seven-round loop
+as 3.5 trips and its rotated eight-iteration tail as four. The new
+`ExactTrips` hint distinguishes a closed counted loop from a mere upper
+bound. It covers both top- and bottom-tested unsigned literal comparisons,
+rejecting uncertain control flow, entry values, widths and possible wrapping.
+The existing upper-bound heuristic remains unchanged for other loops.
+This is costing evidence only: source laws, seam checks and semantic verdict
+requirements are unchanged.
+
+The result was not simply selection of the preceding small-unroll experiment.
+Ordinary search now selects **full constant unrolling + scheduling +
+reallocation**, freshly proven for all eight result chunks. Enabling
+`OAK_NATIVE_UNROLL_SMALL=1` selects the identical object; small unrolling
+remains experimental and was not forced to win. The selected form costs 1973,
+against 2834.5 for the old rolled form with its exact trips charged (previously
+1523 under the half-bound heuristic).
+
+Static size grows from 283 assembler instructions (287 encoded) to 1175
+(1179 encoded); the frame grows from 160 to 288 bytes, with SP-relative memory
+instructions increasing from ten to 306. Those counts alone are misleading
+here: the old body executes its memory instructions inside seven- and
+eight-trip loops. From the assembly and those exact trip counts, its dynamic
+loads/stores total 550 per compression, versus 358 in the selected loop-free
+body. This is an assembly-derived count, not a hardware-counter measurement.
+
+The actual **search-selected** object was linked with the same C companion
+as the baseline. Three sequential same-process runs used 100 calls per sample
+and 21 samples, rotating variant order; run B reversed the libraries. All
+32 digest bytes agreed with the pure-C control at fourteen boundary lengths
+through 1 MiB and after every timed sample. No builds or tests from this
+experiment ran during timing, though other shared-host work remained active.
+
+| Run | Baseline ms/MiB | Selected ms/MiB | Ratio of medians | Median paired ratio | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 5.966 | 4.080 | 0.684 | 0.690 | 4.470 |
+| B, reversed | 6.458 | 4.896 | 0.758 | 0.771 | 5.247 |
+| C | 6.847 | 6.562 | 0.958 | 0.911 | 4.843 |
+
+All three favor the selected output, but the **9–31% paired improvement is
+provisional**: load was high (one-minute load 62.35 before run A), timing
+spreads were large, and cores/frequency were uncontrolled. This is native
+compression within the C hash driver, not a whole-native application result
+or a claim of consistent parity with C. Raw samples, artifacts and the
+reproduction protocol are in
+[the experiment record](results/blake3-exact-trips-2026-09-17.json).
+
+There is a build-time tradeoff. Observed emission rose from 82.3 seconds to
+243.2 seconds (246.7 with small unrolling offered). These are loaded-host
+observations, not a controlled compiler benchmark. One-second process samples
+found candidate materialization in `machine.ReallocateWith`/`Simplify`; final
+semantic verification remained below one second. Cheaper search/materialization
+of the winning form is follow-up work; the runtime gain does not erase that
+cost.
+
+As a broader code-generation check, separate before/after builds allowing
+`bench_dot`, `bench_sum`, `bench_search`, `bench_page_probe`, `bench_bitmap`,
+`bench_dispatch` and `bench_tiled` produced **byte-identical C and native
+companion objects**. This preserves their existing mixed backend/evidence
+grades; it is not a claim that all seven are proven native bodies. Compiler
+regressions retain the all-chunk proof, wrong-rotate refutation and native/C
+boundary checks, with distinct bounded profiles for the measured fully
+unrolled output and the original rolled fallback.
+
+These measurements preceded integration of the branch's loop-rewrite preflight
+and per-pass checker fingerprint changes. To reproduce the measured comparison,
+build one emitter at `65070a4b` and another at that base plus this commit's
+exact-trip costing patch; building the current branch also includes those
+independent compile-time changes. Use
+`OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_NATIVE_TIMING=1`
+on `benchmarks/native/emit`, using `benchmarks/kernels/oak` as input. Link each
+selected object with the unchanged baseline C companion as a local shared
+library, using `cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main`.
+Build the pure-C control separately. Run `blake3_same_process.c` with absolute
+baseline/selected/control library paths and `100 21`, reversing the first two
+paths for run B. No special candidate probe or raised proof budget is needed.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

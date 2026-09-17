@@ -122,6 +122,62 @@ func TestNativeBlake3SmallUnrollCandidateProven(t *testing.T) {
 		t.Fatalf("small unroll must freshly prove all chunks: outcome=%s verdict=%s (%s), verified=%d cached=%d",
 			result.Outcome, verdict.Kind, verdict.Message, verified, fromCache)
 	}
+	metrics := driver.Measure(candidate)
+	if len(metrics.LoopBodies) != 1 || metrics.LoopBodies[0].ExactTrips != 7 {
+		t.Fatalf("small candidate must retain its exact seven-round loop: %+v", metrics.LoopBodies)
+	}
+	// Price the same placement without small unrolling, including the real
+	// bottom-tested tail. A mere upper bound used to charge that tail four
+	// trips instead of its exact eight and favor the slower rolled form.
+	rolledLane := lane
+	rolledLane.UnrollSmall = false
+	rolledLane.ElideProven = true
+	rolledLane.RotateLoops = true
+	rolled := opt.Identity(rolledLane)
+	if err := driver.Materialize(rolled); err != nil {
+		t.Fatal(err)
+	}
+	if findings := driver.Check(rolled); len(findings) != 0 {
+		t.Fatalf("rolled comparator seam refused: %v", findings)
+	}
+	if proof := driver.Validate(rolled); proof.Outcome != opt.Proven {
+		t.Fatalf("rolled comparator did not prove: %s", proof.Message)
+	}
+	rolledMetrics := driver.Measure(rolled)
+	if len(rolledMetrics.LoopBodies) != 2 || rolledMetrics.LoopBodies[0].ExactTrips != 7 || rolledMetrics.LoopBodies[1].ExactTrips != 8 {
+		t.Fatalf("rolled comparator lacks exact main/tail counts: %+v", rolledMetrics.LoopBodies)
+	}
+	if smallCost, rolledCost := opt.AArch64Costs.Estimate(metrics), opt.AArch64Costs.Estimate(rolledMetrics); smallCost >= rolledCost {
+		t.Fatalf("exact trip costing still favors rolled comparator: small=%v rolled=%v", smallCost, rolledCost)
+	}
+	// The corrected costs also expose the existing fully unrolled winner.
+	// Exercise its normal admission and proof directly, independently of the
+	// slower end-to-end test which pins production search selection.
+	fullLane := nativegen.PlainLane(lane)
+	fullLane.UnrollConstant, fullLane.Reallocate = true, true
+	fullLane.Schedule, fullLane.Cleanup = true, true
+	full := &opt.Candidate{Config: fullLane, Applied: []string{
+		nativegen.TransformUnrollConst, nativegen.TransformSchedule,
+		nativegen.TransformReallocate, nativegen.TransformCleanup,
+	}}
+	if err := driver.Materialize(full); err != nil {
+		t.Fatal(err)
+	}
+	if findings := driver.Check(full); len(findings) != 0 {
+		t.Fatalf("fully unrolled seam refused: %v", findings)
+	}
+	fullBody := full.Body.(*asm.Function)
+	if proof := driver.Validate(full); proof.Outcome != opt.Proven || driver.verdicts[fullBody].Kind != asm.VerdictProven ||
+		!strings.Contains(driver.verdicts[fullBody].Message, "all 8 result chunks") {
+		t.Fatalf("fully unrolled candidate did not prove all chunks: %s (%s)", proof.Message, driver.verdicts[fullBody].Message)
+	}
+	requireNativeBlake3StrongProfile(t, fullBody)
+	if nativegen.UnrolledConstant(fullBody) == 0 {
+		t.Fatal("direct fully unrolled candidate lost its rewrite")
+	}
+	if fullCost, rolledCost := opt.AArch64Costs.Estimate(driver.Measure(full)), opt.AArch64Costs.Estimate(rolledMetrics); fullCost >= rolledCost {
+		t.Fatalf("exact trip costing did not favor full unrolling: full=%v rolled=%v", fullCost, rolledCost)
+	}
 
 	// Preserve the candidate's legal footprint but alter its computation. The
 	// verifier must refute the changed rotate rather than recognize the source

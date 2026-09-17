@@ -1,0 +1,523 @@
+{
+  "schema": "oak-exact-trips-selected-v1",
+  "date": "2026-09-17",
+  "base_commit": "65070a4bbc63c5a713d5d6b1b64900d7f921cfe6",
+  "measurement_source": "Baseline is base_commit; selected and opt-in emitters are that base plus this commit's exact-trip costing patch, before integration of independent upstream loop-rewrite preflight and per-pass checker fingerprint changes. Current branch timings may differ.",
+  "decision": "Retain cost-only exact-trip distinction. Normal search selects existing fully unrolled/scheduled/reallocated Proven compressor; small-unroll opt-in remains off by default and is not forced.",
+  "scope": "Only hash__blake3_ucompress is native in runtime comparisons, using identical C hash companion. Not a whole-native workload or final-executable proof.",
+  "platform": {
+    "os": "macOS 26.3.1(a), Darwin 25.3.0 arm64",
+    "affinity": "uncontrolled",
+    "frequency": "uncontrolled",
+    "load_before_run_A": "62.35 / 67.43 / 54.89 (1/5/15 minutes)",
+    "limitations": "Shared host busy with other work; no compiler builds/tests from this experiment ran during timing. Differences are provisional and not confidence-bounded."
+  },
+  "protocol": {
+    "harness": "benchmarks/native/blake3_same_process.c",
+    "rounds": 100,
+    "samples": 21,
+    "runs": 3,
+    "execution": "Sequential non-overlapping same-process runs, distinct RTLD_LOCAL libraries and entrypoints, one shared seeded input, one warmup per variant, rotating execution order; B reverses library order.",
+    "boundary_lengths": [
+      0,
+      1,
+      63,
+      64,
+      65,
+      1023,
+      1024,
+      1025,
+      2048,
+      2049,
+      3072,
+      4096,
+      5000,
+      1048576
+    ],
+    "validation": "All 32 digest bytes equal C at each boundary and after every timed sample. All eight result chunks freshly Proven before the normal emitter writes the object; default verifier budget and cache off.",
+    "flags": [
+      "-dynamiclib",
+      "-std=c99",
+      "-O3",
+      "-DNDEBUG",
+      "-Dmain=oak_unused_main"
+    ],
+    "statistics": "Ratio of medians and median of paired selected/baseline samples are different statistics; both are retained."
+  },
+  "baseline": {
+    "emission_seconds": 82.33731925004395,
+    "metrics": {
+      "instructions": 287,
+      "stack_accesses": 10,
+      "frame_bytes": 160
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+reallocate+late-cleanup): 0.58s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "9e68c975fbdfaa6826319acb20f5cceaed72bf138b49ee4b42a58c669db96557",
+    "object_sha256": "ff7329aacc06b5dfef28c05dd99ddc5980dd97c88250f8324d0490135df44c33",
+    "runner_sha256": "cb02767848053ab6c118654bdb299c3d839ae983a4056e102a4d79cfeda4c0a2",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "selected": {
+    "emission_seconds": 243.16198629100109,
+    "metrics": {
+      "instructions": 1179,
+      "stack_accesses": 306,
+      "frame_bytes": 288
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate+late-cleanup): 0.92s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "5f2f55369a54bf17542de0c3bf9fe23bc864cd98662f97b020b918efb80818e5",
+    "object_sha256": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "runner_sha256": "1291da18a30f8dec7ee823c341673d0afcdf10bd096df47087eb4b86fbef072f",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "opt_in": {
+    "emission_seconds": 246.74521179200383,
+    "metrics": {
+      "instructions": 1179,
+      "stack_accesses": 306,
+      "frame_bytes": 288
+    },
+    "diagnostics": [
+      "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 0.69s (proven)",
+      "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+    ],
+    "emitter_sha256": "5f2f55369a54bf17542de0c3bf9fe23bc864cd98662f97b020b918efb80818e5",
+    "object_sha256": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "runner_sha256": "96388e1a9ce05407badb4bc67162ffffe825cb42265dc8619a544af588e47274",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "assembly_counts": {
+    "baseline": {
+      "assembler_instructions": 283,
+      "encoded_instructions": 287,
+      "loads": 69,
+      "stores": 55,
+      "main": {
+        "trips": 7,
+        "loads": 32,
+        "stores": 32
+      },
+      "tail": {
+        "trips": 8,
+        "loads": 4,
+        "stores": 2
+      },
+      "dynamic_memory_operations": 550
+    },
+    "selected": {
+      "assembler_instructions": 1175,
+      "encoded_instructions": 1179,
+      "loads": 219,
+      "stores": 139,
+      "loops": 0,
+      "dynamic_memory_operations": 358
+    },
+    "method": "Derived from generated assembly and exact trip counts, not hardware counters."
+  },
+  "costs": {
+    "old_rolled_half_bound": 1523,
+    "rolled_with_exact_counts": 2834.5,
+    "selected_fully_unrolled": 1973
+  },
+  "compilation_tradeoff": {
+    "baseline_seconds": 82.33731925004395,
+    "selected_seconds": 243.16198629100109,
+    "opt_in_seconds": 246.74521179200383,
+    "interpretation": "Observed about 3x emission time under load, not a controlled compiler-speed estimate. One-second samples show materialization in ReallocateWith/Simplify; final verification remained under 1s. Runtime gain does not erase compile-time cost."
+  },
+  "nonhash_comparison": {
+    "before": {
+      "emission_seconds": 28.165344542008825,
+      "metrics": {},
+      "diagnostics": [
+        "timing: bench_dot (elide-guards+vectorize-folds+hoist-invariants+rotate-loops+schedule+reallocate): 0.04s (proven)",
+        "timing: bench_sum (elide-guards+vectorize-reductions+hoist-invariants+rotate-loops+schedule+reallocate+vector-blocks): 0.01s (proven)",
+        "timing: bench_search (strength-reduce+elide-guards+rotate-loops+fuse+fuse-exits+schedule+reallocate): 0.09s (witness-checked)",
+        "timing: bench_search (strength-reduce+elide-guards): 0.10s (witness-checked)",
+        "timing: bench_search (identity): 0.11s (witness-checked)",
+        "timing: bench_page_probe (strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+fuse-exits+schedule+reallocate): 0.33s (witness-checked)",
+        "timing: bench_page_probe (strength-reduce+elide-guards+hoist-invariants): 6.21s (witness-checked)",
+        "timing: bench_page_probe (identity): 10.51s (witness-checked)",
+        "timing: bench_dispatch (elide-guards+hoist-invariants+rotate-loops+reallocate): 0.46s (proven)",
+        "timing: bench_tiled (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate): 0.01s (witness-checked)",
+        "timing: bench_tiled (elide-guards+hoist-invariants): 0.02s (witness-checked)",
+        "timing: bench_tiled (identity): 0.02s (witness-checked)"
+      ],
+      "emitter_sha256": "9e68c975fbdfaa6826319acb20f5cceaed72bf138b49ee4b42a58c669db96557",
+      "object_sha256": "5a3637a9c060b4e7715100cf118196e2488335fd588e843ab82a03dcaeedc790",
+      "runner_sha256": "f77ab6870bac090dbd9e75fd010b23d86e90750de1d5601817efc64bf7455db0",
+      "native_only": [
+        "bench_dot",
+        "bench_sum",
+        "bench_search",
+        "bench_page_probe",
+        "bench_bitmap",
+        "bench_dispatch",
+        "bench_tiled"
+      ]
+    },
+    "after": {
+      "emission_seconds": 30.95650804101024,
+      "metrics": {},
+      "diagnostics": [
+        "timing: bench_dot (elide-guards+vectorize-folds+hoist-invariants+rotate-loops+schedule+reallocate): 0.10s (proven)",
+        "timing: bench_sum (elide-guards+vectorize-reductions+hoist-invariants+rotate-loops+schedule+reallocate+vector-blocks): 0.01s (proven)",
+        "timing: bench_search (strength-reduce+elide-guards+rotate-loops+fuse+fuse-exits+schedule+reallocate): 0.23s (witness-checked)",
+        "timing: bench_search (strength-reduce+elide-guards): 0.13s (witness-checked)",
+        "timing: bench_search (identity): 0.09s (witness-checked)",
+        "timing: bench_page_probe (strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+fuse-exits+schedule+reallocate): 0.18s (witness-checked)",
+        "timing: bench_page_probe (strength-reduce+elide-guards+hoist-invariants): 7.20s (witness-checked)",
+        "timing: bench_page_probe (identity): 11.75s (witness-checked)",
+        "timing: bench_dispatch (elide-guards+hoist-invariants+rotate-loops+reallocate): 0.03s (proven)",
+        "timing: bench_tiled (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate): 0.01s (witness-checked)",
+        "timing: bench_tiled (elide-guards+hoist-invariants): 0.01s (witness-checked)",
+        "timing: bench_tiled (identity): 0.01s (witness-checked)"
+      ],
+      "emitter_sha256": "5f2f55369a54bf17542de0c3bf9fe23bc864cd98662f97b020b918efb80818e5",
+      "object_sha256": "5a3637a9c060b4e7715100cf118196e2488335fd588e843ab82a03dcaeedc790",
+      "runner_sha256": "bec92917cd133b72b7e554e73ed44092bf58fa81db3ae6be5e1442b9df9532b5",
+      "native_only": [
+        "bench_dot",
+        "bench_sum",
+        "bench_search",
+        "bench_page_probe",
+        "bench_bitmap",
+        "bench_dispatch",
+        "bench_tiled"
+      ]
+    },
+    "c_equal": true,
+    "object_equal": true,
+    "c_sha256": "ed9e9295a58d9e78ce0a5575b33b12ba44fe1d63f0afe9c9b539b142e246140e",
+    "caveat": "Restrictedsevenkernel build preserves existing backend/evidence mixture, including fallback and witness-checked bodies. No runtime claim based on unchanged code."
+  },
+  "artifacts": {
+    "baseline_dylib_sha256": "e669309ef820fdb090a26b1e5c8e203f76a08dc3b6a13576a67c845b7de41abf",
+    "selected_dylib_sha256": "2dd045b420350aa57506275325287a95b621b0139c4cd82a81d28e5b7547e009",
+    "c_control_dylib_sha256": "fd7808089ae53f201ed6f2e3a3938baf718b53068766dccbca965a5212485aea",
+    "harness_sha256": "76311298277475d9a2ab059f4c13ed764c6ef1f259446db1412059ef917a50d1"
+  },
+  "runs": [
+    {
+      "id": "A",
+      "library_order": [
+        "baseline",
+        "selected",
+        "c-control"
+      ],
+      "medians_ns": {
+        "baseline": 5966330,
+        "selected": 4079560,
+        "c_control": 4470410
+      },
+      "ratio_of_medians": 0.6837637207462544,
+      "median_paired_ratio": 0.6899819775368718,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              10544400,
+              9160790,
+              6723860,
+              5952810,
+              4788220,
+              5966330,
+              6217430,
+              4630110,
+              8215180,
+              9418830,
+              7601800,
+              6673300,
+              5151750,
+              5299390,
+              4755960,
+              6738450,
+              5689360,
+              6747880,
+              5425120,
+              5750610,
+              5004930
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              6415410,
+              6320780,
+              4736570,
+              4343820,
+              5627220,
+              3551910,
+              3481780,
+              3948940,
+              4856110,
+              5878180,
+              3813430,
+              6015840,
+              3514150,
+              4103180,
+              3707490,
+              3872660,
+              3356820,
+              3645710,
+              6591260,
+              4079560,
+              3734190
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              5602900,
+              5564330,
+              6384000,
+              3680440,
+              3645260,
+              3563770,
+              3575540,
+              3917880,
+              4519440,
+              5304560,
+              7770230,
+              4559790,
+              6153120,
+              4052280,
+              3684600,
+              4470410,
+              3707520,
+              3342090,
+              4825630,
+              4501870,
+              4159110
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "B",
+      "library_order": [
+        "selected",
+        "baseline",
+        "c-control"
+      ],
+      "medians_ns": {
+        "baseline": 6458260,
+        "selected": 4895800,
+        "c_control": 5246610
+      },
+      "ratio_of_medians": 0.7580679625781557,
+      "median_paired_ratio": 0.7706326131159379,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              4460830,
+              5081390,
+              4135840,
+              4225330,
+              4470920,
+              3879350,
+              6314700,
+              11648590,
+              17199160,
+              4102250,
+              4322880,
+              4541030,
+              5434210,
+              10636690,
+              9952670,
+              4929170,
+              6218460,
+              4895800,
+              4268150,
+              4307340,
+              5410680
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              5788530,
+              5232550,
+              4878380,
+              5819010,
+              6290550,
+              11495080,
+              6645970,
+              10826250,
+              9123980,
+              9753590,
+              6458260,
+              7748520,
+              9434720,
+              7042940,
+              5830830,
+              10160190,
+              8357960,
+              4709470,
+              5180380,
+              5699500,
+              6276810
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              5083730,
+              4750870,
+              3656190,
+              6198260,
+              5246610,
+              8767160,
+              5370820,
+              12516300,
+              9389960,
+              5356710,
+              4067390,
+              5501690,
+              6561570,
+              8038160,
+              8263670,
+              5175240,
+              4708130,
+              4563320,
+              3913440,
+              3562480,
+              3895180
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "C",
+      "library_order": [
+        "baseline",
+        "selected",
+        "c-control"
+      ],
+      "medians_ns": {
+        "baseline": 6847350,
+        "selected": 6561700,
+        "c_control": 4842920
+      },
+      "ratio_of_medians": 0.9582831314304073,
+      "median_paired_ratio": 0.911166254480013,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              11601430,
+              8883080,
+              14226190,
+              6380270,
+              7067280,
+              8236200,
+              6441350,
+              5795650,
+              6520870,
+              5354000,
+              6302930,
+              8906630,
+              6437130,
+              8037380,
+              6300960,
+              5535360,
+              6966740,
+              5773390,
+              7201660,
+              7201430,
+              6847350
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              13232360,
+              8785230,
+              12611920,
+              6952930,
+              10420250,
+              6183950,
+              8501440,
+              4126400,
+              3931240,
+              4165330,
+              5778840,
+              4911390,
+              8269530,
+              4484430,
+              7469550,
+              7046760,
+              7282630,
+              4866640,
+              4002780,
+              6561700,
+              5238400
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              7879530,
+              8335690,
+              6811540,
+              7835390,
+              10377020,
+              4207060,
+              6449560,
+              4147450,
+              4036330,
+              4625120,
+              4316110,
+              4301610,
+              4269790,
+              4842920,
+              4784090,
+              4414600,
+              4985180,
+              6928820,
+              8020630,
+              4407180,
+              6241200
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

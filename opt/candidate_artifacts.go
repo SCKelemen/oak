@@ -122,12 +122,12 @@ func (pipeline *candidateArtifactPipeline) materialize(candidate *Candidate) (ca
 	metrics := ArtifactKey{
 		Kind:    ArtifactMetrics,
 		Name:    "search.metrics",
-		Version: DeriveArtifactVersion("oak.search.metrics.v2", key, admission),
+		Version: DeriveArtifactVersion("oak.search.metrics.v3", key, admission),
 	}
 	cost := ArtifactKey{
 		Kind:    ArtifactCost,
 		Name:    "search.cost",
-		Version: DeriveArtifactVersion("oak.search.cost.v2:"+pipeline.costs.Name(), metrics),
+		Version: DeriveArtifactVersion("oak.search.cost.v3:"+pipeline.costs.Name(), metrics),
 	}
 	nodes := candidateArtifactKeys{input: input, candidate: key, admission: admission, metrics: metrics, cost: cost}
 

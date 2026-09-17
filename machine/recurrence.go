@@ -48,6 +48,10 @@ type LoopShape struct {
 	// or a smaller-stride remainder after a loop over the same index.
 	// Pattern-derived remainder hints are not verification authority.
 	MaxTrips int
+	// ExactTrips is the positive number of body iterations per entered loop
+	// when the conservative CFG/induction recognizer establishes it; zero
+	// means unknown. This cost-only hint is not verification authority.
+	ExactTrips int
 }
 
 // Shapes analyzes the loops of a lifted function.
@@ -199,6 +203,7 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 				}
 			}
 		}
+		sh.ExactTrips = f.exactLoopTrips(l, dom, siteWeb)
 		shapes = append(shapes, sh)
 	}
 	// Remainder loops: a smaller-stride loop right after a strided loop over

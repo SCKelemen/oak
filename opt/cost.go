@@ -57,6 +57,10 @@ type LoopMetrics struct {
 	Stalls       int
 	Stride       int
 	MaxTrips     int
+	// ExactTrips is a positive fixed count per entered loop, independently
+	// recognized from its recurrence and complete control flow. Zero means
+	// unknown. It is a cost hint, never checker or verifier authority.
+	ExactTrips int
 	// Depth is how many loops enclose this one; Outer the 1-based index
 	// in LoopBodies of the innermost of them, 0 at the top level. An
 	// inner loop's body runs its own trips for every trip of its outer
@@ -89,7 +93,9 @@ func (m Metrics) String() string {
 		if loop.Stride > 1 {
 			shape += fmt.Sprintf(", stride %d", loop.Stride)
 		}
-		if loop.MaxTrips > 0 {
+		if loop.ExactTrips > 0 {
+			shape += fmt.Sprintf(", exactly %d trips", loop.ExactTrips)
+		} else if loop.MaxTrips > 0 {
 			shape += fmt.Sprintf(", <= %d trips", loop.MaxTrips)
 		}
 		if loop.Depth > 0 {
@@ -241,7 +247,11 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 		if loop.Stride > 1 {
 			trips /= float64(loop.Stride)
 		}
-		if loop.MaxTrips > 0 && float64(loop.MaxTrips) < trips {
+		if loop.ExactTrips > 0 {
+			// A fixed count already counts trips, not elements. Neither the
+			// unknown-loop budget nor a half-bound estimate applies to it.
+			trips = float64(loop.ExactTrips)
+		} else if loop.MaxTrips > 0 && float64(loop.MaxTrips) < trips {
 			// A bounded loop runs anywhere from none to its bound: its
 			// expected trips, so a remainder loop after an unrolled main
 			// loop is charged its share and not its worst case.
