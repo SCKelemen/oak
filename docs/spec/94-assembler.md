@@ -3348,6 +3348,29 @@ form, so the two reads are one unknown and the unit is proven where the
 bit-level decision over the 49152-element memory exceeded its budget
 (`compiler/e2e_native_select_index_linear_test.go`).
 
+**Two span memories after the loops are decided by cases before any
+diagram (`asm/span_cases.go`).** The OS pilot's `map_page` writes one leaf
+descriptor whose bits depend on a two-bit permission: the Oak side writes
+one value with the permission's two conditionals inside it, the machine
+branches four ways on the permission and writes a constant per branch,
+and the two spell the leaf's index under different masks (a 32-bit
+register read wide then narrowed to `u16` against a `u16` narrowing then
+widened). The exit premise settles most of both memories through its
+facts (`pruneUnderFacts`), but its diagram is past every budget, so what
+remains is settled without one: a case split over the small comparisons
+on parameters alone that the facts leave open (`perm eq 1`, `perm eq 2`;
+never an equality over a memory read, at most three, so eight cases), and
+in each case both memories pruned under the case's facts and respelled
+(`canonicalLinear`) — every linear subterm written out in its normal form
+in one atom order, a memory read's index included; nested constant masks
+across widths folded to one mask over the innermost operand, since each
+node's value is masked to its own width; an equality of two terms with
+one form its constant — until the two are one term. Every respelling is
+an equality on all assignments, so the decision is a decision over the
+originals; a case that does not close leaves the memories to the
+bit-level implication as before. `map_page` in the pilot's `addr_space`
+is proven by it (`compiler/e2e_native_map_page_cases_test.go`).
+
 **Thirty-first increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
 `asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
