@@ -1198,6 +1198,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.fresh[name] = fresh
 	}
 	for _, reg := range regs {
+		// Entry-path facts constrain the entry value, not the fresh value
+		// of an arbitrary iteration. The loop's own tests re-establish
+		// any bound its body may use.
+		delete(freshState.bounds, reg)
 		name := fmt.Sprintf("r%d", reg)
 		width := 64
 		if allW[reg] {
@@ -1240,8 +1244,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// the slots' symbols exist, and every slot it changes or creates joins
 	// the loop-carried slots at its width (a body with inner loops or
 	// calls is not probed: the probe would summarize them a second time).
-	if x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape) {
+	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape)
+	if probeFrameStores {
 		probe := freshState.clone()
+		x.noteLoopBodyBounds(shape, probe)
 		if ends, _, ok := x.runBody(shape, probe, nil); ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
@@ -1376,6 +1382,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	bodyStart := freshState.clone()
 	for reg, value := range headerValues {
 		bodyStart.regs[reg] = value
+	}
+	if probeFrameStores {
+		x.noteLoopBodyBounds(shape, bodyStart)
 	}
 	ends, reason, ok := x.runBody(shape, bodyStart, &ev.bodyTrap)
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]

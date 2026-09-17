@@ -2003,6 +2003,22 @@ and native proof/negative tests passed again, as did all four hash law modules.
 Fresh native emission still proves every compression result chunk; its object,
 C companion and fresh pure-C output match the measured candidate byte-for-byte.
 
+**Loop-bound verifier coverage (2026-09-17).** After the absorption change,
+`blake3_update` still selected its plain body because an indexed store in
+the guard-elided form forgot the neighboring `.stack_len` field. Replaying
+the loop's continuing bounds for its store inventory and iteration recovers
+the optimized selection: **548 to 528 instructions, four guards to one**
+against `2689708f`, which already includes the conditional-bound fix.
+Reduced loop cases now prove; the update itself remains witness-checked on
+307 inputs, with `next.cv[0]` coupling through nested call events unresolved.
+
+This is not a demonstrated runtime gain. With only the update native and
+compression fixed in C, three paired runs give candidate/baseline ratios
+**1.261, 0.987 and 0.898** on the loaded M4 Max. All digest bytes match at
+fourteen boundary lengths and after every sample; assembler, native reference
+and RV64 checks pass. The conflicting timings need a quiet-host follow-up.
+[All samples, selections, hashes and validation](results/blake3-loop-bounds-2026-09-17.json).
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

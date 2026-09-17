@@ -9184,6 +9184,29 @@ on the taken side, `b.hi`/`b.ls` below K+1, `bgeu`/`bltu` alike on the
 RV64 lane (`noteBranchBound`) — in straight-line bodies and in loop
 bodies, so the elided form is proven and taken.
 
+The same fact is available inside a loop whose continuing condition
+bounds the index (`while i < n && i < 16`). The indexed-store inventory
+replays a linear, comparison-only header on its private probe state and
+on the iteration state; recognized rotated loops use their matching
+entry/tail test. Each changed slot joins the loop-carried frame before
+the usual coupling proof. Bounds on replaced entry registers are cleared
+when those registers become fresh iteration symbols. Continuing-side
+facts do not escape to the state after the loop. Headers with setup,
+loads, calls or internal forks keep the existing conservative handling,
+as do bodies with calls or inner loops that cannot use the store probe
+(`noteLoopBodyBounds`, `TestVerifyLoopConditionFrameStore`).
+
+A conditional's register fact applies only while the register still
+holds the compared value. Conditional, floating or unknown flags do not
+establish it; a W comparison cannot constrain an X value with unknown
+upper bits. Inclusive bounds never wrap at the operand-width boundary,
+and a later weaker comparison retains the tighter fact. RV64 keeps the
+bound on the original index term when address scaling rewrites its
+register (`TestBranchIndexBound*`, `TestRV64BranchIndexBound`).
+Calls clear bounds on caller-saved registers, including scalar and
+aggregate result registers whose values the summary replaces directly;
+callee-saved facts still hold (`TestCallClearsRegisterBounds`).
+
 **A field's address as an aggregate argument (2026-09-16).** A callee
 taking an owned array or record by reference may receive the address of
 a field inside the caller's own record parameter (`state.cv`, an `[8]u32`,
