@@ -7218,7 +7218,13 @@ beside `Callees`, which holds only functions with bodies).
 through the host; the flush's own unit still stops at the call summary's
 binding of a frame array view with a symbolic length
 (`frameArrayArgument`: "its length is not a constant"), the next gap on
-the write family's path.
+the write family's path. Alongside, the run that merges the paths at
+their joins has a path budget of its own, sixteen times the flat run's
+(`joinedPathBudget`): a fork whose sides meet again costs one merged
+state, and a parser's few hundred sequential conditionals (`cnf_ite`,
+`peek_precedence`, the `step_*_p` family) were refused on the merged run
+too; `peek_precedence` proves in 33 ms
+(`TestE2ENativeManySequentialConditionalsProven`, three hundred of them).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
