@@ -55,6 +55,8 @@ func unrollConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Ex
 		return body, false
 	}
 	changed := false
+	expansions := 0
+	generated := map[string]bool{}
 	var rewrite func(stmts []ast.Statement) []ast.Statement
 	rewrite = func(stmts []ast.Statement) []ast.Statement {
 		var out []ast.Statement
@@ -63,10 +65,34 @@ func unrollConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Ex
 			switch s := stmt.(type) {
 			case *ast.WhileStatement:
 				if c, ok := recognizeConstantLoop(s, prev, body); ok {
-					// Inner loops unroll inside the copies.
+					// Inner expansion creates locals absent from c.declared.
+					// Keep the outer loop in that case rather than copying
+					// generated names the outer match cannot freshen.
+					beforeInner := expansions
 					s.Body.Statements = rewrite(s.Body.Statements)
-					out = append(out, unrolledConstantLoop(c)...)
-					changed = true
+					// Original-body freshness alone cannot see names made
+					// by an earlier, separately scoped loop in this rewrite.
+					fresh := true
+					names := map[string]bool{}
+					for _, name := range c.declared {
+						for k := int64(0); k < c.trips; k++ {
+							trip := tripName(name, k)
+							if generated[trip] || names[trip] {
+								fresh = false
+							}
+							names[trip] = true
+						}
+					}
+					if fresh && expansions == beforeInner {
+						expansions++
+						for name := range names {
+							generated[name] = true
+						}
+						out = append(out, unrolledConstantLoop(c)...)
+						changed = true
+					} else {
+						out = append(out, stmt)
+					}
 					prev = stmt
 					continue
 				}

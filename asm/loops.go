@@ -1327,6 +1327,12 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// same signature (loopEvent).
 	storedSpans := map[string]bool{}
 	writtenSpans := writableSpanMemories(x.fn, x.spans, x.recordSpans)
+	for name := range x.localSpans {
+		// A large owned array declared as a span: the loop's memory as a
+		// writable parameter's is (frameSpanAccess).
+		writtenSpans = append(writtenSpans, name)
+	}
+	sort.Strings(writtenSpans)
 	for _, span := range writtenSpans {
 		storedSpans[span] = true
 	}
@@ -4746,6 +4752,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
+		if lowering.localSpans[name] {
+			continue // the body's own large array, or an inlined callee's: no caller observes it
+		}
 		entry := selectTerm(name, at, elemWidth)
 		asmLog := substituteWriteLog(exec.writes[name], sigma)
 		var oakMemory, asmMemory *term

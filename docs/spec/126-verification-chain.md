@@ -725,7 +725,14 @@ the pre-`Mem` Sail request proves successful architectural memory execution,
 PTE provenance/alignment beyond the source base fact, virtual-to-physical
 translation, endianness, faults, permissions, tags, exclusives, MMIO, CAT `ca`/`inv-scope`
 membership, TLBI effects, DSB completion, publication, or ISB synchronization.
-There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
+The Darwin/ARM64 Mach-O oracle now requires the same complete BBM words, guard,
+and trailing trap in a single-leaf instruction section, with its sole external
+symbol at the start and no text relocations. It also pins the six barrier
+leaves, TLBI leaf, context-sync slice, and both cold-entry examples. Metadata,
+relocation, and instruction mutations must fail. The strict verified profile
+still refuses the trusted BBM object on both ELF and Mach-O. This executable
+source-to-object regression witness neither proves the final linked bytes nor
+executes privileged code; a privileged Apple EL2 execution gate remains open.
 
 The fixed Oak context-sync example has a bootstrap C system-instruction order
 gate and an independent native zero-overhead gate: the bootstrap C lane retains

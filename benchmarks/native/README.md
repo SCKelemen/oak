@@ -159,6 +159,26 @@ ns/cycle, median paired ratio 0.998. No decoder-cycle speedup is claimed.
 
 [Raw observations and provenance](results/stage2-record-base-cse-m4-max-2026-09-17.json).
 
+The follow-on matcher also preserves nearby independent instructions which
+the scheduler places between `movz`, `movk`, and `umaddl`. Against the same
+byte-identical disabled baseline, the current proven bodies are:
+
+| Selected body | Before | After | Bases shared |
+| --- | ---: | ---: | ---: |
+| `alloc_table` | 173 | 173 | 0 |
+| `free_table` | 32 | 29 | 1 |
+| `map_page` | 198 | 192 | 2 |
+| `reset` | 160 | 160 | 0 |
+| `translate` | 114 | 111 | 1 |
+| `unmap_page` | 287 | 263 | 8 |
+| `walk_leaf` | 145 | 142 | 1 |
+
+That is 39 instructions removed (156 bytes of Mach-O `__text`; the object is
+160 bytes smaller after alignment), with all five OS differential tests still
+passing. No new runtime result is recorded: the attempted run saw load
+averages above 100 and was discarded. Static provenance is recorded in
+[the sparse-schedule result](results/stage2-record-base-sparse-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
@@ -205,11 +225,29 @@ invocation, 2^20 elements, best of seven rounds of two hundred calls:
 | `sum_ab` | 0.150 | 0.152 | 0.425 |
 | `xor_mask` | 0.022 ns/byte | 0.023 | 0.412 |
 
-Four to five times over the scalar loops, parity with the C backend on
-the two-span zip and the byte mask, and fifteen to twenty-four percent
-behind it on the three single-span maps. Runs on this machine move by
-that much between invocations, so the three-row shape matters more than
-any one number: read it as parity on two and a real gap on three.
+Four to five times over the scalar loops. That much is solid; the
+native-against-C column is not, and the row above overstated it.
+
+**The noise floor, measured.** Ten runs of one binary on one kernel,
+`add_k`, at 2^12 elements on this machine at load 59:
+
+```
+0.065 0.077 0.063 0.131 0.120 0.083 0.065 0.067 0.072 0.079
+0.067 0.068 0.063 0.070 0.063 0.066 0.065 0.067 0.073 0.081
+```
+
+The same code, twice as slow at the top of the range as at the bottom,
+and a 32 percent spread even discarding the two outliers. A difference
+of fifteen to twenty-four percent from a single invocation is therefore
+not a result. Take the table as parity within the noise on all five, and
+the four-to-five-times over the scalar loops — an order of magnitude
+clear of the floor — as the only claim it supports.
+
+The lesson generalizes to everything timed here at these sizes: alternate
+the binaries inside one invocation, repeat, and treat anything under a
+third as unresolved until the machine is quiet. The rows above that
+report a factor of two or more are safe; the ones that report tens of
+percent from a single run are not.
 
 Where the gap is, in `add_k`:
 
@@ -226,10 +264,19 @@ clang                                 native
                                         ...
 ```
 
+The disassembly below still stands as a description of what the two
+backends emit, and the instruction difference is real whatever the clock
+says here. What is not established is the size of its cost.
+
 Two things the native form does not do. It forms an address per access —
 an index add and an address add for every load and every store — where
 one base and an immediate offset would serve, which is what the
-`vector-blocks` transform exists for and it reports no site here. And it
+`vector-blocks` transform exists for and it does fire on these loops — the fused
+`[base, #0x10]` form is in the emitted code — but only for some of the
+pairs: the rest are refused because the lowering reuses one general
+register as both a block address and an index (`x10` holding the address
+while `mov w10, w6` writes the same register's W view), and the
+transform will not fuse across a write to the address it keeps. And it
 has no paired vector load: clang moves 64 bytes in two `ldp q` with the
 pointer advanced by the post-index, where the native form issues four
 loads and four address computations. `ldp` is modeled for X and W
@@ -989,6 +1036,51 @@ matcher, caller allocation, traps, shared-memory ordering, or Arm ASL refinement
 Next: improve the register-pressure tradeoff and obtain controlled timings
 before considering default promotion. The downstream pin is unchanged.
 
+**Result-home register budget follow-up (2026-09-17).** The experimental
+candidate now caps result homes at **two per loop**, independently of private
+frame homes (the combined cap stays eight). Integrated materialization v21
+records the new recipe alongside upstream extent folding, sparse record-base
+sharing, and late-machine flags. It still
+requires the same alias, trap and verifier checks and is
+still disabled unless `OAK_NATIVE_LOOP_RESULT_HOMES=1`.
+
+Testing budgets 1, 2, 3, 4, 5, 6 and 8 showed that two had the lowest selected
+static cost for BLAKE3 (1421). Six homes removed 24 result-memory operations
+per round but displaced four message-word promotions. Two homes retain all
+11 promotions: compared with six, whole-body SP-memory instructions fall
+46 → 30, instructions 308 → 307, and estimated main-loop stalls 18 → 5.
+The main loop is 212 instructions versus the default's 218; the 144-byte frame
+is unchanged. The budget-three search actually selects no result homes, so
+its selected-body proof is not evidence for a three-home implementation.
+
+The timing sessions remain inconclusive: candidate/default median ratios
+range from 0.76 to 1.12, including a reversed-load-order control. Against the
+six-home body the ratio was 0.96. Host load was high and changing, affinity
+uncontrolled, and some early sessions may overlap brief agent builds; even
+the final session without our own builds has uncontrolled external load.
+The [complete budget sweep, raw timings and hashes](results/blake3-result-home-budget-2026-09-17.json)
+are diagnostic evidence, not a reliable speedup or C/Rust/Zig parity claim.
+No default promotion follows from the improved static cost.
+
+The existing conditional Lean laws quantify over arbitrary selected sets,
+so they are reused without broadening their premises. Regression fixtures now
+mix writes to cached and uncached result cells, verify all returned chunks,
+refute a missing flush, and compare all 16 runtime cells against an independent
+C-only caller computation. Unit tests pin deterministic subset selection,
+uncached-memory fallback, independent frame-home capacity and per-loop budget
+reset. The isolated two-home BLAKE body retains all eight chunks Proven and
+the dedicated fixtures require the bounded homes. Shared-memory ordering,
+Arm ASL coverage and the downstream pin are unchanged.
+
+Integration onto `9530ae6f` supersedes that isolated BLAKE comparison: upstream
+scalar replacement, inlining and frame-store cleanup select a 283-instruction
+body with ten SP-memory instructions, a 160-byte frame, and all eight chunks
+Proven. Offering result homes changes neither instructions nor object bytes;
+no result homes fire. The BLAKE regression permits this better strategy and
+pins the 283/10/160 bounds, while the dedicated fixture uses a computed
+post-flush access to keep the actual two-home path covered. This integrated
+body differs from all timed variants above: no speedup is transferred to it.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —
@@ -1081,6 +1173,62 @@ within a tenth on the loop kernels and ahead on `page_probe` and
 `dispatch`; the hashes' gap to Rust is algorithmic (BENCHMARKS.md). The
 absolute times are about 0.6 of the loaded runs' — the load, not the
 compiler, was the other factor there.
+
+### Selective constant unrolling: not retained (2026-09-17)
+
+At `d735d322`, a 512-node copy-cost heuristic kept BLAKE3's large seven-round
+loop rolled and unrolled only the small final mixing loop. This exposed
+scalar replacement of the state. The prototype was **not retained**:
+fewer memory operations did not produce a repeatable runtime improvement.
+Raw samples and artifact identities are in
+[the experiment record](results/blake3-selective-unroll-rejected-2026-09-17.json).
+
+The ordinary selection was 287 encoded instructions, ten SP-relative
+accesses and a 160-byte frame. Enabling the existing result-home experiment
+at this revision produced the identical object. Partial unrolling plus
+reallocation instead produced 336 assembler instructions (340 encoded),
+a 288-byte frame, and one main loop with 31 loads and 19 stores, against
+the ordinary main loop's 32 loads and 32 stores; the final loop disappeared.
+
+The actual partial-unroll candidate was independently seam-checked and
+**proven for all eight result chunks**, with the normal verification
+budget and no cache hit, before encoding it for measurement. This matters
+because ordinary search did not select it: the counter remained in
+`[sp, #208]`, so the cost estimator missed its seven-trip bound and used
+the default 256 loop weight. The prototype's ordinary search result was
+a different, 299-instruction fallback; that was **not** the timed candidate.
+
+The same-process harness loaded separate baseline/candidate/C libraries,
+checked every digest byte at fourteen lengths including 1 MiB, then ran
+the variants in rotating order. Runs were sequential, without agent
+builds or tests during timing; the second reversed library order. Only
+compression was Oak-native, with the same C companion for both variants.
+
+| Run | Rounds × samples | Baseline ms/MiB | Candidate ms/MiB | Candidate / baseline | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 30 × 15 | 6.040 | 6.253 | 1.035 | 4.910 |
+| B, reversed | 100 × 21 | 6.182 | 7.035 | 1.138 | 4.782 |
+| C | 100 × 21 | 6.580 | 7.323 | 1.113 | 5.732 |
+
+These are medians under heavy shared-host load, not clean regression
+estimates or a replacement for the quiet-machine suite above. They give
+no basis to enable the change. The existing unroll profitability policy
+is restored; only generated-name collision guards and their proof/execution
+regressions remain. The stack-counter cost gap is a follow-up, not a
+performance claim or an implemented change.
+Rebuilding with those guards on the measurement base reproduced the
+baseline object byte-for-byte, still proven for all eight result chunks.
+
+For reproduction, the inert
+[prototype patch](experiments/selective-constant-unroll.patch) targets
+`d735d322` and includes the budget tests and the explicit, proof-gated
+candidate probe. It is **not** a patch against the final name-guard revision.
+The probe uses the historical scratch path `/tmp/oak-hash-next.yX4zpM`;
+its encoded object links against the baseline C companion with
+`cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main`.
+Use `blake3_same_process.c` with absolute baseline/candidate/control library
+paths and the rounds/sample counts above. No experimental flag or weaker
+verdict was made a default.
 
 ## The refuted kernel
 

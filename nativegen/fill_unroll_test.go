@@ -83,6 +83,9 @@ fill: (pages: [*]u64): () {
 	if _, changed := unrollFills(short, short.Body, shortTC, map[string]asm.Constant{"entries": {Type: "u32", Value: 3}}); changed {
 		t.Fatal("a fill shorter than one block was rewritten")
 	}
+	if CanUnrollFills(short, shortTC, map[string]asm.Constant{"entries": {Type: "u32", Value: 3}}) {
+		t.Fatal("a fill shorter than one block entered candidate search")
+	}
 	dynamic, _, _, dynamicTC := checkedFillFunction(t, `
 fill: (pages: [*]u64, bound: u32): () {
   j: u32 = u32(0)
@@ -95,6 +98,33 @@ fill: (pages: [*]u64, bound: u32): () {
 	got, changed := unrollFills(dynamic, dynamic.Body, dynamicTC, nil)
 	if !changed || !strings.Contains(got.String(), "bound >= u32(4)") {
 		t.Fatalf("dynamic bound lost its underflow guard:\n%s", got.String())
+	}
+	if !CanUnrollFills(dynamic, dynamicTC, nil) {
+		t.Fatal("a dynamic checked fill was gated out of candidate search")
+	}
+}
+
+func TestUnrollFillsDoesNotMutateNestedCheckedBody(t *testing.T) {
+	fn, _, _, tc := checkedFillFunction(t, `
+fill: (pages: [*]u64, bound: u32): () {
+  outer: u32 = u32(0)
+  while outer < u32(1) {
+    j: u32 = u32(0)
+    while j < bound {
+      pages[j] = u64(0)
+      j = j + u32(1)
+    }
+    outer = outer + u32(1)
+  }
+}
+`, "fill")
+	original := fn.Body.String()
+	got, changed := unrollFills(fn, fn.Body, tc, nil)
+	if !changed || got.String() == original {
+		t.Fatalf("nested fill was not rewritten:\n%s", got.String())
+	}
+	if fn.Body.String() != original {
+		t.Fatalf("fill rewrite mutated the checked source body:\nbefore: %s\nafter:  %s", original, fn.Body.String())
 	}
 }
 

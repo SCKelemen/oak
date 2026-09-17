@@ -1124,8 +1124,15 @@ returns. Descriptor/PA/default-RAM provenance, translation correctness,
 successful ASL memory or external RAM effects, byte placement/atomicity,
 unique writes, tags/device
 behavior, CAT membership, completion, invalidation, publication, and context
-synchronization remain open. No Darwin/Mach-O object oracle or privileged
-Apple EL2 execution gate exists yet.
+synchronization remain open. A Darwin/ARM64 Mach-O regression oracle now checks
+the complete instruction sections of the six barrier leaves, TLBI leaf,
+context-sync and BBM slices, and both cold-entry examples. Each is emitted as a
+single-leaf object with no text relocations; no function extent is guessed from
+Mach-O symbols or `RET`. Mutants cover metadata, relocations, and instruction
+order/content, including the BBM guard and trailing trap. The strict verified
+profile still rejects the BBM object on both ELF and Mach-O. This is static
+source-to-object evidence, not a linked-image proof or privileged Apple EL2
+execution gate (`compiler/e2e_native_macho_ordering_test.go`).
 
 The adjacent **offset-form STP64 slice is formal evidence only**. The
 XML-generated row `STP_64_ldstpair_off` has base `0xa9000000`, mask
@@ -5479,6 +5486,18 @@ lowering's homes run out and the copies price above the loop's trips
 (a hash compression's sixteen state words with seven rounds), the loop
 stays.
 
+Constant-unroll generated locals are reserved across the entire rewrite,
+not just checked against names in the original body. A later loop whose
+trip-local names collide stays rolled. If an inner loop expands, its
+outer loop also stays rolled: the outer match's original declaration list
+cannot freshen the inner expansion's newly generated locals. These are
+conservative name-safety refusals, not a change to the unroll law or the
+verification gate. The native/C regression cases cover nested loops and
+successive loops reusing a scoped local name.
+Materialization recipe v21 includes these refusals and retains sparse
+record-base sharing, v19's result-home budget, v18's extent folding, and the
+explicit lane flags.
+
 **Dead frame stores and copies through redefined sources (2026-09-17,
 `machine/slots.go`, `machine/simplify.go`).** A frame slot the promotion
 qualifies — plain loads and stores of one width, its address never taken,
@@ -5888,8 +5907,11 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v15 keys
-it independently from private-frame `loop-array-homes`. It remains a
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v21 keys
+it independently from private-frame `loop-array-homes` and records the smaller
+two-result-home budget (the combined frame/result cap remains eight). The
+budget resets per loop and leaves uncached cells on the memory path; it is a
+profitability restriction, not new memory authority. It remains a
 non-neutral, verifier-gated mechanical candidate; generic admission can still
 be Witnessed, so enabling it is not a proof-only compilation policy.
 
@@ -5930,6 +5952,19 @@ C and is Witnessed, not Proven. Opt-in BLAKE3 remains Proven for all eight
 result chunks. Despite a smaller loop, higher stack traffic and inconclusive,
 regressed native timings keep this candidate off by default; the measurements
 are in `benchmarks/native/results/blake3-loop-result-homes-2026-09-17.json`.
+At isolated base `0ee3b6b5`, the subsequent two-home budget preserves all eleven
+BLAKE frame-word promotions and reduces experimental SP-memory instructions
+from 46 to 30, while all eight result chunks still prove. Selected and unselected result
+writes are tested together. The same arbitrary-selected-set Lean law applies;
+no caller/ASL/ordering premises change. Timing remains inconclusive; the
+follow-up sweep is recorded in
+`benchmarks/native/results/blake3-result-home-budget-2026-09-17.json`.
+After integration onto `9530ae6f`, upstream scalar replacement and frame-store
+cleanup win instead: both default and experimental search select the same
+283-instruction, ten-SP-memory-instruction, 160-byte-frame body, Proven for all
+eight chunks, with no result homes. The smaller budget does not replace that
+body. Dedicated computed-post-flush fixtures still require actual result
+homes. Historical timings are not transferred to the integrated object.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array
@@ -6016,31 +6051,40 @@ with six pairs faster; see
 **Shared record-span bases (2026-09-17, AArch64 lane).** The
 `share-record-bases` machine candidate (`nativegen/record_base_cse.go`)
 recognizes the final scheduled spelling of a wide record-span element base:
-`movz wT, #lo; movk wT, #hi, lsl #16; umaddl xD, wI, wT, xB`. When one such
+`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`. The
+elided positions may contain nearby independent scheduled instructions; a
+label, branch, call, or any intervening read/write of `wT` refuses the site.
+When one such
 definition dominates later identical definitions, and neither the span base
 nor its index changes on any path between them, the first result is retargeted
 to a declared caller-saved scratch and later local reads use that carried
 value. Calls delimit the region. The scratch must be absent from the whole
 function suffix; a later stride temporary must be dead after the deleted
 multiply; and every replaced destination must be local to its straight-line
-region. A cyclic machine CFG is outside this late pass; loop optimization keeps
-its separate proof and profitability path. The pass deliberately leaves
-interleaved materializations alone.
+region. The stride cannot alias the index or base through its W/X view. A
+cyclic machine CFG is outside this late pass; loop optimization keeps its
+separate proof and profitability path.
 
 This changes no load, store, guard, branch, or arithmetic result. It composes
 only with the scheduler and runs after it, so an unscheduled parent cannot win
 by acquiring the sharing flag and scheduling cannot lengthen or split the new
 live range. It is a non-neutral **verdict-gated** candidate: only the unchanged
 whole-body verifier can authorize it. Unit refusals cover non-dominance,
-changed base/index, calls, different stride words, live deleted temporaries,
-cross-boundary destinations, unavailable scratches, and undeclared
-scratches. The compiler differential exercises both conditional arms and the
-invalid-domain trap over a record whose stride exceeds sixteen bits.
+changed base/index (including inside a sparse site), calls and control
+boundaries, different stride words, intervening stride uses/definitions,
+over-wide sparse sites, W/X aliasing, live deleted temporaries, cross-boundary
+destinations, unavailable scratches, and undeclared scratches. The compiler
+differential exercises both conditional arms and the invalid-domain trap over
+a record whose stride exceeds sixteen bits.
 
-Native materialization recipe v17 adds `share-record-bases` to v16's explicit
-`carry-loop-index` and `elide-redundant-guards` keying. This closes the
-artifact-cache contract for the late candidate; the registry-wide test
-requires every transform switch to change the recipe key.
+Native materialization recipe v21 distinguishes the sparse scheduled recipe
+from v17's adjacent-only recipe and composes it with v20's constant-unroll
+name guards, v19's two-result-home budget, and v18's exact local-view extent
+folding. The key also carries
+`share-record-bases` alongside v16's explicit `carry-loop-index` and
+`elide-redundant-guards` keying. This closes the artifact-cache contract for
+the late candidate; the registry-wide test requires every transform switch
+to change the recipe key.
 
 On the actual stage-2 pilot, the three changed selected bodies remain `proven`:
 one base is shared in `map_page` (198→195 instructions), one in `translate`
@@ -6052,6 +6096,16 @@ ratio is 0.940 (6.0% lower), with separate medians 4.36→4.07 ns/op.
 Decoder-cycle timings are neutral/mixed (4 of 7 faster; median paired ratio
 0.998), so no decoder speedup is claimed. Raw timings and provenance are in
 `benchmarks/native/results/stage2-record-base-cse-m4-max-2026-09-17.json`.
+
+The subsequent sparse-schedule extension, against the same byte-identical
+disabled baseline, shares one base in `free_table` (32→29 instructions), one
+in `walk_leaf` (145→142), two in `map_page` (198→192), one in `translate`
+(114→111), and eight in `unmap_page` (287→263). `alloc_table` and `reset`
+remain 173 and 160 instructions. This removes 39 instructions (156 bytes of
+Mach-O `__text`; the object is 160 bytes smaller after alignment); every
+selected body remains `proven`, and all five OS differential tests pass. No
+follow-on runtime claim is attached because the
+available host was heavily loaded during the attempted measurement.
 
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
@@ -7530,6 +7584,30 @@ threshold keeps small arrays on the leaf model that proves them today.
 `fill_chunk`'s nested loops sharing one counter are a search problem
 apart from this.
 
+**Landed (2026-09-17).** The design above is in: `largeArrayElements`
+(64) decides on both sides; the machine routes a frame access inside a
+named object to the span (`frameSpanAccess`: the element index from the
+byte offset, plus the register index when scaled by the element size and
+bounded by the checker; a pair load or store is two elements; the fill's
+wider zero stores split; any other width is refused), lists the span
+among a loop's marked memories, and binds a callee's span argument that
+is a view or subslice of the array as an alias of the span with the
+argument's length (`summarizeCall`); the lowering declares the local as a
+span with no aggregate local (`declareLocal`, `tableLens` its length,
+`localSpanWidths` outliving an inlined callee's scope) and binds
+`view(&chunk)` to it. A zero-filled array's log starts with the marker
+`zero` on both sides, which `memoryAt` reads as "zero from here", so every
+comparison, restore and witness evaluation sees the fill without knowing
+the span. A local span's final memory is left undecided in `decideSpans`
+and after the loops (no caller observes it; its reads went through the
+one model). `TestE2ENativeLargeArrayLoopsProven` proves a 256-byte
+array filled in one loop and summed in another;
+`TestE2ENativeExternFlushLargeChunkProven` proves a caller of the
+prover's flush shape — a 4096-byte chunk copied in a loop, viewed,
+subsliced and handed through `host_write_all` to the extern — with both
+loops coupled through the chunk, while the flush itself, a 4192-byte
+frame, stays with the C backend by the native backend's own limit.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
@@ -7878,6 +7956,26 @@ verifier judging each candidate as on AArch64
 (`TestE2ENativeRV64StrengthReduction`: the four reduced bodies proven,
 the variable divisor keeping its test). Doing this by hand a second time
 is the case for the shared item-level layer below.
+
+**Exact local-view extent quotients (2026-09-17).** Under the same
+`Strength` candidate, both emitters share a recognizer for u32
+`len(named_view) / constant` and `% constant`. The local view's recorded
+extent must equal its owned-array/table extent and fit u32. The divisor
+must be a positive u32 literal (optionally its literal constructor) or an
+unshadowed immutable u32 constant. This folds, for example, the grapheme
+table's `4893 / 3` to `1631` before machine emission. The view declaration
+still evaluates its address; no call or conversion is silently skipped.
+Dynamic spans, subslices, nested conversions and zero divisors are not
+folded. Native span rebindings remain unsupported.
+
+RV64 now separates source rewriting from body emission, as AArch64 does,
+so a Layer-A rewrite no longer disables emitter strength reductions. The
+source theorem and final seam/semantic checks are unchanged; materialization
+identity advances to v18. Tests cover both lanes' proven quotient/remainder
+bodies, composition with source rewriting, C/native execution and retained
+traps. The actual stdlib grapheme candidate must prove and contain no `udiv`.
+Runtime evidence belongs to `benchmarks/native/table_views`, not the static
+instruction count; there is no floating-point relaxation in this transform.
 
 **Where the optimizer's layers should live (decision, 2026-09-15).** Three
 layers, split by where the proofs live rather than by the textbook line

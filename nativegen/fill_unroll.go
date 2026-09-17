@@ -40,6 +40,13 @@ type fillBlockIndex struct {
 	width  int64
 }
 
+type fillContext struct {
+	block     *ast.BlockExpression
+	types     map[string]ast.Expression
+	allowed   map[string]bool
+	constants map[string]asm.Constant
+}
+
 var fillBlockIndices = map[token.Token]fillBlockIndex{}
 
 func markFillBlockIndex(tok token.Token, info fillBlockIndex) {
@@ -58,12 +65,10 @@ func rewriteFillBlockIndex(tok token.Token) (fillBlockIndex, bool) {
 	return info, ok
 }
 
-// unrollFills returns a copy of body with every admitted scalar zero fill
-// blocked four ways. The checked source tree is never mutated.
-func unrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker, constants map[string]asm.Constant) (ast.Expression, bool) {
+func newFillContext(fn *ast.FunctionStatement, body ast.Expression, constants map[string]asm.Constant) (fillContext, bool) {
 	block, isBlock := body.(*ast.BlockExpression)
-	if !isBlock || block.Block == nil || fn == nil || tc == nil {
-		return body, false
+	if !isBlock || block.Block == nil || fn == nil {
+		return fillContext{}, false
 	}
 	types := declaredScalarTypes(block.Block.Statements)
 	allowed := make(map[string]bool, len(types)+len(fn.Parameters)+len(constants))
@@ -84,6 +89,71 @@ func unrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker
 	for name := range constants {
 		allowed[name] = true
 	}
+	return fillContext{block: block, types: types, allowed: allowed, constants: foldedConstants}, true
+}
+
+// CanUnrollFills reports whether the exact checked scalar-fill matcher can
+// fire in fn. Candidate search uses this only to avoid materializing known
+// no-op configurations; unrollFills, the seam checker, and the verifier still
+// decide what may be rewritten and shipped.
+func CanUnrollFills(fn *ast.FunctionStatement, tc *typechecker.TypeChecker, constants map[string]asm.Constant) bool {
+	if fn == nil || tc == nil {
+		return false
+	}
+	return canUnrollFills(fn, fn.Body, tc, constants)
+}
+
+func canUnrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker, constants map[string]asm.Constant) bool {
+	ctx, ok := newFillContext(fn, body, constants)
+	if !ok {
+		return false
+	}
+	var visit func([]ast.Statement) bool
+	visit = func(stmts []ast.Statement) bool {
+		for _, stmt := range stmts {
+			switch s := stmt.(type) {
+			case *ast.WhileStatement:
+				if fill, matched := recognizeFill(s, ctx.types, ctx.allowed, tc); matched {
+					if bound, known := constantFillBound(fill.bound, ctx.constants); !known || bound >= 4 {
+						return true
+					}
+				}
+				if s.Body != nil && visit(s.Body.Statements) {
+					return true
+				}
+			case *ast.ExpressionStatement:
+				if inner, ok := s.Expression.(*ast.BlockExpression); ok && inner.Block != nil && visit(inner.Block.Statements) {
+					return true
+				}
+				if match, ok := s.Expression.(*ast.MatchExpression); ok {
+					for _, arm := range match.Arms {
+						if inner, ok := arm.Body.(*ast.BlockExpression); ok && inner.Block != nil && visit(inner.Block.Statements) {
+							return true
+						}
+					}
+				}
+			case *ast.BlockStatement:
+				if visit(s.Statements) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(ctx.block.Block.Statements)
+}
+
+// unrollFills returns a copy of body with every admitted scalar zero fill
+// blocked four ways. The checked source tree is never mutated.
+func unrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker.TypeChecker, constants map[string]asm.Constant) (ast.Expression, bool) {
+	if fn == nil || tc == nil || !canUnrollFills(fn, body, tc, constants) {
+		return body, false
+	}
+	clone := cloneNode(body).(ast.Expression)
+	ctx, ok := newFillContext(fn, clone, constants)
+	if !ok {
+		return body, false
+	}
 	names := newFillNames(body)
 	changed := false
 	var rewrite func([]ast.Statement) []ast.Statement
@@ -92,11 +162,11 @@ func unrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker
 		for _, stmt := range stmts {
 			switch s := stmt.(type) {
 			case *ast.WhileStatement:
-				if fill, ok := recognizeFill(s, types, allowed, tc); ok {
-					if bound, known := constantFillBound(fill.bound, foldedConstants); known && bound < 4 {
+				if fill, ok := recognizeFill(s, ctx.types, ctx.allowed, tc); ok {
+					if bound, known := constantFillBound(fill.bound, ctx.constants); known && bound < 4 {
 						break
 					}
-					out = append(out, unrolledFill(fill, names, foldedConstants)...)
+					out = append(out, unrolledFill(fill, names, ctx.constants)...)
 					changed = true
 					continue
 				}
@@ -121,12 +191,12 @@ func unrollFills(fn *ast.FunctionStatement, body ast.Expression, tc *typechecker
 		}
 		return out
 	}
-	clone := cloneNode(body).(*ast.BlockExpression)
-	clone.Block.Statements = rewrite(clone.Block.Statements)
+	clonedBlock := clone.(*ast.BlockExpression)
+	clonedBlock.Block.Statements = rewrite(clonedBlock.Block.Statements)
 	if !changed {
 		return body, false
 	}
-	return clone, true
+	return clonedBlock, true
 }
 
 // constantFillBound reads only the compiler's checked u32 constants (or a

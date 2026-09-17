@@ -1604,6 +1604,11 @@ type Lane struct {
 	// UnrollFills rewrites a checked scalar u64 zero-fill loop into four
 	// ordered scalar stores per main trip and the original remainder.
 	UnrollFills bool
+	// UnrollFillsEligible is a cheap search-planning hint computed from the
+	// checked source body. It prevents the candidate search from lowering an
+	// unroll-fills configuration for functions where the exact matcher cannot
+	// fire. It is not proof authority and does not affect lowering by itself.
+	UnrollFillsEligible bool
 	// HoistInvariants runs the loop-invariant code motion pass
 	// (nativegen/licm.go) on the AArch64 lane; the compiler clears it and
 	// lowers again when the checker refuses the hoisted form.
@@ -2076,9 +2081,10 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 		out.Items = scheduled.Items
 		scheduledOf[out] = moved
 	}
-	// Record-base sharing recognizes final adjacent materializations. Running
-	// it after scheduling also prevents the scheduler from shortening or
-	// splitting the deliberately longer-lived carried value.
+	// Record-base sharing recognizes final local materializations, including
+	// nearby independent instructions interleaved by this scheduler. Running it
+	// afterward also prevents scheduling from shortening or splitting the
+	// deliberately longer-lived carried value.
 	if lane.ShareRecordBases && lane.Schedule {
 		sharedRecordBases[out] = shareRecordBase(out)
 	}
@@ -4386,16 +4392,22 @@ func (g *generator) popScope() {
 	}
 }
 
-// declareArray gives an owned array local its frame storage: whole 8-byte
-// slots, so every element access stays aligned and spills never overlap.
-func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+// allocNamedArray is allocArray for a declared local: the frame object it
+// records carries the local's name and element size, which the verifier's
+// memory model of a large array reads (asm.FrameObject).
+func (g *generator) allocNamedArray(name string, elem scalar, length int64) *arrayLocal {
 	before := len(g.frameObjects)
 	arr := g.allocArray(elem, length)
 	if n := len(g.frameObjects); n == before+1 {
-		// The verifier's memory model of a large array wants the local's
-		// name and element size beside the object's extent.
 		g.frameObjects[n-1].Name, g.frameObjects[n-1].Elem = name, int64(elem.bits/8)
 	}
+	return arr
+}
+
+// declareArray gives an owned array local its frame storage: whole 8-byte
+// slots, so every element access stays aligned and spills never overlap.
+func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+	arr := g.allocNamedArray(name, elem, length)
 	g.bindArray(name, arr)
 	return arr
 }
@@ -4410,8 +4422,19 @@ func (g *generator) allocArray(elem scalar, length int64) *arrayLocal {
 	return arr
 }
 
-// bindArray brings an array's storage into scope under a name.
+// bindArray brings an array's storage into scope under a name. The frame
+// object recorded for the storage takes the name and the element size
+// (a scalar-element array in the frame), which the verifier's memory
+// model of a large array reads (asm.FrameObject).
 func (g *generator) bindArray(name string, arr *arrayLocal) {
+	if arr != nil && !arr.inReg && arr.elemLayout == nil {
+		for i := range g.frameObjects {
+			if g.frameObjects[i].Offset == arr.offset && g.frameObjects[i].Name == "" {
+				g.frameObjects[i].Name, g.frameObjects[i].Elem = name, int64(arr.elem.bits/8)
+				break
+			}
+		}
+	}
 	delete(g.slots, name)
 	delete(g.types, name)
 	delete(g.regs, name)
@@ -6751,6 +6774,15 @@ var floatIntrinsicOps = map[string]string{
 }
 
 func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if k, ok := g.extentQuotient(e, typ); ok {
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		g.constant(r, k, typ)
+		g.reduced++
+		return r, nil
+	}
 	if !g.rvLane {
 		// The rv64 lane hooks the same recognizer in its own infix
 		// (rvFusedWordLoad); this emission is the AArch64 idiom.
