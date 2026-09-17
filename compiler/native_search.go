@@ -234,6 +234,7 @@ var setAside = map[string]string{
 	nativegen.TransformRecordBases:        "recomputes its record-span bases",
 	nativegen.TransformGlobalAddresses:    "recomputes its scalar-global addresses",
 	nativegen.TransformForwardGlobalLoads: "reloads its scalar globals after stores",
+	nativegen.TransformGlobalLoadMasks:    "keeps narrow scalar-global reload masks",
 	nativegen.TransformSchedule:           "keeps its instruction order",
 	nativegen.TransformFuse:               "keeps its instructions apart",
 	nativegen.TransformFuseExits:          "keeps its exit tests apart",

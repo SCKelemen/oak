@@ -9,6 +9,7 @@ import (
 
 const nativeGlobalAddressCSEProgram = `
 st: u32 = u32(0)
+byte_st: u8 = u8(0)
 touch: (value: u32, choose: Bool): u32 {
   st = value
   prior: u32 = st
@@ -19,16 +20,21 @@ touch: (value: u32, choose: Bool): u32 {
   }
   st
 }
+touch_byte: (value: u8): u8 {
+  byte_st = value
+  byte_st
+}
 main: (): i32 {
   assert(touch(u32(10), true) == u32(11))
   assert(touch(u32(20), false) == u32(22))
+  assert(touch_byte(u8(41)) == u8(41))
   42
 }
 `
 
 func TestE2ENativeGlobalAddressCSE(t *testing.T) {
 	requireArm64Host(t)
-	t.Setenv("OAK_NATIVE_ONLY", "touch")
+	t.Setenv("OAK_NATIVE_ONLY", "touch,touch_byte")
 	// Exercise the late emitted-assembly candidate rather than the separate
 	// direct-OptIR lowering, which forwards this small fixture's global values.
 	t.Setenv("OAK_OPT_SKIP", nativegen.TransformOptIR)
@@ -40,11 +46,13 @@ func TestE2ENativeGlobalAddressCSE(t *testing.T) {
 	if verdict := model.NativeVerdicts["touch"]; verdict.Kind != asm.VerdictProven {
 		t.Fatalf("touch: %s: %s", verdict.Kind, verdict.Message)
 	}
-	var selected *asm.Function
+	var selected, selectedByte *asm.Function
 	for _, fn := range model.AsmFunctions {
-		if fn.Name == "touch" {
+		switch fn.Name {
+		case "touch":
 			selected = fn
-			break
+		case "touch_byte":
+			selectedByte = fn
 		}
 	}
 	if selected == nil {
@@ -55,6 +63,15 @@ func TestE2ENativeGlobalAddressCSE(t *testing.T) {
 	}
 	if nativegen.ForwardedGlobalLoads(selected) == 0 {
 		t.Fatalf("the proven scalar-global reload must be forwarded:\n%s", nativegen.Describe(selected))
+	}
+	if selectedByte == nil {
+		t.Fatal("missing native touch_byte")
+	}
+	if verdict := model.NativeVerdicts["touch_byte"]; verdict.Kind != asm.VerdictProven {
+		t.Fatalf("touch_byte: %s: %s", verdict.Kind, verdict.Message)
+	}
+	if nativegen.ForwardedGlobalLoads(selectedByte) == 0 || nativegen.ElidedGlobalLoadMasks(selectedByte) == 0 {
+		t.Fatalf("the proven normalized scalar-global reload must omit its mask:\n%s", nativegen.Describe(selectedByte))
 	}
 	if nativegen.Scheduled(selected) == 0 {
 		t.Fatalf("scalar-global sharing must retain its scheduled parent:\n%s", nativegen.Describe(selected))

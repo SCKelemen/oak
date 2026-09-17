@@ -92,6 +92,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedAddressSharing.ShareVectorAddresses = true
 	changedGlobalForwarding := lane(false)
 	changedGlobalForwarding.ForwardGlobalLoads = true
+	changedGlobalMaskElision := lane(false)
+	changedGlobalMaskElision.ElideGlobalLoadMasks = true
 	changedLoopArrayHomes := lane(false)
 	changedLoopArrayHomes.LoopArrayHomes = true
 	changedLoopResultHomes := lane(false)
@@ -149,6 +151,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"map-grouping", driver(false), opt.Identity(changedMapGrouping)},
 		{"vector-address-sharing", driver(false), opt.Identity(changedAddressSharing)},
 		{"global-load-forwarding", driver(false), opt.Identity(changedGlobalForwarding)},
+		{"global-load-mask-elision", driver(false), opt.Identity(changedGlobalMaskElision)},
 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
 		{"unroll-small", driver(false), opt.Identity(changedUnrollSmall)},

@@ -6228,6 +6228,32 @@ scalar-global-address artifact, and all five OS differential tests pass.
 Runtime is not reported from the loaded host; static provenance is in
 `benchmarks/native/results/stage2-global-load-forward-2026-09-17.json`.
 
+**Normalized scalar-global forwarding (2026-09-17, AArch64 lane).** The
+separate `elide-global-load-masks` candidate is eligible only after
+`forward-global-loads`. It recognizes the exact adjacent `strb`/`strh` and
+unsigned-mask spelling produced by that parent, authenticates the declared
+non-aggregate scalar global again, and replaces the mask with a move, or
+removes it when source and destination are the same register. Every other
+shape refuses. The masked parent remains a separately selectable fallback.
+
+The local equality `Oak.Forwarding.narrow_load_of_normalized` deliberately
+takes normalization as a premise. Neither the matcher nor that theorem
+establishes the premise: only the unchanged whole-body verifier may show that
+the stored Oak value was already normalized to its declared width and select
+the stronger body. The transform is non-neutral and **verdict-gated**.
+Materialization v25 keys its separate lane flag;
+`OAK_OPT_SKIP=elide-global-load-masks` keeps the masks.
+
+On the stage-2 pilot, all thirteen byte masks are eligible: seven become moves
+and six disappear. Selected `check_range` and `map_page` remain `proven`, at
+46→44 and 159→157 instructions; `unmap_page` retains its pre-existing
+`witnessed` trap-domain/node-budget verdict at 218→216. Stalls fall by two and
+static cost by three in each body. Mach-O `__text` and the object both shrink
+24 bytes (4600→4576 and 6120→6096), relocations stay at 27, and all five OS
+differential tests pass. Runtime is not reported from the loaded host; static
+provenance is in
+`benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with
