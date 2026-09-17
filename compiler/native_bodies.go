@@ -266,6 +266,24 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// verdict from an earlier build under the same key.
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %d of %d verdicts from the verdict cache", fromCache, verified)))
 	}
+	// The call graph's reading of the verdicts: a trusted body whose reason
+	// names a callee inherits the callee's verdict, so the callee whose own
+	// reason names none is the fix that unlocks its callers; and the
+	// functions no entry point reaches (nativegen/callgraph.go).
+	graph := nativegen.BuildCallGraph(functions)
+	symbolNames := map[string]string{}
+	for name, fn := range functions {
+		symbolNames[nativegen.NativeSymbol(fn)] = name
+	}
+	for _, root := range nativegen.VerdictRoots(result.Verdicts, symbolNames) {
+		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: call graph: %s keeps %d caller(s) trusted through its verdict (%s): %s", root.Name, len(root.Blocked), root.Reason, strings.Join(root.Blocked, ", "))))
+	}
+	if unreachable := graph.Unreachable(); len(unreachable) > 0 {
+		// After the compiler's helper expansion, an inlined helper's own body
+		// has no caller left: lowered natively all the same, each with its
+		// own search, for nothing an entry point runs.
+		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: call graph: %d function(s) no entry point reaches after helper expansion, lowered for nothing: %s", len(unreachable), strings.Join(unreachable, ", "))))
+	}
 	if comp.options.OptReport || os.Getenv("OAK_OPT_REPORT") != "" {
 		fmt.Fprint(os.Stderr, report.String())
 	}

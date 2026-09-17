@@ -889,6 +889,22 @@ unreachable bodies fall out as nodes off the root. The pieces exist —
 `nativegen.functions`, `calleeName`, the inliner's stack — as a graph
 walked implicitly; naming it is the increment.
 
+Named (2026-09-18, `nativegen/callgraph.go`): `BuildCallGraph` over the
+program's functions with a synthetic root calling `main` and the exported
+functions; callees, callers, reachability, Tarjan's components in
+reverse topological order (callees before callers), and the recursive
+set. Two readers so far, both diagnostics in the native backend's
+report. `VerdictRoots` follows every trusted verdict whose reason names a
+callee — "a call to X …", X the callee's native symbol — to the callee
+whose own reason names none and groups the callers under it, so the
+report says which body's seam unlocks the most callers. `Unreachable`
+lists the functions no entry point reaches; on the kernel program that is
+eight bodies — `blake3_g`, `permute`, `rotr32`, `crc32c_word_at`, and
+their like — helpers the compiler's expansion has already inlined into
+every caller, lowered natively all the same, each with its own search,
+for code nothing runs: the next compile-time saving, once the tests that
+pin those units' verdicts are read the same way.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until
