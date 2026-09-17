@@ -470,6 +470,22 @@ instructions, and a 272-byte frame. It retains the witnessed verdict and
 agrees with C at the same 13 boundary sizes plus 1 MiB. The timings above
 measure the verifier change independently of that lifetime improvement.
 
+The next frame reduction is the message permutation itself. At `2323cc1b`,
+the inlined `m = blake3_permute(m)` built a 64-byte literal temporary and
+copied it back every round. The in-place cycle lowering
+(`docs/spec/94-assembler.md` §9 "In-place array permutations") changes the
+selected compression body from 342 to 334 instructions, its stack-relative
+memory instructions from 152 to 144, and its frame from 272 to 208 bytes; the
+witnessed verdict and native coverage are unchanged. The eight static
+instructions are inside the six-round permutation path, hence 48 fewer
+instructions per compression. Two interleaved restricted-build runs on the M4
+Max agreed on the 1 MiB checksum. Their candidate/base medians were 0.967×
+(seven samples, twenty inner rounds) and 0.854× (nine samples, fifty inner
+rounds), with wide overlapping ranges under uncontrolled load; the clock says
+the change helps but does not support a precise speedup. The raw samples and
+the invariant machine-shape counts are in
+[`blake3-in-place-permutation-2026-09-17.json`](results/blake3-in-place-permutation-2026-09-17.json).
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —
