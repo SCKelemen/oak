@@ -7702,7 +7702,11 @@ writes — the tally passed twenty gigabytes), and the blaster gives two
 reads of one span whose indices are one linear form spelled two ways one
 block rather than two tied by a consistency implication over the index
 bits (`selectBits`): the OS pilot's `unmap_page`, evidence at the node
-budget since its pin, proves in 1.9 million nodes.
+budget since its pin, proves in 1.9 million nodes, and with it the OS
+pilot's two page-table walkers are fully proven: stage2 twenty of twenty
+bodies, addr_space twenty-nine of twenty-nine (`map_page` and
+`get_page_entry` crossed on this head too), where the pilot's pin had
+seventeen and twenty-six with three evidence each.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
