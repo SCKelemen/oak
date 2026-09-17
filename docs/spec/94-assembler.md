@@ -7169,16 +7169,40 @@ is proven, and is the better code besides, since the load leaves the
 loop. The workaround is therefore no hardship, but the reason is worth
 recording, because it is not the bound and not the counter.
 
-Instrumenting the coupling search at its failure shows the machine loop
-carrying both variables it should — the accumulator's register and the
-counter's — and the slot for `total` offered one candidate, the
-*counter's* register as a negation (`total↔r4, r4 = 0 - total`), with
-the accumulator's own register absent because an earlier level of the
-search had already taken it for `i`. The search backtracks, so a first
-dead end is not a failure; but this one ends in evidence, which points
-at the conflict-driven pruning that passes a conflict up when "this
-level's choice played no part" rather than at the candidate generation.
-That is a completeness question in the search, not a soundness one: the
+The message is doubly misleading, and the first reading of it here was
+wrong. The search does reach the right pairing: printing every pairing
+it tries shows `i↔r4`, the correct one, offered first at depth 0 — and
+rejected before it recurses, by the pending check on the loop's continue
+conditions. Everything after that is the search working through wrong
+pairings, and the message names the last slot to run out of candidates.
+
+The conditions differ in where they read the bound:
+
+```
+oak: (loop1.i lo ((d lo len(s)) ? loop1.s.count[d] : s.count[d])) and (loop1.i lo 4)
+asm: (loop1.i lo s.count[d]) and (loop1.i lo 4)
+```
+
+The Oak side reads `count` from the loop's *unknown* memory
+`loop1.s.count`, the machine side from the entry memory. Both are
+reading a memory the body never writes — the body writes `xs` — and the
+marker on `count` is dropped afterwards for exactly that reason (§8's
+loop memory markers). The Oak condition has already captured it by
+then.
+
+The asymmetry is an ordering one. The machine side computes its header
+condition *before* the markers are appended (`headerCondition`, then
+`summarizeLoop` marks), so its condition reads the entry memory. The
+Oak side appends the markers first and lowers the condition after, so
+its condition reads the marked memory. Making the Oak side match would
+fix this case in one move, and is not obviously right: a condition that
+reads a memory the body *does* write should see the iteration's memory,
+not the entry's, and that is a question about the machine side's order
+as much as the Oak side's. Marking only the memories the body writes
+would fix it from the other end and needs a conservative walk of the
+body, which no longer exists in the tree.
+
+Either way it is a completeness question, not a soundness one: the
 verdict falls back to evidence, which is what it is for.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
