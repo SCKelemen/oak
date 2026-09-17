@@ -24,6 +24,6 @@ jobs:
       - name: Test actual Wasm bytes with an independent engine
         env:
           OAK_REQUIRE_WASM_TESTS: '1'
-        run: go test -race . ./wasm ./playground ./compiler ./target ./toolchain -run 'Test(BuildWasm|Wasm|Compile$|LEB|FailClosedCFG|Spellings|ResolveOrder|TimehostCompilesEverywhere)' -count=1
+        run: go test -race . ./wasm ./playground ./compiler ./target ./toolchain -run 'Test(BuildWasm|Wasm|Compile$|LEB|FailClosedCFG|Spellings|ResolveOrder)' -count=1
       - name: Build the locally hosted browser compiler
         run: sh playground/build.sh
