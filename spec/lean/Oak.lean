@@ -249,5 +249,6 @@ import Oak.PairStoreEffects
 import Oak.RecordArrayRegion
 import Oak.FieldPromotion
 import Oak.LoopArrayHomes
+import Oak.LoopResultHomes
 import Oak.Forwarding
 import Oak.ArrayValues

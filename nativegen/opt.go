@@ -43,6 +43,7 @@ const (
 	TransformUnroll          = "unroll-reductions"
 	TransformVectorHomes     = "vector-homes"
 	TransformLoopArrayHomes  = "loop-array-homes"
+	TransformLoopResultHomes = "loop-result-homes"
 	TransformCleanup         = "late-cleanup"
 	TransformVectorize       = "vectorize-reductions"
 	TransformVectorMaps      = "vectorize-maps"
@@ -407,6 +408,16 @@ func Transforms() []opt.Transform {
 			fired:   LoopArrayHomes,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index elements of an eligible result-buffer
+			// array live in callee-saved registers for one loop. This remains
+			// a separate machine candidate judged against the Oak reference.
+			name: TransformLoopResultHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopResultHomes },
+			apply:   func(l Lane) Lane { l.LoopResultHomes = true; return l },
+			fired:   LoopResultHomes,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
 			// linear scan, its slots moved into registers, its copies
@@ -519,6 +530,7 @@ func PlainLane(lane Lane) Lane {
 	lane.CarryLoopIndices = false
 	lane.VectorHomes = false
 	lane.LoopArrayHomes = false
+	lane.LoopResultHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
 	lane.ShareVectorAddresses = false

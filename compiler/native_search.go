@@ -151,16 +151,24 @@ func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 // level, docs/spec/90-backend.md §16 item 5).
 func nativeSearch(arch string, report *opt.Report) *opt.Search {
 	registry := nativegen.Registry()
+	// Result homes currently trade less result traffic for more frame traffic.
+	// Keep them experimental until native timings justify default selection;
+	// a lower static cost alone is not evidence of an Apple Silicon speedup.
+	skipped := map[string]bool{}
+	if os.Getenv("OAK_NATIVE_LOOP_RESULT_HOMES") != "1" {
+		skipped[nativegen.TransformLoopResultHomes] = true
+	}
 	if skip := os.Getenv("OAK_OPT_SKIP"); skip != "" {
 		// For experiments and benchmarks: the named transforms (by their
 		// report names, comma-separated) propose nothing; unknown names are
 		// ignored. The identity candidate and the verdicts are as always.
-		skipped := map[string]bool{}
 		for _, name := range strings.Split(skip, ",") {
 			if name = strings.TrimSpace(name); name != "" {
 				skipped[name] = true
 			}
 		}
+	}
+	if len(skipped) > 0 {
 		var kept []opt.Transform
 		for _, tr := range registry.Transforms() {
 			if !skipped[tr.Name()] {
@@ -195,6 +203,7 @@ var setAside = map[string]string{
 	nativegen.TransformUnroll:          "keeps its plain reduction",
 	nativegen.TransformVectorHomes:     "keeps its vector slots",
 	nativegen.TransformLoopArrayHomes:  "keeps its loop array elements in memory",
+	nativegen.TransformLoopResultHomes: "keeps its loop result elements in memory",
 	nativegen.TransformCleanup:         "keeps its copies",
 	nativegen.TransformVectorize:       "keeps its scalar reduction",
 	nativegen.TransformVectorMaps:      "keeps its scalar map",

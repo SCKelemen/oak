@@ -18,7 +18,7 @@ func (g *generator) arrayDeclarationStorage(name string, elem scalar, length int
 			// Stay within the existing direct-frame lowering's extent;
 			// oversized arrays do not acquire new result-offset paths.
 			if layout == g.resultRecord && layout.size > 16 && layout.size <= 4080 && layout.size%8 == 0 && !g.arrayResultReassigned(name) {
-				return &arrayLocal{elem: elem, length: length, inReg: true, reg: g.resultAreaReg}
+				return &arrayLocal{elem: elem, length: length, inReg: true, reg: g.resultAreaReg, resultStorage: true}
 			}
 		}
 	}

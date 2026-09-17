@@ -5808,6 +5808,52 @@ wrong-rotate mutant is refuted (`TestNativeBlake3CompressionProven`).
 This does not extend the claim to the surrounding hash API or final
 linked executable.
 
+An independent **experimental** `loop-result-homes` candidate (2026-09-17)
+caches selected literal-index cells of that exact result array in callee-saved
+registers for one loop, then flushes written cells before later memory uses.
+The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v15 keys
+it independently from private-frame `loop-array-homes`. It remains a
+non-neutral, verifier-gated mechanical candidate; generic admission can still
+be Witnessed, so enabling it is not a proof-only compilation policy.
+
+The storage tag records origin, not a no-alias theorem. The candidate requires
+the exact named return local, result layout/base/extent, zero interior offset,
+u32/u64 elements, and at most 64 cells. Its whole rewritten function must be
+call-free (only the closed inline conversion/`len` forms), with scalar or
+owned u32/u64 fixed-array inputs, no mutable-global/nonconstant-global-aggregate
+access, and no borrowed storage, address escapes, ordered blocks, unsupported
+control or early exits. Immutable constant tables are allowed. The cached
+loop condition and body additionally exclude dynamic indices, out-of-range
+literal indices, dynamic shifts, division/remainder, and trapping float-to-int
+truncation; a language trap must not bypass the flush. Computed accesses after
+the flush remain allowed. These are conservative implementation checks, not a
+mechanically verified matcher.
+
+The external caller must supply ordinary nonvolatile result RAM, disjoint
+from inputs and all other callee-observable objects, unpublished and unobserved
+while the function executes. This is **not** an MMIO, DMA, atomic, or shared
+page-table transformation. Oak-generated calls retain the existing fresh-result
+and by-value snapshot rules, including a temporary for assignment back to an
+input. Neither those Go rules nor caller allocation are proven by the new
+algebra. [Arm's AAPCS64 result-return convention](https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#69result-return)
+specifies x8 as the indirect-result address; it does not itself establish
+these separation or unobservability premises. The verifier's synthetic
+result-area address likewise is not a proof about an external caller's memory.
+
+`Oak.LoopResultHomes` extends `Oak.LoopArrayHomes` with separate result/external
+state. Each admitted external step supplies both a result-region frame law
+and a result-blindness law; the cached step sees the actual, potentially stale
+backing memory. Logical equivalence is preserved through mixed writes and
+external steps, and final flush equals resident execution. The premises are
+explicit: there is no theorem here about the Go generator, control flow/traps,
+ABI allocation, memory ordering, atomicity, or official Arm ASL execution.
+Fixed zero/one/three-trip u32/u64 fixtures prove against unchanged Oak bodies,
+and a deleted flush is refuted. A dynamic input-snapshot fixture agrees with
+C and is Witnessed, not Proven. Opt-in BLAKE3 remains Proven for all eight
+result chunks. Despite a smaller loop, higher stack traffic and inconclusive,
+regressed native timings keep this candidate off by default; the measurements
+are in `benchmarks/native/results/blake3-loop-result-homes-2026-09-17.json`.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array

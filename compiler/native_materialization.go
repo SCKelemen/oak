@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v14 adds independently keyed loop-local scalar array homes to v13's
-	// frame-pair initializer and W-word promotion recipe.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v14")
+	// v15 adds independently keyed loop-local result-array homes to v14's
+	// private-array homes, frame-pair initializer, and W-word promotion recipe.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v15")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -65,6 +65,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
 		{"loop-array-homes", lane.LoopArrayHomes},
+		{"loop-result-homes", lane.LoopResultHomes},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},

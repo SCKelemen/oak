@@ -1,0 +1,269 @@
+{
+  "schema": "oak-blake3-loop-result-homes-v1",
+  "date": "2026-09-17",
+  "compiler_base": "e29948c5323712e42a3c9398f93d519b8c5765a7",
+  "compiler_candidate": "working tree: isolated loop-result-homes candidate, later restricted and made default-off",
+  "integrated_validation": {
+    "commit": "eff2acd33cd8cd7f22202222b5e943174e8ebf84",
+    "upstream": "26289668",
+    "default_and_optin_objects_identical_to_recorded_hashes": true,
+    "default_enable_environment": "OAK_NATIVE_LOOP_RESULT_HOMES=0",
+    "experimental_enable_environment": "OAK_NATIVE_LOOP_RESULT_HOMES=1",
+    "both_selected_compressors": "Proven for all 8 result chunks"
+  },
+  "native_only": [
+    "hash__blake3_ucompress"
+  ],
+  "cpu": "Apple M4 Max",
+  "platform": "macOS 26.3.1(a), arm64",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "c_flags": [
+    "-std=c99",
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "harness": "benchmarks/native/blake3_same_process.c",
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "load_average_near_start": [
+    182.91,
+    207.13,
+    154.59
+  ],
+  "own_compiler_and_proof_suites_during_timing": "none started by parent; test agent asked to pause; unrelated host work uncontrolled",
+  "interpretation": "No demonstrated speedup. All three medians regressed amid extreme scheduling/load noise. Retain experiment opt-in only; do not use this run to claim a stable slowdown magnitude or +/-8% parity.",
+  "boundary_checks": [
+    0,
+    1,
+    63,
+    64,
+    65,
+    1023,
+    1024,
+    1025,
+    2048,
+    2049,
+    3072,
+    4096,
+    5000,
+    1048576
+  ],
+  "proof_scope": "Selected compression body: all 8 result chunks Proven. Not the surrounding hash API, linked program or source-to-Arm-ASL path.",
+  "objects": {
+    "before": {
+      "sha256": "f97be7073bd89985f7922c7663fd99bbb91bda26d004394080db62482fffe584",
+      "instructions": 307,
+      "frame_bytes": 144,
+      "sp_memory_instructions": 28,
+      "result_homes": 0,
+      "main_loop_instructions": 218,
+      "main_loop_loads": 42,
+      "main_loop_stores": 37,
+      "static_cost": 1469
+    },
+    "after": {
+      "sha256": "cb9636563e8066a982595c40ce2cd52fbf3a2b29db447b422ac12dd550312d7e",
+      "instructions": 308,
+      "frame_bytes": 144,
+      "sp_memory_instructions": 46,
+      "result_homes": 6,
+      "main_loop_instructions": 203,
+      "main_loop_loads": 38,
+      "main_loop_stores": 29,
+      "static_cost": 1431.5
+    },
+    "native_c_sha256": "4f8248697a2f01f40ce870d90689c481e0ef542b2e3ab5475e6b637adc503161",
+    "control_c_sha256": "136724a562abd6939aa6303dfdd3bd2a2aad19463240c3a22f92f08bf66675fc"
+  },
+  "sessions": [
+    {
+      "schema": "oak-same-process-blake3-v1",
+      "size": 1048576,
+      "rounds": 30,
+      "samples": 11,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+      "results": [
+        {
+          "impl": "before",
+          "samples": [
+            10571566.7,
+            10580866.7,
+            8519100,
+            5037466.7,
+            4166066.7,
+            5654266.7,
+            5435166.7,
+            6295466.7,
+            5101100,
+            5746866.7,
+            4092866.7
+          ],
+          "ns_per_op_median": 5654266.7
+        },
+        {
+          "impl": "after",
+          "samples": [
+            8621333.3,
+            10976500,
+            10435633.3,
+            15450933.3,
+            13532333.3,
+            4335200,
+            11232466.7,
+            5798166.7,
+            8629200,
+            3870766.7,
+            3874400
+          ],
+          "ns_per_op_median": 8629200
+        },
+        {
+          "impl": "c-control",
+          "samples": [
+            6927400,
+            11863300,
+            10406533.3,
+            10503100,
+            5587400,
+            3097100,
+            3301566.7,
+            8263600,
+            6416733.3,
+            5775600,
+            3138000
+          ],
+          "ns_per_op_median": 6416733.3
+        }
+      ],
+      "candidate_over_base": 1.5261395434354024,
+      "candidate_over_c": 1.3447964246854394
+    },
+    {
+      "schema": "oak-same-process-blake3-v1",
+      "size": 1048576,
+      "rounds": 30,
+      "samples": 11,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+      "results": [
+        {
+          "impl": "before",
+          "samples": [
+            6330633.3,
+            4696666.7,
+            11755033.3,
+            4414433.3,
+            7602033.3,
+            4402933.3,
+            4419566.7,
+            4845466.7,
+            4634566.7,
+            12532666.7,
+            4203800
+          ],
+          "ns_per_op_median": 4696666.7
+        },
+        {
+          "impl": "after",
+          "samples": [
+            4406366.7,
+            6521433.3,
+            8772866.7,
+            3886600,
+            4236100,
+            4630933.3,
+            9555600,
+            6832133.3,
+            15032966.7,
+            4694000,
+            5975566.7
+          ],
+          "ns_per_op_median": 5975566.7
+        },
+        {
+          "impl": "c-control",
+          "samples": [
+            3471133.3,
+            4763966.7,
+            5497933.3,
+            3184266.7,
+            3186933.3,
+            3502433.3,
+            6173000,
+            4211666.7,
+            3321900,
+            3539833.3,
+            3687833.3
+          ],
+          "ns_per_op_median": 3539833.3
+        }
+      ],
+      "candidate_over_base": 1.2722995012611817,
+      "candidate_over_c": 1.6880926850425415
+    },
+    {
+      "schema": "oak-same-process-blake3-v1",
+      "size": 1048576,
+      "rounds": 30,
+      "samples": 11,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+      "results": [
+        {
+          "impl": "before",
+          "samples": [
+            4501133.3,
+            4115966.7,
+            4399833.3,
+            9120100,
+            4255866.7,
+            5225733.3,
+            4234633.3,
+            4253866.7,
+            4685500,
+            5929933.3,
+            7297266.7
+          ],
+          "ns_per_op_median": 4501133.3
+        },
+        {
+          "impl": "after",
+          "samples": [
+            8784933.3,
+            6999566.7,
+            9039833.3,
+            15880633.3,
+            5240700,
+            10520933.3,
+            3971066.7,
+            9721966.7,
+            12542766.7,
+            9351966.7,
+            4001633.3
+          ],
+          "ns_per_op_median": 9039833.3
+        },
+        {
+          "impl": "c-control",
+          "samples": [
+            3202766.7,
+            3460400,
+            3145733.3,
+            3367600,
+            5329933.3,
+            4944033.3,
+            3200700,
+            5473533.3,
+            3143600,
+            3710500,
+            3412866.7
+          ],
+          "ns_per_op_median": 3412866.7
+        }
+      ],
+      "candidate_over_base": 2.0083460536483115,
+      "candidate_over_c": 2.648750770137023
+    }
+  ]
+}
