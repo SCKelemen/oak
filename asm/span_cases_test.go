@@ -50,6 +50,18 @@ func TestCanonicalLinearRespellsMasksAndForms(t *testing.T) {
 	if reads := canonicalLinear(selectTerm("s.pages", oakIndex, 64), memo); !equalTerms(reads, canonicalLinear(selectTerm("s.pages", asmIndex, 64), memo)) {
 		t.Fatalf("a read's index is respelled too: %s", reads)
 	}
+	// A comparison of two constants is its value, and an equality whose
+	// sides are one term structurally — an index outside the linear form,
+	// `(ipa shr 25) and 1` — is true.
+	entry := &term{kind: termCmp, width: 1, op: "lo", left: constTerm(0, 32), right: constTerm(128, 32)}
+	if c := canonicalLinear(entry, map[*term]*term{}); c.kind != termConst || c.value != 1 {
+		t.Fatalf("0 lo 128 is 1: %s", c)
+	}
+	odd := binaryTerm("and", binaryTerm("shr", paramTerm("ipa", 64), constTerm(25, 64)), constTerm(1, 64))
+	same := &term{kind: termCmp, width: 1, op: "eq", left: binaryTerm("add", zeroExtend(dom, 64), odd), right: binaryTerm("add", zeroExtend(dom, 64), odd)}
+	if c := canonicalLinear(same, map[*term]*term{}); c.kind != termConst || c.value != 1 {
+		t.Fatalf("X eq X is 1 even outside the linear form: %s", c)
+	}
 }
 
 // spanEqualByCases: the machine writes a constant per permission case,

@@ -7800,6 +7800,22 @@ func (g *generator) convert(operand ast.Expression, target scalar, op string) (i
 	if err != nil {
 		return 0, err
 	}
+	if op == "" && !source.isFloat && !target.isFloat && !source.isVec && !target.isVec && !target.signed {
+		// A plain constructor over a constant is the constant at the
+		// target width — `u8(1)`, `u8(0)`, `u64(page_size)` — materialized
+		// once, normalized by construction: no `and wN, wN, #255` after
+		// the `movz`, no mask after a `mov wN, wzr` (the page walkers'
+		// status conditionals spent two instructions per constant). The
+		// checker admits the constructor only where the value fits.
+		if v, isConst := g.constantOperand(operand, source); isConst {
+			r, err := g.alloc(target)
+			if err != nil {
+				return 0, err
+			}
+			g.constant(r, v&mask64(target.bits), target)
+			return r, nil
+		}
+	}
 	r, err := g.expr(operand, &source)
 	if err != nil {
 		return 0, err

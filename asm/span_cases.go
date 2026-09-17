@@ -152,8 +152,23 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 		}
 	case termCmp:
 		left, right := canonicalLinear(t.left, memo), canonicalLinear(t.right, memo)
+		if left.kind == termConst && right.kind == termConst {
+			// Two constants compare at once (`0 lo 128`, a loop's entry
+			// test over its literal bounds, which reaches here unfolded).
+			out = cmpTerm(t.op, left, right)
+			break
+		}
 		if (t.op == "eq" || t.op == "ne") && left.width == right.width {
-			if l, r := left.linearAt(left.width), right.linearAt(right.width); l != nil && r != nil && l.equal(r) {
+			// The same term on both sides, structurally or in one linear
+			// form: the Oak side's read-after-write at the index it wrote,
+			// `(X eq X) ? written : entry`.
+			same := equalTerms(left, right)
+			if !same {
+				if l, r := left.linearAt(left.width), right.linearAt(right.width); l != nil && r != nil && l.equal(r) {
+					same = true
+				}
+			}
+			if same {
 				value := uint64(0)
 				if t.op == "eq" {
 					value = 1
