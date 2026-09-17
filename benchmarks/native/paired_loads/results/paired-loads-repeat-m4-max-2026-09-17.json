@@ -1,0 +1,2276 @@
+{
+  "schema": "oak-paired-load-liveness-v1",
+  "revision": "7e82a813a31b0cac69288209c0cc207db4eb7fa6",
+  "dirty_worktree": false,
+  "baseline_revision": "4d1bc1dd2ba6e46583eef65a8b4b2d82e2aca87d",
+  "binaries": {
+    "baseline_emit": {
+      "sha256": "c576d6fb3ad46f813a8ea7b0bff61ca82539c91aae2edbcdb95505407db4a0a6",
+      "go_build_info": "/private/tmp/oak-pair-liveness-GnoZ09/baseline-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917072041-4d1bc1dd2ba6\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=4d1bc1dd2ba6e46583eef65a8b4b2d82e2aca87d\n\tbuild\tvcs.time=2026-09-17T07:20:41Z\n\tbuild\tvcs.modified=false"
+    },
+    "baseline_oak": {
+      "sha256": "7c39f2a51861163b5669fb6007a6b2688f25da6d5432fc3ad11bede9bb0ec66d",
+      "go_build_info": "/private/tmp/oak-pair-liveness-GnoZ09/baseline-oak: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917072041-4d1bc1dd2ba6\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tdep\tgolang.org/x/sys\tv0.38.0\th1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=\n\tdep\tgolang.org/x/term\tv0.37.0\th1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=4d1bc1dd2ba6e46583eef65a8b4b2d82e2aca87d\n\tbuild\tvcs.time=2026-09-17T07:20:41Z\n\tbuild\tvcs.modified=false"
+    },
+    "candidate_emit": {
+      "sha256": "aba94382ca0ed157f707df7f7a726ae11460a5b17e2e45815355ccbbe15d29db",
+      "go_build_info": "/private/tmp/oak-pair-liveness-GnoZ09/clean-candidate-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917073909-7e82a813a31b\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=7e82a813a31b0cac69288209c0cc207db4eb7fa6\n\tbuild\tvcs.time=2026-09-17T07:39:09Z\n\tbuild\tvcs.modified=false"
+    }
+  },
+  "date": "2026-09-17T07:40:56.296619+00:00",
+  "cpu": "Apple M4 Max",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+  "c_flags": [
+    "-std=c11",
+    "-O3",
+    "-ffp-contract=off",
+    "-fno-fast-math"
+  ],
+  "source_sha256": "e3f684551d833aac777518e9bb421d050eb154d66610779c37dc5df223fa640f",
+  "runner_sha256": "b6c914927f795e93ded0ef5ea031e7bc09783d53dc1565428c468a9c0adfe2c8",
+  "sample_order": "interleaved backend/width, rotating first variant each round",
+  "core_affinity": "uncontrolled",
+  "cache_flush": false,
+  "native_bodies": {
+    "native-before": {
+      "sum32": {
+        "verdict": "proven",
+        "assembly": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x4, x5, x6, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov w2, wzr\n  mov w3, wzr\n  sub w13, w1, #16\n  cmp w1, #16\n  b.lo done_5\n  cmp w3, w13\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #2\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add v8.4s, v8.4s, v16.4s\n  ldr q16, [x10, #32]\n  add v9.4s, v9.4s, v17.4s\n  add w10, w3, #12\n  add x9, x0, w10, uxtw #2\n  ldr q17, [x9]\n  add v10.4s, v10.4s, v16.4s\n  add w3, w3, #16\n  add v11.4s, v11.4s, v17.4s\n  cmp w3, w13\n  b.ls loop_4\ndone_5:\n  mov w4, wzr\n  mov w5, wzr\n  mov w6, wzr\n  sub w14, w1, #4\n  cmp w1, #4\n  b.lo done_7\n  cmp w3, w14\n  b.hi done_7\nloop_6:\n  add x15, x0, w3, uxtw #2\n  ldp w9, w10, [x15]\n  add w3, w3, #4\n  add w2, w2, w9\n  add w4, w4, w10\n  ldp w9, w10, [x15, #8]\n  add w5, w5, w9\n  add w6, w6, w10\n  cmp w3, w14\n  b.ls loop_6\ndone_7:\n  cmp w3, w1\n  b.hs done_9\nloop_8:\n  ldr w9, [x0, w3, uxtw #2]\n  add w3, w3, #1\n  add w2, w2, w9\n  cmp w3, w1\n  b.lo loop_8\ndone_9:\n  add w10, w2, w4\n  add w9, w5, w6\n  add w2, w10, w9\n  mov w10, wzr\n  str w10, [sp, #144]\n  mov w10, wzr\n  str w10, [sp, #148]\n  add v16.4s, v8.4s, v9.4s\n  add v17.4s, v10.4s, v11.4s\n  mov w10, wzr\n  str w10, [sp, #152]\n  add v12.4s, v16.4s, v17.4s\n  mov w10, wzr\n  str w10, [sp, #156]\n  str q12, [sp, #144]\n  ldr w10, [sp, #144]\n  ldr w9, [sp, #148]\n  ldr w11, [sp, #156]\n  add w10, w10, w9\n  ldr w9, [sp, #152]\n  add w9, w9, w11\n  add w10, w10, w9\n  add w0, w2, w10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}",
+        "frame_bytes": 160,
+        "main_loop_instructions": 14,
+        "main_loop_addresses": 2
+      },
+      "sum64": {
+        "verdict": "proven",
+        "assembly": "sum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov x2, xzr\n  mov w3, wzr\n  sub w15, w1, #8\n  cmp w1, #8\n  b.lo done_5\n  cmp w3, w15\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #3\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #8\n  add v8.2d, v8.2d, v16.2d\n  add v9.2d, v9.2d, v17.2d\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.2d, v10.2d, v16.2d\n  add v11.2d, v11.2d, v17.2d\n  cmp w3, w15\n  b.ls loop_4\ndone_5:\n  cmp w3, w1\n  b.hs done_7\nloop_6:\n  ldr x9, [x0, w3, uxtw #3]\n  add w3, w3, #1\n  add x2, x2, x9\n  cmp w3, w1\n  b.lo loop_6\ndone_7:\n  add v16.2d, v8.2d, v9.2d\n  add v17.2d, v10.2d, v11.2d\n  mov x10, xzr\n  str x10, [sp, #144]\n  add v12.2d, v16.2d, v17.2d\n  mov x10, xzr\n  str x10, [sp, #152]\n  str q12, [sp, #144]\n  ldr x10, [sp, #144]\n  ldr x9, [sp, #152]\n  add x10, x10, x9\n  add x0, x2, x10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}",
+        "frame_bytes": 160,
+        "main_loop_instructions": 12,
+        "main_loop_addresses": 1
+      }
+    },
+    "native-identity": {
+      "sum32": {
+        "verdict": "proven",
+        "assembly": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\n  mov x19, x0\n  mov w20, w1\nhead_1:\n  mov w2, wzr\n  mov w3, wzr\nloop_4:\n  cmp w3, w20\n  b.hs done_5\n  cmp w3, w20\n  b.hs trap_3\n  ldr w9, [x19, w3, uxtw #2]\n  add w2, w2, w9\n  add w3, w3, #1\n  b loop_4\ndone_5:\n  mov w0, w2\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}",
+        "frame_bytes": 80,
+        "main_loop_instructions": 8,
+        "main_loop_addresses": 0
+      },
+      "sum64": {
+        "verdict": "proven",
+        "assembly": "sum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\n  mov x19, x0\n  mov w20, w1\nhead_1:\n  mov x2, xzr\n  mov w3, wzr\nloop_4:\n  cmp w3, w20\n  b.hs done_5\n  cmp w3, w20\n  b.hs trap_3\n  ldr x9, [x19, w3, uxtw #3]\n  add x2, x2, x9\n  add w3, w3, #1\n  b loop_4\ndone_5:\n  mov x0, x2\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}",
+        "frame_bytes": 80,
+        "main_loop_instructions": 8,
+        "main_loop_addresses": 0
+      }
+    },
+    "native-after": {
+      "sum32": {
+        "verdict": "proven",
+        "assembly": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x4, x5, x6, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov w2, wzr\n  mov w3, wzr\n  sub w13, w1, #16\n  cmp w1, #16\n  b.lo done_5\n  cmp w3, w13\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #2\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #16\n  add v8.4s, v8.4s, v16.4s\n  add v9.4s, v9.4s, v17.4s\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.4s, v10.4s, v16.4s\n  add v11.4s, v11.4s, v17.4s\n  cmp w3, w13\n  b.ls loop_4\ndone_5:\n  mov w4, wzr\n  mov w5, wzr\n  mov w6, wzr\n  sub w14, w1, #4\n  cmp w1, #4\n  b.lo done_7\n  cmp w3, w14\n  b.hi done_7\nloop_6:\n  add x15, x0, w3, uxtw #2\n  ldp w9, w10, [x15]\n  add w3, w3, #4\n  add w2, w2, w9\n  add w4, w4, w10\n  ldp w9, w10, [x15, #8]\n  add w5, w5, w9\n  add w6, w6, w10\n  cmp w3, w14\n  b.ls loop_6\ndone_7:\n  cmp w3, w1\n  b.hs done_9\nloop_8:\n  ldr w9, [x0, w3, uxtw #2]\n  add w3, w3, #1\n  add w2, w2, w9\n  cmp w3, w1\n  b.lo loop_8\ndone_9:\n  add w10, w2, w4\n  add w9, w5, w6\n  add w2, w10, w9\n  mov w10, wzr\n  str w10, [sp, #144]\n  mov w10, wzr\n  str w10, [sp, #148]\n  add v16.4s, v8.4s, v9.4s\n  add v17.4s, v10.4s, v11.4s\n  mov w10, wzr\n  str w10, [sp, #152]\n  add v12.4s, v16.4s, v17.4s\n  mov w10, wzr\n  str w10, [sp, #156]\n  str q12, [sp, #144]\n  ldr w10, [sp, #144]\n  ldr w9, [sp, #148]\n  ldr w11, [sp, #156]\n  add w10, w10, w9\n  ldr w9, [sp, #152]\n  add w9, w9, w11\n  add w10, w10, w9\n  add w0, w2, w10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}",
+        "frame_bytes": 160,
+        "main_loop_instructions": 12,
+        "main_loop_addresses": 1
+      },
+      "sum64": {
+        "verdict": "proven",
+        "assembly": "sum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov x2, xzr\n  mov w3, wzr\n  sub w15, w1, #8\n  cmp w1, #8\n  b.lo done_5\n  cmp w3, w15\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #3\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #8\n  add v8.2d, v8.2d, v16.2d\n  add v9.2d, v9.2d, v17.2d\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.2d, v10.2d, v16.2d\n  add v11.2d, v11.2d, v17.2d\n  cmp w3, w15\n  b.ls loop_4\ndone_5:\n  cmp w3, w1\n  b.hs done_7\nloop_6:\n  ldr x9, [x0, w3, uxtw #3]\n  add w3, w3, #1\n  add x2, x2, x9\n  cmp w3, w1\n  b.lo loop_6\ndone_7:\n  add v16.2d, v8.2d, v9.2d\n  add v17.2d, v10.2d, v11.2d\n  mov x10, xzr\n  str x10, [sp, #144]\n  add v12.2d, v16.2d, v17.2d\n  mov x10, xzr\n  str x10, [sp, #152]\n  str q12, [sp, #144]\n  ldr x10, [sp, #144]\n  ldr x9, [sp, #152]\n  add x10, x10, x9\n  add x0, x2, x10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}",
+        "frame_bytes": 160,
+        "main_loop_instructions": 12,
+        "main_loop_addresses": 1
+      }
+    }
+  },
+  "diagnostics": {
+    "native-before": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x4, x5, x6, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov w2, wzr\n  mov w3, wzr\n  sub w13, w1, #16\n  cmp w1, #16\n  b.lo done_5\n  cmp w3, w13\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #2\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add v8.4s, v8.4s, v16.4s\n  ldr q16, [x10, #32]\n  add v9.4s, v9.4s, v17.4s\n  add w10, w3, #12\n  add x9, x0, w10, uxtw #2\n  ldr q17, [x9]\n  add v10.4s, v10.4s, v16.4s\n  add w3, w3, #16\n  add v11.4s, v11.4s, v17.4s\n  cmp w3, w13\n  b.ls loop_4\ndone_5:\n  mov w4, wzr\n  mov w5, wzr\n  mov w6, wzr\n  sub w14, w1, #4\n  cmp w1, #4\n  b.lo done_7\n  cmp w3, w14\n  b.hi done_7\nloop_6:\n  add x15, x0, w3, uxtw #2\n  ldp w9, w10, [x15]\n  add w3, w3, #4\n  add w2, w2, w9\n  add w4, w4, w10\n  ldp w9, w10, [x15, #8]\n  add w5, w5, w9\n  add w6, w6, w10\n  cmp w3, w14\n  b.ls loop_6\ndone_7:\n  cmp w3, w1\n  b.hs done_9\nloop_8:\n  ldr w9, [x0, w3, uxtw #2]\n  add w3, w3, #1\n  add w2, w2, w9\n  cmp w3, w1\n  b.lo loop_8\ndone_9:\n  add w10, w2, w4\n  add w9, w5, w6\n  add w2, w10, w9\n  mov w10, wzr\n  str w10, [sp, #144]\n  mov w10, wzr\n  str w10, [sp, #148]\n  add v16.4s, v8.4s, v9.4s\n  add v17.4s, v10.4s, v11.4s\n  mov w10, wzr\n  str w10, [sp, #152]\n  add v12.4s, v16.4s, v17.4s\n  mov w10, wzr\n  str w10, [sp, #156]\n  str q12, [sp, #144]\n  ldr w10, [sp, #144]\n  ldr w9, [sp, #148]\n  ldr w11, [sp, #156]\n  add w10, w10, w9\n  ldr w9, [sp, #152]\n  add w9, w9, w11\n  add w10, w10, w9\n  add w0, w2, w10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}\nsum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov x2, xzr\n  mov w3, wzr\n  sub w15, w1, #8\n  cmp w1, #8\n  b.lo done_5\n  cmp w3, w15\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #3\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #8\n  add v8.2d, v8.2d, v16.2d\n  add v9.2d, v9.2d, v17.2d\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.2d, v10.2d, v16.2d\n  add v11.2d, v11.2d, v17.2d\n  cmp w3, w15\n  b.ls loop_4\ndone_5:\n  cmp w3, w1\n  b.hs done_7\nloop_6:\n  ldr x9, [x0, w3, uxtw #3]\n  add w3, w3, #1\n  add x2, x2, x9\n  cmp w3, w1\n  b.lo loop_6\ndone_7:\n  add v16.2d, v8.2d, v9.2d\n  add v17.2d, v10.2d, v11.2d\n  mov x10, xzr\n  str x10, [sp, #144]\n  add v12.2d, v16.2d, v17.2d\n  mov x10, xzr\n  str x10, [sp, #152]\n  str q12, [sp, #144]\n  ldr x10, [sp, #144]\n  ldr x9, [sp, #152]\n  add x10, x10, x9\n  add x0, x2, x10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}\nnative backend: sum32: layer A \u2014 reduction vectorization \u00d71 under Oak.Reduction.vector16_eq, vector8_eq; reduction unrolling \u00d71 under Oak.Reduction.unrolled4_eq\nnative backend: sum32: 5 element guard(s) elided under the checker's own facts\nnative backend: sum32: 3 loop(s) bottom-tested, proven\nnative backend: asm unit sum32: proven equal to its Oak body at the bit level \u2014 3 data-dependent loops coupled inductively (i\u2194r3, acc_v0[0..1]\u2194v8.lo, acc_v0[2..3]\u2194v8.hi, acc_v1[0..1]\u2194v9.lo, acc_v1[2..3]\u2194v9.hi, acc_v2[0..1]\u2194v10.lo, acc_v2[2..3]\u2194v10.hi, acc_v3[0..1]\u2194v11.lo, acc_v3[2..3]\u2194v11.hi, i\u2194r3, acc\u2194r2, acc_u1\u2194r4, acc_u2\u2194r5, acc_u3\u2194r6, i\u2194r3, acc\u2194r2), 19 concrete inputs agree\nnative backend: sum64: layer A \u2014 reduction vectorization \u00d71 under Oak.Reduction.vector16_eq, vector8_eq\nnative backend: sum64: 1 element guard(s) elided under the checker's own facts\nnative backend: sum64: 2 loop(s) bottom-tested, proven\nnative backend: asm unit sum64: proven equal to its Oak body at the bit level \u2014 2 data-dependent loops coupled inductively (i\u2194r3, acc_v0[0]\u2194v8.lo, acc_v0[1]\u2194v8.hi, acc_v1[0]\u2194v9.lo, acc_v1[1]\u2194v9.hi, acc_v2[0]\u2194v10.lo, acc_v2[1]\u2194v10.hi, acc_v3[0]\u2194v11.lo, acc_v3[1]\u2194v11.hi, i\u2194r3, acc\u2194r2), 19 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 2 of 2 verdicts from the verdict cache\n",
+    "native-identity": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\n  mov x19, x0\n  mov w20, w1\nhead_1:\n  mov w2, wzr\n  mov w3, wzr\nloop_4:\n  cmp w3, w20\n  b.hs done_5\n  cmp w3, w20\n  b.hs trap_3\n  ldr w9, [x19, w3, uxtw #2]\n  add w2, w2, w9\n  add w3, w3, #1\n  b loop_4\ndone_5:\n  mov w0, w2\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\nsum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\n  mov x19, x0\n  mov w20, w1\nhead_1:\n  mov x2, xzr\n  mov w3, wzr\nloop_4:\n  cmp w3, w20\n  b.hs done_5\n  cmp w3, w20\n  b.hs trap_3\n  ldr x9, [x19, w3, uxtw #3]\n  add x2, x2, x9\n  add w3, w3, #1\n  b loop_4\ndone_5:\n  mov x0, x2\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\nnative backend: asm unit sum32: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (i\u2194r3, acc\u2194r2) (loop 1 under the invariant (loop1.i ls len(v))), 19 concrete inputs agree\nnative backend: asm unit sum64: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (i\u2194r3, acc\u2194r2) (loop 1 under the invariant (loop1.i ls len(v))), 19 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 2 of 2 verdicts from the verdict cache\n",
+    "native-after": "sum32 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x4, x5, x6, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov w2, wzr\n  mov w3, wzr\n  sub w13, w1, #16\n  cmp w1, #16\n  b.lo done_5\n  cmp w3, w13\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #2\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #16\n  add v8.4s, v8.4s, v16.4s\n  add v9.4s, v9.4s, v17.4s\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.4s, v10.4s, v16.4s\n  add v11.4s, v11.4s, v17.4s\n  cmp w3, w13\n  b.ls loop_4\ndone_5:\n  mov w4, wzr\n  mov w5, wzr\n  mov w6, wzr\n  sub w14, w1, #4\n  cmp w1, #4\n  b.lo done_7\n  cmp w3, w14\n  b.hi done_7\nloop_6:\n  add x15, x0, w3, uxtw #2\n  ldp w9, w10, [x15]\n  add w3, w3, #4\n  add w2, w2, w9\n  add w4, w4, w10\n  ldp w9, w10, [x15, #8]\n  add w5, w5, w9\n  add w6, w6, w10\n  cmp w3, w14\n  b.ls loop_6\ndone_7:\n  cmp w3, w1\n  b.hs done_9\nloop_8:\n  ldr w9, [x0, w3, uxtw #2]\n  add w3, w3, #1\n  add w2, w2, w9\n  cmp w3, w1\n  b.lo loop_8\ndone_9:\n  add w10, w2, w4\n  add w9, w5, w6\n  add w2, w10, w9\n  mov w10, wzr\n  str w10, [sp, #144]\n  mov w10, wzr\n  str w10, [sp, #148]\n  add v16.4s, v8.4s, v9.4s\n  add v17.4s, v10.4s, v11.4s\n  mov w10, wzr\n  str w10, [sp, #152]\n  add v12.4s, v16.4s, v17.4s\n  mov w10, wzr\n  str w10, [sp, #156]\n  str q12, [sp, #144]\n  ldr w10, [sp, #144]\n  ldr w9, [sp, #148]\n  ldr w11, [sp, #156]\n  add w10, w10, w9\n  ldr w9, [sp, #152]\n  add w9, w9, w11\n  add w10, w10, w9\n  add w0, w2, w10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}\nsum64 = {\n  bind x0, w1 = v\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, d12, x2, x3, x0\n  frame 160\n  sub sp, sp, #160\n  stp x19, x20, [sp]\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  str d12, [sp, #112]\n  mov w20, w1\nhead_1:\n  movi v8.16b, #0\n  movi v9.16b, #0\n  movi v10.16b, #0\n  movi v11.16b, #0\n  mov x2, xzr\n  mov w3, wzr\n  sub w15, w1, #8\n  cmp w1, #8\n  b.lo done_5\n  cmp w3, w15\n  b.hi done_5\nloop_4:\n  add x10, x0, w3, uxtw #3\n  ldr q16, [x10]\n  ldr q17, [x10, #16]\n  add w3, w3, #8\n  add v8.2d, v8.2d, v16.2d\n  add v9.2d, v9.2d, v17.2d\n  ldr q16, [x10, #32]\n  ldr q17, [x10, #48]\n  add v10.2d, v10.2d, v16.2d\n  add v11.2d, v11.2d, v17.2d\n  cmp w3, w15\n  b.ls loop_4\ndone_5:\n  cmp w3, w1\n  b.hs done_7\nloop_6:\n  ldr x9, [x0, w3, uxtw #3]\n  add w3, w3, #1\n  add x2, x2, x9\n  cmp w3, w1\n  b.lo loop_6\ndone_7:\n  add v16.2d, v8.2d, v9.2d\n  add v17.2d, v10.2d, v11.2d\n  mov x10, xzr\n  str x10, [sp, #144]\n  add v12.2d, v16.2d, v17.2d\n  mov x10, xzr\n  str x10, [sp, #152]\n  str q12, [sp, #144]\n  ldr x10, [sp, #144]\n  ldr x9, [sp, #152]\n  add x10, x10, x9\n  add x0, x2, x10\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  ldr d12, [sp, #112]\n  ldp x19, x20, [sp]\n  add sp, sp, #160\n  ret\n}\nnative backend: sum32: layer A \u2014 reduction vectorization \u00d71 under Oak.Reduction.vector16_eq, vector8_eq; reduction unrolling \u00d71 under Oak.Reduction.unrolled4_eq\nnative backend: sum32: 5 element guard(s) elided under the checker's own facts\nnative backend: sum32: 3 loop(s) bottom-tested, proven\nnative backend: asm unit sum32: proven equal to its Oak body at the bit level \u2014 3 data-dependent loops coupled inductively (i\u2194r3, acc_v0[0..1]\u2194v8.lo, acc_v0[2..3]\u2194v8.hi, acc_v1[0..1]\u2194v9.lo, acc_v1[2..3]\u2194v9.hi, acc_v2[0..1]\u2194v10.lo, acc_v2[2..3]\u2194v10.hi, acc_v3[0..1]\u2194v11.lo, acc_v3[2..3]\u2194v11.hi, i\u2194r3, acc\u2194r2, acc_u1\u2194r4, acc_u2\u2194r5, acc_u3\u2194r6, i\u2194r3, acc\u2194r2), 19 concrete inputs agree\nnative backend: sum64: layer A \u2014 reduction vectorization \u00d71 under Oak.Reduction.vector16_eq, vector8_eq\nnative backend: sum64: 1 element guard(s) elided under the checker's own facts\nnative backend: sum64: 2 loop(s) bottom-tested, proven\nnative backend: asm unit sum64: proven equal to its Oak body at the bit level \u2014 2 data-dependent loops coupled inductively (i\u2194r3, acc_v0[0]\u2194v8.lo, acc_v0[1]\u2194v8.hi, acc_v1[0]\u2194v9.lo, acc_v1[1]\u2194v9.hi, acc_v2[0]\u2194v10.lo, acc_v2[1]\u2194v10.hi, acc_v3[0]\u2194v11.lo, acc_v3[1]\u2194v11.hi, i\u2194r3, acc\u2194r2), 19 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 2 of 2 verdicts from the verdict cache\n"
+  },
+  "samples": [
+    {
+      "elapsed_ns": 3241000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.44155120849609375
+    },
+    {
+      "elapsed_ns": 4029000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.5489076886858258
+    },
+    {
+      "elapsed_ns": 4821000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.6568091256277901
+    },
+    {
+      "elapsed_ns": 5684000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.774383544921875
+    },
+    {
+      "elapsed_ns": 5438000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.7408687046595982
+    },
+    {
+      "elapsed_ns": 4499000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.6129401070731026
+    },
+    {
+      "elapsed_ns": 4958000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.6754738943917411
+    },
+    {
+      "elapsed_ns": 5754000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 0,
+      "ns_per_element": 0.7839202880859375
+    },
+    {
+      "elapsed_ns": 4716000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.6425040108816964
+    },
+    {
+      "elapsed_ns": 5181000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.705855233328683
+    },
+    {
+      "elapsed_ns": 5479000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.7464545113699776
+    },
+    {
+      "elapsed_ns": 5821000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.7930483136858258
+    },
+    {
+      "elapsed_ns": 4675000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.636918204171317
+    },
+    {
+      "elapsed_ns": 4298000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.5855560302734375
+    },
+    {
+      "elapsed_ns": 5844000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.7961818150111607
+    },
+    {
+      "elapsed_ns": 3209000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 1,
+      "ns_per_element": 0.4371915544782366
+    },
+    {
+      "elapsed_ns": 4755000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.6478173392159599
+    },
+    {
+      "elapsed_ns": 5835000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.7949556623186383
+    },
+    {
+      "elapsed_ns": 4411000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.6009510585239956
+    },
+    {
+      "elapsed_ns": 4412000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.6010872977120536
+    },
+    {
+      "elapsed_ns": 6733000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.9172984531947544
+    },
+    {
+      "elapsed_ns": 5837000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.7952281406947544
+    },
+    {
+      "elapsed_ns": 3476000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.47356741768973215
+    },
+    {
+      "elapsed_ns": 4164000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 2,
+      "ns_per_element": 0.5672999790736607
+    },
+    {
+      "elapsed_ns": 5838000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.7953643798828125
+    },
+    {
+      "elapsed_ns": 4913000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.6693431309291294
+    },
+    {
+      "elapsed_ns": 5331000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.7262911115373883
+    },
+    {
+      "elapsed_ns": 4459000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.6074905395507812
+    },
+    {
+      "elapsed_ns": 5273000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.7183892386300224
+    },
+    {
+      "elapsed_ns": 3574000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.48691885811941965
+    },
+    {
+      "elapsed_ns": 4888000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.6659371512276786
+    },
+    {
+      "elapsed_ns": 4958000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 3,
+      "ns_per_element": 0.6754738943917411
+    },
+    {
+      "elapsed_ns": 5750000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.7833753313337054
+    },
+    {
+      "elapsed_ns": 5680000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.7738385881696429
+    },
+    {
+      "elapsed_ns": 7277000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.9914125714983258
+    },
+    {
+      "elapsed_ns": 5835000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.7949556623186383
+    },
+    {
+      "elapsed_ns": 4304000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.5863734654017857
+    },
+    {
+      "elapsed_ns": 4010000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "elapsed_ns": 4960000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.6757463727678571
+    },
+    {
+      "elapsed_ns": 5842000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 4,
+      "ns_per_element": 0.7959093366350446
+    },
+    {
+      "elapsed_ns": 5137000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.6998607090541294
+    },
+    {
+      "elapsed_ns": 5691000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.7753372192382812
+    },
+    {
+      "elapsed_ns": 5256000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.7160731724330357
+    },
+    {
+      "elapsed_ns": 3599000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.49032483782087055
+    },
+    {
+      "elapsed_ns": 4872000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.66375732421875
+    },
+    {
+      "elapsed_ns": 5276000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.7187979561941964
+    },
+    {
+      "elapsed_ns": 6337000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.8633477347237724
+    },
+    {
+      "elapsed_ns": 4905000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 5,
+      "ns_per_element": 0.6682532174246651
+    },
+    {
+      "elapsed_ns": 7310000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.9959084647042411
+    },
+    {
+      "elapsed_ns": 6605000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.8998598371233258
+    },
+    {
+      "elapsed_ns": 3461000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.4715238298688616
+    },
+    {
+      "elapsed_ns": 4013000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.5467278616768974
+    },
+    {
+      "elapsed_ns": 4465000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.6083079746791294
+    },
+    {
+      "elapsed_ns": 5248000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.7149832589285714
+    },
+    {
+      "elapsed_ns": 4415000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.6014960152762276
+    },
+    {
+      "elapsed_ns": 4411000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 6,
+      "ns_per_element": 0.6009510585239956
+    },
+    {
+      "elapsed_ns": 5251000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.7153919764927456
+    },
+    {
+      "elapsed_ns": 3209000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.4371915544782366
+    },
+    {
+      "elapsed_ns": 4010000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "elapsed_ns": 4468000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.6087166922433036
+    },
+    {
+      "elapsed_ns": 5252000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.7155282156808036
+    },
+    {
+      "elapsed_ns": 4429000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.6034033639090401
+    },
+    {
+      "elapsed_ns": 4414000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.6013597760881696
+    },
+    {
+      "elapsed_ns": 4462000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 7,
+      "ns_per_element": 0.6078992571149554
+    },
+    {
+      "elapsed_ns": 3217000,
+      "checksum": "00000000580d4af6",
+      "backend": "c",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.4382814679827009
+    },
+    {
+      "elapsed_ns": 4013000,
+      "checksum": "580d4af8e7859462",
+      "backend": "c",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.5467278616768974
+    },
+    {
+      "elapsed_ns": 4457000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.6072180611746651
+    },
+    {
+      "elapsed_ns": 5247000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.7148470197405133
+    },
+    {
+      "elapsed_ns": 4411000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.6009510585239956
+    },
+    {
+      "elapsed_ns": 5613000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.7647105625697544
+    },
+    {
+      "elapsed_ns": 4460000,
+      "checksum": "00000000580d4af6",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.6076267787388393
+    },
+    {
+      "elapsed_ns": 5316000,
+      "checksum": "580d4af8e7859462",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 7,
+      "calls": 1048576,
+      "round": 8,
+      "ns_per_element": 0.7242475237165179
+    },
+    {
+      "elapsed_ns": 6034000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.04495680332183838
+    },
+    {
+      "elapsed_ns": 17529000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.13060122728347778
+    },
+    {
+      "elapsed_ns": 9104000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.06783008575439453
+    },
+    {
+      "elapsed_ns": 13620000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.10147690773010254
+    },
+    {
+      "elapsed_ns": 55444000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.4130899906158447
+    },
+    {
+      "elapsed_ns": 57254000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.42657554149627686
+    },
+    {
+      "elapsed_ns": 6841000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.05096942186355591
+    },
+    {
+      "elapsed_ns": 21877000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 0,
+      "ns_per_element": 0.1629963517189026
+    },
+    {
+      "elapsed_ns": 13851000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.10319799184799194
+    },
+    {
+      "elapsed_ns": 6866000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.051155686378479004
+    },
+    {
+      "elapsed_ns": 14256000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.1062154769897461
+    },
+    {
+      "elapsed_ns": 59766000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.4452913999557495
+    },
+    {
+      "elapsed_ns": 58372000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.4349052906036377
+    },
+    {
+      "elapsed_ns": 6835000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.050924718379974365
+    },
+    {
+      "elapsed_ns": 15787000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.11762231588363647
+    },
+    {
+      "elapsed_ns": 6628000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 1,
+      "ns_per_element": 0.04938244819641113
+    },
+    {
+      "elapsed_ns": 6867000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.05116313695907593
+    },
+    {
+      "elapsed_ns": 13863000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.10328739881515503
+    },
+    {
+      "elapsed_ns": 63400000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.4723668098449707
+    },
+    {
+      "elapsed_ns": 73314000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.5462318658828735
+    },
+    {
+      "elapsed_ns": 7893000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.058807432651519775
+    },
+    {
+      "elapsed_ns": 13854000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.10322034358978271
+    },
+    {
+      "elapsed_ns": 6854000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.05106627941131592
+    },
+    {
+      "elapsed_ns": 13980000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 2,
+      "ns_per_element": 0.10415911674499512
+    },
+    {
+      "elapsed_ns": 13978000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.10414421558380127
+    },
+    {
+      "elapsed_ns": 56902000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.42395293712615967
+    },
+    {
+      "elapsed_ns": 60137000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.44805556535720825
+    },
+    {
+      "elapsed_ns": 6834000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.05091726779937744
+    },
+    {
+      "elapsed_ns": 14364000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.10702013969421387
+    },
+    {
+      "elapsed_ns": 6713000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.05001574754714966
+    },
+    {
+      "elapsed_ns": 12972000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.0966489315032959
+    },
+    {
+      "elapsed_ns": 7132000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 3,
+      "ns_per_element": 0.05313754081726074
+    },
+    {
+      "elapsed_ns": 64573000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.48110634088516235
+    },
+    {
+      "elapsed_ns": 55653000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.4146471619606018
+    },
+    {
+      "elapsed_ns": 6179000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.046037137508392334
+    },
+    {
+      "elapsed_ns": 12693000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.09457021951675415
+    },
+    {
+      "elapsed_ns": 6703000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.04994124174118042
+    },
+    {
+      "elapsed_ns": 18320000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.13649463653564453
+    },
+    {
+      "elapsed_ns": 6872000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.05120038986206055
+    },
+    {
+      "elapsed_ns": 14274000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 4,
+      "ns_per_element": 0.10634958744049072
+    },
+    {
+      "elapsed_ns": 78220000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.5827844142913818
+    },
+    {
+      "elapsed_ns": 6964000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.05188584327697754
+    },
+    {
+      "elapsed_ns": 14157000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.10547786951065063
+    },
+    {
+      "elapsed_ns": 6710000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.04999339580535889
+    },
+    {
+      "elapsed_ns": 12971000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.09664148092269897
+    },
+    {
+      "elapsed_ns": 6997000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.052131712436676025
+    },
+    {
+      "elapsed_ns": 13635000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.1015886664390564
+    },
+    {
+      "elapsed_ns": 65706000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 5,
+      "ns_per_element": 0.48954784870147705
+    },
+    {
+      "elapsed_ns": 6920000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.05155801773071289
+    },
+    {
+      "elapsed_ns": 13997000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.10428577661514282
+    },
+    {
+      "elapsed_ns": 7161000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.05335360765457153
+    },
+    {
+      "elapsed_ns": 30624000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.2281665802001953
+    },
+    {
+      "elapsed_ns": 6862000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.05112588405609131
+    },
+    {
+      "elapsed_ns": 15088000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.11241436004638672
+    },
+    {
+      "elapsed_ns": 62833000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.4681423306465149
+    },
+    {
+      "elapsed_ns": 116311000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 6,
+      "ns_per_element": 0.8665844798088074
+    },
+    {
+      "elapsed_ns": 14628000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.10898709297180176
+    },
+    {
+      "elapsed_ns": 7640000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.05692243576049805
+    },
+    {
+      "elapsed_ns": 14239000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.10608881711959839
+    },
+    {
+      "elapsed_ns": 14516000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.10815262794494629
+    },
+    {
+      "elapsed_ns": 16458000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.12262165546417236
+    },
+    {
+      "elapsed_ns": 59202000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.4410892724990845
+    },
+    {
+      "elapsed_ns": 65868000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.4907548427581787
+    },
+    {
+      "elapsed_ns": 6846000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 7,
+      "ns_per_element": 0.05100667476654053
+    },
+    {
+      "elapsed_ns": 6723000,
+      "checksum": "00000000dc7c3288",
+      "backend": "c",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.050090253353118896
+    },
+    {
+      "elapsed_ns": 30073000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "c",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.22406131029129028
+    },
+    {
+      "elapsed_ns": 6867000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.05116313695907593
+    },
+    {
+      "elapsed_ns": 14242000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.10611116886138916
+    },
+    {
+      "elapsed_ns": 63501000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.47311931848526
+    },
+    {
+      "elapsed_ns": 65733000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.489749014377594
+    },
+    {
+      "elapsed_ns": 6835000,
+      "checksum": "00000000dc7c3288",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.050924718379974365
+    },
+    {
+      "elapsed_ns": 13840000,
+      "checksum": "dc7c3a71b1c20800",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 4096,
+      "calls": 32768,
+      "round": 8,
+      "ns_per_element": 0.10311603546142578
+    },
+    {
+      "elapsed_ns": 8573000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.06387382745742798
+    },
+    {
+      "elapsed_ns": 17729000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.13209134340286255
+    },
+    {
+      "elapsed_ns": 8587000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.06397813558578491
+    },
+    {
+      "elapsed_ns": 17528000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.13059377670288086
+    },
+    {
+      "elapsed_ns": 60115000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.4478916525840759
+    },
+    {
+      "elapsed_ns": 93283000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.6950125098228455
+    },
+    {
+      "elapsed_ns": 8621000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.06423145532608032
+    },
+    {
+      "elapsed_ns": 19979000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 0,
+      "ns_per_element": 0.14885514974594116
+    },
+    {
+      "elapsed_ns": 17239000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.12844055891036987
+    },
+    {
+      "elapsed_ns": 8591000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.06400793790817261
+    },
+    {
+      "elapsed_ns": 30179000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.2248510718345642
+    },
+    {
+      "elapsed_ns": 59410000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.44263899326324463
+    },
+    {
+      "elapsed_ns": 59096000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.44029951095581055
+    },
+    {
+      "elapsed_ns": 10424000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.07766485214233398
+    },
+    {
+      "elapsed_ns": 17569000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.13089925050735474
+    },
+    {
+      "elapsed_ns": 8559000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 1,
+      "ns_per_element": 0.06376951932907104
+    },
+    {
+      "elapsed_ns": 8650000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.06444752216339111
+    },
+    {
+      "elapsed_ns": 17394000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.12959539890289307
+    },
+    {
+      "elapsed_ns": 111302000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.8292645215988159
+    },
+    {
+      "elapsed_ns": 118995000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.8865818381309509
+    },
+    {
+      "elapsed_ns": 9658000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.07195770740509033
+    },
+    {
+      "elapsed_ns": 18214000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.1357048749923706
+    },
+    {
+      "elapsed_ns": 10416000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.0776052474975586
+    },
+    {
+      "elapsed_ns": 21389000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 2,
+      "ns_per_element": 0.15936046838760376
+    },
+    {
+      "elapsed_ns": 20062000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.14947354793548584
+    },
+    {
+      "elapsed_ns": 77466000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.5771666765213013
+    },
+    {
+      "elapsed_ns": 62539000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.4659518599510193
+    },
+    {
+      "elapsed_ns": 11029000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.0821724534034729
+    },
+    {
+      "elapsed_ns": 19354000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.14419853687286377
+    },
+    {
+      "elapsed_ns": 8592000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.06401538848876953
+    },
+    {
+      "elapsed_ns": 18503000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.1378580927848816
+    },
+    {
+      "elapsed_ns": 10164000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 3,
+      "ns_per_element": 0.07572770118713379
+    },
+    {
+      "elapsed_ns": 60696000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.45222043991088867
+    },
+    {
+      "elapsed_ns": 60371000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.4497990012168884
+    },
+    {
+      "elapsed_ns": 9671000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.07205456495285034
+    },
+    {
+      "elapsed_ns": 18036000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.13437867164611816
+    },
+    {
+      "elapsed_ns": 10974000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.08176267147064209
+    },
+    {
+      "elapsed_ns": 19384000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.14442205429077148
+    },
+    {
+      "elapsed_ns": 10211000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.07607787847518921
+    },
+    {
+      "elapsed_ns": 19317000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 4,
+      "ns_per_element": 0.1439228653907776
+    },
+    {
+      "elapsed_ns": 73263000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.5458518862724304
+    },
+    {
+      "elapsed_ns": 8661000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.06452947854995728
+    },
+    {
+      "elapsed_ns": 19422000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.1447051763534546
+    },
+    {
+      "elapsed_ns": 11131000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.08293241262435913
+    },
+    {
+      "elapsed_ns": 19321000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.14395266771316528
+    },
+    {
+      "elapsed_ns": 10796000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.08043646812438965
+    },
+    {
+      "elapsed_ns": 20567000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.15323609113693237
+    },
+    {
+      "elapsed_ns": 61713000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 5,
+      "ns_per_element": 0.4597976803779602
+    },
+    {
+      "elapsed_ns": 10952000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.08159875869750977
+    },
+    {
+      "elapsed_ns": 20164000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.15023350715637207
+    },
+    {
+      "elapsed_ns": 12333000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.09188801050186157
+    },
+    {
+      "elapsed_ns": 17463000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.1301094889640808
+    },
+    {
+      "elapsed_ns": 10853000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.0808611512184143
+    },
+    {
+      "elapsed_ns": 27426000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.2043396234512329
+    },
+    {
+      "elapsed_ns": 58374000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.43492019176483154
+    },
+    {
+      "elapsed_ns": 63924000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 6,
+      "ns_per_element": 0.4762709140777588
+    },
+    {
+      "elapsed_ns": 18481000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.13769418001174927
+    },
+    {
+      "elapsed_ns": 8681000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.06467849016189575
+    },
+    {
+      "elapsed_ns": 17494000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.13034045696258545
+    },
+    {
+      "elapsed_ns": 9493000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.0707283616065979
+    },
+    {
+      "elapsed_ns": 20011000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.14909356832504272
+    },
+    {
+      "elapsed_ns": 67106000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.4999786615371704
+    },
+    {
+      "elapsed_ns": 73545000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.5479529500007629
+    },
+    {
+      "elapsed_ns": 8889000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 7,
+      "ns_per_element": 0.06622821092605591
+    },
+    {
+      "elapsed_ns": 8636000,
+      "checksum": "000000002dbfacc8",
+      "backend": "c",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.06434321403503418
+    },
+    {
+      "elapsed_ns": 19148000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "c",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.14266371726989746
+    },
+    {
+      "elapsed_ns": 9118000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-before",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.06793439388275146
+    },
+    {
+      "elapsed_ns": 19318000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-before",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.1439303159713745
+    },
+    {
+      "elapsed_ns": 58960000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-identity",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.4392862319946289
+    },
+    {
+      "elapsed_ns": 60925000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-identity",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.45392662286758423
+    },
+    {
+      "elapsed_ns": 13448000,
+      "checksum": "000000002dbfacc8",
+      "backend": "native-after",
+      "width": 32,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.10019540786743164
+    },
+    {
+      "elapsed_ns": 18556000,
+      "checksum": "2dc7ac6342080000",
+      "backend": "native-after",
+      "width": 64,
+      "elements": 1048576,
+      "calls": 128,
+      "round": 8,
+      "ns_per_element": 0.13825297355651855
+    }
+  ],
+  "identity_disabled_transforms": [
+    "strength-reduce",
+    "optir-emit",
+    "elide-guards",
+    "reuse-flags",
+    "hoist-invariants",
+    "unroll-reductions",
+    "vector-homes",
+    "late-cleanup",
+    "vectorize-reductions",
+    "vectorize-maps",
+    "unroll-vector-maps",
+    "vectorize-folds",
+    "vector-blocks",
+    "share-vector-addresses",
+    "multiply-add",
+    "value-select",
+    "reallocate",
+    "schedule",
+    "fuse",
+    "fuse-exits",
+    "rotate-loops"
+  ],
+  "load_before": "9:40  up 5 days,  3:45, 21 users, load averages: 60.95 39.41 33.12",
+  "load_after": "9:41  up 5 days,  3:46, 21 users, load averages: 75.41 43.65 34.74"
+}
