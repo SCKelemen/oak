@@ -1809,3 +1809,45 @@ function decode64_ordinary_bl_immediate_pure (op_code) = {
       offset = branch26_offset_pure(imm26)
     }
 }
+
+/* CBZ W-register subset of SEE 1176 / branch_conditional_compare_decode.
+ * The supplied rt_value represents _R[t], not a proved architectural read.
+ * Width/op admission is fail-closed: CBZ X and CBNZ are separate profiles.
+ * No PostDecode, PC read, BranchTo, fall-through, or exception is executed. */
+struct CBZ32Decode = {
+  encoding_valid : bool,
+  Rt : bits(5),
+  imm19 : bits(19),
+  offset : bits(64)
+}
+
+val branch19_offset_pure : bits(19) -> bits(64)
+
+function branch19_offset_pure (imm19) = {
+    let scaled : bits(21) = imm19 @ 0b00;
+    sail_sign_extend(scaled, 64)
+}
+
+val decode64_cbz32_pure : bits(32) -> CBZ32Decode
+
+function decode64_cbz32_pure (op_code) = {
+    let Rt : bits(5) = slice(op_code, 0, 5);
+    let imm19 : bits(19) = slice(op_code, 5, 19);
+    let encoding_valid : bool = (op_code & 0xFF000000) == 0x34000000;
+    struct {
+      encoding_valid = encoding_valid,
+      Rt = Rt,
+      imm19 = imm19,
+      offset = branch19_offset_pure(imm19)
+    }
+}
+
+/* aget_X at width 32, followed by IsZero(operand1) == true. The Boolean is
+ * only the branch predicate, and is meaningful for an admitted CBZ32 word. */
+val cbz32_condition_pure : (bits(5), bits(64)) -> bool
+
+function cbz32_condition_pure (Rt, rt_value) = {
+    let operand1 : bits(32) = if Rt == 0b11111 then Zeros(32)
+                             else slice(rt_value, 0, 32);
+    operand1 == Zeros(32)
+}

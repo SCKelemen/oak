@@ -4,6 +4,7 @@ import Oak.AArch64Encoding
 import Oak.AArch64ReturnEncoding
 import Oak.AArch64DirectBranchEncoding
 import Oak.AArch64CallBranchEncoding
+import Oak.AArch64CompareBranchEncoding
 import Oak.AArch64EventControl
 import Oak.AArch64SysReg
 import Oak.AArch64Barrier
@@ -1842,6 +1843,102 @@ theorem bl_word_rejected_by_ordinary_b_projection :
     (Out.Functions.decode64_ordinary_b_immediate_pure
       0x94000003#32).encoding_valid = false := by
   rfl
+
+/-! ## CBZ W-register guard
+
+This restricted projection reads supplied raw register bits, not architectural
+state. It pins SEE 1176's 32-bit zero-test arm and signed branch offset. The
+official decoder's PostDecode and the conditional BranchTo call are not
+executed here; PC, register provenance, fall-through, and traps remain open.
+-/
+
+theorem cbz32_offset_generated_eq_signExtend (imm19 : BitVec 19) :
+    Out.Functions.branch19_offset_pure imm19 =
+      (imm19 ++ 0#2).signExtend 64 := by
+  rfl
+
+theorem cbz32_offset_generated_toInt (imm19 : BitVec 19) :
+    (Out.Functions.branch19_offset_pure imm19).toInt = imm19.toInt * 4 := by
+  rw [cbz32_offset_generated_eq_signExtend,
+    BitVec.toInt_signExtend_of_le (by omega), BitVec.toInt_append]
+  simp
+  omega
+
+theorem cbz32_generated_decode_exact (rt : BitVec 5) (imm19 : BitVec 19) :
+    Out.Functions.decode64_cbz32_pure
+      (Oak.AArch64CompareBranchEncoding.encodeCbz32 rt imm19) = {
+        encoding_valid := true
+        Rt := rt
+        imm19 := imm19
+        offset := (imm19 ++ 0#2).signExtend 64
+      } := by
+  simp only [Out.Functions.decode64_cbz32_pure, Sail.BitVec.slice]
+  rw [Oak.AArch64CompareBranchEncoding.encodeCbz32_extract_rt,
+    Oak.AArch64CompareBranchEncoding.encodeCbz32_extract_imm19,
+    cbz32_offset_generated_eq_signExtend]
+  congr 1
+  simp [Oak.AArch64CompareBranchEncoding.encodeCbz32,
+    Oak.AArch64CompareBranchEncoding.cbz32]
+  bv_decide
+
+/-- Rt=31 is WZR, never SP. Other W-register operands use only the low bits
+    of the externally supplied raw X-register value. -/
+theorem cbz32_condition_generated_eq_cbz (rt : BitVec 5) (raw : BitVec 64) :
+    Out.Functions.cbz32_condition_pure rt raw =
+      Oak.AssemblerSemantics.cbz
+        (if rt = 31#5 then 0#32 else raw.extractLsb' 0 32) := by
+  simp only [Out.Functions.cbz32_condition_pure, Out.Functions.Zeros,
+    Sail.BitVec.slice, Oak.AssemblerSemantics.cbz, BitVec.zero_eq]
+  bv_decide
+
+theorem cbz32_wzr_condition (discarded : BitVec 64) :
+    Out.Functions.cbz32_condition_pure 31#5 discarded = true := by
+  rw [cbz32_condition_generated_eq_cbz]
+  simp [Oak.AssemblerSemantics.cbz]
+
+theorem bbm_guard_generated_decode_exact :
+    Out.Functions.decode64_cbz32_pure
+      Oak.AArch64CompareBranchEncoding.bbmGuard = {
+        encoding_valid := true
+        Rt := 1#5
+        imm19 := 7#19
+        offset := 28#64
+      } := by
+  rfl
+
+/-- A supplied span length and arbitrary upper X1 bits select the guard's
+    branch predicate exactly when that 32-bit length is zero. -/
+theorem bbm_guard_condition_iff_empty (upper length : BitVec 32) :
+    Out.Functions.cbz32_condition_pure
+      (Out.Functions.decode64_cbz32_pure
+        Oak.AArch64CompareBranchEncoding.bbmGuard).Rt
+      (upper ++ length) = true ↔ length = 0 := by
+  rw [bbm_guard_generated_decode_exact, cbz32_condition_generated_eq_cbz]
+  have low : (upper ++ length).extractLsb' 0 32 = length := by bv_decide
+  rw [low]
+  simp [Oak.AssemblerSemantics.cbz]
+
+theorem bbm_guard_nonempty_condition_false (upper length : BitVec 32)
+    (nonempty : length ≠ 0) :
+    Out.Functions.cbz32_condition_pure 1#5 (upper ++ length) = false := by
+  rw [cbz32_condition_generated_eq_cbz]
+  have low : (upper ++ length).extractLsb' 0 32 = length := by bv_decide
+  rw [low]
+  simp [Oak.AssemblerSemantics.cbz]
+  exact nonempty
+
+/-- Arithmetic of the selected BranchTo argument only. `pc` is supplied, not
+    read from Arm state, and the conditional call is not executed. -/
+theorem bbm_guard_supplied_target (pc : BitVec 64) :
+    pc + (Out.Functions.decode64_cbz32_pure
+      Oak.AArch64CompareBranchEncoding.bbmGuard).offset = pc + 28#64 := by
+  rw [bbm_guard_generated_decode_exact]
+
+theorem cbz32_rejects_other_classes :
+    (Out.Functions.decode64_cbz32_pure 0x350000e1#32).encoding_valid = false ∧
+    (Out.Functions.decode64_cbz32_pure 0xb40000e1#32).encoding_valid = false ∧
+    (Out.Functions.decode64_cbz32_pure 0#32).encoding_valid = false := by
+  decide
 
 /-! ## Ordinary direct BL-immediate decoder dispatch
 

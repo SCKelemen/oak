@@ -1341,6 +1341,20 @@ identity only. It does not read architectural PC, write X30, execute
 `PostDecode`/`BranchTo`, establish target or source-label validity, prove
 object/link correctness, or observe a call.
 
+The `CBZ W` compare-branch slice is also connected to generated Sail Lean.
+`Oak.AArch64CompareBranchEncoding` pins `CBZ_32_compbranch` and proves the
+fixed bits, exact Rt/imm19 fields, signed endpoint words, and BBM guard
+`0x340000e1`. The Sail bridge proves the signed byte offset and equality of
+the generated zero predicate with `Oak.AssemblerSemantics.cbz`, including
+WZR behavior and independence from the upper 32 register bits. The BBM guard
+selects a supplied length's zero case and offset 28. Go gates check all 32 Rt
+values at six displacements, range/alignment rejection, and Arm's complete
+SEE-1176 decode, compare-branch, register-read, and zero-test source routes.
+The restricted decoder rejects CBNZ and 64-bit CBZ. Register/PC provenance,
+dynamic `PostDecode`/`BranchTo`, fall-through and trap execution remain open;
+no control-flow occurrence, memory-ordering effect, or proof-admission upgrade
+is inferred from these pure results.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization
