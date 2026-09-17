@@ -529,6 +529,16 @@ pub blake3_update: (state: Blake3State, src: []u8): Blake3State {
     next.block[next.block_len] = src[i]
     next.block_len = next.block_len + u32(1)
     i = i + u32(1)
+    // Until this block fills, neither boundary action can run. Keep the
+    // first checked write above so malformed public states trap as before;
+    // stop at the end of input without closing the final buffered block.
+    at: u32 = next.block_len
+    while at < u32(64) && i < len(src) {
+      next.block[at] = src[i]
+      at = at + u32(1)
+      i = i + u32(1)
+    }
+    next.block_len = at
   }
   next
 }

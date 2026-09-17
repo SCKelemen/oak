@@ -1778,6 +1778,61 @@ regressions passed again. Fresh default emission on the integrated branch
 produced **byte-identical BLAKE3 C and native object files** to the frozen
 baseline and independently proved all eight chunks with no cached verdict.
 
+## BLAKE3: batch bytes inside the input block, 2026-09-17
+
+Against `559dae70`, `hash.blake3_update` keeps its original first-byte
+boundary handling and checked write, then fills the remaining block through
+a guarded inner loop. Its scalar position is written back to `block_len`
+once. A full final block/chunk stays buffered until more input arrives; the
+first checked write still traps on malformed public state. No unsafe copy
+builtin, compression change, numerical relaxation or new optimizer flag is
+introduced.
+
+This is a **library input-handling improvement**, not faster native compressor
+code. Apple clang turns the interior byte copy into a bounded `memcpy`. The
+C-compiled update symbol grows **464 → 696 bytes**, with the same 2,096-byte
+frame. Both native compressor emissions freshly prove all eight result chunks
+at the default budget, with no cached verdict, and produce **byte-identical
+objects**. The first cohort explicitly links that same object into both
+variants; the second compares entirely C-compiled hashes.
+
+| Cohort / run | Baseline ms/MiB | Batched ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 4.121 | 2.969 | 0.695 | 18/21 |
+| Native compression fixed / B, reversed | 5.208 | 3.507 | 0.687 | 20/21 |
+| Native compression fixed / C | 4.782 | 3.913 | 0.716 | 14/21 |
+| Pure C / A | 4.775 | 3.371 | 0.710 | 19/21 |
+| Pure C / B, reversed | 3.627 | 2.613 | 0.759 | 21/21 |
+| Pure C / C | 3.129 | 2.212 | 0.713 | 21/21 |
+
+Each run rotates three separately loaded libraries on one thread, with one
+warmup and 21 samples of 100 complete 1 MiB hashes per variant. The third
+library is the original pure-C hash in the first cohort and the original
+native-compressor hash in the second. Run B reverses the first two arguments
+in each cohort. Every digest byte agrees at fourteen boundary lengths and
+after every sample. No builds/tests from this experiment overlapped timing;
+the non-isolated M4 Max had one-minute load readings of 41.5–58.4 at run
+boundaries. These runs show a repeatable **28–31% reduction in paired elapsed
+time with native compression fixed, and 24–29% with pure C**, not a precise
+isolated-host speedup or a short-input performance claim.
+
+The frozen original byte loop and current implementation also agree in the C
+backend and interpreter on every state field, all 65 starting block offsets,
+empty/exact-fill/multi-block inputs, patterned/random split streams and Go
+reference digests. Tests preserve empty malformed states and bounds traps on
+nonempty input with `block_len = 65` or `UINT32_MAX`.
+
+`Oak.Stdlib.Blake3UpdateLaws` pins the generated inner loop and proves that
+its scalar-index/writeback result is a sequence of original guarded byte
+steps, leaving other state fields unchanged. This is deliberately scoped to
+the extracted totalized array operations; it is **not** a whole-update native
+proof, a proof of C `memcpy`, or an old/new extraction equality at identical
+fuel. Source trap behavior is covered separately by the differential tests.
+
+[All raw samples, artifact hashes, commands and verification scope](results/blake3-buffered-input-2026-09-17.json).
+The gain is retained for its measured runtime benefit despite the larger
+update symbol. It does not establish parity between the native and C backends.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

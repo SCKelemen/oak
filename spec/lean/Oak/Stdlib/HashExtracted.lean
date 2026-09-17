@@ -569,6 +569,16 @@ def blake3_push_chunk (state : Blake3State) (cv : Array UInt32) (fuel : Nat) : O
   let next := { next with block_len := (0 : UInt32) }
   pure next
 
+def blake3_update.loop2 (src : Array UInt8) (next : Blake3State) (i : UInt32) (at_ : UInt32) : Nat → Option (Blake3State × UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (at_ < (64 : UInt32))) && (decide (i < (src.size.toUInt32)))) then do
+      let next := { next with block := next.block.setIfInBounds at_.toNat (src.getD i.toNat (0 : UInt8)) }
+      let at_ := (at_ + (1 : UInt32))
+      let i := (i + (1 : UInt32))
+      blake3_update.loop2 src next i at_ fuel
+    else pure (next, i, at_)
+
 def blake3_update.loop1 (src : Array UInt8) (next : Blake3State) (i : UInt32) : Nat → Option (Blake3State × UInt32)
   | 0 => none
   | fuel + 1 => do
@@ -589,6 +599,9 @@ def blake3_update.loop1 (src : Array UInt8) (next : Blake3State) (i : UInt32) : 
       let next := { next with block := next.block.setIfInBounds next.block_len.toNat (src.getD i.toNat (0 : UInt8)) }
       let next := { next with block_len := (next.block_len + (1 : UInt32)) }
       let i := (i + (1 : UInt32))
+      let at_ : UInt32 := next.block_len
+      let (next, i, at_) ← blake3_update.loop2 src next i at_ fuel
+      let next := { next with block_len := at_ }
       blake3_update.loop1 src next i fuel
     else pure (next, i)
 

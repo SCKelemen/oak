@@ -191,6 +191,7 @@ import Oak.Stdlib.Base32StrictLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Stdlib.UuidLaws
 import Oak.Stdlib.HashLaws
+import Oak.Stdlib.Blake3UpdateLaws
 import Oak.Stdlib.Sha256Laws
 import Oak.Stdlib.KeyTree
 import Oak.Stdlib.NormalizeTables

@@ -1,0 +1,722 @@
+{
+  "schema": "oak-native-runtime-experiment-v1",
+  "date": "2026-09-17",
+  "experiment": "Batch BLAKE3 input bytes inside a block while retaining the original checked boundary step",
+  "status": "retained; exact library source optimization, no new compiler transform or semantic relaxation",
+  "baseline_commit": "559dae7046145ddb5b5ddbc91a019457bbec3762",
+  "scope": "Complete 1 MiB BLAKE3 hash. First cohort holds the native compression object fixed and changes the C-compiled update loop. Second cohort compares fresh pure-C builds. This is not a native whole-update proof or a measured native compiler code-generation improvement.",
+  "decision": "All three runs in each cohort improve: median paired candidate/baseline ratios 0.687–0.716 with native compression fixed and 0.710–0.759 with pure C. Retain the source change. Shared-host timing supports a repeatable trend, not an isolated-host speedup guarantee or a short-input claim.",
+  "change": {
+    "source": "stdlib/hash.oak: blake3_update",
+    "description": "Keep the old first-byte boundary handling and checked write. Then copy remaining bytes while scalar at < 64 and i < len(src); write back block_len once. No boundary helper can run during these interior bytes, and the last full block/chunk remains buffered if input ends.",
+    "safety": "No unchecked copy builtin or new alias assumption. Preserve source write/read order and first invalid-access trap for malformed public block_len. The scalar index cannot wrap inside the guarded block interior.",
+    "compiler_observation": "Apple clang recognizes a bounded memcpy for the interior copy. C update symbol grows by 232 bytes; native compressor bytes do not change."
+  },
+  "static_metrics": {
+    "pure_C_update": {
+      "baseline_symbol_bytes": 464,
+      "candidate_symbol_bytes": 696,
+      "baseline_frame_bytes": 2096,
+      "candidate_frame_bytes": 2096,
+      "measurement": "Mach-O symbol address interval from oak_hash__blake3_uupdate to oak_hash__blake3_ufinal, including trap/stack-check tails; frame from prologue allocation."
+    },
+    "native_compressor": {
+      "assembler_instructions": 1175,
+      "encoded_instructions": 1179,
+      "frame_bytes": 288,
+      "memory_instructions": 358,
+      "object_identical": true
+    }
+  },
+  "verification": {
+    "Lean_scope": "Oak.Stdlib.Blake3UpdateLaws pins the generated scalar-at loop2, proves its successful guarded replay and exact stopping guard, and equates deferred block_len writeback with repeated original byte transitions. Non-buffer fields are preserved and arbitrary boundary code is unobserved during interior steps. The final corollary specializes to the outer initialization at := next.block_len.",
+    "Lean_limits": "Theorems use extracted totalized Array.setIfInBounds/getD semantics, not source out-of-bounds traps. They do not prove whole-update equality at identical fuel, C memcpy correctness, or a whole-update native verdict. Runtime traps are tested separately. No axiom or sorry added.",
+    "Lean_tests": "lake build Oak.Stdlib.HashExtracted passed; lake env lean Oak/Stdlib/Blake3UpdateLaws.lean passed (0.79s).",
+    "native_compression": "Both fresh emissions prove all 8 result chunks, 0 of 1 verdicts cached, default verification budget. Native object is byte-identical; both mixed libraries explicitly link baseline.o.",
+    "baseline_recipe": "unroll-constant+schedule+reallocate",
+    "candidate_recipe": "unroll-constant+schedule+reallocate+late-cleanup",
+    "recipe_note": "The final cleanup recipe suffix differs in the reports but emits exactly the same object bytes. No compiler implementation is changed by this increment.",
+    "runtime": "All 32 digest bytes agree across all three variants at lengths 0,1,63,64,65,1023,1024,1025,2048,2049,3072,4096,5000,1048576, and after every timed sample.",
+    "differential": "go test ./compiler -run '^TestE2EBlake3Update' -count=1 -timeout=10m -v passed (7.822s). C and interpreter compare all 4 scalar fields and all 504 array elements against the frozen original loop: 65 starting offsets, ordinary/final chunk blocks, empty/exact-fill/multi-block cases, valid pattern/random split streams and independent Go digests. Malformed block_len 65/MAX preserves nonempty bounds traps and empty state.",
+    "existing_tests": "go test ./compiler -run '^(TestE2EHashBlake3|TestBlake3ReferenceAnchors|TestLeanStdlibExtract)$' -count=1 -timeout=5m passed (16.168s), after the final scalar-at source refinement."
+  },
+  "host": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.3.1 (a), build 25D771280a",
+    "cc": "Apple clang 21.0.0 (clang-2100.1.1.101)",
+    "go": "go1.27.1 darwin/arm64",
+    "limitations": "Shared loaded host; cores, frequency, thermal state and unrelated activity uncontrolled. No builds/tests from this experiment overlapped the six runtime runs."
+  },
+  "protocol": {
+    "timer": "CLOCK_MONOTONIC; nanoseconds per complete 1 MiB hash",
+    "rounds_per_sample": 100,
+    "samples_per_variant_per_run": 21,
+    "runs_per_cohort": 3,
+    "warmup": "one hash per variant",
+    "order": "One thread, rotating interleaved variants; distinct RTLD_LOCAL libraries. Run B reverses the first two arguments in each cohort.",
+    "warning": "Raw before/after labels are argument positions, not normalized baseline/candidate identities; B is reversed. Raw c-control is baseline pure C in the mixed cohort but baseline native compression in the pure-C cohort. Normalize by library_order and control fields."
+  },
+  "artifacts_sha256": {
+    "baseline.stdlib/hash.oak": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+    "candidate.stdlib/hash.oak": "a61ffbed88c4035d47e3880725d034c4a6d8adf67df3b0d62b1be0eb27469541",
+    "benchmarks/kernels/oak/kernels.oak": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+    "benchmarks/native/blake3_same_process.c": "6b5ad95417d3498dd6bcc8f9440ce5bfc3457180dbd444a5d0c49d0ef981a692",
+    "baseline.object": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "candidate.object": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "baseline.native-companion.c": "4e057f67fe3a6e90d9b2c01890a75418a4ea050fb7283fbf36f0f148bd5e2b0e",
+    "candidate.native-companion.c": "82252df6fbf71a7dc4d2e51e0770a175ec9bf25290c982680388dd5f7b0a577c",
+    "baseline.pure-c.c": "d04a5bacd951d73ec15fd16a86d859bfd17f726f3cb41f9ba3e2064957783994",
+    "candidate.pure-c.c": "29d62acc1e77291911cf4c52908e9849fca1bc9a0f243d9c1a045e91d4cbf144",
+    "baseline.native.dylib": "49fcc034d259e386483336df2957ac5576d11c0eaaa6094768ec901ae45d14da",
+    "candidate.native.dylib": "782154c5b28299d21ae580fb979eb0ffaf2a94cc6ff605aa83e92f6dcb359c6e",
+    "baseline.pure-c.dylib": "6b52fbe5156e143498c9256d7f92bdd32ac8f5f1d325a19409467a450b160c14",
+    "candidate.pure-c.dylib": "ffebf0850e576b8d2ce01ba0ea97f8bfebb5d396f44326c81617072d650f32fd",
+    "baseline.emitter": "3cf09cde187aec8e2dc876d33174521024a0eaedb4e0d4de2f5862414fdc7f32",
+    "candidate.emitter": "daf0033286ec0d248d62e2479a07a6bbc7db29286f161dbb6249a11acc3c3dc4",
+    "baseline.compiler": "f1e4c3b2afaf317610ea8a05a8fde95661d891abd1a795300e5a57e26223a533",
+    "candidate.compiler": "5c98d3fc2d8c4b13acd63b322f8a2fd8b3498e90f7aec076ab7cc0f874a81172",
+    "harness": "76311298277475d9a2ab059f4c13ed764c6ef1f259446db1412059ef917a50d1"
+  },
+  "reproduction": [
+    "Build baseline at 559dae70 and candidate with only this stdlib/hash.oak source change. Both compiler binaries embed that same VCS revision (candidate dirty); compiler implementation unchanged.",
+    "go build -o OUT/emit ./benchmarks/native/emit; go build -o OUT/oak .",
+    "env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_NATIVE_TIMING=1 OAK_NATIVE_DUMP=1 OUT/emit benchmarks/kernels/oak OUT/variant",
+    "Require baseline.o and candidate.o byte-identical. Link baseline.c/candidate.c separately, both with baseline.o: cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main VARIANT.c baseline.o -o VARIANT.dylib",
+    "Fresh pure-C builds: OUT/oak build -o OUT/VARIANT-c.c benchmarks/kernels/oak; cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main OUT/VARIANT-c.c -o OUT/VARIANT-c.dylib",
+    "cc -std=c99 -O3 -Wall -Wextra -Werror benchmarks/native/blake3_same_process.c -o OUT/same-process",
+    "Pause experiment builds/tests. Mixed cohort: absolute baseline.dylib candidate.dylib baseline-c.dylib paths, then counts 100 21. Repeat swapping first two arguments, then original order.",
+    "Pure-C cohort: absolute baseline-c.dylib candidate-c.dylib baseline.dylib paths, then 100 21. Repeat reversed, then original. Preserve every raw run and host-load boundary, not only favorable samples."
+  ],
+  "runs": [
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "A",
+      "library_order": [
+        "baseline",
+        "candidate"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 53.93,
+      "one_minute_load_end": 54.98,
+      "baseline_median_ns": 4121110,
+      "candidate_median_ns": 2968620,
+      "control_median_ns": 5025720,
+      "ratio_of_medians": 0.7203447614841633,
+      "median_paired_ratio": 0.6950093961856902,
+      "pairs_faster": 18,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              8463980,
+              6432300,
+              3811530,
+              4014330,
+              3801270,
+              5157110,
+              4204260,
+              3909660,
+              6692900,
+              8420950,
+              4859060,
+              4799820,
+              3906920,
+              3423590,
+              5212110,
+              3770740,
+              3328280,
+              4121110,
+              4616250,
+              3548430,
+              3593000
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              3647940,
+              3380960,
+              2642800,
+              2968620,
+              2568320,
+              3419300,
+              5699140,
+              2630730,
+              7202630,
+              2753000,
+              2645630,
+              3335920,
+              3253570,
+              2891440,
+              4031790,
+              3147630,
+              2447330,
+              2626370,
+              2793710,
+              4386460,
+              2881740
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              6936230,
+              3565710,
+              4760110,
+              7349390,
+              5025720,
+              3448390,
+              4675600,
+              5641550,
+              6713230,
+              4011670,
+              5131740,
+              3410710,
+              5284440,
+              4182620,
+              4071940,
+              5298390,
+              3257500,
+              5030940,
+              5176240,
+              5725990,
+              3384100
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "B-reversed",
+      "library_order": [
+        "candidate",
+        "baseline"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 51.44,
+      "one_minute_load_end": 50.19,
+      "baseline_median_ns": 5208180,
+      "candidate_median_ns": 3506830,
+      "control_median_ns": 4565160,
+      "ratio_of_medians": 0.6733311828700237,
+      "median_paired_ratio": 0.6865928195825928,
+      "pairs_faster": 20,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              3021550,
+              2760890,
+              3908940,
+              3291540,
+              2640030,
+              3916980,
+              3476520,
+              3159330,
+              4931900,
+              3506830,
+              5618630,
+              2886810,
+              3343390,
+              4284700,
+              4118170,
+              3723550,
+              2856040,
+              3533890,
+              3344250,
+              6037470,
+              4015030
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              4776100,
+              4335970,
+              5208180,
+              4313650,
+              5215040,
+              3743330,
+              5177540,
+              4268100,
+              7720620,
+              6549680,
+              6766080,
+              5988790,
+              3916310,
+              6985290,
+              5997980,
+              4831490,
+              5479130,
+              5119090,
+              5318670,
+              6058070,
+              4059870
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              4828400,
+              3481180,
+              6873340,
+              5016990,
+              3864090,
+              4417120,
+              5954750,
+              3436830,
+              7127280,
+              7036510,
+              4297540,
+              4565160,
+              6830480,
+              6144270,
+              5271310,
+              5562180,
+              4527970,
+              4536800,
+              3541150,
+              4483480,
+              4483660
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "C",
+      "library_order": [
+        "baseline",
+        "candidate"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 48.34,
+      "one_minute_load_end": 58.36,
+      "baseline_median_ns": 4782220,
+      "candidate_median_ns": 3912730,
+      "control_median_ns": 4282630,
+      "ratio_of_medians": 0.8181827686722902,
+      "median_paired_ratio": 0.7162767992556602,
+      "pairs_faster": 14,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              4793510,
+              5024140,
+              3569640,
+              3911190,
+              8817580,
+              3711150,
+              5675130,
+              4653520,
+              4344640,
+              3851440,
+              3642230,
+              3769360,
+              9129870,
+              4141150,
+              3500730,
+              4782220,
+              5748000,
+              5495060,
+              5112170,
+              5062820,
+              5647430
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              3433480,
+              3581700,
+              4365600,
+              5941220,
+              4486090,
+              4352930,
+              2701320,
+              4158330,
+              6078460,
+              7199100,
+              2512560,
+              6092350,
+              2635470,
+              2570010,
+              4509520,
+              3912730,
+              2889260,
+              3719840,
+              3460990,
+              4903820,
+              2938840
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              6724180,
+              3830380,
+              4386670,
+              5350190,
+              3490860,
+              6524340,
+              4842200,
+              5324060,
+              3282880,
+              3467810,
+              4385680,
+              3215830,
+              3733760,
+              4093170,
+              4055630,
+              4282630,
+              4175560,
+              4023580,
+              6311510,
+              4947730,
+              4402730
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "A",
+      "library_order": [
+        "baseline",
+        "candidate"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 55.37,
+      "one_minute_load_end": 54.85,
+      "baseline_median_ns": 4774650,
+      "candidate_median_ns": 3371060,
+      "control_median_ns": 4668040,
+      "ratio_of_medians": 0.7060329029352936,
+      "median_paired_ratio": 0.7098317554263885,
+      "pairs_faster": 19,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              5117200,
+              5447390,
+              4554420,
+              5382370,
+              4450000,
+              3658660,
+              6941500,
+              7304800,
+              3485020,
+              4240850,
+              3916730,
+              3952160,
+              4939650,
+              4863490,
+              4774650,
+              3403650,
+              3932640,
+              3863240,
+              8009250,
+              5084050,
+              5370980
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              2572730,
+              3378210,
+              4656530,
+              4095980,
+              2755080,
+              4012510,
+              2920200,
+              3730500,
+              3371060,
+              3010290,
+              3366530,
+              3756800,
+              3382960,
+              2476420,
+              3115570,
+              2523070,
+              3695450,
+              3340340,
+              3770460,
+              4291440,
+              2449700
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              6061940,
+              4020270,
+              6889020,
+              3379860,
+              4864160,
+              7526810,
+              5933050,
+              3591720,
+              4302850,
+              5772640,
+              4628850,
+              3703010,
+              4668040,
+              4380680,
+              3678030,
+              4801700,
+              5373910,
+              5706980,
+              5793450,
+              3990130,
+              4576660
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "B-reversed",
+      "library_order": [
+        "candidate",
+        "baseline"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 50.81,
+      "one_minute_load_end": 50.63,
+      "baseline_median_ns": 3626540,
+      "candidate_median_ns": 2612720,
+      "control_median_ns": 3618500,
+      "ratio_of_medians": 0.7204442802230225,
+      "median_paired_ratio": 0.7592417640236157,
+      "pairs_faster": 21,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              3258280,
+              2982310,
+              3003610,
+              3666490,
+              3336250,
+              3785700,
+              2445680,
+              2612720,
+              2611860,
+              2359540,
+              2299720,
+              2820430,
+              2618860,
+              2427560,
+              2487790,
+              2409020,
+              3013930,
+              2102980,
+              2282120,
+              2250540,
+              2666830
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              3660060,
+              3718250,
+              3626540,
+              4319760,
+              3366830,
+              4071710,
+              3272470,
+              4858700,
+              3440090,
+              4244270,
+              4117920,
+              4031610,
+              3301640,
+              4868990,
+              3291280,
+              4067550,
+              3276200,
+              3505390,
+              2901290,
+              3222830,
+              2992270
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              3599640,
+              5753720,
+              3584650,
+              4708730,
+              3950070,
+              3924800,
+              3557800,
+              3886100,
+              4788750,
+              3618500,
+              6702460,
+              3179580,
+              4114640,
+              4095570,
+              4150700,
+              3379040,
+              3392410,
+              3430600,
+              2943160,
+              3232270,
+              3127670
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "C",
+      "library_order": [
+        "baseline",
+        "candidate"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 47.56,
+      "one_minute_load_end": 41.52,
+      "baseline_median_ns": 3129210,
+      "candidate_median_ns": 2211910,
+      "control_median_ns": 3254700,
+      "ratio_of_medians": 0.7068589196634294,
+      "median_paired_ratio": 0.7126500168243167,
+      "pairs_faster": 21,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [
+              3880440,
+              3453080,
+              3187450,
+              4910010,
+              3766750,
+              3209640,
+              3028750,
+              2913200,
+              3023120,
+              3536290,
+              2920630,
+              3129210,
+              2817440,
+              2851250,
+              3224140,
+              2928090,
+              3170090,
+              2800090,
+              2754920,
+              4529570,
+              2800260
+            ]
+          },
+          {
+            "impl": "after",
+            "samples": [
+              2211910,
+              2392910,
+              2357830,
+              2441950,
+              2737030,
+              2287350,
+              2151840,
+              2116670,
+              2407290,
+              2226320,
+              2094420,
+              2115470,
+              2768000,
+              2018860,
+              2240700,
+              2247990,
+              2060790,
+              2028970,
+              2026080,
+              2062440,
+              2207670
+            ]
+          },
+          {
+            "impl": "c-control",
+            "samples": [
+              3254700,
+              3707150,
+              3588600,
+              3288180,
+              3730910,
+              3259760,
+              3161050,
+              2927060,
+              3705420,
+              2978440,
+              3148750,
+              3778540,
+              2933430,
+              2881520,
+              2894130,
+              3365130,
+              3420840,
+              3205980,
+              2925490,
+              3004140,
+              3675430
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
