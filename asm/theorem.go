@@ -87,6 +87,12 @@ type Guard struct {
 type Declarations struct {
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// Constants are the program's folded scalar constants, by name. A
+	// theorem that names one reads its value, as a body lowered for the
+	// native backend does: without them the decider met an identifier
+	// that is not a parameter and left the theorem open, so a property
+	// stated over a named constant had to be restated over its literal.
+	Constants map[string]Constant
 }
 
 // DecideTheoremWith is DecideTheorem over a program whose refinements are
@@ -128,6 +134,7 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 	lowering.functions = functions
 	lowering.guards = guards
 	lowering.records, lowering.adts = decls.Records, decls.ADTs
+	lowering.constants = decls.Constants
 	lowering.trapsTracked = true
 	for _, param := range sig.Parameters {
 		if _, _, ok := contractBits(param.Type); ok {
@@ -159,6 +166,16 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 	if len(lowering.loops) > 0 {
 		return undecided("the body has a data-dependent loop")
 	}
+	// Unsigned division is an uninterpreted function of its operands, so
+	// a theorem over `/` or `%` had nothing to reason from and the
+	// decider reported that its counterexample falsifies only the
+	// abstraction. Its defining bound is a fact, so assuming it is sound:
+	// where the divisor is not zero the remainder is below it, and the
+	// quotient is no greater than the dividend. That decides the range
+	// claims — a cursor stepped modulo a catalog's length stays inside it
+	// — without blasting a division. A power-of-two divisor folds to a
+	// mask before reaching here and needs none of this.
+	assume = binaryTerm("and", assume, unsignedDivisionFacts(append([]*term{t}, lowering.traps...)))
 	// Under the tag hypothesis: the claim holds, and no trap fires.
 	t, traps := assembleTheoremRoots(assume, t, lowering.traps)
 
@@ -175,6 +192,40 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 	}
 	sort.Strings(names)
 	return &loweredTheorem{claim: t, traps: traps, names: names, widths: widths}, nil
+}
+
+// unsignedDivisionFacts conjoins, for every unsigned division in the
+// terms, what its operands make true of its value: with a non-zero
+// divisor b and dividend a, the remainder `a - q·b` is below b and the
+// quotient q is at most a. Both hold of real division, so assuming them
+// cannot make a false claim decide; they are what a range claim over `%`
+// needs. Signed division is left alone: its rounding toward zero makes
+// the corresponding facts depend on the operands' signs.
+func unsignedDivisionFacts(roots []*term) *term {
+	facts := constTerm(1, 1)
+	seen := map[*term]bool{}
+	var walk func(*term)
+	walk = func(t *term) {
+		if t == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		if t.kind == termFloat && (t.op == "udiv" || t.op == "rv.udiv") && t.left != nil && t.right != nil && t.cond == nil {
+			a, b, w := t.left, t.right, t.width
+			zero := constTerm(0, w)
+			remainder := binaryTerm("sub", a, binaryTerm("mul", t, b))
+			divides := binaryTerm("or", cmpTerm("eq", b, zero), cmpTerm("lo", remainder, b))
+			bounded := binaryTerm("or", cmpTerm("eq", b, zero), cmpTerm("ls", t, a))
+			facts = binaryTerm("and", facts, binaryTerm("and", truncate(divides, 1), truncate(bounded, 1)))
+		}
+		walk(t.left)
+		walk(t.right)
+		walk(t.cond)
+	}
+	for _, root := range roots {
+		walk(root)
+	}
+	return truncate(facts, 1)
 }
 
 // decideLowered settles the lowered theorem: the witness inputs first, then

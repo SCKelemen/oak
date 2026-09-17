@@ -437,6 +437,44 @@ backend is reported as `refuted` — the differential witness of
 driver cannot enumerate, or whose domain exceeds the bound, is left to the
 decider's verdict and named in the summary.
 
+### 4.1 What a theorem body may name (2026-09-17)
+
+Two things a body could say left the bit-level decider with nothing to
+work from, and a property had to be restated to get decided.
+
+**A package-level constant.** `inset_fits: theorem (side: u32) {
+inset_len(side, GAP) <= side }` came back open, "the body contains
+identifier GAP (not a parameter)": the decider was given the program's
+record and sum-type declarations but not its constants, so a name it
+could have folded looked like a free variable of no finite type. It now
+receives the same folded scalar constants the native backend reads as
+immediate values (`compiler.ConstantGlobals`), and the theorem decides
+with the node count of the literal spelling — the constant is gone by the
+time the diagrams are built.
+
+**A remainder.** Unsigned division is an uninterpreted function of its
+operands (§8's thirty-first increment), which is what translation
+validation wants: the same function stands on both sides, so `divmod` is
+proven without a divider being blasted. A *theorem* over `%` had nothing
+to reason from, and the solver said so — its counterexample "falsifies
+only the abstraction of an uninterpreted operation; the claim holds at
+it". The decider now assumes what the operands make true of the value:
+with a non-zero divisor the remainder `a - q·b` is below `b`, and the
+quotient is at most the dividend. Both hold of real division, so
+assuming them cannot make a false claim decide, and they are what a range
+claim needs — a cursor stepped modulo a catalog's length stays inside it.
+
+Three things this deliberately does not do. A power-of-two divisor still
+folds to a mask before reaching the abstraction and needs none of it. A
+divisor that is itself a variable still exceeds the node budget: the
+facts bound the value but the claim remains a statement about two free
+operands. And signed division is left alone, since rounding toward zero
+makes the corresponding facts depend on the operands' signs.
+
+Pinned: `prove/theorem_constants_test.go` — a theorem naming a constant
+and one over a remainder by a non-power-of-two both decide, and two false
+claims about a remainder are still refuted with their counterexamples.
+
 ## 5. The Lean projection
 
 A theorem extracts like the function it is (`95-extraction.md`), followed
