@@ -1,4 +1,5 @@
 import Oak.TypeLattice
+import Oak.WasmLEB
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
