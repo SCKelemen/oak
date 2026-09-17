@@ -273,3 +273,67 @@ func TestCheckerDividedConstantBound(t *testing.T) {
 		})
 	}
 }
+
+// A ceiling that survives a loop (docs/spec/94-assembler.md §9.ak): a
+// binary search rewrites its bound register on the back edge, so the
+// register holds no constant at the loop header and only a fact both
+// predecessors state survives the meet. This is the stdlib's search over
+// a three-word table, the shape §9.aj left refused.
+func TestCheckerSearchLoopCeiling(t *testing.T) {
+	decl := "lookup: (scalar: u32) -> u32"
+	symbols := map[string]bool{}
+	// 4893 four-byte words: 1631 entries of three.
+	table := map[string]Table{"table": {Size: 19572, Elem: 4}}
+	head := "  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x2, x3, x4, x5\n  adrl x9, table\n  add x13, x9, #0\n  movz w10, #4893\n  mov w9, w10\n  movz w11, #3\n  udiv w2, w9, w11\n  mov w3, wzr\n  mov w4, w2\nloop:\n  cmp w3, w4\n  b.hs done\n  sub w9, w4, w3\n  movz w10, #2\n  udiv w9, w9, w10\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n"
+	tail := "  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop\ndone:\n  mov w0, wzr\n  ret"
+	accepts := []struct{ name, body string }{
+		{"the first word of the midpoint's entry (Oak.Assembler.search_midpoint_in_table)",
+			head + "  ldr w9, [x13, w9, uxtw #2]\n" + tail},
+		{"the second word, through the offset the slack leaves",
+			head + "  add w9, w9, #1\n  ldr w9, [x13, w9, uxtw #2]\n" + tail},
+		{"the third word, the last the entry holds",
+			head + "  add w9, w9, #2\n  ldr w9, [x13, w9, uxtw #2]\n" + tail},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("search.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			unit.Functions[0].Tables = table
+			sig, _ := parseSignature(decl)
+			if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+				t.Fatalf("must pass: %v", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, body, want string }{
+		{"a fourth word runs past the entry the divisor leaves",
+			head + "  add w9, w9, #3\n  ldr w9, [x13, w9, uxtw #2]\n" + tail,
+			"past the"},
+		{"a midpoint divided by one is not below the bound",
+			strings.Replace(head, "movz w10, #2", "movz w10, #1", 1) + "  ldr w9, [x13, w9, uxtw #2]\n" + tail,
+			"without a dominating constant index guard"},
+		{"a bound register the back edge leaves unbounded carries no ceiling",
+			strings.Replace(head, "csel w4, w5, w4, hs", "mov w4, w0", 1) + "  ldr w9, [x13, w9, uxtw #2]\n" +
+				strings.Replace(tail, "csel w4, w5, w4, hs", "mov w4, w0", 1),
+			"without a dominating constant index guard"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("search.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			unit.Functions[0].Tables = table
+			sig, _ := parseSignature(decl)
+			findings := Check(unit.Functions[0], sig, symbols)
+			if len(findings) == 0 {
+				t.Fatalf("must be refused")
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, findings)
+			}
+		})
+	}
+}

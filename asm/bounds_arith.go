@@ -264,6 +264,45 @@ func atMost(f idxFact) bool {
 	return f.boundReg >= 0 && (!f.slack || f.need == 0)
 }
 
+// maxConstBoundDepth bounds the walk below; the chains are acyclic, since
+// a fact on a register is recorded only after the write that dropped every
+// fact naming it.
+const maxConstBoundDepth = 8
+
+// constBound reads an immediate ceiling for a w register: the value is
+// below the bound returned. It is the fact itself when the register is
+// guarded below a constant, the constant plus one when the register holds
+// one (Oak.Assembler.constant_index_bound), and one less than the
+// referent's ceiling when the register is guarded below another register
+// that has one — `wI < wB` under `wB < K` leaves `wI < K - 1`
+// (Oak.Assembler.transitive_const_bound). A search whose bound register is
+// rewritten on the back edge has no constant of its own at the loop
+// header, and this is what carries its ceiling across the meet.
+func (c *checker) constBound(n int) (int64, bool) {
+	return c.constBoundAt(n, 0)
+}
+
+func (c *checker) constBoundAt(n, depth int) (int64, bool) {
+	if depth >= maxConstBoundDepth {
+		return 0, false
+	}
+	if fact, has := c.idxFacts[n]; has && !fact.slack {
+		if fact.boundReg < 0 {
+			if fact.bound > 0 {
+				return fact.bound, true
+			}
+			return 0, false
+		}
+		if ceiling, ok := c.constBoundAt(fact.boundReg, depth+1); ok && ceiling >= 2 {
+			return ceiling - 1, true
+		}
+	}
+	if k, isConst := c.constFacts[n]; isConst && k >= 0 && k < maxUpperDiv {
+		return k + 1, true
+	}
+	return 0, false
+}
+
 // arithmeticFacts reads, before the write of dest, the facts a w-register
 // data-processing instruction derives from its sources; applyArithmeticFacts
 // installs them after the write.
@@ -323,6 +362,17 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 		if !isConst || d < 1 {
 			return
 		}
+		// The same instruction halves a midpoint's difference where the
+		// generator spells `(hi - lo) / 2` as a division rather than a
+		// shift: under wLo < wHi the quotient stays below the difference,
+		// so `add wMid, wLo, wT` still proves wMid < wHi
+		// (Oak.Assembler.midpoint_below_div). This is why the binary
+		// searches' midpoints carried no fact at all.
+		if d >= 2 {
+			if m, has := c.mid[regs[1].Num]; has && m.lo != dest.Num && m.hi != dest.Num {
+				newMid = &midFact{lo: m.lo, hi: m.hi, halved: true}
+			}
+		}
 		root, div := c.resolveUpper(regs[1].Num)
 		if div > maxUpperDiv/d {
 			return
@@ -348,6 +398,12 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 			}
 			f, has := c.idxFacts[index]
 			if !has {
+				// No fact of its own, but a ceiling may still be reachable
+				// through the register it is guarded below.
+				if ceiling, ok := c.constBound(index); ok && ceiling >= 1 && ceiling-1 <= (maxUpperDiv-1)/k {
+					newIdx = &idxFact{boundReg: -1, bound: (ceiling-1)*k + 1}
+					return
+				}
 				continue
 			}
 			// A constant bound scaled by a constant: wI < U leaves
@@ -356,11 +412,11 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 			// read through a global takes, where no register holds a
 			// length and the entry count is itself a constant — the
 			// binary search over `entries = len(table) / 3`.
-			if f.boundReg < 0 && !f.slack && f.bound >= 1 {
-				if f.bound-1 > (maxUpperDiv-1)/k {
+			if ceiling, ok := c.constBound(index); ok && ceiling >= 1 {
+				if ceiling-1 > (maxUpperDiv-1)/k {
 					continue
 				}
-				newIdx = &idxFact{boundReg: -1, bound: (f.bound-1)*k + 1}
+				newIdx = &idxFact{boundReg: -1, bound: (ceiling-1)*k + 1}
 				return
 			}
 			if !atMost(f) {
@@ -450,6 +506,21 @@ func (c *checker) arithmeticFacts(instr Instruction, dest Register, regs []Regis
 		if fa, hasA := c.idxFacts[a]; hasA {
 			if fb, hasB := c.idxFacts[b]; hasB && fa == fb && fa.boundReg != dest.Num {
 				newIdx = &fa
+				return
+			}
+		}
+		// Two ceilings, not the same fact: the result is one of the arms,
+		// so it is below the larger of them
+		// (Oak.Assembler.select_const_bound). This is what carries a
+		// search's bound across the back edge, where `csel wHi, wMid, wHi`
+		// leaves no constant of its own.
+		if ka, okA := c.constBound(a); okA {
+			if kb, okB := c.constBound(b); okB {
+				ceiling := ka
+				if kb > ceiling {
+					ceiling = kb
+				}
+				newIdx = &idxFact{boundReg: -1, bound: ceiling}
 			}
 		}
 	case "add":

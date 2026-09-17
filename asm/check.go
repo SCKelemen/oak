@@ -2801,8 +2801,21 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Shift >= 0 && imm.Shift < 32 && imm.Shift%16 == 0 {
 			value, known = imm.Value<<uint(imm.Shift), true
 		}
-		if src, isReg := instr.Operands[1].(Register); isReg && src.ZeroRegister() {
-			value, known = 0, true
+		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
+			switch {
+			case src.ZeroRegister():
+				value, known = 0, true
+			default:
+				// A copy of a register holding a constant carries the bound
+				// as the immediate form does. A search's bound register is
+				// initialized this way (`hi = entries`), and without the
+				// bound here nothing survives the loop header's meet: the
+				// back edge writes the register, so its constant is gone
+				// and only a fact both sides state can be kept.
+				if k, isConst := c.constFacts[src.Num]; isConst && k >= 0 {
+					value, known = k, true
+				}
+			}
 		}
 		if known {
 			c.constFacts[dest.Num] = value

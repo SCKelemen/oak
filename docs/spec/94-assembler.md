@@ -8977,3 +8977,77 @@ constant bound survives the loop header, and the midpoint's fact names a
 register the meet can say nothing about. Admitting it needs a bound that
 survives a select — the transitive reading of `wI < wB` under `wB < K` as
 `wI < K - 1` — which is the next increment rather than this one.
+
+### 9.ak A ceiling that survives a loop (2026-09-17)
+
+What §9.aj left refused: the table read *inside* the binary search, where
+§9.aj closed only the reads after it. The loop rewrites its bound register
+on the back edge (`csel wHi, wMid, wHi, hs`), so at the loop header the
+register holds no constant of its own, and the meet keeps only a fact both
+predecessors state. Nothing did.
+
+Four additions carry the ceiling across it, each a generalization of a
+rule already there, and each only ever adding a fact.
+
+- **The midpoint through a division.** `sub wT, wHi, wLo` under `wLo < wHi`
+  then `lsr wT, wT, #k` already marked the difference halved, which is
+  what makes `add wMid, wLo, wT` prove `wMid < wHi`. The generator spells
+  `(hi - lo) / 2` as `udiv` against a register holding two, so the same
+  reading now applies to a `udiv` by any constant `d >= 2`
+  (`Oak.Assembler.midpoint_below_div`). This is why the searches'
+  midpoints carried no fact at all: not a missing bound, a missing
+  spelling.
+- **A transitive ceiling** (`checker.constBound`). A register is below `K`
+  when its fact says so, when it holds the constant `K - 1`, or — the new
+  step — when it is guarded below another register that is itself below
+  `K`, which leaves it below `K - 1`
+  (`Oak.Assembler.transitive_const_bound`). The walk is depth-bounded and
+  the chains are acyclic, since a fact on a register is recorded only
+  after the write that dropped every fact naming it.
+- **A select of two ceilings.** `csel wD, wA, wB, cond` leaves the result
+  below the larger of the arms' ceilings
+  (`Oak.Assembler.select_const_bound`). This is what survives the back
+  edge.
+- **A copy of a constant register** carries the bound as the immediate
+  form does. `hi = entries` is spelled `mov wHi, wE`, and without the
+  bound on that edge the meet has nothing to intersect with what the back
+  edge states.
+
+`Oak.Assembler.search_midpoint_in_table` states the chain end to end: for
+`lo < hi <= entries` with `entries · k <= len`, `d >= 2` and `j < k`, the
+scaled midpoint `(lo + (hi - lo) / d) · k + j` is inside the table.
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`3b5b2577`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| trap branches emitted | 772 | 772 |
+| instructions emitted | 33338 | 33338 |
+| element guards elided | 175 | 175 |
+| refused candidate forms | 281 | **278** |
+
+**The emitted code does not change.** Not one body differs, and the
+reason is §9.aj's companion fix: with the typechecker's proof consulted
+whenever the checker's own fact does not admit an access, these reads were
+already being admitted through the proof. What this section adds is a
+second, independent route to the same admission — one the checker walks
+from the machine code alone, with no reliance on the lowering having
+emitted a proof reference for the operand — and three candidate forms the
+search no longer has to work around.
+
+That is worth stating plainly rather than dressing up. The rules are
+sound, laws and all, and they close the shape §9.aj named as remaining;
+they buy no instruction today. The independence is the argument for
+keeping them: a proof reference is metadata the lowering must choose to
+attach, and a checker that can only decide an access when that metadata is
+present is a checker that stops deciding the moment a new lowering path
+forgets it.
+
+
+What the tests pin, beside the three accepted reads: a fourth word runs
+past the entry the divisor leaves; a midpoint divided by one is not below
+the bound, since `lo + (hi - lo)` is `hi` itself; and a bound register the
+back edge leaves unbounded carries no ceiling at all
+(`TestCheckerSearchLoopCeiling`).
