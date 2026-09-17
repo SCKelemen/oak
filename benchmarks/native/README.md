@@ -840,6 +840,46 @@ arbitrary selected sets and mixed selected/unselected write traces. It does not
 prove the Go matcher, private provenance, control flow, register allocator, or
 Arm ASL execution. Memory/ordering admission and the downstream pin are unchanged.
 
+**Result-buffer loop homes (2026-09-17, experimental, default off).** A separate
+`loop-result-homes` candidate handles the exact named-local returned u32/u64
+array, not arbitrary pointer-backed storage. Enable compiler search with
+`OAK_NATIVE_LOOP_RESULT_HOMES=1`; `OAK_OPT_SKIP=loop-result-homes` still wins.
+It is independently keyed in materialization v15 and verifier-gated, not
+shape-neutral. Direct `Lane.LoopResultHomes` is also an explicit experiment.
+
+The first scope is deliberately call-free, with scalar/owned fixed-array
+inputs, no mutable-global access, and no address escapes or ordered operations.
+Its active loop excludes potentially trapping indices, dynamic shifts,
+division/remainder, and float-to-integer truncation. Computed accesses after
+the flush remain allowed. Result memory must be ordinary, unpublished storage,
+disjoint from inputs and other observable objects; x8 alone proves none of
+those properties. See `docs/spec/94-assembler.md` under named-local result
+storage for the contract and formal limits.
+
+At base `e29948c5`, the opt-in BLAKE3 compressor selects six homes and still
+proves all eight result chunks. The main loop falls from 218 to 203 instructions
+and 79 to 67 loads/stores, but the whole body rises from 307 to 308 instructions
+and stack-memory instructions from 28 to 46; the frame stays 144 bytes.
+The static cost model prefers it (1469 → 1431.5). The existing default
+stack-traffic regression test correctly rejected that choice; its bound was
+not relaxed. Default search therefore retains the earlier body.
+
+Three same-process 1 MiB sessions on the M4 Max did **not** establish a speedup:
+the candidate/baseline median ratios were 1.53, 1.27, and 2.01. Host load was
+extreme (approximately 183/207/155), with no core affinity, so these are not
+stable slowdown estimates either. All boundary and timed digest comparisons
+passed. The [complete raw samples and artifact hashes](results/blake3-loop-result-homes-2026-09-17.json)
+are retained, including the regressions. No ±8% Zig/Rust/C claim follows.
+
+Fixed zero/one/three-trip u32/u64 cases prove against their unchanged source;
+deleting a result flush is refuted. The dynamic 0..7-trip input-snapshot fixture
+agrees with C but remains witness-checked. `Oak.LoopResultHomes` proves final
+flush equivalence through result-framed, result-blind external steps under
+explicit separation/noninterference premises. It does not establish the Go
+matcher, caller allocation, traps, shared-memory ordering, or Arm ASL refinement.
+Next: improve the register-pressure tradeoff and obtain controlled timings
+before considering default promotion. The downstream pin is unchanged.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

@@ -6,6 +6,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // Loop-local homes leave an owned array in memory outside one loop. Inside,
@@ -23,9 +24,14 @@ type loopArrayHomeSet struct {
 }
 
 var loopArrayHomesOf = map[*asm.Function]int{}
+var loopResultHomesOf = map[*asm.Function]int{}
 
 // LoopArrayHomes counts the element homes introduced by the candidate.
 func LoopArrayHomes(fn *asm.Function) int { return loopArrayHomesOf[fn] }
+
+// LoopResultHomes counts homes for exact named-local indirect result arrays.
+// This is independent of the private-frame candidate and is verifier gated.
+func LoopResultHomes(fn *asm.Function) int { return loopResultHomesOf[fn] }
 
 // homeNodes is deliberately closed over ordinary expressions and structured
 // control. Unsupported syntax cannot hide an alias or an exit past the flush.
@@ -210,8 +216,145 @@ func loopHomeUses(fn *ast.FunctionStatement, loop *ast.WhileStatement, name stri
 	return counts, writes
 }
 
+// loopHomeStorageEligible distinguishes private frame arrays from exact
+// result storage. A matching register number alone is not provenance: array
+// fields, globals, parameter references, and views must never acquire homes.
+// The result case additionally excludes other observers in the body. It still
+// relies on the ordinary result-RAM/input separation contract at the caller;
+// neither a tag nor the ABI's register spelling proves general non-aliasing.
+func (g *generator) loopHomeStorageEligible(name string, arr *arrayLocal) bool {
+	if arr == nil || arr.paramRef || arr.readOnly || arr.elemLayout != nil ||
+		(arr.elem != scalars["u32"] && arr.elem != scalars["u64"]) || arr.length <= 0 || arr.length > 64 {
+		return false
+	}
+	if !arr.inReg {
+		return g.loopArrayHomesEnabled && !arr.resultStorage
+	}
+	return g.loopResultHomesEnabled && arr.resultStorage && g.resultIndirect &&
+		name != "" && name == g.returnSlot && arr.reg == g.resultAreaReg && arr.offset == 0 &&
+		len(arr.temps) == 0 && g.resultRecord != nil &&
+		g.resultRecord.size > 16 && g.resultRecord.size%8 == 0 &&
+		g.resultRecord == g.arrayLayout(arr.elem, arr.length) && g.resultHomeBodyIsolated()
+}
+
+// resultHomeBodyIsolated is deliberately narrower than private-frame homes.
+// Mutable globals or a scalar callee could observe a caller-provided result
+// pointer without the local's address ever being taken. Do not speculate about
+// those aliases: allow only owned/scalar inputs and a call-free body whose
+// nonlocal memory is immutable constant data. Full source-body checking also
+// covers observations before/after the candidate loop.
+func (g *generator) resultHomeBodyIsolated() bool {
+	if g.fn == nil || g.fn.Body == nil || g.hasCalls {
+		return false
+	}
+	for _, p := range g.fn.Parameters {
+		if p == nil {
+			return false
+		}
+		if _, scalar := scalarOf(p.Type); scalar {
+			continue
+		}
+		elem, record, length, err := g.arrayTypeOf(p.Type)
+		if err != nil || record != nil || length <= 0 || length > 64 ||
+			(elem != scalars["u32"] && elem != scalars["u64"]) {
+			return false
+		}
+	}
+	isolate := true
+	mentionIdents(g.fn.Body, func(name string) {
+		if _, mutable := g.globals[name]; mutable {
+			isolate = false
+		}
+		if _, aggregate := g.aggregates[name]; aggregate {
+			if _, immutable := g.tables[name]; !immutable {
+				isolate = false
+			}
+		}
+	})
+	if !isolate {
+		return false
+	}
+	if !homeNodes(g.fn.Body, func(n ast.Node) {
+		if call, ok := n.(*ast.InvocationExpression); ok {
+			f, direct := call.Function.(*ast.Identifier)
+			if !direct || (!isConversion(f.Value) && f.Value != "len") {
+				isolate = false
+			}
+		}
+	}) {
+		return false
+	}
+	return isolate
+}
+
+// No language trap may bypass a result flush. The verifier's guard-holding
+// result equivalence alone does not establish that property. Check only the
+// active interval: computed accesses after the flush remain ordinary memory
+// accesses. This intentionally refuses even some independently provable guards.
+func (g *generator) resultHomeLoopTrapFree(loop *ast.WhileStatement) bool {
+	if loop == nil || loop.Body == nil {
+		return false
+	}
+	safe := true
+	// Helper expansion may declare fixed arrays inside the loop (BLAKE's
+	// quarter-round results). They are not bound in g.arrays at loop entry.
+	// Record only explicit extents, refusing duplicate/shadowed identities.
+	localLengths, declared := map[string]int64{}, map[string]bool{}
+	if !homeNodes(loop.Body, func(n ast.Node) {
+		if d, ok := n.(*ast.VariableDeclaration); ok {
+			if d.Name == nil {
+				safe = false
+				return
+			}
+			name := d.Name.Value
+			if declared[name] || g.arrays[name] != nil {
+				safe = false
+			}
+			declared[name] = true
+			if _, record, length, err := g.arrayTypeOf(d.Type); err == nil && record == nil && length > 0 {
+				localLengths[name] = length
+			}
+		}
+	}) {
+		return false
+	}
+	visit := func(n ast.Node) {
+		switch e := n.(type) {
+		case *ast.InfixExpression:
+			switch e.Operator {
+			case "/", "%":
+				safe = false
+			case "<<", ">>":
+				// Invalid literal counts refuse in the typed lowering; only
+				// nonliteral shifts can emit a runtime bounds trap.
+				if k, constant := constantValue(e.Right); !constant || k < 0 {
+					safe = false
+				}
+			}
+		case *ast.IndexExpression:
+			id, direct := e.Left.(*ast.Identifier)
+			_, _, length, known := g.staticArrayOf(e.Left)
+			if direct && declared[id.Value] {
+				length, known = localLengths[id.Value]
+			}
+			k, constant := constantValue(e.Index)
+			if e.Dot || !direct || !known || !constant || k < 0 || k >= length {
+				safe = false
+			}
+		case *ast.InvocationExpression:
+			if f, direct := e.Function.(*ast.Identifier); direct {
+				_, op, source, conversion := typechecker.ConversionParts(f.Value)
+				if conversion && op == "trunc" && scalars[source].isFloat {
+					safe = false
+				}
+			}
+		}
+	}
+	return homeNodes(loop.Condition, visit) && homeNodes(loop.Body, visit) && safe
+}
+
 func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
-	if !g.loopArrayHomesEnabled || g.rvLane || len(g.loops) != 0 || g.activeArrayHomes != nil {
+	if (!g.loopArrayHomesEnabled && !g.loopResultHomesEnabled) || g.rvLane || len(g.loops) != 0 || g.activeArrayHomes != nil {
 		return nil
 	}
 	type choice struct {
@@ -222,8 +365,9 @@ func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
 		written bool
 	}
 	var choices []choice
+	resultTrapFree := g.loopResultHomesEnabled && g.resultHomeLoopTrapFree(loop)
 	for name, arr := range g.arrays {
-		if arr == nil || arr.inReg || arr.paramRef || arr.readOnly || arr.elemLayout != nil || (arr.elem != scalars["u32"] && arr.elem != scalars["u64"]) {
+		if !g.loopHomeStorageEligible(name, arr) || (arr.resultStorage && !resultTrapFree) {
 			continue
 		}
 		counts, writes := loopHomeUses(g.fn, loop, name, arr.length)
@@ -262,7 +406,7 @@ func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
 			break
 		}
 		g.declareAt(hidden, c.arr.elem, r)
-		g.emit(loadOf(c.arr.elem), reg(r, c.arr.elem), g.slotMem(c.arr.offset+c.index*int64(c.arr.elem.bits/8)))
+		g.emit(loadOf(c.arr.elem), reg(r, c.arr.elem), g.memOf(c.arr.loc().plus(c.index*c.arr.elemSize())))
 		set := g.activeArrayHomes[c.name]
 		if set == nil {
 			set = &loopArrayHomeSet{array: c.arr, homes: map[int64]loopArrayHome{}}
@@ -270,13 +414,17 @@ func (g *generator) beginLoopArrayHomes(loop *ast.WhileStatement) func() {
 		}
 		set.homes[c.index] = loopArrayHome{hidden: hidden, written: c.written}
 		selected = append(selected, c)
-		g.arrayHomesCount++
+		if c.arr.resultStorage {
+			g.resultHomesCount++
+		} else {
+			g.arrayHomesCount++
+		}
 	}
 	return func() {
 		for _, c := range selected {
 			home := g.activeArrayHomes[c.name].homes[c.index]
 			if home.written {
-				g.emit(storeOf(c.arr.elem), reg(g.regs[home.hidden], c.arr.elem), g.slotMem(c.arr.offset+c.index*int64(c.arr.elem.bits/8)))
+				g.emit(storeOf(c.arr.elem), reg(g.regs[home.hidden], c.arr.elem), g.memOf(c.arr.loc().plus(c.index*c.arr.elemSize())))
 			}
 		}
 		g.activeArrayHomes = nil
