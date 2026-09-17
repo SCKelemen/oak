@@ -113,6 +113,12 @@ type Function struct {
 	// verdict is relative to it. Set by the native backend; nil leaves
 	// every call opaque (trusted).
 	Callees map[string]*ast.FunctionStatement
+	// Externs are the program's extern bindings (`name: (…): c.T effects
+	// {…} = c.extern("symbol")`), by Oak name, for the verifier's
+	// lowering of a call to one (lowerExternCall): a fresh result under
+	// a host-only effect row. Set by the native backend; nil leaves every
+	// such call trusted.
+	Externs map[string]*ast.FunctionStatement
 	// Body: the Oak body the lowering realized when it differs from the
 	// source's — a verified rewrite (nativegen/reduction.go: the plain
 	// integer reductions unrolled four ways) — so the verifier judges the

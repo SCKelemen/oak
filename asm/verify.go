@@ -4771,6 +4771,13 @@ type oakLowering struct {
 	loops     []*loopEvent   // data-dependent loops met, in creation order
 	loopStack []int          // indices of the loops whose bodies are being lowered
 	fresh     map[string]int // loop-carried fresh symbols -> width
+	// externSite and externSeq name an extern binding's result: the
+	// source line of the call the outermost inlined callee was entered
+	// at (the machine's `bl` line for a call summary) and the extern
+	// call's sequence within that callee's lowering (lowerExternCall).
+	externSite int
+	externSeq  int
+	externs    map[string]*ast.FunctionStatement // the program's extern bindings, by Oak name (Function.Externs)
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
@@ -5310,6 +5317,13 @@ func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason 
 		return true, reason, ok
 	}
 	callee := lo.functions[ident.Value]
+	if callee == nil {
+		callee = lo.externs[ident.Value]
+	}
+	if callee != nil && callee.ExternSymbol != "" && callee.ReturnType == nil {
+		_, reason, ok := lo.lowerExternCall(callee, call, 0)
+		return true, reason, ok
+	}
 	if callee == nil || !unitFunction(callee) || callee.Body == nil {
 		return false, "", false
 	}
@@ -7259,6 +7273,9 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 // and recursion fail closed.
 func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
 	name := callee.Name.Value
+	if callee.ExternSymbol != "" {
+		return lo.lowerExternCall(callee, call, width)
+	}
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
@@ -7285,6 +7302,115 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		return extendTerm(result, resultWidth, width, resultSigned), "", true
 	}
 	return truncate(result, width), "", true
+}
+
+// lowerExternCall lowers a call to an extern binding (`name: (…): c.T
+// effects { Host.… } = c.extern("symbol")`, docs/spec/92-ffi.md): the
+// result is a fresh parameter of the result's width, named by the
+// symbol, the outermost inlined callee's call line and the call's
+// sequence within it (`extern:symbol@line#k`), and the call has no
+// effect on Oak memory. The gate is the declared effect row: every
+// effect in the `Host` namespace and no writable span parameter, so the
+// call's effects are the host's alone. Both sides of the verifier lower
+// the same callee Oak body (a caller's inline, a call summary), so the
+// names agree and the proof is relative to the extern behaving alike on
+// both — as it is relative to the callee's Oak body. The arguments are
+// lowered for their traps (a subslice past its span, an element read);
+// their values do not reach the result, which the extern alone decides.
+// An extern outside the gate leaves the body trusted, as before.
+func (lo *oakLowering) lowerExternCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
+	name := callee.Name.Value
+	if !callee.EffectsDeclared {
+		return nil, fmt.Sprintf("a call to the extern %s without a declared effect row", name), false
+	}
+	for _, effect := range callee.Effects {
+		if effect.Namespace != "Host" {
+			return nil, fmt.Sprintf("a call to the extern %s with the effect %s (outside the host)", name, effect.String()), false
+		}
+	}
+	for _, param := range callee.Parameters {
+		if isWritableSpan(param.Type) {
+			return nil, fmt.Sprintf("a call to the extern %s, which takes the writable span %s", name, param.Name.Value), false
+		}
+	}
+	// The arguments are the type checker's business (`c.span_of(v)`
+	// stands for two C parameters, the pointer and the count); here each
+	// is lowered for its traps alone.
+	for _, arg := range call.Arguments {
+		if reason, ok := lo.lowerExternArgument(arg); !ok {
+			return nil, fmt.Sprintf("a call to the extern %s whose argument contains %s", name, reason), false
+		}
+	}
+	if callee.ReturnType == nil {
+		return nil, "", true
+	}
+	resultWidth, ok := cScalarWidth(typeText(callee.ReturnType))
+	if !ok {
+		return nil, fmt.Sprintf("a call to the extern %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	symbol := fmt.Sprintf("extern:%s@%d#%d", callee.ExternSymbol, lo.externSite, lo.externSeq)
+	lo.externSeq++
+	lo.fresh[symbol] = resultWidth
+	return adaptWidth(paramTerm(symbol, resultWidth), width), "", true
+}
+
+// lowerExternArgument lowers an extern call's argument for its traps: a
+// `c.*` conversion or `c.span_of` wraps the Oak value; a subslice records
+// its bounds against its span; a name, a literal or a view of a local
+// traps on nothing; any other expression lowers as a scalar.
+func (lo *oakLowering) lowerExternArgument(arg ast.Expression) (string, bool) {
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		if access, isAccess := call.Function.(*ast.IndexExpression); isAccess && len(call.Arguments) == 1 {
+			if lib, isIdent := access.Left.(*ast.Identifier); isIdent && lib.Value == "c" {
+				return lo.lowerExternArgument(call.Arguments[0])
+			}
+		}
+		if sub, isSub := subsliceOf(arg); isSub {
+			if _, isSpan := lo.spans[sub.span]; !isSpan {
+				return fmt.Sprintf("a subslice of %s, which is not a span", sub.span), false
+			}
+			start, reason, ok := lo.lower(sub.start, 32)
+			if !ok {
+				return reason, false
+			}
+			count, reason, ok := lo.lower(sub.count, 32)
+			if !ok {
+				return reason, false
+			}
+			length := lo.spanLenTerm(sub.span, 32)
+			lo.addTrap(cmpTerm("hi", start, length))
+			lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+			if lo.witnessTrapped {
+				return fmt.Sprintf("a subslice of %s past its length on this input", sub.span), false
+			}
+			return "", true
+		}
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" && len(call.Arguments) == 1 {
+			return "", true
+		}
+	}
+	switch arg.(type) {
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
+		return "", true
+	}
+	_, reason, ok := lo.lower(arg, 64)
+	return reason, ok
+}
+
+// cScalarWidth is the width of a `c.*` integer type an extern returns
+// (docs/spec/92-ffi.md section 2.2).
+func cScalarWidth(typeName string) (int, bool) {
+	switch strings.TrimPrefix(typeName, "c.") {
+	case "Int64", "UInt64", "Size", "SSize", "Long", "ULong", "Ptr", "IntPtr", "UIntPtr":
+		return 64, true
+	case "Int32", "UInt32", "Int", "UInt":
+		return 32, true
+	case "Int16", "UInt16", "Short", "UShort":
+		return 16, true
+	case "Int8", "UInt8", "Char", "UChar", "Bool":
+		return 8, true
+	}
+	return 0, false
 }
 
 // describe spells a type for a message: its name, or its shape.
@@ -7343,6 +7469,12 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
+	}
+	if len(lo.inlining) == 0 {
+		// The outermost inlined callee: the extern results met inside it
+		// are named by this call's line, as the machine side names them
+		// by the `bl`'s line when it summarizes the same callee.
+		lo.externSite, lo.externSeq = call.Token.Line, 0
 	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
@@ -7991,6 +8123,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := lo.functions[ident.Value]; known {
 				return lo.inlineCall(callee, e, width)
+			}
+			if extern, isExtern := lo.externs[ident.Value]; isExtern {
+				return lo.lowerExternCall(extern, e, width)
 			}
 			if guard, isGuard := lo.guards[ident.Value]; isGuard && len(e.Arguments) == 1 {
 				return lo.lowerGuard(ident.Value, guard, e.Arguments[0], width)
@@ -9098,9 +9233,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// back after the body (asm/span_args.go).
 	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
+	lo.externs = x.fn.Externs
 	lo.declareTables(x.fn.Tables)
 	lo.declareGlobalArrays(x.fn.Globals)
 	lo.inlining = map[string]bool{name: true}
+	lo.externSite = instr.Line // the externs met in the callee are named by this call's line (lowerExternCall)
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
 	// (docs/spec/94-assembler.md §9).
@@ -9749,6 +9886,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.globals = fn.Globals
 	lowering.bindRecordSpans(fn, sig)
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.externs = fn.Externs
 	lowering.declareTables(fn.Tables)
 	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
