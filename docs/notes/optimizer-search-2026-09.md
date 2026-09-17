@@ -816,6 +816,20 @@ bound attached. Those result writes now invalidate the bound, and all
 call paths clear facts on the caller-saved registers they discard. Eight
 ARM64/RV64 cases fail before the fix and pass after it, including actual
 scalar, pair and vector-returning call summaries; callee-saved facts remain valid.
+### The shift into the logical operations, and crc32c's proven identity (2026-09-17, night)
+
+`crc32c`'s byte loop is nine instructions to clang's seven: clang folds
+the fold's shift into its xor (`eor w0, w11, w0, lsr #8`) and counts the
+loop down with `subs`. The first is the pair fusion's business, and
+`machine.Fuse` now feeds the logical operations as it fed add and sub —
+the verifier and the checker read a shifted operand on every verifiable
+operation already. It does not change `crc32c` yet: every transformed
+form of `hash.crc32c_update` — hoisted, rotated, fused, or merely
+reallocated — is witnessed, "one iteration of loop 1 was not proven to
+preserve r25 = crc xor 4294967295", while the identity proves, and the
+search keeps a proof over a cheaper witness (cost 821 against 568). The
+inverted CRC in a register the loop carries unchanged is the next fact
+the loop proof needs; the count-down loop is a source-shape question.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
