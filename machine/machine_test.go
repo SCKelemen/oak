@@ -1473,3 +1473,35 @@ func TestPromoteRemovesDeadSlotStores(t *testing.T) {
 		t.Fatalf("the read slot must be promoted (promoted %d):\n%s", alloc.Promoted, got)
 	}
 }
+
+// The shift folds into the logical operations too: the CRC's fold
+// `lsr w9, w24, #8; eor w24, w11, w9` becomes `eor w24, w11, w24, lsr #8`,
+// one instruction a byte fewer; a flag-setting or conditional consumer
+// keeps the shift.
+func TestFuseShiftIntoLogical(t *testing.T) {
+	f := fn(
+		ins("ldr", w(11), mem(x(0), 0)),
+		ins("lsr", w(9), w(24), imm(8)),
+		ins("eor", w(24), w(11), w(9)),
+		ins("mov", w(0), w(24)),
+		ins("ret"),
+	)
+	out, fused, err := Fuse(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folded := false
+	for _, item := range out.Items {
+		if ins, ok := item.(asm.Instruction); ok && ins.Mnemonic == "eor" && len(ins.Operands) == 3 {
+			if sh, isShifted := ins.Operands[2].(asm.Shifted); isShifted && sh.Kind == "lsr" && sh.Amount == 8 {
+				folded = true
+			}
+		}
+		if ins, ok := item.(asm.Instruction); ok && ins.Mnemonic == "lsr" {
+			t.Fatalf("the shift must fold into the eor:\n%s", text(out.Items))
+		}
+	}
+	if fused != 1 || !folded {
+		t.Fatalf("fused %d, folded %v:\n%s", fused, folded, text(out.Items))
+	}
+}

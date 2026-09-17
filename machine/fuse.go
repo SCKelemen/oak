@@ -194,7 +194,8 @@ func (f *Function) sourceStable(b *Block, i, j int, producer *Instr) bool {
 	return true
 }
 
-// fuseShift folds `lsl/lsr/asr wT, wS, #k` into the add or sub that reads
+// fuseShift folds `lsl/lsr/asr wT, wS, #k` into the add, sub, and, orr,
+// or eor that reads
 // wT as its second source: `add wD, wA, wS, <shift> #k`.
 func (f *Function) fuseShift(producer *Instr, use site) bool {
 	a := producer.Asm
@@ -213,7 +214,7 @@ func (f *Function) fuseShift(producer *Instr, use site) bool {
 		return false
 	}
 	c := use.Instr.Asm
-	if (c.Mnemonic != "add" && c.Mnemonic != "sub") || c.Cond != "" || len(c.Operands) != 3 || use.Access.Op != 2 {
+	if !shiftedOperandOps[c.Mnemonic] || c.Cond != "" || len(c.Operands) != 3 || use.Access.Op != 2 {
 		return false
 	}
 	d, okD := c.Operands[0].(asm.Register)
@@ -232,6 +233,11 @@ func (f *Function) fuseShift(producer *Instr, use site) bool {
 	use.Instr.Asm.Operands[2] = asm.Shifted{Reg: s, Kind: a.Mnemonic, Amount: k.Value}
 	return true
 }
+
+// shiftedOperandOps are the instructions whose second source takes a
+// shifted register (`eor wD, wN, wM, lsr #8`: the CRC's fold of the next
+// byte); the flag-setting and conditional forms are left alone.
+var shiftedOperandOps = map[string]bool{"add": true, "sub": true, "and": true, "orr": true, "eor": true}
 
 // fuseIncrement folds `add wT, wX, #1` into the csel that selects wT:
 // `csel wD, wT, wB, c` becomes `csinc wD, wB, wX, !c`, and `csel wD, wA,
