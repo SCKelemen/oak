@@ -9259,3 +9259,63 @@ The reject cases are the point (`TestCheckerSlackOutlivesLengthRegister`):
 without the proven minimum the subtraction may have wrapped, so the read
 is refused; an element past the run the slack leaves is refused; and the
 fact dies with the base register that named the span.
+
+### 9.am Promotion declares the registers it takes (2026-09-17)
+
+Not a checker gap. The checker was right every time, and the histogram of
+refused candidate forms had been saying so for a while: of 269 refusals,
+130 were `write to undeclared register`, every one of them in a form
+containing the register-reallocation transform, and the registers were
+callee-saved — x22 through x28, and w19, w20.
+
+The chain, read off the emitted body of `percent_encoded_size`. Its
+prologue saves seven callee-saved registers, x19 through x25, and its
+epilogue restores them. Its declaration names six, x19 through x24: the
+save of the seventh is emitted for a register the lowering reserved but
+whose declaration never followed. That alone costs nothing, since nothing
+writes x25. Then slot promotion looks for a register to hold a frame
+slot's value across a call and takes a callee-saved one only when the
+body already writes it, reading "writes it" as "the prologue saves it"
+(`slotRegister`). The epilogue's `ldr x25, [sp, #64]` **is** a write of
+x25, so x25 passes that test. Promotion takes it, moves the slot into it,
+and does not declare it, because the declaration step exempted
+callee-saved registers on the assumption that any it could take had come
+from the lowering already declared. The checker then refuses the whole
+form, the search falls back, and the body keeps its frame traffic.
+
+So promotion now declares the callee-saved registers it takes, on the
+AArch64 lane. It takes such a register only when the prologue saves it,
+so the declaration is the truth about the body and the checker's other
+rule — save before writing — is met. The RV64 checker takes the opposite
+convention and refuses a callee-saved clobber outright, so that lane
+keeps the exemption (`machine/machine_test.go` pins it).
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`33e4adb5`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted | 32883 | **32617** |
+| refused candidate forms | 269 | **144** |
+| undeclared-write refusals | 130 | **0** |
+| trap branches emitted | 770 | 770 |
+
+Thirty-seven bodies are shorter and one is a single instruction longer
+(`url_empty`, 81 to 82), for 266 instructions net. The largest are
+`url_with_authority` 256 to 212, `url_failure` 82 to 55,
+`latin1_to_utf8` 98 to 83. No body gains a trap branch and all 322 units
+keep their verdicts. This is the largest single change in emitted code of
+this series, and it is not new optimization: it is optimization the
+compiler was already doing and then throwing away, because a declaration
+did not match the frame it described.
+
+The general lesson, worth more than the instructions: a refusal class
+this large sat unexamined because it reads as "bodies outside the
+checker's subset", the same phrase §9.ai used to dismiss 250 of them. It
+was not that. It was one missing declaration, and the way to find it was
+to group the refusals by the transform that produced them, which pointed
+at reallocation immediately. The other two large classes — a memory
+operand through a base the checker cannot place, and a read before any
+write — deserve the same treatment before anyone assumes they are out of
+subset too.
