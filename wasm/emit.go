@@ -239,16 +239,26 @@ func (m Module) ValidateBytes() (check.Report, error) {
 
 func (f *function) body(functions map[string]*function) (binary, error) {
 	var b binary
-	// One group per SSA local, plus an i32 program counter. No physical
-	// registers or memory stack. Entry parameters already occupy local slots.
+	// A single returning block needs no dispatcher or program-counter local.
+	// Do not select this path for a single-block back edge, even if an analysis
+	// claims it is unreachable: this emitter consumes the checked raw CFG.
+	direct := len(f.cfg.Blocks) == 1 && f.entry.Terminator.Kind == optir.TerminatorReturn
+	extra := 0
+	if !direct {
+		extra = 1
+	}
+	// One group per SSA local, plus the optional i32 program counter. Entry
+	// parameters already occupy local slots; local indices are never reordered.
 	n := len(f.entry.Parameters)
-	b.u(uint64(len(f.localTypes) - n + 1))
+	b.u(uint64(len(f.localTypes) - n + extra))
 	for _, t := range f.localTypes[n:] {
 		b.u(1)
 		b.op(t)
 	}
-	b.u(1)
-	b.op(0x7f)
+	if !direct {
+		b.u(1)
+		b.op(0x7f)
+	}
 	pc := uint32(len(f.localTypes))
 	for _, p := range f.entry.Parameters {
 		if p.Type == "Bool" {
@@ -256,6 +266,16 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 			b.i32(1)
 			b.op(0x4b, 0x04, 0x40, 0x00, 0x0b)
 		}
+	}
+	if direct {
+		for _, op := range f.entry.Operations {
+			if err := f.operation(&b, op, functions); err != nil {
+				return nil, err
+			}
+		}
+		f.returnValue(&b, f.entry.Terminator)
+		b.op(0x0b) // function end returns the result already on the operand stack
+		return b, nil
 	}
 	b.i32(int32(f.blocks[f.cfg.Entry]))
 	b.local(0x21, pc)
@@ -271,9 +291,7 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		switch t := block.Terminator; t.Kind {
 		case optir.TerminatorReturn:
-			if f.cfg.Results[0] != "()" {
-				f.get(&b, t.Values[0])
-			}
+			f.returnValue(&b, t)
 			b.op(0x0f)
 		case optir.TerminatorBranch:
 			f.edge(&b, t.True, pc, 1)
@@ -291,6 +309,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	}
 	b.op(0x00, 0x0b, 0x00, 0x0b) // invalid PC traps; unreachable after loop; function end
 	return b, nil
+}
+
+func (f *function) returnValue(b *binary, t optir.Terminator) {
+	if f.cfg.Results[0] != "()" {
+		f.get(b, t.Values[0])
+	}
 }
 
 func (f *function) get(b *binary, id optir.ValueID) { b.local(0x20, f.locals[id]) }

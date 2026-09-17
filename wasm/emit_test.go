@@ -138,3 +138,21 @@ func TestWasmDivisionEffects(t *testing.T) {
 		}
 	}
 }
+
+func TestWasmSingleBlockBackedgeKeepsDispatcher(t *testing.T) {
+	// Block count alone is not enough: this function never returns. Do not run
+	// it in-process; pin the dispatcher body, including the parallel edge copy.
+	cfg := optir.CFG{Name: "spin", Entry: 9, Results: []optir.Type{"u32"}, Blocks: []optir.Block{{
+		ID: 9, Parameters: []optir.Value{{ID: 1, Type: "u32"}},
+		Terminator: optir.Terminator{Kind: optir.TerminatorBranch, True: optir.Edge{Target: 9, Arguments: []optir.ValueID{1}}},
+	}}}
+	m, err := Emit([]optir.CFG{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte{1, 1, 0x7f, 0x41, 0, 0x21, 1, 0x03, 0x40, 0x20, 1, 0x41, 0, 0x46, 0x04, 0x40,
+		0x20, 0, 0x21, 0, 0x41, 0, 0x21, 1, 0x0c, 1, 0x0b, 0, 0x0b, 0, 0x0b}
+	if !bytes.HasSuffix(m.Bytes, body) {
+		t.Fatalf("one-block backedge changed: %x", m.Bytes)
+	}
+}

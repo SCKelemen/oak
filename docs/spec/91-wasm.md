@@ -79,9 +79,51 @@ revision, not a change to the Core Wasm binary-version header.
 
 The emitter checks CFG/SSA structure and the existing closed scalar operation
 typing rules, applies profile limits, and emits deterministic type/function/
-export/code sections. A dispatch loop represents arbitrary accepted CFGs. Edge
-values are pushed before any phi local is overwritten. This implementation is
-not yet a size- or throughput-optimized backend.
+export/code sections. A single-block CFG ending in return emits directly,
+without a program-counter local or dispatch loop. All other accepted CFGs retain
+the dispatch-loop baseline. Edge values are pushed before any phi local is
+overwritten. This is a first bounded code-size optimization, not a mature
+throughput-optimized backend.
+
+### Direct returning-block emission
+
+The direct path depends only on checked raw CFG shape: exactly one block, ending
+in return. A one-block backedge still uses the dispatcher. It does not use SCCP
+reachability to skip blocks, consume an optimized candidate, eliminate dead
+operations, reorder calls, reuse locals or stackify expressions. Every operation
+still passes the same effect/type/attribute gates and emits in source order.
+Bool argument checks remain before the body, including for unused arguments;
+Unit results do not suppress calls or traps. Returning a parameter does not skip
+preceding operations. The function's final `end` returns its declared result.
+
+The encoding recipe is now `oak.wasm.encode.v3`; scalar/check profiles remain
+v1 because neither the accepted vocabulary nor the byte-validation rules
+changed. Independent final-byte admission is unchanged, and translation
+verification remains false.
+
+`TestWasmDirectEmissionSize` retains executable baseline bytes from specification
+`ea3c3793` and gates the measured result. `TestWasmDirectEmissionExecution`
+independently instantiates both versions and checks arithmetic, calls, Bool
+guards, signed division overflow/traps, branches and loops against reference
+results. Sizes below are whole modules; instruction counts include structural
+Wasm instructions, not native JIT instructions or dynamic execution counts.
+
+| Fixture | Module bytes, before → after | Wasm instructions, before → after |
+| --- | ---: | ---: |
+| i64 identity | 58 → 38 | 14 → 2 |
+| u32 add | 68 → 48 | 18 → 6 |
+| shared u64 multiply result | 77 → 57 | 22 → 10 |
+| unused Bool argument with guard | 73 → 53 | 22 → 10 |
+| Unit return | 60 → 40 | 15 → 3 |
+| signed i64 division | 82 → 62 | 27 → 15 |
+| caller plus add callee | 126 → 86 | 40 → 16 |
+| conditional / loop fixtures | 133 / 166, unchanged | 55 / 65, unchanged |
+
+These are deterministic code-size gates, not a measured wall-clock speedup or
+formal equivalence proof. Multi-block structurization, stack expression emission,
+local allocation and runtime benchmarks remain open.
+
+### Execution and proof coverage
 
 Independent runtime tests decode, validate and execute final bytes, including
 loop-carried swaps, zero-trip loops, overflow, signedness, Bool guards and calls.

@@ -93,7 +93,7 @@ func emitWasmGraph(ctx context.Context, description target.Description, cfgs []o
 	key := opt.ArtifactKey{Kind: opt.ArtifactChecked, Name: "wasm.checked-raw-cfg",
 		Version: opt.DeriveArtifactVersion("oak.wasm.checked-raw-cfg.v1", inputs...)}
 	module, report, err := runEmissionGraph(ctx, description, key, owned, emissionBackend[[]optir.CFG, wasm.Module]{
-		name: "wasm", materializeRevision: "oak.wasm.encode.v2/" + wasm.Profile,
+		name: "wasm", materializeRevision: "oak.wasm.encode.v3/" + wasm.Profile,
 		admissionRevision: "oak.wasm.manifest-admission.v1/" + check.Validator + "/" + check.CoreSpecRevision,
 		materialize: func(_ context.Context, _ target.Description, input []optir.CFG) (wasm.Module, error) {
 			return wasm.EncodeCandidate(input)

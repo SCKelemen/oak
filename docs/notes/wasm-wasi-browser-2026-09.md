@@ -189,7 +189,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Planned |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial code-size slice: direct single-returning-block emission with baseline-byte/engine regression gates. General structurization, local reuse, stackification, formal translation validation and runtime measurements open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -198,7 +198,8 @@ certificate replay. Gate stronger features on their actual evidence.
 Native speed and Wasm speed are separate measurements. A browser's JIT chooses
 physical allocation, scheduling and ISA instructions. Measure guest runtime,
 module size, compiler download/startup, compilation latency and memory separately.
-The current dispatch-loop implementation makes no native-parity claim.
+The current direct-returning-block/dispatch-fallback implementation makes no
+native-parity claim.
 
 Initial execution evidence (2026-09-17): actual bytes pass V8 engine tests;
 headless Chrome compiles the example locally and returns 4950, terminates an
@@ -247,3 +248,15 @@ loops and a remainder-based GCD loop. Independent byte validation now compares
 Oak-accepted cases also validate in the engine. Malformed effect declarations,
 operation shapes, operand widths and old profile manifests still refuse.
 These are conformance tests, not a new formal refinement or performance claim.
+
+First code-size increment (2026-09-17): single returning blocks no longer carry
+a program-counter local or dispatch loop. The ten-module regression corpus
+retains pre-change executable bytes from `ea3c3793`. Eligible one-function
+fixtures lose 20 bytes and 12 Wasm instructions each; the caller/callee fixture
+loses 40 bytes and 24 instructions. Branch and loop fixtures are byte-identical.
+Both old and new modules run against the same independent reference results.
+Dedicated tests retain unused Bool input guards, Unit-call traps and the
+single-block-backedge fallback. The v3 materialization recipe invalidates old
+encoding identities without changing scalar/check v1. This is measured static
+size improvement, not a wall-clock result or formal translation proof; see the
+[fixture table](../spec/91-wasm.md#direct-returning-block-emission).

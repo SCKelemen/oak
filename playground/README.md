@@ -22,6 +22,11 @@ Zero divisors trap; signed overflow preserves Oak's wrapping result. The page
 requires matching v1 profile/validator reports. Rebuild the compiler assets and
 reload the page together after updating; stale v0 reports are not accepted.
 
+Straight-line single-returning-block functions now omit the dispatch loop and
+program-counter local. This reduces downloaded program bytes; other CFGs keep
+the dispatch baseline. See the [measured fixture sizes](../docs/spec/91-wasm.md#direct-returning-block-emission).
+This does not reduce the Go compiler payload or establish a runtime speedup.
+
 “Compile only” produces a downloadable module without executing it or requiring
 `main`. Artifact information includes the compiler's target and DAG provenance.
 The page checks hashes against the actual source and module bytes before
