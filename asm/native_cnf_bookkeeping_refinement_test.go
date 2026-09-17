@@ -403,6 +403,7 @@ func runNativeCNFBookkeepingKernel(t *testing.T, module, namespace, filename str
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	buildLeanImports(t, lake, leanPath)
 	command := exec.CommandContext(ctx, lake, "env", "lean", leanPath)
 	command.Dir = filepath.Join("..", "spec", "lean")
 	if output, err := command.CombinedOutput(); err != nil {
