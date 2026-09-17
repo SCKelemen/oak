@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v30 adds verifier-gated carrier-aware rescheduling to v29's record-base
-	// recipe. Preserve every recipe input to avoid
+	// v31 adds verifier-gated fixed-point carrier reuse to v30's carrier-aware
+	// scheduling recipe. Preserve every recipe input to avoid
 	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v30")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v31")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -79,6 +79,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"loop-result-homes", lane.LoopResultHomes},
 		{"share-record-bases", lane.ShareRecordBases},
 		{"reuse-record-base-carriers", lane.ReuseRecordBaseDestinations},
+		{"reuse-remaining-record-base-carriers", lane.ReuseRemainingRecordBaseDestinations},
 		{"reschedule-record-base-carriers", lane.RescheduleRecordBaseCarriers},
 		{"share-global-addresses", lane.ShareGlobalAddresses},
 		{"forward-global-loads", lane.ForwardGlobalLoads},

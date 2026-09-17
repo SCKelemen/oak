@@ -12,7 +12,7 @@
  * `spec/lean/Oak/ArmASL.lean` is proved equal.
  *
  * The adaptations, all listed here, make the fragment self-contained and
- * pure except for the explicitly retained RAM wrappers and selector register; none
+ * pure except for the explicitly retained RAM wrappers and register reads; none
  * changes a computed value:
  *   - `UInt`/`SInt`/`__GetSlice_int`/`IsZero`/`Zeros` come from Arm's
  *     prelude, written against Sail 0.8; they are restated over the Sail
@@ -35,6 +35,9 @@
  *   - `__WriteMemory` and `__defaultRAM` are retained from aarch_mem.sail,
  *     including the register read and the official no-device trace helper.
  *     Register initialization and reaching this wrapper are not assumed.
+ *   - `_R` and `aget_X` retain the official general-register bank and
+ *     accessor, including the bank-free register-31 zero branch and the
+ *     legacy effect annotation (inferred by the modern Sail compiler).
  */
 
 default Order dec
@@ -59,6 +62,19 @@ function __GetSlice_int(n, m, o) = get_slice_int(n, m, o)
 
 val Zeros : forall 'n, 'n >= 0. int('n) -> bits('n)
 function Zeros(n) = sail_zeros(n)
+
+/* aarch_mem.sail register declaration and aarch64.sail accessor. These
+ * declarations do not include SP selection, initialization, or instruction
+ * execution. The vector's descending order is part of the copied model. */
+register _R : vector(31, dec, bits(64))
+
+val aget_X : forall 'width 'n,
+  ('n >= 0 & 'n <= 31 & 'width in {8, 16, 32, 64}).
+  (implicit('width), int('n)) -> bits('width) effect {rreg}
+
+function aget_X (width, n) = if n != 31 then slice(_R[n], 0, width) else Zeros(width)
+
+overload X = {aget_X}
 
 /* aarch_mem.sail */
 val IsZero : forall ('N : Int), 'N >= 0. bits('N) -> bool

@@ -170,14 +170,18 @@ structure SoftwareBreakpointArguments where
 
 inductive Register : Type where
   | __defaultRAM
+  | _R
   deriving DecidableEq, Hashable, Repr
 open Register
 
 abbrev RegisterType : Register → Type
   | .__defaultRAM => (BitVec 56)
+  | ._R => (Vector (BitVec 64) 31)
 
 instance : Inhabited (RegisterRef RegisterType (BitVec 56)) where
   default := .Reg __defaultRAM
+instance : Inhabited (RegisterRef RegisterType (Vector (BitVec 64) 31)) where
+  default := .Reg _R
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception

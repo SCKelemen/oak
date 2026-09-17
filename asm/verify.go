@@ -2540,6 +2540,11 @@ func (x *pathExecutor) pathLimit() int {
 // with a data-dependent trip count, outside the subset. The path and step
 // budgets bound the unfolding.
 type pathExecutor struct {
+	// probing: the loop summarizer is running a body once to discover the
+	// frame slots its indexed stores reach (summarizeLoop); a call is then
+	// a clobber of the caller-saved registers, not summarized (its summary
+	// would record its loops and cells a second time).
+	probing     bool
 	items       []Item
 	labels      map[string]int
 	arch        string   // the lane

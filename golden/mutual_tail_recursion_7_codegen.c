@@ -370,7 +370,7 @@ static inline oak_view_u8 oak_view_subslice_u8(oak_view_u8 v, u64 start, u64 n) 
 
 /* bounds-checked owned-array indexing: out-of-range traps, never UB */
 static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
-#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+#define oak_index(base, len, i) ((base)[oak_lv_idx((u64)(i), (u64)(len))])
 /* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */
 static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
 

@@ -1244,11 +1244,18 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// the slots' symbols exist, and every slot it changes or creates joins
 	// the loop-carried slots at its width (a body with inner loops or
 	// calls is not probed: the probe would summarize them a second time).
-	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape)
+	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoop(shape)
 	if probeFrameStores {
 		probe := freshState.clone()
 		x.noteLoopBodyBounds(shape, probe)
-		if ends, _, ok := x.runBody(shape, probe, nil); ok {
+		// A call in the body clobbers the caller-saved registers and binds
+		// its results afresh (probing); the slots a callee writes through
+		// an address it was handed are not discovered here — the summary
+		// proper lists them (summarizeCallInLoop).
+		x.probing = true
+		ends, _, ok := x.runBody(shape, probe, nil)
+		x.probing = false
+		if ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
 					before, held := state.frame[addr]
@@ -2134,6 +2141,12 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState, tr
 			var reason string
 			var ok bool
 			switch {
+			case (instr.Mnemonic == "bl" || instr.Mnemonic == "call") && x.probing:
+				x.forgetCallerSaved(st)
+				for r := 0; r <= 7; r++ {
+					st.regs[r] = paramTerm(fmt.Sprintf("probe.call%d.r%d", pc, r), 64)
+				}
+				reason, ok = "", true
 			case instr.Mnemonic == "bl" || instr.Mnemonic == "call":
 				reason, ok = x.summarizeCallInLoop(instr, st)
 			case x.arch == ArchRV64:
@@ -2257,6 +2270,16 @@ func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
 			continue
 		}
 		if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && mem.Base.Class == ClassX && mem.Index != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInnerLoop reports a recognized inner loop exit inside the body.
+func (x *pathExecutor) hasInnerLoop(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		if _, isExit := x.loopExits[i]; isExit {
 			return true
 		}
 	}

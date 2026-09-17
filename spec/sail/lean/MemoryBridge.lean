@@ -112,7 +112,7 @@ theorem writeRAM64_defaultRAM_irrelevant (state : State)
   rw [writeRAM64_run, writeRAM64_run]
 
 /-- The same runtime rule holds with arbitrary register and choice-state
-types, not only the generated fragment's single RAM-selector register. -/
+types, not only the generated fragment's RAM selector and general-register bank. -/
 theorem runtime_writeRAM64_run {Reg : Type} {RegType : Reg → Type}
     [DecidableEq Reg] [Hashable Reg] {choice : Sail.ChoiceSource} {exception : Type}
     (state : PreSail.SequentialState RegType choice)

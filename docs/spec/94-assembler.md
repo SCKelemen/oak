@@ -1129,7 +1129,7 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment itself has one RAM-selector register. This runtime
+the generated fragment contains a RAM selector and the general-register bank. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1141,10 +1141,23 @@ and Sail's `Unreachable` error with unchanged state when it is missing. Normal
 return is equivalent to an initialized register entry; ignoring the selector
 in the lower runtime does not allow skipping this read. Break/make projections
 compose with the new effectful wrapper under both endian choices, retaining
-the actual register-lookup premise. No full architectural register bank or
+the actual register-lookup premise. No full architectural register state or
 initialization proof is implied, and this runtime error is not an Arm Data
 Abort. Exact-source/mutation gates pin the register, write/trace/return order,
 and the complete no-op trace expression, including continuation lines.
+
+`RegisterBridge.lean` separately proves the copied, mechanically generated
+`aget_X` against the actual `_R` bank: direct exported-vector slot selection,
+low-bit reads at the four supported widths, unchanged full state, missing-bank
+failure, and XZR zero without any bank read. The source width/index domain is
+retained explicitly in the theorems. Its non-SP STR operand adapter composes
+these reads and matches the existing pure request, deriving the X0/XZR and
+X0/X2 pairs from the bank. It is not the original instruction body and makes
+no `Mem` call: SP, PostDecode, syndrome updates, translation, faults, register
+provenance and architectural events remain open. A checked wrapping-address
+example records the 64-bit arithmetic; it supplies no physical-address
+translation by truncation. Upstream/local source-mutation gates pin the exact
+bank, getter, and overload, and the existing Sail CI builds the proof (§126).
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
@@ -6343,6 +6356,28 @@ No runtime claim is attached because final load averages were 79–113. Exact
 provenance is in
 `benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
 
+The `reuse-remaining-record-base-carriers` child closes the same rewrite to a
+fixed point only after the one-group carrier candidate fires. Each successful
+iteration removes at least one complete materialization; the next iteration
+rebuilds the item CFG and liveness before making another decision. The CFG
+must remain acyclic, every definition must dominate its renamed reads, the
+index and span base must remain stable on every relevant path, and calls or a
+write of the carrier refuse the group exactly as in the parent. The one-group
+body remains an independent fallback, and the fixed-point child has its own
+materialization-v31 key and non-trusted whole-body verdict gate.
+
+Against a same-compiler
+`OAK_OPT_SKIP=reuse-remaining-record-base-carriers` control, the fresh stage-2
+pilot closes one additional group in proven `walk_leaf`. Its selected body
+falls from 126 to 123 instructions, five to four multiplies, 19 to 18 modeled
+stalls, and static cost 206.5 to 201.0. The exact removal is one redundant
+`movz`/`movk`/`umaddl` record-base triple; all other selected bodies remain
+unchanged. Mach-O `__text` shrinks by 12 bytes and the aligned object by 8;
+all 27 relocations remain. Both objects pass all eight current stage-2 native
+conformance tests. No runtime claim is attached because host load averages
+were 185–237. Exact provenance is in
+`benchmarks/native/results/stage2-record-base-closure-2026-09-18.json`.
+
 The separate `reschedule-record-base-carriers` child closes one consequence of
 that late rewrite: the original scheduler could not see the dependence graph
 after the first destination became the long-lived carrier and the redundant
@@ -8392,7 +8427,14 @@ the registers, frame, globals, and write logs of one joined state): a
 merge past it is refused as "the paths merged at their joins exceed
 the verifier's term budget" rather than grown, and `emit_header`, whose
 merged run had passed twenty gigabytes under `joinedPathBudget`, is
-trusted in five seconds.
+trusted in five seconds. Tallied on the plain bodies: the two
+obligations had taken the prover's build from 574 proven, 218
+evidence, 172 trusted (9eca941a) to 535, 250, 166 of 951 identity
+forms at 40e4c2f7, `unmap_page` and `map_page` among the fallen on the
+OS pilot; the per-end decision and the fact-pruned respelling that
+followed it (`sourceTrapOnPath`, below) bring it to 573, 212, 166 at
+62ce8b44, and both walkers are fully proven again (stage2 twenty of
+twenty, addr_space twenty-nine of twenty-nine).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -9358,6 +9400,21 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**Probing a body that calls (2026-09-17).** The slots a store at a
+data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its
+guard) are found by running the body once on the fresh register state
+(the probe of `summarizeLoop`); a body with a call was not probed, since
+the probe would have summarized the call — its loops, its cells — a
+second time. `sha256_update`'s byte loop calls the block compression
+when the block fills, so its 64-byte block was never loop-carried on the
+machine side, the Oak chunks `next.block[0..7]…` had no image, and the
+coupling search spent its budget on affine pairings. The probe now runs
+in a probing mode where a call clobbers the caller-saved registers and
+binds its results afresh, summarizing nothing (`pathExecutor.probing`);
+bodies with inner loops are still not probed. The slots a callee writes
+through an address it was handed are not discovered by the probe — the
+summary proper lists them — so the discovery is conservative.
 
 **Header values spelled apart (2026-09-17).** A coupling candidate is an
 equality when the two sides' header values are one term, else an affine

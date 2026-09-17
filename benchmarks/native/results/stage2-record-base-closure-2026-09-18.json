@@ -1,0 +1,100 @@
+{
+  "date_local": "2026-09-18",
+  "recorded_at_utc": "2026-09-17T22:13:18Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "31df236c5796f4a6e068694d9a33b120626b17ba",
+  "candidate": "baseline plus the reuse-record-base-carriers-parented, verifier-gated AArch64 reuse-remaining-record-base-carriers fixed-point child and native materialization-v31 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=reuse-remaining-record-base-carriers",
+  "os_revision": "e6313f218f212997a4c25e1f48a5dc3643a86653",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "573b583bf310dbacc2ec7bf51236775d4bffdd4b6cd276f5393b0cdae431e7aa",
+  "object_sha256": {
+    "baseline": "25da2aafce03c54815db4338e34b82c7cab51fab18dd583cecf266dd297e2c0c",
+    "candidate": "ff33201a142fa544ab208ddd9537ac7a5c5e8c87f5b3932aa710d318157e7c5b"
+  },
+  "object_bytes": {
+    "baseline": 5424,
+    "candidate": 5416,
+    "delta": -8
+  },
+  "text_bytes": {
+    "baseline": 3904,
+    "candidate": 3892,
+    "delta": -12
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "oak": ["build", "-native", "-verify-fresh", "-opt-report"],
+    "baseline_opt_skip": "reuse-remaining-record-base-carriers",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "walk_leaf": {
+      "instructions_before": 126,
+      "instructions_after": 123,
+      "branches_before": 19,
+      "branches_after": 19,
+      "loads_before": 14,
+      "loads_after": 14,
+      "stores_before": 8,
+      "stores_after": 8,
+      "calls_before": 1,
+      "calls_after": 1,
+      "multiplies_before": 5,
+      "multiplies_after": 4,
+      "guards_before": 8,
+      "guards_after": 8,
+      "estimated_stalls_before": 19,
+      "estimated_stalls_after": 18,
+      "static_cost_before": 206.5,
+      "static_cost_after": 201.0,
+      "parent_carrier_materializations_removed": 2,
+      "remaining_carrier_materializations_removed": 1,
+      "rescheduled_instructions": 6,
+      "verdict": "proven",
+      "proof": "bit-level data-dependent loop coupled inductively (j to j), including package and span memory writes"
+    }
+  },
+  "summary": {
+    "selected_instructions_removed": 3,
+    "selected_multiplies_removed": 1,
+    "estimated_stalls_removed": 1,
+    "text_bytes_removed": 12,
+    "object_bytes_removed": 8,
+    "interpretation": "A second distinct record-base group is admitted after recomputing CFG and liveness; one movz/movk/umaddl triple disappears and the existing carrier-aware scheduler orders the final body. All other selected bodies are unchanged."
+  },
+  "differential_tests": {
+    "baseline_passed": 8,
+    "candidate_passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "final host load averages were 236.96, 192.65, and 185.39, so no samples were taken"
+  }
+}

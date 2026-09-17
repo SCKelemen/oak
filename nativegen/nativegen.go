@@ -1684,6 +1684,10 @@ type Lane struct {
 	// computed destination when no surviving instruction overwrites it. It is
 	// a separate child candidate of ShareRecordBases.
 	ReuseRecordBaseDestinations bool
+	// ReuseRemainingRecordBaseDestinations repeats carrier reuse to a fixed
+	// point after the first group. It is a separate child candidate so the
+	// established one-group body remains a fallback.
+	ReuseRemainingRecordBaseDestinations bool
 	// RescheduleRecordBaseCarriers reruns scheduling after record-base and
 	// scalar-address rewrites expose the carrier's final dependencies. It is a
 	// separate child candidate of ReuseRecordBaseDestinations.
@@ -2179,6 +2183,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	}
 	if lane.ReuseRecordBaseDestinations && lane.ShareRecordBases && lane.Schedule {
 		reusedRecordBaseDestinations[out] = reuseRecordBaseDestination(out)
+	}
+	if lane.ReuseRemainingRecordBaseDestinations && reusedRecordBaseDestinations[out] > 0 {
+		reusedRemainingRecordBaseDestinations[out] = reuseRemainingRecordBaseDestinations(out)
 	}
 	if lane.ShareGlobalAddresses && lane.Schedule {
 		sharedGlobalAddresses[out] = shareGlobalAddresses(out)

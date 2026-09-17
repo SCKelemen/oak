@@ -30,8 +30,22 @@ type Module struct {
 	ByteValidation      *check.Report `json:"byteValidation,omitempty"`
 }
 
+// FunctionInput binds the structured program retained by the checked frontend
+// to its canonical CFG projection. The encoder independently reprojects the
+// structure and refuses any disagreement before using it as a lowering plan.
+type FunctionInput struct {
+	Structured optir.Function
+	CFG        optir.CFG
+}
+
+type candidateInput struct {
+	cfg        optir.CFG
+	structured *optir.Function
+}
+
 type function struct {
 	cfg        optir.CFG
+	structured *optir.Function
 	entry      optir.Block
 	index      uint32
 	locals     map[optir.ValueID]uint32
@@ -66,27 +80,85 @@ func Emit(cfgs []optir.CFG) (Module, error) {
 	return out, nil
 }
 
+// EmitStructured is the safe combined API for a checked structured/CFG pair.
+// Byte validation remains structural and does not claim source translation
+// verification.
+func EmitStructured(inputs []FunctionInput) (Module, error) {
+	out, err := EncodeStructuredCandidate(inputs)
+	if err != nil {
+		return Module{}, err
+	}
+	report, err := out.ValidateBytes()
+	if err != nil {
+		return Module{}, fmt.Errorf("wasm: emitted bytes refused: %w", err)
+	}
+	out.ByteValidation = &report
+	return out, nil
+}
+
 // EncodeCandidate is untrusted materialization for a compiler artifact graph.
 // It enforces the input subset but does NOT independently admit output bytes.
 // Use Emit for the safe combined API, or gate this result with ValidateBytes.
 // Its result has no ByteValidation report or translation-verification authority.
 func EncodeCandidate(cfgs []optir.CFG) (Module, error) {
-	if len(cfgs) == 0 || len(cfgs) > 128 {
+	inputs := make([]candidateInput, len(cfgs))
+	for i, cfg := range cfgs {
+		inputs[i] = candidateInput{cfg: cfg}
+	}
+	return encodeCandidateInputs(inputs)
+}
+
+// EncodeStructuredCandidate is untrusted materialization for exact checked
+// structured/CFG pairs. Structure is used only as a lowering plan; exact
+// reprojection prevents it from acquiring independent semantic authority.
+func EncodeStructuredCandidate(inputs []FunctionInput) (Module, error) {
+	prepared := make([]candidateInput, len(inputs))
+	for i, input := range inputs {
+		if err := validateStructuredLimits(input.Structured); err != nil {
+			return Module{}, err
+		}
+		structured, _, err := optir.SnapshotFunction(input.Structured)
+		if err != nil {
+			return Module{}, fmt.Errorf("wasm: invalid structured function: %w", err)
+		}
+		cfg, _, err := optir.SnapshotCFG(input.CFG)
+		if err != nil {
+			return Module{}, fmt.Errorf("wasm: invalid CFG projection: %w", err)
+		}
+		projected, err := optir.Project(structured)
+		if err != nil {
+			return Module{}, err
+		}
+		equal, err := optir.ExactCFGEqual(projected, cfg)
+		if err != nil {
+			return Module{}, err
+		}
+		if !equal {
+			return Module{}, fmt.Errorf("wasm: structured function %s disagrees with its exact CFG projection", structured.Name)
+		}
+		prepared[i] = candidateInput{cfg: cfg, structured: &structured}
+	}
+	return encodeCandidateInputs(prepared)
+}
+
+func encodeCandidateInputs(inputs []candidateInput) (Module, error) {
+	if len(inputs) == 0 || len(inputs) > 128 {
 		return Module{}, fmt.Errorf("wasm: need 1..128 functions")
 	}
-	ordered := append([]optir.CFG(nil), cfgs...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
+	ordered := append([]candidateInput(nil), inputs...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cfg.Name < ordered[j].cfg.Name })
 	functions := make([]*function, 0, len(ordered))
 	byName := map[string]*function{}
 	total := 0
-	for _, cfg := range ordered {
+	for _, input := range ordered {
+		cfg := input.cfg
 		if cfg.Name == "" || len(cfg.Name) > 256 || !utf8.ValidString(cfg.Name) || byName[cfg.Name] != nil {
 			return Module{}, fmt.Errorf("wasm: invalid or duplicate function name %q", cfg.Name)
 		}
 		if len(cfg.Blocks) == 0 || len(cfg.Blocks) > 128 || len(cfg.Results) != 1 {
 			return Module{}, fmt.Errorf("wasm: %s needs 1..128 blocks and one Oak result", cfg.Name)
 		}
-		f := &function{cfg: cfg, index: uint32(len(functions)), locals: map[optir.ValueID]uint32{}, types: map[optir.ValueID]optir.Type{}, blocks: map[optir.BlockID]int{}}
+		f := &function{cfg: cfg, structured: input.structured, index: uint32(len(functions)), locals: map[optir.ValueID]uint32{}, types: map[optir.ValueID]optir.Type{}, blocks: map[optir.BlockID]int{}}
 		for i, b := range cfg.Blocks {
 			if b.ID == cfg.Entry {
 				f.entry = b
@@ -144,6 +216,11 @@ func EncodeCandidate(cfgs []optir.CFG) (Module, error) {
 				if err := define(op.Results[0]); err != nil {
 					return Module{}, err
 				}
+			}
+		}
+		if f.structured != nil {
+			if err := f.bindStructuredArguments(); err != nil {
+				return Module{}, fmt.Errorf("wasm: %s: %w", cfg.Name, err)
 			}
 		}
 		functions = append(functions, f)
@@ -265,6 +342,10 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		dispatch = !structuredRegionLoop
 	}
+	structuredTree := dispatch && f.structured != nil
+	if structuredTree {
+		dispatch = false
+	}
 	extra := 0
 	if dispatch {
 		extra = 1
@@ -317,6 +398,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	}
 	if structuredRegionLoop {
 		if err := f.regionLoopBody(&b, regionLoop, functions); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	if structuredTree {
+		if err := f.structuredBody(&b, functions); err != nil {
 			return nil, err
 		}
 		return b, nil

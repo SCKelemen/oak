@@ -18,6 +18,27 @@ func FingerprintCFG(cfg CFG) (string, error) {
 	return fingerprintCFG(cfg), nil
 }
 
+// FingerprintFunction returns a canonical digest of every semantic field in a
+// valid structured OptIR function. It distinguishes control structure even
+// when two functions project to extensionally similar CFGs. Nil and empty
+// ordered slices have the same representation.
+func FingerprintFunction(function Function) (string, error) {
+	if _, err := Project(function); err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	fingerprintString(digest, "oak.optir.function.v1")
+	fingerprintString(digest, function.Name)
+	fingerprintValues(digest, function.Parameters)
+	fingerprintUint64(digest, uint64(len(function.Results)))
+	for _, result := range function.Results {
+		fingerprintString(digest, string(result))
+	}
+	fingerprintRegion(digest, function.Body)
+	fingerprintFacts(digest, function.Facts)
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
 // FingerprintRegionMemoryInput returns a canonical digest of an exact CFG and
 // its checked region-memory boundary. Declaration order is not significant for
 // regions, memory-operation metadata, distinct-region accesses, or live-out
@@ -190,6 +211,35 @@ func fingerprintOperation(digest hash.Hash, operation Operation) {
 	}
 	fingerprintFacts(digest, operation.Facts)
 	fingerprintSource(digest, operation.Source)
+}
+
+func fingerprintRegion(digest hash.Hash, region Region) {
+	fingerprintValues(digest, region.Arguments)
+	fingerprintUint64(digest, uint64(len(region.Nodes)))
+	for _, node := range region.Nodes {
+		switch {
+		case node.Operation != nil:
+			fingerprintString(digest, "operation")
+			fingerprintOperation(digest, *node.Operation)
+		case node.If != nil:
+			fingerprintString(digest, "if")
+			fingerprintUint64(digest, uint64(node.If.Condition))
+			fingerprintValues(digest, node.If.Results)
+			fingerprintRegion(digest, node.If.Then)
+			fingerprintRegion(digest, node.If.Else)
+		case node.While != nil:
+			fingerprintString(digest, "while")
+			fingerprintValueIDs(digest, node.While.Initial)
+			fingerprintValues(digest, node.While.Results)
+			fingerprintRegion(digest, node.While.Condition)
+			fingerprintRegion(digest, node.While.Body)
+		default:
+			// Validation rejects this shape. Keep the encoding total in case a
+			// caller mutates a checked value concurrently, which is unsupported.
+			fingerprintString(digest, "invalid")
+		}
+	}
+	fingerprintValueIDs(digest, region.Yield)
 }
 
 func fingerprintTerminator(digest hash.Hash, terminator Terminator) {

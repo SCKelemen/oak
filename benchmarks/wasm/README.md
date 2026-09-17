@@ -31,8 +31,10 @@ gain in Chrome, other Wasm engines or representative applications.
 
 Counter, sum, swap and GCD modules also shrink by 61–63 bytes and 34 Wasm
 instructions each. The code-size difference includes section-length LEB changes.
-Broader loop shapes still use the dispatcher; formal source-to-Wasm translation
-verification, general structurization, local reuse and stackification remain open.
+Nested reducible source loops now use the structured-region path below. Raw
+unmatched/irreducible CFGs still use the dispatcher; formal source-to-Wasm
+translation verification, general structurization, local reuse and stackification
+remain open.
 
 ## Four-block conditionals
 
@@ -113,3 +115,26 @@ returns, shuffled block storage, inverted header polarity and the 124/125-block
 depth boundary. Effect tests cover lazy trapping calls, Unit results, entry/
 header/exit operations, signed overflow, zero-trip bodies and nested-loop
 dispatcher fallback. None grants formal source-to-Wasm equivalence.
+
+## Nested structured regions
+
+`compiler/wasm_nested_loop_test.go` compares the unchanged public raw-CFG
+dispatcher route with production lowering supplied both checked structured OptIR
+and its exact CFG. Nested counters shrink 337→203 bytes and 140→66 instructions;
+adding a conditional inner body shrinks 437→255 bytes and 189→88 instructions.
+Normal tests execute both lanes against independent nested-loop references and
+cover calls, lazy division traps, Unit results, zero trips and Bool guards.
+
+```sh
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
+  go test ./compiler -run '^TestWasmNestedLoopTiming$' -count=3 -v
+```
+
+The opt-in benchmark uses the conditional inner body, a fresh engine per test,
+15 warmup batches per lane, seven alternating samples and four calls at `n=1000`
+per sample. Compilation and instantiation are excluded and every result is
+checked. [All three local samples](nested-loop-2026-09-17.json) have median
+structured/dispatcher ratios of 0.087–0.100 under Deno 2.9.6 / V8
+15.0.245.2-rusty. This small quadratic-loop microbenchmark on a shared
+Darwin/arm64 host is not a stable speedup estimate, Chrome result, representative
+application result, timing CI gate or formal proof.
