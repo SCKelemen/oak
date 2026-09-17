@@ -1753,6 +1753,10 @@ type Lane struct {
 	// emitted. A body the lift refuses does not lower under the flag, so
 	// the candidate search keeps the body as emitted.
 	Reallocate bool
+	// TrimCalleeSaves removes callee-saved general-register homes left dead
+	// by reallocation, together with their matched prologue/epilogue traffic.
+	// It keeps the frame layout fixed and is independently verifier-gated.
+	TrimCalleeSaves bool
 	// Fuse folds instruction pairs into the one instruction that does both
 	// (machine.Fuse: a shift into an add's shifted operand, an increment
 	// into a csinc); the candidate search turns it on, the verifier judges.
@@ -1954,6 +1958,17 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 				return nil, err
 			}
 		}
+		if lane.TrimCalleeSaves {
+			if !lane.Reallocate {
+				return nil, unsupported("callee-save trimming without reallocation")
+			}
+			trimmed, sites, err := machine.TrimCalleeSaves(out)
+			if err != nil {
+				return nil, unsupported("%v", err)
+			}
+			out.Items, out.Clobbers = trimmed.Items, trimmed.Clobbers
+			trimmedCalleeSaves[out] = sites
+		}
 		if lane.CarryLoopIndices {
 			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
 		}
@@ -1962,6 +1977,9 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
+		if lane.TrimCalleeSaves {
+			return nil, unsupported("callee-save trimming is not implemented on the RV64 lane")
+		}
 		var out *asm.Function
 		var err error
 		if lane.UseOptIR {
@@ -2154,6 +2172,12 @@ var fusedExitsOf = map[*asm.Function]int{}
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+// TrimmedCalleeSaves reports the dead callee homes and saved registers removed
+// under Lane.TrimCalleeSaves.
+func TrimmedCalleeSaves(fn *asm.Function) int { return trimmedCalleeSaves[fn] }
+
+var trimmedCalleeSaves = map[*asm.Function]int{}
 
 // OptIRLowered reports the generic SSA operations eliminated or hoisted by
 // the optimized CFG selected into fn. Zero means the body came from the

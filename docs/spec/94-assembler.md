@@ -6332,6 +6332,33 @@ tests pass. Runtime is not reported from the heavily loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
 
+**Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
+make a parameter home in x19–x28 dead while the lowering's conservative frame
+still saves and restores that register. The separate `trim-callee-saves`
+machine candidate runs only after `reallocate`. It recognizes the exact
+lowering-generated prefix of x19–x28 saves and the matching restores, at the
+same offsets, in a unique return block. Machine def-use webs remove only dead
+register copies into those saved registers. A register no remaining
+instruction mentions then loses its save, restore, and clobber declaration;
+when one member of a pair remains, `stp`/`ldp` become `str`/`ldr` at that
+member's original slot. The frame size and every other offset remain fixed.
+Unknown, unmatched, and multi-return shapes do not transform.
+
+This is a non-neutral, **verdict-gated** candidate. The untrimmed reallocated
+body remains selectable, and the unchanged seam checker and whole-body
+verifier authorize the edited ABI scaffold. Materialization v27 keys the lane
+flag; `OAK_OPT_SKIP=trim-callee-saves` retains the conservative traffic.
+
+On the stage-2 pilot, the same-compiler disabled control establishes 28 fewer
+selected instructions and 112 fewer bytes in both Mach-O `__text` and the
+object (4280→4168 and 5800→5688), with all 27 relocations unchanged.
+`translate` falls 91→88 instructions and stays proven; `unmap_page` falls
+206→202 and retains its existing witnessed trap-domain/node-budget verdict.
+The proven `walk_leaf`, `get_root_pa`, and six small accessors account for the
+other 21 instructions. All five OS differential tests pass. Runtime is not
+reported from the loaded host. Exact provenance is in
+`benchmarks/native/results/stage2-callee-save-trim-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with

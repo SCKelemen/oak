@@ -1,0 +1,84 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T17:43:31Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "785e9a5f9e5e86f1b7f19fb0915bc4617c088a60",
+  "candidate": "baseline plus the reallocate-parented, verifier-gated AArch64 trim-callee-saves transform and native materialization-v27 cache-key closure",
+  "baseline_configuration": "same final candidate compiler, OAK_OPT_SKIP=trim-callee-saves",
+  "os_revision": "03b872f0b62fb10e90e6b0cd2b6e657e83a85252",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness_sha256": "27c9a0653d68c56d8d9fad2a1785b229264f95845f4c041540dbc28e77861d95",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "compiler_binary_sha256": "01de248ce6703288e94e612987287d5d8794b21644536d05661b9b46d9f7042c",
+  "object_sha256": {
+    "baseline": "43e0ca7e04ee316dc2daeb9c0dbfd6bb2638b5bd60c3d714cc58eb011c056ba4",
+    "candidate": "1fe4008ec7a7b32297efdff328169b2fb87fa6c9ac727f3a17490cb2b2190fc3"
+  },
+  "object_bytes": {
+    "baseline": 5800,
+    "candidate": 5688,
+    "delta": -112
+  },
+  "text_bytes": {
+    "baseline": 4280,
+    "candidate": 4168,
+    "delta": -112
+  },
+  "relocation_entries": {
+    "baseline": 27,
+    "candidate": 27,
+    "delta": 0
+  },
+  "build": {
+    "oak": [
+      "build",
+      "-native",
+      "-verify-fresh",
+      "-opt-report"
+    ],
+    "baseline_opt_skip": "trim-callee-saves",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0
+  },
+  "changed_selected_bodies": {
+    "walk_leaf": { "instructions_before": 135, "instructions_after": 132, "verdict": "proven" },
+    "unmap_page": { "instructions_before": 206, "instructions_after": 202, "verdict": "witnessed", "verdict_note": "existing machine trap-domain and bit-level node-budget limitations" },
+    "translate": { "instructions_before": 91, "instructions_after": 88, "verdict": "proven" },
+    "get_root_pa": { "instructions_before": 23, "instructions_after": 20, "verdict": "proven" },
+    "get_free_count": { "instructions_before": 15, "instructions_after": 12, "verdict": "proven" },
+    "get_in_use": { "instructions_before": 18, "instructions_after": 15, "verdict": "proven" },
+    "get_high_water": { "instructions_before": 15, "instructions_after": 12, "verdict": "proven" },
+    "get_mapped_pages": { "instructions_before": 15, "instructions_after": 12, "verdict": "proven" },
+    "get_entry_count": { "instructions_before": 18, "instructions_after": 15, "verdict": "proven" }
+  },
+  "unchanged_hot_body": {
+    "map_page": { "instructions": 149, "verdict": "witnessed" }
+  },
+  "summary": {
+    "selected_instructions_removed": 28,
+    "text_bytes_removed": 112,
+    "object_bytes_removed": 112,
+    "hot_frame_traffic": "translate and unmap_page each remove one 16-byte save and one 16-byte restore per invocation",
+    "interpretation": "Dead callee homes and only their matched ABI scaffold were removed; frame size and surviving offsets are unchanged."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "host load averages remained above 40 during final validation"
+  }
+}

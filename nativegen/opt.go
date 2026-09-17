@@ -58,6 +58,7 @@ const (
 	TransformMultiplyAdd         = "multiply-add"
 	TransformValueSelect         = "value-select"
 	TransformReallocate          = "reallocate"
+	TransformTrimCalleeSaves     = "trim-callee-saves"
 	TransformSchedule            = "schedule"
 	TransformFuse                = "fuse"
 	TransformFuseExits           = "fuse-exits"
@@ -471,6 +472,18 @@ func Transforms() []opt.Transform {
 			fired:   Reallocated,
 		}, neutral: true},
 		&gatedTransform{laneTransform: laneTransform{
+			// Reallocation can leave a parked parameter dead while the original
+			// callee-save scaffold still saves and restores its register. Trim
+			// only an exactly matched canonical frame, keep every offset fixed,
+			// and let the whole-body verifier authorize the smaller candidate.
+			name: TransformTrimCalleeSaves, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.TrimCalleeSaves },
+			eligible: func(l Lane) bool { return l.Reallocate },
+			apply:    func(l Lane) Lane { l.TrimCalleeSaves = true; return l },
+			fired:    TrimmedCalleeSaves,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			name: TransformCarryIndex, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.CarryLoopIndices },
@@ -635,6 +648,7 @@ func PlainLane(lane Lane) Lane {
 	lane.MultiplyAdd = false
 	lane.ValueSelect = false
 	lane.Reallocate = false
+	lane.TrimCalleeSaves = false
 	lane.Schedule = false
 	lane.Fuse = false
 	lane.FuseExits = false

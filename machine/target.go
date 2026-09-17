@@ -104,6 +104,8 @@ type frameShape struct {
 	// isSave recognizes a save of callee-saved registers to the frame: the
 	// registers stored and the offset.
 	isSave func(asm.Instruction) (regs []Reg, offset int64, ok bool)
+	// isRestore recognizes the matching restore spelling.
+	isRestore func(asm.Instruction) (regs []Reg, offset int64, ok bool)
 	// save and restore spell one register's save and restore.
 	save, restore func(r Reg, offset int64, line int) asm.Instruction
 	// pairArea is how many bytes the frame pair's save occupies before the
@@ -311,6 +313,13 @@ var arm64Target = &target{
 			regs, off, ok := gprStore(a, "stp")
 			if !ok {
 				regs, off, ok = gprStore(a, "str")
+			}
+			return regs, off, ok
+		},
+		isRestore: func(a asm.Instruction) ([]Reg, int64, bool) {
+			regs, off, ok := gprStore(a, "ldp")
+			if !ok {
+				regs, off, ok = gprStore(a, "ldr")
 			}
 			return regs, off, ok
 		},
@@ -795,6 +804,13 @@ var rv64Target = &target{
 		saveOrder: append([]Reg{{GPR, 9}}, gprRegs(18, 27)...),
 		isSave: func(a asm.Instruction) ([]Reg, int64, bool) {
 			regs, off, ok := gprStore(a, "sd")
+			if !ok || len(regs) != 1 || regs[0].Num == 1 {
+				return nil, 0, false
+			}
+			return regs, off, true
+		},
+		isRestore: func(a asm.Instruction) ([]Reg, int64, bool) {
+			regs, off, ok := gprStore(a, "ld")
 			if !ok || len(regs) != 1 || regs[0].Num == 1 {
 				return nil, 0, false
 			}

@@ -233,6 +233,7 @@ var setAside = map[string]string{
 	nativegen.TransformMultiplyAdd:         "keeps its multiply and add apart",
 	nativegen.TransformValueSelect:         "branches around its conditional",
 	nativegen.TransformReallocate:          "keeps its register assignment",
+	nativegen.TransformTrimCalleeSaves:     "keeps its callee-save traffic",
 	nativegen.TransformCarryIndex:          "recomputes its loop index",
 	nativegen.TransformRedundantGuards:     "keeps its repeated span guards",
 	nativegen.TransformRecordBases:         "recomputes its record-span bases",

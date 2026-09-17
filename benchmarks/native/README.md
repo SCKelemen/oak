@@ -287,6 +287,35 @@ is intentionally unreported because final-build load averages were 176–214.
 
 [Static observations and provenance](results/stage2-global-load-mask-elision-2026-09-17.json).
 
+## OS stage-2: trim dead callee saves, 2026-09-17
+
+The verifier-gated `trim-callee-saves` candidate runs after reallocation and
+removes a dead callee-register home together with its exactly matched
+save/restore traffic. It keeps the frame and every surviving offset unchanged;
+`OAK_OPT_SKIP=trim-callee-saves` produced the same-compiler control, and both
+artifacts used fresh verification.
+
+| Selected body | Instructions | Result |
+| --- | ---: | --- |
+| `walk_leaf` | 135 → 132 | proven |
+| `unmap_page` | 206 → 202 | witnessed (existing trap-domain/node budget) |
+| `translate` | 91 → 88 | proven |
+| `get_root_pa` | 23 → 20 | proven |
+| `get_free_count` | 15 → 12 | proven |
+| `get_in_use` | 18 → 15 | proven |
+| `get_high_water` | 15 → 12 | proven |
+| `get_mapped_pages` | 15 → 12 | proven |
+| `get_entry_count` | 18 → 15 | proven |
+
+That is 28 selected instructions. Mach-O `__text` and the complete object both
+shrink by 112 bytes (4280→4168 and 5800→5688), while all 27 relocations remain.
+The hot `translate` and `unmap_page` each stop saving and restoring x19/x20,
+removing 32 bytes of frame memory traffic per invocation in addition to their
+dead home copies. All five OS differential tests pass. Runtime is intentionally
+unreported because the host load averages remained above 40.
+
+[Static observations and provenance](results/stage2-callee-save-trim-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established

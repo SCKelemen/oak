@@ -300,6 +300,19 @@ complete assembly and cleanup counts with the full-rebuild algorithm across
 branches, loops, register reuse,
 calls, width restrictions, tied operands, restores and RV64 copies.
 
+Dead callee-save trimming (2026-09-17) closes the ABI-scaffold consequence of
+that cleanup without weakening its restore rule. The separate AArch64
+`trim-callee-saves` candidate, eligible only after reallocation, matches the
+lowering's x19–x28 save prefix to the unique epilogue at identical offsets,
+uses the webs to discard dead copies into those registers, and removes an
+unmentioned register's save/restore pair. A half-live `stp`/`ldp` is narrowed
+to `str`/`ldr` at the surviving register's original slot; frame size and all
+other offsets stay fixed. Unmatched shapes refuse. The pass is non-neutral and
+verdict-gated, so the untrimmed reallocated form remains the fallback. On the
+OS stage-2 pilot it removes 28 selected instructions and 112 text/object bytes;
+the hot `translate` and `unmap_page` lose three and four instructions, and all
+five differential tests pass. The exact A/B is in `benchmarks/native/README.md`.
+
 Second increment: machine-level loop-invariant code motion on the loop
 tree (`machine.HoistInvariants`). Innermost loop first, an instruction
 moves to the loop's unique preheader when it is pure and reads no
