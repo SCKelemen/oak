@@ -1052,6 +1052,36 @@ What the rows say, in the order they matter:
   §3). The verdict is the C backend's realization agreeing on the
   checksums, which every row above shows.
 
+**The kernels on a quiet machine (2026-09-17, revision d972d43f).** The
+same runner (interleaving the implementations, checking every sample's
+checksum), seven samples of five rounds, 1 MiB per kernel, load average
+under 7 throughout — the first measurement of the native lane without
+another session's suites on the host. Raw samples:
+`results/kernels-m4-max-2026-09-17.json`.
+
+| Kernel | C backend ns/byte | Native ns/byte | Native / C | Rust ns/byte | Go ns/byte |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.095 | 0.103 | 1.09 | 1.888 | — |
+| `sha256` | 0.419 | 0.414 | 0.99 | 2.435 | — |
+| `blake3` | 1.759 | 2.312 | 1.31 | — | — |
+| `dot` | 0.545 | 0.585 | 1.07 | 0.542 | 0.852 |
+| `sum` | 0.087 | 0.087 | 1.00 | 0.082 | 0.280 |
+| `search` | 5.225 | 5.901 | 1.13 | 5.296 | 8.792 |
+| `page_probe` | 5.441 | 6.107 | 1.12 | 6.258 | 9.487 |
+| `bitmap` | 0.135 | 0.129 | 0.96 | 0.126 | — |
+| `dispatch` | 6.492 | 5.165 | 0.80 | 6.539 | 6.422 |
+| `tiled` | 0.121 | 0.126 | 1.04 | 0.146 | 0.299 |
+
+Every kernel's native body is within thirteen percent of the C backend's
+build, `sum` at parity and `dispatch` ahead; `blake3`, with its
+compression native since the arrays-as-values increment, is at 1.31
+after the night's register homes and in-place permutation (3.15 the
+evening before, on a loaded host). Against Rust the native lane is
+within a tenth on the loop kernels and ahead on `page_probe` and
+`dispatch`; the hashes' gap to Rust is algorithmic (BENCHMARKS.md). The
+absolute times are about 0.6 of the loaded runs' — the load, not the
+compiler, was the other factor there.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
