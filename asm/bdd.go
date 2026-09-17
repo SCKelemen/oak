@@ -39,16 +39,20 @@ const bddTerminalVar = int(^uint(0) >> 1)
 // Node ids fit in 32 bits (the budget is two million). Go maps keyed by
 // the same triples were the engine's measured cost — the diagrams are
 // built and read through these two tables and almost nothing else.
-type uniqueEntry struct{ variable, low, high, node int32 }
-type opEntry struct{ op, a, b, result int32 }
+// An entry stores its node or result plus one, so that the zero value
+// an allocation already holds marks an empty slot: the tables were
+// filled with a sentinel at every allocation and doubling, a pass over
+// the whole table each time.
+type uniqueEntry struct{ variable, low, high, node1 int32 }
+type opEntry struct{ op, a, b, result1 int32 }
 
 type uniqueTable struct {
-	entries []uniqueEntry // node < 0 marks an empty slot
+	entries []uniqueEntry // node1 == 0 marks an empty slot
 	count   int
 }
 
 type opTable struct {
-	entries []opEntry // result < 0 marks an empty slot
+	entries []opEntry // result1 == 0 marks an empty slot
 	count   int
 }
 
@@ -61,22 +65,18 @@ func hashMix(a, b, c uint32) uint32 {
 }
 
 func newUniqueTable(capacity int) *uniqueTable {
-	t := &uniqueTable{entries: make([]uniqueEntry, capacity)}
-	for i := range t.entries {
-		t.entries[i].node = -1
-	}
-	return t
+	return &uniqueTable{entries: make([]uniqueEntry, capacity)}
 }
 
 func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
-		if e.node < 0 {
+		if e.node1 == 0 {
 			return 0, false
 		}
 		if e.variable == variable && e.low == low && e.high == high {
-			return e.node, true
+			return e.node1 - 1, true
 		}
 	}
 }
@@ -86,46 +86,43 @@ func (t *uniqueTable) insert(variable, low, high, node int32) {
 	if 2*(t.count+1) > len(t.entries) {
 		t.grow()
 	}
+	t.place(uniqueEntry{variable, low, high, node + 1})
+	t.count++
+}
+
+// place stores an entry known to be absent at its probe position.
+func (t *uniqueTable) place(e uniqueEntry) {
 	mask := uint32(len(t.entries) - 1)
-	i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask
-	for t.entries[i].node >= 0 {
+	i := hashMix(uint32(e.variable), uint32(e.low), uint32(e.high)) & mask
+	for t.entries[i].node1 != 0 {
 		i = (i + 1) & mask
 	}
-	t.entries[i] = uniqueEntry{variable, low, high, node}
-	t.count++
+	t.entries[i] = e
 }
 
 func (t *uniqueTable) grow() {
 	old := t.entries
 	t.entries = make([]uniqueEntry, 2*len(old))
-	for i := range t.entries {
-		t.entries[i].node = -1
-	}
-	t.count = 0
 	for _, e := range old {
-		if e.node >= 0 {
-			t.insert(e.variable, e.low, e.high, e.node)
+		if e.node1 != 0 {
+			t.place(e)
 		}
 	}
 }
 
 func newOpTable(capacity int) *opTable {
-	t := &opTable{entries: make([]opEntry, capacity)}
-	for i := range t.entries {
-		t.entries[i].result = -1
-	}
-	return t
+	return &opTable{entries: make([]opEntry, capacity)}
 }
 
 func (t *opTable) lookup(op, a, b int32) (int32, bool) {
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(op), uint32(a), uint32(b)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
-		if e.result < 0 {
+		if e.result1 == 0 {
 			return 0, false
 		}
 		if e.a == a && e.b == b && e.op == op {
-			return e.result, true
+			return e.result1 - 1, true
 		}
 	}
 }
@@ -135,25 +132,26 @@ func (t *opTable) insert(op, a, b, result int32) {
 	if 2*(t.count+1) > len(t.entries) {
 		t.grow()
 	}
+	t.place(opEntry{op, a, b, result + 1})
+	t.count++
+}
+
+// place stores an entry known to be absent at its probe position.
+func (t *opTable) place(e opEntry) {
 	mask := uint32(len(t.entries) - 1)
-	i := hashMix(uint32(op), uint32(a), uint32(b)) & mask
-	for t.entries[i].result >= 0 {
+	i := hashMix(uint32(e.op), uint32(e.a), uint32(e.b)) & mask
+	for t.entries[i].result1 != 0 {
 		i = (i + 1) & mask
 	}
-	t.entries[i] = opEntry{op, a, b, result}
-	t.count++
+	t.entries[i] = e
 }
 
 func (t *opTable) grow() {
 	old := t.entries
 	t.entries = make([]opEntry, 2*len(old))
-	for i := range t.entries {
-		t.entries[i].result = -1
-	}
-	t.count = 0
 	for _, e := range old {
-		if e.result >= 0 {
-			t.insert(e.op, e.a, e.b, e.result)
+		if e.result1 != 0 {
+			t.place(e)
 		}
 	}
 }
