@@ -84,3 +84,34 @@ func BenchmarkSimplifySelfCopy(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkLiveness(b *testing.B) {
+	for _, shape := range []struct {
+		name           string
+		blocks, copies int
+		loop           bool
+	}{
+		{"straight", 1, 1024, false},
+		{"blocks", 64, 16, false},
+		{"loop", 16, 64, true},
+	} {
+		b.Run(shape.name, func(b *testing.B) {
+			f, err := Lift(websBenchmarkBody(shape.blocks, shape.copies, shape.loop))
+			if err != nil {
+				b.Fatal(err)
+			}
+			webs, err := f.Webs()
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				in, out := f.Liveness(webs)
+				if len(in) != len(f.Blocks) || len(out) != len(f.Blocks) {
+					b.Fatal("missing block liveness sets")
+				}
+			}
+		})
+	}
+}

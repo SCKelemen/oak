@@ -10,17 +10,30 @@ func usePos(ins *Instr) int { return 2 * ins.Index }
 func defPos(ins *Instr) int { return 2*ins.Index + 1 }
 
 // Liveness computes live-in and live-out per block and fills each web's
-// From and To. It returns the live-in sets for inspection.
+// From, To and Segs. It returns the live-in and live-out sets for inspection.
 func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
-	// The sets are bitsets over the webs' positions in the slice: the
-	// simplifier recomputes liveness after every propagated copy, and the
-	// maps this held — fresh in and out maps per block per iteration —
-	// were half of its time in map assignment. The callers receive the
-	// maps they always did, built once at the end.
-	position := make(map[*Web]int, len(webs))
-	for i, w := range webs {
-		position[w] = i
+	in, out := f.liveRanges(webs)
+	liveIn = make([]map[*Web]bool, len(f.Blocks))
+	liveOut = make([]map[*Web]bool, len(f.Blocks))
+	for i := range f.Blocks {
+		liveIn[i], liveOut[i] = map[*Web]bool{}, map[*Web]bool{}
+		for w, web := range webs {
+			mask := uint64(1) << (uint(w) & 63)
+			if in[i][w>>6]&mask != 0 {
+				liveIn[i][web] = true
+			}
+			if out[i][w>>6]&mask != 0 {
+				liveOut[i][web] = true
+			}
+		}
 	}
+	return liveIn, liveOut
+}
+
+// liveRanges fills the webs' ranges and returns compact block sets. Optimizer
+// passes use the ranges directly, without allocating the inspection maps.
+func (f *Function) liveRanges(webs []*Web) (in, out [][]uint64) {
+	// Bit positions follow the input slice, not Web.Index.
 	words := (len(webs) + 63) / 64
 	newSet := func() []uint64 { return make([]uint64, words) }
 	set := func(s []uint64, i int) { s[i>>6] |= 1 << (uint(i) & 63) }
@@ -28,6 +41,22 @@ func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
 	// Per instruction (by its index), the webs it defines and uses.
 	defW := make([][]int, len(f.Instrs))
 	useW := make([][]int, len(f.Instrs))
+	nsites := 0
+	for _, ins := range f.Instrs {
+		nsites += len(ins.Defs) + len(ins.Uses)
+	}
+	sites := make([]int, nsites)
+	at := 0
+	for i, ins := range f.Instrs {
+		// Limit each append to this instruction's own portion. Spare
+		// capacity must never expose the next definition or use list.
+		next := at + len(ins.Defs)
+		defW[i] = sites[at:at:next]
+		at = next
+		next = at + len(ins.Uses)
+		useW[i] = sites[at:at:next]
+		at = next
+	}
 	for i, w := range webs {
 		for _, d := range w.Defs {
 			if d.Instr != nil {
@@ -55,8 +84,8 @@ func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
 			}
 		}
 	}
-	in := make([][]uint64, n)
-	out := make([][]uint64, n)
+	in = make([][]uint64, n)
+	out = make([][]uint64, n)
 	for i := range f.Blocks {
 		in[i], out[i] = newSet(), newSet()
 	}
@@ -86,8 +115,12 @@ func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
 	// closes a segment at every definition and opens one at every use, so
 	// a value saved before a call and reloaded after it is not live across
 	// the call.
-	for _, w := range webs {
-		w.From, w.To, w.Segs = -1, -1, nil
+	firstSegments := make([]seg, len(webs))
+	for i, w := range webs {
+		w.From, w.To = -1, -1
+		// Most webs need one segment. A second must allocate independently,
+		// rather than append into another web's first segment.
+		w.Segs = firstSegments[i : i : i+1]
 	}
 	add := func(w *Web, from, to int) {
 		w.Segs = append(w.Segs, seg{from, to})
@@ -140,19 +173,6 @@ func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
 			}
 		}
 	}
-	liveIn = make([]map[*Web]bool, n)
-	liveOut = make([]map[*Web]bool, n)
-	for i := range f.Blocks {
-		liveIn[i], liveOut[i] = map[*Web]bool{}, map[*Web]bool{}
-		for w := range webs {
-			if has(in[i], w) {
-				liveIn[i][webs[w]] = true
-			}
-			if has(out[i], w) {
-				liveOut[i][webs[w]] = true
-			}
-		}
-	}
 	// Entry webs hold their register from position 0.
 	for _, w := range webs {
 		for _, d := range w.Defs {
@@ -165,7 +185,7 @@ func (f *Function) Liveness(webs []*Web) (liveIn, liveOut []map[*Web]bool) {
 			}
 		}
 	}
-	return liveIn, liveOut
+	return in, out
 }
 
 // overlaps reports whether two live ranges share a position.

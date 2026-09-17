@@ -297,8 +297,18 @@ copies. The instruction remains for width-aware cleanup, since a narrow
 self-copy can clear upper bits. Each next round rebuilds webs and liveness;
 the 1,024-round limit remains a bound on actual changes. Regressions compare
 complete assembly and cleanup counts with the full-rebuild algorithm across
-branches, loops, register reuse,
-calls, width restrictions, tied operands, restores and RV64 copies.
+branches, loops, register reuse, calls, width restrictions, tied operands,
+restores and RV64 copies.
+
+Liveness uses bitsets for the block dataflow and constructs inspection maps
+only for callers of the public `Liveness` method. Optimizer passes request
+the live ranges directly. Definition/use links share one allocation with a
+capacity-bounded slice per instruction, and each web gets one first-segment
+slot with capacity one. Further appends cannot overwrite a neighboring list
+or range. Each analysis allocates fresh storage, so previously retained range
+slices remain unchanged. Regressions compare block sets with independent path
+reachability and check range isolation, repeated analysis, and web ordering
+across multiple bitset words. Measurements are in `benchmarks/native/README.md`.
 
 Dead callee-save trimming (2026-09-17) closes the ABI-scaffold consequence of
 that cleanup without weakening its restore rule. The separate AArch64

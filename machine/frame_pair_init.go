@@ -59,7 +59,7 @@ func splitFramePairInitializers(f *Function, objects []FrameObject) (*asm.Functi
 	if err != nil {
 		return nil, nil, err
 	}
-	f.Liveness(webs)
+	f.liveRanges(webs)
 	replacements := map[int][]asm.Item{}
 	words := map[int64]bool{}
 	for _, instruction := range f.Instrs {

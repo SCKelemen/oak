@@ -36,7 +36,7 @@ func (f *Function) HoistInvariants() (int, error) {
 				if err != nil {
 					return total, err
 				}
-				f.Liveness(webs)
+				f.liveRanges(webs)
 				if !f.hoistOne(l, webs) {
 					break
 				}

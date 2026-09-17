@@ -72,7 +72,7 @@ func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Al
 	if err != nil {
 		return nil, nil, err
 	}
-	lifted.Liveness(webs)
+	lifted.liveRanges(webs)
 	t := lifted.t
 	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, DeadStores: deadStores, Propagated: propagated, Eliminated: eliminated, Hoisted: hoisted}
 	for _, ins := range lifted.Instrs {

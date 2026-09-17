@@ -131,7 +131,7 @@ func promoteWith(fn *asm.Function, objects []FrameObject, splitPairs bool) (*asm
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	lifted.Liveness(webs)
+	lifted.liveRanges(webs)
 	var calls []int
 	for _, ins := range lifted.Instrs {
 		if ins.Call {

@@ -1683,6 +1683,50 @@ normal budget and zero cached verdicts. No experiment builds or tests overlapped
 timing. [The measurement record](results/self-copy-progress-2026-09-17.json)
 includes samples, load, counters, hashes and the pre-fix failures.
 
+### Fewer allocations in liveness (2026-09-17)
+
+A profile of the 128-copy simplifier fixture attributed about 30% of sampled
+allocation objects to liveness, mainly instruction-link slices and first
+live-range segments. Those now share storage with capacity-bounded slices:
+each instruction has its own definition/use portion, and each web's first
+segment has capacity one. Longer ranges allocate independently. Optimizer
+passes request ranges directly; the public `Liveness` method still returns
+its inspection maps. The dataflow equations and ranges are unchanged.
+
+Frozen binaries at `ea3c3793` and that base plus this change ran in
+before/after/after/before order. The initial three-iteration liveness samples
+were noisy, including a slower 64-block result, so all three shapes were
+repeated with 100 iterations per sample. Both sets of raw samples are retained.
+The table uses ten longer samples per variant for liveness and ten initial
+three-iteration samples for Simplify; medians:
+
+| Fixture | Before ms/op | After ms/op | Before allocations/op | After allocations/op |
+| --- | ---: | ---: | ---: | ---: |
+| Liveness, straight line | 0.446 | 0.231 | 10,343 | 31 |
+| Liveness, 64 blocks | 1.315 | 1.206 | 10,945 | 631 |
+| Liveness, loop | 0.534 | 0.422 | 10,519 | 204 |
+| Simplify, 128 copies | 96.044 | 86.526 | 414,132 | 264,618 |
+
+Liveness uses **94–99.7% fewer allocations**; the full Simplify fixture uses
+36% fewer and takes about 10% less observed time. Its allocated bytes decrease
+only 1.3%, from 102.0 to 100.7 MB/op: most allocated bytes remain elsewhere.
+
+Four BLAKE3 compression-only emissions gave CPU times of 57.73, 57.27, 55.84
+and 55.81 seconds in the same before/after/after/before order. CPU time is
+essentially unchanged. Wall times were 78.77, 73.71, 64.97 and 56.32 seconds,
+with one-minute host load ranging from 69 to 200. This establishes no additional
+BLAKE3 compilation or runtime speedup. All four native objects and C companions
+are byte-identical, and all eight result chunks were freshly proven with the
+normal budget and zero cached verdicts. No experiment builds or tests overlapped
+timing.
+
+An independent path-reachability oracle checks live-in/out sets across branches,
+loops, calls, tied operands, paired loads, unreachable roots and reversed web
+order over multiple bitset words. Range-storage checks cover append/mutation
+isolation and retaining earlier results across recomputation.
+[The measurement record](results/liveness-storage-2026-09-17.json) contains
+both timing protocols, load, counters, hashes and reproduction commands.
+
 ## Reusing allocation proposals, 2026-09-17
 
 The preceding full-unroll runtime improvement made candidate materialization

@@ -27,7 +27,7 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 		if werr != nil {
 			return propagated, eliminated, werr
 		}
-		f.Liveness(webs)
+		f.liveRanges(webs)
 		copyDst := f.propagateCopy(webs)
 		if copyDst != nil {
 			propagated++
