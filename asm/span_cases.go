@@ -62,8 +62,9 @@ func spanEqualByCases(fn string, name string, premise, oak, machine *term) (equa
 }
 
 // spanSplitConditions collects the comparisons to split on: small, over
-// parameters alone (no memory read), not already decided by the premise's
-// facts, in a fixed order, at most limit of them.
+// parameters alone (no memory read), not a constant once respelled
+// (`(0 and 255) eq 0`), not already decided by the premise's facts, in a
+// fixed order, at most limit of them.
 func spanSplitConditions(premise *term, terms []*term, limit int) []*term {
 	seen := map[*term]bool{}
 	byText := map[string]*term{}
@@ -71,13 +72,20 @@ func spanSplitConditions(premise *term, terms []*term, limit int) []*term {
 	// node, and a fresh memo at every comparison met re-walked the shared
 	// graph below it (ap_certificate_after_proven hung here for an hour).
 	sizes := map[*term]int{}
+	linear := map[*term]*term{}
 	var walk func(*term)
 	walk = func(t *term) {
 		if t == nil || seen[t] {
 			return
 		}
 		seen[t] = true
-		if t.kind == termCmp && termSize(t, sizes) <= spanCaseConditionNodes && !readsMemory(t) && !(t.left.kind == termConst && t.right.kind == termConst) {
+		if t.kind == termCmp && termSize(t, sizes) <= spanCaseConditionNodes && !readsMemory(t) {
+			// One canonical memo serves the walk just as one size memo does.
+			// A comparison already proved constant is semantically dead here;
+			// neither it nor comparisons below it need a case split.
+			if canonicalLinear(t, linear).kind == termConst {
+				return
+			}
 			text := t.String()
 			if _, dup := byText[text]; !dup {
 				byText[text] = t
