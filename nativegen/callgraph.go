@@ -287,4 +287,3 @@ func VerdictRoots(verdicts map[string]asm.Verdict, symbolNames map[string]string
 	})
 	return out
 }
-
