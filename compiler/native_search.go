@@ -27,15 +27,18 @@ import (
 // nativeDriver lowers, keys, measures, checks, and verifies one function's
 // candidates.
 type nativeDriver struct {
-	source       *ast.FunctionStatement
-	functions    map[string]*ast.FunctionStatement
-	externs      map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
-	records      map[string]*ast.RecordLiteral
-	adts         map[string]*ast.ADTType
-	constants    map[string]asm.Constant
-	tc           *typechecker.TypeChecker
-	symbols      map[string]bool
-	declarations string
+	// The allocation proposal cache lives for this function's search only.
+	// It neither caches a verdict nor skips candidate admission.
+	compileSession nativegen.CompileSession
+	source         *ast.FunctionStatement
+	functions      map[string]*ast.FunctionStatement
+	externs        map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
+	records        map[string]*ast.RecordLiteral
+	adts           map[string]*ast.ADTType
+	constants      map[string]asm.Constant
+	tc             *typechecker.TypeChecker
+	symbols        map[string]bool
+	declarations   string
 	// tcFingerprint is tc.NativeLoweringFingerprint(), taken once for the
 	// lowering pass: the checker's facts are fixed after checking, and the
 	// fingerprint hashes every position-keyed one in the program — taken
@@ -53,7 +56,7 @@ type nativeDriver struct {
 // Materialize lowers the candidate's lane configuration.
 func (d *nativeDriver) Materialize(c *opt.Candidate) error {
 	lane := c.Config.(nativegen.Lane)
-	fn, err := nativegen.CompileFor(lane, d.source, d.functions, d.records, d.adts, d.constants, d.tc)
+	fn, err := d.compileSession.CompileFor(lane, d.source, d.functions, d.records, d.adts, d.constants, d.tc)
 	if err != nil {
 		return err
 	}

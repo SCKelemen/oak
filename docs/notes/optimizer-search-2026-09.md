@@ -106,6 +106,21 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   scheduling and allocation candidates beat BLAKE3's previously underpriced
   seven-round/eight-tail loops; measured results and the increased emission
   cost are recorded in `benchmarks/native/README.md`.
+- Candidate materialization reuses identical register-allocation inputs within
+  one function's search (`nativegen.CompileSession`,
+  `machine.ReallocationCache`). The exact key includes architecture, frame,
+  clobbers, the explicit frame-object layout and every ordered instruction
+  field/operand, including checked-fact references, call-site IDs and lines.
+  A closed, bounded encoder preserves raw string bytes and floating-point bits;
+  unsupported shapes take the uncached path. Only deeply copied machine items,
+  clobbers and allocation counters are reused, never source metadata, webs or
+  verdicts. The fresh candidate remains subject to ordinary admission, costing
+  and semantic-validation policy. The cache retains at most 32 entries and
+  16 MiB of canonical input/output payload (not a Go heap limit); trace mode bypasses it.
+  Standalone `CompileFor` remains uncached, and there is no global or persistent
+  allocation cache. Candidate and verdict identities are unchanged. The BLAKE3
+  comparison in `benchmarks/native/README.md` checks byte-identical output while
+  measuring the reduction in repeated allocation work.
 - `compiler/native_search.go` and `compiler/native_bodies.go` — the
   hand-written fallback ladder (elide, then hoist, then reuse, then
   strength, then the plain reduction) is replaced by one search per

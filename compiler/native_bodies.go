@@ -154,6 +154,10 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
 		selection, err := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+		if stats := driver.compileSession.ReallocationStats(); os.Getenv("OAK_NATIVE_TIMING") != "" && stats.Requests > 0 {
+			fmt.Fprintf(os.Stderr, "timing: %s allocation reuse: %d/%d hits, %d entries, %d retained payload bytes\n",
+				fn.Name.Value, stats.Hits, stats.Requests, stats.Entries, stats.PayloadBytes)
+		}
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))

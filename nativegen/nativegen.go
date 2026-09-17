@@ -1873,6 +1873,12 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 // §9). A lane without a native backend leaves the function to the C
 // backend with the reason.
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
+	return (*CompileSession)(nil).CompileFor(lane, fn, functions, records, adts, constants, tc)
+}
+
+// CompileFor lowers a candidate, reusing identical allocation inputs within
+// this session. A nil session retains the standalone, uncached path.
+func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	if lane.UnrollConstant && lane.UnrollSmall {
 		return nil, fmt.Errorf("native lane cannot combine full and small constant unrolling")
 	}
@@ -1934,13 +1940,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		// webs recolored and its copies coalesced; a lift the package
 		// refuses leaves this configuration without a lowering.
 		if lane.Reallocate {
-			re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
-			if rerr != nil {
-				return nil, unsupported("%v", rerr)
+			if err := session.reallocate(out); err != nil {
+				return nil, err
 			}
-			out.Items, out.Clobbers = re.Items, re.Clobbers
-			reallocated[out] = alloc.Sites()
-			promotedSlots[out] = alloc.Promoted
 		}
 		if lane.CarryLoopIndices {
 			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
@@ -1998,13 +2000,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		if !lane.Reallocate {
 			return scheduleLane(lane, out)
 		}
-		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
-		if rerr != nil {
-			return nil, unsupported("%v", rerr)
+		if err := session.reallocate(out); err != nil {
+			return nil, err
 		}
-		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Sites()
-		promotedSlots[out] = alloc.Promoted
 		return scheduleLane(lane, out)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)

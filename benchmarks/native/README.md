@@ -1525,6 +1525,71 @@ microbenchmark samples, CPU and wall observations, resource counters, source and
 binary hashes, proof diagnostics and reproduction instructions. The permanent
 fixtures are in `machine/webs_benchmark_test.go`.
 
+## Reusing allocation proposals, 2026-09-17
+
+The preceding full-unroll runtime improvement made candidate materialization
+expensive: sibling configurations repeatedly allocated the same machine body
+before differing in later scheduling or cleanup. A search-local cache now
+reuses that deterministic stage, without changing which proposals are offered
+or bypassing their seam checks, costs or semantic verdicts.
+
+On base `8c30d7b6`, before integration of subsequent branch changes, four
+separate emitter processes ran in **before → after → after → before** order.
+Only `hash__blake3_ucompress` was allowed native. The verdict cache was disabled,
+the proof budget unchanged, and both experimental small-unroll and
+loop-result-home modes off. `/usr/bin/time -l` measured emission (checking,
+candidate search, proof, C-source and native-object writing), not C compilation,
+linking or application execution. No builds/tests from this experiment
+overlapped the measurements; other shared-host work and uncontrolled cores and
+frequency remained substantial limitations.
+
+| Run | Elapsed seconds | User + system CPU seconds | Maximum RSS, MiB |
+| --- | ---: | ---: | ---: |
+| Before A | 176.95 | 250.19 | 529.6 |
+| After A | 57.67 | 66.17 | 542.3 |
+| After B | 75.17 | 68.31 | 550.2 |
+| Before B | 333.71 | 273.18 | 540.4 |
+
+Total CPU fell **74–75%** in both comparisons, as did retired instructions.
+Elapsed time improved in both, but its large variation precludes a stable
+wall-clock multiplier claim. Both after runs reused **18 of 22 allocation
+requests**, retaining four entries and 1,204,729 bytes of canonical payload.
+Peak RSS increased by about 10–13 MiB in the paired observations; the cache is
+not free. Its 32-entry/16-MiB limit bounds canonical retained input/output,
+**not Go heap usage**.
+
+All four builds produced **byte-identical native objects and C companions**
+and freshly proved all eight BLAKE3 result chunks. The full-unroll winner from
+the preceding experiment is preserved; this change claims **no additional
+application-runtime speedup**. The final before run reported a `late-cleanup`
+recipe label while emitting the same bytes as the other three.
+
+A separate seven-kernel before/after check also preserved byte-identical C and
+native objects. Its CPU time fell 32.59 → 29.11 seconds while elapsed time rose
+25.57 → 29.87 seconds and RSS rose 1370 → 1442 MiB. This single, loaded-host pair
+does not establish a general wall-clock benefit. Evidence grades were unchanged:
+dot, sum and dispatch proven; search, page-probe and tiled witnessed; bitmap
+left to C. Neither this comparison nor allocation reuse promotes weaker grades
+to proof.
+
+The key contains exact machine inputs, including every instruction field and
+operand, explicit frame objects, clobbers and architecture. Only deeply copied
+items, clobbers and reporting counts are retained; each hit keeps the fresh
+candidate's source metadata. Trace mode bypasses reuse. Regression coverage
+compares cold/hit/uncached AArch64 and RV64 output, checks mutation isolation
+and bounded admission, and freshly refutes a deliberately changed candidate
+after a hit.
+
+[The measurement record](results/blake3-allocation-reuse-2026-09-17.json)
+contains counters, hashes, evidence and commands. Reproduce with emitters built
+at `8c30d7b6` and that base plus this commit's allocation-reuse patch. These
+timings do not include the independent immutable-reaching-set optimization
+above or subsequent verifier/checker changes; the percentages are not additive.
+Use
+`OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_NATIVE_TIMING=1`,
+unset any verifier-budget override, and emit `benchmarks/kernels/oak` into
+distinct output prefixes. Compare both `.o` and `.c` files, not just diagnostics.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused
