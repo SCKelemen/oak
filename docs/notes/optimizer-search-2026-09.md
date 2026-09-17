@@ -323,6 +323,19 @@ OS stage-2 pilot it removes 28 selected instructions and 112 text/object bytes;
 the hot `translate` and `unmap_page` lose three and four instructions, and all
 five differential tests pass. The exact A/B is in `benchmarks/native/README.md`.
 
+Empty-frame elision (2026-09-17) closes the remaining stack-scaffold case
+without broadening the callee-save pass. The separate AArch64
+`elide-empty-frame` candidate is eligible only after callee-save trimming and
+matches equal, unshifted entry/return stack adjustments around one call-free
+return. Any other `sp` operand, stack argument, frame object, call, mismatched
+adjustment, or second return refuses. The rewrite removes exactly those two
+instructions and declares a zero frame; its trimmed-but-framed parent stays
+available until the seam checker and verifier authorize the smaller body. On
+the OS stage-2 pilot, six proven getters lose 12 instructions and 48
+text/object bytes total, with 27 relocations unchanged and both artifacts
+passing all five differential tests. Exact provenance is in
+`benchmarks/native/README.md`.
+
 Second increment: machine-level loop-invariant code motion on the loop
 tree (`machine.HoistInvariants`). Innermost loop first, an instruction
 moves to the loop's unique preheader when it is pure and reads no

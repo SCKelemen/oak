@@ -1757,6 +1757,10 @@ type Lane struct {
 	// by reallocation, together with their matched prologue/epilogue traffic.
 	// It keeps the frame layout fixed and is independently verifier-gated.
 	TrimCalleeSaves bool
+	// ElideEmptyFrame removes the exact stack-adjustment pair left when
+	// callee-save trimming emptied a frame. It refuses every remaining stack
+	// use and is independently verifier-gated.
+	ElideEmptyFrame bool
 	// Fuse folds instruction pairs into the one instruction that does both
 	// (machine.Fuse: a shift into an add's shifted operand, an increment
 	// into a csinc); the candidate search turns it on, the verifier judges.
@@ -1969,6 +1973,17 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 			out.Items, out.Clobbers = trimmed.Items, trimmed.Clobbers
 			trimmedCalleeSaves[out] = sites
 		}
+		if lane.ElideEmptyFrame {
+			if !lane.TrimCalleeSaves {
+				return nil, unsupported("empty-frame elision without callee-save trimming")
+			}
+			elided, frames, err := machine.ElideEmptyFrame(out)
+			if err != nil {
+				return nil, unsupported("%v", err)
+			}
+			out.Items, out.Frame = elided.Items, elided.Frame
+			elidedEmptyFrames[out] = frames
+		}
 		if lane.CarryLoopIndices {
 			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
 		}
@@ -1977,8 +1992,8 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		if lane.TrimCalleeSaves {
-			return nil, unsupported("callee-save trimming is not implemented on the RV64 lane")
+		if lane.TrimCalleeSaves || lane.ElideEmptyFrame {
+			return nil, unsupported("callee-save and empty-frame trimming are not implemented on the RV64 lane")
 		}
 		var out *asm.Function
 		var err error
@@ -2178,6 +2193,12 @@ func Reallocated(fn *asm.Function) int { return reallocated[fn] }
 func TrimmedCalleeSaves(fn *asm.Function) int { return trimmedCalleeSaves[fn] }
 
 var trimmedCalleeSaves = map[*asm.Function]int{}
+
+// ElidedEmptyFrames reports whether Lane.ElideEmptyFrame removed the exact
+// adjustment pair around an otherwise stack-free body.
+func ElidedEmptyFrames(fn *asm.Function) int { return elidedEmptyFrames[fn] }
+
+var elidedEmptyFrames = map[*asm.Function]int{}
 
 // OptIRLowered reports the generic SSA operations eliminated or hoisted by
 // the optimized CFG selected into fn. Zero means the body came from the

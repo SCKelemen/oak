@@ -316,6 +316,33 @@ unreported because the host load averages remained above 40.
 
 [Static observations and provenance](results/stage2-callee-save-trim-2026-09-17.json).
 
+## OS stage-2: elide empty frames, 2026-09-17
+
+The verifier-gated `elide-empty-frame` candidate runs only after callee-save
+trimming. It removes the exact entry/return stack-adjustment pair when the
+body is call-free and has no remaining stack operand, stack argument, or frame
+object. The trimmed-but-framed body remains the fallback, and
+`OAK_OPT_SKIP=elide-empty-frame` produced the same-compiler control. Both
+artifacts used fresh verification with zero of 27 verdicts from cache.
+
+| Proven getter | Instructions | Frame bytes |
+| --- | ---: | ---: |
+| `get_root_pa` | 20 → 18 | 80 → 0 |
+| `get_free_count` | 12 → 10 | 80 → 0 |
+| `get_in_use` | 15 → 13 | 80 → 0 |
+| `get_high_water` | 12 → 10 | 80 → 0 |
+| `get_mapped_pages` | 12 → 10 | 80 → 0 |
+| `get_entry_count` | 15 → 13 | 80 → 0 |
+
+That is 12 selected instructions. Mach-O `__text` and the complete object
+both shrink by 48 bytes (4168→4120 and 5688→5640), while all 27 relocations
+remain. The page walkers keep their existing selected bodies because their
+frames are not empty. Both artifacts pass all five OS differential tests.
+Runtime is intentionally unreported because host load averages remained
+30–73 during final validation.
+
+[Static observations and provenance](results/stage2-empty-frame-elision-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established

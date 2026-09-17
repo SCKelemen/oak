@@ -6359,6 +6359,29 @@ other 21 instructions. All five OS differential tests pass. Runtime is not
 reported from the loaded host. Exact provenance is in
 `benchmarks/native/results/stage2-callee-save-trim-2026-09-17.json`.
 
+**Empty-frame elision (2026-09-17, AArch64 lane).** Callee-save trimming can
+leave a call-free function with only `sub sp, sp, #frame` and the matching
+`add sp, sp, #frame` observing its old frame. The separate
+`elide-empty-frame` candidate is eligible only after `trim-callee-saves`. It
+requires the exact lowering-generated adjustment at entry and immediately
+before the unique return, equal unshifted immediates, no call, no other
+explicit `sp` operand, no incoming stack arguments, and no frame objects.
+Unknown, mismatched, multi-return, call-bearing, and still-stack-using bodies
+do not transform. A successful rewrite removes exactly the two adjustments
+and changes the declared frame to zero; every other instruction and metadata
+stay fixed.
+
+The transform is non-neutral and **verdict-gated**. Its trimmed-but-framed
+parent remains selectable, and the ordinary seam checker and whole-body
+verifier authorize the frameless body. Materialization v28 keys the new lane
+flag; `OAK_OPT_SKIP=elide-empty-frame` retains the adjustment pair. On the
+stage-2 pilot, six proven getters each lose two instructions and an otherwise
+unused 80-byte frame. Mach-O `__text` and the object both shrink 48 bytes
+(4168→4120 and 5688→5640), all 27 relocations remain, and both artifacts pass
+all five OS differential tests. Runtime is not reported from the loaded host.
+Exact provenance is in
+`benchmarks/native/results/stage2-empty-frame-elision-2026-09-17.json`.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with

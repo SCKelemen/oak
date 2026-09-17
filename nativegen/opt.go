@@ -59,6 +59,7 @@ const (
 	TransformValueSelect         = "value-select"
 	TransformReallocate          = "reallocate"
 	TransformTrimCalleeSaves     = "trim-callee-saves"
+	TransformEmptyFrame          = "elide-empty-frame"
 	TransformSchedule            = "schedule"
 	TransformFuse                = "fuse"
 	TransformFuseExits           = "fuse-exits"
@@ -484,6 +485,17 @@ func Transforms() []opt.Transform {
 			fired:    TrimmedCalleeSaves,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
+			// Callee-save trimming can expose a frame with no remaining stack
+			// observer. Remove only its exact adjustment pair and preserve the
+			// trimmed-but-framed candidate until this smaller body proves.
+			name: TransformEmptyFrame, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ElideEmptyFrame },
+			eligible: func(l Lane) bool { return l.TrimCalleeSaves },
+			apply:    func(l Lane) Lane { l.ElideEmptyFrame = true; return l },
+			fired:    ElidedEmptyFrames,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			name: TransformCarryIndex, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.CarryLoopIndices },
@@ -649,6 +661,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ValueSelect = false
 	lane.Reallocate = false
 	lane.TrimCalleeSaves = false
+	lane.ElideEmptyFrame = false
 	lane.Schedule = false
 	lane.Fuse = false
 	lane.FuseExits = false

@@ -49,4 +49,23 @@ func TestCompileTrimCalleeSavesCandidate(t *testing.T) {
 	if verdict := asm.Verify(after, function, function.Body); verdict.Kind != asm.VerdictProven {
 		t.Fatalf("trimmed candidate did not prove: %s", verdict.Message)
 	}
+	emptyLane := afterLane
+	emptyLane.ElideEmptyFrame = true
+	empty, err := CompileFor(emptyLane, function, functions, nil, nil, nil, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames := ElidedEmptyFrames(empty); frames != 1 || empty.Frame != 0 {
+		t.Fatalf("empty frames = %d, arch = %q, frame = %d, items = %v, objects = %v, stack args = %d", frames, empty.Arch, empty.Frame, empty.Items, empty.FrameObjects, empty.StackArgs)
+	}
+	emptyMetrics := Metrics(empty)
+	if emptyMetrics.Instructions != afterMetrics.Instructions-2 || emptyMetrics.Loads != afterMetrics.Loads || emptyMetrics.Stores != afterMetrics.Stores {
+		t.Fatalf("empty-frame candidate changed more than its adjustments: trimmed=%+v empty=%+v", afterMetrics, emptyMetrics)
+	}
+	if findings := asm.Check(empty, function, map[string]bool{"get": true}); len(findings) != 0 {
+		t.Fatalf("empty-frame candidate failed the seam check: %v", findings)
+	}
+	if verdict := asm.Verify(empty, function, function.Body); verdict.Kind != asm.VerdictProven {
+		t.Fatalf("empty-frame candidate did not prove: %s", verdict.Message)
+	}
 }

@@ -98,6 +98,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedPostScheduleCleanup.PostScheduleCleanup = true
 	changedCalleeSaveTrim := lane(false)
 	changedCalleeSaveTrim.TrimCalleeSaves = true
+	changedEmptyFrame := lane(false)
+	changedEmptyFrame.ElideEmptyFrame = true
 	changedLoopArrayHomes := lane(false)
 	changedLoopArrayHomes.LoopArrayHomes = true
 	changedLoopResultHomes := lane(false)
@@ -158,6 +160,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"global-load-mask-elision", driver(false), opt.Identity(changedGlobalMaskElision)},
 		{"post-schedule-cleanup", driver(false), opt.Identity(changedPostScheduleCleanup)},
 		{"callee-save-trim", driver(false), opt.Identity(changedCalleeSaveTrim)},
+		{"empty-frame", driver(false), opt.Identity(changedEmptyFrame)},
 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
 		{"unroll-small", driver(false), opt.Identity(changedUnrollSmall)},
