@@ -43,7 +43,7 @@ nested: (dst: [*]f32, a: []f32, b: []f32, k: f32): () {
 
 func TestNativeUnrolledFMAMapsSelected(t *testing.T) {
 	var remarks []string
-	model, err := New().WithSource("grouped_maps.oak", nativeFMAMaps[:strings.Index(nativeFMAMaps, "nested:")]).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+	model, err := nativeShapeCompilation("grouped_maps.oak", nativeFMAMaps[:strings.Index(nativeFMAMaps, "nested:")]).WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {
 			remarks = append(remarks, d.Message)
 		}
@@ -170,7 +170,7 @@ func TestNativeFMAMapRefusesShadowedAndEffectfulCalls(t *testing.T) {
 func TestNativeFMAMapKeepsStrictArithmetic(t *testing.T) {
 	t.Setenv("OAK_NATIVE_ONLY", "map32")
 	source := strings.Replace(nativeFMAMaps, "fma(a[i], k, c)", "a[i] * k + c", 1)
-	model, err := New().WithSource("strict_fma_map.oak", source).WithNativeBodies().WithNativeAsm().Check().Get()
+	model, err := nativeShapeCompilation("strict_fma_map.oak", source).Check().Get()
 	if err != nil {
 		t.Fatal(err)
 	}
