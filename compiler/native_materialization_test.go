@@ -88,6 +88,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedLane.Strength = true
 	changedMapGrouping := lane(false)
 	changedMapGrouping.UnrollVectorMaps = true
+	changedFoldGrouping := lane(false)
+	changedFoldGrouping.UnrollVectorFolds = true
 	changedVectorLanes := lane(false)
 	changedVectorLanes.VectorLanes = true
 	changedAddressSharing := lane(false)
@@ -104,6 +106,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedEmptyFrame.ElideEmptyFrame = true
 	changedRecordBaseCarriers := lane(false)
 	changedRecordBaseCarriers.ReuseRecordBaseDestinations = true
+	changedRecordBaseSchedule := lane(false)
+	changedRecordBaseSchedule.RescheduleRecordBaseCarriers = true
 	changedLoopArrayHomes := lane(false)
 	changedLoopArrayHomes.LoopArrayHomes = true
 	changedLoopResultHomes := lane(false)
@@ -159,6 +163,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	}{
 		{"lane", changedDriver, opt.Identity(changedLane)},
 		{"map-grouping", driver(false), opt.Identity(changedMapGrouping)},
+		{"fold-grouping", driver(false), opt.Identity(changedFoldGrouping)},
 		{"vector-lanes", driver(false), opt.Identity(changedVectorLanes)},
 		{"vector-address-sharing", driver(false), opt.Identity(changedAddressSharing)},
 		{"global-load-forwarding", driver(false), opt.Identity(changedGlobalForwarding)},
@@ -167,6 +172,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"callee-save-trim", driver(false), opt.Identity(changedCalleeSaveTrim)},
 		{"empty-frame", driver(false), opt.Identity(changedEmptyFrame)},
 		{"record-base-carriers", driver(false), opt.Identity(changedRecordBaseCarriers)},
+		{"record-base-schedule", driver(false), opt.Identity(changedRecordBaseSchedule)},
 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
 		{"unroll-small", driver(false), opt.Identity(changedUnrollSmall)},

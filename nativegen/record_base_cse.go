@@ -340,3 +340,9 @@ var sharedRecordBases = map[*asm.Function]int{}
 func ReusedRecordBaseDestinations(fn *asm.Function) int { return reusedRecordBaseDestinations[fn] }
 
 var reusedRecordBaseDestinations = map[*asm.Function]int{}
+
+// RescheduledRecordBaseCarriers reports how many instructions moved when the
+// final carrier-aware dependency graph was scheduled again.
+func RescheduledRecordBaseCarriers(fn *asm.Function) int { return rescheduledRecordBaseCarriers[fn] }
+
+var rescheduledRecordBaseCarriers = map[*asm.Function]int{}

@@ -370,6 +370,29 @@ far too high for a useful A/B measurement.
 
 [Static observations and provenance](results/stage2-record-base-carriers-2026-09-17.json).
 
+## OS stage-2: reschedule live record-base carriers, 2026-09-17
+
+The verifier-gated `reschedule-record-base-carriers` child reruns the existing
+MachineIR scheduler after the late carrier and address rewrites expose the
+final dependence graph. It adopts the reorder only when
+`machine.StallEstimate` strictly decreases, so the carrier parent remains the
+byte-stable fallback for neutral schedules. A same-compiler
+`OAK_OPT_SKIP=reschedule-record-base-carriers` build is the control, and both
+artifacts used fresh verification with zero of 22 verdicts from cache.
+
+| Selected body | Instructions | Stalls | Static cost | Moved instructions | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `translate` | 85 → 85 | 15 → 14 | 123.5 → 123.0 | 3 | proven |
+| `unmap_page` | 181 → 181 | 52 → 51 | 294.0 → 293.5 | 7 | proven |
+
+`free_table` is unchanged, and the profitability guard prevents a
+stall-neutral `walk_leaf` reorder from displacing its parent. Mach-O `__text`
+and the complete object remain 4148 and 5672 bytes, all 27 relocations remain,
+and both objects pass all five OS differential tests. Runtime is intentionally
+unreported because final host load averages were 47–57.
+
+[Static observations and provenance](results/stage2-record-base-reschedule-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established

@@ -411,6 +411,17 @@ the length and was refused; the target now names such *bonded* pairs
 (`target.bonded`) and the scheduler moves them as one unit, after which
 the RV64 binary search's scheduled form is admitted and proven.
 
+A later AArch64 measurement exposed the other side of scheduling order. The
+record-base carrier and scalar-address candidates run after the first schedule
+and can remove producers or lengthen a live carrier, so that first scheduler
+never sees the selected body's final dependence graph. The separate
+`reschedule-record-base-carriers` child runs the same scheduler after those
+rewrites and keeps the result only when `machine.StallEstimate` strictly
+falls. The byte-stable parent therefore wins neutral ties. On the stage-2
+pilot this moves three instructions in `translate` (15→14 estimated stalls)
+and seven in `unmap_page` (52→51), without changing the instruction count or
+weakening either body's proven verdict.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

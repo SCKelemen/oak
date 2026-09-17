@@ -6318,6 +6318,28 @@ No runtime claim is attached because final load averages were 79–113. Exact
 provenance is in
 `benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
 
+The separate `reschedule-record-base-carriers` child closes one consequence of
+that late rewrite: the original scheduler could not see the dependence graph
+after the first destination became the long-lived carrier and the redundant
+materializations disappeared. The child invokes the same MachineIR scheduler
+after all record-base and scalar-address cleanup, but adopts its result only
+when `machine.StallEstimate` strictly decreases. A zero-move or equal-cost
+schedule leaves the byte-stable carrier parent untouched. The child has its
+own materialization-v30 key, the carrier parent remains an independent
+fallback, and selection still requires the ordinary seam checker and a
+non-trusted whole-body verdict.
+
+Against a same-compiler
+`OAK_OPT_SKIP=reschedule-record-base-carriers` control, the fresh stage-2
+pilot keeps all instruction, multiply, text-size, object-size, and relocation
+counts fixed. It moves three instructions in proven `translate`, reducing
+estimated stalls 15→14 and static cost 123.5→123.0, and seven in proven
+`unmap_page`, reducing stalls 52→51 and cost 294.0→293.5. `free_table` is
+unchanged, and a stall-neutral `walk_leaf` reorder is not selected. Both
+artifacts pass all five OS differential tests. No runtime claim is attached:
+the final host load average was 47–57. Exact provenance is in
+`benchmarks/native/results/stage2-record-base-reschedule-2026-09-17.json`.
+
 **Shared scalar-global addresses (2026-09-17, AArch64 lane).** The
 `share-global-addresses` machine candidate (`nativegen/global_address_cse.go`)
 recognizes a declared non-aggregate package global's exact address pair,

@@ -1673,6 +1673,10 @@ type Lane struct {
 	// computed destination when no surviving instruction overwrites it. It is
 	// a separate child candidate of ShareRecordBases.
 	ReuseRecordBaseDestinations bool
+	// RescheduleRecordBaseCarriers reruns scheduling after record-base and
+	// scalar-address rewrites expose the carrier's final dependencies. It is a
+	// separate child candidate of ReuseRecordBaseDestinations.
+	RescheduleRecordBaseCarriers bool
 	// ShareGlobalAddresses carries one exact adrp/add address of a declared
 	// scalar package global through later materializations on call-free paths.
 	// It composes only with scheduling and requires a whole-body verdict.
@@ -2177,7 +2181,34 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	if lane.PostScheduleCleanup && lane.Schedule {
 		postScheduledCleanup[out] = postScheduleCleanup(out)
 	}
+	if lane.RescheduleRecordBaseCarriers && reusedRecordBaseDestinations[out] > 0 {
+		moved, err := rescheduleForFewerStalls(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		if moved > 0 {
+			rescheduledRecordBaseCarriers[out] = moved
+		}
+	}
 	return out, nil
+}
+
+// rescheduleForFewerStalls adopts a second schedule only when the final
+// dependency graph strictly improves the target's stall estimate. Candidate
+// search still compares the complete target cost; this local guard keeps a
+// neutral reorder from displacing its byte-stable parent on a tie.
+func rescheduleForFewerStalls(fn *asm.Function) (int, error) {
+	beforeStalls, _ := machine.StallEstimate(fn)
+	rescheduled, moved, err := machine.Schedule(fn)
+	if err != nil {
+		return 0, err
+	}
+	afterStalls, _ := machine.StallEstimate(rescheduled)
+	if moved == 0 || afterStalls >= beforeStalls {
+		return 0, nil
+	}
+	fn.Items = rescheduled.Items
+	return moved, nil
 }
 
 // Scheduled reports how many instructions a lowering moved under
