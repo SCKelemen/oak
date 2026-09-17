@@ -90,12 +90,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	search := nativeSearch(comp.options.Target.AsmArch(), report)
 	var lowered []*asm.Function
 	tcFingerprint := tc.NativeLoweringFingerprint() // once for the pass (nativeDriver.tcFingerprint)
-	// The program's call graph (nativegen/callgraph.go): a body no entry
-	// point reaches — after the compiler's helper expansion, an inlined
-	// helper's own body — is not lowered natively; nothing would run it,
-	// and its search is a full one. The C backend keeps its definition.
+	// The program's call graph (nativegen/callgraph.go), read at the end
+	// for the report: which bodies no entry point reaches. Every body is
+	// lowered all the same — a package compiled for its exports has no
+	// entry point of its own, and a test lowers each function it names.
 	graph := nativegen.BuildCallGraph(functions)
-	reachable := graph.Reachable()
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
@@ -116,12 +115,6 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				slots = append(slots, slot.Feature)
 			}
 			reason := fmt.Sprintf("it dispatches on %s; the C backend keeps the selection between its realizations", strings.Join(slots, ", "))
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
-			result.Fallbacks[fn.Name.Value] = reason
-			continue
-		}
-		if !reachable[fn.Name.Value] {
-			reason := "no entry point reaches it after helper expansion"
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
 			result.Fallbacks[fn.Name.Value] = reason
 			continue
@@ -290,7 +283,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: call graph: %s keeps %d caller(s) trusted through its verdict (%s): %s", root.Name, len(root.Blocked), root.Reason, strings.Join(root.Blocked, ", "))))
 	}
 	if unreachable := graph.Unreachable(); len(unreachable) > 0 {
-		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: call graph: %d function(s) no entry point reaches after helper expansion, left to the C backend: %s", len(unreachable), strings.Join(unreachable, ", "))))
+		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: call graph: %d function(s) no entry point reaches after helper expansion: %s", len(unreachable), strings.Join(unreachable, ", "))))
 	}
 	if comp.options.OptReport || os.Getenv("OAK_OPT_REPORT") != "" {
 		fmt.Fprint(os.Stderr, report.String())
