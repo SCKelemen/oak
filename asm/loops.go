@@ -2953,6 +2953,13 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// leaf: each lane or element is its own variable (`error[3]`).
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
+	// The field paths the body assigns inside each aggregate (`next.h`,
+	// `next.block` for `next.block[i] = …`): only the leaves under one are
+	// carried; a field the loop never writes (`next.filled`, read in the
+	// condition) keeps its header value and needs no machine image
+	// (docs/spec/94-assembler.md §9 "Loop invariants", the carried leaves).
+	assignedPaths := map[string][]string{}
+	assignedFieldPaths(loop.Body, assignedPaths)
 	// A call in the body to a function that assigns package cells: the
 	// cells are the caller's locals, so the loop carries them as it
 	// carries a cell the body assigns itself (the machine side lists them
@@ -2975,13 +2982,19 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	}
 	sort.Strings(carried)
 	aggregates := map[string]bool{}
+	// uncarried: the leaves of a carried aggregate the body never assigns,
+	// with the term each held at the header; they must hold it still after
+	// the body (checked below), else the event fails closed.
+	uncarried := map[string]*term{}
 	for _, name := range carried {
 		if view, isView := lo.views[name]; isView {
-			// A store through a view: its owner is the carried aggregate.
+			// A store through a view: its owner is the carried aggregate,
+			// whole (the view reaches any of its leaves).
 			if aggregates[view.owner] {
 				continue
 			}
 			name = view.owner
+			assignedPaths[name] = []string{name}
 		}
 		local, isLocal := lo.locals[name]
 		if !isLocal {
@@ -3003,6 +3016,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			}
 			sort.Strings(paths)
 			for _, path := range paths {
+				if !underAssignedPath(path, assignedPaths[name]) {
+					uncarried[path] = leaves[path].scalar // a leaf the loop never writes keeps its header value
+					continue
+				}
 				leaf := leaves[path]
 				ev.vars = append(ev.vars, path)
 				ev.width[path] = leaf.typ.width
@@ -3169,6 +3186,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		leafRefs(lo.locals[name].agg, name, leaves)
 		for path, leaf := range leaves {
 			if _, carried := ev.fresh[path]; !carried {
+				if header, known := uncarried[path]; known && header == leaf.scalar {
+					continue // never assigned: the header value stands, as on the machine side
+				}
 				return fmt.Sprintf("the aggregate %s changed shape across the loop", name), false
 			}
 			ev.next[path] = leaf.scalar
@@ -3251,6 +3271,83 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 			}
 		}
 	}
+}
+
+// assignedFieldPaths collects, for each local a loop body assigns into, the
+// access paths of the assignments: the local itself for `r = …`, `r.f` for
+// `r.f = …` and for `r.f[i] = …` (the element index is dynamic: the whole
+// field), `r.f.g` through nested fields — the same scopes assignedLocals
+// walks (nested loops, the arms of statement conditionals).
+func assignedFieldPaths(body *ast.BlockStatement, into map[string][]string) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.Statements {
+		switch s := stmt.(type) {
+		case *ast.AssignmentStatement:
+			into[s.Name.Value] = append(into[s.Name.Value], s.Name.Value)
+		case *ast.IndexAssignmentStatement:
+			if root, path := indexFieldPath(s.Target); root != "" {
+				into[root] = append(into[root], path)
+			}
+		case *ast.WhileStatement:
+			assignedFieldPaths(s.Body, into)
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						assignedFieldPaths(block.Block, into)
+					}
+				}
+			}
+		}
+	}
+}
+
+// indexFieldPath is the root local of an assignment target and the static
+// field path from it: `r.f.g` for `r.f.g = …`, `r.f` for `r.f[i] = …` and
+// for `r.f[i].x = …` (past an element index the path is the array field).
+func indexFieldPath(e ast.Expression) (root string, path string) {
+	var chain []*ast.IndexExpression
+	for e != nil {
+		switch n := e.(type) {
+		case *ast.Identifier:
+			root = n.Value
+			e = nil
+		case *ast.IndexExpression:
+			chain = append(chain, n)
+			e = n.Left
+		default:
+			return "", ""
+		}
+	}
+	if root == "" {
+		return "", ""
+	}
+	path = root
+	for k := len(chain) - 1; k >= 0; k-- {
+		field, isField := chain[k].Index.(*ast.Identifier)
+		if !chain[k].Dot || !isField {
+			break // an element index: the whole array field from here
+		}
+		path += "." + field.Value
+	}
+	return root, path
+}
+
+// underAssignedPath reports a leaf path (`next.h[3]`, `next.filled`) that
+// one of the assigned paths covers: equal to it, or extending it by a field
+// or an element.
+func underAssignedPath(leaf string, assigned []string) bool {
+	for _, path := range assigned {
+		if leaf == path {
+			return true
+		}
+		if strings.HasPrefix(leaf, path) && (leaf[len(path)] == '.' || leaf[len(path)] == '[') {
+			return true
+		}
+	}
+	return false
 }
 
 // indexRootIdent is the local an index chain `a[i].f[j]` starts from.
