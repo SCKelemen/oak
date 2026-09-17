@@ -507,7 +507,13 @@ The first source and native rules are:
 
 The native lane proposes its strength reduction, guard elimination, flag reuse,
 invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
-promotion, and late cleanup through `opt.Search`. A refused composition is not
+promotion, and late cleanup through `opt.Search`. Below the search, a shift
+whose count is a named module constant lowers as one by a literal does — one
+immediate shift (`lsr x9, x3, #25`, `srli`), no register for the count and no
+width check before it — so the page walkers' `(ipa >> l0_shift) & l0_mask`
+costs one instruction rather than four; a named count at or beyond the width
+keeps the run-time check, which traps as `10-syntax.md` §3b says
+(`compiler/e2e_native_constant_shift_test.go`). A refused composition is not
 reinterpreted as permission for one of its parts: each alternative is a
 separate candidate and every selected body passes the ordinary seam checker.
 Transforms marked verifier-gated are set aside when equivalence is not judged,
