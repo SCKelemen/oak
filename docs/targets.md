@@ -50,6 +50,11 @@ new target's explicit acceptance gates.
 
 ## Adding a target: reuse and porting gates
 
+The first [shared target-description/emission boundary](notes/target-pipeline-2026-09.md)
+is implemented: C/native/Wasm entry points resolve checked descriptions, and
+Wasm materialization/byte admission uses the typed DAG. Native ISA/cost dispatch
+below these entry points still needs the further refactoring described here.
+
 Adding an OS/ABI on an existing ISA, adding an external-C target, and adding an
 Oak-native verified backend are different projects. A target spelling is not
 evidence of native lowering, proof coverage or competitive performance.

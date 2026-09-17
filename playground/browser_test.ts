@@ -124,7 +124,23 @@ try {
     if (await evaluate("!!document.getElementById('run')")) break;
     await sleep(100);
   }
-  await evaluate("document.getElementById('run').click()");
+  // Retain one real compiler response to test report corruption independently
+  // of the compiler. The wrapper observes messages but does not alter them.
+  await evaluate(`
+    globalThis.realWorker = Worker;
+    globalThis.compiledFixture = null;
+    globalThis.Worker = class extends realWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', ({data}) => {
+          if (data.kind === 'compiled' && !data.response.error && !compiledFixture) {
+            globalThis.compiledFixture = structuredClone(data.response);
+          }
+        });
+      }
+    };
+    document.getElementById('run').click();
+  `);
   let output = "";
   for (let i = 0; i < 300; i++) {
     output = String(
@@ -151,15 +167,105 @@ try {
   ) {
     throw Error("Missing independent byte-validation status");
   }
-  await evaluate(
-    "document.getElementById('source').dispatchEvent(new Event('input'))",
+  if (
+    !String(await evaluate("document.getElementById('artifact').textContent"))
+      .includes("wasm.admit")
+  ) {
+    throw Error("Missing emission DAG provenance");
+  }
+  // Both report hashes agree with each other but not the actual valid module.
+  // A string-to-string report check alone would accept this stale evidence.
+  await evaluate(`
+    globalThis.Worker = class {
+      constructor() { queueMicrotask(() => this.onmessage?.({data:{kind:'ready'}})); }
+      postMessage() {
+        const response = structuredClone(compiledFixture);
+        response.moduleSHA256 = '0'.repeat(64);
+        response.module.byteValidation.sha256 = response.moduleSHA256;
+        queueMicrotask(() => this.onmessage?.({data:{kind:'compiled',response}}));
+      }
+      terminate() {}
+    };
+    document.getElementById('compile').click();
+  `);
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate("!document.getElementById('compile').disabled")) break;
+    await sleep(100);
+  }
+  output = String(
+    await evaluate("document.getElementById('output').textContent"),
+  );
+  if (
+    !output.includes("hash does not match actual bytes") ||
+    !await evaluate("document.getElementById('download').disabled")
+  ) {
+    throw Error("Corrupt byte report exposed an artifact: " + output);
+  }
+  await evaluate("void (globalThis.Worker = realWorker)");
+  console.log(
+    "PASS: actual-byte hashing refuses a stale byte-admission report",
+  );
+  // Pause hashing after a valid response, then invalidate the source request.
+  // Resolving that old asynchronous work must not restore an artifact.
+  await evaluate(`
+    globalThis.realDigest = crypto.subtle.digest.bind(crypto.subtle);
+    globalThis.pendingDigests = [];
+    crypto.subtle.digest = (...args) => new Promise((resolve, reject) => {
+      pendingDigests.push(() => realDigest(...args).then(resolve, reject));
+    });
+    globalThis.Worker = class {
+      constructor() { queueMicrotask(() => this.onmessage?.({data:{kind:'ready'}})); }
+      postMessage() { queueMicrotask(() => this.onmessage?.({data:{kind:'compiled',response:structuredClone(compiledFixture)}})); }
+      terminate() {}
+    };
+    document.getElementById('compile').click();
+  `);
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate("pendingDigests.length === 2")) break;
+    await sleep(100);
+  }
+  if (!await evaluate("pendingDigests.length === 2")) {
+    throw Error("Did not reach asynchronous hash boundary");
+  }
+  await evaluate(`
+    document.getElementById('source').dispatchEvent(new Event('input'));
+    crypto.subtle.digest = realDigest;
+    globalThis.Worker = realWorker;
+    pendingDigests.forEach((release) => release());
+  `);
+  await sleep(100);
+  if (
+    !String(await evaluate("document.getElementById('artifact').textContent"))
+      .includes("No current artifact")
+  ) {
+    throw Error("Stale asynchronous hashing restored an artifact");
+  }
+  console.log(
+    "PASS: source invalidation discards stale asynchronous hash results",
   );
   if (!await evaluate("document.getElementById('download').disabled")) {
     throw Error("Editing source retained stale download");
   }
   await evaluate(
-    "document.getElementById('source').value='main: (): u32 { i: u32 = 0; while i == i { i = i + u32(1) }; i }'; document.getElementById('run').click()",
+    "document.getElementById('source').value='main: (): u32 { i: u32 = 0; while i == i { i = i + u32(1) }; i }'; document.getElementById('compile').click()",
   );
+  for (let i = 0; i < 300; i++) {
+    if (await evaluate("!document.getElementById('compile').disabled")) break;
+    await sleep(300);
+  }
+  output = String(
+    await evaluate("document.getElementById('output').textContent"),
+  );
+  if (
+    !output.endsWith("Not executed.") ||
+    await evaluate("document.getElementById('download').disabled")
+  ) {
+    throw Error("Compile-only ran or failed to publish the loop: " + output);
+  }
+  console.log(
+    "PASS: Compile only admits and downloads an infinite loop without executing it",
+  );
+  await evaluate("document.getElementById('run').click()");
   for (let i = 0; i < 300; i++) {
     output = String(
       await evaluate("document.getElementById('output').textContent"),

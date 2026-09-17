@@ -7,6 +7,13 @@ and arity-specific builders derive keys and decode dependencies for the OptIR
 graph. This note refines the optimizer search design; it does not change Oak
 semantics or authorize OptIR emission.
 
+The experimental Wasm backend now uses the same typed graph infrastructure for
+target/input → materialization → byte admission. Its returned graph report is
+diagnostic: byte admission does not stand in for a native semantic verdict.
+Both the OptIR root and the Wasm input boundary take owned CFG snapshots.
+See [target emission pipelines](target-pipeline-2026-09.md) for the small shared
+builder and the remaining target-specific boundaries.
+
 ## 1. Decision
 
 Reusable, branching, independently verifiable, proof-gating, or expensive

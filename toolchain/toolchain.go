@@ -65,8 +65,12 @@ type Options struct {
 // tables (no runtime to read them), and compile to a relocatable object.
 // A processor (opts.CPU, else the target's default) is passed as -mcpu.
 func Resolve(t target.Target, opts Options, look Lookup, getenv func(string) string) (Driver, error) {
-	if t.CoreWasm() {
-		return Driver{}, fmt.Errorf("core/wasm32 uses Oak's Wasm emitter, not a C toolchain")
+	description, err := t.Describe()
+	if err != nil {
+		return Driver{}, err
+	}
+	if description.Backend != target.BackendC {
+		return Driver{}, fmt.Errorf("%s uses Oak's %s emitter, not a C toolchain", t, description.Backend)
 	}
 	if look == nil {
 		look = exec.LookPath
@@ -105,9 +109,6 @@ func Resolve(t target.Target, opts Options, look Lookup, getenv func(string) str
 			return Driver{}, fmt.Errorf("OAK_CC=%s: %v", cc, err)
 		}
 		return finish(Driver{Kind: "explicit", Path: path, Args: strings.Fields(getenv("OAK_CFLAGS"))})
-	}
-	if !t.Supported() {
-		return Driver{}, fmt.Errorf("target %s is not supported", t)
 	}
 	if t.IsHost() {
 		if path, err := look("cc"); err == nil {

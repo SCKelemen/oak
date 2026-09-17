@@ -256,7 +256,7 @@ func runOptIRAnalysisGraphWithMemory(cfg optir.CFG, memoryAuthority optir.Checke
 }
 
 func newOptIRAnalysisGraph(cfg optir.CFG, memoryAuthority optir.CheckedMemoryAuthority) (*opt.ArtifactGraph, optIRArtifactRefs, error) {
-	fingerprint, err := optir.FingerprintCFG(cfg)
+	cfg, fingerprint, err := optir.SnapshotCFG(cfg)
 	if err != nil {
 		return nil, optIRArtifactRefs{}, err
 	}
