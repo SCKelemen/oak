@@ -9,6 +9,7 @@ type recordBaseSite struct {
 	low, high          asm.Immediate
 	uses               []int
 	localUseBoundary   int
+	rewritable         bool
 }
 
 // shareRecordBase eliminates repeated materializations of one record-span
@@ -25,6 +26,18 @@ type recordBaseSite struct {
 // delimit the region. A destination live past a control boundary refuses its
 // site. The whole candidate remains verifier-gated.
 func shareRecordBase(fn *asm.Function) int {
+	return shareRecordBaseWith(fn, false)
+}
+
+// reuseRecordBaseDestination makes the first computed base itself the carrier
+// when it remains unmodified through every replacement use. It is separate
+// from shareRecordBase so candidate search retains the established
+// scratch-carried result as a verifier-gated fallback.
+func reuseRecordBaseDestination(fn *asm.Function) int {
+	return shareRecordBaseWith(fn, true)
+}
+
+func shareRecordBaseWith(fn *asm.Function, existingDestinationOnly bool) int {
 	if fn == nil || (fn.Arch != "" && fn.Arch != asm.ArchArm64) {
 		return 0
 	}
@@ -36,7 +49,7 @@ func shareRecordBase(fn *asm.Function) int {
 	live := liveAfter(items)
 	var sites []recordBaseSite
 	for i := 0; i+2 < len(items); i++ {
-		site, ok := recordBaseAt(items, live, i)
+		site, ok := recordBaseAt(items, live, succ, i, existingDestinationOnly)
 		if ok {
 			sites = append(sites, site)
 		}
@@ -44,6 +57,9 @@ func shareRecordBase(fn *asm.Function) int {
 	for firstIndex, first := range sites {
 		group := []recordBaseSite{first}
 		for _, site := range sites[firstIndex+1:] {
+			if !site.rewritable {
+				continue
+			}
 			same := sameRecordBase(first, site)
 			dominates := itemDominates(succ, first.def, site.def)
 			stable := guardOperandsStable(items, succ, first.def+1, site.def, first.index.Num, first.base.Num)
@@ -56,25 +72,32 @@ func shareRecordBase(fn *asm.Function) int {
 		if len(group) < 2 {
 			continue
 		}
-		scratch, found := recordBaseScratch(fn.Clobbers, items, first.start, first)
+		carrier, found := asm.Register{}, false
+		if existingDestinationOnly {
+			carrier, found = existingRecordBaseCarrier(items, first, group)
+		} else {
+			carrier, found = recordBaseScratch(fn.Clobbers, items, first.start, first)
+		}
 		if !found {
 			continue
 		}
 		out := append([]asm.Item(nil), items...)
 		remove := make([]bool, len(items))
-		definition := out[first.def].(asm.Instruction)
-		operands := append([]asm.Operand(nil), definition.Operands...)
-		operands[0] = scratch
-		definition.Operands = operands
-		definition.CheckedFacts = nil
-		out[first.def] = definition
-		for _, use := range first.uses {
-			out[use] = renameReads(out[use].(asm.Instruction), first.dest.Num, scratch)
+		if carrier.Num != first.dest.Num {
+			definition := out[first.def].(asm.Instruction)
+			operands := append([]asm.Operand(nil), definition.Operands...)
+			operands[0] = carrier
+			definition.Operands = operands
+			definition.CheckedFacts = nil
+			out[first.def] = definition
+			for _, use := range first.uses {
+				out[use] = renameReads(out[use].(asm.Instruction), first.dest.Num, carrier)
+			}
 		}
 		for _, site := range group[1:] {
 			remove[site.start], remove[site.middle], remove[site.def] = true, true, true
 			for _, use := range site.uses {
-				out[use] = renameReads(out[use].(asm.Instruction), site.dest.Num, scratch)
+				out[use] = renameReads(out[use].(asm.Instruction), site.dest.Num, carrier)
 			}
 		}
 		fn.Items = fn.Items[:0]
@@ -86,6 +109,39 @@ func shareRecordBase(fn *asm.Function) int {
 		return len(group) - 1
 	}
 	return 0
+}
+
+// existingRecordBaseCarrier admits the first destination only when every
+// instruction that will remain preserves it until all rewritten reads. The
+// linear no-write condition is stronger than path-sensitive liveness: it also
+// rejects writes on branches which do not reach the final textual use.
+func existingRecordBaseCarrier(items []asm.Item, first recordBaseSite, group []recordBaseSite) (asm.Register, bool) {
+	removed := make(map[int]bool, 3*(len(group)-1))
+	lastUse := first.def
+	for _, site := range group[1:] {
+		removed[site.start], removed[site.middle], removed[site.def] = true, true, true
+		for _, use := range site.uses {
+			if use > lastUse {
+				lastUse = use
+			}
+		}
+	}
+	if lastUse == first.def {
+		return asm.Register{}, false
+	}
+	for i := first.def + 1; i <= lastUse; i++ {
+		if removed[i] {
+			continue
+		}
+		instruction, ok := items[i].(asm.Instruction)
+		if !ok {
+			continue
+		}
+		if instruction.Mnemonic == "bl" || instruction.Mnemonic == "blr" || writesGeneral(instruction, first.dest.Num) {
+			return asm.Register{}, false
+		}
+	}
+	return first.dest, true
 }
 
 func itemCFGHasCycle(succ [][]int) bool {
@@ -120,7 +176,7 @@ func itemCFGHasCycle(succ [][]int) bool {
 // local cleanup into unbounded instruction search.
 const recordBaseMaterializationSpan = 6
 
-func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, bool) {
+func recordBaseAt(items []asm.Item, live []uint32, succ [][]int, start int, allowCarriedDestination bool) (recordBaseSite, bool) {
 	a, okA := items[start].(asm.Instruction)
 	if !okA || a.Mnemonic != "movz" || a.Cond != "" || len(a.Operands) != 2 {
 		return recordBaseSite{}, false
@@ -162,10 +218,36 @@ func recordBaseAt(items []asm.Item, live []uint32, start int) (recordBaseSite, b
 		return recordBaseSite{}, false
 	}
 	uses, boundary, ok := localDefinitionUses(items, live, def, dest.Num)
-	if !ok || len(uses) == 0 {
+	rewritable := ok && len(uses) > 0
+	if !rewritable && allowCarriedDestination {
+		uses, boundary, rewritable = carriedDefinitionUses(items, succ, def, dest.Num)
+	}
+	if !rewritable && !allowCarriedDestination {
 		return recordBaseSite{}, false
 	}
-	return recordBaseSite{start: start, middle: middle, def: def, stride: strideA, dest: dest, index: index, base: base, low: low, high: high, uses: uses, localUseBoundary: boundary}, true
+	return recordBaseSite{start: start, middle: middle, def: def, stride: strideA, dest: dest, index: index, base: base, low: low, high: high, uses: uses, localUseBoundary: boundary, rewritable: rewritable}, true
+}
+
+// carriedDefinitionUses follows a definition across labels and branches only
+// while the linear suffix contains no possible overwrite. Each renamed read
+// must also be dominated by the definition. This is deliberately stricter
+// than full reaching-definitions analysis, but admits a base carried through
+// a read-only conditional without conflating values at a join.
+func carriedDefinitionUses(items []asm.Item, succ [][]int, def, reg int) ([]int, int, bool) {
+	var uses []int
+	for i := def + 1; i < len(items); i++ {
+		instruction, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction {
+			continue
+		}
+		if instruction.Mnemonic == "bl" || instruction.Mnemonic == "blr" || writesGeneral(instruction, reg) {
+			return uses, i, len(uses) > 0
+		}
+		if readsGeneral(instruction, reg) && itemDominates(succ, def, i) {
+			uses = append(uses, i)
+		}
+	}
+	return uses, len(items) - 1, len(uses) > 0
 }
 
 // nextGeneralRegisterMention finds the next read or write of reg without
@@ -252,3 +334,9 @@ func recordBaseScratch(clobbers []asm.Register, items []asm.Item, from int, expr
 func SharedRecordBases(fn *asm.Function) int { return sharedRecordBases[fn] }
 
 var sharedRecordBases = map[*asm.Function]int{}
+
+// ReusedRecordBaseDestinations reports how many repeated materializations
+// used the first computed destination as their carried base.
+func ReusedRecordBaseDestinations(fn *asm.Function) int { return reusedRecordBaseDestinations[fn] }
+
+var reusedRecordBaseDestinations = map[*asm.Function]int{}

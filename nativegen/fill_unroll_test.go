@@ -144,7 +144,7 @@ fill: (pages: [*]u64): () {
 			fn, functions,
 			map[string]asm.Constant{"entries": {Type: "u32", Value: bound}},
 			tc,
-			false, false, true, false, false, false, false, false, false, false, false,
+			false, false, true, false, false, false, false, false, false, false, false, false,
 		)
 	}
 	if got := len(stages(8)); got != 2 {

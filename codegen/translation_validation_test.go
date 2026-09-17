@@ -176,7 +176,8 @@ const casHelperText = "static inline u32 __oak_cas_u32_acq_rel_acquire(_Atomic(u
 // these are the lines the validated units are compiled from.
 var guardMacroLines = []string{
 	`static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }`,
-	`#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])`,
+	`#define oak_index(base, len, i) ((base)[oak_lv_idx((u64)(i), (u64)(len))])`,
+	`static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }`,
 	`#define OAK_SHIFT_HELPERS(T, W) \`,
 	`  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \`,
 	`  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }`,

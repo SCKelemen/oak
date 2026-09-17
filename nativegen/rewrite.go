@@ -65,6 +65,10 @@ func UnrolledMaps(fn *asm.Function) int { return countSites(fn, "map unrolling",
 // lowering vectorized under Lane.VectorFolds (nativegen/vector_fold.go).
 func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectorization", false) }
 
+// UnrolledFolds reports how many bodies' folds a lowering took two vectors
+// a trip under Lane.UnrollVectorFolds (nativegen/vector_fold.go).
+func UnrolledFolds(fn *asm.Function) int { return countSites(fn, "fold unrolling", false) }
+
 // VectorizedLanes reports how many bodies' lane-wise accumulator loops a
 // lowering vectorized under Lane.VectorLanes (nativegen/vector_lanes.go).
 func VectorizedLanes(fn *asm.Function) int { return countSites(fn, "lane vectorization", false) }
@@ -95,10 +99,10 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                                                                          *ast.FunctionStatement
-	tc                                                                                          *typechecker.TypeChecker
-	constants                                                                                   string
-	expand, unroll, fills, vectorize, maps, unrollMaps, folds, lanes, constant, small, strength bool
+	fn                                                                                                       *ast.FunctionStatement
+	tc                                                                                                       *typechecker.TypeChecker
+	constants                                                                                                string
+	expand, unroll, fills, vectorize, maps, unrollMaps, folds, unrollFolds, lanes, constant, small, strength bool
 }
 
 var (
@@ -122,19 +126,19 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, lanes, constant, small, strength bool) []rewriteStage {
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, unrollFolds, lanes, constant, small, strength bool) []rewriteStage {
 	constantKey := ""
 	if fills {
 		constantKey = rewriteConstantsKey(constants)
 	}
-	key := stageKey{fn: fn, tc: tc, constants: constantKey, expand: expand, unroll: unroll, fills: fills, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, lanes: lanes, constant: constant, small: small, strength: strength}
+	key := stageKey{fn: fn, tc: tc, constants: constantKey, expand: expand, unroll: unroll, fills: fills, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, unrollFolds: unrollFolds, lanes: lanes, constant: constant, small: small, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, constants, tc, expand, unroll, fills, vectorize, maps, unrollMaps, folds, lanes, constant, small, strength)
+	stages := computeStages(fn, functions, constants, tc, expand, unroll, fills, vectorize, maps, unrollMaps, folds, unrollFolds, lanes, constant, small, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
@@ -158,7 +162,7 @@ func rewriteConstantsKey(constants map[string]asm.Constant) string {
 	return out.String()
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, lanes, constant, small, strength bool) []rewriteStage {
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, unrollFolds, lanes, constant, small, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
@@ -239,11 +243,19 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	// trip, the lanes added in order (nativegen/vector_fold.go): lane-wise
 	// semantics and the kept order license it.
 	if folds {
-		if vectorized, changed := vectorizeFolds(fn, body); changed {
+		foldSource := body
+		if vectorized, changed := vectorizeFolds(fn, foldSource, false); changed {
 			sites = append(sites, RewriteSite{Rewrite: "fold vectorization", Law: "Oak.Fold.blocked_eq", Detail: "each block of a vector's lanes computed as one vector load per span and the lane-wise operations, its lanes added to the accumulator in element order, the remainder one element at a time; the simd operations are lane-wise by their specification and the additions keep their order, so the blocked fold is the sequential fold", Line: fn.Token.Line})
 			body = vectorized
 			judged = true
 			push()
+			if unrollFolds {
+				if grouped, changed := vectorizeFolds(fn, foldSource, true); changed {
+					sites = append(sites, RewriteSite{Rewrite: "fold unrolling", Law: "Oak.Fold.blocked_eq", Detail: "two vector blocks a trip, the lanes added in element order, a one-vector loop cleaning up before the scalar remainder; each loop the blocked fold over what the loops before it left", Line: fn.Token.Line})
+					body = grouped
+					push()
+				}
+			}
 		}
 	}
 	// A u64 zero-fill loop as four ordered scalar stores per main trip and

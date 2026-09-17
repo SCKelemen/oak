@@ -343,6 +343,33 @@ Runtime is intentionally unreported because host load averages remained
 
 [Static observations and provenance](results/stage2-empty-frame-elision-2026-09-17.json).
 
+## OS stage-2: reuse live record-base destinations, 2026-09-17
+
+The verifier-gated `reuse-record-base-carriers` child candidate extends
+`share-record-bases` when its whole-suffix scratch rule is too restrictive.
+It retains the first computed base in its existing destination, but only when
+that definition dominates every replacement and no call or surviving write
+can clobber it. The scratch-carried parent remains selectable, and
+`OAK_OPT_SKIP=reuse-record-base-carriers` produced the same-compiler control.
+Both artifacts used fresh verification with zero of 22 verdicts from cache.
+
+| Selected body | Instructions | Multiplies | Verdict |
+| --- | ---: | ---: | --- |
+| `free_table` | 29 → 26 | 3 → 2 | proven |
+| `translate` | 88 → 85 | 3 → 2 | proven |
+| `unmap_page` | 202 → 181 | 9 → 2 | proven |
+| `walk_leaf` | 132 → 129 | 7 → 6 | proven |
+
+That is 30 selected instructions and 10 multiplies removed. Mach-O `__text`
+and the complete object both shrink by 120 bytes (4268→4148 and 5792→5672),
+while all 27 relocations remain. `translate` retains its exact bit-level proof
+at 1,905,704 BDD nodes; `unmap_page` now proves at 1,906,094 nodes after the
+upstream trap-domain refinement. Both objects pass all five OS differential
+tests. Runtime is intentionally unreported: final host load averages were 79–113,
+far too high for a useful A/B measurement.
+
+[Static observations and provenance](results/stage2-record-base-carriers-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established
@@ -2019,6 +2046,23 @@ fourteen boundary lengths and after every sample; assembler, native reference
 and RV64 checks pass. The conflicting timings need a quiet-host follow-up.
 [All samples, selections, hashes and validation](results/blake3-loop-bounds-2026-09-17.json).
 
+**Packed record leaves (2026-09-17).** The assigned-field loop fix in
+`40aaaf83` removes the earlier nested `next.cv[0]` preservation failure;
+at `0973619d`, the update instead exhausts the coupling-search budget.
+Its frame reloads still spell packed input bytes as shifts and masks, so
+the search tries unrelated fields before the correct byte slot. Recognizing
+widened parameters inside a pack by their declared widths recovers the
+original leaves: the first search now pairs all 64 block bytes directly
+with their frame slots, up from eight. Unbounded and overlapping placements
+remain refused.
+
+The update still exhausts the normal coupling budget around its chaining-value
+fields. Its C companion and native object are unchanged: **528 instructions,
+one guard, 307 agreeing witness inputs**. This is verifier progress without
+a runtime speedup claim. The compressor proof and native package/reference
+checks pass; [the evidence record](results/blake3-packed-record-leaves-2026-09-17.json)
+contains the artifact hashes, search examples and validation commands.
+
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 
 At baseline `65477201`, the existing guarded input loop becomes `memcpy`
@@ -2066,6 +2110,57 @@ with reproducible rejected patches for the
 [counted](results/blake3-counted-copy-raw-rejected-2026-09-17.patch) and
 [guarded counted](results/blake3-counted-copy-guarded-rejected-2026-09-17.patch)
 variants against the recorded baseline.
+
+## BLAKE3: stack-only chunk push deferred, 2026-09-17
+
+At baseline `bd89ea49`, closing a chunk copied the entire 1,848-byte state
+into the private push helper's result and then back into the caller. A
+prototype instead borrowed only the private copy's stack, returned its new
+depth and let the caller reset the same scalar fields. Public update value
+semantics, checked accesses and wrapping arithmetic were unchanged.
+
+The two copies disappear: 3,781,008 bytes of logical copy work per complete
+1 MiB hash, not measured hardware traffic. The C update frame shrinks
+**2,112 → 336 bytes**, but its code grows **616 → 684 bytes** and the push
+helper grows **340 → 452 bytes**. Initial input-state copying remains.
+
+| Cohort / run | Baseline ms/MiB | Stack-only ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 1.989 | 1.818 | 0.946 | 13/21 |
+| Native compression fixed / B, reversed | 3.711 | 3.528 | 0.941 | 13/21 |
+| Native compression fixed / C | 2.394 | 2.250 | 1.002 | 10/21 |
+| Pure C / A | 2.681 | 2.223 | 1.014 | 10/21 |
+| Pure C / B, reversed | 2.920 | 2.418 | 0.903 | 14/21 |
+| Pure C / C | 2.536 | 2.286 | 0.940 | 11/21 |
+
+**Deferred, not shipped.** Four paired medians improve, two are roughly
+neutral/slightly worse, and only 71/126 pairs improve. The host's one-minute
+load readings ranged from 85.68 to 146.52. This is a candidate for a quiet-host
+rerun, not a demonstrated runtime win or a precise regression estimate.
+Each run used the same rotating single-thread protocol, 21 samples of 100
+hashes, complete digest checks at fourteen lengths and after every sample,
+and no overlapping builds/tests from this experiment. Native compression
+was freshly proven and byte-identical in the mixed comparison.
+
+The experiment did expose two compiler correctness issues that are fixed:
+literal values were missing recursive lowering, so span/view reads inside
+arrays or records could emit invalid C; and the C `oak_index` macro repeated
+an effectful index expression. Aggregate values now traverse the existing
+checked lowering, and the macro uses `oak_lv_idx` with each argument once.
+Tests retain the evaluation-order case that caught the second issue.
+
+Both timed compilers had the same aggregate-lowering prerequisite; the
+single-evaluation macro fix came **after** those frozen samples. No timings
+here establish a speedup for that compiler fix. The retained hash tests
+freeze the old push helper and cover full state, counter/index wrapping,
+chunk-boundary input aliasing and exact malformed-depth traps. Hash source
+and extraction are restored; the proposed mutable-stack refinement proof
+is deferred with the source optimization.
+
+[All samples, hashes, reproduction steps and verification scope](results/blake3-stack-push-deferred-2026-09-17.json),
+the [source prototype](results/blake3-stack-push-deferred-2026-09-17.patch), and
+its [timed compiler prerequisite](results/blake3-stack-push-lowering-prerequisite-2026-09-17.patch)
+are preserved for a controlled rerun.
 
 ## The refuted kernel
 

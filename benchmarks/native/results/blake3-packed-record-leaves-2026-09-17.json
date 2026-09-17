@@ -1,0 +1,107 @@
+{
+  "date": "2026-09-17",
+  "baseline_commit": "0973619d",
+  "integration_parent": "62ce8b44",
+  "scope": "BLAKE3 update only native; standard production search and verification budgets, cache disabled. No runtime timing claim.",
+  "fix": "Recover declared-width record parameters inside 64-bit lane packs; preserve bare scalar adapters and refuse overlapping, unbounded, misaligned or non-64-bit placements.",
+  "prior_upstream_fix": {
+    "commit": "40aaaf83",
+    "effect": "Nested next.cv[0] preservation failure becomes coupling search budget exhaustion."
+  },
+  "search": {
+    "first_attempt_correct_block_byte_pairs_before": 8,
+    "first_attempt_correct_block_byte_pairs_after": 64,
+    "before_first_eight_pairs": [
+      "next.block[0]↔s1099511627808:1",
+      "r24 = next.block[1] + (state.blocks_compressed sub state.block[1])",
+      "r24 = next.block[2] + (state.blocks_compressed sub state.block[2])",
+      "r24 = next.block[3] + (state.blocks_compressed sub state.block[3])",
+      "r24 = next.block[4] + (state.blocks_compressed sub state.block[4])",
+      "r24 = next.block[5] + (state.blocks_compressed sub state.block[5])",
+      "r24 = next.block[6] + (state.blocks_compressed sub state.block[6])",
+      "r24 = next.block[7] + (state.blocks_compressed sub state.block[7])"
+    ],
+    "after_first_eight_pairs": [
+      "next.block[0]↔s1099511627808:1",
+      "next.block[1]↔s1099511627809:1",
+      "next.block[2]↔s1099511627810:1",
+      "next.block[3]↔s1099511627811:1",
+      "next.block[4]↔s1099511627812:1",
+      "next.block[5]↔s1099511627813:1",
+      "next.block[6]↔s1099511627814:1",
+      "next.block[7]↔s1099511627815:1"
+    ],
+    "trace_scope": "The unrestricted packed-leaf prototype and final implementation recognize the same packed record words; the final implementation additionally preserves bare scalar adapters for RV64.",
+    "remaining": "The search backtracks around next.cv after pairing block bytes and stack leaves; full BLAKE3 update proof remains outside the coupling budget."
+  },
+  "selection_before_and_after": {
+    "candidates_considered": 75,
+    "verified_candidates": 3,
+    "selected": "elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup",
+    "instructions": 528,
+    "guards": 1,
+    "cost": 906834,
+    "identity_cost": 1313107,
+    "verdict": "witnessed",
+    "agreeing_inputs": 307,
+    "reason": "the coupling search exceeded its budget"
+  },
+  "artifacts": {
+    "baseline.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "baseline.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "after.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "after.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "final.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "final.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "integrated.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "integrated.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7",
+    "publish.c": "3ac369987acce4b316040e9372244d7d9004d658a2ed88899e4deedb11e3360d",
+    "publish.o": "b3dd3947ff42cb8e3a7def238349e3d09d34fb3de735afbe7b41c02ee4c960d7"
+  },
+  "validation": [
+    {
+      "check": "New packed-lane regression at baseline",
+      "result": "Fails to recover state.block[0]."
+    },
+    {
+      "check": "Packed-lane and RV64 promoted-cell tests after final narrowing",
+      "result": "Pass (0.808s)."
+    },
+    {
+      "check": "Full asm suite on unrestricted prototype",
+      "result": "One RV64 diagnostic spelling failure; verdict still proven. Clean baseline passes. Fixed by retaining bare scalar adapters."
+    },
+    {
+      "check": "Native BLAKE3 package/reference and compressor proof plus record-field loops on prototype",
+      "result": "Pass (327.012s); BLAKE3 package 315.59s, compressor 8.60s."
+    },
+    {
+      "check": "Final compressor proof, record-field loops and RV64 under QEMU",
+      "result": "Pass (22.164s); compressor 10.70s, record execution 1.29s, RV64 QEMU executed 8.74s."
+    },
+    {
+      "check": "Final normal-budget update emission",
+      "result": "Same selection and witness verdict; C and object byte-identical to baseline and prototype."
+    },
+    {
+      "check": "Final full assembler suite on bd89ea49 plus fix",
+      "result": "Pass (124.608s), cache disabled, normal budgets."
+    },
+    {
+      "check": "Rebased onto 8ee46a56 including the loop memory-marking change",
+      "result": "Full asm passes (108.794s); compressor proof, both record-loop cases, new field-bound memory loop and executed RV64 QEMU pass (24.251s). Fresh normal-budget update emission retains verdict/selection and exact baseline C/object bytes."
+    },
+    {
+      "check": "Rebased onto 62ce8b44 record-base carrier optimization",
+      "result": "Record-base transform checks pass (0.734s); materialization-key and compressor proof checks pass (8.186s). Cache-off update emission still matches baseline C/object byte-for-byte and retains the same selection/verdict."
+    }
+  ],
+  "commands": {
+    "build": "go build -p 1 -o <emit> ./benchmarks/native/emit",
+    "emit": "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_NATIVE_DUMP=1 OAK_OPT_REPORT=1 <emit> benchmarks/kernels/oak <output>",
+    "trace": "env OAK_NATIVE_ONLY=hash__blake3_uupdate OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_VERIFY_TRACE=1 <emit> benchmarks/kernels/oak <output>",
+    "asm_suite": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./asm -count=1 -timeout=15m",
+    "native_reference": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./compiler -run '^(TestNativeBlake3CompressionProven|TestE2ENativeBlake3PackageAgreesWithReference|TestNativeShapesRecordFieldLoopCarriesAssignedLeaves|TestE2ENativeRecordFieldLoop)$' -count=1 -timeout=20m -v",
+    "final_native_checks": "env OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= go test -p 1 ./compiler -run '^(TestNativeBlake3CompressionProven|TestNativeShapesRecordFieldLoopCarriesAssignedLeaves|TestE2ENativeRecordFieldLoop|TestE2ENativeRV64UnderQEMU)$' -count=1 -timeout=10m -v"
+  }
+}

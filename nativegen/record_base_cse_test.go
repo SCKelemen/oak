@@ -68,6 +68,59 @@ func TestShareRecordBase(t *testing.T) {
 	}
 }
 
+func TestReuseRecordBaseDestination(t *testing.T) {
+	carried := strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add x4, x4, x10\n", 1)
+	fn := recordBaseFunction(t, carried, "x4, x9, x10, x11, x12, x17, x0")
+	if n := reuseRecordBaseDestination(fn); n != 1 {
+		t.Fatalf("reused %d existing destinations, want one:\n%s", n, Describe(fn))
+	}
+	text := Describe(fn)
+	if strings.Count(text, "umaddl") != 1 || !strings.Contains(text, "umaddl x10, w2, w9, x0") ||
+		!strings.Contains(text, "add x4, x4, x10") || !strings.Contains(text, "str x4, [x10, #16]") || strings.Contains(text, "umaddl x17") {
+		t.Fatalf("first record base was not retained as the carrier:\n%s", text)
+	}
+
+	clobbered := strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add x10, x0, #0\n", 1)
+	fn = recordBaseFunction(t, clobbered, "x4, x9, x10, x11, x12, x17, x0")
+	before := Describe(fn)
+	if n := reuseRecordBaseDestination(fn); n != 0 || Describe(fn) != before {
+		t.Fatalf("clobbered first destination was reused %d times:\n%s", n, Describe(fn))
+	}
+
+	for name, body := range map[string]string{
+		"call between":         strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  bl helper\n", 1),
+		"index changes":        strings.Replace(recordBaseAssembly, "skip:\n", "skip:\n  add w2, w2, #1\n", 1),
+		"first not dominating": strings.Replace(recordBaseAssembly, "  movz w9, #16384", "  cbz w4, skip\n  movz w9, #16384", 1),
+		"machine loop":         strings.Replace(recordBaseAssembly, "  cmp w2, w1", "loop:\n  cbnz w4, loop\n  cmp w2, w1", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fn := recordBaseFunction(t, body, "x4, x9, x10, x11, x12, x17, x0")
+			before := Describe(fn)
+			if n := reuseRecordBaseDestination(fn); n != 0 || Describe(fn) != before {
+				t.Fatalf("unsafe shape reused %d destinations:\n%s", n, Describe(fn))
+			}
+		})
+	}
+
+	transform, found := Registry().Lookup(TransformRecordBaseCarriers)
+	if !found {
+		t.Fatal("missing record-base carrier candidate")
+	}
+	if gated, ok := transform.(opt.Gated); !ok || !gated.NeedsVerdict() {
+		t.Fatal("record-base carrier reuse must require a semantic verdict")
+	}
+	identity := opt.Identity(PlainLane(Lane{Arch: asm.ArchArm64}))
+	if transform.Apply(identity) != nil {
+		t.Fatal("record-base carrier candidate applied without its parent")
+	}
+	parent := identity.Config.(Lane)
+	parent.Schedule, parent.ShareRecordBases = true, true
+	next := transform.Apply(opt.Identity(parent))
+	if next == nil || !next.Config.(Lane).ReuseRecordBaseDestinations || PlainLane(next.Config.(Lane)).ReuseRecordBaseDestinations {
+		t.Fatal("record-base carrier candidate toggle or identity fallback")
+	}
+}
+
 func TestShareRecordBasePreservesScheduledInterleaving(t *testing.T) {
 	body := strings.Replace(recordBaseAssembly,
 		"  movz w9, #16384\n  movk w9, #6, lsl #16\n  umaddl x10, w2, w9, x0",

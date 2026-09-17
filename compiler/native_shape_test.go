@@ -128,8 +128,9 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 	} else if fadds != want {
 		t.Errorf("dot's loop must hold one fadd, got %d", fadds)
 	}
-	if nativegen.VectorizedFolds(dot) > 0 && fadds != 4 {
-		t.Errorf("dot's vectorized loop must hold one fadd a lane, got %d", fadds)
+	// One fadd a lane, over one vector a trip or two (unroll-vector-folds).
+	if nativegen.VectorizedFolds(dot) > 0 && (fadds == 0 || fadds%4 != 0 || fadds > 8) {
+		t.Errorf("dot's vectorized loop must hold one fadd a lane over one or two vectors, got %d", fadds)
 	}
 	tiled, ok := units["tiled"]
 	if !ok {

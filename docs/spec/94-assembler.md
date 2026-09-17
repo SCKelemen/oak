@@ -1190,9 +1190,23 @@ names and wrong register-value constructors are tested separately, as are
 pending reads and failed traces. The generated selector conversion checks
 its value constructor but not its bit-list length. Two calls retain both
 selector reads and both request pairs, including with different responses.
-This remains an executable oracle without a register-state interpreter,
-Lean/Lem proof, or architectural event interpretation; it cannot establish
-selector initialization/provenance or justify BBM optimization (§126).
+Prompt matching alone supplies no register-state interpretation, Lean/Lem
+proof, or architectural event interpretation; it cannot establish selector
+initialization/provenance or justify BBM optimization (§126).
+
+`TestSailLemStateReplay` separately executes the original Sail trace-state
+replayer with the generated register accessors. Its test predicate requires
+both a normally returning prompt trace and successful state replay: the
+former alone accepts inconsistent selector replies, while the latter alone
+forgets address-request order and write kind. The oracle checks exact byte
+contents/presence, frame preservation, register consistency, false-acknowledgement
+rejection, and generic runtime tags. Compiled runtime mutations must pass the
+prompt harness and fail state assertions. This uses an exact source extraction
+of `emitEventS`/`runTraceS`, not the general `liftState` interpreter, whose
+unbounded choice cannot be translated to OCaml. It also pins a state-model
+gap: Lem plain writes clear a bit-valued tag map, whereas Lean's pinned `tags`
+field is only `Unit`. No full-state refinement, Arm MTE semantics, well-formed
+initialization, architectural provenance, or BBM publication follows (§126).
 
 A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,
@@ -1750,7 +1764,14 @@ recognizable pack** — a vector spilled and reloaded, a frame word
 assembled from byte slots, a loop-carried register the substitution made
 the pack of its Oak lanes — is the lane term itself (`unpackLane`,
 `extractedLane`, applied at extraction and at substitution), not a mask
-over a shift over the pack. **Bitwise vector operations** run at the
+over a shift over the pack. As of 2026-09-17, this includes record parameters
+widened into a 64-bit pack without explicit masks: their declared widths must
+fit the lane, and every placement must be distinct and aligned. The word's
+operations must be 64-bit; a bare scalar adapter remains outside this
+recognition. Overlapping or unbounded placements are refused. The regression
+in `asm/packed_declared_lanes_test.go` checks byte, halfword and word reloads
+against their original leaves and concrete values, plus those refusals.
+**Bitwise vector operations** run at the
 finer of their operands' lane widths, and byte by byte over two words
 that are packs of nothing recognizable (two loop symbols), since bitwise
 operations distribute over lanes: the machine then spells `error |
@@ -5556,7 +5577,11 @@ equals the sequential fold for any lane function and any accumulation —
 and the verifier proves the assembly against the rewritten body, reading
 the lane moves (`mov sD, vN.s[k]`) as the lanes. A bare element
 (`acc = acc + v[i]`) saves no work as a vector and is left to the scalar
-loop. `bench_dot`'s selected loop is sixteen instructions for four
+loop. With `unroll-vector-folds` (registered after the fold, so the search
+composes them) the main loop takes two vectors of elements a trip, the
+lanes still added in element order, and a one-vector loop cleans up before
+the remainder — each loop the blocked fold over what the loops before it
+left, the same law. `bench_dot`'s selected loop is sixteen instructions for four
 elements against the scalar loop's seven for one: two vector loads, one
 `fmul.4s`, four lane moves and four `fadd`, the index step, and one slack
 test — the second span's lanes stand under the first span's test, the
@@ -6267,6 +6292,31 @@ Mach-O `__text`; the object is 160 bytes smaller after alignment); every
 selected body remains `proven`, and all five OS differential tests pass. No
 follow-on runtime claim is attached because the
 available host was heavily loaded during the attempted measurement.
+
+The separate `reuse-record-base-carriers` child candidate handles the case in
+which no whole-suffix scratch is free but the first computed destination
+already remains intact. It is eligible only after scheduling and
+`share-record-bases`. The first definition must dominate every renamed read;
+the span base and index remain stable; later stride temporaries are dead; and
+the acyclic linear suffix contains no call or surviving write of the carrier
+through the final replacement. A later destination is rewritten only through
+its dominated reads before its next definition. All materialization
+instructions of that later base disappear, but guards, branches, loads, and
+stores stay in place. Calls, loops, unresolved direct branches, carrier
+clobbers, and non-dominated reads refuse the pass. The established
+scratch-carried candidate remains an independent fallback.
+
+This child is likewise non-neutral and **verdict-gated**; it adds no semantic
+checker rule. Materialization v29 keys its lane flag independently. Against a
+same-compiler `OAK_OPT_SKIP=reuse-record-base-carriers` control, the stage-2
+pilot removes 3 instructions each from proven `free_table`, `translate`, and
+`walk_leaf`, and 21 from the now-proven `unmap_page`. The 30 instructions are
+exactly 120 bytes
+from Mach-O `__text` and the object; 27 relocations remain. Both fresh builds
+report zero of 22 verdict-cache hits and pass all five OS differential tests.
+No runtime claim is attached because final load averages were 79–113. Exact
+provenance is in
+`benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
 
 **Shared scalar-global addresses (2026-09-17, AArch64 lane).** The
 `share-global-addresses` machine candidate (`nativegen/global_address_cse.go`)
@@ -7202,6 +7252,29 @@ is proven, and is the better code besides, since the load leaves the
 loop. The workaround is therefore no hardship, but the reason is worth
 recording, because it is not the bound and not the counter.
 
+**Fixed 2026-09-17: a loop marks what it can write.** Both sides now
+decide the marker set before anything reads it, from a walk that fails
+closed — the Oak side over the body's statements, answering yes to an
+index assignment, a call that is not a conversion or `len`, or any form
+it does not enumerate; the machine side over the body's items, answering
+yes to any store, any call, and anything that is not an instruction or a
+label. A body that can write nothing marks nothing, both sides read the
+entry memory for a memory that genuinely does not change, and the loop
+above is proven by coupling. A body that does write is unchanged: the
+marker goes on, and the verdict still names the memory.
+
+The two attempts that did not work are worth keeping. Lowering the Oak
+condition before marking, to match the machine side's order, makes both
+sides read the entry memory even for a memory the body *does* write,
+which is wrong and would hide the case rather than expose it. And
+lifting the guard into a separate path through `loopEvent` — rather
+than leaving the one path and only skipping the marker set's population
+— silently dropped the header's trap domain, because the condition must
+be lowered before the loop event is pushed for a trap in it to belong
+to the header. The minimal edit was the safe one.
+
+What follows is the diagnosis that led there.
+
 The message is doubly misleading, and the first reading of it here was
 wrong. The search does reach the right pairing: printing every pairing
 it tries shows `i↔r4`, the correct one, offered first at depth 0 — and
@@ -7235,8 +7308,11 @@ as much as the Oak side's. Marking only the memories the body writes
 would fix it from the other end and needs a conservative walk of the
 body, which no longer exists in the tree.
 
-Either way it is a completeness question, not a soundness one: the
-verdict falls back to evidence, which is what it is for.
+Both are completeness questions, not soundness ones: the verdict falls
+back to evidence, which is what it is for. Pinned:
+`compiler/e2e_native_loop_bound_field_test.go` — the read-only loop
+bounded by a field proven by coupling, the storing loop still proven in
+the memory it writes, and both backends agreeing on the values.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
@@ -9206,6 +9282,19 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**Header values spelled apart (2026-09-17).** A coupling candidate is an
+equality when the two sides' header values are one term, else an affine
+image with the headers' difference as its offset, tried after every
+equality. A frame slot holding two 32-bit words reads `h0 or (h1 shl 32)`
+on the machine and `(h0 and 0xffffffff) or ((h1 and 0xffffffff) shl 32)`
+as the Oak pack of the two lanes — one value, two terms — so
+`sha256_update`'s slots were offered only as images with a symbolic
+offset, behind every wrong pairing's refutation, and the search spent its
+budget. Two headers are now one value when they are the same term, the
+same canonical term, or — for terms under 192 nodes — equal at
+the bit level (`headersEqual`); the pairing is then the equality it is,
+first in line.
+
 **The carried leaves of a record (2026-09-17).** A loop that assigned
 into a record local carried every leaf of the record as a loop variable,
 the fields it never wrote included: `sha256_update`'s whole-block loop
@@ -9540,3 +9629,63 @@ The reject cases are the point (`TestCheckerSlackOutlivesLengthRegister`):
 without the proven minimum the subtraction may have wrapped, so the read
 is refused; an element past the run the slack leaves is refused; and the
 fact dies with the base register that named the span.
+
+### 9.am Promotion declares the registers it takes (2026-09-17)
+
+Not a checker gap. The checker was right every time, and the histogram of
+refused candidate forms had been saying so for a while: of 269 refusals,
+130 were `write to undeclared register`, every one of them in a form
+containing the register-reallocation transform, and the registers were
+callee-saved — x22 through x28, and w19, w20.
+
+The chain, read off the emitted body of `percent_encoded_size`. Its
+prologue saves seven callee-saved registers, x19 through x25, and its
+epilogue restores them. Its declaration names six, x19 through x24: the
+save of the seventh is emitted for a register the lowering reserved but
+whose declaration never followed. That alone costs nothing, since nothing
+writes x25. Then slot promotion looks for a register to hold a frame
+slot's value across a call and takes a callee-saved one only when the
+body already writes it, reading "writes it" as "the prologue saves it"
+(`slotRegister`). The epilogue's `ldr x25, [sp, #64]` **is** a write of
+x25, so x25 passes that test. Promotion takes it, moves the slot into it,
+and does not declare it, because the declaration step exempted
+callee-saved registers on the assumption that any it could take had come
+from the lowering already declared. The checker then refuses the whole
+form, the search falls back, and the body keeps its frame traffic.
+
+So promotion now declares the callee-saved registers it takes, on the
+AArch64 lane. It takes such a register only when the prologue saves it,
+so the declaration is the truth about the body and the checker's other
+rule — save before writing — is met. The RV64 checker takes the opposite
+convention and refuses a callee-saved clobber outright, so that lane
+keeps the exemption (`machine/machine_test.go` pins it).
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`33e4adb5`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted | 32883 | **32617** |
+| refused candidate forms | 269 | **144** |
+| undeclared-write refusals | 130 | **0** |
+| trap branches emitted | 770 | 770 |
+
+Thirty-seven bodies are shorter and one is a single instruction longer
+(`url_empty`, 81 to 82), for 266 instructions net. The largest are
+`url_with_authority` 256 to 212, `url_failure` 82 to 55,
+`latin1_to_utf8` 98 to 83. No body gains a trap branch and all 322 units
+keep their verdicts. This is the largest single change in emitted code of
+this series, and it is not new optimization: it is optimization the
+compiler was already doing and then throwing away, because a declaration
+did not match the frame it described.
+
+The general lesson, worth more than the instructions: a refusal class
+this large sat unexamined because it reads as "bodies outside the
+checker's subset", the same phrase §9.ai used to dismiss 250 of them. It
+was not that. It was one missing declaration, and the way to find it was
+to group the refusals by the transform that produced them, which pointed
+at reallocation immediately. The other two large classes — a memory
+operand through a base the checker cannot place, and a read before any
+write — deserve the same treatment before anyone assumes they are out of
+subset too.

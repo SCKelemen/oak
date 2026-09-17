@@ -831,6 +831,43 @@ search keeps a proof over a cheaper witness (cost 821 against 568). The
 inverted CRC in a register the loop carries unchanged is the next fact
 the loop proof needs; the count-down loop is a source-shape question.
 
+### Two vectors a trip in the fold (2026-09-17, night)
+
+`dot` at 1.08× was the fold at four elements a trip: the loop's test and
+index step amortized over one vector. `unroll-vector-folds` mirrors
+upstream's `unroll-vector-maps`: a two-vector main loop, a one-vector loop
+cleaning up, the scalar remainder, the lanes still added in element order
+— the same law, `Oak.Fold.blocked_eq`, over each loop in turn. The
+search composes same-phase transforms in registry order, applying each to
+the frontier the earlier ones built, so the unrolling had to be
+registered after the fold vectorization to ever meet a fold candidate;
+registered before it, it fired on the identity alone and reported no
+site. Composed, it wins for the `f32` dot at 1640 against the one-vector
+form's 1781, proven. On the harness under a load average past sixty the
+ratios lean its way (1.05× against 1.10× the C backend, three interleaved
+runs) and the native times do not separate; the loop is bound by its one
+ordered `fadd` an element either way.
+
+### Next: an explicit call graph (2026-09-17, night)
+
+Three of today's decisions reasoned about calls one callee at a time and
+would be simpler, and stronger, over a call graph of the program's
+functions in the sense of `golang.org/x/tools/go/callgraph` — nodes the
+functions, edges labeled by call site, a synthetic root calling the entry
+points, sound (every dynamic call has an edge) and as precise as the
+language allows (Oak's calls are static but for dispatch). The verifier's
+verdicts already propagate along edges ("a call to `push_chunk` whose
+body contains …" makes the caller trusted), so lowering callees before
+callers in a reverse topological order would let a caller's search read
+its callees' verdicts instead of discovering them; the inliner's depth
+counter and per-call budget become a decision on the graph (which edges
+to expand, where a callee has one caller); destination passing and
+in-place expansion (`aliasSafeCall`, `expandInPlace`) become edge
+properties computed once per callee rather than rechecked per call; and
+unreachable bodies fall out as nodes off the root. The pieces exist —
+`nativegen.functions`, `calleeName`, the inliner's stack — as a graph
+walked implicitly; naming it is the increment.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

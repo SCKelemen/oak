@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v28 adds verifier-gated empty-frame elision to v27's callee-save
-	// trimming recipe. Preserve every recipe input to avoid
+	// v29 adds verifier-gated reuse of a record base's first destination to
+	// v28's late-machine recipe. Preserve every recipe input to avoid
 	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v28")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v29")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -62,6 +62,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
 		{"vectorize-lanes", lane.VectorLanes},
+		{"unroll-vector-folds", lane.UnrollVectorFolds},
 		{"unroll-small", lane.UnrollSmall},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
@@ -77,6 +78,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"loop-array-homes", lane.LoopArrayHomes},
 		{"loop-result-homes", lane.LoopResultHomes},
 		{"share-record-bases", lane.ShareRecordBases},
+		{"reuse-record-base-carriers", lane.ReuseRecordBaseDestinations},
 		{"share-global-addresses", lane.ShareGlobalAddresses},
 		{"forward-global-loads", lane.ForwardGlobalLoads},
 		{"elide-global-load-masks", lane.ElideGlobalLoadMasks},

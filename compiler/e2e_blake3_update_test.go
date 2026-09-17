@@ -13,9 +13,9 @@ import (
 	"github.com/SCKelemen/oak/scanner"
 )
 
-// Freeze the pre-batched update loop and original whole-state absorb helper,
-// not transformations of current source. Compression and chunk/stack helpers
-// remain shared; update and ordinary-block state transitions are independent.
+// Freeze the pre-batched update loop and original whole-state absorb/push
+// helpers, not transformations of current source. Compression and chunk-CV
+// calculation remain shared; the state transitions are independent.
 const blake3OriginalUpdateSource = `
 update_test_absorb_original: (state: Blake3State): Blake3State {
   next: Blake3State = state
@@ -26,12 +26,39 @@ update_test_absorb_original: (state: Blake3State): Blake3State {
   next
 }
 
+// The bd89ea49 push body, unchanged apart from its test-local name.
+update_test_push_original: (state: Blake3State, cv: [8]u32): Blake3State {
+  next: Blake3State = state
+  merged: [8]u32 = cv
+  total: u64 = next.chunk_counter + u64(1)
+  while total % u64(2) == u64(0) && next.stack_len > u32(0) {
+    top: u32 = (next.stack_len - u32(1)) * u32(8)
+    left: [8]u32 = [8]u32{ next.stack[top], next.stack[top + u32(1)], next.stack[top + u32(2)], next.stack[top + u32(3)], next.stack[top + u32(4)], next.stack[top + u32(5)], next.stack[top + u32(6)], next.stack[top + u32(7)] }
+    parent: [16]u32 = blake3_compress(BLAKE3_IV, blake3_parent_words(left, merged), u64(0), u32(64), BLAKE3_PARENT)
+    merged = blake3_first8(parent)
+    next.stack_len = next.stack_len - u32(1)
+    total = total / u64(2)
+  }
+  at: u32 = next.stack_len * u32(8)
+  k: u32 = 0
+  while k < u32(8) {
+    next.stack[at + k] = merged[k]
+    k = k + u32(1)
+  }
+  next.stack_len = next.stack_len + u32(1)
+  next.chunk_counter = next.chunk_counter + u64(1)
+  next.cv = BLAKE3_IV
+  next.blocks_compressed = u32(0)
+  next.block_len = u32(0)
+  next
+}
+
 update_test_original: (state: Blake3State, src: []u8): Blake3State {
   next: Blake3State = state
   i: u32 = 0
   while i < len(src) {
     next.block_len == u32(64) && next.blocks_compressed == u32(15) ? {
-      next = blake3_push_chunk(next, blake3_chunk_cv(next))
+      next = update_test_push_original(next, blake3_chunk_cv(next))
     } | {
       next.block_len == u32(64) ? { next = update_test_absorb_original(next) }
     }
@@ -384,6 +411,134 @@ main: (): i32 {
 			t.Fatalf("input-view differential returned %d", got)
 		}
 	})
+}
+
+// Pushes are checked through the public update entry point, so this test
+// remains useful without a particular private helper or lowering strategy.
+func TestE2EBlake3UpdatePushTransition(t *testing.T) {
+	var program strings.Builder
+	program.WriteString(`
+update_test_push_seed: (depth: u32, counter: u64): Blake3State {
+  state: Blake3State = update_test_seed(u32(64), u32(15))
+  state.stack_len = depth
+  state.chunk_counter = counter
+  state
+}
+
+update_test_push_case: (depth: u32, counter: u64, expected_depth: u32): Bool {
+  state: Blake3State = update_test_push_seed(depth, counter)
+  input: [3]u8 = [3]u8{ 31, 33, 35 }
+  old: Blake3State = update_test_original(state, view(&input))
+  next: Blake3State = blake3_update(state, view(&input))
+  assert(update_test_same(old, next))
+  assert(next.stack_len == expected_depth && next.chunk_counter == counter + u64(1))
+  assert(next.block_len == u32(3) && next.blocks_compressed == u32(0))
+  update_test_same(state, update_test_push_seed(depth, counter))
+}
+
+update_test_push_alias: (): Bool {
+  state: Blake3State = update_test_push_seed(u32(2), u64(3))
+  block: []u8 = view(&state.block)
+  input: []u8 = subslice(block, u32(58), u32(4))
+  old: Blake3State = update_test_original(state, input)
+  next: Blake3State = blake3_update(state, input)
+  assert(update_test_same(old, next))
+  // The input borrows the original record while push mutates only its copy.
+  // Independently rebuild all fields, including the original stack words.
+  pristine: Blake3State = update_test_push_seed(u32(2), u64(3))
+  assert(update_test_same(state, pristine))
+  assert(next.stack_len == u32(1) && next.chunk_counter == u64(4))
+  assert(next.block_len == u32(4) && next.blocks_compressed == u32(0))
+  i: u32 = 0
+  while i < u32(4) {
+    assert(next.block[i] == pristine.block[u32(58) + i])
+    i = i + u32(1)
+  }
+  true
+}
+
+main: (): i32 {
+`)
+	for _, test := range []struct {
+		depth, expected uint32
+		counter         uint64
+	}{
+		{0, 1, 0}, {0, 1, ^uint64(0)}, // wrapped total is zero, but no stack read
+		{1, 2, 0}, {1, 1, 1}, {2, 1, 3}, {3, 1, 7},
+		{53, 54, 0}, {54, 54, 1}, {54, 1, ^uint64(0)},
+		// Public depths need not describe a reachable hash history. These
+		// u32 products wrap to checked, in-range indices and must not trap.
+		{1 << 29, 1<<29 + 1, 0},
+		{1<<29 + 1, 1<<29 + 1, 1},
+		{1<<29 + 1, 1<<29 + 2, 0},
+	} {
+		fmt.Fprintf(&program, "  assert(update_test_push_case(u32(%d), u64(%d), u32(%d)))\n", test.depth, test.counter, test.expected)
+	}
+	program.WriteString("  assert(update_test_push_alias())\n  42\n}\n")
+	source := blake3UpdateSource(t, program.String())
+	t.Run("c", func(t *testing.T) {
+		if code, abnormal := buildAndRun(t, "blake3_push_diff", source); abnormal || code != 42 {
+			t.Fatalf("push transition differential: code=%d abnormal=%v", code, abnormal)
+		}
+	})
+	t.Run("interpreter", func(t *testing.T) {
+		if got := interpretChecked(t, source); got != 42 {
+			t.Fatalf("push transition differential returned %d", got)
+		}
+	})
+}
+
+func TestE2EBlake3UpdateMalformedDepthTraps(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		depth   uint32
+		counter uint64
+		index   uint32
+	}{
+		{"final-store", 54, 0, 432},
+		{"first-parent-read", 55, 1, 432},
+		{"wrapped-first-read", 1 << 29, 1, 4294967288},
+		{"wrapped-second-read", 1<<29 + 1, 3, 4294967288},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, update := range []string{"update_test_original", "blake3_update"} {
+				t.Run(update, func(t *testing.T) {
+					program := fmt.Sprintf(`
+main: (): i32 {
+  state: Blake3State = update_test_seed(u32(64), u32(15))
+  state.stack_len = u32(%d)
+  state.chunk_counter = u64(%d)
+  input: [1]u8 = [1]u8{ 239 }
+  next: Blake3State = %s(state, view(&input))
+  i32_bits_u32(next.stack_len)
+}
+`, test.depth, test.counter, update)
+					source := blake3UpdateSource(t, program)
+					if code, abnormal := buildAndRun(t, "blake3_depth_trap", source); !abnormal {
+						t.Fatalf("malformed depth did not trap: code=%d", code)
+					}
+					model, err := New().WithSource("blake3_depth_trap.oak", source).Check().Get()
+					if err != nil {
+						t.Fatal(err)
+					}
+					env := object.NewEnvironment()
+					env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
+					if result := evaluator.Eval(model.Tree.Root, env); isEvalError(result) {
+						t.Fatalf("defining the program failed: %s", result.Inspect())
+					}
+					call := parser.New(layout.New(scanner.New("main()"))).ParseProgram()
+					result := evaluator.Eval(call, env)
+					failure, ok := result.(*object.Error)
+					want := fmt.Sprintf("index out of bounds: %d (length: 432)", test.index)
+					// A borrowed implementation may name a view/span instead of
+					// an array. The first failing numeric index/extent is exact.
+					if !ok || (failure.Message != "array "+want && failure.Message != "view "+want && failure.Message != "span "+want) {
+						t.Fatalf("interpreter returned %v, want array/view/span %q", result, want)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestE2EBlake3UpdateMalformedStateTraps(t *testing.T) {
