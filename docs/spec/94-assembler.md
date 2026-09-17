@@ -7078,13 +7078,52 @@ assuming the collected predicates are sound and the value/effect equality
 holds on the machine-returning domain. It is not a formal verification of
 the Go collector or decider. The rule is one-way partial correctness:
 source-trapping inputs do not acquire a result/effect obligation, and it
-does not equate trap kinds or effects before trapping. Summarized loops
-retain the existing coupling contract; their per-iteration trap-domain
-obligations remain open. Architectural exception entry, handler
-non-resumption, and concurrent memory ordering are separate obligations.
+does not equate trap kinds or effects before trapping. Architectural
+exception entry, handler non-resumption, and concurrent memory ordering
+are separate obligations.
 Regressions include unseen and misplaced traps, matching guards, span
 reads/writes, vector returns, SIMD index overflow, and strict-profile
 refusal before ELF or Mach-O emission.
+
+**Summarized-loop trap admission (2026-09-17).** The same rare-trap
+counterexample existed at iteration 1234: the loop summarizer dropped the
+trap branch, then proved the remaining counter transition inductively.
+Machine events now retain path-conditioned header and body trap predicates,
+including dropped body paths; substitution, event merging, symbol-use
+analysis, and term budgets preserve those predicates. Source lowering
+collects separate root, header, and body scopes. A hypothetical trap in a
+nested loop cannot justify an unrelated trap in its parent or outside it.
+
+After selecting the loop coupling, `decideLoopTrapDomains` checks header
+traps even on exiting iterations and body traps only under the source
+continue condition. A machine body trap must imply a collected source
+header or body trap; a header trap must imply a source header trap. Root
+traps are checked separately. A source loop contributes to its enclosing
+scope only its first-iteration trap instantiated at saved entry values and
+exact entry memories, with body traps guarded by source continuation. A
+projection that still mentions this loop's or a descendant's fresh state
+is refused. This permits valid peeled guards but rejects trapping on a
+zero-trip loop or using a later iteration's assertion to justify an early
+trap. Premises use only typed source inputs and
+source reach/ancestor-continue conditions, never machine-returning paths,
+machine reach exclusions, or loop exit facts. This deliberately stronger
+check can leave valid loops as evidence; failure or budget exhaustion is
+not a proof, nor itself a concrete counterexample. The cache namespace is
+advanced again to discard earlier loop admissions.
+
+`Oak.TrapDomainAdmission.admit_loop_iteration` proves this phase rule under
+explicit source-collector soundness assumptions. `admit_loop_prefix` proves
+composition along finite source-safe prefixes under source reachability
+preservation. `first_iteration_trap_sound` supplies the entry-projection
+rule under explicit projection and collector premises. None establishes
+the Go coupling/collector/decider, termination, or an architectural
+exception's non-resumption. Regressions
+cover iteration-1234 traps, exiting-header checks, wrong conditional arms,
+nested scope separation, root traps, memory-only loops, metadata merging,
+and strict ELF/Mach-O refusal; matching source guards still prove.
+The record-span collector also retains an array field's own element bound,
+not just its enclosing span bound. This keeps the page-zeroing affine-index
+and hoisted forms proven without weakening their trap obligations.
 
 Explicit `.oakasm` units now retain their verdicts in `NativeVerdicts`
 alongside compiler-generated bodies. Previously those verdicts were only
@@ -7108,7 +7147,7 @@ on which every guard holds. An assert is therefore a no-op on the Oak
 side of the verifier: the trapping inputs are outside the equivalence on
 both sides, exactly as an element guard's or a divisor's are. The
 theorem decider's reading (a trap obligation to prove impossible) is
-unchanged. This exclusion now requires the independent non-loop admission
+unchanged. This exclusion now requires the independent trap-domain admission
 obligation above; witness agreement alone is insufficient. Proven bodies
 at that historical increment rose to 201 on AArch64 and 179 on RV64; the
 asserting callees that remain trusted do so for their span arguments,

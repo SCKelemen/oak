@@ -5149,8 +5149,8 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
-	// trapDomainTracked collects source traps for the independent,
-	// non-loop machine-trap admission check. Unlike trapsTracked, it
+	// trapDomainTracked collects source traps for the independent
+	// machine-trap admission checks. Unlike trapsTracked, it
 	// retains the assembler lowering's loop and value policies.
 	trapDomainTracked bool
 	// witnessTrapped: in a witness run (concrete), a trap condition held
@@ -5163,8 +5163,8 @@ type oakLowering struct {
 	witnessMemo mapMemo
 	// machineTrap is the asm side's trap condition (pathExecutor.trap):
 	// the inputs on which the machine trapped leave the value/effect
-	// comparison domain. Non-loop proofs must separately justify this
-	// exclusion in verifyTrapDomain; it is not a premise of that check.
+	// comparison domain. Proofs separately justify this exclusion in
+	// verifyTrapDomain or decideLoopTrapDomains; it is not their premise.
 	machineTrap *term
 	// shiftGuardMax: the executor's largest trap bound over the register
 	// count shifts it ran (pathNotes); a variable shift count lowers only
@@ -5790,8 +5790,8 @@ func negatedCmp(c *term) *term {
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
 // never elided; here the decider proves it cannot fire); under the
-// assembler verifier's value/effect lowering it is a no-op. The separate
-// non-loop trap-domain lowering records it to justify excluding machine
+// assembler verifier's value/effect lowering it has no value effect.
+// Trap-domain collection records it to justify excluding machine
 // trap inputs; sampled agreement alone cannot justify that exclusion.
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -9544,6 +9544,9 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
+	// Loop admission needs path-conditioned source traps in the root,
+	// header, and body scopes, not just concrete witness runs.
+	lowering.trapDomainTracked = len(exec.loops) != 0
 	if exec.notes != nil {
 		lowering.shiftGuardMax = exec.notes.shiftGuardMax
 	}
@@ -10636,6 +10639,14 @@ func (lo *oakLowering) recordSpanPlaceOf(e *ast.IndexExpression) (place recordSp
 			return recordSpanPlace{}, true, fmt.Sprintf("%s is not an array field of %s's element", path, root.Value), false
 		}
 		length, elemLeaf := field.length, field.first
+		if lo.concrete != nil || lo.trapDomainTracked {
+			// The array field has its own bound, distinct from the
+			// enclosing record span's length and the flattened index.
+			lo.addTrap(cmpTerm("hs", j, constTerm(uint64(length), 32)))
+			if lo.witnessTrapped {
+				return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s on this input", length, path), false
+			}
+		}
 		if j.kind == termConst && int64(j.value) >= length {
 			return recordSpanPlace{}, true, fmt.Sprintf("an index past the %d elements of %s", length, path), false
 		}

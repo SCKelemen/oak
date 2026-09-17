@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	verdictCacheNamespace     = "verdict-cache-3-trap-domain"
+	verdictCacheNamespace     = "verdict-cache-4-loop-trap-domain"
 	verdictCacheFormatVersion = 2
 )
 

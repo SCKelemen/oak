@@ -532,15 +532,25 @@ argument construction with mutation tests. The pure projection is not a full
 exception record, ESR encoding, BTI/PostDecode execution, exception entry,
 handler model, or proof of the runtime's non-resuming trap contract.
 
-Separately, the native verifier's non-loop trap exclusion now requires a
+Separately, the native verifier's trap exclusion now requires a
 symbolic implication from machine traps to collected source traps, without
 assuming the machine-returning domain. This closes the unsampled-extra-trap
-admission counterexample at `b = 1234`; unproved obligations stay evidence
-and are refused by the strict profile. `Oak.TrapDomainAdmission` proves the
+admission counterexamples at `b = 1234` and loop iteration 1234; unproved
+obligations stay evidence and are refused by the strict profile.
+`Oak.TrapDomainAdmission` proves the
 logical admission rule under explicit collector-soundness and observation
 equality premises, not the Go implementation or Arm exception execution.
-Summarized-loop trap obligations remain open; this gate is not a complete
-source-to-ASL proof or a memory-ordering proof.
+Summarized loops retain separate header/body predicates and root traps:
+header checks apply even on exit, body checks require source continuation,
+and hypothetical nested states do not leak into parent scopes. Valid
+peeled guards use only first-iteration source traps projected at exact
+saved entry values/memories, guarded by source continuation; unknown
+projections fail closed. After coupling, the gate
+uses source-only reach conditions, never machine-return exclusions or loop
+exit facts. Lean proves the phase rule and finite-prefix composition under
+explicit collector/coupling and reachability assumptions; implementation
+soundness and termination remain separate. This conservative gate is not
+a complete source-to-ASL proof or a memory-ordering proof.
 Explicit target-lane `.oakasm` verdicts now participate in that profile and
 its callee-dependency closure; a unit without an Oak fallback remains
 trusted and cannot pass strict admission.
