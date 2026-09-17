@@ -645,6 +645,22 @@ overlapping addresses in a loop body, the destination-passed call writing
 the variable's region the loop also writes), so the machine passes do not
 run on them.
 
+### A constant table read whole (2026-09-17, evening)
+
+`blake3_push_chunk` was trusted for `next.cv = BLAKE3_IV`: the verifier
+read a constant table as a span — `T[k]` on both sides, the asm side's
+load through the table's address — but not as a value, so an identifier
+naming a table in aggregate position was "not an aggregate local", and
+`blake3_update`, calling it in a loop, inherited the verdict. The Oak
+side now reads such an identifier as the array of its element terms
+(`tableValue`, at most sixty-four elements), each the `T[k]` the span
+reading gives, so the copy's leaves match the asm side's loads one for
+one. `push_chunk` moved on to its next reason (a frame load at a
+data-dependent index: the chaining-value stack read at `top + k`), and
+`update` to its own (a result field the destination-passed call writes
+through the callee, which the verifier does not yet count as a store to
+the result area). Both are the next seams on this body.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

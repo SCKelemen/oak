@@ -5852,6 +5852,37 @@ func (lo *oakLowering) valueOf(expr ast.Expression, typ *oakType) (*oakValue, st
 	return lo.aggregateValue(expr, typ)
 }
 
+// tableAggregateLimit bounds the elements a constant table read whole
+// unfolds into.
+const tableAggregateLimit = 64
+
+// tableValue reads a constant table whole, as the array of its elements:
+// `next.cv = BLAKE3_IV` copies eight words, each the element term T[k]
+// the asm side's load through the table's address gives
+// (spanElementTerm), so the aggregate is the copy's value leaf by leaf.
+func (lo *oakLowering) tableValue(ident *ast.Identifier) (*oakValue, string, bool) {
+	name := ident.Value
+	contract, isSpan := lo.spans[name]
+	length := lo.tableLens[name]
+	if !isSpan || length <= 0 {
+		return nil, fmt.Sprintf("%s is not an aggregate local", name), false
+	}
+	if length > tableAggregateLimit {
+		return nil, fmt.Sprintf("the table %s read whole (%d elements)", name, length), false
+	}
+	elem := &oakType{kind: oakScalar, width: contract.elemWidth, signed: contract.signed}
+	out := &oakValue{typ: &oakType{kind: oakArray, elem: elem, length: length}}
+	for k := int64(0); k < length; k++ {
+		read := &ast.IndexExpression{Token: ident.Token, Left: &ast.Identifier{Token: ident.Token, Value: name}, Index: &ast.IntegerLiteral{Token: ident.Token, Value: k}}
+		value, reason, ok := lo.valueOf(read, elem)
+		if !ok {
+			return nil, reason, false
+		}
+		out.elems = append(out.elems, value)
+	}
+	return out, "", true
+}
+
 // placeOf resolves an access chain over aggregate locals: a local, `p.f`,
 // `arr[k]` with a constant index.
 func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
@@ -5872,6 +5903,9 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 	case *ast.Identifier:
 		local, isLocal := lo.locals[e.Value]
 		if !isLocal || local.agg == nil {
+			if read && lo.declaredTables[e.Value] {
+				return lo.tableValue(e)
+			}
 			return nil, fmt.Sprintf("%s is not an aggregate local", e.Value), false
 		}
 		return local.agg, "", true
