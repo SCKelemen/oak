@@ -1355,6 +1355,21 @@ dynamic `PostDecode`/`BranchTo`, fall-through and trap execution remain open;
 no control-flow occurrence, memory-ordering effect, or proof-admission upgrade
 is inferred from these pure results.
 
+The BBM trap word `BRK #1` has the corresponding software-breakpoint seam.
+`Oak.AArch64BreakpointEncoding` proves its field packing and `0xd4200020`;
+generated Sail Lean recovers the immediate and proves the selected exception-
+argument components from supplied EL, EL2-enabled, HCR/MDCR and instruction-
+address values. The 25-bit syndrome is the zero-extended immediate, the
+preferred-return argument is the supplied instruction address (not PC+4), and
+the vector-offset argument is zero. The pure target-EL rule retains EL2/EL3
+and conditionally routes EL0/EL1 to EL2. Whole official source functions and
+their signatures, the exception-record shape, all 65,536 immediate encodings,
+and negative source mutations are checked. This does not reconstruct the
+complete exception record, pack/write ESR, execute BTI/PostDecode or exception
+entry, prove register provenance, or establish non-resumption by a handler.
+The verifier's non-resuming runtime trap contract is not discharged by this
+argument projection.
+
 These seams prove neither access admission nor runtime
 X0/X1/X2/X3/X4/X5/X6/X7 value provenance,
 HCR/VTTBR/VTCR/CNTHCTL/CNTVOFF/SP/ELR/SPSR field validity, desired virtualization

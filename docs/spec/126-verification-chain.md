@@ -522,6 +522,16 @@ regeneration are checked independently of the Go local-encoder cases. Dynamic
 register/PC provenance, `PostDecode`/`BranchTo`, fall-through, trap execution,
 and BBM memory effects are not proved by this slice.
 
+The trailing `BRK #1` has a matching partial seam in
+`Oak.AArch64BreakpointEncoding`: exact field packing and word, generated Sail
+decode, and selected software-breakpoint argument components. Supplied EL2
+stays EL2; the 25-bit syndrome carries immediate one, the supplied instruction
+address is passed unchanged, and vector offset is zero. Go checks every
+16-bit immediate and pins the complete official decoder/dispatch/exception
+argument construction with mutation tests. The pure projection is not a full
+exception record, ESR encoding, BTI/PostDecode execution, exception entry,
+handler model, or proof of the runtime's non-resuming trap contract.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
