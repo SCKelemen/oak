@@ -18,6 +18,29 @@ Optimization should therefore grow as a library of small transforms and planning
 
 ## 0. Status (2026-09-15): Phase A landed
 
+### Table-view admission increment (2026-09-17)
+
+An exact stdlib `grapheme_class` extraction exposed a proof gate rather than
+a new transform opportunity: the cheaper fused/reallocated form existed, but
+the source-side verifier could not declare a local view of its constant table.
+Such read-only views now alias the already-declared symbolic table memory,
+with its exact element width and length. A dedicated declared-table set keeps
+this authority distinct from mutable global-array length metadata; retained
+global declaration provenance does not erase a table's existing identity.
+Derived lengths take precedence over the root table length, including nested
+aliases/subslices. Unknown roots, shadowed values and mutable constructors
+remain outside this addition. The existing checker and semantic verdict remain
+the admission authorities; search and its budgets are unchanged.
+
+The actual ARM64 grapheme lookup now proves inductively and selects a
+45-instruction body (12 in the loop), versus the 49-instruction ungated
+fallback (14 in the loop). This is a static observation, not a speed claim.
+`benchmarks/native/table_views` contains the before/identity/after/C experiment
+and its limitations. `asm/table_views_test.go` checks correct and incorrect
+alias implementations on both ARM64 and RV64; compiler regressions pin the
+actual stdlib proof and native execution. This is translation-validator
+coverage, not a universal formal refinement of the production Go verifier.
+
 The planning substrate of §16 Phase A is implemented on `specification`:
 
 - `opt/` — the target-independent substrate: `Fact`/`Proposition`/

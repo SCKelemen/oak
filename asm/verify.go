@@ -4782,8 +4782,12 @@ type oakLowering struct {
 	// element counts; a table reads as a span (spans holds its contract)
 	// whose length is the constant (declareTables).
 	tableLens map[string]int64
-	locals    map[string]*oakLocal // statement-body locals, in declaration scope
-	concrete  map[string]uint64    // a witness run: parameters are these constants
+	// declaredTables distinguishes read-only table roots from mutable global
+	// arrays, whose lengths also live in tableLens. Tables may additionally
+	// have Globals entries retained for source declaration provenance.
+	declaredTables map[string]bool
+	locals         map[string]*oakLocal // statement-body locals, in declaration scope
+	concrete       map[string]uint64    // a witness run: parameters are these constants
 	// work counts the loop iterations this lowering has run, its inlined
 	// callees' included (loweringWorkBudget): a body whose unrolled loops
 	// inline callees that unroll their own (the BDD apply's, sixty-four
@@ -6459,10 +6463,11 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 // derived), `w: []T = subslice(v, start, n)` an alias of v's root at the
 // offset start (plus v's) of length n, the C helper's check a trap
 // obligation. The local's reads, writes, and `len` translate to the root
-// (asm/derived_spans.go); a view over an owned array stays outside.
+// (asm/derived_spans.go). Aggregate locals use declareView; a read-only
+// view of a declared constant table uses the table's root and exact length.
 func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, bool) {
 	name := s.Name.Value
-	elem, _, ok := spanShape(s.Type)
+	elem, writable, ok := spanShape(s.Type)
 	if !ok {
 		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
 	}
@@ -6501,6 +6506,20 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	}
 	if src, isIdent := s.Value.(*ast.Identifier); isIdent {
 		return bind(src.Value, lo.spanOffset[src.Value], nil)
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall && !writable {
+		// Tables are already symbolic memories on both sides. This only
+		// names an alias; it grants no authority to an arbitrary pointer,
+		// mutable global, or a parameter/local shadowing the table.
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" {
+			src := addressOfOperand(call)
+			count, isTable := lo.tableLens[src]
+			_, isParam := lo.params[src]
+			_, isAlias := lo.spanAlias[src]
+			if isTable && lo.declaredTables[src] && !isParam && !isAlias && count >= 0 && uint64(count) <= mask(32) {
+				return bind(src, nil, constTerm(uint64(count), 32))
+			}
+		}
 	}
 	sub, isSub := subsliceOf(s.Value)
 	if !isSub {
@@ -7877,6 +7896,10 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 			lo.tableLens = map[string]int64{}
 		}
 		lo.tableLens[name] = table.Size / table.Elem
+		if lo.declaredTables == nil {
+			lo.declaredTables = map[string]bool{}
+		}
+		lo.declaredTables[name] = true
 	}
 }
 
@@ -7952,6 +7975,9 @@ func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
 	if !isIdent || !argIsIdent || fn.Value != "len" {
 		return 0, false
+	}
+	if lo.spanLen[arg.Value] != nil {
+		return 0, false // the derived extent, not the whole root table
 	}
 	length, isTable := lo.tableLens[lo.spanRoot(arg.Value)]
 	return length, isTable
