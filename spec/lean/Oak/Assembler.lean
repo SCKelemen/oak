@@ -241,6 +241,57 @@ theorem shifted_index_element (i len k j : Nat) (hslack : i * 2 ^ k + 2 ^ k ≤ 
     i * 2 ^ k + j < len := by
   omega
 
+/-! ### The divided bound (`udiv`, `mul`; docs/spec/94-assembler.md §7)
+
+A length divided by a constant that is not a power of two — `entries =
+len(table) / 3` before a binary search over a three-word table — and the
+index multiplied back by it. The shift rules above are these with the
+divisor `2 ^ s`; `checker.resolveUpper` multiplies the divisors along a
+chain where it summed the shifts. -/
+
+/-- An upper chain composes through arbitrary divisors: `r ≤ s / a` and
+    `s ≤ t / b` give `r ≤ t / (b * a)` (`checker.resolveUpper`). Generalizes
+    `upper_chain`, whose divisors are `2 ^ a` and `2 ^ b`. -/
+theorem upper_chain_div (r s t a b : Nat) (hr : r ≤ s / a) (hs : s ≤ t / b) :
+    r ≤ t / (b * a) := by
+  have h1 : s / a ≤ (t / b) / a := Nat.div_le_div_right hs
+  rw [Nat.div_div_eq_div_mul] at h1
+  omega
+
+/-- **The divided bound** (`udiv wE, wS, wD` with `wD` a known constant `d`):
+    a source already at most `t / a` leaves the quotient at most `t / (a * d)`,
+    which is the upper fact the checker records on the quotient. With no fact
+    on the source, `a = 1`. -/
+theorem divided_upper (s t a d : Nat) (hs : s ≤ t / a) : s / d ≤ t / (a * d) := by
+  have h1 : s / d ≤ (t / a) / d := Nat.div_le_div_right hs
+  rw [Nat.div_div_eq_div_mul] at h1
+  omega
+
+/-- **The scaled index** (`mul wD, wI, wK` with `wK` a known constant `k`):
+    under `wI < wB`, `wB ≤ len / d` and `k ≤ d`, the `k` elements from
+    `wI · k` lie inside the span — the slack fact `wD + k ≤ len`. Generalizes
+    `shifted_index_slack`, whose `k` and `d` are `2 ^ k` and `2 ^ s`. -/
+theorem scaled_index_slack (i b len k d : Nat) (hi : i < b) (hb : b ≤ len / d) (hk : k ≤ d) :
+    i * k + k ≤ len := by
+  have h1 : (i + 1) * k ≤ b * k := Nat.mul_le_mul_right _ hi
+  have h2 : b * k ≤ b * d := Nat.mul_le_mul_left b hk
+  have h3 : b * d ≤ (len / d) * d := Nat.mul_le_mul_right _ hb
+  have h4 : (len / d) * d ≤ len := Nat.div_mul_le_self len d
+  have h5 : (i + 1) * k = i * k + k := by rw [Nat.add_mul, Nat.one_mul]
+  omega
+
+/-- A slack fact carried through `add wJ, wD, #j` with `j < k` admits the
+    element `wD + j` — `table[mid * 3 + 1]` under `mid < len / 3`. -/
+theorem scaled_index_element (i len k j : Nat) (hslack : i * k + k ≤ len) (hj : j < k) :
+    i * k + j < len := by
+  omega
+
+/-- The same slack fact carried through a wider index: an access of `w`
+    elements at `wD + j` stays inside when `j + w ≤ k`. -/
+theorem scaled_index_run (i len k j w : Nat) (hslack : i * k + k ≤ len) (hj : j + w ≤ k) :
+    i * k + j + w ≤ len := by
+  omega
+
 /-! ### If-conversion (nativegen/select.go, docs/spec/94-assembler.md §9)
 
 A conditional chain over one comparison lowers as one compare and a select

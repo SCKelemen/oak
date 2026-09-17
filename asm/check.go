@@ -416,15 +416,15 @@ func reconcileIdx(constState *guardState, constFact idxFact, regState *guardStat
 	return regFact, true
 }
 
-// holdsUpper reports whether the state proves value(reg) <= value(u.ref)
-// >> u.shift: it states the fact, the two registers hold constants in
-// that relation, or both hold one span's length (reg = ref).
+// holdsUpper reports whether the state proves value(reg) <=
+// value(u.ref) / u.div: it states the fact, the two registers hold
+// constants in that relation, or both hold one span's length (reg = ref).
 func (gs *guardState) holdsUpper(reg int, u upperFact) bool {
 	if have, ok := gs.upper[reg]; ok && have == u {
 		return true
 	}
 	if k, ok := gs.consts[reg]; ok {
-		if kr, okr := gs.consts[u.ref]; okr && k >= 0 && kr >= 0 && k <= kr>>u.shift {
+		if kr, okr := gs.consts[u.ref]; okr && k >= 0 && kr >= 0 && k <= kr/u.divisor() {
 			return true
 		}
 	}
@@ -2336,6 +2336,13 @@ func (c *checker) instruction(instr Instruction) bool {
 					}
 				} else if f, has := c.idxFacts[src.Num]; has && f.slack && f.bound > k.Value {
 					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true, need: f.need}
+				} else if has && instr.Mnemonic == "add" && f.boundReg < 0 && !f.slack && f.bound > 0 && f.bound <= maxUpperDiv-k.Value {
+					// A constant bound raised by the offset: wI < B leaves
+					// wI + j < B + j, the second and third words of a table
+					// entry read from the scaled index
+					// (Oak.Assembler.scaled_index_element). The sum is below
+					// 2^31, so the 32-bit add does not wrap.
+					carried = &idxFact{boundReg: -1, bound: f.bound + k.Value}
 				}
 				if instr.Mnemonic == "add" && dest.Num != src.Num {
 					sum = &sumFact{idx: src.Num, k: k.Value}
@@ -2775,7 +2782,10 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 // `movz wK, #c` / `mov wK, #c` records the constant; `add xD, xS, #imm`
 // over the source's saved region of n bytes with 0 <= imm <= n makes xD
 // its n-imm byte tail. Indexed ADD/UMADDL addresses are derived separately
-// by elementBeforeWrite, before any input facts can be invalidated.
+// by elementBeforeWrite, before any input facts can be invalidated. It also
+// folds `udiv` of two known constants, which is how the entry count of a
+// constant table reaches the compare that guards the search
+// (docs/spec/94-assembler.md §7, "the divided bound").
 func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion region, hadRegion bool) {
 	switch instr.Mnemonic {
 	case "movz", "mov":
@@ -2820,6 +2830,24 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 					}
 				}
 			}
+		}
+	case "udiv":
+		// A quotient of two known constants is a known constant: the
+		// generator spells `len(table) / 3` as `movz` of the length, `movz`
+		// of the divisor, and `udiv`, and the entry count it computes is
+		// what the search's index is then guarded below.
+		if dest.Class != ClassW || len(instr.Operands) != 3 {
+			return
+		}
+		numerator, okN := instr.Operands[1].(Register)
+		divisor, okD := instr.Operands[2].(Register)
+		if !okN || !okD || numerator.Class != ClassW || divisor.Class != ClassW {
+			return
+		}
+		n, knownN := c.constFacts[numerator.Num]
+		d, knownD := c.constFacts[divisor.Num]
+		if knownN && knownD && n >= 0 && d >= 1 {
+			c.constFacts[dest.Num] = n / d
 		}
 	}
 }
