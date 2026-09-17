@@ -1162,6 +1162,10 @@ type linearForm struct {
 	width    int
 	coeffs   map[string]uint64
 	constant uint64
+	// atoms is the term behind each name in coeffs — the parameter or the
+	// memory read — so a form can be spelled back as one canonical term
+	// (canonicalLinear).
+	atoms map[string]*term
 }
 
 // linearAt computes the form modulo 2^w. A mask by at least w bits is
@@ -1187,7 +1191,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 	m := mask(w)
 	switch t.kind {
 	case termParam:
-		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}, atoms: map[string]*term{t.name: t}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
 	case termSelect:
@@ -1201,7 +1205,8 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if t.width > w {
 			return nil
 		}
-		return &linearForm{width: w, coeffs: map[string]uint64{t.selectAtom(): 1}}
+		atom := t.selectAtom()
+		return &linearForm{width: w, coeffs: map[string]uint64{atom: 1}, atoms: map[string]*term{atom: t}}
 	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
@@ -1243,7 +1248,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if l == nil || r == nil {
 			return nil
 		}
-		out := &linearForm{width: w, coeffs: map[string]uint64{}}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, atoms: mergeAtoms(l, r)}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = c
 		}
@@ -1276,7 +1281,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if l == nil {
 			return nil
 		}
-		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor.value) & m}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor.value) & m, atoms: l.atoms}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = (c * factor.value) & m
 		}
@@ -1290,7 +1295,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 			return nil
 		}
 		factor := uint64(1) << (t.right.value % uint64(t.width))
-		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor) & m}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor) & m, atoms: l.atoms}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = (c * factor) & m
 		}
@@ -1398,6 +1403,21 @@ func (t *term) selectAtom() string {
 		}
 	}
 	return t.String()
+}
+
+// mergeAtoms joins the atoms of two forms (the same name is the same term
+// up to spelling; either spelling serves, canonicalLinear respells it).
+func mergeAtoms(l, r *linearForm) map[string]*term {
+	out := make(map[string]*term, len(l.atoms)+len(r.atoms))
+	for name, t := range l.atoms {
+		out[name] = t
+	}
+	for name, t := range r.atoms {
+		if _, seen := out[name]; !seen {
+			out[name] = t
+		}
+	}
+	return out
 }
 
 func (f *linearForm) trim() *linearForm {
