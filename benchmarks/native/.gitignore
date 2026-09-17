@@ -6,6 +6,8 @@ utf8_valid_native.o
 bench_map_vector
 bench_map_scalar
 map_add_vector.c
+map_add_c.c
+bench_map_c
 map_add_vector.o
 map_add_scalar.c
 map_add_scalar.o

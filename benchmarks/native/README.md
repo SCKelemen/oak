@@ -129,6 +129,58 @@ proven at the bit level. What remained then was the slot traffic of the
 five vector locals the register file did not hold. That is gone; see the
 next section for what is left, which is not it.
 
+## Map vectorization against the C backend, 2026-09-17
+
+`run_map.sh` compared the vectorized maps with the scalar loops the
+search keeps when `vectorize-maps` is withheld, which says the transform
+works but not whether it reaches what clang makes of the same Oak. The
+script now builds a third row through the C backend. All three in one
+invocation, 2^20 elements, best of seven rounds of two hundred calls:
+
+| kernel | `vectorize-maps` | C backend | scalar loops |
+| --- | ---: | ---: | ---: |
+| `add_k` | 0.092 ns/element | 0.080 | 0.413 |
+| `bump` | 0.103 | 0.090 | 0.410 |
+| `fmadd_k` | 0.105 | 0.085 | 0.413 |
+| `sum_ab` | 0.150 | 0.152 | 0.425 |
+| `xor_mask` | 0.022 ns/byte | 0.023 | 0.412 |
+
+Four to five times over the scalar loops, parity with the C backend on
+the two-span zip and the byte mask, and fifteen to twenty-four percent
+behind it on the three single-span maps. Runs on this machine move by
+that much between invocations, so the three-row shape matters more than
+any one number: read it as parity on two and a real gap on three.
+
+Where the gap is, in `add_k`:
+
+```
+clang                                 native
+  ldp  q1, q2, [x10, #-0x20]            add  x10, x2, w5, uxtw #2
+  ldp  q3, q4, [x10], #0x40             ldr  q16, [x10]
+  add.4s v1, v1, v0                     add  x9,  x0, w5, uxtw #2
+  add.4s v2, v2, v0                     add.4s v16, v16, v8
+  add.4s v3, v3, v0                     str  q16, [x9]
+  add.4s v4, v4, v0                     add  w9,  w5, #0x4
+                                        add  x10, x2, w9, uxtw #2
+                                        ldr  q16, [x10]
+                                        ...
+```
+
+Two things the native form does not do. It forms an address per access —
+an index add and an address add for every load and every store — where
+one base and an immediate offset would serve, which is what the
+`vector-blocks` transform exists for and it reports no site here. And it
+has no paired vector load: clang moves 64 bytes in two `ldp q` with the
+pointer advanced by the post-index, where the native form issues four
+loads and four address computations. `ldp` is modeled for X and W
+registers only (`asm/arm64.go`), so the pair form is a seam change —
+the instruction, its semantics, and the checker's memory rule — not a
+lowering one.
+
+At 2^20 elements these loops are close to memory-bound, which is why
+four times the instructions costs only a fifth of the time. The place to
+measure either fix is an L1-resident size.
+
 ## Where the validator's last 1.27x is, 2026-09-17
 
 Re-measured on the same 64 MB input after the increments since:
