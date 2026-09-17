@@ -68,6 +68,7 @@ import Oak.Uninterpreted
 import Oak.IntegerDivision
 import Oak.StrengthReduction
 import Oak.KnownBits
+import Oak.BitwiseCanonical
 import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles

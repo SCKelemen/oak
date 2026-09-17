@@ -10548,7 +10548,8 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
 		case termBinary:
-			if t.op == "mul" && left.width == t.width {
+			out = canonicalBitwise(t, left, right)
+			if out == nil && t.op == "mul" && left.width == t.width {
 				switch {
 				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))

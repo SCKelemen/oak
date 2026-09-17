@@ -561,6 +561,27 @@ the night's changes) `blake3` measures 5.85 ms/op against the C
 backend's 3.48 — 1.68×, the 2026-09-14 ratio again. The commit that
 cost the factor of two in between was not isolated.
 
+**BLAKE3 compression equivalence (2026-09-17).** The selected standard-library
+`hash__blake3_ucompress` now proves all eight returned 64-bit chunks by structural
+equality, at the ordinary verification budget. The comparison canonicalizer
+spells fixed 32/64-bit rotates as shift-and-OR, recovers a packed high word only
+under exact width/count/low-bit bounds, and removes zero-count shifts and
+repeated identical masks. This avoids bit-blasting the entire seven-round hash.
+The selected companion object is byte-for-byte identical before and after this
+verifier change: 330 instructions by the optimization report's count, 144
+stack-relative memory instructions, and a 208-byte frame. No runtime speedup is
+claimed. `TestNativeBlake3CompressionProven` uses the actual library body and
+refutes a changed rotate; `TestE2ENativeBlake3CompressionBoundaries` compares the
+compressor-native path and C against the existing reference at thirteen input
+lengths from 0 to 5000 bytes, including block/chunk/tree boundaries.
+
+`Oak.BitwiseCanonical` proves the normalization algebra, not a refinement of
+the Go canonicalizer or a complete source-to-Arm-ASL execution theorem. The
+surrounding hash API is not claimed fully native or proven, and memory-effect
+admission, ordering/custody requirements, and the downstream compiler pin are
+unchanged. Repeated state traffic and physical message permutations remain
+performance work.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

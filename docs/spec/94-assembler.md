@@ -368,6 +368,23 @@ verification of straight-line bodies against `Oak.Intrinsics`.
 
 ## 8. Semantic verification of asm bodies (seven increments implemented)
 
+**Fixed bitwise normalization (2026-09-17).** Before structural comparison,
+`asm/canonical_bitwise.go` gives fixed 32/64-bit rotates the Oak shift-and-OR
+spelling, folds same-width shifts whose evaluator-normalized count is zero,
+and removes repeated identical constant masks at the same width. It also
+normalizes `((lo | (hi << k)) >> k)` (either OR order) to
+`hi & mask(w-k)` only when all operation/operand widths agree, both constant
+counts are exactly the same, `0 < k < w`, and the conservative significant-bit
+bound proves that `lo` fits below bit `k`. The final mask is omitted only when
+`hi` also fits; a declared-wide input retains it. Shared subterms remain shared.
+These exact identities let the native standard-library BLAKE3 compressor prove
+all eight result chunks structurally, without changing its selected assembly
+or increasing decision budgets. A legal but wrong rotate is still refuted.
+`Oak.BitwiseCanonical` proves the underlying bitvector algebra, including the
+explicit distinction between evaluator-modulo counts and Lean's raw shifts;
+it does not refine the Go implementation or establish an end-to-end ASL path.
+No checker, memory-effect, ordering, or authority admission is widened.
+
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
 verifier and labels its verdict — **proven** when both sides normalize to
