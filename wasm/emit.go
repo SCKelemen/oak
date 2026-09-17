@@ -246,6 +246,15 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	loop, structuredLoop := f.matchLoop()
 	diamond, structuredDiamond := f.matchDiamond()
 	dispatch := !direct && !structuredLoop && !structuredDiamond
+	var forward []optir.BlockID
+	if dispatch && len(f.cfg.Blocks) <= maxForwardBlocks {
+		var err error
+		forward, err = optir.AcyclicOrder(f.cfg)
+		if err != nil {
+			return nil, err
+		}
+		dispatch = len(forward) == 0
+	}
 	extra := 0
 	if dispatch {
 		extra = 1
@@ -286,6 +295,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	}
 	if structuredDiamond {
 		if err := f.diamondBody(&b, diamond, functions); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	if len(forward) != 0 {
+		if err := f.forwardBody(&b, forward, functions); err != nil {
 			return nil, err
 		}
 		return b, nil

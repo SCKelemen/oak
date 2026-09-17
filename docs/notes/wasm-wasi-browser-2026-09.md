@@ -189,7 +189,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial direct returning blocks, four-block loops and conditionals; executable baseline/size gates and preliminary warmed V8 sum/helper-call timings. General structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, four-block loops/conditionals and bounded general acyclic CFGs; executable baseline/size gates and preliminary warmed V8 sum/helper-call timings. General loop structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -283,3 +283,18 @@ noisy run's 0.073 ratio is also retained in the [raw samples](../../benchmarks/w
 This remains a microbenchmark, not general browser performance evidence. The
 encoding recipe is v5, scalar/check profiles remain v1, and semantic translation
 verification is still open.
+
+Forward-CFG increment (2026-09-17): nested/sequential conditionals and arbitrary
+acyclic joins now use forward labels rather than the dispatcher, up to 127
+blocks. Shared `optir.AcyclicOrder` supplies a deterministic topology schedule;
+Wasm-specific scope/branch lowering emits each block once without changing its
+operations. Cycles/deeper graphs keep dispatch, and the existing compact special
+cases retain their bytes. No artifact per block or new proof authority is added.
+Nested/serial fixtures shrink by 86–88 bytes and 48 instructions; three local
+V8 nested-helper measurements give median new/old time ratios of 0.387–0.438.
+The [samples and caveats](../../benchmarks/wasm/README.md#acyclic-forward-cfgs)
+are retained. A nested-call test also fixed shared structured-memory metadata
+ordering: exact site sorting now precedes the unchanged identity/authority
+comparison. Encoding is v6, scalar/check profiles remain v1, and source-to-bytes
+verification remains open. Next control-flow work is composition with general
+loops, not another whole-function diamond shape.

@@ -58,3 +58,30 @@ instructions each. The complete timed module shrinks from 327 to 258 bytes;
 its code-size delta also includes a body-length LEB change. The tests retain
 untaken traps, short-circuit evaluation, Unit calls and merge computations;
 neither faster execution nor smaller bytes grant a formal translation verdict.
+
+## Acyclic forward CFGs
+
+`compiler/wasm_forward_test.go` retains dispatcher bytes from `65477201` for
+nested/sequential conditionals and a loop calling a nested conditional helper.
+The caller loop is structured in both versions. Static fixture gates show
+253→167 bytes for the nested function, 248→160 for the sequential function,
+and 421→335 for the complete kernel. Each loses 48 Wasm instructions.
+
+```sh
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
+  go test ./compiler -run '^TestWasmForwardTiming$' -count=3 -v
+```
+
+The timing protocol is unchanged: fresh engine per test, both lanes warmed,
+seven alternating samples, eight calls of approximately one million iterations
+per sample, results checked against a wrapping-u32 oracle. Compilation and
+instantiation are excluded. [All three local samples](forward-cfg-2026-09-17.json)
+show median new/old ratios of 0.387–0.438. This remains a small Deno/V8 kernel on
+a shared Darwin/arm64 host, not a Chrome measurement or application-wide claim.
+Normal CI checks exact bytes/instructions and execution, not elapsed time.
+
+Generated CFG tests cover another 2,304 input pairs across 64 graphs, including
+shared joins and early returns. Depth-limit, lazy trapping calls, Unit results,
+signed overflow and Bool guards are tested separately. The extension remains
+untrusted lowering with independent byte validation, not formal source-to-bytes
+verification.

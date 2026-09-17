@@ -81,8 +81,9 @@ The emitter checks CFG/SSA structure and the existing closed scalar operation
 typing rules, applies profile limits, and emits deterministic type/function/
 export/code sections. A single-block CFG ending in return emits directly,
 without a program-counter local or dispatch loop. The four-block loop and
-conditional shapes below also emit directly; other accepted CFGs retain the
-dispatch-loop baseline. Edge values are pushed before any phi local is
+conditional shapes below also emit directly. Other acyclic CFGs of at most 127
+blocks use forward labels; remaining CFGs retain the dispatch-loop baseline.
+Edge values are pushed before any phi local is
 overwritten. These are bounded lowering improvements, not a mature
 throughput-optimized backend. Shape recognition stays inside versioned
 materialization; blocks do not become separate artifact-DAG nodes. Lookup,
@@ -99,7 +100,7 @@ Bool argument checks remain before the body, including for unused arguments;
 Unit results do not suppress calls or traps. Returning a parameter does not skip
 preceding operations. The function's final `end` returns its declared result.
 
-The encoding recipe is now `oak.wasm.encode.v5`; scalar/check profiles remain
+The encoding recipe is now `oak.wasm.encode.v6`; scalar/check profiles remain
 v1 because neither the accepted vocabulary nor the byte-validation rules
 changed. Independent final-byte admission is unchanged, and translation
 verification remains false.
@@ -183,7 +184,8 @@ optimization-candidate admission and carries no new proof authority.
 Tests cover retained dispatcher binaries versus reference results, both branch
 polarities, shuffled blocks, multiple arm/join parameters, mixed i32/i64 locals,
 Bool guards (including unused arguments), Unit calls, short-circuit operators,
-condition/arm/merge traps, constant selectors and nested-conditional fallback.
+condition/arm/merge traps, constant selectors and nested conditionals (now using
+the general acyclic path below).
 
 | Conditional fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
@@ -198,6 +200,51 @@ of 0.073; three repeated processes measured 0.134–0.136. [All raw samples and 
 method](../../benchmarks/wasm/README.md#four-block-conditionals) are retained.
 This single-kernel result is not a general browser/application speed claim, a
 CI timing threshold or a formal translation proof.
+
+### Acyclic forward-CFG lowering
+
+Beyond the compact special cases, the emitter now handles arbitrary acyclic
+CFGs with forward Wasm labels, including nested/sequential branches, shared
+cross-joins, early returns and duplicate destinations with different arguments.
+The target-independent `optir.AcyclicOrder` validates the CFG, reuses iterative
+reverse postorder, and accepts an order only if every edge goes forward. Cycles
+return no schedule; malformed CFGs return an error. Numeric block IDs and slice
+order have no semantic significance. No constant-reachability pruning occurs.
+
+Wasm nests empty `block` scopes around the scheduled blocks, emits each source
+block once, and branches out to its destination label. Only unconditional
+adjacent edges fall through. Conditional edges keep lazy `if/else` transfers;
+all incoming phi values are captured before any destination local is written.
+Calls, dead-result traps, signed division overflow behavior, and all entry Bool
+guards remain. A 127-block cap reserves the byte validator's 128 control frames
+for forward labels, the function, and an internal `if`. Larger accepted CFGs and
+unmatched loops keep dispatch. Existing direct/loop/diamond fixtures are unchanged.
+
+This is generic bounded lowering, not a new optimization candidate or DAG node
+per block. The versioned materializer consumes checked raw CFGs and still gates
+actual bytes with independent admission. It neither consumes optimized OptIR
+nor grants formal translation verification.
+
+| Forward fixture | Module bytes, before → after | Wasm instructions, before → after |
+| --- | ---: | ---: |
+| nested conditionals | 253 → 167 | 114 → 66 |
+| sequential i64 conditionals | 248 → 160 | 112 → 64 |
+| loop plus nested conditional helper | 421 → 335 | 174 → 126 |
+
+Tests execute retained pre-change bytes and current output against reference
+results. Another 64 generated graphs exercise 2,304 input pairs with shared
+joins, edge arguments, early returns, inverted polarity and shuffled blocks.
+Depth-boundary tests execute both the 127-block forward path and 128-block
+fallback, including unused trapping signed division at maximum nesting.
+Nested Unit calls also exposed a shared projection bug: structured DFS collected
+memory metadata in a different order from CFG scanning. The projector now sorts
+metadata by exact operation site before the unchanged authority comparison; it
+does not move operations or weaken identity/effect checks.
+
+Three local warmed Deno/V8 runs of the nested-helper kernel measured median
+new/old execution ratios of 0.387–0.438. The caller loop is structured in both
+versions. [Raw samples and method](../../benchmarks/wasm/README.md#acyclic-forward-cfgs)
+are retained; this is not a representative browser performance claim.
 
 ### Execution and proof coverage
 

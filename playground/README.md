@@ -22,8 +22,8 @@ Zero divisors trap; signed overflow preserves Oak's wrapping result. The page
 requires matching v1 profile/validator reports. Rebuild the compiler assets and
 reload the page together after updating; stale v0 reports are not accepted.
 
-Single returning blocks, simple four-block loops, and four-block conditionals
-with a returning join omit the dispatcher and program-counter local; other CFGs
+Single returning blocks, simple four-block loops/conditionals, and acyclic CFGs
+of up to 127 blocks omit the dispatcher and program-counter local; other CFGs
 keep the dispatch baseline. See the
 [measured fixture sizes](../docs/spec/91-wasm.md#four-block-conditionals-with-a-join) and
 [preliminary engine timings](../benchmarks/wasm/README.md). This does not reduce
