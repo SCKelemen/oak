@@ -530,7 +530,11 @@ to the lowering — `page_size - u64(1)`, `^(page_size - u64(1))`,
 run-time value since fixed-width arithmetic wraps (`20-types.md` §11.1) —
 so the page walkers' offset and frame masks are one `and` with a logical
 immediate rather than the three or four instructions that built the mask
-(`compiler/e2e_native_constant_fold_test.go`).
+(`compiler/e2e_native_constant_fold_test.go`). A plain constructor over a
+constant — `u8(0)`, `u8(1)`, `u16(limit)` — is the constant at the target
+width, materialized once and normalized by construction, so no `and wN,
+wN, #255` follows it (`compiler/e2e_native_constant_conversion_test.go`);
+the checker admits the constructor only where the value fits.
 Transforms marked verifier-gated are set aside when equivalence is not judged,
 at worst selecting the checked identity lowering.
 

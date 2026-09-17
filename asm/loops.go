@@ -4829,7 +4829,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					premise = binaryTerm("and", premise, pins)
 				}
 			}
-			if equal, decided := spanEqualByCases(fn.Name, name, premise, oak, machine); decided {
+			if equal, decided := spanEqualByCases(fn.Name, name, premise, oak, machine, implies); decided {
 				return equal, true
 			}
 			if equal, decided := implies(premise, oak, machine); decided {
