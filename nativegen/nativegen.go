@@ -4309,7 +4309,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		if err != nil {
 			return err
 		}
-		arr := g.allocArray(elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		dst, _ := g.arrayAsRecord(arr)
 		if from.layout != dst.layout {
 			return unsupported("an array local %s initialized from a %s", s.Name.Value, from.layout.name)
@@ -4338,7 +4338,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		return g.declareScalarArray(s, elem, length, literal)
 	}
 	if s.Value == nil {
-		arr := g.declareArray(s.Name.Value, elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		zero, err := g.alloc(scalars["u64"])
 		if err != nil {
 			return err
@@ -4348,12 +4348,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		words := (bytes + 7) / 8
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.zeroPair(zero, g.slotMem(arr.offset+8*w))
+				g.zeroPair(zero, g.memOf(arr.loc().plus(8*w)))
 			} else {
-				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
+				g.emit("str", xr(zero), g.memOf(arr.loc().plus(8*w)))
 			}
 		}
 		g.release(zero)
+		g.bindArray(s.Name.Value, arr)
 		return nil
 	}
 	literal, isLiteral := s.Value.(*ast.ArrayLiteral)
@@ -4365,13 +4366,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	}
 	// The elements evaluate one at a time into storage reserved before the
 	// name is bound (an initializer never sees the array it fills).
-	arr := g.allocArray(elem, length)
+	arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 	for i, element := range literal.Elements {
 		r, err := g.expr(element, &elem)
 		if err != nil {
 			return err
 		}
-		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
+		g.emit(storeOf(elem), reg(r, elem), g.memOf(arr.loc().plus(int64(i)*int64(elem.bits/8))))
 		g.release(r)
 	}
 	g.bindArray(s.Name.Value, arr)
@@ -4512,11 +4513,12 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.promoteFields(name, rec)
 }
 
-// returnSlotLocal names the record local a function builds in its result
-// area: the body's tail is the bare name of a local declared once, at the
-// body's top level, of the result type, not from a literal (a literal
-// fills frame slots), and whose address is never taken — the local then
-// is the area the caller passed in x8, and the return copies nothing.
+// returnSlotLocal selects a record or array local for the result area:
+// the body's tail is its bare name, declared once at the body's top level
+// with the result type, and its address is never taken. Record literals
+// are excluded because their initializer fills frame storage; array
+// literals remain candidates under arrayDeclarationStorage's additional
+// type, extent, and whole-assignment guards.
 func returnSlotLocal(fn *ast.FunctionStatement) string {
 	block, isBlock := fn.Body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {

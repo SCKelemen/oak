@@ -5635,6 +5635,21 @@ counts "N rotation(s) lowered to ror"). The RV64 lane keeps the shifts
 (`rori` is Zbb, outside its base contract). SHA-256's compression has six
 rotations per round: the saving is forty-two instructions a round, and
 the trap guards leave the loop with them.
+
+The verifier canonicalizes a constant `ror` back to this exact source
+spelling before comparing terms (`asm/rotate_canonical_test.go`). This
+entry requires 32- or 64-bit operations and operands of that same width.
+The integrated `canonicalBitwise` also handles zero/wrapped constant
+counts under `Oak.BitwiseCanonical`'s modulo-width laws; symbolic counts
+and mixed-width terms do not enter it. There is no change to proof
+budgets, decision order, or verdict authority. Independently
+parsed one- and seven-quarter-round integer fixtures now prove by
+structural equality instead of exhausting the bit-level budget; an
+incorrect rotation is still refuted. This is a verifier-time improvement,
+not a new machine optimization. The isolated rotate experiment predates
+the fuller BLAKE3 normalization described below. Timings and scope:
+`benchmarks/native/results/rotate-verifier-2026-09-17.json`.
+
 **Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
 `spec/lean/Oak/Forwarding.lean`).** The generator keeps, per frame slot
 addressed from `sp`, the integer register whose value the slot holds: a
@@ -5701,6 +5716,36 @@ result stored into existing storage, `next.h = f(next.h, …)`, whose
 target may alias an argument passed in place — the temp stays; a callee
 with a writable span parameter; a parameter the callee passes to its own
 recursive call.
+
+The named-local result-area rule also admits integer arrays on AArch64
+(`nativegen/array_result.go`, 2026-09-17). The local must have the exact
+indirect-result layout, `u32/i32/u64/i64` elements, and an extent above
+16 and at most 4080 bytes, divisible by eight. Zero, literal, and copied
+initializers write through the array's actual base; the name is bound
+only after initialization. Exact eight-byte extents keep zeroing from
+writing frame padding beyond the caller's result buffer. Any whole-array
+assignment, including in a nested arm or loop, keeps the frame path so
+the existing in-place permutation lowering is not disabled. Element
+stores remain eligible. Parameters, address-taken locals, nonmatching
+layouts, narrow/float arrays and the RV64 lane keep their previous paths.
+
+The caller's existing by-value snapshot rules are unchanged: assigning
+`words = copy_words(words)` still receives the call into distinct storage
+before overwriting `words`. External callers must obey the same result
+area/input non-aliasing ABI contract as for returned records. Regression
+fixtures require both direct and selected bodies to be proven, including
+a partial result write, a real native call, and a later result read/write
+through the parked result pointer. The array-storage change itself does
+not promote evidence grades; this is not a new
+universal implementation-refinement theorem. The existing
+`Oak.BoundaryCopies.build_in_place` is the content/location model law.
+
+Integrated with the bitwise normalization, the real BLAKE3 compression
+body using this storage is proven for all eight result chunks; the
+wrong-rotate mutant is refuted (`TestNativeBlake3CompressionProven`).
+This does not extend the claim to the surrounding hash API or final
+linked executable.
+
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array

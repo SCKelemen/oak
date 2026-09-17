@@ -582,6 +582,75 @@ admission, ordering/custody requirements, and the downstream compiler pin are
 unchanged. Repeated state traffic and physical message permutations remain
 performance work.
 
+**Exact rotate normalization in the verifier (2026-09-17, baseline
+`40558540`).** A constant 32/64-bit machine rotate now canonicalizes to
+the source's two shifts and or, under the existing
+`Oak.AssemblerSemantics.ror_spelling` law. There is no reassociation or
+numeric relaxation, no raised budget, and no reordered proof stage.
+Independent source/assembly quarter-round fixtures change from witnessed
+to proven by structural equality; a wrong rotate count still refutes.
+
+| Scalar quarter rounds | Before, median Verify time | After | Verdict |
+| --- | ---: | ---: | --- |
+| 1 | 653 ms | 1.64 ms | witnessed → proven |
+| 7 | 706 ms | 9.08 ms | witnessed → proven |
+
+Three one-iteration Go benchmark samples per fixture, parsing outside the
+timer, same base budget. Before/after groups were not interleaved and host
+load/core placement were uncontrolled. Allocation per verification drops
+from roughly 1.34 GB to 0.44/0.70 MB respectively because the whole-word
+bit-level fallback is avoided. These are **verification costs**, not
+application speedups. Full BLAKE3 compression was still witnessed in this
+isolated experiment. The later `def4003e` normalization above supersedes
+its narrower rotate rule; the independent fixtures/benchmark are retained.
+The byte-exact baseline
+overlay, source hashes, protocol, proof scope, and raw benchmark output are
+recorded in
+[`rotate-verifier-2026-09-17.json`](results/rotate-verifier-2026-09-17.json).
+
+**Returned arrays built in the result area (2026-09-17, baseline
+`40558540`).** Eligible integer-array locals now use the caller's result
+buffer directly, avoiding a separate frame array and its final copy.
+Whole-array replacements remain frame-backed, preserving the permutation
+optimization above; caller self-assignment still uses snapshot storage.
+See `docs/spec/94-assembler.md` §9, "Copies at the boundary", for guards
+and proof scope.
+
+Only `hash__blake3_ucompress` was native in these comparisons; the rest
+of the unchanged package used C in both variants. Compression changes
+from 334 to 308 instructions, 208 to 144 frame bytes, and 170 to 162 static
+memory instructions. Stack-relative accesses fall from 144 to 60, but most
+of that is a change of memory base to the result buffer, not eliminated
+loads/stores. Both measured compression bodies were **witnessed**, not
+proven; this historical report predates `def4003e`.
+
+| Interleaved run | Samples × rounds | Before ms / MiB | After | After / before |
+| --- | ---: | ---: | ---: | ---: |
+| A | 15 × 30 | 4.939 | 4.454 | 0.902 |
+| B | 15 × 50 | 4.160 | 4.037 | 0.971 |
+| C | 15 × 50 | 4.801 | 4.842 | 1.008 |
+| D | 21 × 50 | 4.159 | 4.003 | 0.962 |
+
+All full-digest checks agree with the C control, including 13 boundary
+sizes around blocks, chunks and tree merges. Host load and core placement
+were uncontrolled; C overlapped local regression suites and D ran after
+they finished. Three medians improve, one is effectively flat, with
+overlapping sample ranges: a modest gain is plausible, a precise speedup
+is not established. These are not whole-native-suite results or proof of
+parity with C. The final D C control was 3.065 ms/MiB.
+All candidate builds emitted the same compression object, including after
+conservative extent/call-lifetime hardening. Raw samples, binary/source
+hashes, build protocol, counters and proof limits:
+[`blake3-array-result-2026-09-17.json`](results/blake3-array-result-2026-09-17.json).
+
+After integration with `def4003e`, the **same 308-instruction compression
+object is proven for all eight result chunks**, with the result-area
+optimization retained. The real-compressor wrong-rotate test still refutes,
+and native/C boundary tests pass. The object hash is identical to the timed
+candidate; the report records this later integration separately rather than
+relabeling earlier evidence as proof. The broader upstream canonicalizer
+is used directly, without a duplicate rotate rule.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

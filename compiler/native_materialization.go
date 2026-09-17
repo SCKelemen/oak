@@ -26,9 +26,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v10 adds verifier-gated late vector address sharing and tighter
-	// register-version/use checks in the early load-only matcher.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v10")
+	// v11 adds direct construction of eligible returned integer arrays
+	// in the caller's result area, on top of v10's vector address sharing.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v11")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
