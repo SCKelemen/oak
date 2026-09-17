@@ -22,7 +22,7 @@ var viewHelperLines = []string{
 // (Oak.ViewRefinement, "Owned arrays").
 var ownedArrayMacroLines = []string{
 	"static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n",
-	"#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n",
+	"#define oak_index(base, len, i) ((base)[oak_lv_idx((u64)(i), (u64)(len))])\n",
 	"static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n",
 	"#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n",
 }
