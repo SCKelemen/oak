@@ -47,6 +47,11 @@ jobs:
       - name: Check bounded production correspondence
         run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
+      - name: Check Wasm LEB production decisions against Lean
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./wasm/check -run '^TestWasmLEBMatchesLean$' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 

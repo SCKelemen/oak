@@ -80,8 +80,10 @@ are additional implementation and proof work, not automatically solved by Wasm.
    differential/edge-case tests cover the admitted operations. Current level.
 2. **Decoded-byte boundary:** bounded independent decoder and validator, formal
    correspondence to the pinned rules, malformed-input/fuzz coverage. The Go
-   decoder/validator and test infrastructure are implemented; the formal
-   correspondence remains open. Matching
+   decoder/validator and test infrastructure are implemented. `Oak.WasmLEB`
+   proves the mathematical prefix decoder against its grammar, with range,
+   length and suffix laws; production Go outcomes have finite kernel pins.
+   Universal Go decoder/validator correspondence remains open. Matching
    an encoder and decoder is insufficient if they share the same mistake.
 3. **Translation refinement:** source-to-OptIR and OptIR-to-decoded-Wasm behavior,
    including traps, calls, loops, divergence and state. No value-only proof
@@ -150,7 +152,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | --- | --- | --- |
 | W0 | Scalar raw-CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Initial implementation |
 | B0 | Local compiler/editor/runner prototype; cancellation; explicit unverified status | Initial implementation |
-| W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; formal decoder/validator correspondence still required | Partial implementation; no formal refinement |
+| W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; LEB model theorems and finite Go/Lean pins | Partial; universal production decoder/validator refinement open |
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Planned |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |

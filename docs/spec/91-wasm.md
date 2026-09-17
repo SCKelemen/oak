@@ -55,8 +55,9 @@ cross-checks the export names and carrier signatures against the manifest.
 Malformed bytes are also checked by the runtime. These are implementations and
 tests, not universal proofs or an independently **verified** Oak decoder.
 
-No Oak Wasm semantics/refinement theorem, authoritative Wasm certificate checker
-or verified browser runtime is claimed. `Oak.Target` currently models the
+The first formal slice is the LEB prefix model described below, not Wasm
+execution or source-to-output refinement. No authoritative Wasm certificate
+checker or verified browser runtime is claimed. `Oak.Target` currently models the
 existing C/native targets only; its theorems do not cover `core/wasm32` yet.
 
 ## 4. Independent byte-validation boundary
@@ -78,6 +79,24 @@ names of at most 256 bytes. Signatures have at most 64 i32/i64 parameters and
 one result. Section/body lengths, indices and exact byte coverage are checked.
 LEB32/64 decoding accepts legal padding but rejects overlong encodings and
 incorrect unsigned/sign-extension bits.
+
+`Oak.WasmLEB` models the pinned integer prefix grammar independently of the
+Go accumulator, using mathematical signed integers. `decode_sound` and
+`decode_complete` establish agreement between the executable model decoder and
+that grammar. `Encoding.range`, `Encoding.nonempty`, `Encoding.byte_budget`,
+and `decode_append` prove numeric range, nonempty/bounded consumption and
+preservation of trailing bytes. Legal nonminimal encodings remain admitted.
+`decodeWord` projects a successful value to its sign-extended 64-bit word and
+consumed length, matching the production reader's observable success interface.
+
+`TestWasmLEBMatchesLean` generates kernel-checked `by decide` examples from
+actual Go reader outcomes: all one-byte inputs; every final byte at the
+32-/64-bit length boundary with zero/all-one preceding payloads; signed extrema,
+padding, truncation, overlong inputs and suffixes. Formal CI requires this oracle
+with `OAK_REQUIRE_WASM_LEAN=1`. These are **finite production correspondence
+checks**, not a universal proof of the Go OR/shift accumulator, cursor/slice
+mutation, failure offsets or module/type validation. The inductive theorems are
+universal for the Lean prefix model only.
 
 Instruction validation uses iterative operand/control stacks. It admits integer
 constants, the emitter's arithmetic/comparison vocabulary, locals get/set/tee,
