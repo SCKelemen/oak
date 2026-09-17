@@ -370,6 +370,29 @@ far too high for a useful A/B measurement.
 
 [Static observations and provenance](results/stage2-record-base-carriers-2026-09-17.json).
 
+## OS stage-2: reschedule live record-base carriers, 2026-09-17
+
+The verifier-gated `reschedule-record-base-carriers` child reruns the existing
+MachineIR scheduler after the late carrier and address rewrites expose the
+final dependence graph. It adopts the reorder only when
+`machine.StallEstimate` strictly decreases, so the carrier parent remains the
+byte-stable fallback for neutral schedules. A same-compiler
+`OAK_OPT_SKIP=reschedule-record-base-carriers` build is the control, and both
+artifacts used fresh verification with zero of 22 verdicts from cache.
+
+| Selected body | Instructions | Stalls | Static cost | Moved instructions | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `translate` | 85 → 85 | 15 → 14 | 123.5 → 123.0 | 3 | proven |
+| `unmap_page` | 181 → 181 | 52 → 51 | 294.0 → 293.5 | 7 | proven |
+
+`free_table` is unchanged, and the profitability guard prevents a
+stall-neutral `walk_leaf` reorder from displacing its parent. Mach-O `__text`
+and the complete object remain 4148 and 5672 bytes, all 27 relocations remain,
+and both objects pass all five OS differential tests. Runtime is intentionally
+unreported because final host load averages were 47–57.
+
+[Static observations and provenance](results/stage2-record-base-reschedule-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established
@@ -2063,6 +2086,26 @@ a runtime speedup claim. The compressor proof and native package/reference
 checks pass; [the evidence record](results/blake3-packed-record-leaves-2026-09-17.json)
 contains the artifact hashes, search examples and validation commands.
 
+**Chaining-value fields at branch joins (2026-09-17).** Tracing the next
+coupling failure found that all eight `next.cv` fields were present at
+the loop header but absent after a branch join. The chunk-push summary
+stores 32-bit fields; the other arm copies 64-bit words. The join kept
+only stores with identical addresses and widths, then the loop summary
+treated the missing fields as unchanged header values.
+
+The verifier now intersects known byte ranges across both arms and refuses
+a loop summary when a carried value is lost. A reduced mixed-width loop
+goes from witness evidence to proof, and storing the wrong value on one
+arm is refuted. Restoring the real dependencies also exposed repeated
+preparation of unresolved coupling obligations; caching dependencies of
+both source terms and chosen replacements avoids that work.
+
+The full update still exhausts its normal coupling budget, with **307
+agreeing witness inputs, 528 instructions and one guard**. Its native
+object is byte-identical to `98faccd3`; this finding does not establish a
+runtime gain. [The evidence record](results/blake3-frame-joins-2026-09-17.json)
+records the diagnosis, artifact comparison and validation.
+
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 
 At baseline `65477201`, the existing guarded input loop becomes `memcpy`
@@ -2110,6 +2153,57 @@ with reproducible rejected patches for the
 [counted](results/blake3-counted-copy-raw-rejected-2026-09-17.patch) and
 [guarded counted](results/blake3-counted-copy-guarded-rejected-2026-09-17.patch)
 variants against the recorded baseline.
+
+## BLAKE3: stack-only chunk push deferred, 2026-09-17
+
+At baseline `bd89ea49`, closing a chunk copied the entire 1,848-byte state
+into the private push helper's result and then back into the caller. A
+prototype instead borrowed only the private copy's stack, returned its new
+depth and let the caller reset the same scalar fields. Public update value
+semantics, checked accesses and wrapping arithmetic were unchanged.
+
+The two copies disappear: 3,781,008 bytes of logical copy work per complete
+1 MiB hash, not measured hardware traffic. The C update frame shrinks
+**2,112 → 336 bytes**, but its code grows **616 → 684 bytes** and the push
+helper grows **340 → 452 bytes**. Initial input-state copying remains.
+
+| Cohort / run | Baseline ms/MiB | Stack-only ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 1.989 | 1.818 | 0.946 | 13/21 |
+| Native compression fixed / B, reversed | 3.711 | 3.528 | 0.941 | 13/21 |
+| Native compression fixed / C | 2.394 | 2.250 | 1.002 | 10/21 |
+| Pure C / A | 2.681 | 2.223 | 1.014 | 10/21 |
+| Pure C / B, reversed | 2.920 | 2.418 | 0.903 | 14/21 |
+| Pure C / C | 2.536 | 2.286 | 0.940 | 11/21 |
+
+**Deferred, not shipped.** Four paired medians improve, two are roughly
+neutral/slightly worse, and only 71/126 pairs improve. The host's one-minute
+load readings ranged from 85.68 to 146.52. This is a candidate for a quiet-host
+rerun, not a demonstrated runtime win or a precise regression estimate.
+Each run used the same rotating single-thread protocol, 21 samples of 100
+hashes, complete digest checks at fourteen lengths and after every sample,
+and no overlapping builds/tests from this experiment. Native compression
+was freshly proven and byte-identical in the mixed comparison.
+
+The experiment did expose two compiler correctness issues that are fixed:
+literal values were missing recursive lowering, so span/view reads inside
+arrays or records could emit invalid C; and the C `oak_index` macro repeated
+an effectful index expression. Aggregate values now traverse the existing
+checked lowering, and the macro uses `oak_lv_idx` with each argument once.
+Tests retain the evaluation-order case that caught the second issue.
+
+Both timed compilers had the same aggregate-lowering prerequisite; the
+single-evaluation macro fix came **after** those frozen samples. No timings
+here establish a speedup for that compiler fix. The retained hash tests
+freeze the old push helper and cover full state, counter/index wrapping,
+chunk-boundary input aliasing and exact malformed-depth traps. Hash source
+and extraction are restored; the proposed mutable-stack refinement proof
+is deferred with the source optimization.
+
+[All samples, hashes, reproduction steps and verification scope](results/blake3-stack-push-deferred-2026-09-17.json),
+the [source prototype](results/blake3-stack-push-deferred-2026-09-17.patch), and
+its [timed compiler prerequisite](results/blake3-stack-push-lowering-prerequisite-2026-09-17.patch)
+are preserved for a controlled rerun.
 
 ## The refuted kernel
 

@@ -82,7 +82,8 @@ typing rules, applies profile limits, and emits deterministic type/function/
 export/code sections. A single-block CFG ending in return emits directly,
 without a program-counter local or dispatch loop. The four-block loop and
 conditional shapes below also emit directly. Other acyclic CFGs of at most 127
-blocks use forward labels; remaining CFGs retain the dispatch-loop baseline.
+blocks use forward labels. A single pre-test loop may compose the same lowering
+for an acyclic body of at most 124 blocks; remaining CFGs retain dispatch.
 Edge values are pushed before any phi local is
 overwritten. These are bounded lowering improvements, not a mature
 throughput-optimized backend. Shape recognition stays inside versioned
@@ -100,7 +101,7 @@ Bool argument checks remain before the body, including for unused arguments;
 Unit results do not suppress calls or traps. Returning a parameter does not skip
 preceding operations. The function's final `end` returns its declared result.
 
-The encoding recipe is now `oak.wasm.encode.v6`; scalar/check profiles remain
+The encoding recipe is now `oak.wasm.encode.v7`; scalar/check profiles remain
 v1 because neither the accepted vocabulary nor the byte-validation rules
 changed. Independent final-byte admission is unchanged, and translation
 verification remains false.
@@ -141,8 +142,9 @@ initial and final test); body operations run only on the selected body edge;
 exit operations run on exit. All edge values are pushed before any destination
 local is set, preserving cyclic phi assignments. Bool argument guards and all
 operation/effect admission gates are shared with the other emission paths.
-Nested loops, extra blocks, conditional bodies and other shapes keep the
-dispatcher. A one-block self-loop is not a returning block or this loop shape.
+The compact recognizer still covers exactly this shape. Conditional bodies may
+instead use the composed region-loop lowering below. Nested loops and
+irreducible bodies keep the dispatcher. A one-block self-loop is not this shape.
 
 Engine tests compare retained dispatcher bytes with current output and reference
 results for sum, swap and GCD, including zero trips, u32 wraparound and full-width
@@ -164,6 +166,40 @@ was noisy; this is one microbenchmark, not a browser/application performance
 guarantee. [Raw samples and reproduction](../../benchmarks/wasm/README.md) retain
 the engine version, protocol and limits. Timing is not a CI pass/fail threshold.
 This lowering remains untrusted and execution-tested, not formally refined.
+
+### Pre-test loops with acyclic bodies
+
+The general loop path composes the target-independent region scheduler with
+Wasm's structured `block`/`loop`/`if`. It recognizes one entry → header pre-test
+loop, a common returning exit, and a body region whose remaining edges are
+forward except for explicit transfers to the header or exit. The body may have
+nested/sequential branches, shared joins, multiple latches, breaks and early
+returns. Entry, header, body and exit must exhaust the whole checked CFG. Nested
+or irreducible cycles do not match and retain dispatch.
+
+`optir.AcyclicRegionOrder` validates the entire CFG before treating boundaries
+as traversal stops. It returns no partial schedule for a residual cycle and does
+not mutate the CFG or consult constant reachability. Wasm emits each body block
+once; transfers use existing parallel phi copies and branch to explicit loop/
+exit labels. A 124-body-block cap reserves the independent validator's control
+depth for the function, exit block, loop, condition and operation-level `if`.
+The 125-block boundary is executed through the dispatcher in tests.
+
+| Region-loop fixture | Module bytes, before → after | Wasm instructions, before → after |
+| --- | ---: | ---: |
+| conditional loop body | 342 → 251 | 144 → 93 |
+| nested-conditional loop body | 436 → 312 | 191 → 122 |
+
+Executable baseline/current tests cover zero trips, wrapping results, lazy
+traps, Unit calls, header/entry/tail operations, signed `MIN/-1`, Bool guards,
+multiple latches, breaks, early returns, polarity, shuffled block storage and
+the nested-loop fallback. Unsupported effects are checked in every region,
+including a constant-zero-trip body. Existing compact outputs remain unchanged.
+
+Six local warmed Deno/V8 runs of the nested-body kernel all favored the new
+lowering, with median new/old ratios from 0.021 to 0.121, but individual samples
+were extremely noisy. [All samples and protocol](../../benchmarks/wasm/README.md#pre-test-loops-with-acyclic-bodies)
+are retained. They establish neither a general speedup nor Chrome behavior.
 
 ### Four-block conditionals with a join
 

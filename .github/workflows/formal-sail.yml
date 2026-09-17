@@ -143,7 +143,7 @@ jobs:
       - name: Fetch the Sail Lean support library at its pinned revision
         run: sh spec/sail/setup.sh
 
-      - name: Build the Arm bridges (pure semantics and sequential RAM effects)
+      - name: Build the Arm bridges (semantics, RAM effects, and span-state simulation)
         working-directory: spec/sail/lean
         run: lake build
 

@@ -136,7 +136,14 @@ func TestE2ENativeIfConversion(t *testing.T) {
 				}
 			}
 		}
-		if selects == 0 {
+		if selects == 0 && name != "order" {
+			// order's swap is the one chain whose OptIR body — two moves
+			// under one flags branch, once the late cleanup branches on
+			// the compare's flags instead of a materialized Bool — is
+			// cheaper than the four selects (10 instructions against
+			// 11), and the search keeps the cheapest proven body
+			// (docs/spec/94-assembler.md §9); its branches target the
+			// OptIR blocks, never an arm.
 			t.Errorf("%s must lower its chain as selects", name)
 		}
 	}

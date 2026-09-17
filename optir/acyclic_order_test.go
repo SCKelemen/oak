@@ -77,3 +77,43 @@ func TestAcyclicOrderCyclesAndMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestAcyclicRegionOrder(t *testing.T) {
+	cfg := canonicalLoopCFG("region", "u32", "0", "4", "1", OpLess, OpIntAdd)
+	before := fingerprintCFG(cfg)
+	for _, tc := range []struct {
+		entry            BlockID
+		boundaries, want []BlockID
+	}{
+		{2, []BlockID{1, 3}, []BlockID{2}},
+		{1, []BlockID{2, 3}, []BlockID{1}},
+		{0, []BlockID{1}, []BlockID{0}},
+		{3, nil, []BlockID{3}},
+	} {
+		order, err := AcyclicRegionOrder(cfg, tc.entry, tc.boundaries)
+		if err != nil || !reflect.DeepEqual(order, tc.want) {
+			t.Fatalf("region: %v %v", order, err)
+		}
+	}
+	if fingerprintCFG(cfg) != before {
+		t.Fatal("region analysis mutated CFG")
+	}
+	if order, err := AcyclicRegionOrder(cfg, 2, []BlockID{3}); err != nil || order != nil {
+		t.Fatal("uncontained cycle got partial schedule", order, err)
+	}
+	for _, tc := range []struct {
+		entry      BlockID
+		boundaries []BlockID
+	}{
+		{999, nil}, {2, []BlockID{999}}, {2, []BlockID{2}}, {2, []BlockID{1, 1}},
+	} {
+		if order, err := AcyclicRegionOrder(cfg, tc.entry, tc.boundaries); err == nil || order != nil {
+			t.Fatal("invalid region request admitted", order, err)
+		}
+	}
+	// A boundary is only a traversal stop, not permission to skip validation.
+	cfg.Blocks[3].Terminator.Values = []ValueID{999}
+	if order, err := AcyclicRegionOrder(cfg, 2, []BlockID{1, 3}); err == nil || order != nil {
+		t.Fatal("malformed boundary escaped CFG validation", order, err)
+	}
+}

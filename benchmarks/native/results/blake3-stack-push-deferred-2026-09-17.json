@@ -1,0 +1,342 @@
+{
+  "schema": "oak-native-runtime-experiment-v1",
+  "date": "2026-09-17",
+  "experiment": "Mutate only the private BLAKE3 tree stack at chunk boundaries",
+  "status": "deferred; hash source restored, compiler correctness fixes and boundary regressions retained",
+  "baseline_commit": "bd89ea49ec35951e10918e1e4accc02ac3e59427",
+  "production_validation": {
+    "integrated_upstream": "98faccd3",
+    "post_integration": "Combined compiler regression/extraction/native-proof suite passed again (58.175s), as did exact helper pins/lowering tests and all five relevant Lean modules (7 jobs). Required-RV64 translation validation passed (56.162s): each AArch64 lane had 73 proven/20 witnessed helpers; RV64 had 80 proven/13 witnessed, with none outside the decided subset. All index helpers retain proofRequired.",
+    "compiler": "Combined aggregate/indexing/evaluation-order/extents/hash/reference/extraction/native-proof suite passed with restored hash source (56.904s), including deliberate old-index-macro and wrong-compression-rotate rejection.",
+    "codegen": "Full codegen suite passed (62.381s), including AArch64/default/Apple/LSE and RV64 C-helper translation validation with unchanged proof requirements; both clang and riscv64-elf-gcc are available. Lowering suite passed (0.655s).",
+    "Lean": "Oak.ViewRefinement built successfully (2 jobs); all four existing BLAKE3/SHA256 hash law modules built successfully (6 jobs)."
+  },
+  "decision": "Do not ship the source rewrite from this run. Four of six paired medians improve, two are approximately neutral/slightly worse, and only 71 of 126 pairs improve under heavy shared-host noise. The smaller frame and eliminated copies are promising but insufficient evidence of repeatable elapsed-time improvement. A quiet-host rerun is needed; no speedup or slowdown bound is claimed.",
+  "scope": "Two cohorts of complete 1 MiB hashes: C update/helpers with the exact same proven native compressor held fixed, and wholly C-compiled hashes. Not whole-package native timing or whole-source-to-binary proof.",
+  "change": {
+    "source_patch": "blake3-stack-push-deferred-2026-09-17.patch",
+    "description": "Replace private by-value blake3_push_chunk with blake3_push_cv(stack:[*]u32,depth:u32,counter:u64,cv:[8]u32):u32, mutating only the copied next.stack. Caller snapshots fields/CV before the borrow, then resets the exact same scalar fields. Public blake3_update retains its independent by-value state and unchanged input/boundary loop.",
+    "prerequisite_patch": "blake3-stack-push-lowering-prerequisite-2026-09-17.patch",
+    "compiler_isolation": "Both timed variants include the identical recursive aggregate-literal lowering prerequisite. The later oak_index single-evaluation macro fix is NOT in the timed compilers. The hash fixtures use pure index expressions and pass full digest/state/trap checks; do not attribute these samples to the final compiler revision.",
+    "restored": "stdlib/hash.oak is byte-identical to baseline. No BLAKE3 Lean model/extraction change or push theorem ships; checked-index correspondence is updated separately."
+  },
+  "static_metrics": {
+    "C_update_symbol_bytes": {
+      "baseline": 616,
+      "candidate": 684
+    },
+    "C_update_frame_bytes": {
+      "baseline": 2112,
+      "candidate": 336
+    },
+    "C_push_symbol_bytes": {
+      "baseline": 340,
+      "candidate": 452
+    },
+    "chunk_boundary_full_state_copies_before": 2,
+    "chunk_boundary_full_state_copies_after": 0,
+    "bytes_per_full_state_copy": 1848,
+    "closed_chunks_per_1MiB": 1023,
+    "avoided_logical_copy_bytes_per_1MiB": 3781008,
+    "measurement": "Symbol interval from push to update and update to final, including trap/stack-check tails; update frame from prologue. Logical copy volume is not measured hardware memory traffic. Initial by-value update copy remains.",
+    "native_compressor_object_identical": true
+  },
+  "verification": {
+    "candidate": "C/interpreter hash/reference/full-state/alias/malformed-depth regressions passed (32.762s), with recursive literal lowering and before the later macro fix. Earlier interpreter-only update/push/alias cases passed (3.395s).",
+    "new_regressions": "Freeze prior push helper exactly apart from name, independently of current source. Twelve successful depth/counter pairs cover empty stack, normal merges, depths53/54, counter wrap, and huge depths whose UInt32*8 wraps to legal checked slots. Chunk-boundary borrowed block-view case checks original state and expected source bytes independently. Four malformed old/new cases pin index432 or4294967288 and extent432 in interpreter, plus C traps.",
+    "native": "Baseline and candidate compression-only emissions prove all 8 result chunks at default budget with no cache hit; compressor objects match. Both mixed libraries link the same baseline object.",
+    "limits": "The mutable-stack prototype was not formally refined, and the update/push bodies were not emitted natively for this experiment. Extraction-level push proof was deferred when the runtime acceptance condition was not met.",
+    "runtime": "All 32 digest bytes agree at 14 lengths (0,1,63,64,65,1023,1024,1025,2048,2049,3072,4096,5000,1048576) and after every timed sample."
+  },
+  "compiler_fixes": {
+    "aggregate_lowering": "lowerExpression previously skipped array and record literal values; span/view reads there emitted invalid raw indexing of a C wrapper. Recursively lower their values using existing core_index logic while preserving checked AST and type/field metadata.",
+    "single_evaluation": "Expanded evaluation-order testing exposed oak_index evaluating its index argument twice. Use the existing checked oak_lv_idx helper inside the macro so base, length and index each occur once. This fix is separate from the deferred hash optimization and postdates these frozen timing artifacts.",
+    "formal_scope": "ViewRefinement pins the new C macro, models the checked numeric index result and proves exact in-bounds success/unchanged index and out-of-bounds failure. C operand evaluation is not formally modeled: the text pins and fixed-versus-old-macro execution regression check single evaluation. Existing native C-helper translation-validation proof bars remain unchanged."
+  },
+  "host": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.3.1 (a), build25D771280a",
+    "cc": "Apple clang21.0.0 (clang-2100.1.1.101)",
+    "limitations": "Shared-host load, CPU placement/frequency and other work uncontrolled. One-minute boundary readings85.68–146.52. No builds/tests from this experiment or its agents overlap the six timing runs."
+  },
+  "protocol": {
+    "timer": "CLOCK_MONOTONIC; ns per complete1MiB hash",
+    "rounds_per_sample": 100,
+    "samples_per_variant_per_run": 21,
+    "warmup": "one hash per variant",
+    "order": "Single-thread rotating interleaved variants, distinct RTLD_LOCAL libraries; reverse first two library arguments in runB of each cohort.",
+    "warning": "Raw before/after labels are argument positions; B is reversed. Raw c-control is baseline pure-C for mixed, but baseline mixed for pure-C. Ratio of separate medians differs from median of paired ratios; retain both, all samples and all runs."
+  },
+  "artifacts_sha256": {
+    "blake3-stack-push-deferred-2026-09-17.patch": "4ab864bfb724cb1374bcc4235e0e22549ef28a4cafa9af70677f81411805e100",
+    "blake3-stack-push-lowering-prerequisite-2026-09-17.patch": "d56fccb18437c5b7b6bf0b317a5e94878acdd5311183d59c60ad1ca6e6eabc81",
+    "baseline.stdlib/hash.oak": "883426189fb1080f1888ab8e90ba8f9007106ce0d449769b2539273443efb42c",
+    "timed.lowering/lowering.go": "8f6b5d5f47f4235e5e40d8237d418ec08b4eb214fce2a0ec39107e5b92c65bbf",
+    "benchmarks/native/blake3_same_process.c": "6b5ad95417d3498dd6bcc8f9440ce5bfc3457180dbd444a5d0c49d0ef981a692",
+    "baseline.pure-C": "a48d61d8526a13178ab19917005736c059229397b1a2187d57010363a9a8ee63",
+    "candidate.pure-C": "666bf941471ca7fe62d892e6b2d8a84e7ed51b900c30eff18c7aeeb8e6c38d41",
+    "baseline.native-companion-C": "8230e761e52aa1a8b13141012a1b6a65e5879e550ed9e1d6c7fa843c2f0ba742",
+    "candidate.native-companion-C": "7975c035a8bb5c6b572cb9394b88e93f5d73da579e18070d5f8b50dc843de635",
+    "baseline.pure-C-dylib": "32c294b9217bfc6a456860d260e53f5e230ca94fdd534f825fe60c05bd14672e",
+    "candidate.pure-C-dylib": "9d01ddbcc712bbf6fbf96a3ccafb6547c4f01d022135bbce00cbeee13694cc97",
+    "baseline.mixed-dylib": "e5448d4869165a2b47568cac6449f525f7d513e38edc65d559b9cc1c67d129d0",
+    "candidate.mixed-dylib": "a3b4213a1c0c6b529853e213cdab7d8cadbec1f43d6178b0f705061956dfbbf0",
+    "baseline-and-candidate.native-object": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "baseline.compiler": "d9b159e42b60b867b7c1c589010fab5b02c5bed13c71da95f86a96607d17c845",
+    "candidate.compiler": "7219e413668ff9eeffd022f8dc75c3484aeb5c8ff2bbb134826b70dbfd58e406",
+    "baseline.emitter": "9629ee390309a224451deadb936d379e0c3104318f7007dd8866b83dac98fed6",
+    "candidate.emitter": "879d64851a22238a7da5a79f0840b8aa33f64d4ffe93690f0317e19509e973de",
+    "harness": "76311298277475d9a2ab059f4c13ed764c6ef1f259446db1412059ef917a50d1"
+  },
+  "reproduction": [
+    "Start at bd89ea49 and apply blake3-stack-push-lowering-prerequisite-2026-09-17.patch to BOTH variants. Apply blake3-stack-push-deferred-2026-09-17.patch only to candidate.",
+    "Build each frozen compiler/emitter: go build -o OUT/oak-VARIANT .; go build -o OUT/emit-VARIANT ./benchmarks/native/emit",
+    "Pure C: OUT/oak-VARIANT build -o OUT/VARIANT-c.c benchmarks/kernels/oak; cc -dynamiclib -std=c99 -O3 -DNDEBUG -Dmain=oak_unused_main OUT/VARIANT-c.c -o OUT/VARIANT-c.dylib",
+    "Native compression: env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_NATIVE_TIMING=1 OAK_NATIVE_DUMP=1 OUT/emit-VARIANT benchmarks/kernels/oak OUT/VARIANT",
+    "Require baseline.o and candidate.o identical and fresh 8-chunk proven verdicts. Link each native C companion to baseline.o with the same dylib flags.",
+    "Build unchanged benchmarks/native/blake3_same_process.c with cc -std=c99 -O3 -Wall -Wextra -Werror.",
+    "Pause builds/tests. Run harness with absolute paths to baseline/candidate/control dylibs and100 21; reverse first two arguments for B, restore for C, separately for mixed and pure-C cohorts. Record uptime boundaries."
+  ],
+  "runs": [
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "A",
+      "library_order": [
+        "baseline",
+        "candidate",
+        "control"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 106.02,
+      "one_minute_load_end": 111,
+      "baseline_median_ns": 1989140,
+      "candidate_median_ns": 1817990,
+      "control_median_ns": 1729730,
+      "ratio_of_medians": 0.913957790804066,
+      "median_paired_ratio": 0.9459515167358759,
+      "pairs_faster": 13,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [1694640, 1729170, 2048620, 2175850, 3008200, 1763900, 1657270, 1953370, 2211410, 2329830, 2021770, 1650240, 1778300, 1672530, 1761740, 2146220, 1649240, 3852390, 1989140, 3471700, 2771070]
+          },
+          {
+            "impl": "after",
+            "samples": [1776100, 1817990, 1935480, 1699330, 1571830, 1673180, 2470440, 3859670, 1859900, 1847440, 1907980, 1630810, 2393900, 1721100, 1768770, 1692570, 1743010, 1672180, 1881630, 2564570, 1851510]
+          },
+          {
+            "impl": "c-control",
+            "samples": [1600360, 2901070, 1615410, 1500870, 1526930, 3191900, 1773400, 2270150, 1871710, 3470190, 1584620, 1505490, 2040800, 1729730, 2022080, 1595950, 1506330, 1451190, 1846710, 1545280, 2285880]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "B",
+      "library_order": [
+        "candidate",
+        "baseline",
+        "control"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 85.68,
+      "one_minute_load_end": 124.73,
+      "baseline_median_ns": 3710710,
+      "candidate_median_ns": 3527630,
+      "control_median_ns": 3414440,
+      "ratio_of_medians": 0.9506617331993069,
+      "median_paired_ratio": 0.940578314708142,
+      "pairs_faster": 13,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [2144240, 5607220, 5525350, 4364450, 3527630, 2624610, 4834320, 5526450, 3632390, 2857970, 3180740, 2307370, 2205250, 5069090, 1855370, 2892080, 4110350, 1833600, 5616640, 4473580, 1965110]
+          },
+          {
+            "impl": "after",
+            "samples": [3710710, 5961460, 5931910, 5420560, 4607840, 3123020, 4179080, 2354670, 5057090, 2152420, 6767310, 2398800, 2269260, 3045110, 4133300, 2122890, 2337440, 4184940, 2353970, 4335290, 3027380]
+          },
+          {
+            "impl": "c-control",
+            "samples": [2867790, 4444460, 6404210, 5235330, 3512320, 5190140, 3024320, 6258850, 3569220, 8178580, 4690910, 2181360, 3236720, 5021560, 3082790, 2548250, 2676820, 1886490, 1745170, 3414440, 1807220]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "native-compressor-fixed",
+      "run": "C",
+      "library_order": [
+        "baseline",
+        "candidate",
+        "control"
+      ],
+      "control": "baseline pure-C hash",
+      "one_minute_load_start": 134.15,
+      "one_minute_load_end": 112.33,
+      "baseline_median_ns": 2394370,
+      "candidate_median_ns": 2250020,
+      "control_median_ns": 2026830,
+      "ratio_of_medians": 0.9397127428091732,
+      "median_paired_ratio": 1.0017158834118502,
+      "pairs_faster": 10,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [3307860, 3008600, 2610900, 2282920, 2681540, 2394370, 1875010, 2770510, 5897580, 1868590, 8612220, 1686650, 2475720, 2563250, 2298870, 2974580, 1901660, 2173620, 1850430, 2290580, 1939590]
+          },
+          {
+            "impl": "after",
+            "samples": [5557390, 2250920, 2615380, 2681870, 2870470, 2550670, 2040830, 2834670, 2039640, 3806740, 1801610, 1771120, 1819010, 2911820, 2105130, 2250020, 1758010, 1948400, 2902510, 1717560, 1923350]
+          },
+          {
+            "impl": "c-control",
+            "samples": [2632410, 2302990, 2307590, 2316820, 1901940, 3234850, 3334690, 1758360, 2781900, 2026830, 4214280, 2146920, 1610460, 1613030, 2741300, 1700280, 1625410, 1784710, 1801700, 1807570, 1574950]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "A",
+      "library_order": [
+        "baseline",
+        "candidate",
+        "control"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 135.18,
+      "one_minute_load_end": 146.52,
+      "baseline_median_ns": 2681020,
+      "candidate_median_ns": 2223280,
+      "control_median_ns": 3667420,
+      "ratio_of_medians": 0.8292664732079582,
+      "median_paired_ratio": 1.01436655707043,
+      "pairs_faster": 10,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [4701990, 4273130, 2262360, 3283270, 6224210, 3871630, 2753760, 3669000, 3892790, 2716030, 1861470, 2681020, 2063820, 3241230, 1740390, 1699040, 1773200, 2065810, 2086520, 2345430, 2016170]
+          },
+          {
+            "impl": "after",
+            "samples": [2223280, 2036260, 6539330, 2969390, 3165550, 4368610, 3481120, 2731440, 5867050, 2755050, 2068560, 3506440, 2133510, 2319650, 1698690, 1730020, 1939580, 2202870, 1622220, 1572090, 2007470]
+          },
+          {
+            "impl": "c-control",
+            "samples": [2120270, 5793240, 5542310, 4861490, 4123480, 3684000, 5100760, 3987170, 5041300, 5354320, 3345030, 3880060, 2215140, 1971850, 2451440, 3404270, 3667420, 2158220, 1869030, 2931470, 2723920]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "B",
+      "library_order": [
+        "candidate",
+        "baseline",
+        "control"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 141.46,
+      "one_minute_load_end": 129.63,
+      "baseline_median_ns": 2919810,
+      "candidate_median_ns": 2417810,
+      "control_median_ns": 3503900,
+      "ratio_of_medians": 0.8280710046201636,
+      "median_paired_ratio": 0.9025692359025692,
+      "pairs_faster": 14,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [3197740, 3112510, 3339830, 2186970, 3670530, 2417810, 3661250, 3648480, 1725930, 1677100, 2160440, 6190540, 2096450, 1656290, 2112960, 1932750, 4644140, 1986840, 3386990, 3005520, 1822500]
+          },
+          {
+            "impl": "after",
+            "samples": [3333590, 3802450, 2953650, 2919810, 3878090, 4178670, 3870230, 2637100, 3635900, 1858140, 1882530, 3639390, 2744120, 2064170, 1618260, 2458630, 1610000, 2624790, 2539760, 3787190, 3061380]
+          },
+          {
+            "impl": "c-control",
+            "samples": [2424940, 2478620, 2397530, 5514580, 2741700, 2329690, 2965740, 3641350, 3529230, 3811080, 2860300, 2122590, 7097030, 3052360, 1775580, 4185520, 3515620, 3503900, 3893710, 4187930, 4809950]
+          }
+        ]
+      }
+    },
+    {
+      "cohort": "pure-C",
+      "run": "C",
+      "library_order": [
+        "baseline",
+        "candidate",
+        "control"
+      ],
+      "control": "baseline native-compressor hash",
+      "one_minute_load_start": 121.79,
+      "one_minute_load_end": 119.32,
+      "baseline_median_ns": 2535960,
+      "candidate_median_ns": 2286430,
+      "control_median_ns": 2899400,
+      "ratio_of_medians": 0.9016033375920756,
+      "median_paired_ratio": 0.9400689599871702,
+      "pairs_faster": 11,
+      "raw": {
+        "schema": "oak-same-process-blake3-v1",
+        "size": 1048576,
+        "rounds": 100,
+        "samples": 21,
+        "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+        "protocol": "one thread, rotating interleaved variants, one warmup each, distinct locally loaded libraries; affinity uncontrolled",
+        "results": [
+          {
+            "impl": "before",
+            "samples": [1870650, 2189670, 2600670, 1772640, 2703990, 3295300, 2000410, 2447880, 3688910, 1608690, 3216170, 2535960, 2667630, 2821480, 2852590, 1667440, 2679720, 1698360, 2284070, 1663750, 3310710]
+          },
+          {
+            "impl": "after",
+            "samples": [1758540, 2448310, 2010310, 4029850, 2141480, 2286430, 2143920, 3108260, 1639800, 2547500, 1855800, 1703340, 1845280, 3866930, 2585720, 2570260, 3258520, 3240790, 1771180, 3699220, 2284640]
+          },
+          {
+            "impl": "c-control",
+            "samples": [3559170, 2645170, 2872690, 2461370, 4630430, 2083860, 2478790, 3011870, 2751760, 3492710, 2014530, 2380750, 2091220, 2391450, 4099720, 2899400, 4420840, 4770550, 4807450, 3263660, 5125210]
+          }
+        ]
+      }
+    }
+  ]
+}

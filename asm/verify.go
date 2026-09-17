@@ -4276,15 +4276,14 @@ func (x *pathExecutor) mergeTwo(cond *term, a, b *symbolicState) (*symbolicState
 		}
 		return iteTerm(cond, l, r)
 	}
-	out := &symbolicState{arch: a.arch, disp: a.disp, notes: a.notes, regs: map[int]*term{}, frame: map[int64]frameSlot{}}
+	frame, ok := mergeFrameSlots(a.frame, b.frame, sel)
+	if !ok {
+		return nil, false
+	}
+	out := &symbolicState{arch: a.arch, disp: a.disp, notes: a.notes, regs: map[int]*term{}, frame: frame}
 	for reg, l := range a.regs {
 		if r, has := b.regs[reg]; has {
 			out.regs[reg] = sel(l, r)
-		}
-	}
-	for addr, l := range a.frame {
-		if r, has := b.frame[addr]; has && r.width == l.width {
-			out.frame[addr] = frameSlot{value: sel(l.value, r.value), width: l.width}
 		}
 	}
 	if a.vregs != nil && b.vregs != nil {

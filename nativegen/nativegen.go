@@ -905,7 +905,7 @@ func (g *generator) resolvePlace(expr ast.Expression, whole bool) (place, error)
 			// An element of an array or span of records: `pool[i]`.
 			if ident, isIdent := e.Left.(*ast.Identifier); isIdent {
 				if sp, isSpan := g.spans[ident.Value]; isSpan && sp.elemLayout != nil {
-					return g.spanRecordElement(sp, e.Index)
+					return g.spanRecordElement(sp, e.Index, &e.Token)
 				}
 			}
 			base, err := g.resolvePlace(e.Left, false)
@@ -1110,10 +1110,19 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 // checker's span element idiom: the index guarded against the length
 // register, then `add xE, xB, wI, uxtw #s` or `movz`/`umaddl` by the
 // record's stride; the place is read-only through a view.
-func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, error) {
-	r, err := g.guardedIndex(sp, index)
+func (g *generator) spanRecordElement(sp span, index ast.Expression, tok *token.Token) (place, error) {
+	r, err := g.guardedIndexAt(sp, index, tok)
 	if err != nil {
 		return place{}, err
+	}
+	// The index in a variable's own register (the guard compares it
+	// there, and the checker keys its fact on that register): no copy,
+	// so a second element of the same span through the same index spells
+	// the same base — the record-base sharing and the redundant-guard
+	// elision read that — and nothing to release.
+	fixed := r < -1
+	if fixed {
+		r = -r - 2
 	}
 	element, err := g.alloc(scalars["u64"])
 	if err != nil {
@@ -1134,7 +1143,9 @@ func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, err
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(sp.baseReg))
 		g.release(strideReg)
 	}
-	g.release(r)
+	if !fixed {
+		g.release(r)
+	}
 	return place{rec: &recordLocal{layout: sp.elemLayout, inReg: true, reg: element, temps: []int{element}, readOnly: !sp.writable}}, nil
 }
 
@@ -1673,6 +1684,10 @@ type Lane struct {
 	// computed destination when no surviving instruction overwrites it. It is
 	// a separate child candidate of ShareRecordBases.
 	ReuseRecordBaseDestinations bool
+	// RescheduleRecordBaseCarriers reruns scheduling after record-base and
+	// scalar-address rewrites expose the carrier's final dependencies. It is a
+	// separate child candidate of ReuseRecordBaseDestinations.
+	RescheduleRecordBaseCarriers bool
 	// ShareGlobalAddresses carries one exact adrp/add address of a declared
 	// scalar package global through later materializations on call-free paths.
 	// It composes only with scheduling and requires a whole-body verdict.
@@ -2177,7 +2192,34 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	if lane.PostScheduleCleanup && lane.Schedule {
 		postScheduledCleanup[out] = postScheduleCleanup(out)
 	}
+	if lane.RescheduleRecordBaseCarriers && reusedRecordBaseDestinations[out] > 0 {
+		moved, err := rescheduleForFewerStalls(out)
+		if err != nil {
+			return nil, unsupported("%v", err)
+		}
+		if moved > 0 {
+			rescheduledRecordBaseCarriers[out] = moved
+		}
+	}
 	return out, nil
+}
+
+// rescheduleForFewerStalls adopts a second schedule only when the final
+// dependency graph strictly improves the target's stall estimate. Candidate
+// search still compares the complete target cost; this local guard keeps a
+// neutral reorder from displacing its byte-stable parent on a tie.
+func rescheduleForFewerStalls(fn *asm.Function) (int, error) {
+	beforeStalls, _ := machine.StallEstimate(fn)
+	rescheduled, moved, err := machine.Schedule(fn)
+	if err != nil {
+		return 0, err
+	}
+	afterStalls, _ := machine.StallEstimate(rescheduled)
+	if moved == 0 || afterStalls >= beforeStalls {
+		return 0, nil
+	}
+	fn.Items = rescheduled.Items
+	return moved, nil
 }
 
 // Scheduled reports how many instructions a lowering moved under

@@ -1160,6 +1160,19 @@ eliminating an intermediate BBM break. These width-eight model proofs do not
 establish Go executor/call-summary refinement, actual array placement, storage
 authority, or safe concurrent reordering.
 
+`SpanStateBridge.lean` adds a relation to independently supplied Oak bytes:
+the actual selector register must be initialized and every byte in a bounded,
+aligned physical span must be present and equal. Actual generated wrapper
+calls preserve this relation, individually and across any finite list of
+in-range element stores in source-list order. The proof preserves all other
+runtime fields and exact byte presence outside the span, with no address
+truncation. Kernel examples cover repeated stores, empty and upper-bound
+spans, and failed byte/selector premises. These are supplied physical-region
+and in-range-index premises, not derived source guards or storage authority;
+a negative example shows the bare wrapper can write outside an empty span.
+The relation concerns Lean's runtime, not Lem's tags or undefined bits, and
+does not prove dynamic STR execution, architectural events, or BBM (§126).
+
 Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
 reachability, architectural memory effects, atomicity/non-tearing, unique
 architectural writes, tags/device behavior, CAT membership, completion,
@@ -3913,8 +3926,11 @@ used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
 when an arm's tail is empty. Under a whole-function liveness of the
 general registers over the item list (blocks at labels and after
 branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
-x0, x1, x8 and the restored callee-saved registers), five block-local
-rules run to a fixpoint: a copy read once by the next instruction is
+x0, x1, x8 and the restored callee-saved registers), six block-local
+rules run to a fixpoint (the sixth: a Bool materialized only to be
+branched on — `cset wN, cond; cbz wN, L` with wN dead after the branch —
+is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the OS
+walkers' status conditionals spent the cset and a register per test): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
@@ -6237,7 +6253,10 @@ with six pairs faster; see
 **Shared record-span bases (2026-09-17, AArch64 lane).** The
 `share-record-bases` machine candidate (`nativegen/record_base_cse.go`)
 recognizes the final scheduled spelling of a wide record-span element base:
-`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`. The
+`movz wT, #lo; ...; movk wT, #hi, lsl #16; ...; umaddl xD, wI, wT, xB`, and
+the two-instruction spelling of a stride below 2^16 without the `movk` (the
+OS pilots' 2096-byte `Regime`, whose walkers repeated the base four times
+where the wide form never occurred). The
 elided positions may contain nearby independent scheduled instructions; a
 label, branch, call, or any intervening read/write of `wT` refuses the site.
 When one such
@@ -6317,6 +6336,28 @@ report zero of 22 verdict-cache hits and pass all five OS differential tests.
 No runtime claim is attached because final load averages were 79–113. Exact
 provenance is in
 `benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
+
+The separate `reschedule-record-base-carriers` child closes one consequence of
+that late rewrite: the original scheduler could not see the dependence graph
+after the first destination became the long-lived carrier and the redundant
+materializations disappeared. The child invokes the same MachineIR scheduler
+after all record-base and scalar-address cleanup, but adopts its result only
+when `machine.StallEstimate` strictly decreases. A zero-move or equal-cost
+schedule leaves the byte-stable carrier parent untouched. The child has its
+own materialization-v30 key, the carrier parent remains an independent
+fallback, and selection still requires the ordinary seam checker and a
+non-trusted whole-body verdict.
+
+Against a same-compiler
+`OAK_OPT_SKIP=reschedule-record-base-carriers` control, the fresh stage-2
+pilot keeps all instruction, multiply, text-size, object-size, and relocation
+counts fixed. It moves three instructions in proven `translate`, reducing
+estimated stalls 15→14 and static cost 123.5→123.0, and seven in proven
+`unmap_page`, reducing stalls 52→51 and cost 294.0→293.5. `free_table` is
+unchanged, and a stall-neutral `walk_leaf` reorder is not selected. Both
+artifacts pass all five OS differential tests. No runtime claim is attached:
+the final host load average was 47–57. Exact provenance is in
+`benchmarks/native/results/stage2-record-base-reschedule-2026-09-17.json`.
 
 **Shared scalar-global addresses (2026-09-17, AArch64 lane).** The
 `share-global-addresses` machine candidate (`nativegen/global_address_cse.go`)
@@ -7866,6 +7907,36 @@ of `TestVerifyCountedLoops` is proven through its joins. Prover build:
 proven 562, evidence 139, trusted 265, the path-budget bodies down to
 fifty-one (the rest fork in loop bodies or unfold loops), the
 verifier's time unchanged.
+
+**Frame bytes at joins (2026-09-17).** Two paths may know the same bytes
+through different store widths: a record-returning callee writes 32-bit
+leaves where another arm copies 64-bit words. `mergeTwo` retains the
+intersection of their known byte ranges (`mergeFrameSlots`), selecting
+each common piece under the path condition. Sorted, disjoint intervals
+give a linear walk after sorting; unequal extents split into naturally
+aligned pieces of at most eight bytes. Identical extents retain their
+layout and shared terms. Gaps and bytes known on only one side stay
+unbound; overlapping or invalid incoming layouts cannot merge.
+
+A loop's body paths start with its fresh header frame. If a carried
+slot is absent at an end, `valueOfVar` no longer substitutes the header
+value: the loop summary stops with the lost value named. Otherwise a
+join that forgot changed memory could invent an unchanged-field invariant.
+`asm/frame_join_test.go` exercises both branch orders, narrow and wide
+stores, unaligned overlaps, gaps, result-area and stack addresses, invalid
+layouts and the lost-slot refusal. Its mixed-width loop proves, while a
+wrong value stored by one arm is refuted.
+
+Restoring the changed fields also restores the dependencies of their call
+results. The coupling search caches the machine loop symbols each raw
+next-value or continue condition mentions, including the symbols in their
+chosen replacements, and defers preliminary valuations until they are
+paired. It still checks the substituted value before building the full
+obligation. A substitution could erase a raw dependency,
+so deferring can miss an early refutation; every complete candidate
+still faces the same guard and preservation implications under the same
+budgets. This avoids rebuilding a large unresolved expression at each
+intervening search depth.
 
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine

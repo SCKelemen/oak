@@ -757,6 +757,37 @@ concurrent observers. These are width-eight model-to-model proofs, not a Go
 executor/call-summary refinement, real frame/span placement, or permission to
 reorder published memory. The strict BBM admission boundary is unchanged.
 
+`SpanStateBridge.lean` strengthens the sequential connection with an
+**independently supplied** Oak byte memory, rather than defining it as a view
+of Sail's map. Its `Related` predicate requires the actual generated
+RAM-selector entry and a present, equal byte at every address of a supplied
+aligned span of 64-bit elements. The span has a u32 length and its full
+extent fits in the 52-bit physical range. In-range element addresses are
+proved aligned and representable before conversion to the wrapper's 56 bits.
+`writeElement_simulates` connects an actual generated `__WriteMemory` call to
+the existing Oak byte store and preserves this relation. By induction,
+`writeElements_simulates` composes any finite list of in-range calls in the
+same order, retaining selector initialization, every non-memory runtime
+field, and exact optional lookups outside the span.
+
+Kernel-checked examples exercise an initialized two-element span, repeated
+and distinct indices, the last representable physical element, an empty
+span, absent and mismatched bytes, and a wrong selector. Oversized and
+misaligned span descriptions contradict the premises. A separate negative
+example establishes that the raw generated wrapper still writes outside an
+empty span: the supplied in-range indices are **not** a bounds check or
+ownership certificate implemented by Sail. This relation does not derive
+source guards, allocation, actual frame placement, address translation, or
+the store list from native execution. Its values are already in the
+wrapper's little-endian byte order. It only relates the pinned Lean runtime;
+its Unit tags do not discharge Lem's real tag-map/undefined-bit gap. Neither
+finite sequential composition nor preservation of final state supplies
+architectural events or justifies BBM break elimination. The new module and
+its examples are required by the existing Sail bridge CI build. Checked
+axiom reports restrict the composition theorem and its concrete execution
+examples to Lean's standard `propext`, `Classical.choice`, and `Quot.sound`;
+no `sorry` or native-evaluation axiom is admitted by those reports.
+
 Alignment, normal fault-free translation and PA/default-RAM provenance,
 special-route exclusion, dynamic instruction-to-wrapper reachability, and
 architectural RAM effects remain open. The sequential byte updates prove

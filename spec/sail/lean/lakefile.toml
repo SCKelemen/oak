@@ -4,12 +4,14 @@
 # `../arm_primitives.sail` (see `../regen.sh`); do not edit them. `Bridge.lean`
 # proves the hand transliteration `Oak.ArmASL` equal to them. `MemoryBridge`
 # proves the generated RAM wrapper's sequential byte-map effect, not an Arm
-# concurrency model or dynamic instruction-to-wrapper reachability. This package
-# is separate from `spec/lean` so the main specification builds without the Sail
+# concurrency model or dynamic instruction-to-wrapper reachability.
+# `SpanStateBridge` preserves an independent Oak byte-memory relation across
+# finite in-range generated wrapper calls, under supplied physical-span premises.
+# This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -21,6 +23,9 @@ name = "Bridge"
 
 [[lean_lib]]
 name = "MemoryBridge"
+
+[[lean_lib]]
+name = "SpanStateBridge"
 
 [[require]]
 name = "Sail"

@@ -1,0 +1,65 @@
+diff --git a/stdlib/hash.oak b/stdlib/hash.oak
+index 4c2412fe..1640e74e 100644
+--- a/stdlib/hash.oak
++++ b/stdlib/hash.oak
+@@ -483,32 +483,26 @@ blake3_parent_words: (left: [8]u32, right: [8]u32): [16]u32 = [16]u32{
+   right[0], right[1], right[2], right[3], right[4], right[5], right[6], right[7]
+ }
+ 
+-// Push a finished chunk's chaining value, merging parents as the chunk
+-// counter's trailing zero bits dictate (the reference's stack discipline).
+-blake3_push_chunk: (state: Blake3State, cv: [8]u32): Blake3State {
+-  next: Blake3State = state
++// Merge a finished chunk into the caller's stack without copying the whole
++// state. The caller retains its block and resets the other chunk fields.
++blake3_push_cv: (stack: [*]u32, depth: u32, counter: u64, cv: [8]u32): u32 {
+   merged: [8]u32 = cv
+-  total: u64 = next.chunk_counter + u64(1)
+-  while total % u64(2) == u64(0) && next.stack_len > u32(0) {
+-    top: u32 = (next.stack_len - u32(1)) * u32(8)
+-    left: [8]u32 = [8]u32{ next.stack[top], next.stack[top + u32(1)], next.stack[top + u32(2)], next.stack[top + u32(3)], next.stack[top + u32(4)], next.stack[top + u32(5)], next.stack[top + u32(6)], next.stack[top + u32(7)] }
++  total: u64 = counter + u64(1)
++  while total % u64(2) == u64(0) && depth > u32(0) {
++    top: u32 = (depth - u32(1)) * u32(8)
++    left: [8]u32 = [8]u32{ stack[top], stack[top + u32(1)], stack[top + u32(2)], stack[top + u32(3)], stack[top + u32(4)], stack[top + u32(5)], stack[top + u32(6)], stack[top + u32(7)] }
+     parent: [16]u32 = blake3_compress(BLAKE3_IV, blake3_parent_words(left, merged), u64(0), u32(64), BLAKE3_PARENT)
+     merged = blake3_first8(parent)
+-    next.stack_len = next.stack_len - u32(1)
++    depth = depth - u32(1)
+     total = total / u64(2)
+   }
+-  at: u32 = next.stack_len * u32(8)
++  at: u32 = depth * u32(8)
+   k: u32 = 0
+   while k < u32(8) {
+-    next.stack[at + k] = merged[k]
++    stack[at + k] = merged[k]
+     k = k + u32(1)
+   }
+-  next.stack_len = next.stack_len + u32(1)
+-  next.chunk_counter = next.chunk_counter + u64(1)
+-  next.cv = BLAKE3_IV
+-  next.blocks_compressed = u32(0)
+-  next.block_len = u32(0)
+-  next
++  depth + u32(1)
+ }
+ 
+ // Absorb a view. A chunk is closed only when more input follows it, so the
+@@ -518,7 +512,15 @@ pub blake3_update: (state: Blake3State, src: []u8): Blake3State {
+   i: u32 = 0
+   while i < len(src) {
+     next.block_len == u32(64) && next.blocks_compressed == u32(15) ? {
+-      next = blake3_push_chunk(next, blake3_chunk_cv(next))
++      finished: [8]u32 = blake3_chunk_cv(next)
++      depth: u32 = next.stack_len
++      counter: u64 = next.chunk_counter
++      pushed: u32 = blake3_push_cv(span(&next.stack), depth, counter, finished)
++      next.stack_len = pushed
++      next.chunk_counter = counter + u64(1)
++      next.cv = BLAKE3_IV
++      next.blocks_compressed = u32(0)
++      next.block_len = u32(0)
+     } | {
+       next.block_len == u32(64) ? {
+         next.cv = blake3_absorb_cv(next.cv, next.block, next.chunk_counter, blake3_start_flag(next))

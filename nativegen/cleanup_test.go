@@ -149,3 +149,21 @@ func TestCleanupZeroIndexStore(t *testing.T) {
 		})
 	}
 }
+
+// Rule 6: a Bool materialized only to be branched on becomes the branch
+// on the flags; one read again, or one tested after another instruction,
+// stays.
+func TestCleanupFusesFlagBranches(t *testing.T) {
+	out, n := cleanupText(t, "  cmp w2, w1\n  cset w5, hs\n  cbz w5, skip\n  add x0, x0, #1\nskip:\n  cmp w2, #1\n  cset w5, eq\n  cbnz w5, done\n  add x0, x0, #2\ndone:\n  ret")
+	if n != 2 || !strings.Contains(out, "b.lo skip") || !strings.Contains(out, "b.eq done") || strings.Contains(out, "cset") {
+		t.Fatalf("cset+cbz is b.!cond and cset+cbnz is b.cond (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  cmp w2, w1\n  cset w5, hs\n  cbz w5, skip\n  add w0, w5, #1\nskip:\n  ret")
+	if n != 0 || !strings.Contains(out, "cset w5, hs") {
+		t.Fatalf("a Bool read after the branch keeps its cset (%d removed):\n%s", n, out)
+	}
+	out, n = cleanupText(t, "  cmp w2, w1\n  cset w5, hs\n  add w0, w0, #1\n  cbz w5, skip\nskip:\n  ret")
+	if n != 0 {
+		t.Fatalf("an instruction between the cset and the branch refuses the fusion (%d removed):\n%s", n, out)
+	}
+}

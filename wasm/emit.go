@@ -255,6 +255,16 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		dispatch = len(forward) == 0
 	}
+	var regionLoop regionLoopShape
+	var structuredRegionLoop bool
+	if dispatch {
+		var err error
+		regionLoop, structuredRegionLoop, err = f.matchRegionLoop()
+		if err != nil {
+			return nil, err
+		}
+		dispatch = !structuredRegionLoop
+	}
 	extra := 0
 	if dispatch {
 		extra = 1
@@ -301,6 +311,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	}
 	if len(forward) != 0 {
 		if err := f.forwardBody(&b, forward, functions); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	if structuredRegionLoop {
+		if err := f.regionLoopBody(&b, regionLoop, functions); err != nil {
 			return nil, err
 		}
 		return b, nil
