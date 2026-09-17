@@ -9191,3 +9191,71 @@ past the entry the divisor leaves; a midpoint divided by one is not below
 the bound, since `lo + (hi - lo)` is `hi` itself; and a bound register the
 back edge leaves unbounded carries no ceiling at all
 (`TestCheckerSearchLoopCeiling`).
+
+### 9.al A slack fact outlives its length register (2026-09-17)
+
+The largest elision-relevant refusal left after §9.ak, found by
+histogramming the refused candidate forms rather than by guessing: fifteen
+span reads across the UTF-8, JSON and URL decoders, refused for want of a
+dominating index guard. The cause is not a missing law. It is that the
+fact was keyed to a register the allocator was entitled to reuse.
+
+`json_hex4` is the clearest case. Its Oak body guards `len(src) >= 4 &&
+at <= len(src) - 4` and then reads `src[at]` through `src[at + 3]`, all
+four proven. That lowers to `cmp w20, #4; b.lo exit; sub w10, w20, #4;
+cmp w21, w10; b.hi exit`, which the checker reads as the slack fact `w21 +
+4 <= len` with the length in w20 and the span's minimum at four. The
+program has no further use for the length, so the allocator reuses w20,
+and a later call clobbers the caller-saved copy in w1. Every register
+holding the length is then gone, `forgetRegisterFacts` drops the index
+fact that named one, `dropLen` lapsed the minimum with the last of them,
+and the three reads after the first were refused. Deleting that one
+register reuse from the body admits all four, which is how the cause was
+pinned.
+
+The length is not a register. It is a property of the span, which its
+base register still identifies, and `Oak.SpanAlias.SpanMeans` already
+states it that way: the proven minimum is a conjunct about the world, with
+no register in it. So:
+
+- An index fact whose bound register is written is re-keyed to the span
+  rather than dropped, when no other register holds the length and exactly
+  one span measured by that register remains (`lenOfSpan`, `spanBase`).
+  Exactly one, because a register measuring two spans names no single
+  length.
+- The same re-keying happens at a call, where a caller-saved length
+  register dies and the span's callee-saved base survives.
+- `dropLen` keeps the proven minimum when the last length register goes.
+  The Lean model made this obviously sound and the proof went through
+  unchanged: `SpanMeans` never mentions a register in that conjunct.
+- A re-keyed fact dies with the base register that named its span, so a
+  span later bound at the same register cannot inherit it.
+- At the access the fact bounds the length only when its span is the one
+  being addressed, and the slack guard's side condition is restated
+  explicitly for it: the subtraction that made the slack register wrapped
+  unless the span's proven minimum covers the run
+  (`Oak.Assembler.slack_survives_len`). That condition is the whole
+  soundness of the re-keying and the reject cases exist to hold it.
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`af3167e8`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| trap branches emitted | 772 | **768** |
+| instructions emitted | 33338 | **33328** |
+| element guards elided | 175 | **179** |
+| refused candidate forms | 280 | **271** |
+
+No body anywhere gains a trap branch and all 313 units keep their
+verdicts. `json_hex4` goes from three trap branches to none, eliding four
+guards where it elided one; `percent_encode` from five to four. This is
+the largest movement in emitted code of the four increments from §9.ai to
+here, and it came from reading the histogram instead of guessing which
+law was missing.
+
+The reject cases are the point (`TestCheckerSlackOutlivesLengthRegister`):
+without the proven minimum the subtraction may have wrapped, so the read
+is refused; an element past the run the slack leaves is refused; and the
+fact dies with the base register that named the span.

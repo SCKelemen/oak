@@ -317,6 +317,26 @@ theorem transitive_const_bound (i b K : Nat) (hi : i < b) (hb : b < K) (hK : 2 �
     i < K - 1 := by
   omega
 
+/-- **A slack fact outlives its length register** (`lenOfSpan`,
+    docs/spec/94-assembler.md §9.al): the guard `wI + K ≤ len` is a fact
+    about the span, not about the register that carried its length, so an
+    access at `wI + j` for `j < K` is inside the span however that
+    register was later reused. The side condition is the one the slack
+    guard always needed — `K ≤ len`, which the span's proven minimum
+    supplies — because the subtraction that made the slack register
+    wrapped without it. `Oak.SpanAlias.SpanMeans` states the minimum with
+    no register in it, which is why re-keying the fact to the span is
+    sound. -/
+theorem slack_survives_len (i K j len : Nat) (hmin : K ≤ len) (hslack : i + K ≤ len)
+    (hj : j < K) : i + j < len := by
+  omega
+
+/-- And the run it admits: `w` elements at `wI + j` stay inside when
+    `j + w ≤ K`. -/
+theorem slack_survives_len_run (i K j w len : Nat) (hslack : i + K ≤ len)
+    (hj : j + w ≤ K) : i + j + w ≤ len := by
+  omega
+
 /-- **The select of two ceilings** (`csel wD, wA, wB, cond`): the result is
     one of its arms, so it is below the larger ceiling. This is what a
     search's bound register carries across its back edge. -/
