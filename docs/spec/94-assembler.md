@@ -6282,6 +6282,31 @@ selected body remains `proven`, and all five OS differential tests pass. No
 follow-on runtime claim is attached because the
 available host was heavily loaded during the attempted measurement.
 
+The separate `reuse-record-base-carriers` child candidate handles the case in
+which no whole-suffix scratch is free but the first computed destination
+already remains intact. It is eligible only after scheduling and
+`share-record-bases`. The first definition must dominate every renamed read;
+the span base and index remain stable; later stride temporaries are dead; and
+the acyclic linear suffix contains no call or surviving write of the carrier
+through the final replacement. A later destination is rewritten only through
+its dominated reads before its next definition. All materialization
+instructions of that later base disappear, but guards, branches, loads, and
+stores stay in place. Calls, loops, unresolved direct branches, carrier
+clobbers, and non-dominated reads refuse the pass. The established
+scratch-carried candidate remains an independent fallback.
+
+This child is likewise non-neutral and **verdict-gated**; it adds no semantic
+checker rule. Materialization v29 keys its lane flag independently. Against a
+same-compiler `OAK_OPT_SKIP=reuse-record-base-carriers` control, the stage-2
+pilot removes 3 instructions each from proven `free_table`, `translate`, and
+`walk_leaf`, and 21 from the now-proven `unmap_page`. The 30 instructions are
+exactly 120 bytes
+from Mach-O `__text` and the object; 27 relocations remain. Both fresh builds
+report zero of 22 verdict-cache hits and pass all five OS differential tests.
+No runtime claim is attached because final load averages were 79–113. Exact
+provenance is in
+`benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
+
 **Shared scalar-global addresses (2026-09-17, AArch64 lane).** The
 `share-global-addresses` machine candidate (`nativegen/global_address_cse.go`)
 recognizes a declared non-aggregate package global's exact address pair,

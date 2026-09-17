@@ -239,6 +239,7 @@ var setAside = map[string]string{
 	nativegen.TransformCarryIndex:          "recomputes its loop index",
 	nativegen.TransformRedundantGuards:     "keeps its repeated span guards",
 	nativegen.TransformRecordBases:         "recomputes its record-span bases",
+	nativegen.TransformRecordBaseCarriers:  "keeps separate record-base destinations",
 	nativegen.TransformGlobalAddresses:     "recomputes its scalar-global addresses",
 	nativegen.TransformForwardGlobalLoads:  "reloads its scalar globals after stores",
 	nativegen.TransformGlobalLoadMasks:     "keeps narrow scalar-global reload masks",

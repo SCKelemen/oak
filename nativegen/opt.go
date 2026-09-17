@@ -68,6 +68,7 @@ const (
 	TransformCarryIndex          = "carry-loop-index"
 	TransformRedundantGuards     = "elide-redundant-guards"
 	TransformRecordBases         = "share-record-bases"
+	TransformRecordBaseCarriers  = "reuse-record-base-carriers"
 	TransformGlobalAddresses     = "share-global-addresses"
 	TransformForwardGlobalLoads  = "forward-global-loads"
 	TransformGlobalLoadMasks     = "elide-global-load-masks"
@@ -530,6 +531,14 @@ func Transforms() []opt.Transform {
 			fired:   SharedRecordBases,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRecordBaseCarriers, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ReuseRecordBaseDestinations },
+			eligible: func(l Lane) bool { return l.Schedule && l.ShareRecordBases },
+			apply:    func(l Lane) Lane { l.ReuseRecordBaseDestinations = true; return l },
+			fired:    ReusedRecordBaseDestinations,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			name: TransformGlobalAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:  arm64Only,
 			applied: func(l Lane) bool { return l.ShareGlobalAddresses },
@@ -660,6 +669,7 @@ func PlainLane(lane Lane) Lane {
 	lane.CarryLoopIndices = false
 	lane.ElideRedundantGuards = false
 	lane.ShareRecordBases = false
+	lane.ReuseRecordBaseDestinations = false
 	lane.ShareGlobalAddresses = false
 	lane.ForwardGlobalLoads = false
 	lane.ElideGlobalLoadMasks = false

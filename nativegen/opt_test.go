@@ -256,7 +256,7 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 36 {
+	if got := len(registry.Transforms()); got != 37 {
 		t.Fatalf("%d transforms", got)
 	}
 	rotate, _ := registry.Lookup(TransformRotate)
@@ -266,7 +266,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 		t.Fatalf("loop rotation must preserve an unrotated fallback until its changed control shape proves")
 	}
 	loopRewrites := LoopRewriteEligibility{Reduction: true, VectorReduction: true, VectorMap: true, VectorFold: true, Constant: true}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, ShareGlobalAddresses: true, ForwardGlobalLoads: true, ElideGlobalLoadMasks: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, TrimCalleeSaves: true, ElideEmptyFrame: true, Cleanup: true, PostScheduleCleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, UnrollConstant: true, UnrollSmall: true, UnrollFills: true, UnrollFillsEligible: true, LoopRewrites: loopRewrites, Fuse: true, FuseExits: true, Schedule: true})
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, CarryLoopIndices: true, ElideRedundantGuards: true, ShareRecordBases: true, ReuseRecordBaseDestinations: true, ShareGlobalAddresses: true, ForwardGlobalLoads: true, ElideGlobalLoadMasks: true, VectorHomes: true, LoopArrayHomes: true, LoopResultHomes: true, Reallocate: true, TrimCalleeSaves: true, ElideEmptyFrame: true, Cleanup: true, PostScheduleCleanup: true, VectorBlocks: true, ShareVectorAddresses: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, VectorLanes: true, UnrollConstant: true, UnrollSmall: true, UnrollFills: true, UnrollFillsEligible: true, LoopRewrites: loopRewrites, Fuse: true, FuseExits: true, Schedule: true})
 	if PlainLane(Lane{UnrollVectorMaps: true}).UnrollVectorMaps {
 		t.Fatal("plain lane retained map unrolling")
 	}
@@ -280,13 +280,13 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	if gated, ok := sharing.(opt.Gated); !ok || !gated.NeedsVerdict() {
 		t.Fatal("late address sharing must require a semantic verdict")
 	}
-	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.CarryLoopIndices || plain.ElideRedundantGuards || plain.ShareRecordBases || plain.ShareGlobalAddresses || plain.ForwardGlobalLoads || plain.ElideGlobalLoadMasks || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.TrimCalleeSaves || plain.ElideEmptyFrame || plain.Cleanup || plain.PostScheduleCleanup || plain.VectorBlocks || plain.ShareVectorAddresses || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.UnrollConstant || plain.UnrollSmall || plain.UnrollFills || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
+	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.CarryLoopIndices || plain.ElideRedundantGuards || plain.ShareRecordBases || plain.ReuseRecordBaseDestinations || plain.ShareGlobalAddresses || plain.ForwardGlobalLoads || plain.ElideGlobalLoadMasks || plain.VectorHomes || plain.LoopArrayHomes || plain.LoopResultHomes || plain.Reallocate || plain.TrimCalleeSaves || plain.ElideEmptyFrame || plain.Cleanup || plain.PostScheduleCleanup || plain.VectorBlocks || plain.ShareVectorAddresses || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.VectorLanes || plain.UnrollConstant || plain.UnrollSmall || plain.UnrollFills || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
 	for _, tr := range registry.Transforms() {
 		next := tr.Apply(identity)
-		if tr.Name() == TransformGlobalLoadMasks || tr.Name() == TransformPostScheduleCleanup || tr.Name() == TransformTrimCalleeSaves || tr.Name() == TransformEmptyFrame {
+		if tr.Name() == TransformGlobalLoadMasks || tr.Name() == TransformPostScheduleCleanup || tr.Name() == TransformTrimCalleeSaves || tr.Name() == TransformEmptyFrame || tr.Name() == TransformRecordBaseCarriers {
 			if next != nil {
 				t.Fatalf("%s applied without its parent", tr.Name())
 			}
@@ -298,6 +298,9 @@ func TestTransformsToggleTheLane(t *testing.T) {
 				parentLane.ElideGlobalLoadMasks = true
 			} else if tr.Name() == TransformTrimCalleeSaves {
 				parentLane.Reallocate = true
+			} else if tr.Name() == TransformRecordBaseCarriers {
+				parentLane.Schedule = true
+				parentLane.ShareRecordBases = true
 			} else {
 				parentLane.Reallocate = true
 				parentLane.TrimCalleeSaves = true
@@ -312,7 +315,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.ElideRedundantGuards || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.TrimCalleeSaves || lane.ElideEmptyFrame || lane.Cleanup || lane.PostScheduleCleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.UnrollConstant || lane.UnrollSmall || lane.UnrollFills || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.UseOptIR || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.CarryLoopIndices || lane.ElideRedundantGuards || lane.VectorHomes || lane.LoopArrayHomes || lane.LoopResultHomes || lane.Reallocate || lane.TrimCalleeSaves || lane.ElideEmptyFrame || lane.ReuseRecordBaseDestinations || lane.Cleanup || lane.PostScheduleCleanup || lane.VectorBlocks || lane.ShareVectorAddresses || lane.MultiplyAdd || lane.ValueSelect || lane.VectorReductions || lane.VectorLanes || lane.UnrollConstant || lane.UnrollSmall || lane.UnrollFills || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}

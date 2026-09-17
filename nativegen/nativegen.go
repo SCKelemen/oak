@@ -1666,6 +1666,10 @@ type Lane struct {
 	// It composes only with scheduling and is selected only when the whole
 	// machine body proves.
 	ShareRecordBases bool
+	// ReuseRecordBaseDestinations carries a repeated record base in the first
+	// computed destination when no surviving instruction overwrites it. It is
+	// a separate child candidate of ShareRecordBases.
+	ReuseRecordBaseDestinations bool
 	// ShareGlobalAddresses carries one exact adrp/add address of a declared
 	// scalar package global through later materializations on call-free paths.
 	// It composes only with scheduling and requires a whole-body verdict.
@@ -2154,6 +2158,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	// deliberately longer-lived carried value.
 	if lane.ShareRecordBases && lane.Schedule {
 		sharedRecordBases[out] = shareRecordBase(out)
+	}
+	if lane.ReuseRecordBaseDestinations && lane.ShareRecordBases && lane.Schedule {
+		reusedRecordBaseDestinations[out] = reuseRecordBaseDestination(out)
 	}
 	if lane.ShareGlobalAddresses && lane.Schedule {
 		sharedGlobalAddresses[out] = shareGlobalAddresses(out)

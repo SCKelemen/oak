@@ -343,6 +343,33 @@ Runtime is intentionally unreported because host load averages remained
 
 [Static observations and provenance](results/stage2-empty-frame-elision-2026-09-17.json).
 
+## OS stage-2: reuse live record-base destinations, 2026-09-17
+
+The verifier-gated `reuse-record-base-carriers` child candidate extends
+`share-record-bases` when its whole-suffix scratch rule is too restrictive.
+It retains the first computed base in its existing destination, but only when
+that definition dominates every replacement and no call or surviving write
+can clobber it. The scratch-carried parent remains selectable, and
+`OAK_OPT_SKIP=reuse-record-base-carriers` produced the same-compiler control.
+Both artifacts used fresh verification with zero of 22 verdicts from cache.
+
+| Selected body | Instructions | Multiplies | Verdict |
+| --- | ---: | ---: | --- |
+| `free_table` | 29 → 26 | 3 → 2 | proven |
+| `translate` | 88 → 85 | 3 → 2 | proven |
+| `unmap_page` | 202 → 181 | 9 → 2 | proven |
+| `walk_leaf` | 132 → 129 | 7 → 6 | proven |
+
+That is 30 selected instructions and 10 multiplies removed. Mach-O `__text`
+and the complete object both shrink by 120 bytes (4268→4148 and 5792→5672),
+while all 27 relocations remain. `translate` retains its exact bit-level proof
+at 1,905,704 BDD nodes; `unmap_page` now proves at 1,906,094 nodes after the
+upstream trap-domain refinement. Both objects pass all five OS differential
+tests. Runtime is intentionally unreported: final host load averages were 79–113,
+far too high for a useful A/B measurement.
+
+[Static observations and provenance](results/stage2-record-base-carriers-2026-09-17.json).
+
 ## OS stage-2: clean final scheduled copies, 2026-09-17
 
 The verifier-gated `post-schedule-cleanup` candidate reruns the established
