@@ -736,6 +736,27 @@ is not an Arm Data Abort. Exact-source/mutation checks retain the register,
 write/trace/return order, and no-op trace body, including its continuation
 lines. A no-device trace is not architectural write-event evidence.
 
+`SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
+the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span
+write-back. Every byte's optional lookup is exact, and the total byte view
+commutes with the Oak store for any caller-supplied fallback. Byte presence is
+tracked separately: the value view and presence together determine the
+partial map, while a checked counterexample shows that an absent byte and an
+explicit zero byte can have identical total views. Neither presence nor the
+fallback grants allocation, ownership, or access authority. The actual
+generated wrapper result, its selector-initialization premise, and pre-call
+endian conversion compose with this correspondence. The existing Oak law
+for disjoint eight-byte elements transports to the Sail map.
+
+Two further checked limits matter for optimization: distinct starting
+addresses one byte apart can overlap and make store order observable, while
+successive stores at the same address leave only the last value in the final
+map. The latter equation does not justify deleting a BBM break store. Even
+the complete sequential byte map omits intermediate architectural events and
+concurrent observers. These are width-eight model-to-model proofs, not a Go
+executor/call-summary refinement, real frame/span placement, or permission to
+reorder published memory. The strict BBM admission boundary is unchanged.
+
 Alignment, normal fault-free translation and PA/default-RAM provenance,
 special-route exclusion, dynamic instruction-to-wrapper reachability, and
 architectural RAM effects remain open. The sequential byte updates prove

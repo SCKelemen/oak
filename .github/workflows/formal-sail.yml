@@ -42,6 +42,7 @@ on:
       - 'spec/lean/Oak/RiscV.lean'
       - 'spec/lean/Oak/ArmASL.lean'
       - 'spec/lean/Oak/AssemblerSemantics.lean'
+      - 'spec/lean/Oak/SpanArguments.lean'
       - 'spec/lean/Oak/AArch64Encoding.lean'
       - 'spec/lean/Oak/AArch64ReturnEncoding.lean'
       - 'spec/lean/Oak/AArch64DirectBranchEncoding.lean'

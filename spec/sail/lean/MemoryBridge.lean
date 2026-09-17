@@ -1,4 +1,5 @@
 import Bridge
+import Oak.SpanArguments
 import Std.Data.ExtHashMap.Lemmas
 
 /-!
@@ -9,6 +10,8 @@ Unlike the pure request projections, this module evaluates the generated
 The register-reading `__WriteMemory` wrapper is also generated unchanged,
 including the no-device trace helper. Its success requires a populated
 `__defaultRAM` entry in the actual generated register state.
+`SpanRefinement` connects this byte update to Oak's existing span store
+model, preserving byte presence separately from a total observation.
 The footprint is a sequential byte-map update, not an Arm/CAT event, an
 atomicity claim, or a proof of the C runtime. Reaching this wrapper from STR
 still requires the external alignment/translation/fault/MMIO premises.
@@ -62,6 +65,21 @@ theorem store64_frame (mem : Memory) (address : Nat) (data : BitVec 64)
   simp [store64, Std.ExtHashMap.getElem?_insert, ne0,
     ne 1 (by decide), ne 2 (by decide), ne 3 (by decide),
     ne 4 (by decide), ne 5 (by decide), ne 6 (by decide), ne 7 (by decide)]
+
+/-- Exact optional lookup, including absence outside the written range. -/
+theorem store64_lookup (mem : Memory) (address : Nat) (data : BitVec 64)
+    (other : Nat) :
+    (store64 mem address data)[other]? =
+      if address ≤ other ∧ other < address + 8 then
+        some (data.extractLsb' (8 * (other - address)) 8)
+      else mem[other]? := by
+  by_cases inside : address ≤ other ∧ other < address + 8
+  · rw [if_pos inside]
+    have hi : other - address < 8 := by omega
+    simpa only [Nat.add_sub_of_le inside.1] using
+      store64_byte mem address data ⟨other - address, hi⟩
+  · rw [if_neg inside]
+    exact store64_frame mem address data other (by omega)
 
 /-- A complete sequential-state footprint for the generated wrapper. The
 state equality in `writeRAM64_run` also rules out any exceptional result. -/
@@ -242,5 +260,163 @@ theorem str_x2_x0_selected_writeMemory_run (state : State)
   dsimp only
   rw [writeMemory64_eq_writeRAM_of_initialized state defaultRAM _ _ initialized]
   exact str_x2_x0_selected_writeRAM_run state defaultRAM bigEndian pa x0 x2 sp
+
+namespace SpanRefinement
+
+/-- A total *observation* of Sail's partial byte map. The fallback is
+arbitrary and is not an initialized-byte, address-validity or ownership
+certificate. In particular, equality of views cannot establish presence. -/
+def byteView (mem : Memory) (fallback : Nat → BitVec 8) : Nat → BitVec 8 :=
+  fun address => (mem[address]?).getD (fallback address)
+
+/-- Presence in the sequential runtime's map, not allocation or access
+authority. Keep this separate from the total Oak byte observation. -/
+def bytePresent (mem : Memory) (address : Nat) : Prop :=
+  ∃ value, mem[address]? = some value
+
+theorem store64_presence (mem : Memory) (address other : Nat) (data : BitVec 64) :
+    bytePresent (store64 mem address data) other ↔
+      (address ≤ other ∧ other < address + 8) ∨ bytePresent mem other := by
+  unfold bytePresent
+  rw [store64_lookup]
+  by_cases inside : address ≤ other ∧ other < address + 8 <;> simp [inside]
+
+/-- The concrete Sail store and Oak's existing owned-array/span byte store
+commute with the byte observation, for every fallback and every prior map.
+The shift/truncate on the Oak side equals the runtime's byte extraction. -/
+theorem store64_refines_span_store (mem : Memory) (fallback : Nat → BitVec 8)
+    (address : Nat) (data : BitVec 64) :
+    byteView (store64 mem address data) fallback =
+      Oak.SpanArguments.storeBytes (byteView mem fallback) address 8 data := by
+  funext other
+  unfold byteView Oak.SpanArguments.storeBytes
+  rw [store64_lookup]
+  split <;> rfl
+
+/-- Lift the byte-model refinement to an actual generated wrapper result,
+retaining the state-indexed RAM-selector initialization requirement. -/
+theorem writeMemory64_refines_span_store (state : State)
+    (defaultRAM address : BitVec 56) (data : BitVec 64)
+    (fallback : Nat → BitVec 8)
+    (initialized : state.regs.get? Register.__defaultRAM = some defaultRAM) :
+    ∃ post : State,
+      (Out.Functions.__WriteMemory 8 address data).run state = .ok () post ∧
+      byteView post.mem fallback =
+        Oak.SpanArguments.storeBytes (byteView state.mem fallback) address.toNat 8 data ∧
+      (∀ other, bytePresent post.mem other ↔
+        (address.toNat ≤ other ∧ other < address.toNat + 8) ∨ bytePresent state.mem other) ∧
+      post.regs = state.regs ∧ post.choiceState = state.choiceState ∧
+      post.tags = state.tags ∧ post.cycleCount = state.cycleCount ∧
+      post.sailOutput = state.sailOutput := by
+  refine ⟨{ state with mem := store64 state.mem address.toNat data },
+    writeMemory64_initialized state defaultRAM address data initialized,
+    store64_refines_span_store state.mem fallback address.toNat data,
+    ?_, rfl, rfl, rfl, rfl, rfl⟩
+  intro other
+  exact store64_presence state.mem address.toNat other data
+
+/-- Preserve the official pre-call endian selection when connecting the
+generated effect to the Oak byte store. Translation/reachability is still
+external: `pa` and `bigEndian` are inputs, not inferred from the source. -/
+theorem aligned_writeMemory64_refines_span_store (state : State)
+    (defaultRAM : BitVec 56) (bigEndian : Bool) (pa : BitVec 52)
+    (preMemData : BitVec 64) (fallback : Nat → BitVec 8)
+    (initialized : state.regs.get? Register.__defaultRAM = some defaultRAM) :
+    let args := Out.Functions.str64_aligned_normal_write_memory_arguments_pure
+      bigEndian pa preMemData
+    ∃ post : State,
+      (Out.Functions.__WriteMemory 8 args.1 args.2).run state = .ok () post ∧
+      byteView post.mem fallback =
+        Oak.SpanArguments.storeBytes (byteView state.mem fallback) pa.toNat 8
+          (if bigEndian then Oak.ArmASL.bigEndianReverse64 preMemData else preMemData) := by
+  dsimp only
+  refine ⟨{ state with
+    mem := store64 state.mem pa.toNat
+      (if bigEndian then Oak.ArmASL.bigEndianReverse64 preMemData else preMemData) }, ?_, ?_⟩
+  · rw [writeMemory64_eq_writeRAM_of_initialized state defaultRAM _ _ initialized]
+    exact aligned_normal_writeRAM64_run state defaultRAM bigEndian pa preMemData
+  · exact store64_refines_span_store state.mem fallback pa.toNat _
+
+/-- Transport the existing Oak disjoint-element law, without claiming that
+these mathematical array slots have been allocated or translated. -/
+theorem distinct_element_bytes_survive (mem : Memory) (fallback : Nat → BitVec 8)
+    (base i j k : Nat) (first second : BitVec 64) (distinct : i ≠ j) (hk : k < 8) :
+    byteView (store64 (store64 mem (base + i * 8) first) (base + j * 8) second)
+        fallback (base + i * 8 + k) = (first >>> (8 * k)).truncate 8 := by
+  rw [store64_refines_span_store, store64_refines_span_store]
+  exact Oak.SpanArguments.two_writes_commute_on_first
+    (byteView mem fallback) base i j 8 first second distinct k hk
+
+/-- Keeping both the byte observation and presence is lossless for the
+partial map. Observation equality alone, below, is intentionally weaker. -/
+theorem eq_of_view_and_presence (left right : Memory) (fallback : Nat → BitVec 8)
+    (values : byteView left fallback = byteView right fallback)
+    (presence : ∀ address, bytePresent left address ↔ bytePresent right address) :
+    left = right := by
+  apply Std.ExtHashMap.ext_getElem?
+  intro address
+  have hv := congrFun values address
+  have hp := presence address
+  unfold byteView at hv
+  unfold bytePresent at hp
+  cases hl : left[address]? <;> cases hr : right[address]? <;> simp_all
+
+/-- Regression: absent bytes and explicitly present zero bytes can have
+identical total views. Do not infer address validity from the fallback. -/
+theorem total_view_can_hide_absence (address : Nat) :
+    byteView (∅ : Memory) (fun _ => 0#8) =
+        byteView ((∅ : Memory).insert address (0#8)) (fun _ => 0#8) ∧
+      ¬ bytePresent (∅ : Memory) address ∧
+      bytePresent ((∅ : Memory).insert address (0#8)) address := by
+  constructor
+  · funext other
+    simp only [byteView, Std.ExtHashMap.getElem?_insert, Std.ExtHashMap.getElem?_empty]
+    split <;> rfl
+  · simp [bytePresent]
+
+/-- Disjoint byte footprints suffice for sequential map commutation.
+This is not an Arm event-order or publication-reordering theorem. -/
+theorem disjoint_store64_commute (mem : Memory) (a b : Nat) (first second : BitVec 64)
+    (disjoint : a + 8 ≤ b ∨ b + 8 ≤ a) :
+    store64 (store64 mem a first) b second = store64 (store64 mem b second) a first := by
+  apply Std.ExtHashMap.ext_getElem?
+  intro other
+  simp only [store64_lookup]
+  by_cases ha : a ≤ other ∧ other < a + 8 <;>
+    by_cases hb : b ≤ other ∧ other < b + 8
+  · omega
+  all_goals simp only [ha, hb, ↓reduceIte]
+
+/-- Model limit: even a lossless final byte map cannot observe an
+intermediate write overwritten at the same address. In particular, this
+equation does NOT justify deleting a published descriptor's BBM break. -/
+theorem store64_last_write_wins (mem : Memory) (address : Nat) (first last : BitVec 64) :
+    store64 (store64 mem address first) address last = store64 mem address last := by
+  apply Std.ExtHashMap.ext_getElem?
+  intro other
+  simp only [store64_lookup]
+  split <;> simp_all
+
+/-- Regression: starts differing by one byte are not independent stores.
+The differing shared byte witnesses order sensitivity for every prior map. -/
+theorem overlapping_store64_order_matters (mem : Memory) (address : Nat) :
+    store64 (store64 mem address (0#64)) (address + 1) (0xffffffffffffffff#64) ≠
+      store64 (store64 mem (address + 1) (0xffffffffffffffff#64)) address (0#64) := by
+  intro same
+  have lastOnes :
+      (store64 (store64 mem address (0#64)) (address + 1)
+        (0xffffffffffffffff#64))[address + 1]? = some (255#8) := by
+    simpa using store64_byte (store64 mem address (0#64)) (address + 1)
+      (0xffffffffffffffff#64) ⟨0, by decide⟩
+  have lastZero :
+      (store64 (store64 mem (address + 1) (0xffffffffffffffff#64))
+        address (0#64))[address + 1]? = some (0#8) := by
+    simpa using store64_byte (store64 mem (address + 1) (0xffffffffffffffff#64))
+      address (0#64) ⟨1, by decide⟩
+  have impossible : some (255#8) = some (0#8) :=
+    lastOnes.symm.trans ((congrArg (fun m : Memory => m[address + 1]?) same).trans lastZero)
+  contradiction
+
+end SpanRefinement
 
 end Oak.SailBridge.SequentialRAM

@@ -1146,6 +1146,20 @@ initialization proof is implied, and this runtime error is not an Arm Data
 Abort. Exact-source/mutation gates pin the register, write/trace/return order,
 and the complete no-op trace expression, including continuation lines.
 
+The `SpanRefinement` section of the same bridge now relates that generated
+eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
+for owned-array/span write-back. It preserves byte presence separately from
+the total value view and proves that the two together determine the original
+partial map. A checked absent-byte/zero-byte counterexample prevents treating
+the arbitrary fallback as initialized storage. The initialized wrapper and
+pre-call endian selection compose with this model correspondence, and Oak's
+disjoint-element law transports to Sail's sequential map. A second negative
+example shows overlapping stores one byte apart are order-sensitive. The
+last-write-wins equation also records why final RAM state alone cannot justify
+eliminating an intermediate BBM break. These width-eight model proofs do not
+establish Go executor/call-summary refinement, actual array placement, storage
+authority, or safe concurrent reordering.
+
 Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
 reachability, architectural memory effects, atomicity/non-tearing, unique
 architectural writes, tags/device behavior, CAT membership, completion,
