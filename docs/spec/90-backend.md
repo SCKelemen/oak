@@ -41,6 +41,11 @@ C is not Oak's semantic definition and should not prevent future native/LLVM/etc
 
 ## 2a. Targets and cross builds
 
+The C/native target set below now has an experimental sibling, `core/wasm32`.
+It emits Wasm bytes directly, not C or ELF/Mach-O, and is specified separately
+in [91-wasm.md](91-wasm.md). Existing C/native target theorems do not yet cover
+this extension. See the [target maturity matrix](../targets.md).
+
 Status: implemented (`target`, `toolchain`; `oak build -target os/arch`;
 `compiler/e2e_cross_test.go`, `Oak.Target`). Motivated by dbs ask 6
 (`docs/notes/dbs-feedback-2026-09.md`): AArch64 and RISC-V are its only

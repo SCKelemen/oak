@@ -736,6 +736,9 @@ func (comp Compilation) Lower() Stage[*LoweredProgram] {
 
 // EmitC runs the current C backend through the same fluent compilation value.
 func (comp Compilation) EmitC() Stage[string] {
+	if comp.options.Target.CoreWasm() {
+		return Failure[string](fmt.Errorf("core/wasm32 requires EmitWasm, not EmitC"))
+	}
 	comp.options.InlineHelpers = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
 		for _, stmt := range lowered.Root.Statements {
@@ -780,6 +783,9 @@ type NativeOutput struct {
 // EmitNative emits the C with asm units as prototypes and the companion
 // object holding their machine code, in one pass over the program.
 func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] {
+	if comp.options.Target.CoreWasm() {
+		return Failure[NativeOutput](fmt.Errorf("core/wasm32 requires EmitWasm, not EmitNative"))
+	}
 	comp.options.InlineHelpers = true
 	comp.options.NativeAsm = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) (NativeOutput, error) {

@@ -195,6 +195,9 @@ func quoteAsm(text string) string {
 func TestTimehostCompilesEverywhere(t *testing.T) {
 	root := writeModule(t, map[string]string{"oak.mod": "module example.com/mcu\noak 0.1.0\n", "main.oak": mcuOak})
 	for _, tgt := range target.Supported() {
+		if tgt.CoreWasm() {
+			continue // This tests C host hooks; scalar Wasm has no imports.
+		}
 		code, err := New().WithPackageDir(root).WithTarget(tgt).EmitC().Get()
 		if err != nil {
 			t.Fatalf("%s: %v", tgt, err)
