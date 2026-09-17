@@ -7119,12 +7119,40 @@ that field across every element, so the value agrees leaf for leaf with
 what the field accesses would have read. The element type's name is now
 kept on the span's model, which is what makes the shape reachable.
 
-Two shapes remain trusted, and are the next a scene proof will meet: a
+One shape remains, and it is the writer's counterpart of this: a
 whole-element *assignment*, whose `stp` the store path still refuses as
-a pair — the writer's counterpart of this, needing the value split
-across the leaves it covers — and a loop bounded by the record's own
-count field, which is witnessed rather than proven because no register
-is an affine image of the Oak counter.
+a pair, needing the value split across the leaves it covers. The machine
+half of that is the same tiling; what it waits on is the Oak side, which
+stops before it — `.surfaces is not an array field of s's element` for
+an element of an array field, and `is not a scalar leaf` for an element
+of the span itself.
+
+**A loop bounded by a field, and where its coupling stops
+(2026-09-17).** `while i < s[d].count` comes back witnessed rather than
+proven — "no register is an affine image of the loop variable `total` of
+loop 1 at its header" — while the same loop with the bound read into a
+local first,
+
+```
+n: u32 = s[d].count
+while i < n && i < u32(4) { … }
+```
+
+is proven, and is the better code besides, since the load leaves the
+loop. The workaround is therefore no hardship, but the reason is worth
+recording, because it is not the bound and not the counter.
+
+Instrumenting the coupling search at its failure shows the machine loop
+carrying both variables it should — the accumulator's register and the
+counter's — and the slot for `total` offered one candidate, the
+*counter's* register as a negation (`total↔r4, r4 = 0 - total`), with
+the accumulator's own register absent because an earlier level of the
+search had already taken it for `i`. The search backtracks, so a first
+dead end is not a failure; but this one ends in evidence, which points
+at the conflict-driven pruning that passes a conflict up when "this
+level's choice played no part" rather than at the candidate generation.
+That is a completeness question in the search, not a soundness one: the
+verdict falls back to evidence, which is what it is for.
 
 **A match arm's payload binder belongs to its arm (2026-09-16).** The
 Oak side lowers a match by running each arm from the locals the match
