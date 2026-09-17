@@ -1180,6 +1180,20 @@ pinned CI oracle, not a kernel proof or an architectural event interpretation.
 Neither normal return nor these two requests establish committed writes,
 atomicity, CAT membership, or page-table publication (§126 records its scope).
 
+The adjacent `TestSailLemWriteMemoryTraces` generates the audited memory
+declarations through Sail's prompt Lem backend and executes the actual
+`__WriteMemory` wrapper: selector read, plain address request, plain data
+request. The standalone input copies the contiguous declarations unchanged;
+the complete fragment's unrelated `FPAdd` external cannot be translated by
+Lem, and no replacement FP or memory stubs are introduced. Wrong register
+names and wrong register-value constructors are tested separately, as are
+pending reads and failed traces. The generated selector conversion checks
+its value constructor but not its bit-list length. Two calls retain both
+selector reads and both request pairs, including with different responses.
+This remains an executable oracle without a register-state interpreter,
+Lean/Lem proof, or architectural event interpretation; it cannot establish
+selector initialization/provenance or justify BBM optimization (§126).
+
 A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,
 context-sync and BBM slices, and both cold-entry examples. Each is emitted as a

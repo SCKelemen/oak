@@ -12,10 +12,16 @@ import (
 	"time"
 )
 
-// This executes the official Lem external wrapper, not a Go restatement of
-// its semantics. It is a regression oracle, NOT a kernel-checked proof of
-// execution, an architectural interpreter, or permission to admit BBM bodies.
-func TestSailLemRAMTraces(t *testing.T) {
+type sailLemOracle struct {
+	lem, ocamlfind, sail, library string
+	armExtras                     []byte
+	run                           func(*testing.T, string, string, ...string) ([]byte, error)
+}
+
+// Both event oracles use the same source-pinned prompt runtime. In particular,
+// do not silently substitute the sequential Lem backend for missing tools.
+func newSailLemOracle(t *testing.T) sailLemOracle {
+	t.Helper()
 	tool := func(name string) string {
 		t.Helper()
 		path, err := exec.LookPath(name)
@@ -94,6 +100,14 @@ func TestSailLemRAMTraces(t *testing.T) {
 	if err := auditLemPlainRAM(source); err != nil {
 		t.Fatal(err)
 	}
+	return sailLemOracle{lem, ocamlfind, sail, library, source, run}
+}
+
+// This executes the official Lem external wrapper, not a Go restatement of
+// its semantics. It is a regression oracle, NOT a kernel-checked proof of
+// execution, an architectural interpreter, or permission to admit BBM bodies.
+func TestSailLemRAMTraces(t *testing.T) {
+	oracle := newSailLemOracle(t)
 	harness, err := os.ReadFile(filepath.Join("..", "spec", "sail", "lem", "ram_trace_test.ml"))
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +123,7 @@ func TestSailLemRAMTraces(t *testing.T) {
 		{"reject_false_ack", write + "\n  return ()", "write_mem Write_plain () address size value >>= fun ok ->\n  if ok then return () else Fail \"ack\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := string(source)
+			input := string(oracle.armExtras)
 			if tc.old != "" {
 				if strings.Count(input, tc.old) != 1 {
 					t.Fatal("mutation must replace exactly one occurrence")
@@ -125,15 +139,15 @@ func TestSailLemRAMTraces(t *testing.T) {
 				}
 			}
 			for _, args := range [][]string{
-				{lem, "-ocaml", "-lib", library, "-outdir", dir, filepath.Join(dir, "aarch64_extras.lem")},
-				{ocamlfind, "ocamlopt", "-package", "libsail", "-linkpkg", "-open", "Libsail", "aarch64_extras.ml", "ram_trace_test.ml", "-o", "ram_trace_test"},
+				{oracle.lem, "-ocaml", "-lib", oracle.library, "-outdir", dir, filepath.Join(dir, "aarch64_extras.lem")},
+				{oracle.ocamlfind, "ocamlopt", "-package", "libsail", "-linkpkg", "-open", "Libsail", "aarch64_extras.ml", "ram_trace_test.ml", "-o", "ram_trace_test"},
 			} {
-				out, err := run(t, dir, args[0], args[1:]...)
+				out, err := oracle.run(t, dir, args[0], args[1:]...)
 				if err != nil {
 					t.Fatalf("oracle must build, including mutants: %v\n%s", err, out)
 				}
 			}
-			out, err := run(t, dir, filepath.Join(dir, "ram_trace_test"))
+			out, err := oracle.run(t, dir, filepath.Join(dir, "ram_trace_test"))
 			if tc.old == "" {
 				if err != nil || strings.TrimSpace(string(out)) != "Arm Lem RAM traces: 80 checks passed" {
 					t.Fatalf("official trace oracle: %v\n%s", err, out)
