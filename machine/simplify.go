@@ -55,17 +55,7 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 // it. The copy itself is left for elimination; further propagation always
 // needs fresh webs.
 func (f *Function) propagateCopy(webs []*Web) *Web {
-	siteWeb := map[site]*Web{}
-	for _, w := range webs {
-		for _, d := range w.Defs {
-			if d.Instr != nil {
-				siteWeb[site{d.Instr, d.Access, true}] = w
-			}
-		}
-		for _, u := range w.Uses {
-			siteWeb[site{u.Instr, u.Access, false}] = w
-		}
-	}
+	index := f.indexWebs(webs)
 	for _, ins := range f.Instrs {
 		if !ins.Copy || len(ins.Defs) != 1 || len(ins.Uses) < 1 {
 			continue
@@ -77,7 +67,7 @@ func (f *Function) propagateCopy(webs []*Web) *Web {
 			// can still clear upper bits, so only width-aware removal is safe.
 			continue
 		}
-		dst, src := siteWeb[site{ins, ins.Defs[0], true}], siteWeb[site{ins, ins.Uses[0], false}]
+		dst, src := index.defWeb[index.defBase[ins.Index]], index.useWeb[index.useBase[ins.Index]]
 		if dst == nil || src == nil || dst == src || dst.Pinned {
 			continue
 		}
@@ -160,15 +150,11 @@ func (f *Function) holdsBetween(r Reg, from, to *Instr) bool {
 // but the frame. copyDst, if non-nil, is the single-definition destination
 // whose every read propagateCopy just transferred to its source.
 func (f *Function) eliminateDead(webs []*Web, copyDst *Web) int {
-	live := map[site]bool{}
-	for _, w := range webs {
-		if w == copyDst || len(w.Uses) == 0 {
-			continue
-		}
-		for _, d := range w.Defs {
-			if d.Instr != nil {
-				live[site{d.Instr, d.Access, true}] = true
-			}
+	index := f.indexWebs(webs)
+	live := make([]bool, len(index.defWeb)) // by definition position: its web is read
+	for at, w := range index.defWeb {
+		if w != nil && w != copyDst && len(w.Uses) > 0 {
+			live[at] = true
 		}
 	}
 	removed := 0
@@ -176,10 +162,10 @@ func (f *Function) eliminateDead(webs []*Web, copyDst *Web) int {
 		kept := b.Instrs[:0]
 		for _, ins := range b.Instrs {
 			dead := len(ins.Defs) > 0 && f.t.pure(ins.Asm)
-			for _, d := range ins.Defs {
+			for k, d := range ins.Defs {
 				// A write to a callee-saved or reserved register no one
 				// reads is a restore, or a save obligation's: it stays.
-				if d.Implicit || live[site{ins, d, true}] || f.t.calleeSaved(d.Reg) || f.t.reserved(d.Reg) {
+				if d.Implicit || live[index.defBase[ins.Index]+k] || f.t.calleeSaved(d.Reg) || f.t.reserved(d.Reg) {
 					dead = false
 					break
 				}
@@ -196,6 +182,50 @@ func (f *Function) eliminateDead(webs []*Web, copyDst *Web) int {
 		f.reindex()
 	}
 	return removed
+}
+
+// webIndex locates the web of every definition and use operand by the
+// instruction's index: an instruction's definitions occupy defBase[i]
+// to defBase[i+1] of defWeb in operand order, its uses useBase[i] on in
+// useWeb. A position holds nil when no web has the operand (an operand
+// the webs do not cover). The passes consulted a map keyed by the site
+// — instruction, operand access, definition flag — rebuilt from every
+// site each round; the map assignment was the larger part of both.
+type webIndex struct {
+	defBase, useBase []int
+	defWeb, useWeb   []*Web
+}
+
+func (f *Function) indexWebs(webs []*Web) webIndex {
+	index := webIndex{defBase: make([]int, len(f.Instrs)+1), useBase: make([]int, len(f.Instrs)+1)}
+	for i, ins := range f.Instrs {
+		index.defBase[i+1] = index.defBase[i] + len(ins.Defs)
+		index.useBase[i+1] = index.useBase[i] + len(ins.Uses)
+	}
+	index.defWeb = make([]*Web, index.defBase[len(f.Instrs)])
+	index.useWeb = make([]*Web, index.useBase[len(f.Instrs)])
+	for _, w := range webs {
+		for _, d := range w.Defs {
+			if d.Instr == nil {
+				continue
+			}
+			for k, access := range d.Instr.Defs {
+				if access == d.Access {
+					index.defWeb[index.defBase[d.Instr.Index]+k] = w
+					break
+				}
+			}
+		}
+		for _, u := range w.Uses {
+			for k, access := range u.Instr.Uses {
+				if access == u.Access {
+					index.useWeb[index.useBase[u.Instr.Index]+k] = w
+					break
+				}
+			}
+		}
+	}
+	return index
 }
 
 // reindex rebuilds the linear instruction list after removals.
