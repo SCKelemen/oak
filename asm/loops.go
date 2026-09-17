@@ -981,6 +981,12 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if x.arch == ArchRV64 {
 		resultRegs = []int{10, 11}
 	}
+	// … unless the body reads the result register before it writes it:
+	// then the header's value flows into the iteration and the register
+	// carries a loop variable — `state` in w0 through crc32c_update's
+	// chunk call, the call's argument and its result, with no move
+	// between the iterations once the registers are reallocated.
+	callCarried := x.callCarriedResults(shape, resultRegs)
 	for at := shape.header + 1; at < shape.bodyEnd; at++ {
 		instr, isInstr := x.items[at].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
@@ -988,6 +994,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
 			for _, reg := range resultRegs {
+				if width, carried := callCarried[reg]; carried {
+					if !written[reg] {
+						allW[reg] = width == 32
+					}
+					written[reg] = true
+					continue
+				}
 				headerWritten[reg] = true
 			}
 			continue
@@ -1244,11 +1257,18 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// the slots' symbols exist, and every slot it changes or creates joins
 	// the loop-carried slots at its width (a body with inner loops or
 	// calls is not probed: the probe would summarize them a second time).
-	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape)
+	probeFrameStores := x.hasIndexedFrameStore(shape) && !x.hasInnerLoop(shape)
 	if probeFrameStores {
 		probe := freshState.clone()
 		x.noteLoopBodyBounds(shape, probe)
-		if ends, _, ok := x.runBody(shape, probe, nil); ok {
+		// A call in the body clobbers the caller-saved registers and binds
+		// its results afresh (probing); the slots a callee writes through
+		// an address it was handed are not discovered here — the summary
+		// proper lists them (summarizeCallInLoop).
+		x.probing = true
+		ends, _, ok := x.runBody(shape, probe, nil)
+		x.probing = false
+		if ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
 					before, held := state.frame[addr]
@@ -2134,6 +2154,12 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState, tr
 			var reason string
 			var ok bool
 			switch {
+			case (instr.Mnemonic == "bl" || instr.Mnemonic == "call") && x.probing:
+				x.forgetCallerSaved(st)
+				for r := 0; r <= 7; r++ {
+					st.regs[r] = paramTerm(fmt.Sprintf("probe.call%d.r%d", pc, r), 64)
+				}
+				reason, ok = "", true
 			case instr.Mnemonic == "bl" || instr.Mnemonic == "call":
 				reason, ok = x.summarizeCallInLoop(instr, st)
 			case x.arch == ArchRV64:
@@ -2257,6 +2283,96 @@ func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
 			continue
 		}
 		if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && mem.Base.Class == ClassX && mem.Index != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// callCarriedResults finds the result registers of the body's summarized
+// calls that the body reads before it writes them (a call reads its
+// argument registers; an ordinary instruction its source operands and
+// memory bases), with the callee's result width: the value at the header
+// reaches the iteration, so the register carries a loop variable rather
+// than a temporary the call leaves. A call the summary cannot resolve
+// claims nothing.
+func (x *pathExecutor) callCarriedResults(shape loopShape, resultRegs []int) map[int]int {
+	carried := map[int]int{}
+	writtenSoFar := map[int]bool{}
+	readFirst := map[int]bool{}
+	noteRead := func(reg Register) {
+		if reg.Class != ClassV && !reg.ZeroRegister() && !writtenSoFar[reg.Num] {
+			readFirst[reg.Num] = true
+		}
+	}
+	argBase := 0
+	if x.arch == ArchRV64 {
+		argBase = 10
+	}
+	for at := shape.bodyStart; at < shape.bodyEnd; at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
+			sym, isSym := instr.Operands[0].(Symbol)
+			if !isSym || x.fn == nil {
+				return nil
+			}
+			callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+			if !resolved {
+				return nil
+			}
+			var classes []ArgClass
+			for _, arg := range classifyArguments(callee.Parameters, x.fn.Composites) {
+				if arg.problem != "" || arg.param.Variadic {
+					return nil
+				}
+				if arg.kind == argVector && x.arch == ArchRV64 {
+					continue
+				}
+				classes = append(classes, arg.class)
+			}
+			places, _ := LayoutArguments(classes, x.fn.PackedStackArgs)
+			for _, place := range places {
+				if place.OnStack || place.Vector {
+					continue
+				}
+				for k := 0; k < place.Regs; k++ {
+					noteRead(Register{Class: ClassX, Num: argBase + place.Reg + k})
+				}
+			}
+			width, _, ok := contractBits(callee.ReturnType)
+			for _, reg := range resultRegs {
+				if readFirst[reg] && ok && width > 0 && !writtenSoFar[reg] {
+					carried[reg] = width
+				}
+				writtenSoFar[reg] = true
+			}
+			continue
+		}
+		reads := instr.Operands
+		writes := false
+		if !(isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic)) {
+			reads = instr.Operands[1:]
+			writes = true
+		}
+		for _, reg := range registerOperands(reads) {
+			noteRead(reg)
+		}
+		if writes {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class != ClassV && !dest.ZeroRegister() {
+				writtenSoFar[dest.Num] = true
+			}
+		}
+	}
+	return carried
+}
+
+// hasInnerLoop reports a recognized inner loop exit inside the body.
+func (x *pathExecutor) hasInnerLoop(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		if _, isExit := x.loopExits[i]; isExit {
 			return true
 		}
 	}
@@ -4578,6 +4694,21 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
+	searchStopped := func() bool {
+		switch {
+		case budget.remaining <= 0:
+			failure = "the loop proof's diagram budget ran out in the coupling search"
+		case budget.calls > implicationCallLimit:
+			failure = "the loop proof's implication budget ran out in the coupling search"
+		case couplingWork <= 0:
+			failure = "the coupling search exceeded its valuation work budget"
+		case visited > searchBudget:
+			failure = "the coupling search exceeded its budget"
+		default:
+			return false
+		}
+		return true
+	}
 	// The search is conflict-directed: a failure below returns the depths
 	// its refutation depended on, and a level whose choice is not among
 	// them passes the failure up without trying its other candidates (the
@@ -4586,11 +4717,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
-		if couplingWork <= 0 {
-			visited = searchBudget + 1
-		}
-		if visited > searchBudget {
-			failure = "the coupling search exceeded its budget"
+		if searchStopped() {
 			return false, nil
 		}
 		if i == len(slots) {
@@ -4677,11 +4804,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
-			if couplingWork <= 0 {
-				visited = searchBudget + 1
-			}
-			if visited > searchBudget {
-				failure = "the coupling search exceeded its budget"
+			if searchStopped() {
 				return false, nil
 			}
 			if !conflict[i] {
@@ -6094,6 +6217,9 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
 	a, b = pushNarrowArithmetic(a), pushNarrowArithmetic(b)
 	a, b = normalizeLowMaskChain(a), normalizeLowMaskChain(b)
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
+		return true, true
+	}
 	boolean := map[*term]bool{}
 	if premise.kind != termConst && booleanValued(a, boolean) && booleanValued(b, boolean) {
 		// A post-case premise often states the small guards whose conjunction
@@ -6117,7 +6243,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
 		}
 	}
-	if equalTerms(a, b) {
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
 		return true, true // the same term on both sides: no diagram needed
 	}
 	if equalReductions(a, b) {

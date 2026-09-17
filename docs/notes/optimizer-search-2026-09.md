@@ -422,6 +422,16 @@ pilot this moves three instructions in `translate` (15→14 estimated stalls)
 and seven in `unmap_page` (52→51), without changing the instruction count or
 weakening either body's proven verdict.
 
+The next record-base measurement found that the matcher already had the
+necessary dominance, path-stability, call, and carrier-clobber checks, but each
+invocation returned after the first distinct repeated-base group. A separate
+`reuse-remaining-record-base-carriers` child now repeats that rewrite to a
+fixed point, rebuilding CFG and liveness after every removal and retaining the
+one-group form as a proof fallback. It closes one more group in the stage-2
+`walk_leaf`: one wide materialization and multiply disappear (126→123
+instructions), after which carrier-aware rescheduling lowers modeled stalls
+19→18. The complete body remains proven.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
@@ -878,6 +888,29 @@ properties computed once per callee rather than rechecked per call; and
 unreachable bodies fall out as nodes off the root. The pieces exist —
 `nativegen.functions`, `calleeName`, the inliner's stack — as a graph
 walked implicitly; naming it is the increment.
+
+Named (2026-09-18, `nativegen/callgraph.go`): `BuildCallGraph` over the
+program's functions with a synthetic root calling `main` and the exported
+functions; callees, callers, reachability, Tarjan's components in
+reverse topological order (callees before callers), and the recursive
+set. Two readers so far, both diagnostics in the native backend's
+report. `VerdictRoots` follows every trusted verdict whose reason names a
+callee — "a call to X …", X the callee's native symbol — to the callee
+whose own reason names none and groups the callers under it, so the
+report says which body's seam unlocks the most callers. `Unreachable`
+lists the functions no entry point reaches; on the kernel program that is
+eight bodies — `blake3_g`, `permute`, `rotr32`, `crc32c_word_at`, and
+their like — helpers the compiler's expansion has already inlined into
+every caller, lowered natively all the same, each with its own search,
+for code nothing runs. Leaving them to the C backend was tried and
+reverted within the hour: a package compiled for its exports has no entry
+point of its own, and the native tests lower each function they name, so
+sixty tests lost their units. Reachability stays a report, read
+conservatively — every identifier naming a function is an edge, a call's
+with its site, a dispatch clause's realizations are edges from the
+dispatching function, and kernels are roots beside `main` and the exported
+functions. The emit's CPU time had not moved either way (eight small
+bodies of some fifty).
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 

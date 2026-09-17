@@ -61,14 +61,21 @@ source → existing checks → owned checked raw OptIR CFG ─┐
 ```
 
 Reuse the existing checked OptIR projection; do not add an AST-to-Wasm compiler.
-The first emitter uses an i32 program counter and structured dispatch loop for
-general CFGs. Each SSA value has a Wasm local. Edge arguments are read before
-any destination is assigned, preserving parallel phi copies and cycles.
-This is intentionally simple, not an optimized structurizer. Preserve natural
-structured regions or introduce a validated structurizer later.
+Production input now retains both structured OptIR and its checked canonical
+CFG. Exact reprojection binds them before recursive structured regions may guide
+emission. Existing raw-CFG recognizers handle direct blocks, diamonds, forward
+regions and one-loop regions; nested source loops/conditionals use the bound
+structured tree. Raw unmatched/irreducible CFGs use an i32 program counter and
+structured dispatch loop. Raw-CFG routes defer eligible pure, total, single-use
+same-block SSA trees to Wasm's operand stack and compact their locals; shared,
+cross-block, effectful and trapping values remain locals. Edge and region-yield
+arguments are read before any destination is assigned, preserving parallel phi
+copies and cycles. A future general structurizer remains untrusted and must
+produce output validated against the same input identity.
 
-The target, input, materialization and admission nodes now use the shared typed
-artifact DAG, with diagnostic recipe/dependency reporting. Frontend checks stay
+The target, structured-function/CFG input, materialization and admission nodes
+now use the shared typed artifact DAG, with diagnostic recipe/dependency
+reporting. Frontend checks stay
 linear; native selection retains its stronger verifier policy. See the
 [Go-inspired target pipeline boundary](target-pipeline-2026-09.md).
 
@@ -183,13 +190,13 @@ certificate replay. Gate stronger features on their actual evidence.
 
 | Milestone | Deliverable / acceptance gate | State |
 | --- | --- | --- |
-| W0 | Scalar raw-CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Implemented subset: scalar v1 adds 32/64-bit division/remainder with Oak trap/overflow behavior |
+| W0 | Scalar structured-OptIR/CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Implemented subset: scalar v1 adds 32/64-bit division/remainder with Oak trap/overflow behavior and exact structured/CFG binding |
 | B0 | Local compiler/editor/runner prototype; cancellation; explicit unverified status | Initial implementation |
 | W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; LEB model theorems and finite Go/Lean pins | Partial; universal production decoder/validator refinement open |
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, bounded acyclic CFGs, simple loops and one pre-test loop with an acyclic body; executable baseline/size gates and preliminary warmed V8 timings. Nested/irreducible loop structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, bounded acyclic CFGs, compact/acyclic-body loops and recursively nested reducible source control; total pure single-use same-block expressions stackify on raw-CFG paths and their locals are compacted. Raw irreducible-CFG structurization, broader local reuse, structured-tree stackification, formal translation validation and representative runtime measurements remain open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -307,3 +314,28 @@ are shared with existing paths. Two fixtures shrink 342→251 and 436→312 byte
 and lose 51/69 Wasm instructions. Six very noisy local V8 runs all favored the
 new code, but are retained only as preliminary evidence. Encoding is v7; the
 scalar/check profile and lack of source-to-bytes proof authority are unchanged.
+
+Nested-region increment (2026-09-17): production Wasm input now owns and keys
+both structured OptIR and its canonical CFG, and materialization independently
+requires exact reprojection before using the tree. Recursive `if` and pre-test
+loop emission handles nested reducible source control after all existing compact
+raw-CFG paths, preserving their bytes. Parallel carried/yield copies, lazy calls,
+traps, Unit values and Bool guards are execution-tested. Two nested-loop modules
+shrink 337→203 and 437→255 bytes and lose 74/101 Wasm instructions. Three local
+Deno/V8 runs measured median structured/dispatcher ratios of 0.087–0.100; this
+microbenchmark is not a Chrome or application-wide claim. Recursive input is
+preflight-bounded and output bytes still pass independent admission. Encoding is
+v8; scalar/check profiles remain v1 and translation verification remains open.
+
+Stack-expression increment (2026-09-18): raw-CFG emission paths now defer total,
+pure, single-use same-block SSA trees directly to their use on Wasm's operand
+stack, then compact the removed result locals without changing parameter indices
+or lexical aliases. Calls, memory-tagged/effectful/trapping operations,
+division/remainder operands, shared values and cross-block values stay in locals.
+The recursive structured-tree fallback remains unchanged pending lexical-region
+use accounting. A retained v8 loop/helper module shrinks 258→161 bytes and
+88→56 Wasm instructions; independent execution agrees on ordinary and large
+inputs. Three longer Deno/V8 runs were inconclusive (median ratios 0.884–1.519
+with extreme noise), so this is a static-size result rather than a runtime claim.
+Encoding is v9; final-byte admission, scalar/check profiles and unverified
+translation status are unchanged.

@@ -187,6 +187,19 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 		}
 	case termCmp:
 		left, right := canonicalLinear(t.left, memo), canonicalLinear(t.right, memo)
+		if (t.op == "eq" || t.op == "ne") && right.kind == termConst && right.value == 0 && left.kind != termConst && left.knownBits() <= 1 {
+			// A zero test of a one-bit value is the value or its negation:
+			// the machine's `tbnz` reads `((d and 1) ne 0)` where the Oak
+			// side and a `cbz` on a Bool read `(d and 1)` and `(d and 1)
+			// xor 1`.
+			bit := truncate(left, 1)
+			if t.op == "eq" {
+				out = binaryTerm("xor", bit, constTerm(1, 1))
+			} else {
+				out = bit
+			}
+			break
+		}
 		if left.kind == termConst && right.kind == termConst {
 			// Two constants compare at once (`0 lo 128`, a loop's entry
 			// test over its literal bounds, which reaches here unfolded).
@@ -223,6 +236,13 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 			}
 		}
 		left, right := canonicalLinear(t.left, memo), canonicalLinear(t.right, memo)
+		if t.width == 1 {
+			// A one-bit node reads its operands at one bit, so `(x and 1)`
+			// at a wider width is x's low bit there: the Oak side's `((d
+			// and 1) xor 1)` and the machine's `tbnz`, which reads the bit
+			// through the register, are one spelling.
+			left, right = oneBitView(left), oneBitView(right)
+		}
 		if (t.op == "and" || t.op == "xor") && left.kind == termConst && right.kind != termConst {
 			left, right = right, left // the constant on the right, as the rules below read it
 		}
@@ -247,10 +267,12 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 				break
 			}
 		}
-		if t.op == "xor" && right.kind == termConst && right.value&mask(t.width) == 1 && t.width == 1 && left.kind == termIte {
-			// A negated one-bit conditional negates its arms: `not (c ? X :
-			// Y)` is `c ? not X : not Y`, the shape a path's facts split on.
-			out = iteTerm(left.cond, binaryTerm("xor", truncate(left.left, 1), constTerm(1, 1)), binaryTerm("xor", truncate(left.right, 1), constTerm(1, 1)))
+		if t.op == "xor" && right.kind == termConst && right.value&mask(t.width) == 1 && left.kind == termIte && left.left.knownBits() <= 1 && left.right.knownBits() <= 1 {
+			// A negated conditional over one-bit arms negates its arms: `not
+			// (c ? X : Y)` is `c ? not X : not Y`, the shape a path's facts
+			// split on — at one bit, or at the register width the machine
+			// read a descriptor's valid bit through.
+			out = adaptWidth(iteTerm(left.cond, binaryTerm("xor", truncate(left.left, 1), constTerm(1, 1)), binaryTerm("xor", truncate(left.right, 1), constTerm(1, 1))), t.width)
 			break
 		}
 		if t.op == "xor" && right.kind == termConst {
@@ -356,6 +378,18 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 	}
 	memo[t] = out
 	return out
+}
+
+// oneBitView is a term read at one bit: `(x and 1)` at a wider width is
+// x itself at one bit, since a one-bit reader masks to the bit anyway.
+func oneBitView(t *term) *term {
+	if t.kind == termBinary && t.op == "and" && t.width > 1 && t.right.kind == termConst && t.right.value == 1 {
+		return truncate(t.left, 1)
+	}
+	if t.width > 1 && t.knownBits() <= 1 {
+		return truncate(t, 1)
+	}
+	return t
 }
 
 // spell writes a linear form out as one term: the constant, then each

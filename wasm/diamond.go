@@ -27,7 +27,9 @@ func (f *function) diamondBody(b *binary, diamond diamondShape, functions map[st
 	if err := f.operations(b, f.entry, functions); err != nil {
 		return err
 	}
-	f.get(b, f.entry.Terminator.Condition)
+	if err := f.emitValue(b, f.entry.Terminator.Condition, functions); err != nil {
+		return err
+	}
 	b.op(0x04, 0x40) // if with empty stack result; phi values use SSA locals
 	for i, arm := range []optir.Block{diamond.whenTrue, diamond.whenFalse} {
 		edge := f.entry.Terminator.True
@@ -35,17 +37,23 @@ func (f *function) diamondBody(b *binary, diamond diamondShape, functions map[st
 			b.op(0x05) // else: only this chosen arm's operations may execute
 			edge = f.entry.Terminator.False
 		}
-		f.edgeValues(b, edge)
+		if err := f.edgeValues(b, edge, functions); err != nil {
+			return err
+		}
 		if err := f.operations(b, arm, functions); err != nil {
 			return err
 		}
-		f.edgeValues(b, arm.Terminator.True)
+		if err := f.edgeValues(b, arm.Terminator.True, functions); err != nil {
+			return err
+		}
 	}
 	b.op(0x0b)
 	if err := f.operations(b, diamond.merge, functions); err != nil {
 		return err
 	}
-	f.returnValue(b, diamond.merge.Terminator)
+	if err := f.returnValue(b, diamond.merge.Terminator, functions); err != nil {
+		return err
+	}
 	b.op(0x0b) // merge executes once, then the function returns its result
 	return nil
 }

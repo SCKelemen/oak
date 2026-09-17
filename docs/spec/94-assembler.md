@@ -1129,7 +1129,8 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment itself has one RAM-selector register. This runtime
+the generated fragment contains a RAM selector, the general-register bank,
+`PSTATE`, and the load/store syndrome register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1141,10 +1142,36 @@ and Sail's `Unreachable` error with unchanged state when it is missing. Normal
 return is equivalent to an initialized register entry; ignoring the selector
 in the lower runtime does not allow skipping this read. Break/make projections
 compose with the new effectful wrapper under both endian choices, retaining
-the actual register-lookup premise. No full architectural register bank or
+the actual register-lookup premise. No full architectural register state or
 initialization proof is implied, and this runtime error is not an Arm Data
 Abort. Exact-source/mutation gates pin the register, write/trace/return order,
 and the complete no-op trace expression, including continuation lines.
+
+`RegisterBridge.lean` separately proves the copied, mechanically generated
+`aget_X` against the actual `_R` bank: direct exported-vector slot selection,
+low-bit reads at the four supported widths, unchanged full state, missing-bank
+failure, and XZR zero without any bank read. The source width/index domain is
+retained explicitly in the theorems. Its non-SP STR operand adapter composes
+these reads and matches the existing pure request, deriving the X0/XZR and
+X0/X2 pairs from the bank. It is not the original instruction body and makes
+no `Mem` call: SP, PostDecode, the instruction's syndrome call, translation, faults, register
+provenance and architectural events remain open. A checked wrapping-address
+example records the 64-bit arithmetic; it supplies no physical-address
+translation by truncation. Upstream/local source-mutation gates pin the exact
+bank, getter, and overload, and the existing Sail CI builds the proof (§126).
+
+`SyndromeBridge.lean` retains and proves the original syndrome maker/setter,
+with the complete Arm `ProcState` record and actual `PSTATE`/`__LSISyndrome`
+register entries. It proves the six encoded fields for supported sizes and
+registers, EL0/EL1's exact syndrome-only update, EL2/EL3's unchanged full state,
+and missing-PSTATE failure. Original assertions and the undefined initializer
+remain; the proof uses the generated trivial choice source. A dependency-only
+adapter composes the register reads and setter, including the EL2 no-op; it is
+not generated STR execution and makes no `Mem` call. Exception/ESR construction,
+PostDecode, SP/MTE handling, translation/faults, architectural events and
+ordering remain open. Required upstream/local source-mutation gates and
+standard-axiom checks cover the new module. Sail regeneration uses a relative
+temporary input filename to keep assertion locations reproducible (§126).
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
@@ -3926,11 +3953,17 @@ used — `mov w10, w24; cbz w10, else`, `movz w10, #1; mov w9, w10`,
 when an arm's tail is empty. Under a whole-function liveness of the
 general registers over the item list (blocks at labels and after
 branches; a call kills x0–x18 and x30 and reads x0–x8; a return reads
-x0, x1, x8 and the restored callee-saved registers), six block-local
+x0, x1, x8 and the restored callee-saved registers), eight block-local
 rules run to a fixpoint (the sixth: a Bool materialized only to be
 branched on — `cset wN, cond; cbz wN, L` with wN dead after the branch —
-is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the OS
-walkers' status conditionals spent the cset and a register per test): a copy read once by the next instruction is
+is the branch on the flags, `b.!cond L`, `b.cond L` for `cbnz`; the
+seventh: a bit tested by mask, compare, and branch — `and xT, xS,
+#(1<<k); cmp xT, #0; b.ne L` with xT dead after — is `tbnz xS, #k, L`,
+`tbz` for `b.eq`, refused when the target's block reads the flags; the
+eighth: a zero moved into a register only to be stored is the zero
+register stored; and the branch rule sees through a run of labels —
+`b endif` before `else:` `endif:` is a fall-through. The OS walkers'
+status conditionals and descriptor tests spent these at every level): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
@@ -6337,6 +6370,28 @@ No runtime claim is attached because final load averages were 79–113. Exact
 provenance is in
 `benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
 
+The `reuse-remaining-record-base-carriers` child closes the same rewrite to a
+fixed point only after the one-group carrier candidate fires. Each successful
+iteration removes at least one complete materialization; the next iteration
+rebuilds the item CFG and liveness before making another decision. The CFG
+must remain acyclic, every definition must dominate its renamed reads, the
+index and span base must remain stable on every relevant path, and calls or a
+write of the carrier refuse the group exactly as in the parent. The one-group
+body remains an independent fallback, and the fixed-point child has its own
+materialization-v31 key and non-trusted whole-body verdict gate.
+
+Against a same-compiler
+`OAK_OPT_SKIP=reuse-remaining-record-base-carriers` control, the fresh stage-2
+pilot closes one additional group in proven `walk_leaf`. Its selected body
+falls from 126 to 123 instructions, five to four multiplies, 19 to 18 modeled
+stalls, and static cost 206.5 to 201.0. The exact removal is one redundant
+`movz`/`movk`/`umaddl` record-base triple; all other selected bodies remain
+unchanged. Mach-O `__text` shrinks by 12 bytes and the aligned object by 8;
+all 27 relocations remain. Both objects pass all eight current stage-2 native
+conformance tests. No runtime claim is attached because host load averages
+were 185–237. Exact provenance is in
+`benchmarks/native/results/stage2-record-base-closure-2026-09-18.json`.
+
 The separate `reschedule-record-base-carriers` child closes one consequence of
 that late rewrite: the original scheduler could not see the dependence graph
 after the first destination became the long-lived carrier and the redundant
@@ -7125,6 +7180,22 @@ spans inside loop bodies (23 and 14 bodies), which need the span memory
 carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
+
+**A call's result register as a loop variable (2026-09-18).** The
+result registers of a summarized call were temporaries without
+exception, and a value that travels through the call's argument and
+result register with no move between the iterations was therefore no
+loop variable at all: `crc32c_update` with its registers reallocated
+keeps `state` in w0 into `crc32c_chunk` and out of it, the summarizer
+read the header's value for w0 at every iteration, `state` had no
+pairing, and every optimized form of the body was set aside as
+witnessed while the identity was kept. A call's result register the
+body reads before it writes — a call reads its argument registers, an
+instruction its sources and memory bases (`callCarriedResults`) — is
+now a loop-carried register at the callee's result width; one the body
+consumes stays a temporary. The rotated, fused, scheduled, reallocated
+form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
+Pinned: `compiler/e2e_native_call_result_carried_test.go`.
 
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
@@ -7938,6 +8009,28 @@ still faces the same guard and preservation implications under the same
 budgets. This avoids rebuilding a large unresolved expression at each
 intervening search depth.
 
+**Declared-width equality through shared terms (2026-09-18).** The restored
+BLAKE3 chaining-value slots all find their identity pairings. The first
+preservation implication still exhausted the diagram budget: its canonical
+terms differed only at the 64 block bytes, read at 32 bits on the Oak side
+and eight on the machine side, with the same eight-bit declarations.
+`equalTermsAtDeclaredWidths` checks the shared term pairs structurally,
+allowing same-name parameter views only when they retain the same declared
+bits. It leaves every operation's result width intact. Comparisons and
+float operations also require equal operand widths; quantifiers use strict
+structural equality because a bound name may shadow the declaration.
+The rule neither rewrites terms nor changes global structural identity.
+
+`TestImpliesEqualDeclaredByteViewsInSharedDAG` proves the reduced shared
+arithmetic graph within 2,000 proof nodes, where the previous decider ran
+out. Changed output bits, discarded high bits, signed comparisons, float
+conversions, unknown bounds and quantifier shadowing remain distinct. The
+full update now proves all four nested loops within the normal budgets.
+The search also stops when its shared diagram or implication allowance
+runs out, preserving that cause instead of continuing until the candidate
+limit hides it. The equality rule alone leaves the native update unchanged;
+measurements and validation are in `benchmarks/native/results/blake3-declared-equality-2026-09-18.json`.
+
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine
 trapped, on the claim that Oak traps there too, on the same guard; the
@@ -8386,7 +8479,14 @@ the registers, frame, globals, and write logs of one joined state): a
 merge past it is refused as "the paths merged at their joins exceed
 the verifier's term budget" rather than grown, and `emit_header`, whose
 merged run had passed twenty gigabytes under `joinedPathBudget`, is
-trusted in five seconds.
+trusted in five seconds. Tallied on the plain bodies: the two
+obligations had taken the prover's build from 574 proven, 218
+evidence, 172 trusted (9eca941a) to 535, 250, 166 of 951 identity
+forms at 40e4c2f7, `unmap_page` and `map_page` among the fallen on the
+OS pilot; the per-end decision and the fact-pruned respelling that
+followed it (`sourceTrapOnPath`, below) bring it to 573, 212, 166 at
+62ce8b44, and both walkers are fully proven again (stage2 twenty of
+twenty, addr_space twenty-nine of twenty-nine).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -9352,6 +9452,21 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**Probing a body that calls (2026-09-17).** The slots a store at a
+data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its
+guard) are found by running the body once on the fresh register state
+(the probe of `summarizeLoop`); a body with a call was not probed, since
+the probe would have summarized the call — its loops, its cells — a
+second time. `sha256_update`'s byte loop calls the block compression
+when the block fills, so its 64-byte block was never loop-carried on the
+machine side, the Oak chunks `next.block[0..7]…` had no image, and the
+coupling search spent its budget on affine pairings. The probe now runs
+in a probing mode where a call clobbers the caller-saved registers and
+binds its results afresh, summarizing nothing (`pathExecutor.probing`);
+bodies with inner loops are still not probed. The slots a callee writes
+through an address it was handed are not discovered by the probe — the
+summary proper lists them — so the discovery is conservative.
 
 **Header values spelled apart (2026-09-17).** A coupling candidate is an
 equality when the two sides' header values are one term, else an affine

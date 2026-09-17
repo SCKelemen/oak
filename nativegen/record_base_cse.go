@@ -38,6 +38,21 @@ func reuseRecordBaseDestination(fn *asm.Function) int {
 	return shareRecordBaseWith(fn, true)
 }
 
+// reuseRemainingRecordBaseDestinations closes carrier reuse to a fixed point
+// after the one-group parent candidate. Each successful iteration removes at
+// least one materialization and the next iteration rebuilds CFG and liveness,
+// so the loop terminates without carrying stale analysis across a rewrite.
+func reuseRemainingRecordBaseDestinations(fn *asm.Function) int {
+	total := 0
+	for {
+		reused := shareRecordBaseWith(fn, true)
+		if reused == 0 {
+			return total
+		}
+		total += reused
+	}
+}
+
 func shareRecordBaseWith(fn *asm.Function, existingDestinationOnly bool) int {
 	if fn == nil || (fn.Arch != "" && fn.Arch != asm.ArchArm64) {
 		return 0
@@ -342,8 +357,8 @@ func recordBaseScratch(clobbers []asm.Register, items []asm.Item, from int, expr
 	return asm.Register{}, false
 }
 
-// SharedRecordBases reports how many repeated three-instruction record-base
-// materializations a candidate removed.
+// SharedRecordBases reports how many repeated record-base materializations a
+// candidate removed.
 func SharedRecordBases(fn *asm.Function) int { return sharedRecordBases[fn] }
 
 var sharedRecordBases = map[*asm.Function]int{}
@@ -353,6 +368,14 @@ var sharedRecordBases = map[*asm.Function]int{}
 func ReusedRecordBaseDestinations(fn *asm.Function) int { return reusedRecordBaseDestinations[fn] }
 
 var reusedRecordBaseDestinations = map[*asm.Function]int{}
+
+// ReusedRemainingRecordBaseDestinations reports how many materializations a
+// separate fixed-point child removed after the first carrier group.
+func ReusedRemainingRecordBaseDestinations(fn *asm.Function) int {
+	return reusedRemainingRecordBaseDestinations[fn]
+}
+
+var reusedRemainingRecordBaseDestinations = map[*asm.Function]int{}
 
 // RescheduledRecordBaseCarriers reports how many instructions moved when the
 // final carrier-aware dependency graph was scheduled again.

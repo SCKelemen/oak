@@ -1,6 +1,6 @@
 # Target support, verification and optimization maturity
 
-Snapshot: 2026-09-17. This is a capability map, not a benchmark ranking or a
+Snapshot: 2026-09-18. This is a capability map, not a benchmark ranking or a
 claim that every program on a target is verified. Supported spellings are
 defined by `target.Supported`; detailed proof coverage is in
 [STATUS](spec/STATUS.md), [native semantics](spec/94-assembler.md), and
@@ -21,7 +21,7 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 | `darwin/amd64`, `linux/amd64`, `freestanding/amd64` | C backend/external compiler; platform-dependent execution/cross-build tests | Shared frontend proof work applies where stated. No Oak amd64 native semantic-verification lane or complete C→machine proof | External C compiler performs machine optimization; no Oak-native amd64 optimization claim |
 | `freestanding/arm` | C/external compiler; Cortex-M emulator fixtures (STM32-class direction) | Shared frontend/data-model work, not verified ARM32 instruction lowering or arbitrary STM32 hardware | External C compiler; MCU runtime/code-size/power benchmarking still needed |
 | `freestanding/riscv32` | C/external compiler; RV32 emulator fixtures | Shared frontend/data-model work, not an Oak RV32 native verifier | External C compiler; no mature RV32 hardware performance suite |
-| `core/wasm32` | Experimental direct scalar OptIR→Wasm, including 32/64-bit division/remainder with Oak trap/overflow behavior; independent bounded Go byte/type validator and engine execution tests | LEB prefix model theorems and finite production/Lean pins; full decoder/validator and translation refinement open. Verified-only mode refuses | Direct returning blocks, bounded acyclic CFGs, simple loops and one pre-test loop with an acyclic body; byte/instruction gates and preliminary local V8 timings. Dispatcher for nested/irreducible cycles; no representative browser/native parity claim |
+| `core/wasm32` | Experimental direct scalar OptIR→Wasm, including 32/64-bit division/remainder with Oak trap/overflow behavior; exact structured/CFG binding; independent bounded Go byte/type validator and engine execution tests | LEB prefix model theorems and finite production/Lean pins; full decoder/validator and translation refinement open. Verified-only mode refuses | Direct/acyclic/loop paths stackify total pure single-use same-block SSA trees and compact their locals; nested structured source control also lowers without dispatch. Byte/instruction gates and preliminary local V8 timings exist. Raw irreducible CFGs dispatch; no representative browser/native parity claim |
 
 ## Embeddings and adjacent outputs
 
@@ -73,7 +73,8 @@ real lane callbacks, but currently selects only AArch64 and RV64. Native lowerin
 and `asm/verify.go` still contain lane-specific branches, including RV64 versus
 AArch64-default behavior. `opt.CostsFor` likewise defaults unknown lanes to
 AArch64 costs. A new native ISA must not enter those defaults. Wasm instead
-reuses the checked raw OptIR projection through `compiler/wasm.go`; it does not
+reuses checked structured OptIR bound to its canonical CFG through
+`compiler/wasm.go`; it does not
 yet consume the optimized native candidate pipeline or the native ISA verifier.
 
 Recommended implementation sequence:

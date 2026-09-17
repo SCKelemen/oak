@@ -35,29 +35,39 @@ func (f *function) loopBody(b *binary, loop loopShape, functions map[string]*fun
 	if err := f.operations(b, f.entry, functions); err != nil {
 		return err
 	}
-	f.edgeValues(b, f.entry.Terminator.True)
+	if err := f.edgeValues(b, f.entry.Terminator.True, functions); err != nil {
+		return err
+	}
 	b.op(0x03, 0x40) // loop, no parameters/results
 	if err := f.operations(b, loop.header, functions); err != nil {
 		return err
 	}
-	f.get(b, loop.header.Terminator.Condition)
+	if err := f.emitValue(b, loop.header.Terminator.Condition, functions); err != nil {
+		return err
+	}
 	b.op(0x04, 0x40) // if, no parameters/results
 	for i, edge := range []optir.Edge{loop.header.Terminator.True, loop.header.Terminator.False} {
 		if i == 1 {
 			b.op(0x05) // else
 		}
-		f.edgeValues(b, edge)
+		if err := f.edgeValues(b, edge, functions); err != nil {
+			return err
+		}
 		if edge.Target == loop.body.ID {
 			if err := f.operations(b, loop.body, functions); err != nil {
 				return err
 			}
-			f.edgeValues(b, loop.body.Terminator.True)
+			if err := f.edgeValues(b, loop.body.Terminator.True, functions); err != nil {
+				return err
+			}
 			b.op(0x0c, 1) // br: past the if label to the enclosing loop
 		} else {
 			if err := f.operations(b, loop.exit, functions); err != nil {
 				return err
 			}
-			f.returnValue(b, loop.exit.Terminator)
+			if err := f.returnValue(b, loop.exit.Terminator, functions); err != nil {
+				return err
+			}
 			b.op(0x0f)
 		}
 	}

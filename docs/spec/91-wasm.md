@@ -6,8 +6,9 @@ Coverage: [target matrix](../targets.md).
 
 ## 1. Target and artifact
 
-`core/wasm32` emits one import-free Core Wasm module directly from checked raw
-OptIR. The target uses 32-bit pointer/data-model metadata, but v1 does not admit
+`core/wasm32` emits one import-free Core Wasm module directly from checked
+structured OptIR bound to its canonical CFG projection. The target uses 32-bit
+pointer/data-model metadata, but v1 does not admit
 pointer or memory operations. It has no C fallback, host imports, memory, start
 function, WASI ABI or Component Model output. All admitted functions are exported
 by their checked names; exports are not a stable public component ABI.
@@ -22,11 +23,12 @@ the CLI also rejects native/C/link/optimization/extraction switches for this
 target. `-verified` is unavailable and must fail, never fall back.
 
 `EmitWasmWithReport()` additionally returns diagnostic target and artifact-DAG
-provenance. A checked target description and owned raw-CFG snapshots feed a
-materialization node; a separately revisioned admission node validates its
-actual bytes/manifest before anything is returned. `wasm.EncodeCandidate` is
-the explicitly untrusted encoding API; ordinary callers use `wasm.Emit` for
-combined encoding and admission. Neither a recipe key nor this graph grants
+provenance. A checked target description and owned structured-function and CFG
+snapshots feed a materialization node; exact reprojection must match before the
+structure can guide lowering. A separately revisioned admission node validates
+actual bytes/manifest before anything is returned. `wasm.EncodeCandidate` and
+`wasm.EncodeStructuredCandidate` are explicitly untrusted encoding APIs;
+ordinary callers use the corresponding combined emit API. Neither a recipe key nor this graph grants
 translation-verification authority. See the
 [target pipeline boundary](../notes/target-pipeline-2026-09.md).
 
@@ -83,25 +85,33 @@ export/code sections. A single-block CFG ending in return emits directly,
 without a program-counter local or dispatch loop. The four-block loop and
 conditional shapes below also emit directly. Other acyclic CFGs of at most 127
 blocks use forward labels. A single pre-test loop may compose the same lowering
-for an acyclic body of at most 124 blocks; remaining CFGs retain dispatch.
+for an acyclic body of at most 124 blocks. When those raw-CFG paths do not match,
+compiler-owned structured OptIR recursively lowers nested reducible loops and
+conditionals. Raw CFGs without matching structure and irreducible cycles retain
+dispatch.
 Edge values are pushed before any phi local is
 overwritten. These are bounded lowering improvements, not a mature
 throughput-optimized backend. Shape recognition stays inside versioned
 materialization; blocks do not become separate artifact-DAG nodes. Lookup,
 operation admission, edge copies and return emission are shared across paths.
+Except for the recursive structured-tree fallback, a local plan also emits
+eligible pure single-use SSA trees directly on Wasm's operand stack and removes
+their result locals.
 
 ### Direct returning-block emission
 
 The direct path depends only on checked raw CFG shape: exactly one block, ending
 in return. A one-block backedge still uses the dispatcher. It does not use SCCP
-reachability to skip blocks, consume an optimized candidate, eliminate dead
-operations, reorder calls, reuse locals or stackify expressions. Every operation
-still passes the same effect/type/attribute gates and emits in source order.
-Bool argument checks remain before the body, including for unused arguments;
-Unit results do not suppress calls or traps. Returning a parameter does not skip
-preceding operations. The function's final `end` returns its declared result.
+reachability, consume an optimized candidate, or remove effects and traps. Pure,
+total definitions with exactly one static use in their defining block may move
+to that use and emit as a stack expression. Shared values, cross-block values,
+calls, memory-tagged operations, effectful operations, division/remainder and
+values consumed by division/remainder remain locals. Bool argument checks remain
+before the body, including for unused arguments; Unit results do not suppress
+calls or traps. Returning a parameter does not skip preceding operations. The
+function's final `end` returns its declared result.
 
-The encoding recipe is now `oak.wasm.encode.v7`; scalar/check profiles remain
+The production encoding recipe is now `oak.wasm.encode.v9`; scalar/check profiles remain
 v1 because neither the accepted vocabulary nor the byte-validation rules
 changed. Independent final-byte admission is unchanged, and translation
 verification remains false.
@@ -116,17 +126,17 @@ Wasm instructions, not native JIT instructions or dynamic execution counts.
 | Fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
 | i64 identity | 58 → 38 | 14 → 2 |
-| u32 add | 68 → 48 | 18 → 6 |
-| shared u64 multiply result | 77 → 57 | 22 → 10 |
-| unused Bool argument with guard | 73 → 53 | 22 → 10 |
-| Unit return | 60 → 40 | 15 → 3 |
+| u32 add | 68 → 42 | 18 → 4 |
+| shared u64 multiply result | 77 → 51 | 22 → 8 |
+| unused Bool argument with guard | 73 → 47 | 22 → 8 |
+| Unit return | 60 → 34 | 15 → 1 |
 | signed i64 division | 82 → 62 | 27 → 15 |
-| caller plus add callee | 126 → 86 | 40 → 16 |
+| caller plus add callee | 126 → 68 | 40 → 10 |
 
 These are deterministic code-size gates, not a measured wall-clock speedup or
 formal equivalence proof. The loop increment below adds a first, narrow runtime
-comparison. General structurization, stack expression emission, local allocation
-and representative runtime benchmarks remain open.
+comparison. General structurization, broader local allocation and representative
+runtime benchmarks remain open.
 
 ### Four-block structured loops
 
@@ -143,21 +153,23 @@ exit operations run on exit. All edge values are pushed before any destination
 local is set, preserving cyclic phi assignments. Bool argument guards and all
 operation/effect admission gates are shared with the other emission paths.
 The compact recognizer still covers exactly this shape. Conditional bodies may
-instead use the composed region-loop lowering below. Nested loops and
-irreducible bodies keep the dispatcher. A one-block self-loop is not this shape.
+instead use the composed region-loop lowering below. Nested loops use recursive
+structured-region lowering when the checked frontend retained their exact
+structure; raw CFGs and irreducible bodies keep the dispatcher. A one-block
+self-loop is not this shape.
 
 Engine tests compare retained dispatcher bytes with current output and reference
 results for sum, swap and GCD, including zero trips, u32 wraparound and full-width
 u64 remainders. Additional tests exercise inverted polarity, shuffled block order,
 header-parameter swap cycles, malformed effects in every region, header/body/exit
-call traps, Unit returns and the nested-loop fallback.
+call traps, Unit returns and the raw-CFG nested-loop fallback.
 
 | Loop fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
-| counter | 166 → 103 | 65 → 31 |
-| sum | 203 → 140 | 79 → 45 |
-| swap | 246 → 185 | 95 → 61 |
-| GCD | 183 → 120 | 71 → 37 |
+| counter | 166 → 79 | 65 → 23 |
+| sum | 203 → 104 | 79 → 33 |
+| swap | 246 → 129 | 95 → 43 |
+| GCD | 183 → 108 | 71 → 33 |
 
 An opt-in warmed sum benchmark compares the exact old/new binaries, alternates
 timing order and checks results. Four local Deno/V8 processes measured median
@@ -187,19 +199,59 @@ The 125-block boundary is executed through the dispatcher in tests.
 
 | Region-loop fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
-| conditional loop body | 342 → 251 | 144 → 93 |
-| nested-conditional loop body | 436 → 312 | 191 → 122 |
+| conditional loop body | 342 → 153 | 144 → 61 |
+| nested-conditional loop body | 436 → 192 | 191 → 82 |
 
 Executable baseline/current tests cover zero trips, wrapping results, lazy
 traps, Unit calls, header/entry/tail operations, signed `MIN/-1`, Bool guards,
 multiple latches, breaks, early returns, polarity, shuffled block storage and
-the nested-loop fallback. Unsupported effects are checked in every region,
-including a constant-zero-trip body. Existing compact outputs remain unchanged.
+the raw-CFG nested-loop fallback. Unsupported effects are checked in every region,
+including a constant-zero-trip body. Stack-expression planning is shared with
+the other raw-CFG paths and does not change the recognized control shape.
 
 Six local warmed Deno/V8 runs of the nested-body kernel all favored the new
 lowering, with median new/old ratios from 0.021 to 0.121, but individual samples
 were extremely noisy. [All samples and protocol](../../benchmarks/wasm/README.md#pre-test-loops-with-acyclic-bodies)
 are retained. They establish neither a general speedup nor Chrome behavior.
+
+### Recursive structured-region lowering
+
+Production materialization now retains the checked structured OptIR function as
+well as its canonical CFG. Before structure can guide emission, the encoder
+validates and snapshots both, independently reprojects the structured function,
+and compares every canonical CFG field directly. Structured and CFG fingerprints
+independently enter the typed artifact-DAG recipe. A mismatched pair fails
+before byte materialization; neither representation is independent authority.
+
+The recursive emitter is selected only after the established direct, compact
+loop/diamond, forward-CFG and region-loop paths decline the CFG. This keeps all
+existing fixture bytes stable. It emits structured `if/else` recursively and
+pre-test loops as an exit `block` containing a `loop`; false conditions branch
+to the exit and completed bodies branch back. Loop initial values, body yields
+and conditional yields use parallel local copies: every source is pushed before
+any destination is overwritten. Lexical condition/body arguments alias the
+current carried-result locals, so retaining structure does not add unused Wasm
+locals to functions handled by older paths.
+
+The structured tree is bounded before recursive copying or projection. Shared
+or cyclic Go control-node pointers, excessive node counts and excessive control
+depth refuse. The independent final-byte checker still enforces its own module,
+instruction, local, stack and 128-frame limits. Operations, calls, traps, Unit
+values and Bool guards pass through the same admission helpers as raw CFG paths.
+
+| Nested-loop fixture | Module bytes, dispatcher → structured | Wasm instructions, dispatcher → structured |
+| --- | ---: | ---: |
+| nested counters | 337 → 203 | 140 → 66 |
+| nested loop with conditional body | 437 → 255 | 189 → 88 |
+
+Engine tests execute both modules against independent reference loops through
+zero-trip, ordinary and larger inputs. Additional tests cover lazy in-module
+calls, division traps, Unit results and invalid Bool inputs in nested loops.
+Three local Deno/V8 processes measured median structured/dispatcher ratios of
+0.087–0.100 for the conditional nested-loop microbenchmark. The full samples
+and method are retained in the [Wasm benchmark record](../../benchmarks/wasm/README.md#nested-structured-regions).
+This is not a Chrome/application guarantee, a timing gate, or formal
+source-to-Wasm refinement.
 
 ### Four-block conditionals with a join
 
@@ -226,9 +278,9 @@ the general acyclic path below).
 | Conditional fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
 | simple choice | 133 → 65 | 55 → 16 |
-| guarded division | 154 → 86 | 61 → 22 |
-| i64 arithmetic after join | 157 → 89 | 65 → 26 |
-| loop plus conditional helper | 327 → 258 | 127 → 88 |
+| guarded division | 154 → 68 | 61 → 16 |
+| i64 arithmetic after join | 157 → 71 | 65 → 20 |
+| loop plus conditional helper | 327 → 161 | 127 → 56 |
 
 The opt-in helper-call benchmark retains a structured caller loop in both
 versions. The initial noisy Deno/V8 process measured a median new/old time ratio
@@ -257,15 +309,16 @@ for forward labels, the function, and an internal `if`. Larger accepted CFGs and
 unmatched loops keep dispatch. Existing direct/loop/diamond fixtures are unchanged.
 
 This is generic bounded lowering, not a new optimization candidate or DAG node
-per block. The versioned materializer consumes checked raw CFGs and still gates
-actual bytes with independent admission. It neither consumes optimized OptIR
-nor grants formal translation verification.
+per block. The raw compatibility API consumes checked CFGs; production
+materialization also retains exact structured identity. Both still gate actual
+bytes with independent admission. Neither consumes optimized OptIR nor grants
+formal translation verification.
 
 | Forward fixture | Module bytes, before → after | Wasm instructions, before → after |
 | --- | ---: | ---: |
-| nested conditionals | 253 → 167 | 114 → 66 |
-| sequential i64 conditionals | 248 → 160 | 112 → 64 |
-| loop plus nested conditional helper | 421 → 335 | 174 → 126 |
+| nested conditionals | 253 → 129 | 114 → 54 |
+| sequential i64 conditionals | 248 → 130 | 112 → 54 |
+| loop plus nested conditional helper | 421 → 214 | 174 → 86 |
 
 Tests execute retained pre-change bytes and current output against reference
 results. Another 64 generated graphs exercise 2,304 input pairs with shared
@@ -281,6 +334,37 @@ Three local warmed Deno/V8 runs of the nested-helper kernel measured median
 new/old execution ratios of 0.387–0.438. The caller loop is structured in both
 versions. [Raw samples and method](../../benchmarks/wasm/README.md#acyclic-forward-cfgs)
 are retained; this is not a representative browser performance claim.
+
+### Pure single-use stack expressions
+
+Before emitting any raw-CFG route, the backend records every SSA definition and
+runtime use. A one-result definition may be deferred to its sole use only when
+both are in the same block and the operation is total, pure, and carries no
+memory access/call identity. Calls, division/remainder, effectful operations,
+shared values and cross-block values remain explicit locals. Operands consumed
+by division/remainder also remain locals because signed-division overflow
+lowering may read them more than once.
+
+Deferred definitions recursively emit through the same operation/type/effect
+checks as ordinary definitions. Cycle and duplicate-consumption guards fail
+closed. Edge copies evaluate all expression sources before writing any target
+phi local. Local compaction preserves parameter indices and remaps every
+retained SSA or structured lexical alias through its old physical local. The
+recursive structured-tree fallback is deliberately excluded until it has
+lexical-region use accounting; its existing bytes stay stable. A deferred pure
+tree used only as Oak's Unit return is accounted for without a Wasm carrier;
+ineligible calls, traps and effects still execute in their original positions.
+
+`TestWasmStackExpressionExecution` retains executable recipe-v8 bytes for a
+loop and conditional helper, independently executes both lanes, and checks
+ordinary, boundary and large inputs. Recipe v9 shrinks that complete module
+from 258 to 161 bytes and from 88 to 56 Wasm instructions. Three longer local
+Deno/V8 timing processes were too variable to establish a runtime improvement:
+their ratios of medians were 0.884, 0.937 and 1.519, with extreme outliers in
+both lanes. The [raw record](../../benchmarks/wasm/stack-expression-2026-09-18.json)
+therefore claims only deterministic static reduction, not faster execution.
+Final bytes still pass independent admission and translation verification
+remains false.
 
 ### Execution and proof coverage
 

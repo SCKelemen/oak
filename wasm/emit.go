@@ -30,14 +30,32 @@ type Module struct {
 	ByteValidation      *check.Report `json:"byteValidation,omitempty"`
 }
 
+// FunctionInput binds the structured program retained by the checked frontend
+// to its canonical CFG projection. The encoder independently reprojects the
+// structure and refuses any disagreement before using it as a lowering plan.
+type FunctionInput struct {
+	Structured optir.Function
+	CFG        optir.CFG
+}
+
+type candidateInput struct {
+	cfg        optir.CFG
+	structured *optir.Function
+}
+
 type function struct {
 	cfg        optir.CFG
+	structured *optir.Function
 	entry      optir.Block
 	index      uint32
 	locals     map[optir.ValueID]uint32
 	types      map[optir.ValueID]optir.Type
 	localTypes []byte
 	blocks     map[optir.BlockID]int
+
+	stackDefinitions map[optir.ValueID]optir.Operation
+	stackActive      map[optir.ValueID]bool
+	stackConsumed    map[optir.ValueID]bool
 }
 
 func valueType(t optir.Type) (byte, error) {
@@ -66,27 +84,85 @@ func Emit(cfgs []optir.CFG) (Module, error) {
 	return out, nil
 }
 
+// EmitStructured is the safe combined API for a checked structured/CFG pair.
+// Byte validation remains structural and does not claim source translation
+// verification.
+func EmitStructured(inputs []FunctionInput) (Module, error) {
+	out, err := EncodeStructuredCandidate(inputs)
+	if err != nil {
+		return Module{}, err
+	}
+	report, err := out.ValidateBytes()
+	if err != nil {
+		return Module{}, fmt.Errorf("wasm: emitted bytes refused: %w", err)
+	}
+	out.ByteValidation = &report
+	return out, nil
+}
+
 // EncodeCandidate is untrusted materialization for a compiler artifact graph.
 // It enforces the input subset but does NOT independently admit output bytes.
 // Use Emit for the safe combined API, or gate this result with ValidateBytes.
 // Its result has no ByteValidation report or translation-verification authority.
 func EncodeCandidate(cfgs []optir.CFG) (Module, error) {
-	if len(cfgs) == 0 || len(cfgs) > 128 {
+	inputs := make([]candidateInput, len(cfgs))
+	for i, cfg := range cfgs {
+		inputs[i] = candidateInput{cfg: cfg}
+	}
+	return encodeCandidateInputs(inputs)
+}
+
+// EncodeStructuredCandidate is untrusted materialization for exact checked
+// structured/CFG pairs. Structure is used only as a lowering plan; exact
+// reprojection prevents it from acquiring independent semantic authority.
+func EncodeStructuredCandidate(inputs []FunctionInput) (Module, error) {
+	prepared := make([]candidateInput, len(inputs))
+	for i, input := range inputs {
+		if err := validateStructuredLimits(input.Structured); err != nil {
+			return Module{}, err
+		}
+		structured, _, err := optir.SnapshotFunction(input.Structured)
+		if err != nil {
+			return Module{}, fmt.Errorf("wasm: invalid structured function: %w", err)
+		}
+		cfg, _, err := optir.SnapshotCFG(input.CFG)
+		if err != nil {
+			return Module{}, fmt.Errorf("wasm: invalid CFG projection: %w", err)
+		}
+		projected, err := optir.Project(structured)
+		if err != nil {
+			return Module{}, err
+		}
+		equal, err := optir.ExactCFGEqual(projected, cfg)
+		if err != nil {
+			return Module{}, err
+		}
+		if !equal {
+			return Module{}, fmt.Errorf("wasm: structured function %s disagrees with its exact CFG projection", structured.Name)
+		}
+		prepared[i] = candidateInput{cfg: cfg, structured: &structured}
+	}
+	return encodeCandidateInputs(prepared)
+}
+
+func encodeCandidateInputs(inputs []candidateInput) (Module, error) {
+	if len(inputs) == 0 || len(inputs) > 128 {
 		return Module{}, fmt.Errorf("wasm: need 1..128 functions")
 	}
-	ordered := append([]optir.CFG(nil), cfgs...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
+	ordered := append([]candidateInput(nil), inputs...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].cfg.Name < ordered[j].cfg.Name })
 	functions := make([]*function, 0, len(ordered))
 	byName := map[string]*function{}
 	total := 0
-	for _, cfg := range ordered {
+	for _, input := range ordered {
+		cfg := input.cfg
 		if cfg.Name == "" || len(cfg.Name) > 256 || !utf8.ValidString(cfg.Name) || byName[cfg.Name] != nil {
 			return Module{}, fmt.Errorf("wasm: invalid or duplicate function name %q", cfg.Name)
 		}
 		if len(cfg.Blocks) == 0 || len(cfg.Blocks) > 128 || len(cfg.Results) != 1 {
 			return Module{}, fmt.Errorf("wasm: %s needs 1..128 blocks and one Oak result", cfg.Name)
 		}
-		f := &function{cfg: cfg, index: uint32(len(functions)), locals: map[optir.ValueID]uint32{}, types: map[optir.ValueID]optir.Type{}, blocks: map[optir.BlockID]int{}}
+		f := &function{cfg: cfg, structured: input.structured, index: uint32(len(functions)), locals: map[optir.ValueID]uint32{}, types: map[optir.ValueID]optir.Type{}, blocks: map[optir.BlockID]int{}}
 		for i, b := range cfg.Blocks {
 			if b.ID == cfg.Entry {
 				f.entry = b
@@ -144,6 +220,11 @@ func EncodeCandidate(cfgs []optir.CFG) (Module, error) {
 				if err := define(op.Results[0]); err != nil {
 					return Module{}, err
 				}
+			}
+		}
+		if f.structured != nil {
+			if err := f.bindStructuredArguments(); err != nil {
+				return Module{}, fmt.Errorf("wasm: %s: %w", cfg.Name, err)
 			}
 		}
 		functions = append(functions, f)
@@ -237,7 +318,15 @@ func (m Module) ValidateBytes() (check.Report, error) {
 	return report, nil
 }
 
-func (f *function) body(functions map[string]*function) (binary, error) {
+func (f *function) body(functions map[string]*function) (out binary, err error) {
+	defer func() {
+		if err == nil {
+			err = f.validateStackExpressions()
+			if err != nil {
+				out = nil
+			}
+		}
+	}()
 	var b binary
 	// A single returning block needs no dispatcher or program-counter local.
 	// Do not select this path for a single-block back edge, even if an analysis
@@ -264,6 +353,16 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 			return nil, err
 		}
 		dispatch = !structuredRegionLoop
+	}
+	structuredTree := dispatch && f.structured != nil
+	if structuredTree {
+		dispatch = false
+	}
+	if !structuredTree {
+		f.planStackExpressions()
+		if err := f.compactStackLocals(); err != nil {
+			return nil, err
+		}
 	}
 	extra := 0
 	if dispatch {
@@ -293,7 +392,9 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		if err := f.operations(&b, f.entry, functions); err != nil {
 			return nil, err
 		}
-		f.returnValue(&b, f.entry.Terminator)
+		if err := f.returnValue(&b, f.entry.Terminator, functions); err != nil {
+			return nil, err
+		}
 		b.op(0x0b) // function end returns the result already on the operand stack
 		return b, nil
 	}
@@ -321,6 +422,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		return b, nil
 	}
+	if structuredTree {
+		if err := f.structuredBody(&b, functions); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
 	b.i32(int32(f.blocks[f.cfg.Entry]))
 	b.local(0x21, pc)
 	b.op(0x03, 0x40) // loop, empty block type
@@ -333,16 +440,26 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		switch t := block.Terminator; t.Kind {
 		case optir.TerminatorReturn:
-			f.returnValue(&b, t)
+			if err := f.returnValue(&b, t, functions); err != nil {
+				return nil, err
+			}
 			b.op(0x0f)
 		case optir.TerminatorBranch:
-			f.edge(&b, t.True, pc, 1)
+			if err := f.edge(&b, t.True, pc, 1, functions); err != nil {
+				return nil, err
+			}
 		case optir.TerminatorCondBranch:
-			f.get(&b, t.Condition)
+			if err := f.emitValue(&b, t.Condition, functions); err != nil {
+				return nil, err
+			}
 			b.op(0x04, 0x40)
-			f.edge(&b, t.True, pc, 2)
+			if err := f.edge(&b, t.True, pc, 2, functions); err != nil {
+				return nil, err
+			}
 			b.op(0x05)
-			f.edge(&b, t.False, pc, 2)
+			if err := f.edge(&b, t.False, pc, 2, functions); err != nil {
+				return nil, err
+			}
 			b.op(0x0b)
 		default:
 			return nil, fmt.Errorf("unsupported terminator %s", t.Kind)
@@ -371,33 +488,54 @@ func (f *function) operations(b *binary, block optir.Block, functions map[string
 	return nil
 }
 
-func (f *function) returnValue(b *binary, t optir.Terminator) {
+func (f *function) returnValue(b *binary, t optir.Terminator, functions map[string]*function) error {
 	if f.cfg.Results[0] != "()" {
-		f.get(b, t.Values[0])
+		return f.emitValue(b, t.Values[0], functions)
 	}
+	for _, value := range t.Values {
+		if err := f.discardValue(value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *function) get(b *binary, id optir.ValueID) { b.local(0x20, f.locals[id]) }
-func (f *function) edge(b *binary, e optir.Edge, pc, depth uint32) {
-	f.edgeValues(b, e)
+func (f *function) edge(b *binary, e optir.Edge, pc, depth uint32, functions map[string]*function) error {
+	if err := f.edgeValues(b, e, functions); err != nil {
+		return err
+	}
 	b.i32(int32(f.blocks[e.Target]))
 	b.local(0x21, pc)
 	b.op(0x0c)
 	b.u(uint64(depth))
+	return nil
 }
 
-func (f *function) edgeValues(b *binary, e optir.Edge) {
+func (f *function) edgeValues(b *binary, e optir.Edge, functions map[string]*function) error {
 	// Parallel copies: snapshot ALL incoming values before writing any phi.
 	for _, a := range e.Arguments {
-		f.get(b, a)
+		if err := f.emitValue(b, a, functions); err != nil {
+			return err
+		}
 	}
 	params := f.cfg.Blocks[f.blocks[e.Target]].Parameters
 	for i := len(params) - 1; i >= 0; i-- {
 		b.local(0x21, f.locals[params[i].ID])
 	}
+	return nil
 }
 
 func (f *function) operation(b *binary, op optir.Operation, functions map[string]*function) error {
+	if len(op.Results) == 1 {
+		if _, planned := f.stackDefinitions[op.Results[0].ID]; planned {
+			return nil
+		}
+	}
+	return f.emitOperation(b, op, functions, true)
+}
+
+func (f *function) emitOperation(b *binary, op optir.Operation, functions map[string]*function, store bool) error {
 	if op.MemoryAccessID != "" {
 		return fmt.Errorf("memory is outside %s", Profile)
 	}
@@ -448,9 +586,13 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 			b.i32(int32(bits))
 		}
 	case optir.OpCopy:
-		f.get(b, op.Operands[0])
+		if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+			return err
+		}
 	case optir.OpBoolNot:
-		f.get(b, op.Operands[0])
+		if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+			return err
+		}
 		b.op(0x45)
 	case optir.OpIntNeg:
 		if wide {
@@ -459,14 +601,18 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 		} else {
 			b.i32(0)
 		}
-		f.get(b, op.Operands[0])
+		if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+			return err
+		}
 		if wide {
 			b.op(0x7d)
 		} else {
 			b.op(0x6b)
 		}
 	case optir.OpIntDiv, optir.OpIntRem:
-		f.divrem(b, op)
+		if err := f.divrem(b, op, functions); err != nil {
+			return err
+		}
 	case optir.OpCall:
 		callee := functions[op.Attributes[0].Value]
 		if callee == nil || len(callee.entry.Parameters) != len(op.Operands) || callee.cfg.Results[0] != r.Type {
@@ -476,7 +622,9 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 			if f.types[id] != callee.entry.Parameters[i].Type {
 				return fmt.Errorf("callee argument type mismatch")
 			}
-			f.get(b, id)
+			if err := f.emitValue(b, id, functions); err != nil {
+				return err
+			}
 		}
 		b.op(0x10)
 		b.u(uint64(callee.index))
@@ -492,11 +640,17 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 		if !ok {
 			return fmt.Errorf("unsupported operation %s in %s", op.Code, Profile)
 		}
-		f.get(b, op.Operands[0])
-		f.get(b, op.Operands[1])
+		if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+			return err
+		}
+		if err := f.emitValue(b, op.Operands[1], functions); err != nil {
+			return err
+		}
 		b.op(opcode)
 	}
-	b.local(0x21, f.locals[r.ID])
+	if store {
+		b.local(0x21, f.locals[r.ID])
+	}
 	return nil
 }
 
@@ -504,7 +658,7 @@ func (f *function) operation(b *binary, op optir.Operation, functions map[string
 // div_s traps on MIN/-1, while Oak wraps. For every dividend, division by -1
 // is wrapping negation, so that arm never executes div_s. rem_s already returns
 // zero for MIN%-1. Operands are SSA locals: no calls are evaluated again here.
-func (f *function) divrem(b *binary, op optir.Operation) {
+func (f *function) divrem(b *binary, op optir.Operation, functions map[string]*function) error {
 	t := op.Results[0].Type
 	wide := t == "i64" || t == "u64"
 	signed := t == "i32" || t == "i64"
@@ -520,7 +674,9 @@ func (f *function) divrem(b *binary, op optir.Operation) {
 	}
 	guard := signed && op.Code == optir.OpIntDiv
 	if guard {
-		f.get(b, op.Operands[1])
+		if err := f.emitValue(b, op.Operands[1], functions); err != nil {
+			return err
+		}
 		if wide {
 			b.op(0x42)
 			b.s(-1)
@@ -532,7 +688,9 @@ func (f *function) divrem(b *binary, op optir.Operation) {
 			b.op(0x46, 0x04, 0x7f) // i32.eq; if (result i32)
 			b.i32(0)
 		}
-		f.get(b, op.Operands[0])
+		if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+			return err
+		}
 		if wide {
 			b.op(0x7d)
 		} else {
@@ -540,12 +698,17 @@ func (f *function) divrem(b *binary, op optir.Operation) {
 		}
 		b.op(0x05) // else
 	}
-	f.get(b, op.Operands[0])
-	f.get(b, op.Operands[1])
+	if err := f.emitValue(b, op.Operands[0], functions); err != nil {
+		return err
+	}
+	if err := f.emitValue(b, op.Operands[1], functions); err != nil {
+		return err
+	}
 	b.op(opcode)
 	if guard {
 		b.op(0x0b)
 	}
+	return nil
 }
 
 func binaryOpcode(code string, t optir.Type) (byte, bool) {

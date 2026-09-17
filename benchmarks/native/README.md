@@ -370,6 +370,31 @@ far too high for a useful A/B measurement.
 
 [Static observations and provenance](results/stage2-record-base-carriers-2026-09-17.json).
 
+## OS stage-2: close record-base carriers to a fixed point, 2026-09-18
+
+The verifier-gated `reuse-remaining-record-base-carriers` child repeats the
+existing carrier rewrite after its one-group parent succeeds. Every iteration
+removes at least one materialization and then recomputes the acyclic CFG and
+liveness, so no analysis survives a changed body. Keeping this as a separate
+candidate preserves the established one-group proven body as a fallback. A
+same-compiler `OAK_OPT_SKIP=reuse-remaining-record-base-carriers` build is the
+control, and both artifacts used fresh verification with zero of 22 verdicts
+from cache.
+
+| Selected body | Instructions | Multiplies | Stalls | Static cost | Extra materializations removed | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `walk_leaf` | 126 → 123 | 5 → 4 | 19 → 18 | 206.5 → 201.0 | 1 | proven |
+
+The exact code delta removes one redundant `movz`/`movk`/`umaddl` record-base
+triple and lets the existing carrier-aware scheduler order the final body. All
+other selected bodies are unchanged. Mach-O `__text` shrinks 3904→3892 bytes;
+object alignment makes the complete object shrink 5424→5416 bytes; all 27
+relocations remain. Both objects pass all eight current OS stage-2 conformance
+tests, including the PRNG streams and fuzz operation stream. Runtime is
+intentionally unreported because the final host load average was 185–237.
+
+[Static observations and provenance](results/stage2-record-base-closure-2026-09-18.json).
+
 ## OS stage-2: reschedule live record-base carriers, 2026-09-17
 
 The verifier-gated `reschedule-record-base-carriers` child reruns the existing
@@ -2105,6 +2130,23 @@ agreeing witness inputs, 528 instructions and one guard**. Its native
 object is byte-identical to `98faccd3`; this finding does not establish a
 runtime gain. [The evidence record](results/blake3-frame-joins-2026-09-17.json)
 records the diagnosis, artifact comparison and validation.
+
+**The update proves (2026-09-18).** With the frame fields restored, the
+search finds all eight chaining-value pairings on its first attempt. The
+remaining obstacle was the proof of `next.cv[0]`: its two canonical graphs
+differed only at 64 byte parameters, read through 32-bit and eight-bit
+views of the same eight-bit declarations. Recognizing that equality
+structurally proves the full update's **four nested loops under the normal
+budgets**. The search validates its first candidate instead of spending
+three validations on witness evidence.
+
+The equality fix alone retains **528 instructions and one guard**, with
+the same object bytes. After integrating the late-cleanup changes in
+`127d358e`, the proven update has **527 instructions and one guard**.
+This closes the update's proof gap without establishing a runtime gain.
+The [evidence record](results/blake3-declared-equality-2026-09-18.json)
+includes the reduced regression, width-sensitive negative cases, artifact
+hashes and integration checks.
 
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 

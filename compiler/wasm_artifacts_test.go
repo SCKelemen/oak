@@ -21,6 +21,20 @@ func wasmArtifactCFG(name, value string) optir.CFG {
 	}}}
 }
 
+func wasmArtifactFunction(name, value string) wasm.FunctionInput {
+	function := optir.Function{Name: name, Results: []optir.Type{"i32"}, Body: optir.Region{
+		Nodes: []optir.Node{{Operation: &optir.Operation{Code: optir.OpConstInt,
+			Results:    []optir.Value{{ID: 1, Type: "i32"}},
+			Attributes: []optir.Attribute{{Name: optir.AttributeValue, Value: value}},
+		}}}, Yield: []optir.ValueID{1},
+	}}
+	cfg, err := optir.Project(function)
+	if err != nil {
+		panic(err)
+	}
+	return wasm.FunctionInput{Structured: function, CFG: cfg}
+}
+
 func TestWasmArtifactPipeline(t *testing.T) {
 	d, _ := (target.Target{OS: target.OSCore, Arch: target.ArchWasm32}).Describe()
 	input := []optir.CFG{wasmArtifactCFG("f", "42"), wasmArtifactCFG("g", "3")}
@@ -82,6 +96,27 @@ func TestWasmArtifactPipeline(t *testing.T) {
 	bad, err := comp.WithVerifiedProfile().EmitWasmWithReport().Get()
 	if err == nil || len(bad.Module.Bytes) != 0 || len(bad.Pipeline.Steps) != 0 {
 		t.Fatal("verified-only returned partial artifact", err)
+	}
+}
+
+func TestWasmStructuredArtifactPipeline(t *testing.T) {
+	d, _ := (target.Target{OS: target.OSCore, Arch: target.ArchWasm32}).Describe()
+	input := []wasm.FunctionInput{wasmArtifactFunction("f", "42"), wasmArtifactFunction("g", "3")}
+	first, err := emitStructuredWasmGraph(context.Background(), d, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := wasm.EmitStructured(input)
+	if err != nil || !reflect.DeepEqual(first.Module, legacy) || len(first.Pipeline.Steps) != 4 {
+		t.Fatal("structured DAG changed safe materialization/admission", err)
+	}
+	reordered, err := emitStructuredWasmGraph(context.Background(), d, []wasm.FunctionInput{input[1], input[0]})
+	if err != nil || !reflect.DeepEqual(first, reordered) {
+		t.Fatal("structured declaration order changed recipes/bytes", err)
+	}
+	input[0].Structured.Body.Nodes[0].Operation.Attributes[0].Value = "43"
+	if output, err := emitStructuredWasmGraph(context.Background(), d, input); err == nil || len(output.Module.Bytes) != 0 || len(output.Pipeline.Steps) != 0 {
+		t.Fatal("mismatched structured identity reached admission", err)
 	}
 }
 

@@ -143,7 +143,7 @@ jobs:
       - name: Fetch the Sail Lean support library at its pinned revision
         run: sh spec/sail/setup.sh
 
-      - name: Build the Arm bridges (semantics, RAM effects, and span-state simulation)
+      - name: Build the Arm bridges (semantics, register reads, RAM, and span state)
         working-directory: spec/sail/lean
         run: lake build
 
@@ -156,6 +156,16 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailNoDeviceRAMWrapperExactAndMutated|TestSailLemRAMRequestsRemainPlain|TestSailRegisterMemoryWrapperExactAndMutated|TestSailNoDeviceWriteTraceExactAndMutated|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+
+      - name: Pin the copied Arm register bank and accessor, including mutations
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailGeneralRegister(Bank|Read)ExactAndMutated$' -count=1 -v
+
+      - name: Check original Arm syndrome declarations and mutation rejection
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailSyndrome(ProcState|Registers|Make|Set)ExactAndMutated$' -count=1 -v
 
   lem-ram-traces:
     name: Arm Lem RAM request traces

@@ -13,8 +13,10 @@ external=$(cd "$here/../../.." && pwd)/external
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 
-# Run inside the temporary directory: sail writes an SMT cache beside its cwd.
-(cd "$out" && sail "$here/arm_primitives.sail" --lean --lean-single-file \
+# Run a copy under a relative name: Sail embeds source paths in assertion
+# messages. Keep both those paths and the SMT cache independent of the checkout.
+cp "$here/arm_primitives.sail" "$out/arm_primitives.sail"
+(cd "$out" && sail arm_primitives.sail --lean --lean-single-file \
   --lean-output-dir "$out" --lean-lib-path "$external/lean-sail")
 
 rm -rf "$here/lean/Out" "$here/lean/Out.lean"

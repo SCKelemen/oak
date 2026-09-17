@@ -7,11 +7,15 @@
 # concurrency model or dynamic instruction-to-wrapper reachability.
 # `SpanStateBridge` preserves an independent Oak byte-memory relation across
 # finite in-range generated wrapper calls, under supplied physical-span premises.
+# `RegisterBridge` proves the copied general-register accessor against the
+# generated state, plus an operand-only STR adapter (not instruction execution).
+# `SyndromeBridge` proves the original load/store syndrome dependency and its
+# PSTATE-dependent register effect, not exception entry or instruction execution.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -26,6 +30,12 @@ name = "MemoryBridge"
 
 [[lean_lib]]
 name = "SpanStateBridge"
+
+[[lean_lib]]
+name = "RegisterBridge"
+
+[[lean_lib]]
+name = "SyndromeBridge"
 
 [[require]]
 name = "Sail"
