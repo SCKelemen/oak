@@ -57,6 +57,19 @@ func TestCanonicalLinearRespellsMasksAndForms(t *testing.T) {
 	if c := canonicalLinear(entry, map[*term]*term{}); c.kind != termConst || c.value != 1 {
 		t.Fatalf("0 lo 128 is 1: %s", c)
 	}
+	// A mask covering every bit a comparison can have set is the identity,
+	// whichever side the constant is on; a u16 call result read with its
+	// unspecified upper half, `(r and 65535) or (hi shl 16)`, under `and
+	// 65535` is `r and 65535`.
+	cmp := cmpTerm("eq", paramTerm("a", 32), paramTerm("b", 32))
+	if c := canonicalLinear(&term{kind: termBinary, width: 1, op: "and", left: constTerm(1, 1), right: cmp}, map[*term]*term{}); !equalTerms(c, truncate(cmp, 1)) {
+		t.Fatalf("1 and c is c: %s", c)
+	}
+	r, hi := paramTerm("call1", 32), paramTerm("call1#hi", 32)
+	read := binaryTerm("and", binaryTerm("or", binaryTerm("and", r, constTerm(65535, 32)), binaryTerm("shl", hi, constTerm(16, 32))), constTerm(65535, 32))
+	if c := canonicalLinear(read, map[*term]*term{}); !equalTerms(c, binaryTerm("and", r, constTerm(65535, 32))) {
+		t.Fatalf("the unspecified upper half strips under the mask: %s", c)
+	}
 	odd := binaryTerm("and", binaryTerm("shr", paramTerm("ipa", 64), constTerm(25, 64)), constTerm(1, 64))
 	same := &term{kind: termCmp, width: 1, op: "eq", left: binaryTerm("add", zeroExtend(dom, 64), odd), right: binaryTerm("add", zeroExtend(dom, 64), odd)}
 	if c := canonicalLinear(same, map[*term]*term{}); c.kind != termConst || c.value != 1 {
