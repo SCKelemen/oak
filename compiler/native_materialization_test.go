@@ -106,6 +106,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedEmptyFrame.ElideEmptyFrame = true
 	changedRecordBaseCarriers := lane(false)
 	changedRecordBaseCarriers.ReuseRecordBaseDestinations = true
+	changedRecordBaseClosure := lane(false)
+	changedRecordBaseClosure.ReuseRemainingRecordBaseDestinations = true
 	changedRecordBaseSchedule := lane(false)
 	changedRecordBaseSchedule.RescheduleRecordBaseCarriers = true
 	changedLoopArrayHomes := lane(false)
@@ -172,6 +174,7 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"callee-save-trim", driver(false), opt.Identity(changedCalleeSaveTrim)},
 		{"empty-frame", driver(false), opt.Identity(changedEmptyFrame)},
 		{"record-base-carriers", driver(false), opt.Identity(changedRecordBaseCarriers)},
+		{"record-base-closure", driver(false), opt.Identity(changedRecordBaseClosure)},
 		{"record-base-schedule", driver(false), opt.Identity(changedRecordBaseSchedule)},
 		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
 		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},

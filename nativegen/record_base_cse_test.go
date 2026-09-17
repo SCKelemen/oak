@@ -120,6 +120,21 @@ func TestReuseRecordBaseDestination(t *testing.T) {
 	if next == nil || !next.Config.(Lane).ReuseRecordBaseDestinations || PlainLane(next.Config.(Lane)).ReuseRecordBaseDestinations {
 		t.Fatal("record-base carrier candidate toggle or identity fallback")
 	}
+	closure, found := Registry().Lookup(TransformRecordBaseClosure)
+	if !found {
+		t.Fatal("missing remaining record-base carrier candidate")
+	}
+	if gated, ok := closure.(opt.Gated); !ok || !gated.NeedsVerdict() {
+		t.Fatal("remaining record-base carrier reuse must require a semantic verdict")
+	}
+	if closure.Apply(identity) != nil {
+		t.Fatal("remaining record-base carrier reuse applied without its parents")
+	}
+	parent.ReuseRecordBaseDestinations = true
+	next = closure.Apply(opt.Identity(parent))
+	if next == nil || !next.Config.(Lane).ReuseRemainingRecordBaseDestinations || PlainLane(next.Config.(Lane)).ReuseRemainingRecordBaseDestinations {
+		t.Fatal("remaining record-base carrier toggle or identity fallback")
+	}
 
 	reschedule, found := Registry().Lookup(TransformRecordBaseSchedule)
 	if !found {
@@ -136,6 +151,39 @@ func TestReuseRecordBaseDestination(t *testing.T) {
 	next = reschedule.Apply(opt.Identity(parent))
 	if next == nil || !next.Config.(Lane).RescheduleRecordBaseCarriers || PlainLane(next.Config.(Lane)).RescheduleRecordBaseCarriers {
 		t.Fatal("record-base carrier rescheduling toggle or identity fallback")
+	}
+}
+
+func TestReuseRemainingRecordBaseDestinations(t *testing.T) {
+	body := `
+  movz w9, #16384
+  movk w9, #6, lsl #16
+  umaddl x10, w2, w9, x0
+  ldr x4, [x10]
+  movz w9, #16384
+  movk w9, #6, lsl #16
+  umaddl x11, w2, w9, x0
+  add x4, x4, x11
+  movz w9, #8192
+  umaddl x12, w2, w9, x0
+  ldr x5, [x12]
+  movz w9, #8192
+  umaddl x13, w2, w9, x0
+  add x5, x5, x13
+  add x0, x4, x5
+  ret`
+	fn := recordBaseFunction(t, body, "x4, x5, x9, x10, x11, x12, x13, x0")
+	if n := reuseRecordBaseDestination(fn); n != 1 {
+		t.Fatalf("parent reused %d groups, want one:\n%s", n, Describe(fn))
+	}
+	if n := reuseRemainingRecordBaseDestinations(fn); n != 1 {
+		t.Fatalf("closure reused %d remaining groups, want one:\n%s", n, Describe(fn))
+	}
+	if text := Describe(fn); strings.Count(text, "umaddl") != 2 {
+		t.Fatalf("remaining bases were not closed to a fixed point:\n%s", text)
+	}
+	if n := reuseRemainingRecordBaseDestinations(fn); n != 0 {
+		t.Fatalf("fixed-point closure reused %d groups again", n)
 	}
 }
 

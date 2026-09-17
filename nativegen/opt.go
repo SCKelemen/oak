@@ -70,6 +70,7 @@ const (
 	TransformRedundantGuards     = "elide-redundant-guards"
 	TransformRecordBases         = "share-record-bases"
 	TransformRecordBaseCarriers  = "reuse-record-base-carriers"
+	TransformRecordBaseClosure   = "reuse-remaining-record-base-carriers"
 	TransformRecordBaseSchedule  = "reschedule-record-base-carriers"
 	TransformGlobalAddresses     = "share-global-addresses"
 	TransformForwardGlobalLoads  = "forward-global-loads"
@@ -553,6 +554,14 @@ func Transforms() []opt.Transform {
 			fired:    ReusedRecordBaseDestinations,
 		}},
 		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRecordBaseClosure, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.ReuseRemainingRecordBaseDestinations },
+			eligible: func(l Lane) bool { return l.Schedule && l.ShareRecordBases && l.ReuseRecordBaseDestinations },
+			apply:    func(l Lane) Lane { l.ReuseRemainingRecordBaseDestinations = true; return l },
+			fired:    ReusedRemainingRecordBaseDestinations,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
 			name: TransformRecordBaseSchedule, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:   arm64Only,
 			applied:  func(l Lane) bool { return l.RescheduleRecordBaseCarriers },
@@ -692,6 +701,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ElideRedundantGuards = false
 	lane.ShareRecordBases = false
 	lane.ReuseRecordBaseDestinations = false
+	lane.ReuseRemainingRecordBaseDestinations = false
 	lane.RescheduleRecordBaseCarriers = false
 	lane.ShareGlobalAddresses = false
 	lane.ForwardGlobalLoads = false

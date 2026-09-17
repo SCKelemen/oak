@@ -422,6 +422,16 @@ pilot this moves three instructions in `translate` (15→14 estimated stalls)
 and seven in `unmap_page` (52→51), without changing the instruction count or
 weakening either body's proven verdict.
 
+The next record-base measurement found that the matcher already had the
+necessary dominance, path-stability, call, and carrier-clobber checks, but each
+invocation returned after the first distinct repeated-base group. A separate
+`reuse-remaining-record-base-carriers` child now repeats that rewrite to a
+fixed point, rebuilding CFG and liveness after every removal and retaining the
+one-group form as a proof fallback. It closes one more group in the stage-2
+`walk_leaf`: one wide materialization and multiply disappear (126→123
+instructions), after which carrier-aware rescheduling lowers modeled stalls
+19→18. The complete body remains proven.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

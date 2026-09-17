@@ -6350,6 +6350,28 @@ No runtime claim is attached because final load averages were 79–113. Exact
 provenance is in
 `benchmarks/native/results/stage2-record-base-carriers-2026-09-17.json`.
 
+The `reuse-remaining-record-base-carriers` child closes the same rewrite to a
+fixed point only after the one-group carrier candidate fires. Each successful
+iteration removes at least one complete materialization; the next iteration
+rebuilds the item CFG and liveness before making another decision. The CFG
+must remain acyclic, every definition must dominate its renamed reads, the
+index and span base must remain stable on every relevant path, and calls or a
+write of the carrier refuse the group exactly as in the parent. The one-group
+body remains an independent fallback, and the fixed-point child has its own
+materialization-v31 key and non-trusted whole-body verdict gate.
+
+Against a same-compiler
+`OAK_OPT_SKIP=reuse-remaining-record-base-carriers` control, the fresh stage-2
+pilot closes one additional group in proven `walk_leaf`. Its selected body
+falls from 126 to 123 instructions, five to four multiplies, 19 to 18 modeled
+stalls, and static cost 206.5 to 201.0. The exact removal is one redundant
+`movz`/`movk`/`umaddl` record-base triple; all other selected bodies remain
+unchanged. Mach-O `__text` shrinks by 12 bytes and the aligned object by 8;
+all 27 relocations remain. Both objects pass all eight current stage-2 native
+conformance tests. No runtime claim is attached because host load averages
+were 185–237. Exact provenance is in
+`benchmarks/native/results/stage2-record-base-closure-2026-09-18.json`.
+
 The separate `reschedule-record-base-carriers` child closes one consequence of
 that late rewrite: the original scheduler could not see the dependence graph
 after the first destination became the long-lived carrier and the redundant
