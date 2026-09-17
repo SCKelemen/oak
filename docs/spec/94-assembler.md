@@ -9685,7 +9685,27 @@ this large sat unexamined because it reads as "bodies outside the
 checker's subset", the same phrase §9.ai used to dismiss 250 of them. It
 was not that. It was one missing declaration, and the way to find it was
 to group the refusals by the transform that produced them, which pointed
-at reallocation immediately. The other two large classes — a memory
-operand through a base the checker cannot place, and a read before any
-write — deserve the same treatment before anyone assumes they are out of
-subset too.
+at reallocation immediately.
+
+**And the same grouping, run again afterwards, says the other two classes
+are the same shape.** Of the 144 refusals that remain, 73 are a memory
+operand through a base the checker cannot place and 49 are a read before
+any write, and in both classes every form that refuses contains
+`reallocate`: 15 plain `reallocate` and 12 `elide-guards+reallocate` lead
+the first, 11 and 6 the second. The bodies are the string and URL
+walkers — `utf8_decode`, `utf8_step`, `path_next_component` for the
+first; `json_scan_integer`, `url_parse`, `url_remove_dots_into` for the
+second.
+
+That is worth stating as a finding rather than a fix, because the two
+readings have opposite consequences and this section does not settle
+which holds. Either reallocation renames a web in a way that leaves the
+body's `bind` declarations behind, so the checker loses the span a base
+register carried and sees a register read before it is written — in which
+case these bodies are **wrong**, not merely unverifiable, and the checker
+is stopping a miscompile — or the renaming is sound and the checker
+cannot follow it, in which case the facts need to follow the rename. The
+first would be a bug of the same family as this section's, the second a
+gap of the §9.al family. Deciding it needs the reallocated body of one
+case read against its original, which is the next piece of work, and it
+should be done before either class is called out of subset.
