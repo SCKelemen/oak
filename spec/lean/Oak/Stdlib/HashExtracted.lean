@@ -494,17 +494,12 @@ def blake3_init  (fuel : Nat) : Option (Blake3State) := do
 def blake3_start_flag (state : Blake3State) (fuel : Nat) : Option (UInt32) := do
   pure (if (state.blocks_compressed == (0 : UInt32)) then BLAKE3_CHUNK_START else (0 : UInt32))
 
-def blake3_absorb_block (state : Blake3State) (fuel : Nat) : Option (Blake3State) := do
-  let next : Blake3State := state
-  let r1 ← blake3_words next.block fuel
-  let r2 ← blake3_start_flag next fuel
-  let r3 ← blake3_compress next.cv r1 next.chunk_counter (64 : UInt32) r2 fuel
-  let out : Array UInt32 := r3
-  let r4 ← blake3_first8 out fuel
-  let next := { next with cv := r4 }
-  let next := { next with blocks_compressed := (next.blocks_compressed + (1 : UInt32)) }
-  let next := { next with block_len := (0 : UInt32) }
-  pure next
+def blake3_absorb_cv (cv : Array UInt32) (block : Array UInt8) (counter : UInt64) (flags : UInt32) (fuel : Nat) : Option (Array UInt32) := do
+  let r1 ← blake3_words block fuel
+  let r2 ← blake3_compress cv r1 counter (64 : UInt32) flags fuel
+  let out : Array UInt32 := r2
+  let r3 ← blake3_first8 out fuel
+  pure r3
 
 def blake3_chunk_cv.loop1 (block : Array UInt8) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)
   | 0 => none
@@ -590,8 +585,11 @@ def blake3_update.loop1 (src : Array UInt8) (next : Blake3State) (i : UInt32) : 
           pure next)
         else (do
           let next ← (if (next.block_len == (64 : UInt32)) then (do
-              let r3 ← blake3_absorb_block next fuel
-              let next := r3
+              let r3 ← blake3_start_flag next fuel
+              let r4 ← blake3_absorb_cv next.cv next.block next.chunk_counter r3 fuel
+              let next := { next with cv := r4 }
+              let next := { next with blocks_compressed := (next.blocks_compressed + (1 : UInt32)) }
+              let next := { next with block_len := (0 : UInt32) }
               pure next)
             else (do
               pure next))

@@ -1941,6 +1941,68 @@ to the measured candidate artifacts.
 The focused tests, Lean builds, fresh native proof and native artifact
 comparisons passed again after the final rebase onto `cc22121d`.
 
+## BLAKE3: avoid copying the tree stack per block, 2026-09-17
+
+At baseline `4777fef6`, ordinary block absorption passed and returned the
+entire 1,848-byte `Blake3State`, including its untouched 1,728-byte chaining
+stack. The C-compiled update copied that state to a temporary every time.
+The private helper now accepts only the chaining value, block, counter and
+flags, and returns the new chaining value. The same caller branch updates
+`cv`, increments `blocks_compressed` and clears `block_len` locally. Public
+signatures, flags, compression and boundary/trap conditions are unchanged.
+
+The ordinary-block full-state copy disappears. A complete 1 MiB hash has
+15,360 such absorptions, removing 28,385,280 bytes of *logical copy work*;
+that is not a hardware memory-traffic measurement. Initial and chunk-boundary
+state copies remain. The C update symbol shrinks **696 → 616 bytes**, while
+its frame grows **2,096 → 2,112 bytes**. Native compression is byte-identical
+before/after, with all eight result chunks freshly proven at the default
+budget and caching disabled. Both mixed variants link the same native object.
+
+| Cohort / run | Baseline ms/MiB | Narrow helper ms/MiB | Median paired ratio | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Native compression fixed / A | 4.753 | 3.417 | 0.751 | 16/21 |
+| Native compression fixed / B, reversed | 2.937 | 3.108 | 0.865 | 13/21 |
+| Native compression fixed / C | 2.599 | 1.878 | 0.790 | 18/21 |
+| Pure C / A | 4.615 | 4.126 | 0.787 | 17/21 |
+| Pure C / B, reversed | 2.595 | 2.283 | 0.771 | 15/21 |
+| Pure C / C | 5.264 | 4.323 | 0.746 | 16/21 |
+
+The protocol is unchanged: rotating interleaved variants on one thread, one
+warmup each, 21 samples of 100 complete 1 MiB hashes per variant, reversing
+the first two libraries in run B. The third library is the original pure-C
+hash for the mixed cohort and the original native-compressor hash for the
+pure-C cohort. Every digest byte matches at fourteen boundary lengths and
+after every sample. No builds/tests from this experiment overlap timing.
+
+**Retained for a consistent paired runtime improvement**, not for the static
+copy count alone. All six median paired ratios improve: roughly 14–25% less
+elapsed time with native compression fixed, and 21–25% less with pure C.
+The M4 Max was heavily loaded (one-minute boundary readings 43.7–160.5), with
+uncontrolled cores/frequency. In mixed run B, separate medians regress even
+though the paired median improves. This is a noisy trend, not a precise
+speedup guarantee, short-input result or whole-package native comparison.
+
+The C/interpreter differential reference now freezes the old whole-state
+absorb helper as well as the old byte loop. A new 60-case transition matrix
+covers arbitrary block counts, `u32`/`u64` counter wrapping, patterned/random
+blocks, every state field and source immutability; streaming, digest and
+malformed-state tests still pass. The native proof test also still refutes a
+deliberately incorrect compression rotate.
+
+`Oak.Stdlib.Blake3AbsorbLaws` proves the narrowed helper plus caller updates
+equal the frozen prior extracted transition for every state and fuel, and
+pins that replacement to the **actual generated ordinary-full-block branch**
+with its continuation unchanged. Existing guarded batching laws still build.
+This is scoped extraction-level refinement, not whole-update, C `memcpy` or
+source-to-binary correctness.
+
+[All samples, artifact hashes, commands and proof scope](results/blake3-absorb-state-copy-2026-09-17.json).
+After integration onto `62980bc8`, the combined hash/differential/extraction
+and native proof/negative tests passed again, as did all four hash law modules.
+Fresh native emission still proves every compression result chunk; its object,
+C companion and fresh pure-C output match the measured candidate byte-for-byte.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

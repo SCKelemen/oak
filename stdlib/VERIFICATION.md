@@ -75,6 +75,25 @@ fix the other.
 | `arena` (reservations over an owner) | `e2e_buffers_test.go` (`TestE2EOwnedBuffers`, `TestOwnedBufferRejections`), `e2e_ffi_inbound_test.go` | — | — | — | — | — | no laws | no | — |
 | `objc` (Objective-C runtime lookups; `c.msg_send`) | `e2e_ffi_objc_test.go` (`TestE2EMessageSendFoundation`, `TestMessageSendEmission`, `TestMessageSendRejections`, `TestMessageSendForbidsFailsClosed`, `TestMessageSendRecordsAssumptionAndStrictAdmits`, `TestMessageSendInterpreterRejects`) | — | Foundation (`NSString`, `NSNumber`, `NSValue`) on an arm64 Darwin host | — | — | — | no laws: each send is a recorded `OAK-B0122` assumption about the selector's signature; the `_stret`/`_fpret` targets are not supported | no | — |
 
+## Scoped BLAKE3 additions, 2026-09-17
+
+The `hash` row's BLAKE3 gap now has two local extraction-level refinements:
+`Blake3UpdateLaws.lean` proves guarded interior byte batching and deferred
+length writeback equal the original byte transitions;
+`Blake3AbsorbLaws.lean` proves the narrowed full-block helper plus caller
+updates equal the prior whole-state transition, and pins this equality to
+the actual generated ordinary-full-block branch at the same fuel.
+Neither introduces axioms or `sorry`.
+
+`compiler/e2e_blake3_update_test.go` compares every state field in C and the
+interpreter against frozen prior transitions, including streaming boundaries,
+counter wrapping, source immutability and malformed-state traps. These are
+not full BLAKE3 digest/streaming laws, source-trap refinement, or whole-update
+native proofs: the extraction still totalizes array accesses. The compiler's
+separate compression proof/negative tests and
+[measured performance records](../benchmarks/native/README.md#blake3-avoid-copying-the-tree-stack-per-block-2026-09-17)
+retain that distinction. Other rows remain at their recorded snapshot.
+
 ## How to read the gaps
 
 Three tiers of evidence appear in the table, and they are not
