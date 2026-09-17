@@ -284,6 +284,19 @@ Entry values, unreachable roots, loop back-edges, tied operands, call clobbers,
 web ordering and the cleanup fixpoint are unchanged. Measurements and emitted
 object comparisons are recorded in `benchmarks/native/README.md`.
 
+`Simplify` also avoids a second reaching-definition analysis between a
+successful copy propagation and dead-code elimination (2026-09-17). When
+the physical registers differ, the copy's single-definition destination is
+now unread. Its source remains read by the still-present copy, and the
+transferred uses reach the source's existing definitions. DCE therefore uses
+the original webs with that destination excluded. All other definitions keep
+their original read/unread status. A self-copy can have distinct webs for the
+same physical register; that case retains the fresh-analysis path. Each next
+round rebuilds webs and liveness, preserving the propagation order and
+1,024-round limit. Regression cases compare complete assembly and cleanup
+counts with the full-rebuild algorithm across branches, loops, register reuse,
+calls, width restrictions, tied operands, restores and RV64 copies.
+
 Second increment: machine-level loop-invariant code motion on the loop
 tree (`machine.HoistInvariants`). Innermost loop first, an instruction
 moves to the loop's unique preheader when it is pure and reads no

@@ -1550,6 +1550,51 @@ microbenchmark samples, CPU and wall observations, resource counters, source and
 binary hashes, proof diagnostics and reproduction instructions. The permanent
 fixtures are in `machine/webs_benchmark_test.go`.
 
+### One analysis per ordinary copy-propagation round (2026-09-17)
+
+`Simplify` previously rebuilt reaching definitions immediately after moving a
+copy's reads, then rebuilt again at the next round. For a copy between different
+physical registers, only its single-definition destination becomes unread;
+the source remains read by the copy. Dead-code elimination can use the original
+webs with that destination excluded. Self-copies retain the full rebuild, and
+each next round still rebuilds webs and liveness. Propagation order, width and
+availability checks, and the 1,024-round bound stay unchanged.
+
+Frozen binaries at `4b1c1a2d` and that base plus this change ran sequentially in
+before/after/after/before order, before later branch integrations. This base
+already includes both immutable reaching sets and allocation-proposal reuse.
+Ten samples per variant of `BenchmarkSimplifyCopies` (three iterations each,
+128 copies checked each iteration) gave these medians:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| ms/op | 289.491 | 179.640 |
+| Allocations/op | 587,667 | 375,691.5 |
+| Allocated bytes/op | 178,341,397 | 114,416,087.5 |
+
+That is **38% less observed time and 36% fewer allocations and allocated bytes**
+for this compiler fixture. Four fresh BLAKE3 compression-only emissions followed:
+
+| Run | Wall seconds | User + system CPU seconds |
+| --- | ---: | ---: |
+| Before A | 84.29 | 66.13 |
+| After A | 73.68 | 60.44 |
+| After B | 91.10 | 60.08 |
+| Before B | 78.70 | 66.83 |
+
+CPU time fell **9–10%** in the paired observations, with fewer retired
+instructions in both. Wall time improved in one pair and worsened in the other;
+one-minute host load ranged from 159 to 272, with uncontrolled frequency and
+scheduling. No builds or tests from this experiment overlapped timing.
+
+All four native compression objects and C companions are **byte-identical**;
+all eight result chunks were freshly proven with the normal budget and no
+cached verdicts. The full-unroll/schedule/reallocate output is preserved (the
+equivalent recipe label sometimes includes late cleanup). There is no additional
+hash-runtime speedup claimed. Regressions compare the cheaper DCE path against
+fresh analysis across 142 cases. [The measurement record](results/blake3-simplify-cost-2026-09-17.json)
+contains raw samples, per-run load, resource counters, hashes and commands.
+
 ## Reusing allocation proposals, 2026-09-17
 
 The preceding full-unroll runtime improvement made candidate materialization

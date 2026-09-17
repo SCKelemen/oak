@@ -1,0 +1,191 @@
+{
+  "schema": "oak-simplify-compilation-cost-v1",
+  "date": "2026-09-17",
+  "base_commit": "4b1c1a2db69b4b6a68bd7977c3414b963fd066e1",
+  "change": "Reuse the pre-propagation webs for DCE, excluding the single-definition destination whose reads moved to a different physical source register. Self-copies retain fresh analysis. Single-copy ordering and the 1024-round bound are unchanged.",
+  "measurement_source": "Frozen baseline at base_commit and candidate at that base plus only this commit's machine/simplify.go change. Both already include immutable reaching sets and allocation-proposal reuse. Their earlier isolated percentages must not be added to these results.",
+  "scope": "Compiler microbenchmark and compression-only native emission. No C compilation, linking, hash execution or application-runtime timing. Native object and C companion are byte-identical in all four emissions.",
+  "platform": {
+    "cpu": "Apple M4 Max",
+    "os": "macOS arm64",
+    "go": "go version go1.27.1 darwin/arm64",
+    "limitations": "Shared host with uncontrolled frequency and scheduling. Load recorded per run. No builds or tests from this experiment overlapped timing. Four emitter processes give two observations per variant, insufficient for a stable general wall-time multiplier or confidence interval."
+  },
+  "microbenchmark": {
+    "source": "machine/webs_benchmark_test.go:BenchmarkSimplifyCopies",
+    "protocol": "Before-a, after-a, after-b, before-b, each five samples of three iterations; ten samples per variant. Each iteration clones and lifts the same 128-copy body and checks exactly 128 propagated and eliminated copies.",
+    "command": "BINARY -test.run '^$' -test.bench '^BenchmarkSimplifyCopies$' -test.benchmem -test.benchtime=3x -test.count=5",
+    "medians": {
+      "before": {
+        "ns_per_op": 289491104.0,
+        "bytes_per_op": 178341397.0,
+        "allocations_per_op": 587667.0
+      },
+      "after": {
+        "ns_per_op": 179639889.0,
+        "bytes_per_op": 114416087.5,
+        "allocations_per_op": 375691.5
+      },
+      "after_over_before": {
+        "ns_per_op": 0.6205368196737403,
+        "bytes_per_op": 0.6415565282355616,
+        "allocations_per_op": 0.6392931711326313
+      }
+    },
+    "samples": [
+      {
+        "run": "before-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16    \t       3\t 182578528 ns/op\t178348040 B/op\t  587674 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 325782722 ns/op\t178341533 B/op\t  587670 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 321253944 ns/op\t178341352 B/op\t  587668 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 280400500 ns/op\t178344237 B/op\t  587666 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 257949458 ns/op\t178340514 B/op\t  587661 allocs/op\nPASS\n",
+        "load_before": "{ 151.92 152.40 153.38 }",
+        "load_after": "{ 158.67 153.88 153.89 }"
+      },
+      {
+        "run": "after-a",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16    \t       3\t 176477097 ns/op\t114420661 B/op\t  375693 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 191182153 ns/op\t114417344 B/op\t  375691 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 189601417 ns/op\t114415949 B/op\t  375692 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 125663847 ns/op\t114416221 B/op\t  375694 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 129463958 ns/op\t114418765 B/op\t  375690 allocs/op\nPASS\n",
+        "load_before": "{ 158.67 153.88 153.89 }",
+        "load_after": "{ 159.34 154.09 153.97 }"
+      },
+      {
+        "run": "after-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16    \t       3\t 139483639 ns/op\t114423176 B/op\t  375703 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 105042014 ns/op\t114415448 B/op\t  375688 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 218185570 ns/op\t114415602 B/op\t  375689 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 182802681 ns/op\t114415448 B/op\t  375688 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 189109139 ns/op\t114415954 B/op\t  375692 allocs/op\nPASS\n",
+        "load_before": "{ 159.34 154.09 153.97 }",
+        "load_after": "{ 159.34 154.09 153.97 }"
+      },
+      {
+        "run": "before-b",
+        "raw_output": "goos: darwin\ngoarch: arm64\npkg: github.com/SCKelemen/oak/machine\ncpu: Apple M4 Max\nBenchmarkSimplifyCopies-16    \t       3\t 385333194 ns/op\t178344370 B/op\t  587669 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 222100889 ns/op\t178341210 B/op\t  587653 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 327183944 ns/op\t178340616 B/op\t  587661 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 280705111 ns/op\t178340365 B/op\t  587659 allocs/op\nBenchmarkSimplifyCopies-16    \t       3\t 298277097 ns/op\t178341442 B/op\t  587669 allocs/op\nPASS\n",
+        "load_before": "{ 159.15 154.14 153.99 }",
+        "load_after": "{ 158.50 154.09 153.97 }"
+      }
+    ]
+  },
+  "emission": {
+    "protocol": "All microbenchmarks completed, then sequential before-a, after-a, after-b, before-b emissions. /usr/bin/time -l measures checking, native candidate search, fresh verification and C/object writing. CPU seconds are user plus system, potentially greater than wall time for parallel Go work. Maximum RSS is process memory, distinct from cache payload bytes.",
+    "command": "/usr/bin/time -l env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_OPT_BEAM= OAK_NATIVE_DUMP= OAK_MACHINE_TRACE_SLOTS= OAK_OPT_REPORT=1 OAK_NATIVE_TIMING=1 BINARY benchmarks/kernels/oak OUTPUT_PREFIX",
+    "samples": [
+      {
+        "run": "before-a",
+        "wall_seconds": 84.29,
+        "user_seconds": 64.34,
+        "system_seconds": 1.79,
+        "cpu_seconds": 66.13,
+        "resources": {
+          "maximum resident set size": 581042176,
+          "page reclaims": 40103,
+          "page faults": 1,
+          "swaps": 0,
+          "instructions retired": 500963410365,
+          "cycles elapsed": 150189885535,
+          "peak memory footprint": 567395312
+        },
+        "load_before": "{ 158.50 154.09 153.97 }",
+        "load_after": "{ 271.41 187.60 166.53 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate+late-cleanup): 1.40s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "84.29 real        64.34 user         1.79 sys\n           581042176  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               40103  page reclaims\n                   1  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n               11568  signals received\n                1005  voluntary context switches\n              238697  involuntary context switches\n        500963410365  instructions retired\n        150189885535  cycles elapsed\n           567395312  peak memory footprint"
+      },
+      {
+        "run": "after-a",
+        "wall_seconds": 73.68,
+        "user_seconds": 59.07,
+        "system_seconds": 1.37,
+        "cpu_seconds": 60.44,
+        "resources": {
+          "maximum resident set size": 568213504,
+          "page reclaims": 35644,
+          "page faults": 1,
+          "swaps": 0,
+          "instructions retired": 458001460450,
+          "cycles elapsed": 136711526255,
+          "peak memory footprint": 552485848
+        },
+        "load_before": "{ 271.41 187.60 166.53 }",
+        "load_after": "{ 271.99 206.48 175.41 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate+late-cleanup): 0.75s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "73.68 real        59.07 user         1.37 sys\n           568213504  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               35644  page reclaims\n                   1  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                9321  signals received\n                 678  voluntary context switches\n              177010  involuntary context switches\n        458001460450  instructions retired\n        136711526255  cycles elapsed\n           552485848  peak memory footprint"
+      },
+      {
+        "run": "after-b",
+        "wall_seconds": 91.1,
+        "user_seconds": 58.45,
+        "system_seconds": 1.63,
+        "cpu_seconds": 60.08,
+        "resources": {
+          "maximum resident set size": 576569344,
+          "page reclaims": 36158,
+          "page faults": 2,
+          "swaps": 0,
+          "instructions retired": 456191053241,
+          "cycles elapsed": 138471194119,
+          "peak memory footprint": 561087472
+        },
+        "load_before": "{ 259.17 204.92 175.04 }",
+        "load_after": "{ 205.22 204.08 177.89 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 0.79s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "91.10 real        58.45 user         1.63 sys\n           576569344  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               36158  page reclaims\n                   2  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n               11649  signals received\n                 917  voluntary context switches\n              210281  involuntary context switches\n        456191053241  instructions retired\n        138471194119  cycles elapsed\n           561087472  peak memory footprint"
+      },
+      {
+        "run": "before-b",
+        "wall_seconds": 78.7,
+        "user_seconds": 65.33,
+        "system_seconds": 1.5,
+        "cpu_seconds": 66.83,
+        "resources": {
+          "maximum resident set size": 602521600,
+          "page reclaims": 45341,
+          "page faults": 2,
+          "swaps": 0,
+          "instructions retired": 493462017861,
+          "cycles elapsed": 151869420704,
+          "peak memory footprint": 587760672
+        },
+        "load_before": "{ 205.22 204.08 177.89 }",
+        "load_after": "{ 189.81 200.91 179.12 }",
+        "diagnostics": [
+          "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 1.03s (proven)",
+          "timing: hash__blake3_ucompress allocation reuse: 18/22 hits, 4 entries, 1204729 retained payload bytes",
+          "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+          "native backend: 0 of 1 verdicts from the verdict cache"
+        ],
+        "raw_time_output": "78.70 real        65.33 user         1.50 sys\n           602521600  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               45341  page reclaims\n                   2  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n               11951  signals received\n                 717  voluntary context switches\n              199343  involuntary context switches\n        493462017861  instructions retired\n        151869420704  cycles elapsed\n           587760672  peak memory footprint"
+      }
+    ],
+    "c_sha256_all_four": "e1b40f6f997ab361fd5f8d399f5ac21b2b5877ad205beff10ec5e3c695fcfb47",
+    "native_object_sha256_all_four": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1"
+  },
+  "artifacts": {
+    "before-emit": "7189f76decb0cf8655d4905d152aa5d35fac09678ecba11facc188780b4154dc",
+    "after-emit": "209d36d47b689793b8cebeb0473ba19fdd9ba71c4e9434b739870fb07309de29",
+    "before-machine.test": "833153cf767f7ec05572ba1c15fa480e39026dee0ba85d52acf4d34472598595",
+    "after-machine.test": "6909d2afb87a8ded71de30d3670ec57263f304664b14d7be49833df2f7d5daf1",
+    "production.patch": "d28ce19501e8c3e2c72ce69ea928c0bdc323fffab068626943332e2847a75317"
+  },
+  "source_hashes": {
+    "stdlib/hash.oak": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+    "stdlib/hash.arm64.oakasm": "0d9c1ca0d3ef7bc76aff022b350b163cc8bfe40b84a5c16990f8a6c75f1f063c",
+    "benchmarks/kernels/oak/kernels.oak": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+    "benchmarks/kernels/oak/oak.mod": "8edc5ce544cb3088cd5be5fd22ce8f38e0f993cbf8b5f31af019af90d2e9a494",
+    "benchmarks/native/emit/main.go": "219d2a6899c3d4901150ada2d4a73e9ff30e661076604257ca08a10e2a02f10c",
+    "machine/webs_benchmark_test.go": "ad9e00fb1257f26b4a4ecba46f781b0d23ab00df52b2282ea6bfc10b3d856522"
+  },
+  "reproduction": [
+    "Build machine test and benchmarks/native/emit binaries at base_commit and at that base plus this commit's machine/simplify.go change. Freeze them before running benchmarks. Use the unchanged benchmark fixture identified by source_hashes.",
+    "In a fresh scratch directory run the microbenchmark command in before/after/after/before order, preserving every sample and sysctl -n vm.loadavg before and after each invocation.",
+    "Run the emitter command sequentially in the same order with distinct output prefixes, preserving stdout, stderr, time -l counters and before/after load. Disable cache and keep the normal proof budget. Do not overlap experiment builds/tests.",
+    "Compare all four .c and .o files byte-for-byte; require all eight result chunks freshly Proven with zero cached verdicts. Report CPU, wall and memory separately, including shared-host limitations."
+  ]
+}
