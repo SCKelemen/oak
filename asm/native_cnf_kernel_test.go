@@ -23,6 +23,7 @@ func checkNativeCNFLean(t *testing.T, filename, source string) {
 	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	buildLeanImports(t, lake, path)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	environment := exec.CommandContext(ctx, lake, "env")

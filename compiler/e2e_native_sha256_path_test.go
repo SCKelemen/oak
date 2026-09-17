@@ -99,7 +99,7 @@ func TestE2ENativeSha256Path(t *testing.T) {
 }
 
 func TestNativeShapesSha256Path(t *testing.T) {
-	model, err := New().WithSource("sha_path.oak", nativeSha256PathProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	model, err := nativeShapeModel("sha_path.oak", nativeSha256PathProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

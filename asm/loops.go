@@ -637,6 +637,25 @@ func isFrameSpill(instr Instruction) bool {
 	return isLoad(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Loads[instr.Mnemonic] != 0 || rv64Stores[instr.Mnemonic] != 0
 }
 
+// isGlobalArrayAddress reports `add xA, xN, :lo12:G` for a top-level array
+// G the executor reads as a span (bindGlobalAddress).
+func isGlobalArrayAddress(x *pathExecutor, instr Instruction) bool {
+	if instr.Mnemonic != "add" || len(instr.Operands) != 3 {
+		return false
+	}
+	sym, isSym := instr.Operands[2].(Symbol)
+	if !isSym || !sym.Lo12 {
+		return false
+	}
+	_, isSpan := x.spans[sym.Name]
+	global, known := x.globals[sym.Name]
+	if !isSpan || !known {
+		return false
+	}
+	_, _, _, isArray := globalArrayShape(global)
+	return isArray
+}
+
 // isHeaderLoad reports a scalar load through a register base (a span or
 // table element) that an exit test may read: not the frame, not a vector.
 func isHeaderLoad(instr Instruction) bool {
@@ -1250,6 +1269,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// symbol at the cell's width, its header value the cell as this path
 	// holds it, paired with the Oak side's cell local like a register.
 	carriedCells := map[string]bool{}
+	x.carriedCells = carriedCells // the calls in the body may write these (summarizeCallInLoop)
 	for _, name := range x.cellsStoredIn(shape) {
 		global := x.globals[name]
 		varName := "global:" + name
@@ -1307,6 +1327,12 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// same signature (loopEvent).
 	storedSpans := map[string]bool{}
 	writtenSpans := writableSpanMemories(x.fn, x.spans, x.recordSpans)
+	for name := range x.localSpans {
+		// A large owned array declared as a span: the loop's memory as a
+		// writable parameter's is (frameSpanAccess).
+		writtenSpans = append(writtenSpans, name)
+	}
+	sort.Strings(writtenSpans)
 	for _, span := range writtenSpans {
 		storedSpans[span] = true
 	}
@@ -1859,6 +1885,18 @@ func (x *pathExecutor) cellsStoredIn(shape loopShape) []string {
 		if !isInstr || len(instr.Operands) == 0 {
 			continue
 		}
+		if (instr.Mnemonic == "bl" || instr.Mnemonic == "call") && x.fn != nil {
+			// A call: the cells the callee's Oak body assigns are stored
+			// in this body as far as the loop is concerned.
+			if sym, isSym := instr.Operands[0].(Symbol); isSym {
+				if callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees); resolved {
+					for _, name := range x.cellsWrittenBy(callee) {
+						stored[name] = true
+					}
+				}
+			}
+			continue
+		}
 		_, isRV64Store := rv64Stores[instr.Mnemonic]
 		if (isStoreMnemonic(instr.Mnemonic) || isRV64Store) && len(instr.Operands) == 2 {
 			if mem, isMem := instr.Operands[1].(Memory); isMem && mem.Index == nil && mem.Offset == 0 {
@@ -1902,12 +1940,66 @@ func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState)
 		return reason, false
 	}
 	// A callee's stores through the caller's spans join the iteration's
-	// write log (the loop's memory); a callee writing package cells is
-	// refused, since the loop summary carries no cells.
-	if name, differs := differingGlobalState(x.globals, cellsBefore, st.globals); differs {
-		return fmt.Sprintf("a call writing package global %s in a loop", name), false
+	// write log (the loop's memory), and its stores to the package cells
+	// the loop carries (cellsStoredIn lists the cells a callee's Oak body
+	// assigns, callee by callee) are the iteration's stores to them; a
+	// store to a cell the loop does not carry is refused.
+	for name, after := range st.globals {
+		before, had := cellsBefore[name]
+		if had && (before == after || equalTerms(before, after)) {
+			continue
+		}
+		if !had {
+			if entry, held := globalStateValue(x.globals, cellsBefore, name); held && (entry == after || equalTerms(entry, after)) {
+				continue
+			}
+		}
+		if !x.carriedCells[name] {
+			return fmt.Sprintf("a call writing package global %s in a loop", name), false
+		}
 	}
 	return "", true
+}
+
+// cellsWrittenBy names the package cells a callee's Oak body assigns,
+// its own callees' included (transitively, each function once): the
+// cells a call in a loop body may write, which the loop then carries.
+func (x *pathExecutor) cellsWrittenBy(callee *ast.FunctionStatement) []string {
+	if x.calleeCells == nil {
+		x.calleeCells = map[string][]string{}
+	}
+	if cells, known := x.calleeCells[callee.Name.Value]; known {
+		return cells
+	}
+	x.calleeCells[callee.Name.Value] = nil // a recursive chain contributes nothing more
+	written := map[string]bool{}
+	if callee.Body != nil {
+		walkASTNodes(callee.Body, func(n ast.Node) {
+			switch e := n.(type) {
+			case *ast.AssignmentStatement:
+				if e.Name != nil {
+					if global, declared := x.globals[e.Name.Value]; declared && !global.Aggregate {
+						written[e.Name.Value] = true
+					}
+				}
+			case *ast.InvocationExpression:
+				if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+					if inner, known := x.fn.Callees[ident.Value]; known && inner != nil && inner.ExternSymbol == "" {
+						for _, name := range x.cellsWrittenBy(inner) {
+							written[name] = true
+						}
+					}
+				}
+			}
+		})
+	}
+	out := make([]string, 0, len(written))
+	for name := range written {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	x.calleeCells[callee.Name.Value] = out
+	return out
 }
 
 // headerPathBudget bounds the paths a loop header's short-circuit
@@ -1999,6 +2091,14 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 				reason, ok = x.frameAccess(instr, st)
 			case isHeaderLoad(instr):
 				reason, ok = x.load(instr, st)
+			case isGlobalArrayAddress(x, instr):
+				_, reason, ok = x.bindGlobalAddress(instr, st)
+			case instr.Mnemonic == "ldp" && !hasVectorOperand(instr):
+				// A pair load through a register base ahead of the exit
+				// test (a record copied before the loop): two loads
+				// (loadPair). Fifteen of the prover's bodies stopped here
+				// with "instruction ldp".
+				reason, ok = x.loadPair(instr, st)
 			default:
 				reason, ok = step(instr, st)
 			}
@@ -2699,6 +2799,13 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					pc++
 					continue
 				}
+				if handled, reason, ok := x.bindGlobalAddress(instr, st); handled {
+					if !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
 				if reason, ok := step(instr, st); !ok {
 					return nil, reason, false
 				}
@@ -2800,6 +2907,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// leaf: each lane or element is its own variable (`error[3]`).
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
+	// A call in the body to a function that assigns package cells: the
+	// cells are the caller's locals, so the loop carries them as it
+	// carries a cell the body assigns itself (the machine side lists them
+	// from the callee's body too, cellsStoredIn).
+	lo.cellsAssignedByCalls(loop.Body, assigned, map[string]bool{})
 	declared := map[string]bool{}
 	declaredLocals(loop.Body, declared)
 	// The Oak path condition at the loop (an arm the loop sits in): a call
@@ -3024,6 +3136,38 @@ func leafRefs(v *oakValue, prefix string, into map[string]*oakValue) {
 	}
 }
 
+// cellsAssignedByCalls adds to into the package cells assigned by the
+// bodies of the program functions the block calls, transitively (each
+// function once): the cells a call in a loop body may write.
+func (lo *oakLowering) cellsAssignedByCalls(node ast.Node, into map[string]bool, seen map[string]bool) {
+	if node == nil {
+		return
+	}
+	walkASTNodes(node, func(n ast.Node) {
+		call, isCall := n.(*ast.InvocationExpression)
+		if !isCall {
+			return
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || seen[ident.Value] {
+			return
+		}
+		callee, known := lo.functions[ident.Value]
+		if !known || callee == nil || callee.Body == nil || callee.ExternSymbol != "" {
+			return
+		}
+		seen[ident.Value] = true
+		walkASTNodes(callee.Body, func(inner ast.Node) {
+			if assign, isAssign := inner.(*ast.AssignmentStatement); isAssign && assign.Name != nil {
+				if _, isCell := lo.cells[assign.Name.Value]; isCell {
+					into[assign.Name.Value] = true
+				}
+			}
+		})
+		lo.cellsAssignedByCalls(callee.Body, into, seen)
+	})
+}
+
 func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 	if body == nil {
 		return
@@ -3223,6 +3367,70 @@ type coupling struct {
 	a     int
 	b     *term
 	ext   string // "" (same width), "zext" or "sext": a 64-bit register carrying a widened 32-bit variable
+}
+
+// preferredSlot names, for a slot that is a run of an array's leaves
+// (`out.at[62..63]`, or `out.at[62]`), the machine frame slot the leaves
+// live in when the pairing is the identity: the result area's slot at the
+// leaf's offset when the array is the record returned through memory
+// (resultArea), else the candidate frame slot whose rank among the
+// candidates' addresses is the leaf's index — the slots of one frame array
+// are contiguous, and the array's leaves are the whole candidate set when
+// they all start at one value. Empty when the slot is no such run or no
+// candidate is a frame slot; a preference only, never a restriction.
+func preferredSlot(s loopSlot, candidates []coupling, resultArea []compositeLeaf) string {
+	open := strings.LastIndexByte(s.name, '[')
+	if open < 0 || !strings.HasSuffix(s.name, "]") {
+		return ""
+	}
+	root, index := s.name[:open], s.name[open+1:len(s.name)-1]
+	if dots := strings.Index(index, ".."); dots >= 0 {
+		index = index[:dots]
+	}
+	start, err := strconv.Atoi(index)
+	if err != nil {
+		return ""
+	}
+	// The candidate frame slots, each once, by address.
+	type frameCandidate struct {
+		addr int64
+		name string
+	}
+	var frames []frameCandidate
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		var addr int64
+		var size int
+		if n, _ := fmt.Sscanf(c.reg, "s%d:%d", &addr, &size); n == 2 && !seen[c.reg] {
+			seen[c.reg] = true
+			frames = append(frames, frameCandidate{addr: addr, name: c.reg})
+		}
+	}
+	if len(frames) == 0 {
+		return ""
+	}
+	// The record returned through memory: the leaf's offset is known.
+	if dot := strings.IndexByte(root, '.'); dot >= 0 && len(resultArea) > 0 {
+		leafName := fmt.Sprintf("%s[%d]", root[dot+1:], start)
+		for _, leaf := range resultArea {
+			if leaf.name == leafName || strings.HasSuffix(leaf.name, "."+leafName) {
+				for _, f := range frames {
+					if f.addr == resultAreaBase+leaf.offset {
+						return f.name
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(frames, func(i, j int) bool { return frames[i].addr < frames[j].addr })
+	per := 1
+	if s.lane > 0 && len(s.locals) > 0 {
+		per = len(s.locals)
+	}
+	if k := start / per; k < len(frames) {
+		return frames[k].name
+	}
+	return ""
 }
 
 // show spells the coupling for the verdict (built only for the couplings
@@ -3899,8 +4107,16 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				oakRead = true
 			}
 		}
+		// An array's leaves all start at zero (`out: Bits` before the loop
+		// that fills it), so every slot of the array is a candidate for
+		// every leaf and the search would permute them: the slot at the
+		// leaf's own offset comes first (preferredSlot).
+		preferred := preferredSlot(s, out, exec.resultArea)
 		rank := func(c coupling) int {
 			r := 0
+			if preferred != "" && c.reg == preferred && c.a == 1 && c.b.kind == termConst && c.b.value == 0 {
+				r -= 8
+			}
 			if exitReadAsm[asmEv.freshName(c.reg)] != oakRead {
 				r += 4
 			}
@@ -4536,6 +4752,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
+		if lowering.localSpans[name] {
+			continue // the body's own large array, or an inlined callee's: no caller observes it
+		}
 		entry := selectTerm(name, at, elemWidth)
 		asmLog := substituteWriteLog(exec.writes[name], sigma)
 		var oakMemory, asmMemory *term
@@ -4562,6 +4781,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				if pins := notRunPins(k, sigma, mentioned); pins != nil {
 					premise = binaryTerm("and", premise, pins)
 				}
+			}
+			if equal, decided := spanEqualByCases(fn.Name, name, premise, oak, machine); decided {
+				return equal, true
 			}
 			if equal, decided := implies(premise, oak, machine); decided {
 				return equal, true

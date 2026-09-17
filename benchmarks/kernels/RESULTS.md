@@ -640,6 +640,47 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## blake3 through the day, 2026-09-17
+
+Single harness runs of `blake3` (two rounds of five samples, 1 MiB) at
+each step, on a host whose load average ran between twenty and fifty;
+every row's checksums agree. The morning table's 3.35× was the plain
+lowering's frame traffic in a witnessed body the machine passes could
+not repair.
+
+| Step | oak-native / C |
+| --- | ---: |
+| morning table (frame arrays, three state copies per block) | 3.35× |
+| dead frame stores, copy propagation through redefined sources, message array scalar-replaced | 2.03× |
+| destination passing and in-place expansion of `absorb_block` | 1.32× |
+
+The remaining gap is the state copies inside `push_chunk` (once per
+sixteen blocks) and `final`, and the verdicts on `update` and
+`push_chunk` (trusted: frame slots written at overlapping addresses in a
+loop body), which keep the machine passes off them.
+
+## The fold vectorization on the dot product, 2026-09-16 (night)
+
+`dot` with the head tree against the same tree withholding the fold
+vectorization (`OAK_OPT_SKIP=vectorize-folds`), three alternated runs of
+three rounds of five samples, 1 MiB, load average 15–40 (other sessions'
+suites running). The vectorized loop is sixteen instructions for four
+elements — two `ldr q`, one `fmul.4s`, four lane moves, four `fadd` in
+element order, one slack test — against the scalar loop's seven for one;
+every product and sum rounds as before, and the checksums agree.
+
+| Kernel | oak-native, vectorized | oak-native, scalar | native / C, vectorized | native / C, scalar |
+| --- | ---: | ---: | ---: | ---: |
+| dot | 716 / 973 / 752 µs | 813 / 867 / 814 µs | 1.03 / 1.32 / 1.02 (median 1.03×) | 1.10 / 1.09 / 1.10 (median 1.10×) |
+
+The native side falls about eight to twelve percent in the two quiet
+rounds (the middle vectorized round caught a load spike on the native
+runner alone), to within three percent of clang, which vectorizes the
+same way — sixteen products a trip to our four — and is bound, as we now
+are, by the one ordered `fadd` an element. The scalar form at 1.10× here
+against 1.31× in the night table is the host: these runs were the
+quietest of the day.
+
 ## The exit-test fusion on the binary searches, 2026-09-16 (evening)
 
 `search` and `page_probe` with the head tree against the same tree

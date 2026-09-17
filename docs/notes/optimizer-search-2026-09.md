@@ -18,6 +18,29 @@ Optimization should therefore grow as a library of small transforms and planning
 
 ## 0. Status (2026-09-15): Phase A landed
 
+### Table-view admission increment (2026-09-17)
+
+An exact stdlib `grapheme_class` extraction exposed a proof gate rather than
+a new transform opportunity: the cheaper fused/reallocated form existed, but
+the source-side verifier could not declare a local view of its constant table.
+Such read-only views now alias the already-declared symbolic table memory,
+with its exact element width and length. A dedicated declared-table set keeps
+this authority distinct from mutable global-array length metadata; retained
+global declaration provenance does not erase a table's existing identity.
+Derived lengths take precedence over the root table length, including nested
+aliases/subslices. Unknown roots, shadowed values and mutable constructors
+remain outside this addition. The existing checker and semantic verdict remain
+the admission authorities; search and its budgets are unchanged.
+
+The actual ARM64 grapheme lookup now proves inductively and selects a
+45-instruction body (12 in the loop), versus the 49-instruction ungated
+fallback (14 in the loop). This is a static observation, not a speed claim.
+`benchmarks/native/table_views` contains the before/identity/after/C experiment
+and its limitations. `asm/table_views_test.go` checks correct and incorrect
+alias implementations on both ARM64 and RV64; compiler regressions pin the
+actual stdlib proof and native execution. This is translation-validator
+coverage, not a universal formal refinement of the production Go verifier.
+
 The planning substrate of §16 Phase A is implemented on `specification`:
 
 - `opt/` — the target-independent substrate: `Fact`/`Proposition`/
@@ -138,6 +161,27 @@ test bodies the general promotion now does what the hand-written
 two forms; the test asserts the outcome (the locals' slot traffic) rather
 than the mechanism, and the compiler reports promoted slots beside kept
 homes.
+
+Frame-pair initialization increment (2026-09-17): on AArch64,
+`PromoteWith` can expose four word slots hidden by one `stp xA,xB,[sp,#off]`
+inside a known, in-frame object. Both distinct data registers must be dead
+after the store (W/X aliases included), declared clobbered and non-reserved.
+Every other overlapping access must be a plain W32 load/store at one of the
+four aligned word offsets, and all four words must be read. Frame-address
+escapes, overlapping pairs/wide/narrow accesses, malformed layouts and
+unsupported offsets refuse the preparation. Source loads stay in place;
+each low word is stored before its data register is shifted by 32 to expose
+the high word. Ordinary promotion then checks reaching-store availability
+and finds free registers; the final candidate still needs its existing
+seam/semantic admission. With no promoted exposed word, promotion reruns on
+the original body. This is a global no-benefit rollback, not per-pair or
+runtime profitability. The materialization identity changes with this code
+generation policy. Independent word projections and the real seven-round
+BLAKE3 compressor prove through the existing verifier; wrong shifts refute.
+This is translation validation, not a universal formal refinement theorem
+for the Go transform. BLAKE3's static memory count falls 162 to 130, with a
+small measured host-specific gain; the full protocol and mixed initial
+timings are in `benchmarks/native/README.md`.
 
 Two rules this increment forced. A trusted verdict is the absence of a
 check, so when no candidate is judged (the verifier cannot yet follow a
@@ -393,7 +437,153 @@ the slack fact names the primary (`w1`). And with no guard left to peel,
 the invariant pass hoists the condition's invariant half instead of
 leaving it in the header for the rotation to copy into the tail. The
 loop is sixteen instructions for four elements, one compare a trip,
-priced 1789 against the identity's 5537, proven.
+priced 1789 against the identity's 5537, proven. On the clock
+(`benchmarks/kernels/RESULTS.md`, three alternated runs): `dot`'s native
+time falls eight to twelve percent, from 1.10× the C backend to 1.03× —
+clang's loop is the same shape at sixteen products a trip, and both are
+bound by the one ordered `fadd` an element, so the remaining gap is the
+loop's overhead, not its arithmetic.
+
+### Phase A, constant-trip unrolling — and what blake3 needs (2026-09-17)
+
+`blake3` at 3.35× is the table's largest gap, and its compression body
+is witnessed, so the reallocator and the slot promotion already run on
+it — and leave 152 frame accesses in 343 instructions. The promotion's
+trace (`OAK_MACHINE_TRACE_SLOTS`, added for this) shows why: the state
+array `v` is indexed by the loop variable in the final `while i < 8 {
+v[i] = v[i] ^ v[i + 8] … }`, so its address is taken and its slots are
+blocked as an object; the message array `m` is copied and permuted in
+pairs (`ldp`/`stp`), which a word-slot rule refuses; and `v` is returned
+whole, which copies it out in pairs too. The loop-shaped cause has a
+Layer A answer: `unroll-constant` (`nativegen/unroll_constant.go`,
+`Oak.ConstantUnroll.loop_eq_unrolled`) rewrites a loop from zero to a
+literal bound into its trips — flat, the locals renamed per trip so the
+verifier's one-scope reading holds, the index a literal in each, a
+conditional on the index folded — and scalar replacement was widened to
+sixteen elements and to an array that is the body's result (stored
+element by element into the result area). With both, `bench_blake3`'s
+`push_chunk` and `final` take the unrolled form (trusted bodies, the law
+licensing it), and `compress` lowers unrolled: sixteen state scalars, no
+loop, no frame array. It still loses on cost, 3280 against the loop's
+2221: the plain lowering homes only some of the sixteen scalars in
+registers and parks the rest in slots of their own — 1666 loads and 1386
+stores before the machine passes — and the reallocator and promotion
+bring that to 266 and 378 but leave 394 copies and 1848 instructions,
+against the loop form's 338. The remaining distance is the register
+allocator: the lowering assigns homes as it declares and spills by
+slot per variable, and the machine passes recolor within what it wrote;
+a whole-body allocation over every web with spill code placed by
+liveness would hold the sixteen words and the round's temporaries in
+the twenty-eight registers, as clang does. That is Phase B's next
+increment, and the one the hash table waits on. Two knobs came out of
+this, default off: `OAK_NATIVE_TRACE_STAGES` prints which rewritten
+shape a lowering refused and why before falling back, and
+`OAK_MACHINE_TRACE_SLOTS` prints the promotion's escapes, blocked ranges,
+and each slot's register or refusal.
+
+### Phase B, the hash body's state in registers (2026-09-17)
+
+What the unrolled `compress` showed was not the loop's fault. Its
+lowered body, before the machine passes, had 1666 loads and 1386 stores
+for sixteen state scalars; the reallocator and the slot promotion took
+that to 266 and 378, and a count over the result said what was left:
+219 of the 324 stores were overwritten before any load — the lowering
+writes a variable's frame home on every assignment, and the reads never
+came back to it — and all 208 loads were the message words, copied in
+pairs at entry and permuted through a temporary each round. Three
+repairs, none of them the unrolling:
+
+- **Dead frame stores** (`machine/slots.go`). A qualified slot — plain
+  accesses of one width, its address never taken, inside the frame, not
+  a callee-save — whose store no load reaches is dead: nothing else can
+  read its bytes, and the frame dies at return. The promotion removes
+  such stores (`Allocation.DeadStores`); a slot never loaded qualifies
+  for exactly this. The simplifier's test that pinned a dead vector
+  store as staying now pins it going.
+- **Copy propagation through redefined sources** (`machine/simplify.go`).
+  A promoted slot read became `mov w23, w14; add w5, w5, w23`, and
+  propagation refused it because `w14` — a state word, written every
+  round — has more than one definition. The value at the read is the
+  copy's when nothing between them in the block redefines the source
+  (`holdsBetween`); that is the check now, and the fixpoint's bound rose
+  from eight rounds to a thousand and twenty-four, one copy a round,
+  ending at the first round that changes nothing. `compress`'s unrolled
+  form went from 1558 instructions to 1171.
+- **Scalar replacement of the message array**
+  (`nativegen/scalar_arrays.go`). `m` was declared from the block
+  parameter and reassigned whole by the expanded permutation, both of
+  which kept it an array. A replaceable array now initializes from
+  another array by reading its elements, and takes a whole assignment
+  from a literal of its length — the expanded helper's block around the
+  literal read through — lowered as a parallel assignment: a permutation
+  of its own elements cycle by cycle with two scratch registers
+  (`permuteScalarArray`, the frame version's walk over hidden locals),
+  any other literal of at most eight elements evaluated first. The
+  inliner substitutes a constant-index read of the caller's owned array
+  for a scalar parameter the callee never assigns, so `g`'s six arguments
+  are reads, not copies.
+
+`compress` in its loop form went from 343 instructions and 152 frame
+accesses to 287 and ten, priced 1509 against 2221 this morning, and it is
+proven now (the verifier's own morning). The unrolled form lost its
+purpose there — thirty-two scalars exceed the lowering's homes and the
+spills price it above the loop — and the search keeps the loop, which is
+the point of pricing both. `bench_blake3` on the harness, one run under a
+load average of fifty: 2.03× the C backend, from 3.35×, checksums
+agreeing. The next bodies are `final` (188 frame accesses in 537
+instructions) and `push_chunk` (88 in 619).
+
+### The record that traveled by value (2026-09-17)
+
+With the state words in registers, `blake3_update` at 1452 instructions
+was the body to read, and its per-block path was two copies of the whole
+`Blake3State` — some 1.6 KB, the chaining-value stack most of it — for
+every 64 input bytes: `next = blake3_absorb_block(next)`, the callee
+expanded in place, had become `inl_next = next; …; next = inl_next`, four
+hundred pair loads and stores each way around a compression that is a
+few hundred instructions itself. The source is the functional style the
+library writes in (`next: Blake3State = state; …; next`), and the C
+backend pays for none of it because clang inlines the step and drops the
+copies. Two changes give the native lane the same:
+
+- **Destination passing** (`nativegen/nativegen.go`, `aliasSafeCall`).
+  `v = f(…, v, …)` with `f` returning a large record through x8 passes
+  `v`'s own storage as the result area — no temporary, no copy at the
+  caller — where `f` cannot observe that its result area is also its
+  argument: either `f` builds its result in a frame local and copies it
+  out only at its end, after every read of the parameter, or it builds in
+  place (the return-slot local) and the parameter bound to `v` is
+  mentioned exactly once, as the whole initializer of that local — a copy
+  that is an identity when the two alias. The callee's copy stays even
+  then: skipping it on a runtime `x0 == x8` test left the verifier
+  reading result fields "never stored to the result area" and, on a
+  witness that aliased the parameter block with the frame, a
+  disagreement — the result area is memory of its own in its model, and
+  the skip is not expressible there. `blake3_push_chunk`, not expanded
+  (it loops), is called this way.
+- **In-place expansion** (`nativegen/inline.go`, `expandInPlace`). When
+  such a callee is expanded, `v = f(…, v, …)` splices `f`'s body run on
+  `v` itself: the return-slot local renamed to `v`, its declaration from
+  the parameter dropped (an identity copy), the trailing result dropped
+  (an identity assignment), the other parameters bound as an expansion
+  binds them, and no other argument allowed to mention `v` (a bound
+  argument evaluates before the body, a substituted one would read the
+  body's writes). What remains reads and writes `v` where `f` read and
+  wrote its copy, and since `f` never read the parameter again, the
+  values are the same — the substitution the inliner already stands on,
+  with two identities removed. `blake3_update`'s per-block path lost both
+  copies; the body is 524 instructions.
+
+`bench_blake3` on the harness, checksums agreeing: 1.32× the C backend,
+from 2.03× an hour before and 3.35× in the morning table, under a load
+average near twenty. The per-byte loop that remains is nine instructions
+a byte with one bounds guard, the C backend's shape; the rest of the
+distance is the state copies that remain inside the callees that are not
+expanded (`push_chunk` once per sixteen blocks, `final` once) and the
+verdicts: `update` and `push_chunk` are trusted (frame slots written at
+overlapping addresses in a loop body, the destination-passed call writing
+the variable's region the loop also writes), so the machine passes do not
+run on them.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
@@ -432,6 +622,23 @@ guard. The increment's cost was in the verifier, not the rewrite: the
 hoisted form's remainder loop proved only once a premise could say that
 a skipped loop leaves its variables at their header values.
 
+Explicit builtin FMA now participates in this lane-wise map vocabulary.
+Checked invocation identity/width is required; every argument must itself be
+lane-wise, and the vector form keeps the scalar intrinsic's single rounding.
+This is an instance of the existing map theorem, not implicit contraction,
+reassociation, or a new numerical-error license. Measurements and the rejected
+scalar-dot contraction experiment are in `benchmarks/native/exact_fma/README.md`.
+
+`unroll-vector-maps` (2026-09-17) is a separate bounded candidate: two
+consecutive vectors per main trip, then one-vector cleanup and the original
+scalar remainder. `Oak.Map.grouped_eq` composes the two blocks without
+reassociation; `grouped_bounds` supplies the extent/next-index inequalities.
+The existing seam checker and verifier still gate emission. Cleanup stays a
+loop: a conditional cleanup made the joins of several maps harder to verify.
+The cost-only recurrence hints now recognize descending vector strides
+(8 → 4 → 1), and actual `MaxTrips` bounds are not divided by stride twice.
+The one-vector form remains available and is an explicit benchmark control.
+
 ### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
@@ -458,6 +665,16 @@ evidence to replace known closed total-pure results, select known branches,
 remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
+
+The analysis includes closed total constant-result identities: exact-SSA self
+subtraction/XOR, reflexive integer/Bool comparisons, multiplication/AND by zero,
+and OR with width-correct all-ones. Unknown operands defer an absorbing transfer
+until both inputs have lattice information, keeping later phi refinement
+monotone. These rules expose branch/zero-trip-loop removal through the existing
+rewrite and post-memory cleanup; no target-specific pass or new search dimension
+is needed. An unused call/load/trap result never licenses deleting its producer,
+and two calls to the same function are not the same SSA value. Floats, division,
+shifts, and attributed/effectful operations receive no such identity rule.
 
 Before GVN, unused non-entry block parameters and their exact incoming edge
 positions are removed to a bounded fixed point; proof facts count as uses. Then
@@ -1228,9 +1445,24 @@ The existing native optimizations should be migrated into the candidate interfac
   this run with a large measured win: 3.4 times on a clamp whose
   comparison is unpredictable, and free where it predicts. Both arms are
   evaluated before the compare, so `speculable` gates it as it gates
-  if-conversion. The statement form (`nativegen/select.go`) still wants
-  every condition in a chain to compare the same two operands, which is
-  the next thing to widen;
+  if-conversion. The statement form (`nativegen/select.go`) already groups
+  a chain's conditions, sharing a compare between consecutive arms that
+  compare the same two operands; its real limit was that only the first
+  arm's condition operand could be computed, **widened 2026-09-16**: a
+  later arm's is evaluated before the chain when it is speculable, so a
+  two-comparison chain converts whole instead of branching on its first
+  arm and re-recognizing the rest. 1.8 times on an unpredictable
+  three-arm chain in a loop. The assignment cap that
+  remains — `maxSelectAssigns` is 4, so a chain assigning two variables
+  across three arms still splits — was **measured and kept 2026-09-17**
+  (`benchmarks/native/README.md` "The chain assignment cap"): counting
+  only the right-hand sides that need a scratch register converts such a
+  chain whole and proves it, and it is nothing to gain where the branch
+  is unpredictable and a factor of 1.6 to 2.8 to lose where it is not. A
+  branch skips the arms after it while a converted chain's selects all
+  execute, and per variable they serialize. That is the third measured
+  reminder that this backend's wins are mispredicts, not instructions,
+  and the first case where the instruction count points the wrong way;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
@@ -1431,7 +1663,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     body"), so the form comes back trusted and the proven scalar loop
     keeps winning; the transform stays AArch64 only until the RV64
     verifier takes `vse` in loops), elements at `i ± k`
-    (stencils), and more than one vector a trip;
+    (stencils). Two vectors per trip landed 2026-09-17 as the separate
+    `unroll-vector-maps` candidate under `Oak.Map.grouped_eq`, followed by
+    one-vector cleanup and the scalar remainder; larger grouping factors
+    remain future work;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

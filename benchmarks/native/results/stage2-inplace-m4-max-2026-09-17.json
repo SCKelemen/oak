@@ -1,0 +1,200 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-16T23:01:02Z",
+  "host": "Apple M4 Max",
+  "load_before": "108.01 85.01 75.51",
+  "load_after": "84.68 83.16 76.44",
+  "baseline_revision": "b0b0cdc616d3b04360c6bb7417f39f0a0aca39dc",
+  "candidate": "baseline plus asm/check.go pre-write ADD/UMADDL element-region derivation; no optimizer change",
+  "os_revision": "37ba2112bd4e1558cae238d48de350301dbd353e",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "harness": "SCKelemen/os pilots/oak/stage2_bench.zig",
+  "harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "object_sha256": {
+    "baseline": "d4bfcde0c50a99fb007b80ca54166d434abe7c79f8fbb5e1a5615ed91b04216f",
+    "candidate": "a9408bbd77741a31452ad0500774af1940fa1aa8738ff0e784d5b1d8e022704f"
+  },
+  "build": {
+    "oak": [
+      "build",
+      "-native"
+    ],
+    "candidate_verify_fresh": true,
+    "zig_version": "0.16.0",
+    "zig_flags": [
+      "-O",
+      "ReleaseFast",
+      "-lc"
+    ],
+    "shim_flags": [
+      "-std=c11",
+      "-O2"
+    ]
+  },
+  "protocol": {
+    "rounds": 7,
+    "order": "baseline,candidate on even rounds; candidate,baseline on odd rounds",
+    "translate_operations": 20000000,
+    "decoder_cycles": 2000000,
+    "within_binary_order": "Zig translate, Oak translate, Zig decoder cycle, Oak decoder cycle",
+    "warmups": "one preliminary baseline run; no explicit per-binary warmup",
+    "compiler_builds_during_samples": false
+  },
+  "selected_bodies": {
+    "translate": {
+      "baseline_instructions": 137,
+      "candidate_instructions": 120,
+      "baseline_mov": 25,
+      "candidate_mov": 8,
+      "frame_bytes": 80,
+      "baseline_verdict": "proven",
+      "candidate_verdict": "proven"
+    },
+    "alloc_table": {
+      "baseline_instructions": 127,
+      "candidate_instructions": 127
+    },
+    "map_page": {
+      "baseline_instructions": 210,
+      "candidate_instructions": 210
+    },
+    "unmap_page": {
+      "baseline_instructions": 339,
+      "candidate_instructions": 339
+    }
+  },
+  "summary": {
+    "baseline_median_translate_ns": 7.31,
+    "candidate_median_translate_ns": 6.76,
+    "median_paired_translate_ratio": 0.961904761904762,
+    "translate_pairs_faster": 5,
+    "baseline_median_cycle_ns": 955.4,
+    "candidate_median_cycle_ns": 928.2,
+    "interpretation": "12.4% smaller translate body; noisy timing trend only, not a reliable whole-OS speedup. No decoder-cycle gain claimed."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "samples": [
+    {
+      "round": 0,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 7.74,
+      "cycle_ns": 1039.6,
+      "output": "stage2 translate (fair) x20000000: zig=1.74 ns/op  oak=7.74 ns/op  (oak/zig 4.442)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=577.8 ns/cycle  oak=1039.6 ns/cycle  (oak/zig 1.799)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 0,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 7.06,
+      "cycle_ns": 1290.7,
+      "output": "stage2 translate (fair) x20000000: zig=2.05 ns/op  oak=7.06 ns/op  (oak/zig 3.437)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=565.8 ns/cycle  oak=1290.7 ns/cycle  (oak/zig 2.281)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 1,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 9.07,
+      "cycle_ns": 1106.1,
+      "output": "stage2 translate (fair) x20000000: zig=1.59 ns/op  oak=9.07 ns/op  (oak/zig 5.697)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=622.8 ns/cycle  oak=1106.1 ns/cycle  (oak/zig 1.776)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 1,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 9.42,
+      "cycle_ns": 1088.2,
+      "output": "stage2 translate (fair) x20000000: zig=1.87 ns/op  oak=9.42 ns/op  (oak/zig 5.043)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=563.0 ns/cycle  oak=1088.2 ns/cycle  (oak/zig 1.933)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 2,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 7.31,
+      "cycle_ns": 955.4,
+      "output": "stage2 translate (fair) x20000000: zig=1.42 ns/op  oak=7.31 ns/op  (oak/zig 5.134)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=567.5 ns/cycle  oak=955.4 ns/cycle  (oak/zig 1.684)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 2,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 5.76,
+      "cycle_ns": 809.3,
+      "output": "stage2 translate (fair) x20000000: zig=1.29 ns/op  oak=5.76 ns/op  (oak/zig 4.453)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=424.9 ns/cycle  oak=809.3 ns/cycle  (oak/zig 1.905)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 3,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 5.96,
+      "cycle_ns": 928.2,
+      "output": "stage2 translate (fair) x20000000: zig=1.42 ns/op  oak=5.96 ns/op  (oak/zig 4.191)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=428.5 ns/cycle  oak=928.2 ns/cycle  (oak/zig 2.166)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 3,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.63,
+      "cycle_ns": 849.1,
+      "output": "stage2 translate (fair) x20000000: zig=1.40 ns/op  oak=6.63 ns/op  (oak/zig 4.735)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=458.6 ns/cycle  oak=849.1 ns/cycle  (oak/zig 1.851)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 4,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.65,
+      "cycle_ns": 824.4,
+      "output": "stage2 translate (fair) x20000000: zig=1.53 ns/op  oak=6.65 ns/op  (oak/zig 4.338)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=452.5 ns/cycle  oak=824.4 ns/cycle  (oak/zig 1.822)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 4,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 6.76,
+      "cycle_ns": 976.3,
+      "output": "stage2 translate (fair) x20000000: zig=1.40 ns/op  oak=6.76 ns/op  (oak/zig 4.842)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=477.8 ns/cycle  oak=976.3 ns/cycle  (oak/zig 2.043)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 5,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 7.07,
+      "cycle_ns": 836.6,
+      "output": "stage2 translate (fair) x20000000: zig=1.50 ns/op  oak=7.07 ns/op  (oak/zig 4.720)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=517.0 ns/cycle  oak=836.6 ns/cycle  (oak/zig 1.618)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 5,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 7.35,
+      "cycle_ns": 990.6,
+      "output": "stage2 translate (fair) x20000000: zig=1.56 ns/op  oak=7.35 ns/op  (oak/zig 4.725)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=558.9 ns/cycle  oak=990.6 ns/cycle  (oak/zig 1.772)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 6,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.18,
+      "cycle_ns": 925.1,
+      "output": "stage2 translate (fair) x20000000: zig=1.50 ns/op  oak=6.18 ns/op  (oak/zig 4.117)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=430.5 ns/cycle  oak=925.1 ns/cycle  (oak/zig 2.149)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 6,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 6.21,
+      "cycle_ns": 865,
+      "output": "stage2 translate (fair) x20000000: zig=1.50 ns/op  oak=6.21 ns/op  (oak/zig 4.151)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=538.3 ns/cycle  oak=865.0 ns/cycle  (oak/zig 1.607)  [sink=62226513897444096]\n"
+    }
+  ]
+}

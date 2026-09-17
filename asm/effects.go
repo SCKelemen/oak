@@ -47,6 +47,13 @@ type spanWrite struct {
 	memory string // a loop memory marker's name, "" for a store
 }
 
+// zeroMemory is the marker a zero-filled owned array's log starts with
+// on both sides (declareLocal, the executor's setup): the memory is zero
+// from there, whatever entry element memoryAt is handed, so every
+// comparison, restore and witness evaluation sees the fill without
+// knowing the span (docs/spec/94-assembler.md §9, large arrays).
+const zeroMemory = "zero"
+
 // loopMemoryName is the unknown memory of a span across loop K.
 func loopMemoryName(loop int, span string) string { return fmt.Sprintf("loop%d.%s", loop, span) }
 
@@ -86,6 +93,19 @@ func appendWrite(log map[string][]*spanWrite, span string, index, value, guard *
 	return log
 }
 
+// appendPair64Writes is the staged final-state expansion of one offset-form
+// 64-bit pair store: two unconditional logical writes at index and index+1 in
+// operand order. It is intentionally not called by an instruction handler.
+// Bounds, exact provenance, trap preservation, and sealed private/unpublished
+// ordinary-memory authority must be checked before the verifier may use it;
+// this helper by itself grants none of them.
+func appendPair64Writes(log map[string][]*spanWrite, span string, index, first, second *term) map[string][]*spanWrite {
+	index = truncate(index, 32)
+	log = appendWrite(log, span, index, truncate(first, 64), nil)
+	next := binaryTerm("add", index, constTerm(1, 32))
+	return appendWrite(log, span, next, truncate(second, 64), nil)
+}
+
 // cloneWrites copies a write log for a forked path: the entries are
 // shared (never mutated), the slices are not.
 func cloneWrites(log map[string][]*spanWrite) map[string][]*spanWrite {
@@ -112,6 +132,10 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		form = index.linearAt(32)
 	}
 	for _, w := range log {
+		if w.memory == zeroMemory {
+			value = constTerm(0, base.width) // a zero-filled array: zero from here
+			continue
+		}
 		if w.memory != "" {
 			// A loop memory marker: the element is the unknown memory's,
 			// under the marker's guard when it has one (an inner loop
@@ -548,6 +572,11 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	}
 	sort.Strings(sorted)
 	for _, name := range sorted {
+		if exec.localSpans[name] || lowering.localSpans[name] {
+			// The body's own large array: no caller observes its final
+			// memory; its reads on either side went through the one model.
+			continue
+		}
 		width, isSpan := lowering.spanMemoryWidth(name)
 		if !isSpan {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}

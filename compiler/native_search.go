@@ -29,6 +29,7 @@ import (
 type nativeDriver struct {
 	source       *ast.FunctionStatement
 	functions    map[string]*ast.FunctionStatement
+	externs      map[string]*ast.FunctionStatement // the program's extern bindings (asm.Function.Externs)
 	records      map[string]*ast.RecordLiteral
 	adts         map[string]*ast.ADTType
 	constants    map[string]asm.Constant
@@ -54,6 +55,7 @@ func (d *nativeDriver) Materialize(c *opt.Candidate) error {
 	// The verifier takes calls to program functions at their Oak bodies
 	// (asm.Function.Callees, docs/spec/94-assembler.md §8).
 	fn.Callees = d.functions
+	fn.Externs = d.externs
 	c.Body = fn
 	if os.Getenv("OAK_NATIVE_DUMP") == "candidates" {
 		// A debugging aid: every candidate body as lowered, before the
@@ -149,16 +151,30 @@ func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 // level, docs/spec/90-backend.md §16 item 5).
 func nativeSearch(arch string, report *opt.Report) *opt.Search {
 	registry := nativegen.Registry()
+	// Result homes currently trade less result traffic for more frame traffic.
+	// Keep them experimental until native timings justify default selection;
+	// a lower static cost alone is not evidence of an Apple Silicon speedup.
+	skipped := map[string]bool{}
+	if os.Getenv("OAK_NATIVE_LOOP_RESULT_HOMES") != "1" {
+		skipped[nativegen.TransformLoopResultHomes] = true
+	}
+	// Small unrolling has promising compressor timings, but not yet a broad
+	// quiet-host suite. Keep its bounded expansion and stable array placement
+	// independently selectable without changing ordinary builds.
+	if os.Getenv("OAK_NATIVE_UNROLL_SMALL") != "1" {
+		skipped[nativegen.TransformUnrollSmall] = true
+	}
 	if skip := os.Getenv("OAK_OPT_SKIP"); skip != "" {
 		// For experiments and benchmarks: the named transforms (by their
 		// report names, comma-separated) propose nothing; unknown names are
 		// ignored. The identity candidate and the verdicts are as always.
-		skipped := map[string]bool{}
 		for _, name := range strings.Split(skip, ",") {
 			if name = strings.TrimSpace(name); name != "" {
 				skipped[name] = true
 			}
 		}
+	}
+	if len(skipped) > 0 {
 		var kept []opt.Transform
 		for _, tr := range registry.Transforms() {
 			if !skipped[tr.Name()] {
@@ -185,24 +201,35 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 // setAside spells, in the compiler's established phrasing, that a
 // transform's form was tried and not kept.
 var setAside = map[string]string{
-	nativegen.TransformStrength:    "keeps its plain arithmetic",
-	nativegen.TransformOptIR:       "keeps its direct lowering",
-	nativegen.TransformElide:       "keeps its element guards",
-	nativegen.TransformReuseFlags:  "repeats its compares",
-	nativegen.TransformHoist:       "keeps its loop invariants in place",
-	nativegen.TransformUnroll:      "keeps its plain reduction",
-	nativegen.TransformVectorHomes: "keeps its vector slots",
-	nativegen.TransformCleanup:     "keeps its copies",
-	nativegen.TransformVectorize:   "keeps its scalar reduction",
-	nativegen.TransformVectorMaps:  "keeps its scalar map",
-	nativegen.TransformVectorFolds: "keeps its scalar fold",
-	nativegen.TransformVecBlocks:   "addresses each vector load",
-	nativegen.TransformMultiplyAdd: "keeps its multiply and add apart",
-	nativegen.TransformValueSelect: "branches around its conditional",
-	nativegen.TransformReallocate:  "keeps its register assignment",
-	nativegen.TransformSchedule:    "keeps its instruction order",
-	nativegen.TransformFuse:        "keeps its instructions apart",
-	nativegen.TransformFuseExits:   "keeps its exit tests apart",
+	nativegen.TransformStrength:        "keeps its plain arithmetic",
+	nativegen.TransformOptIR:           "keeps its direct lowering",
+	nativegen.TransformElide:           "keeps its element guards",
+	nativegen.TransformReuseFlags:      "repeats its compares",
+	nativegen.TransformHoist:           "keeps its loop invariants in place",
+	nativegen.TransformRotate:          "keeps its top-tested loops",
+	nativegen.TransformUnroll:          "keeps its plain reduction",
+	nativegen.TransformUnrollFills:     "keeps its scalar fill loop",
+	nativegen.TransformVectorHomes:     "keeps its vector slots",
+	nativegen.TransformLoopArrayHomes:  "keeps its loop array elements in memory",
+	nativegen.TransformLoopResultHomes: "keeps its loop result elements in memory",
+	nativegen.TransformCleanup:         "keeps its copies",
+	nativegen.TransformVectorize:       "keeps its scalar reduction",
+	nativegen.TransformVectorMaps:      "keeps its scalar map",
+	nativegen.TransformUnrollMaps:      "keeps one vector per map trip",
+	nativegen.TransformVectorFolds:     "keeps its scalar fold",
+	nativegen.TransformUnrollConst:     "keeps its constant-trip loops",
+	nativegen.TransformUnrollSmall:     "keeps its small constant-trip loops",
+	nativegen.TransformVecBlocks:       "addresses each vector load",
+	nativegen.TransformVectorAddresses: "keeps separate vector access addresses",
+	nativegen.TransformMultiplyAdd:     "keeps its multiply and add apart",
+	nativegen.TransformValueSelect:     "branches around its conditional",
+	nativegen.TransformReallocate:      "keeps its register assignment",
+	nativegen.TransformCarryIndex:      "recomputes its loop index",
+	nativegen.TransformRedundantGuards: "keeps its repeated span guards",
+	nativegen.TransformRecordBases:     "recomputes its record-span bases",
+	nativegen.TransformSchedule:        "keeps its instruction order",
+	nativegen.TransformFuse:            "keeps its instructions apart",
+	nativegen.TransformFuseExits:       "keeps its exit tests apart",
 }
 
 // setAsideReasons reads, from the function's remarks, the transforms the

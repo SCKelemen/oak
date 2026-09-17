@@ -1,7 +1,8 @@
 // Package target names the platforms Oak compiles for (docs/spec/90-backend.md
 // §2a): an operating system and an architecture, spelled `os/arch` as Go
-// spells them. The compiler emits one C translation unit whatever the
-// target; the target decides which assembler lane applies to `.oakasm`
+// spells them. C/native targets emit a C translation unit; core/wasm32
+// instead emits an experimental scalar Wasm module (91-wasm.md).
+// The target decides which assembler lane applies to `.oakasm`
 // units, the companion object's format, and which C compiler the tooling
 // drives (package toolchain). Every build is a cross build: the host is
 // only the default target.
@@ -26,30 +27,34 @@ const (
 	OSLinux        = "linux"
 	OSDarwin       = "darwin"
 	OSFreestanding = "freestanding" // no operating system: a relocatable object the user links with their own startup
+	OSCore         = "core"         // import-free Core WebAssembly, not an operating system
 
 	ArchArm64   = "arm64"
 	ArchAmd64   = "amd64"
 	ArchRiscv64 = "riscv64"
 	ArchArm     = "arm"     // 32-bit Arm, Thumb: the Cortex-M microcontrollers (freestanding only)
 	ArchRiscv32 = "riscv32" // 32-bit RISC-V microcontrollers (freestanding only)
+	ArchWasm32  = "wasm32"
 )
 
 // supported is the closed set of targets the tooling drives. The 64-bit
 // members are LP64 (32-bit int, 64-bit long and pointer), the 32-bit
-// microcontroller members ILP32 — the two C data models the backend
-// admits (docs/spec/92-ffi.md §2.4).
+// microcontroller members ILP32 — the two C data models the C backend
+// admits (docs/spec/92-ffi.md §2.4). Core Wasm is a separate output profile.
 var supported = []Target{
 	{OSLinux, ArchArm64}, {OSLinux, ArchAmd64}, {OSLinux, ArchRiscv64},
 	{OSDarwin, ArchArm64}, {OSDarwin, ArchAmd64},
 	{OSFreestanding, ArchArm64}, {OSFreestanding, ArchAmd64}, {OSFreestanding, ArchRiscv64},
 	{OSFreestanding, ArchArm}, {OSFreestanding, ArchRiscv32},
+	{OSCore, ArchWasm32},
 }
 
-// DataModel is the target's C data model as the widths of the
+// DataModel is the target's data model as the widths of the
 // machine-sized Oak types: (int bits, pointer bits) — ILP32 for the 32-bit
-// architectures, LP64 otherwise.
+// architectures, LP64 otherwise. Wasm uses 32-bit indices; its initial
+// profile does not yet admit pointer operations or a C ABI.
 func (t Target) DataModel() (intBits, ptrBits int) {
-	if t.Arch == ArchArm || t.Arch == ArchRiscv32 {
+	if t.Arch == ArchArm || t.Arch == ArchRiscv32 || t.Arch == ArchWasm32 {
 		return 32, 32
 	}
 	return 32, 64
@@ -149,6 +154,9 @@ func (t Target) Supported() bool {
 // IsHost reports whether the target is the platform the compiler runs on.
 func (t Target) IsHost() bool { return t == Host() }
 
+// CoreWasm identifies the experimental scalar module emitter, not a C lane.
+func (t Target) CoreWasm() bool { return t.OS == OSCore && t.Arch == ArchWasm32 }
+
 // Parse reads `os/arch`. The empty string is the host.
 func Parse(text string) (Target, error) {
 	if text == "" {
@@ -239,6 +247,9 @@ func (t Target) llvmArch() string {
 // ZigTriple is the target as `zig cc --target=` spells it: musl for Linux
 // (a hermetic static libc), macos, or freestanding.
 func (t Target) ZigTriple() string {
+	if t.CoreWasm() {
+		return ""
+	} // no external C driver for this profile
 	switch t.OS {
 	case OSLinux:
 		return t.llvmArch() + "-linux-musl"
@@ -253,6 +264,9 @@ func (t Target) ZigTriple() string {
 
 // LLVMTriple is the target as `clang --target=` spells it.
 func (t Target) LLVMTriple() string {
+	if t.CoreWasm() {
+		return ""
+	}
 	switch t.OS {
 	case OSLinux:
 		return t.llvmArch() + "-unknown-linux-musl"

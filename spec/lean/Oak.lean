@@ -21,6 +21,7 @@ import Oak.AArch64ReturnEncoding
 import Oak.AArch64DirectBranchEncoding
 import Oak.AArch64AddressRelocation
 import Oak.AArch64CallBranchEncoding
+import Oak.AArch64CompareBranchEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance
 import Oak.AArch64Mmio
@@ -68,6 +69,7 @@ import Oak.Uninterpreted
 import Oak.IntegerDivision
 import Oak.StrengthReduction
 import Oak.KnownBits
+import Oak.BitwiseCanonical
 import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles
@@ -191,6 +193,7 @@ import Oak.Stdlib.KeyTree
 import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
 import Oak.Typestate
+import Oak.SealedTypestate
 import Oak.IoPort
 import Oak.ObjectStore
 import Oak.ProtocolQuorum
@@ -226,12 +229,16 @@ import Oak.CNFWordCertificate
 import Oak.CNFWordSettled
 import Oak.CNFReplayHeader
 import Oak.CNFReplayCoverage
+import Oak.CNFReplayRecording
+import Oak.CNFReplayRecordedCoverage
 import Oak.CNFMetadataCertificate
+import Oak.CNFMetadataSettled
 import Oak.NativeEqualityCertificate
 import Oak.RVWMO
 import Oak.Reduction
 import Oak.Map
 import Oak.Fold
+import Oak.ConstantUnroll
 import Oak.ReadOnlyBorrow
 import Oak.Inlining
 import Oak.SpanForward
@@ -239,6 +246,10 @@ import Oak.ConstantConditions
 import Oak.BoundaryCopies
 import Oak.PairCopies
 import Oak.BlockedFill
+import Oak.PairStoreEffects
+import Oak.RecordArrayRegion
 import Oak.FieldPromotion
+import Oak.LoopArrayHomes
+import Oak.LoopResultHomes
 import Oak.Forwarding
 import Oak.ArrayValues

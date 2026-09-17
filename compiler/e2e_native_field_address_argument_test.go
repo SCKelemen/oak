@@ -54,7 +54,7 @@ main: (): i32 {
 
 func TestNativeShapesFieldAddressArgument(t *testing.T) {
 	var infos []string
-	comp := New().WithSource("field_arg.oak", nativeFieldAddressArgumentProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+	comp := nativeShapeCompilation("field_arg.oak", nativeFieldAddressArgumentProgram).WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {
 			infos = append(infos, d.Message)
 		}

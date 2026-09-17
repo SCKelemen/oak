@@ -96,9 +96,11 @@ theorem run_perm (l₁ l₂ : List (Thread Addr Val))
 
 `56-kernels.md` section 6: the checker admits a kernel whose every span
 access is at the grid position (one element per thread) or at
-`gid * T + k` under a loop `while k < T` (a tile per thread), and rejects
-every other. These are the footprints; their pairwise disjointness for
-distinct positions is what `Independent` asks of the spans, so `run_perm`
+`gid * T + k` with a proven offset `k < T` (a tile per thread), and rejects
+every other. Offsets include a counter under `while k < T`, `lane(T)`,
+and `s * G + lane(G)` under `while s < T / G`. These are the footprints;
+their pairwise disjointness for distinct positions is what `Independent`
+asks of the spans, so `run_perm`
 applies. The tile fact is over `Nat`: the launch obligation recorded in
 the descriptor is that `grid * T` fits the `u32` index, so the kernel's
 wrapping arithmetic computes these numbers. -/
@@ -147,6 +149,37 @@ def laneFootprint (G g a : Nat) : Prop := tileFootprint G g a
 theorem lane_disjoint {G g h a : Nat} (hne : g ≠ h) :
     ¬ (laneFootprint G g a ∧ laneFootprint G h a) :=
   tile_disjoint hne
+
+/-- A lane's strided offset stays in its row, including when T has a
+partial tail. The quotient loop visits only complete groups of G. -/
+theorem lane_strided_offset_lt {T G s l : Nat} (hs : s < T / G) (hl : l < G) :
+    s * G + l < T := by
+  have hstep : s * G + l < (s + 1) * G := by
+    simpa [Nat.add_mul] using Nat.add_lt_add_left hl (s * G)
+  have hbound : (s + 1) * G ≤ (T / G) * G :=
+    Nat.mul_le_mul_right G hs
+  exact Nat.lt_of_lt_of_le hstep (Nat.le_trans hbound (Nat.div_mul_le_self T G))
+
+/-- Strided lane stores have the same disjoint tile footprints as the
+ordinary bounded counter, so independent grid positions still commute. -/
+theorem lane_strided_disjoint {T G g h s t l m : Nat} (hne : g ≠ h)
+    (hs : s < T / G) (ht : t < T / G) (hl : l < G) (hm : m < G) :
+    g * T + (s * G + l) ≠ h * T + (t * G + m) := by
+  intro heq
+  exact tile_disjoint hne
+    ⟨⟨s * G + l, lane_strided_offset_lt hs hl, rfl⟩,
+     ⟨t * G + m, lane_strided_offset_lt ht hm, heq⟩⟩
+
+/-- Within a position, different lanes never share a strided slot, even
+at different loop iterations. -/
+theorem lane_strided_lanes_disjoint {G s t l m : Nat}
+    (hne : l ≠ m) (hl : l < G) (hm : m < G) : s * G + l ≠ t * G + m := by
+  intro heq
+  have hs := tile_index_div (g := s) hl
+  have ht := tile_index_div (g := t) hm
+  have hst : s = t := by rw [← hs, heq, ht]
+  subst t
+  exact hne (Nat.add_left_cancel heq)
 
 /-- A barrier-separated kernel: its phases, each the lanes' threads. -/
 def runPhases : List (List (Thread Addr Val)) → Mem Addr Val → Mem Addr Val

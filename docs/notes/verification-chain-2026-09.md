@@ -168,9 +168,11 @@ or the verifier, not in the program:
    encoder. **Bounded pair-store class:** offset STP64 now has the exact
    XML-generated layout and two XZR/X0 words proved in Lean, plus a
    source-audited official-Sail projection of the two pre-`Mem` address/data
-   argument pairs. It remains formal-only for blocked fills: no blocked-fill
-   code generation or new span/record pair-store verification is enabled, and
-   the projection proves no
+   argument pairs. It remains formal-only for **pair-store** blocked fills: no
+   span/record pair-store verification is enabled. Production fill blocking
+   uses four ordered scalar stores and a scalar tail, with emitted bounds
+   guards independently checked before semantic verification. The projection
+   proves no
    request occurrence or order, atomicity/non-tearing, memory effect, CAT
    event, or publication. The remaining AArch64 instruction forms remain
    generated/audited rather than universally decoder-proved.

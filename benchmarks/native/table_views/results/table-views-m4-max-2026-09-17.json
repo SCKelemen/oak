@@ -1,0 +1,1054 @@
+{
+  "schema": "oak-table-views-v1",
+  "baseline_revision": "efb4a203f2dc448121e4b8f1d616593bf4acde84",
+  "candidate_revision": "8a4e223b7b101ae1396e1b7a0eef8ebac7b97c60",
+  "binaries": {
+    "baseline_emit": {
+      "sha256": "f46c64b6e8c6d7ce27273125c845def36a01bfb210aeca60ecfa8c592e8d2d25",
+      "build_info": "/private/tmp/oak-search-performance-AbAfRI/baseline-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917081902-efb4a203f2dc\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=efb4a203f2dc448121e4b8f1d616593bf4acde84\n\tbuild\tvcs.time=2026-09-17T08:19:02Z\n\tbuild\tvcs.modified=false"
+    },
+    "baseline_oak": {
+      "sha256": "73d31e8bdf383c7683e59c5fb1059c0e712ad2f39a749beec522df2a0d874646",
+      "build_info": "/private/tmp/oak-search-performance-AbAfRI/baseline-oak: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917081902-efb4a203f2dc\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tdep\tgolang.org/x/sys\tv0.38.0\th1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=\n\tdep\tgolang.org/x/term\tv0.37.0\th1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=efb4a203f2dc448121e4b8f1d616593bf4acde84\n\tbuild\tvcs.time=2026-09-17T08:19:02Z\n\tbuild\tvcs.modified=false"
+    },
+    "candidate_emit": {
+      "sha256": "86d860e1cbec09282339b6e6a8d1f69c96c02b04852df8152388a2fab8b40c9e",
+      "build_info": "/private/tmp/oak-search-performance-AbAfRI/clean-candidate-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917084649-8a4e223b7b10\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=8a4e223b7b101ae1396e1b7a0eef8ebac7b97c60\n\tbuild\tvcs.time=2026-09-17T08:46:49Z\n\tbuild\tvcs.modified=false"
+    }
+  },
+  "dirty_worktree": false,
+  "date": "2026-09-17T08:47:33.819586+00:00",
+  "cpu": "Apple M4 Max",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+  "c_flags": [
+    "-std=c11",
+    "-O3",
+    "-ffp-contract=off",
+    "-fno-fast-math"
+  ],
+  "fixture_sha256": "3b6fe0e4e898009ca6acf2a8d85d9b75d55f3837fee7a143b785413f78fcffa3",
+  "runner_sha256": "3a6bbabe22ce2021e93aba431f52ef1f6edd84a2107b681cae2eb005c2852aac",
+  "identity_disabled_transforms": [
+    "strength-reduce",
+    "optir-emit",
+    "elide-guards",
+    "reuse-flags",
+    "hoist-invariants",
+    "unroll-reductions",
+    "vector-homes",
+    "loop-array-homes",
+    "late-cleanup",
+    "vectorize-reductions",
+    "vectorize-maps",
+    "unroll-vector-maps",
+    "vectorize-folds",
+    "unroll-constant",
+    "vector-blocks",
+    "share-vector-addresses",
+    "multiply-add",
+    "value-select",
+    "reallocate",
+    "schedule",
+    "fuse",
+    "fuse-exits",
+    "rotate-loops"
+  ],
+  "sample_order": "all backend/distribution pairs interleaved, first pair rotated each round",
+  "core_affinity": "uncontrolled",
+  "cache_flush": false,
+  "native_bodies": {
+    "native-before": {
+      "verdict": "native backend: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w9, #4893\n  movz w10, #3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\n  movz w15, #3\n  movz w14, #4893\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  lsr w9, w9, #1\n  add w5, w3, w9\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w10, wzr\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}"
+    },
+    "native-identity": {
+      "verdict": "native backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  cbz w10, trap_3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  movz w10, #2\n  cbz w10, trap_3\n  udiv w9, w9, w10\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  add x10, x19, #0\n  movz w11, #4893\n  cmp w9, w11\n  b.hs trap_3\n  ldr w9, [x10, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  movz w11, #4893\n  cmp w12, w11\n  b.hs trap_3\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  movz w11, #4893\n  cmp w9, w11\n  b.hs trap_3\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}"
+    },
+    "native-after": {
+      "verdict": "native backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  movz w20, #4893\n  movz w10, #3\n  udiv w2, w20, w10\n  adrl x9, data_grapheme_table\n  mov w3, wzr\n  movz w15, #3\n  movz w14, #4893\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add x12, x19, #0\n  add w9, w9, #2\n  ldr w9, [x12, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}"
+    }
+  },
+  "diagnostics": {
+    "native-before": "// refused strength-reduce+elide-guards form of grapheme_class (round 0): grapheme_class:15: ldr indexed by w9 without a dominating constant index guard: `cmp w9, #K` then `b.hs <exit>` bounds the array's index\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  lsr w9, w9, #1\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  add x10, x19, #0\n  ldr w9, [x10, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\n}\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w9, #4893\n  movz w10, #3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\n  movz w15, #3\n  movz w14, #4893\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  lsr w9, w9, #1\n  add w5, w3, w9\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w10, wzr\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\ngrapheme_class:\n  missed    multiply-add       no site to transform\n  missed    reuse-flags        no site to transform\n  missed    unroll-reductions  no site to transform\n  missed    vectorize-reductions no site to transform\n  missed    vectorize-maps     no site to transform\n  missed    unroll-vector-maps no site to transform\n  missed    unroll-constant    no site to transform\n  missed    vectorize-folds    no site to transform\n  missed    fuse-exits         no site to transform\n  missed    vector-homes       no site to transform\n  missed    loop-array-homes   no site to transform\n  missed    value-select       no site to transform\n  missed    vector-blocks      no site to transform\n  missed    share-vector-addresses no site to transform\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup form was not verified: 3 of 3 validations spent on cheaper candidates\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form was not verified (a trusted verdict) and fuse+schedule+reallocate ships only on a verdict: the strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup form is kept\n  passed    strength-reduce    2 site(s), trusted\n  passed    elide-guards       2 site(s), trusted\n                                 fact index-in-extent(((mid * u32(3)) + u32(1)), table) [checked, Oak.ExtentsRefinement.indexUnder_sound] at line 15:10\n  passed    hoist-invariants   1 site(s), trusted\n  passed    rotate-loops       1 site(s), trusted\n  passed    late-cleanup       2 site(s), trusted\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75\n  missed    verify             the identity form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75\n  analysis  search             82 candidate(s) considered, 82 lowered, 4 verified; selected strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup (trusted, cost 5191.5; identity 9816.5)\n  analysis  candidates         strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate cost  4802.0  instructions 45, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 18, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup cost  4803.0  instructions 45, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 20, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup cost  5191.5  instructions 49, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 24, loop[14 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 5 stalls]\n                               identity                         cost  9816.5  instructions 60, branches 10, loads 4, stores 1, multiplies 3, divides 2, guards 5, stalls 46, loop[20 instructions, 4 branches, 1 loads, 0 stores, 2 guards, 28 stalls]\n  analysis  metrics            instructions:      60 -> 49\n                               branches:          10 -> 6\n                               divides:           2 -> 1\n                               guards:            5 -> 1\n                               stalls:            46 -> 24\n                               loop instructions: 20 -> 14\n                               loop branches:     4 -> 2\n                               loop guards:       2 -> 1\n                               loop stalls:       28 -> 5\nnative backend: grapheme_class keeps its instructions apart (the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75)\nnative backend: grapheme_class keeps its instruction order (the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75)\nnative backend: grapheme_class keeps its register assignment (the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form was judged trusted: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75)\nnative backend: grapheme_class: layer A \u2014 strength reduction \u00d71 decided at the bit level\nnative backend: grapheme_class: 2 element guard(s) elided under the checker's own facts, the guards of line(s) 15 kept (the checker did not admit their elided form)\nnative backend: asm unit grapheme_class: not verified (the Oak body contains the span local table from view((&grapheme_table))) \u2014 trusted per docs/spec/94-assembler.md \u00a75\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 4 verdicts from the verdict cache\n",
+    "native-identity": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  cbz w10, trap_3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  movz w10, #2\n  cbz w10, trap_3\n  udiv w9, w9, w10\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  add x10, x19, #0\n  movz w11, #4893\n  cmp w9, w11\n  b.hs trap_3\n  ldr w9, [x10, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  movz w11, #4893\n  cmp w12, w11\n  b.hs trap_3\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  movz w11, #4893\n  cmp w9, w11\n  b.hs trap_3\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\ngrapheme_class:\n  analysis  search             1 candidate(s) considered, 1 lowered, 1 verified; selected identity (proven, cost 9816.5; identity 9816.5)\nnative backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 1 verdicts from the verdict cache\n",
+    "native-after": "// refused strength-reduce+elide-guards form of grapheme_class (round 0): grapheme_class:15: ldr indexed by w9 without a dominating constant index guard: `cmp w9, #K` then `b.hs <exit>` bounds the array's index\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  lsr w9, w9, #1\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  add x10, x19, #0\n  ldr w9, [x10, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  add x12, x19, #0\n  ldr w9, [x12, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\n}\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  movz w20, #4893\n  movz w10, #3\n  udiv w2, w20, w10\n  adrl x9, data_grapheme_table\n  mov w3, wzr\n  movz w15, #3\n  movz w14, #4893\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  add x9, x19, #0\n  ldr w12, [x9, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add x12, x19, #0\n  add w9, w9, #2\n  ldr w9, [x12, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\ngrapheme_class:\n  missed    multiply-add       no site to transform\n  missed    reuse-flags        no site to transform\n  missed    unroll-reductions  no site to transform\n  missed    vectorize-reductions no site to transform\n  missed    vectorize-maps     no site to transform\n  missed    unroll-vector-maps no site to transform\n  missed    unroll-constant    no site to transform\n  missed    vectorize-folds    no site to transform\n  missed    fuse-exits         no site to transform\n  missed    vector-homes       no site to transform\n  missed    loop-array-homes   no site to transform\n  missed    value-select       no site to transform\n  missed    vector-blocks      no site to transform\n  missed    share-vector-addresses no site to transform\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  passed    strength-reduce    2 site(s), proven\n  passed    elide-guards       2 site(s), proven\n                                 fact index-in-extent(((mid * u32(3)) + u32(1)), table) [checked, Oak.ExtentsRefinement.indexUnder_sound] at line 15:10\n  passed    hoist-invariants   1 site(s), proven\n  passed    rotate-loops       1 site(s), proven\n  passed    fuse               2 site(s), proven\n  passed    schedule           11 site(s), proven\n  passed    reallocate         6 site(s), proven\n  analysis  search             82 candidate(s) considered, 82 lowered, 1 verified; selected strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate (proven, cost 4802.0; identity 9816.5)\n  analysis  candidates         strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate cost  4802.0  instructions 45, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 18, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup cost  4803.0  instructions 45, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 20, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+late-cleanup cost  5191.5  instructions 49, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 24, loop[14 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 5 stalls]\n                               identity                         cost  9816.5  instructions 60, branches 10, loads 4, stores 1, multiplies 3, divides 2, guards 5, stalls 46, loop[20 instructions, 4 branches, 1 loads, 0 stores, 2 guards, 28 stalls]\n  analysis  metrics            instructions:      60 -> 45\n                               branches:          10 -> 6\n                               divides:           2 -> 1\n                               guards:            5 -> 1\n                               stalls:            46 -> 18\n                               loop instructions: 20 -> 12\n                               loop branches:     4 -> 2\n                               loop guards:       2 -> 1\n                               loop stalls:       28 -> 6\nnative backend: grapheme_class: layer A \u2014 strength reduction \u00d71 decided at the bit level\nnative backend: grapheme_class: 2 element guard(s) elided under the checker's own facts, the guards of line(s) 15 kept (the checker did not admit their elided form)\nnative backend: grapheme_class: 1 constant operation(s) strength-reduced, proven\nnative backend: grapheme_class: 1 loop(s) bottom-tested, proven\nnative backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 1 verdicts from the verdict cache\n"
+  },
+  "samples": [
+    {
+      "elapsed_ns": 26014000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 24.808883666992188
+    },
+    {
+      "elapsed_ns": 22613000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 21.56543731689453
+    },
+    {
+      "elapsed_ns": 25184000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 24.017333984375
+    },
+    {
+      "elapsed_ns": 35327000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 33.690452575683594
+    },
+    {
+      "elapsed_ns": 30922000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 29.489517211914062
+    },
+    {
+      "elapsed_ns": 34860000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 33.245086669921875
+    },
+    {
+      "elapsed_ns": 46717000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 44.55280303955078
+    },
+    {
+      "elapsed_ns": 42025000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 40.078163146972656
+    },
+    {
+      "elapsed_ns": 49657000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 47.356605529785156
+    },
+    {
+      "elapsed_ns": 32126000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 30.637741088867188
+    },
+    {
+      "elapsed_ns": 29492000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 28.125762939453125
+    },
+    {
+      "elapsed_ns": 32025000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 30.541419982910156
+    },
+    {
+      "elapsed_ns": 21316000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 20.328521728515625
+    },
+    {
+      "elapsed_ns": 24891000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 23.73790740966797
+    },
+    {
+      "elapsed_ns": 34438000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 32.84263610839844
+    },
+    {
+      "elapsed_ns": 30046000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 28.654098510742188
+    },
+    {
+      "elapsed_ns": 34358000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 32.76634216308594
+    },
+    {
+      "elapsed_ns": 47031000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 44.852256774902344
+    },
+    {
+      "elapsed_ns": 41882000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 39.94178771972656
+    },
+    {
+      "elapsed_ns": 53485000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 51.00727081298828
+    },
+    {
+      "elapsed_ns": 32294000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 30.797958374023438
+    },
+    {
+      "elapsed_ns": 28087000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 26.785850524902344
+    },
+    {
+      "elapsed_ns": 30609000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 29.191017150878906
+    },
+    {
+      "elapsed_ns": 25339000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 24.16515350341797
+    },
+    {
+      "elapsed_ns": 27491000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 26.21746063232422
+    },
+    {
+      "elapsed_ns": 38044000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 36.281585693359375
+    },
+    {
+      "elapsed_ns": 30173000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 28.77521514892578
+    },
+    {
+      "elapsed_ns": 36613000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 34.91687774658203
+    },
+    {
+      "elapsed_ns": 53215000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 50.749778747558594
+    },
+    {
+      "elapsed_ns": 50204000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 47.878265380859375
+    },
+    {
+      "elapsed_ns": 50841000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 48.485755920410156
+    },
+    {
+      "elapsed_ns": 32792000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 31.27288818359375
+    },
+    {
+      "elapsed_ns": 29606000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 28.234481811523438
+    },
+    {
+      "elapsed_ns": 34214000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 32.62901306152344
+    },
+    {
+      "elapsed_ns": 25123000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 23.95915985107422
+    },
+    {
+      "elapsed_ns": 21267000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 20.28179168701172
+    },
+    {
+      "elapsed_ns": 34517000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 32.91797637939453
+    },
+    {
+      "elapsed_ns": 30467000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 29.05559539794922
+    },
+    {
+      "elapsed_ns": 35582000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 33.93363952636719
+    },
+    {
+      "elapsed_ns": 51229000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 48.85578155517578
+    },
+    {
+      "elapsed_ns": 41772000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 39.836883544921875
+    },
+    {
+      "elapsed_ns": 50461000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 48.12335968017578
+    },
+    {
+      "elapsed_ns": 32297000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 30.800819396972656
+    },
+    {
+      "elapsed_ns": 28223000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 26.915550231933594
+    },
+    {
+      "elapsed_ns": 30896000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 29.4647216796875
+    },
+    {
+      "elapsed_ns": 25150000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 23.984909057617188
+    },
+    {
+      "elapsed_ns": 21408000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 20.416259765625
+    },
+    {
+      "elapsed_ns": 25100000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 23.937225341796875
+    },
+    {
+      "elapsed_ns": 30168000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 28.77044677734375
+    },
+    {
+      "elapsed_ns": 36254000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 34.57450866699219
+    },
+    {
+      "elapsed_ns": 46869000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 44.69776153564453
+    },
+    {
+      "elapsed_ns": 45231000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 43.135643005371094
+    },
+    {
+      "elapsed_ns": 51438000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 49.05509948730469
+    },
+    {
+      "elapsed_ns": 32728000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 31.21185302734375
+    },
+    {
+      "elapsed_ns": 28405000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 27.08911895751953
+    },
+    {
+      "elapsed_ns": 32280000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 30.78460693359375
+    },
+    {
+      "elapsed_ns": 25434000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 24.255752563476562
+    },
+    {
+      "elapsed_ns": 21595000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 20.59459686279297
+    },
+    {
+      "elapsed_ns": 25104000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 23.9410400390625
+    },
+    {
+      "elapsed_ns": 35542000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 33.89549255371094
+    },
+    {
+      "elapsed_ns": 35796000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 34.137725830078125
+    },
+    {
+      "elapsed_ns": 56778000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 54.14772033691406
+    },
+    {
+      "elapsed_ns": 45584000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 43.4722900390625
+    },
+    {
+      "elapsed_ns": 57405000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 54.74567413330078
+    },
+    {
+      "elapsed_ns": 35194000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 33.56361389160156
+    },
+    {
+      "elapsed_ns": 36511000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 34.819602966308594
+    },
+    {
+      "elapsed_ns": 35336000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 33.69903564453125
+    },
+    {
+      "elapsed_ns": 29265000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 27.909278869628906
+    },
+    {
+      "elapsed_ns": 22549000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 21.50440216064453
+    },
+    {
+      "elapsed_ns": 26028000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 24.822235107421875
+    },
+    {
+      "elapsed_ns": 34430000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 32.83500671386719
+    },
+    {
+      "elapsed_ns": 30102000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 28.707504272460938
+    },
+    {
+      "elapsed_ns": 51661000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 49.26776885986328
+    },
+    {
+      "elapsed_ns": 47534000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 45.33195495605469
+    },
+    {
+      "elapsed_ns": 52011000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 49.60155487060547
+    },
+    {
+      "elapsed_ns": 32357000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 30.85803985595703
+    },
+    {
+      "elapsed_ns": 28370000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 27.055740356445312
+    },
+    {
+      "elapsed_ns": 31012000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 29.575347900390625
+    },
+    {
+      "elapsed_ns": 25279000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 24.107933044433594
+    },
+    {
+      "elapsed_ns": 21277000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 20.29132843017578
+    },
+    {
+      "elapsed_ns": 24665000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 23.522377014160156
+    },
+    {
+      "elapsed_ns": 34365000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 32.77301788330078
+    },
+    {
+      "elapsed_ns": 30340000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 28.934478759765625
+    },
+    {
+      "elapsed_ns": 35582000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 33.93363952636719
+    },
+    {
+      "elapsed_ns": 41589000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 39.66236114501953
+    },
+    {
+      "elapsed_ns": 51055000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 48.689842224121094
+    },
+    {
+      "elapsed_ns": 34427000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 32.83214569091797
+    },
+    {
+      "elapsed_ns": 32630000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 31.118392944335938
+    },
+    {
+      "elapsed_ns": 32829000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 31.30817413330078
+    },
+    {
+      "elapsed_ns": 26394000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 25.171279907226562
+    },
+    {
+      "elapsed_ns": 22301000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 21.26789093017578
+    },
+    {
+      "elapsed_ns": 28133000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 26.82971954345703
+    },
+    {
+      "elapsed_ns": 39973000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 38.12122344970703
+    },
+    {
+      "elapsed_ns": 33910000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 32.33909606933594
+    },
+    {
+      "elapsed_ns": 39524000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 37.693023681640625
+    },
+    {
+      "elapsed_ns": 53022000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 50.56571960449219
+    },
+    {
+      "elapsed_ns": 50516000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 48.175811767578125
+    },
+    {
+      "elapsed_ns": 32163000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 30.67302703857422
+    },
+    {
+      "elapsed_ns": 28092000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 26.790618896484375
+    },
+    {
+      "elapsed_ns": 30831000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 29.402732849121094
+    },
+    {
+      "elapsed_ns": 25991000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 24.786949157714844
+    },
+    {
+      "elapsed_ns": 21337000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 20.348548889160156
+    },
+    {
+      "elapsed_ns": 26365000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 25.14362335205078
+    },
+    {
+      "elapsed_ns": 36026000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 34.35707092285156
+    },
+    {
+      "elapsed_ns": 31648000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 30.181884765625
+    },
+    {
+      "elapsed_ns": 35535000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 33.888816833496094
+    },
+    {
+      "elapsed_ns": 53837000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 51.34296417236328
+    },
+    {
+      "elapsed_ns": 50798000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 48.44474792480469
+    }
+  ],
+  "load_before": "10:47  up 5 days,  4:52, 21 users, load averages: 152.94 200.76 173.69",
+  "load_after": "10:47  up 5 days,  4:52, 21 users, load averages: 146.14 198.56 173.07"
+}

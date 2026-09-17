@@ -235,3 +235,8 @@ func accessBytes(mnemonic string, class operandClass) int64 {
 // generator's if-conversion keeps a compare's flags live across the arm
 // evaluations only when none of them does (nativegen/select.go).
 func SetsFlags(mnemonic string) bool { return instructionTable[mnemonic].setsFlags }
+
+// ReadsFlags reports whether the AArch64 mnemonic consumes NZCV. Machine
+// rewrites use the exact parser table rather than maintaining a second list
+// of conditional instructions.
+func ReadsFlags(mnemonic string) bool { return instructionTable[mnemonic].readsFlags }

@@ -18,11 +18,14 @@ package nativegen
 import (
 	"fmt"
 	"math/bits"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // RewriteSite is one application of a layer-A rewrite in a body.
@@ -43,6 +46,10 @@ var rewriteSitesOf = map[*asm.Function][]RewriteSite{}
 // unroll transform's count).
 func Unrolled(fn *asm.Function) int { return countSites(fn, "reduction unrolling", false) }
 
+// UnrolledFills reports how many scalar u64 zero fills layer A blocked four
+// ways under Oak.BlockedFill.blocked_fill_eq.
+func UnrolledFills(fn *asm.Function) int { return countSites(fn, "fill unrolling", false) }
+
 // Vectorized reports how many reductions a lowering vectorized under
 // Lane.VectorReductions (nativegen/vector_reduction.go).
 func Vectorized(fn *asm.Function) int { return countSites(fn, "reduction vectorization", false) }
@@ -51,9 +58,19 @@ func Vectorized(fn *asm.Function) int { return countSites(fn, "reduction vectori
 // vectorized under Lane.VectorMaps (nativegen/vector_map.go).
 func VectorizedMaps(fn *asm.Function) int { return countSites(fn, "map vectorization", false) }
 
+// UnrolledMaps counts maps processed as two consecutive vectors per trip.
+func UnrolledMaps(fn *asm.Function) int { return countSites(fn, "map unrolling", false) }
+
 // VectorizedFolds reports how many bodies' lane-wise float reductions a
 // lowering vectorized under Lane.VectorFolds (nativegen/vector_fold.go).
 func VectorizedFolds(fn *asm.Function) int { return countSites(fn, "fold vectorization", false) }
+
+// UnrolledConstant reports how many constant-trip loops a lowering
+// unrolled under Lane.UnrollConstant (nativegen/unroll_constant.go).
+func UnrolledConstant(fn *asm.Function) int { return countSites(fn, "constant unrolling", false) }
+
+// UnrolledSmall counts bodies selectively unrolled under Lane.UnrollSmall.
+func UnrolledSmall(fn *asm.Function) int { return countSites(fn, "small constant unrolling", false) }
 
 // StrengthReduced reports how many sites layer A strength-reduced in a
 // body, each decided at the bit level (the strength transform's count,
@@ -74,8 +91,10 @@ func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 // candidate search lowers a body under several configurations, and the
 // per-site theorems are proved once, not once per candidate.
 type stageKey struct {
-	fn                                               *ast.FunctionStatement
-	expand, unroll, vectorize, maps, folds, strength bool
+	fn                                                                                   *ast.FunctionStatement
+	tc                                                                                   *typechecker.TypeChecker
+	constants                                                                            string
+	expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool
 }
 
 var (
@@ -87,6 +106,9 @@ var (
 type rewriteStage struct {
 	body  ast.Expression
 	sites []RewriteSite
+	// scalarEligibilityReference preserves pre-unroll scalar-array eligibility. It is
+	// only an extra placement refusal, never a lowering or verifier body.
+	scalarEligibilityReference ast.Expression
 	// judged marks a stage whose body the verifier must judge in place of
 	// the source: a rewrite beyond substitution changed what the
 	// instructions compute the same value from.
@@ -96,25 +118,47 @@ type rewriteStage struct {
 // rewriteStages returns the bodies to try lowering, the most rewritten
 // first and the source last: a lowering the rewritten shape makes
 // unsupported falls back to the shape before it.
-func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
-	key := stageKey{fn: fn, expand: expand, unroll: unroll, vectorize: vectorize, maps: maps, folds: folds, strength: strength}
+func rewriteStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool) []rewriteStage {
+	constantKey := ""
+	if fills {
+		constantKey = rewriteConstantsKey(constants)
+	}
+	key := stageKey{fn: fn, tc: tc, constants: constantKey, expand: expand, unroll: unroll, fills: fills, vectorize: vectorize, maps: maps, unrollMaps: unrollMaps, folds: folds, constant: constant, small: small, strength: strength}
 	stagesMu.Lock()
 	memo, seen := stagesMemo[key]
 	stagesMu.Unlock()
 	if seen {
 		return memo
 	}
-	stages := computeStages(fn, functions, expand, unroll, vectorize, maps, folds, strength)
+	stages := computeStages(fn, functions, constants, tc, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength)
 	stagesMu.Lock()
 	stagesMemo[key] = stages
 	stagesMu.Unlock()
 	return stages
 }
 
-func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, expand, unroll, vectorize, maps, folds, strength bool) []rewriteStage {
+// rewriteConstantsKey makes the folded constants part of stage identity.
+// Fill blocking uses a checked u32 bound to remove an underflow guard, so a
+// stage produced for one compilation must never be reused with another map.
+func rewriteConstantsKey(constants map[string]asm.Constant) string {
+	keys := make([]string, 0, len(constants))
+	for name := range constants {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	var out strings.Builder
+	for _, name := range keys {
+		constant := constants[name]
+		fmt.Fprintf(&out, "%d:%s:%s:%d;", len(name), name, constant.Type, constant.Value)
+	}
+	return out.String()
+}
+
+func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, constants map[string]asm.Constant, tc *typechecker.TypeChecker, expand, unroll, fills, vectorize, maps, unrollMaps, folds, constant, small, strength bool) []rewriteStage {
 	var stages []rewriteStage
 	var sites []RewriteSite
 	body := fn.Body
+	var scalarEligibilityReference ast.Expression
 	// judged: a stage is the verifier's reference once a rewrite beyond
 	// substitution changed what the instructions compute the same value
 	// from; an expansion alone leaves the source as the reference (the
@@ -122,7 +166,7 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 	judged := false
 	push := func() {
 		copied := append([]RewriteSite(nil), sites...)
-		stages = append([]rewriteStage{{body: body, sites: copied, judged: judged}}, stages...)
+		stages = append([]rewriteStage{{body: body, sites: copied, judged: judged, scalarEligibilityReference: scalarEligibilityReference}}, stages...)
 	}
 	if expand {
 		if inlined := inlineBody(fn, functions); inlined != body {
@@ -139,14 +183,42 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 		body = forwarded
 		push()
 	}
+	// The constant-trip loops as their trips (nativegen/unroll_constant.go):
+	// the loop from zero is the unrolled sequence, whatever the body.
+	if constant {
+		if unrolled, changed := unrollConstantLoops(fn, body); changed {
+			sites = append(sites, RewriteSite{Rewrite: "constant unrolling", Law: "Oak.ConstantUnroll.loop_eq_unrolled", Detail: "a loop from zero to a literal bound, its index written by its step alone, is its trips in order with the index a literal in each; nothing is assumed of the body", Line: fn.Token.Line})
+			body = unrolled
+			judged = true
+			push()
+		}
+	}
+	if small {
+		beforeUnroll := cloneNode(body).(ast.Expression)
+		if unrolled, changed := unrollSmallConstantLoops(fn, body); changed {
+			scalarEligibilityReference = beforeUnroll
+			sites = append(sites, RewriteSite{Rewrite: "small constant unrolling", Law: "Oak.ConstantUnroll.loop_eq_unrolled", Detail: "constant trips in order within a fixed copy budget; pre-unroll scalar-array eligibility may only refuse new scalar homes", Line: fn.Token.Line})
+			body = unrolled
+			judged = true
+			push()
+		}
+	}
 	// The element-wise maps over spans as one vector a trip
 	// (nativegen/vector_map.go): lane-wise semantics alone license it.
 	if maps {
-		if vectorized, changed := vectorizeMaps(fn, body); changed {
+		mapSource := body
+		if vectorized, changed := vectorizeMaps(fn, mapSource, tc, false); changed {
 			sites = append(sites, RewriteSite{Rewrite: "map vectorization", Law: "Oak.Map.blocked_eq", Detail: "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map", Line: fn.Token.Line})
 			body = vectorized
 			judged = true
 			push()
+			if unrollMaps {
+				if grouped, changed := vectorizeMaps(fn, mapSource, tc, true); changed {
+					sites = append(sites, RewriteSite{Rewrite: "map unrolling", Law: "Oak.Map.grouped_eq", Detail: "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder", Line: fn.Token.Line})
+					body = grouped
+					push()
+				}
+			}
 		}
 	}
 	// The lane-wise float reductions as one vector of element values a
@@ -156,6 +228,17 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 		if vectorized, changed := vectorizeFolds(fn, body); changed {
 			sites = append(sites, RewriteSite{Rewrite: "fold vectorization", Law: "Oak.Fold.blocked_eq", Detail: "each block of a vector's lanes computed as one vector load per span and the lane-wise operations, its lanes added to the accumulator in element order, the remainder one element at a time; the simd operations are lane-wise by their specification and the additions keep their order, so the blocked fold is the sequential fold", Line: fn.Token.Line})
 			body = vectorized
+			judged = true
+			push()
+		}
+	}
+	// A u64 zero-fill loop as four ordered scalar stores per main trip and
+	// the original remainder (nativegen/fill_unroll.go). Keeping scalar stores
+	// avoids claiming pair-store custody.
+	if fills {
+		if blocked, changed := unrollFills(fn, body, tc, constants); changed {
+			sites = append(sites, RewriteSite{Rewrite: "fill unrolling", Law: "Oak.BlockedFill.blocked_fill_eq", Detail: "four ordered scalar u64 zero stores per main trip followed by the original less-than-four-word tail; no pair-store authority is claimed", Line: fn.Token.Line})
+			body = blocked
 			judged = true
 			push()
 		}

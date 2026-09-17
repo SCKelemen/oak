@@ -693,8 +693,9 @@ func TestDominatorsAndLoops(t *testing.T) {
 
 func TestSimplifyPropagatesAndEliminates(t *testing.T) {
 	// `mov w10, w9; add w0, w0, w10` with w9 live after: the add reads w9
-	// and the copy goes; a dead frame reload goes; a dead store, a dead
-	// compare, and a call's unread result stay.
+	// and the copy goes; a dead frame reload goes, and so does the store
+	// to that slot once nothing reads it (Promote's dead stores); a dead
+	// compare and a call's unread result stay.
 	f := framed(
 		ins("sub", sp(), sp(), imm(64)),
 		ins("stp", x(29), x(30), mem(sp(), 0)),
@@ -723,8 +724,8 @@ func TestSimplifyPropagatesAndEliminates(t *testing.T) {
 	if strings.Contains(got, "mov w10") || !strings.Contains(got, "add w0, w0, w9") {
 		t.Fatalf("copy not propagated:\n%s", got)
 	}
-	if strings.Contains(got, "ldr q16") || !strings.Contains(got, "str q16") || !strings.Contains(got, "cmp w0, w1") || !strings.Contains(got, "bl g") {
-		t.Fatalf("elimination:\n%s", got)
+	if strings.Contains(got, "ldr q16") || strings.Contains(got, "str q16") || alloc.DeadStores != 1 || !strings.Contains(got, "cmp w0, w1") || !strings.Contains(got, "bl g") {
+		t.Fatalf("elimination (dead stores %d):\n%s", alloc.DeadStores, got)
 	}
 }
 
@@ -983,6 +984,29 @@ func TestShapesRemainderBound(t *testing.T) {
 	}
 	if len(shapes) != 1 || shapes[0].Index != nil || shapes[0].Stride != 1 {
 		t.Fatalf("conditional increment: %v", shapes[0])
+	}
+}
+
+func TestShapesVectorCleanupBound(t *testing.T) {
+	f := fn(
+		ins("mov", w(9), w(31)),
+		label("main_1"),
+		ins("cmp", w(9), w(20)), bcond("hi", "vectors_2"),
+		ins("add", w(9), w(9), imm(8)), ins("b", sym("main_1")),
+		label("vectors_2"),
+		ins("cmp", w(9), w(20)), bcond("hi", "scalar_3"),
+		ins("add", w(9), w(9), imm(4)), ins("b", sym("vectors_2")),
+		label("scalar_3"),
+		ins("cmp", w(9), w(20)), bcond("hs", "done_4"),
+		ins("add", w(9), w(9), imm(1)), ins("b", sym("scalar_3")),
+		label("done_4"), ins("mov", w(0), w(9)), ins("ret"),
+	)
+	shapes, err := LoopShapes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) != 3 || shapes[1].Stride != 4 || shapes[1].MaxTrips != 1 || shapes[2].MaxTrips != 3 {
+		t.Fatalf("unexpected vector/scalar cleanup shapes: %+v", shapes)
 	}
 }
 
@@ -1416,5 +1440,36 @@ func TestFuseExitTests(t *testing.T) {
 	}
 	if fused != 1 || !ccmp || !back {
 		t.Fatalf("fused %d (ccmp %v, back %v):\n%s", fused, ccmp, back, text(out.Items))
+	}
+}
+
+// A store to a qualified slot no load reaches is dead: the lowering wrote
+// a variable's frame home whose reads never came back to it. The store
+// goes with the promotion; a slot that is read keeps its store (promoted
+// or not), and a store the epilogue restores stays a save.
+func TestPromoteRemovesDeadSlotStores(t *testing.T) {
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("add", w(9), w(0), w(1)),
+		ins("str", w(9), mem(sp(), 16)),
+		ins("eor", w(9), w(9), w(1)),
+		ins("str", w(9), mem(sp(), 16)),
+		ins("mul", w(10), w(9), w(0)),
+		ins("str", w(10), mem(sp(), 24)),
+		ins("ldr", w(11), mem(sp(), 24)),
+		ins("sub", w(0), w(9), w(11)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	out, alloc, err := Reallocate(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(out.Items)
+	if alloc.DeadStores != 2 || strings.Contains(got, "[sp,#16]") {
+		t.Fatalf("both stores to the unread slot must go (dead %d):\n%s", alloc.DeadStores, got)
+	}
+	if alloc.Promoted != 1 || strings.Contains(got, "[sp,#24]") {
+		t.Fatalf("the read slot must be promoted (promoted %d):\n%s", alloc.Promoted, got)
 	}
 }

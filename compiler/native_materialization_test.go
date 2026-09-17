@@ -78,6 +78,20 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 
 	changedLane := lane(false)
 	changedLane.Strength = true
+	changedMapGrouping := lane(false)
+	changedMapGrouping.UnrollVectorMaps = true
+	changedAddressSharing := lane(false)
+	changedAddressSharing.ShareVectorAddresses = true
+	changedLoopArrayHomes := lane(false)
+	changedLoopArrayHomes.LoopArrayHomes = true
+	changedLoopResultHomes := lane(false)
+	changedLoopResultHomes.LoopResultHomes = true
+	changedUnrollSmall := lane(false)
+	changedUnrollSmall.UnrollSmall = true
+	changedCarryLoopIndices := lane(false)
+	changedCarryLoopIndices.CarryLoopIndices = true
+	changedRedundantGuards := lane(false)
+	changedRedundantGuards.ElideRedundantGuards = true
 	changedDriver := driver(false)
 	changedDeclarations := driver(false)
 	changedDeclarations.declarations += "Other: type = OtherValue\n"
@@ -122,6 +136,13 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		candidate *opt.Candidate
 	}{
 		{"lane", changedDriver, opt.Identity(changedLane)},
+		{"map-grouping", driver(false), opt.Identity(changedMapGrouping)},
+		{"vector-address-sharing", driver(false), opt.Identity(changedAddressSharing)},
+		{"loop-array-homes", driver(false), opt.Identity(changedLoopArrayHomes)},
+		{"loop-result-homes", driver(false), opt.Identity(changedLoopResultHomes)},
+		{"unroll-small", driver(false), opt.Identity(changedUnrollSmall)},
+		{"carry-loop-indices", driver(false), opt.Identity(changedCarryLoopIndices)},
+		{"elide-redundant-guards", driver(false), opt.Identity(changedRedundantGuards)},
 		{"declarations", changedDeclarations, opt.Identity(lane(false))},
 		{"checker", changedChecker, opt.Identity(lane(false))},
 		{"source", changedSource, opt.Identity(lane(false))},

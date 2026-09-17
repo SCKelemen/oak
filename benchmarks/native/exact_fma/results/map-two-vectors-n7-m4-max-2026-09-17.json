@@ -1,0 +1,2550 @@
+{
+  "workload": "map",
+  "revision": "c3c217b6aa056ba2f6ccd2d607b3233fc6a9fcaf",
+  "dirty_worktree": false,
+  "date": "2026-09-16T23:05:28Z",
+  "host": "Apple M4 Max",
+  "load_before": "1:05  up 4 days, 19:10, 21 users, load averages: 73.12 81.91 78.12",
+  "load_after": "1:05  up 4 days, 19:10, 21 users, load averages: 75.68 82.29 78.28",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+  "flags": [
+    "-std=c11",
+    "-O3",
+    "-ffp-contract=off",
+    "-fno-fast-math"
+  ],
+  "elements": 7,
+  "calls": 1048576,
+  "native_bodies": [
+    {
+      "backend": "native-identity",
+      "name": "map32_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 96,
+      "assembly": "map32_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\nloop_6:\n  cmp w4, w3\n  b.hs done_7\n  cmp w4, w3\n  b.hs trap_3\n  ldr s16, [x2, w4, uxtw #2]\n  fmul s16, s16, s8\n  fadd s16, s16, s9\n  cmp w4, w1\n  b.hs trap_3\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  b loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\ntrap_3:\n  brk #1\n}\n",
+      "verdict_message": "asm unit map32_strict: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 24,
+        "Branches": 6,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 2,
+        "Loops": 1,
+        "Stalls": 7,
+        "LoopInstructions": 12,
+        "LoopBranches": 4,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 2,
+        "LoopStalls": 7,
+        "LoopBodies": [
+          {
+            "Instructions": 12,
+            "Branches": 4,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 2,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-identity",
+      "name": "map32_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 100,
+      "assembly": "map32_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\nloop_6:\n  cmp w4, w3\n  b.hs done_7\n  cmp w4, w3\n  b.hs trap_3\n  ldr s16, [x2, w4, uxtw #2]\n  fmov s17, s8\n  fmov s18, s9\n  fmadd s16, s16, s17, s18\n  cmp w4, w1\n  b.hs trap_3\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  b loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\ntrap_3:\n  brk #1\n}\n",
+      "verdict_message": "asm unit map32_fused: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 25,
+        "Branches": 6,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 2,
+        "Loops": 1,
+        "Stalls": 2,
+        "LoopInstructions": 13,
+        "LoopBranches": 4,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 2,
+        "LoopStalls": 2,
+        "LoopBodies": [
+          {
+            "Instructions": 13,
+            "Branches": 4,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 2,
+            "Stalls": 2,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-identity",
+      "name": "map64_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 96,
+      "assembly": "map64_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\nloop_6:\n  cmp w4, w3\n  b.hs done_7\n  cmp w4, w3\n  b.hs trap_3\n  ldr d16, [x2, w4, uxtw #3]\n  fmul d16, d16, d8\n  fadd d16, d16, d9\n  cmp w4, w1\n  b.hs trap_3\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  b loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\ntrap_3:\n  brk #1\n}\n",
+      "verdict_message": "asm unit map64_strict: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 24,
+        "Branches": 6,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 2,
+        "Loops": 1,
+        "Stalls": 7,
+        "LoopInstructions": 12,
+        "LoopBranches": 4,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 2,
+        "LoopStalls": 7,
+        "LoopBodies": [
+          {
+            "Instructions": 12,
+            "Branches": 4,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 2,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-identity",
+      "name": "map64_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 100,
+      "assembly": "map64_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\nloop_6:\n  cmp w4, w3\n  b.hs done_7\n  cmp w4, w3\n  b.hs trap_3\n  ldr d16, [x2, w4, uxtw #3]\n  fmov d17, d8\n  fmov d18, d9\n  fmadd d16, d16, d17, d18\n  cmp w4, w1\n  b.hs trap_3\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  b loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\ntrap_3:\n  brk #1\n}\n",
+      "verdict_message": "asm unit map64_fused: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 25,
+        "Branches": 6,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 2,
+        "Loops": 1,
+        "Stalls": 2,
+        "LoopInstructions": 13,
+        "LoopBranches": 4,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 2,
+        "LoopStalls": 2,
+        "LoopBodies": [
+          {
+            "Instructions": 13,
+            "Branches": 4,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 2,
+            "Stalls": 2,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-no-maps",
+      "name": "map32_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 80,
+      "assembly": "map32_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\n  cmp w4, w3\n  b.hs done_7\nloop_6:\n  ldr s16, [x2, w4, uxtw #2]\n  fmul s16, s16, s0\n  fadd s16, s16, s1\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_strict: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 20,
+        "Branches": 4,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 1,
+        "Stalls": 11,
+        "LoopInstructions": 7,
+        "LoopBranches": 1,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 0,
+        "LoopStalls": 11,
+        "LoopBodies": [
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-no-maps",
+      "name": "map32_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 76,
+      "assembly": "map32_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\n  cmp w4, w3\n  b.hs done_7\nloop_6:\n  ldr s16, [x2, w4, uxtw #2]\n  fmadd s16, s16, s0, s1\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_fused: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 19,
+        "Branches": 4,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 1,
+        "Stalls": 7,
+        "LoopInstructions": 6,
+        "LoopBranches": 1,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 0,
+        "LoopStalls": 7,
+        "LoopBodies": [
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-no-maps",
+      "name": "map64_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 80,
+      "assembly": "map64_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\n  cmp w4, w3\n  b.hs done_7\nloop_6:\n  ldr d16, [x2, w4, uxtw #3]\n  fmul d16, d16, d0\n  fadd d16, d16, d1\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_strict: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 20,
+        "Branches": 4,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 1,
+        "Stalls": 11,
+        "LoopInstructions": 7,
+        "LoopBranches": 1,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 0,
+        "LoopStalls": 11,
+        "LoopBodies": [
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-no-maps",
+      "name": "map64_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 76,
+      "assembly": "map64_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  mov w4, wzr\n  cmp w4, w3\n  b.hs done_7\nloop_6:\n  ldr d16, [x2, w4, uxtw #3]\n  fmadd d16, d16, d0, d1\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_6\ndone_7:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_fused: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively (i↔r4) (loop 1 under the invariant (loop1.i ls len(a))) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 19,
+        "Branches": 4,
+        "Loads": 2,
+        "Stores": 2,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 1,
+        "Stalls": 7,
+        "LoopInstructions": 6,
+        "LoopBranches": 1,
+        "LoopLoads": 1,
+        "LoopStores": 1,
+        "LoopGuards": 0,
+        "LoopStalls": 7,
+        "LoopBodies": [
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": null
+    },
+    {
+      "backend": "native-one-vector",
+      "name": "map32_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 160,
+      "assembly": "map32_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov s16, s0\n  fmov s17, s1\n  dup v10.4s, v16.s[0]\n  dup v11.4s, v17.s[0]\n  mov w4, wzr\n  sub w15, w3, #4\n  cmp w3, #4\n  b.lo done_7\n  cmp w4, w15\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #2\n  add w4, w4, #4\n  fmul v16.4s, v16.4s, v10.4s\n  fadd v16.4s, v16.4s, v11.4s\n  str q16, [x9]\n  cmp w4, w15\n  b.ls loop_6\ndone_7:\n  cmp w4, w3\n  b.hs done_9\nloop_8:\n  ldr s16, [x2, w4, uxtw #2]\n  fmul s16, s16, s0\n  fadd s16, s16, s1\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_8\ndone_9:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_strict: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively (i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 40,
+        "Branches": 7,
+        "Loads": 4,
+        "Stores": 4,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 2,
+        "Stalls": 17,
+        "LoopInstructions": 16,
+        "LoopBranches": 2,
+        "LoopLoads": 2,
+        "LoopStores": 2,
+        "LoopGuards": 0,
+        "LoopStalls": 17,
+        "LoopBodies": [
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 6,
+            "Stride": 4,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 3,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 3
+        }
+      ]
+    },
+    {
+      "backend": "native-one-vector",
+      "name": "map32_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 156,
+      "assembly": "map32_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov s16, s0\n  fmov s17, s1\n  dup v10.4s, v16.s[0]\n  dup v11.4s, v17.s[0]\n  mov w4, wzr\n  sub w15, w3, #4\n  cmp w3, #4\n  b.lo done_7\n  cmp w4, w15\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #2\n  add w4, w4, #4\n  fmla v17.4s, v16.4s, v10.4s\n  str q17, [x9]\n  cmp w4, w15\n  b.ls loop_6\ndone_7:\n  cmp w4, w3\n  b.hs done_9\nloop_8:\n  ldr s17, [x2, w4, uxtw #2]\n  fmadd s17, s17, s0, s1\n  str s17, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_8\ndone_9:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_fused: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively (i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 39,
+        "Branches": 7,
+        "Loads": 4,
+        "Stores": 4,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 2,
+        "Stalls": 9,
+        "LoopInstructions": 15,
+        "LoopBranches": 2,
+        "LoopLoads": 2,
+        "LoopStores": 2,
+        "LoopGuards": 0,
+        "LoopStalls": 9,
+        "LoopBodies": [
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 2,
+            "Stride": 4,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 3,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 12
+        }
+      ]
+    },
+    {
+      "backend": "native-one-vector",
+      "name": "map64_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 160,
+      "assembly": "map64_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov d16, d0\n  fmov d17, d1\n  dup v10.2d, v16.d[0]\n  dup v11.2d, v17.d[0]\n  mov w4, wzr\n  sub w15, w3, #2\n  cmp w3, #2\n  b.lo done_7\n  cmp w4, w15\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #3\n  add w4, w4, #2\n  fmul v16.2d, v16.2d, v10.2d\n  fadd v16.2d, v16.2d, v11.2d\n  str q16, [x9]\n  cmp w4, w15\n  b.ls loop_6\ndone_7:\n  cmp w4, w3\n  b.hs done_9\nloop_8:\n  ldr d16, [x2, w4, uxtw #3]\n  fmul d16, d16, d0\n  fadd d16, d16, d1\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_8\ndone_9:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_strict: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively (i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 40,
+        "Branches": 7,
+        "Loads": 4,
+        "Stores": 4,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 2,
+        "Stalls": 17,
+        "LoopInstructions": 16,
+        "LoopBranches": 2,
+        "LoopLoads": 2,
+        "LoopStores": 2,
+        "LoopGuards": 0,
+        "LoopStalls": 17,
+        "LoopBodies": [
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 6,
+            "Stride": 2,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 21
+        }
+      ]
+    },
+    {
+      "backend": "native-one-vector",
+      "name": "map64_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 156,
+      "assembly": "map64_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov d16, d0\n  fmov d17, d1\n  dup v10.2d, v16.d[0]\n  dup v11.2d, v17.d[0]\n  mov w4, wzr\n  sub w15, w3, #2\n  cmp w3, #2\n  b.lo done_7\n  cmp w4, w15\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #3\n  add w4, w4, #2\n  fmla v17.2d, v16.2d, v10.2d\n  str q17, [x9]\n  cmp w4, w15\n  b.ls loop_6\ndone_7:\n  cmp w4, w3\n  b.hs done_9\nloop_8:\n  ldr d17, [x2, w4, uxtw #3]\n  fmadd d17, d17, d0, d1\n  str d17, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_8\ndone_9:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_fused: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively (i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 39,
+        "Branches": 7,
+        "Loads": 4,
+        "Stores": 4,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 2,
+        "Stalls": 9,
+        "LoopInstructions": 15,
+        "LoopBranches": 2,
+        "LoopLoads": 2,
+        "LoopStores": 2,
+        "LoopGuards": 0,
+        "LoopStalls": 9,
+        "LoopBodies": [
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 2,
+            "Stride": 2,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 30
+        }
+      ]
+    },
+    {
+      "backend": "native-optimized",
+      "name": "map32_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 248,
+      "assembly": "map32_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov s16, s0\n  fmov s17, s1\n  dup v10.4s, v16.s[0]\n  dup v11.4s, v17.s[0]\n  mov w4, wzr\n  sub w14, w3, #8\n  cmp w3, #8\n  b.lo done_7\n  cmp w4, w14\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #2\n  fmul v16.4s, v16.4s, v10.4s\n  fadd v16.4s, v16.4s, v11.4s\n  str q16, [x9]\n  add w9, w4, #4\n  add x10, x2, w9, uxtw #2\n  ldr q16, [x10]\n  add w10, w4, #4\n  add x9, x0, w10, uxtw #2\n  add w4, w4, #8\n  fmul v16.4s, v16.4s, v10.4s\n  fadd v16.4s, v16.4s, v11.4s\n  str q16, [x9]\n  cmp w4, w14\n  b.ls loop_6\ndone_7:\n  sub w15, w3, #4\n  cmp w3, #4\n  b.lo done_9\n  cmp w4, w15\n  b.hi done_9\nloop_8:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #2\n  add w4, w4, #4\n  fmul v16.4s, v16.4s, v10.4s\n  fadd v16.4s, v16.4s, v11.4s\n  str q16, [x9]\n  cmp w4, w15\n  b.ls loop_8\ndone_9:\n  cmp w4, w3\n  b.hs done_11\nloop_10:\n  ldr s16, [x2, w4, uxtw #2]\n  fmul s16, s16, s0\n  fadd s16, s16, s1\n  str s16, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_10\ndone_11:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_strict: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively (i↔r4, i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 62,
+        "Branches": 10,
+        "Loads": 6,
+        "Stores": 6,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 3,
+        "Stalls": 30,
+        "LoopInstructions": 33,
+        "LoopBranches": 3,
+        "LoopLoads": 4,
+        "LoopStores": 4,
+        "LoopGuards": 0,
+        "LoopStalls": 30,
+        "LoopBodies": [
+          {
+            "Instructions": 17,
+            "Branches": 1,
+            "Loads": 2,
+            "Stores": 2,
+            "Guards": 0,
+            "Stalls": 13,
+            "Stride": 8,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 6,
+            "Stride": 4,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 3,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 3
+        },
+        {
+          "Rewrite": "map unrolling",
+          "Law": "Oak.Map.grouped_eq",
+          "Decided": false,
+          "Detail": "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder",
+          "Line": 3
+        }
+      ]
+    },
+    {
+      "backend": "native-optimized",
+      "name": "map32_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 244,
+      "assembly": "map32_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind s0 = k\n  bind s1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov s8, s0\n  fmov s9, s1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov s16, s0\n  fmov s17, s1\n  dup v10.4s, v16.s[0]\n  dup v11.4s, v17.s[0]\n  mov w4, wzr\n  sub w14, w3, #8\n  cmp w3, #8\n  b.lo done_7\n  cmp w4, w14\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #2\n  fmla v17.4s, v16.4s, v10.4s\n  orr v16.16b, v11.16b, v11.16b\n  str q17, [x9]\n  add w9, w4, #4\n  add x10, x2, w9, uxtw #2\n  ldr q17, [x10]\n  add w10, w4, #4\n  add x9, x0, w10, uxtw #2\n  add w4, w4, #8\n  fmla v16.4s, v17.4s, v10.4s\n  str q16, [x9]\n  cmp w4, w14\n  b.ls loop_6\ndone_7:\n  sub w15, w3, #4\n  cmp w3, #4\n  b.lo done_9\n  cmp w4, w15\n  b.hi done_9\nloop_8:\n  add x10, x2, w4, uxtw #2\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #2\n  add w4, w4, #4\n  fmla v17.4s, v16.4s, v10.4s\n  str q17, [x9]\n  cmp w4, w15\n  b.ls loop_8\ndone_9:\n  cmp w4, w3\n  b.hs done_11\nloop_10:\n  ldr s17, [x2, w4, uxtw #2]\n  fmadd s17, s17, s0, s1\n  str s17, [x0, w4, uxtw #2]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_10\ndone_11:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map32_fused: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively (i↔r4, i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 61,
+        "Branches": 10,
+        "Loads": 6,
+        "Stores": 6,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 3,
+        "Stalls": 13,
+        "LoopInstructions": 32,
+        "LoopBranches": 3,
+        "LoopLoads": 4,
+        "LoopStores": 4,
+        "LoopGuards": 0,
+        "LoopStalls": 13,
+        "LoopBodies": [
+          {
+            "Instructions": 17,
+            "Branches": 1,
+            "Loads": 2,
+            "Stores": 2,
+            "Guards": 0,
+            "Stalls": 4,
+            "Stride": 8,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 2,
+            "Stride": 4,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 3,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 12
+        },
+        {
+          "Rewrite": "map unrolling",
+          "Law": "Oak.Map.grouped_eq",
+          "Decided": false,
+          "Detail": "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder",
+          "Line": 12
+        }
+      ]
+    },
+    {
+      "backend": "native-optimized",
+      "name": "map64_strict",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 248,
+      "assembly": "map64_strict = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov d16, d0\n  fmov d17, d1\n  dup v10.2d, v16.d[0]\n  dup v11.2d, v17.d[0]\n  mov w4, wzr\n  sub w14, w3, #4\n  cmp w3, #4\n  b.lo done_7\n  cmp w4, w14\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #3\n  fmul v16.2d, v16.2d, v10.2d\n  fadd v16.2d, v16.2d, v11.2d\n  str q16, [x9]\n  add w9, w4, #2\n  add x10, x2, w9, uxtw #3\n  ldr q16, [x10]\n  add w10, w4, #2\n  add x9, x0, w10, uxtw #3\n  add w4, w4, #4\n  fmul v16.2d, v16.2d, v10.2d\n  fadd v16.2d, v16.2d, v11.2d\n  str q16, [x9]\n  cmp w4, w14\n  b.ls loop_6\ndone_7:\n  sub w15, w3, #2\n  cmp w3, #2\n  b.lo done_9\n  cmp w4, w15\n  b.hi done_9\nloop_8:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  add x9, x0, w4, uxtw #3\n  add w4, w4, #2\n  fmul v16.2d, v16.2d, v10.2d\n  fadd v16.2d, v16.2d, v11.2d\n  str q16, [x9]\n  cmp w4, w15\n  b.ls loop_8\ndone_9:\n  cmp w4, w3\n  b.hs done_11\nloop_10:\n  ldr d16, [x2, w4, uxtw #3]\n  fmul d16, d16, d0\n  fadd d16, d16, d1\n  str d16, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_10\ndone_11:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_strict: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively (i↔r4, i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 62,
+        "Branches": 10,
+        "Loads": 6,
+        "Stores": 6,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 3,
+        "Stalls": 30,
+        "LoopInstructions": 33,
+        "LoopBranches": 3,
+        "LoopLoads": 4,
+        "LoopStores": 4,
+        "LoopGuards": 0,
+        "LoopStalls": 30,
+        "LoopBodies": [
+          {
+            "Instructions": 17,
+            "Branches": 1,
+            "Loads": 2,
+            "Stores": 2,
+            "Guards": 0,
+            "Stalls": 13,
+            "Stride": 4,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 6,
+            "Stride": 2,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 7,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 11,
+            "Stride": 1,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 21
+        },
+        {
+          "Rewrite": "map unrolling",
+          "Law": "Oak.Map.grouped_eq",
+          "Decided": false,
+          "Detail": "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder",
+          "Line": 21
+        }
+      ]
+    },
+    {
+      "backend": "native-optimized",
+      "name": "map64_fused",
+      "verdict": "proven",
+      "frame_bytes": 144,
+      "code_bytes": 244,
+      "assembly": "map64_fused = {\n  bind x0, w1 = dst\n  bind x2, w3 = a\n  bind d0 = k\n  bind d1 = c\n  clobber x9, x10, x11, x12, x13, x14, x15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, d29, d30, d31, d8, d9, d10, d11, x4\n  frame 144\n  sub sp, sp, #144\n  stp d8, d9, [sp, #80]\n  stp d10, d11, [sp, #96]\n  fmov d8, d0\n  fmov d9, d1\nhead_1:\n  cmp w1, w3\n  b.ne else_4\n  fmov d16, d0\n  fmov d17, d1\n  dup v10.2d, v16.d[0]\n  dup v11.2d, v17.d[0]\n  mov w4, wzr\n  sub w14, w3, #4\n  cmp w3, #4\n  b.lo done_7\n  cmp w4, w14\n  b.hi done_7\nloop_6:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #3\n  fmla v17.2d, v16.2d, v10.2d\n  orr v16.16b, v11.16b, v11.16b\n  str q17, [x9]\n  add w9, w4, #2\n  add x10, x2, w9, uxtw #3\n  ldr q17, [x10]\n  add w10, w4, #2\n  add x9, x0, w10, uxtw #3\n  add w4, w4, #4\n  fmla v16.2d, v17.2d, v10.2d\n  str q16, [x9]\n  cmp w4, w14\n  b.ls loop_6\ndone_7:\n  sub w15, w3, #2\n  cmp w3, #2\n  b.lo done_9\n  cmp w4, w15\n  b.hi done_9\nloop_8:\n  add x10, x2, w4, uxtw #3\n  ldr q16, [x10]\n  orr v17.16b, v11.16b, v11.16b\n  add x9, x0, w4, uxtw #3\n  add w4, w4, #2\n  fmla v17.2d, v16.2d, v10.2d\n  str q17, [x9]\n  cmp w4, w15\n  b.ls loop_8\ndone_9:\n  cmp w4, w3\n  b.hs done_11\nloop_10:\n  ldr d17, [x2, w4, uxtw #3]\n  fmadd d17, d17, d0, d1\n  str d17, [x0, w4, uxtw #3]\n  add w4, w4, #1\n  cmp w4, w3\n  b.lo loop_10\ndone_11:\n  b endif_5\nelse_4:\nendif_5:\nret_2:\n  ldp d8, d9, [sp, #80]\n  ldp d10, d11, [sp, #96]\n  add sp, sp, #144\n  ret\n}\n",
+      "verdict_message": "asm unit map64_fused: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively (i↔r4, i↔r4, i↔r4) and the span memory it writes (dst)",
+      "metrics": {
+        "Instructions": 61,
+        "Branches": 10,
+        "Loads": 6,
+        "Stores": 6,
+        "Calls": 0,
+        "Multiplies": 0,
+        "Divides": 0,
+        "Guards": 0,
+        "Loops": 3,
+        "Stalls": 13,
+        "LoopInstructions": 32,
+        "LoopBranches": 3,
+        "LoopLoads": 4,
+        "LoopStores": 4,
+        "LoopGuards": 0,
+        "LoopStalls": 13,
+        "LoopBodies": [
+          {
+            "Instructions": 17,
+            "Branches": 1,
+            "Loads": 2,
+            "Stores": 2,
+            "Guards": 0,
+            "Stalls": 4,
+            "Stride": 4,
+            "MaxTrips": 0,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 9,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 2,
+            "Stride": 2,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          },
+          {
+            "Instructions": 6,
+            "Branches": 1,
+            "Loads": 1,
+            "Stores": 1,
+            "Guards": 0,
+            "Stalls": 7,
+            "Stride": 1,
+            "MaxTrips": 1,
+            "Depth": 0,
+            "Outer": 0
+          }
+        ]
+      },
+      "rewrites": [
+        {
+          "Rewrite": "map vectorization",
+          "Law": "Oak.Map.blocked_eq",
+          "Decided": false,
+          "Detail": "each block of a vector's lanes mapped as one vector load, the lane-wise operations, and one vector store, the remainder one element at a time; the simd operations are lane-wise by their specification, so the blocked map is the element-wise map",
+          "Line": 30
+        },
+        {
+          "Rewrite": "map unrolling",
+          "Law": "Oak.Map.grouped_eq",
+          "Decided": false,
+          "Detail": "two consecutive vector blocks per trip, preserving each lane's operations and element order; single-vector cleanup and the unchanged scalar remainder",
+          "Line": 30
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 5845000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7963180541992188
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 5485000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7472719464983258
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 4010000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 5071000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6908689226422992
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 4813000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6557192121233258
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 5311000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7235663277762276
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 5248000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7149832589285714
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 4849000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6606238228934151
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 4012000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5465916224888393
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3611000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.49195970807756695
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 3098000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.42206900460379465
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3062000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.41716439383370535
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 3292000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.44849940708705355
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3127000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4260199410574777
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 3403000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46362195696149555
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3393000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4622595650809152
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 0,
+      "elapsed_ns": 3423000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.46634674072265625
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 0,
+      "elapsed_ns": 3357000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4573549543108259
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 2567000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3497259957449777
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3662000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4989079066685268
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 3657000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4982267107282366
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 4802000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6542205810546875
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 5191000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7072176252092633
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 5244000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7144383021763393
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 4884000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6653921944754464
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 4010000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 5212000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7100786481584821
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3608000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.49155099051339285
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 5251000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7153919764927456
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3394000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4623958042689732
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 4476000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6098066057477679
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 5522000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7523127964564732
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3418000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46566554478236605
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 5302000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7223401750837054
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 6143000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.8369173322405133
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 1,
+      "elapsed_ns": 6262000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.8531297956194196
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 1,
+      "elapsed_ns": 3122000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4253387451171875
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 4460000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6076267787388393
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 4460000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6076267787388393
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 6689000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.9113039289202008
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 5351000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7290158952985492
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 5352000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7291521344866071
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 7456000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 1.0157993861607142
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 4460000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6076267787388393
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 4443000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6053107125418526
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 4100000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5585806710379464
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 6690000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.9114401681082589
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 5284000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7198878696986607
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 3745000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5102157592773438
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 5076000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6915501185825893
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 4437000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6044932774135044
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 3525000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4802431379045759
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 4342000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5915505545479911
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 10369000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 1.4126641409737724
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 6046000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.8237021309988839
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 2,
+      "elapsed_ns": 2808000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3825596400669643
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 2,
+      "elapsed_ns": 2807000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.38242340087890625
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 4918000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6700243268694196
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 8107000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 1.1044910975864954
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 8504000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 1.1585780552455358
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 5262000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7168906075613839
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 5226000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7119859967912946
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 4010000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 3613000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.49223218645368305
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 3614000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.49236842564174105
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 3610000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.49182346888950895
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 3395000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46253204345703125
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 3361000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.45789991106305805
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 3532000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.48119681222098215
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 3399000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4630770002092634
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 3400000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46321323939732145
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 5511000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7508141653878349
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 3409000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.46443939208984375
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 3677000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5009514944893974
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 5213000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7102148873465401
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 3,
+      "elapsed_ns": 2808000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3825596400669643
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 3,
+      "elapsed_ns": 4435000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6042207990373883
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 6018000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.8198874337332589
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 5317000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7243837629045758
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 4902000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6678444998604911
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 7191000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.9796960013253349
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 4020000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5476815359933036
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 4057000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5527223859514508
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 3412000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46484810965401785
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 3359000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.45762743268694195
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 3515000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.47888074602399555
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 3476000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.47356741768973215
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 3402000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4634857177734375
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 3394000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4623958042689732
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 3427000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4668916974748884
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 3366000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4585811070033482
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 4755000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6478173392159599
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 2564000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.34931727818080355
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 4,
+      "elapsed_ns": 4010000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5463191441127232
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 4,
+      "elapsed_ns": 4758000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6482260567801339
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 4835000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6587164742606026
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 4795000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6532669067382812
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 4792000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6528581891741071
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3660000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4986354282924107
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3292000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.44849940708705355
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3292000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.44849940708705355
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3292000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.44849940708705355
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 5551000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7562637329101562
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3067000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.41784558977399555
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3295000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4489081246512277
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3114000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4242488316127232
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3115000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.42438507080078125
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3096000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.42179652622767855
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3122000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4253387451171875
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 3070000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41825430733816965
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 3105000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4230226789202009
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 2560000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.34877232142857145
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 6190000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.8433205740792411
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 5,
+      "elapsed_ns": 5132000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6991795131138393
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 5,
+      "elapsed_ns": 4812000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6555829729352679
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 6014000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.8193424769810268
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 7362000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 1.002992902483259
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 4058000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5528586251395089
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3610000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.49182346888950895
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3611000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.49195970807756695
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 5314000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.7239750453404018
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3402000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4634857177734375
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3370000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.45912606375558035
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3609000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4916872297014509
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3118000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.42479378836495535
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3108000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.423431396484375
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3102000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4226139613560268
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3124000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.42561122349330355
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3223000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4390989031110491
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3695000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.503403799874442
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3662000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4989079066685268
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 3691000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5028588431222099
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 3666000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.49945286342075895
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 6,
+      "elapsed_ns": 5497000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7489068167550224
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 6,
+      "elapsed_ns": 5488000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.7476806640625
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 4390000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5980900355747768
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 3658000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.49836294991629465
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 3359000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.45762743268694195
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 4759000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.648362295968192
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 3292000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.44849940708705355
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 3390000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.46185084751674105
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 2840000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.38691929408482145
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 3065000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41757311139787945
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 3062000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41716439383370535
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 2881000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3925051007952009
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 2874000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.39155142647879465
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 2878000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.3920963832310268
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 2839000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.3867830548967634
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 3393000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4622595650809152
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 3391000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4619870867047991
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 3393000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4622595650809152
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 3400000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.46321323939732145
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 4991000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6799697875976562
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 7,
+      "elapsed_ns": 4460000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.6076267787388393
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 7,
+      "elapsed_ns": 4070000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5544934953962054
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 3407000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4641669137137277
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 32,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 3066000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.4177093505859375
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 3051000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41566576276506695
+    },
+    {
+      "backend": "native-no-maps",
+      "width": 64,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 3056000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41634695870535715
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 2871000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.39114270891462055
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 32,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 2861000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3897803170340402
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 3053000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.41593824114118305
+    },
+    {
+      "backend": "native-one-vector",
+      "width": 64,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 3235000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.44073377336774555
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 2876000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3918239048549107
+    },
+    {
+      "backend": "native-optimized",
+      "width": 32,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 2867000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3905977521623884
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 3424000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4664829799107143
+    },
+    {
+      "backend": "native-optimized",
+      "width": 64,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 3162000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.43078831263950895
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 2562000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3490447998046875
+    },
+    {
+      "backend": "c",
+      "width": 32,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 2565000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.3494535173688616
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 9501000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 1.2944085257393974
+    },
+    {
+      "backend": "c",
+      "width": 64,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 3660000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.4986354282924107
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 4404000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5999973842075893
+    },
+    {
+      "backend": "native-identity",
+      "width": 32,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 4389000,
+      "bits": "0bf6ebbf44d1bdb7",
+      "ns_per_element": 0.5979537963867188
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "strict",
+      "round": 8,
+      "elapsed_ns": 4840000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.6593976702008929
+    },
+    {
+      "backend": "native-identity",
+      "width": 64,
+      "form": "fused",
+      "round": 8,
+      "elapsed_ns": 4390000,
+      "bits": "5f981b30a6866486",
+      "ns_per_element": 0.5980900355747768
+    }
+  ]
+}

@@ -594,7 +594,10 @@ literals (`0x` mantissa with `p` binary exponent, C99 §6.4.4.2) are exact
 when representable and otherwise correctly rounded; a hexadecimal literal
 needs its `p` exponent, since a bare `0x1.8` would be ambiguous with
 member access. A literal never has a sign of its own; `-1.5` is unary minus
-applied to `1.5`.
+applied to `1.5` — and a constructor sees through that minus: `f32(-0.5)`
+types the negated literal at the constructor's width exactly as `f32(0.5)`
+does (§11.3.4), where `f32(-x)` for an `f64` variable `x` still spells its
+rounding.
 
 Like integer literals (`25-type-inference.md` §3a), a floating-point literal
 has no type of its own and takes the floating-point type its context

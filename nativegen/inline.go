@@ -315,6 +315,19 @@ func (in *inliner) statements(stmts []ast.Statement) []ast.Statement {
 			s.Value = in.expr(s.Value)
 			out = append(out, s)
 		case *ast.AssignmentStatement:
+			if call, isCall := s.Value.(*ast.InvocationExpression); isCall && s.Name != nil {
+				if ident, isIdent := call.Function.(*ast.Identifier); isIdent {
+					if callee, ok := in.inlinable(ident.Value); ok && len(callee.Parameters) == len(call.Arguments) {
+						if at, inPlace := inPlaceParameter(callee, call, s.Name.Value); inPlace {
+							for i := range call.Arguments {
+								call.Arguments[i] = in.expr(call.Arguments[i])
+							}
+							out = append(out, in.expandInPlace(callee, call, at, s.Name.Value)...)
+							continue
+						}
+					}
+				}
+			}
 			s.Value = in.expr(s.Value)
 			out = append(out, s)
 		case *ast.IndexAssignmentStatement:
@@ -378,6 +391,17 @@ func (in *inliner) expand(callee *ast.FunctionStatement, call *ast.InvocationExp
 		readOnly := !isAggregateSyntax(p.Type) || (!recordParamTouched(callee, p.Name.Value) && !writableSpanParam(callee))
 		if arg, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !assigned[p.Name.Value] && readOnly {
 			rename[p.Name.Value] = arg.Value
+			continue
+		}
+		if element, isElement := in.ownedElementRead(call.Arguments[i]); isElement && isScalarSyntax(p.Type) && !assigned[p.Name.Value] && !writableSpanParam(callee) {
+			// A constant-index read of the caller's owned array (`v[0]`)
+			// to a scalar parameter the callee never assigns, with no
+			// writable span through which the callee could reach the
+			// array: the read stands for the parameter at every use
+			// (Oak.Inlining.eval_subst), no copy — the array is the
+			// caller's, which nothing in the callee names or addresses.
+			rename[p.Name.Value] = prefix + p.Name.Value
+			substitute[prefix+p.Name.Value] = element
 			continue
 		}
 		if root, isPath := fieldPath(call.Arguments[i]); isPath && isAggregateSyntax(p.Type) && readOnly && !mentionsIdentifier(callee.Body, root) {
@@ -565,4 +589,173 @@ func cloneValue(v reflect.Value) reflect.Value {
 		return out
 	}
 	return v
+}
+
+// ownedElementRead recognizes an argument that reads an element of the
+// root function's owned array — a local or parameter of type `[N]T` — at
+// a constant index: the expression to substitute for the parameter.
+func (in *inliner) ownedElementRead(arg ast.Expression) (ast.Expression, bool) {
+	index, isIndex := arg.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return nil, false
+	}
+	base, isIdent := index.Left.(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	if _, isConst := constantValue(index.Index); !isConst {
+		return nil, false
+	}
+	root := in.functions[in.root]
+	if root == nil {
+		return nil, false
+	}
+	owned := func(typ ast.Expression) bool {
+		return isAggregateSyntax(typ) && !isSpanSyntax(typ) && isArraySyntax(typ)
+	}
+	for _, p := range root.Parameters {
+		if p != nil && p.Name != nil && p.Name.Value == base.Value {
+			if owned(p.Type) {
+				return arg, true
+			}
+			return nil, false
+		}
+	}
+	found := false
+	walk(root.Body, func(n ast.Node) {
+		if d, isDecl := n.(*ast.VariableDeclaration); isDecl && d.Name != nil && d.Name.Value == base.Value && d.Type != nil && owned(d.Type) {
+			found = true
+		}
+	})
+	return arg, found
+}
+
+// isArraySyntax reports an owned array type `[N]T`, N a literal.
+func isArraySyntax(typ ast.Expression) bool {
+	index, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
+	}
+	n, isLit := index.Index.(*ast.IntegerLiteral)
+	return isLit && n.Value > 0
+}
+
+// inPlaceParameter recognizes `v = f(…, v, …)` where f copies that
+// parameter into the local it returns and never reads it again:
+//
+//	f: (state: T, …): T { next: T = state; …; next }
+//
+// The parameter is mentioned exactly once, as the whole initializer of
+// f's return-slot local (returnSlotLocal); no other argument mentions v.
+// Expanded in place (expandInPlace), the call's copy in and copy out are
+// identities on v and go: the body runs on the caller's variable itself.
+// The index of that parameter is returned.
+func inPlaceParameter(callee *ast.FunctionStatement, call *ast.InvocationExpression, target string) (int, bool) {
+	slot := returnSlotLocal(callee)
+	if slot == "" {
+		return 0, false
+	}
+	at := -1
+	for i, arg := range call.Arguments {
+		if isName(arg, target) {
+			if at >= 0 {
+				return 0, false
+			}
+			at = i
+		} else if mentionsName(arg, target) {
+			return 0, false
+		}
+	}
+	if at < 0 {
+		return 0, false
+	}
+	param := callee.Parameters[at].Name.Value
+	if !isAggregateSyntax(callee.Parameters[at].Type) || callee.Parameters[at].Type.String() != callee.ReturnType.String() {
+		return 0, false
+	}
+	mentions := 0
+	walk(callee.Body, func(n ast.Node) {
+		if id, isId := n.(*ast.Identifier); isId && id.Value == param {
+			mentions++
+		}
+	})
+	block, isBlock := callee.Body.(*ast.BlockExpression)
+	if mentions != 1 || !isBlock || block.Block == nil {
+		return 0, false
+	}
+	for _, stmt := range block.Block.Statements {
+		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == slot {
+			return at, isName(decl.Value, param)
+		}
+	}
+	return 0, false
+}
+
+// expandInPlace splices `target = f(args)` as f's body run on target: the
+// other parameters bind as expand binds them, the return-slot local is
+// renamed to target and its declaration from the parameter dropped (an
+// identity copy), and the trailing result expression dropped (an
+// identity assignment). What remains reads and writes target where f read
+// and wrote its copy — the same values, since f never read the parameter
+// again (inPlaceParameter).
+func (in *inliner) expandInPlace(callee *ast.FunctionStatement, call *ast.InvocationExpression, at int, target string) []ast.Statement {
+	in.counter++
+	prefix := fmt.Sprintf("inl%d_", in.counter)
+	body := cloneNode(callee.Body).(*ast.BlockExpression)
+	slot := returnSlotLocal(callee)
+	assigned := map[string]bool{}
+	walk(body, func(n ast.Node) {
+		if a, isAssign := n.(*ast.AssignmentStatement); isAssign && a.Name != nil {
+			assigned[a.Name.Value] = true
+		}
+	})
+	rename := map[string]string{slot: target}
+	substitute := map[string]ast.Expression{}
+	var declared []*ast.VariableDeclaration
+	for i, p := range callee.Parameters {
+		if i == at {
+			continue // read once, by the dropped declaration
+		}
+		readOnly := !isAggregateSyntax(p.Type) || (!recordParamTouched(callee, p.Name.Value) && !writableSpanParam(callee))
+		if arg, isIdent := call.Arguments[i].(*ast.Identifier); isIdent && !assigned[p.Name.Value] && readOnly {
+			rename[p.Name.Value] = arg.Value
+			continue
+		}
+		if element, isElement := in.ownedElementRead(call.Arguments[i]); isElement && isScalarSyntax(p.Type) && !assigned[p.Name.Value] && !writableSpanParam(callee) {
+			rename[p.Name.Value] = prefix + p.Name.Value
+			substitute[prefix+p.Name.Value] = element
+			continue
+		}
+		rename[p.Name.Value] = prefix + p.Name.Value
+		declared = append(declared, &ast.VariableDeclaration{Token: call.Token, Name: &ast.Identifier{Token: p.Name.Token, Value: prefix + p.Name.Value}, Type: cloneNode(p.Type).(ast.Expression), Value: call.Arguments[i]})
+	}
+	walk(body, func(n ast.Node) {
+		if d, isDecl := n.(*ast.VariableDeclaration); isDecl && d.Name != nil && d.Name.Value != slot {
+			rename[d.Name.Value] = prefix + d.Name.Value
+		}
+	})
+	renameBound(body, rename)
+	if len(substitute) > 0 {
+		substituteBound(body, substitute)
+	}
+	var out []ast.Statement
+	for _, d := range declared {
+		out = append(out, d)
+	}
+	in.added += len(declared)
+	in.stack = append(in.stack, callee.Name.Value)
+	stmts := body.Block.Statements
+	stmts = stmts[:len(stmts)-1] // the trailing `next`, now `target = target`
+	var kept []ast.Statement
+	for _, stmt := range stmts {
+		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == target {
+			continue // `next: T = state`, now an identity copy
+		}
+		kept = append(kept, stmt)
+	}
+	kept = in.statements(kept)
+	out = append(out, kept...)
+	in.added += len(kept)
+	in.stack = in.stack[:len(in.stack)-1]
+	return out
 }

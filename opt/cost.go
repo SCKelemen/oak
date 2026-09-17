@@ -45,9 +45,9 @@ type Metrics struct {
 // LoopMetrics are one loop's counts and what the body's shape says of its
 // trips: Stride is how many elements one trip advances the loop's index
 // (1 when unknown), read from the index register's increment, and
-// MaxTrips bounds the trips when the shape does (a remainder loop after a
-// strided main loop over the same index runs fewer than the stride), 0
-// when unbounded. Both are the cost model's hints, not facts.
+// MaxTrips estimates a trip bound from the recognized shape (including a
+// smaller-vector cleanup after a wider main loop), 0 when unknown. It counts
+// trips, not elements. Both are cost hints, not proof facts.
 type LoopMetrics struct {
 	Instructions int
 	Branches     int
@@ -147,7 +147,7 @@ type CostModel interface {
 }
 
 // TargetCosts is the first target-cost model: static per-class weights,
-// LoopWeight is how many trips a data-dependent loop is assumed to run,
+// LoopWeight is the assumed scalar-iteration/element budget of a dynamic loop,
 // and it decides how a bounded remainder loop weighs against the main
 // loop it follows: at 32 trips a fifteen-trip tail is half the work, so a
 // main loop strided sixteen ways could never pay for its tail. Calibrated
@@ -236,14 +236,16 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 	factors := make([]float64, len(m.LoopBodies))
 	for k, loop := range m.LoopBodies {
 		trips := weight
+		// Convert the default element budget to trips before considering an
+		// explicit trip bound. MaxTrips already includes the loop's stride.
+		if loop.Stride > 1 {
+			trips /= float64(loop.Stride)
+		}
 		if loop.MaxTrips > 0 && float64(loop.MaxTrips) < trips {
 			// A bounded loop runs anywhere from none to its bound: its
 			// expected trips, so a remainder loop after an unrolled main
 			// loop is charged its share and not its worst case.
 			trips = float64(loop.MaxTrips) / 2
-		}
-		if loop.Stride > 1 {
-			trips /= float64(loop.Stride)
 		}
 		factors[k] = trips
 		if loop.Outer > 0 && loop.Outer-1 < k {

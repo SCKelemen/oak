@@ -59,9 +59,13 @@ main: (): i32 {
 // nativeShapeModel fixes the target whose machine shape these tests inspect.
 // New defaults to the host, which would turn an AArch64 shape test into an
 // unsupported amd64 compilation on the Linux CI runners.
-func nativeShapeModel(name, text string) (*SemanticModel, error) {
+func nativeShapeCompilation(name, text string) Compilation {
 	tgt := target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}
-	return New().WithSource(name, text).WithTarget(tgt).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	return New().WithSource(name, text).WithTarget(tgt).WithNativeBodies().WithNativeAsm()
+}
+
+func nativeShapeModel(name, text string) (*SemanticModel, error) {
+	return nativeShapeCompilation(name, text).SemanticModel().Get()
 }
 
 // loopBody returns the instructions between the first label starting with

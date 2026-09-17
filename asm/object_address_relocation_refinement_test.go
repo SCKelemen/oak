@@ -88,6 +88,7 @@ func TestAArch64ADRL21PatchBoundaries(t *testing.T) {
 	if err != nil {
 		t.Skip("lake not on PATH; the formal workflow runs this kernel oracle")
 	}
+	buildLeanImports(t, lake, leanPath)
 	cmd := exec.Command(lake, "env", "lean", leanPath)
 	cmd.Dir = filepath.Join("..", "spec", "lean")
 	if out, err := cmd.CombinedOutput(); err != nil {

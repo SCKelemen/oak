@@ -11,8 +11,10 @@ package typechecker
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 )
 
 // CodeGlobalInitializerNotConstant rejects top-level initializers the C
@@ -152,6 +154,102 @@ func (tc *TypeChecker) checkGlobalInitializer(decl *ast.VariableDeclaration) {
 		"global initializer is not a compile-time constant")
 	d.AddNote("static storage is initialized before any code runs: literals, arithmetic over literals, primitive casts of constants, and record/array literals of constants are admitted; the C backend rejects anything else")
 	d.AddHelp("initialize at the top of main for runtime values — explicit boot-time initialization, never a hidden global constructor")
+}
+
+// mutatedGlobalBindings names every root a statement assigns, index-assigns,
+// or takes the address of. It is intentionally computed before bodies are
+// checked: an exact global used in a bounds proof must stay exact even when a
+// writer is declared later in the file. This is the typechecker's copy of the
+// backend's conservative mutability boundary (codegen.MutatedGlobals); keeping
+// the scan here avoids making checked facts depend on backend analysis.
+func mutatedGlobalBindings(program *ast.Program) map[string]bool {
+	mutated := map[string]bool{}
+	root := func(expr ast.Expression) (string, bool) {
+		for {
+			switch e := expr.(type) {
+			case *ast.Identifier:
+				return e.Value, true
+			case *ast.IndexExpression:
+				expr = e.Left
+			default:
+				return "", false
+			}
+		}
+	}
+	var walk func(reflect.Value)
+	walk = func(value reflect.Value) {
+		switch value.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if value.IsNil() {
+				return
+			}
+			switch node := value.Interface().(type) {
+			case *ast.AssignmentStatement:
+				if node.Name != nil {
+					mutated[node.Name.Value] = true
+				}
+			case *ast.IndexAssignmentStatement:
+				if name, ok := root(node.Target); ok {
+					mutated[name] = true
+				}
+			case *ast.PrefixExpression:
+				if node.Operator == "&" {
+					if name, ok := root(node.Right); ok {
+						mutated[name] = true
+					}
+				}
+			}
+			walk(value.Elem())
+		case reflect.Struct:
+			if value.Type() == reflect.TypeOf(token.Token{}) {
+				return
+			}
+			for i := 0; i < value.NumField(); i++ {
+				if value.Type().Field(i).IsExported() {
+					walk(value.Field(i))
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for i := 0; i < value.Len(); i++ {
+				walk(value.Index(i))
+			}
+		case reflect.Map:
+			for _, key := range value.MapKeys() {
+				walk(value.MapIndex(key))
+			}
+		}
+	}
+	walk(reflect.ValueOf(program))
+	return mutated
+}
+
+// recordExtentIntegerGlobal retains only the exact constants safe to use in
+// bounds proofs. The deliberately narrow value grammar is enough for array
+// geometry constants such as `entries: u32 = u32(2048)`; derived or otherwise
+// unsupported constants merely miss an optimization. Type checking has
+// already succeeded when this is called.
+func (tc *TypeChecker) recordExtentIntegerGlobal(decl *ast.VariableDeclaration) {
+	if decl == nil || decl.Name == nil || decl.Type == nil || decl.Value == nil ||
+		decl.Section != "" || decl.Measured != nil || tc.mutatedGlobals[decl.Name.Value] ||
+		!tc.constantGlobals[decl.Name.Value] {
+		return
+	}
+	typeName, isIdent := decl.Type.(*ast.Identifier)
+	if !isIdent {
+		return
+	}
+	fixed := tc.FixedWidthName(typeName.Value)
+	if fixed == "" || fixed[0] != 'u' {
+		return
+	}
+	value, exact := tc.extentConstant(decl.Value)
+	if !exact || value < 0 {
+		return
+	}
+	if tc.extentIntegerGlobals == nil {
+		tc.extentIntegerGlobals = map[string]int64{}
+	}
+	tc.extentIntegerGlobals[decl.Name.Value] = value
 }
 
 // IsConstantInitializer is the shared constant-initializer judgment —

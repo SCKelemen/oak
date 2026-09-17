@@ -333,9 +333,35 @@ applied to the protocol's own machine, and it reuses §5a's checker.
 | --- | --- |
 | `Name[S]` | `type = struct { data: NameData }` with `data`, else `struct { at_: u8 }`: the handle, one phantom parameter, one representation for every state (`20-types.md` §9) |
 | `NameS0`, `NameS1`, … | one marker type per state, prefixed with the protocol's name so no declaration of the program is shadowed (`DoorClosed: type = struct { closed_: u8 }`) |
-| `name_handle` | `(): Name[NameInitial]`: the only construction, at the initial state, holding `init`'s data |
+| `name_handle` | `(): Name[NameInitial]`: the generated initial-state constructor, holding `init`'s data |
 | `name_t` | one per **source state** of step `t(p: P)`: the step's lines from that state, tried in declaration order as `name_next` tries them. When the group is one unguarded line `From -> To`: `(handle: Name[NameFrom], p: P): Name[NameTo]`, the line's effects applied to the data. A step with several source states projects `name_t_from_s` per state |
 | `NameTOutcome`, `name_t` | when the group has a guard: `NameTOutcome: type = ToS1(Name[NameS1]) \| ToS2(…) \| Refused(Name[NameFrom])` — one variant per target state reached by a line up to and including the first unguarded one, spelled `To` plus the state so it never collides with `NameState`'s variants, and `Refused` only when no line is unguarded (`NameTFromSOutcome` per source state when there are several) — and `name_t: (handle: Name[NameFrom], p: P): NameTOutcome`: the guards are decided on the handle's data at run time, the first line that holds moves the handle into its target's variant, and `Refused` hands the same handle back |
+
+The generated constructor is sealed by a structural resource fact:
+`SealedInitialConstructor` designates `name_handle` through resolution, SemIR,
+and resource-flow checking. Its unique transition must be a nontrusted fresh
+initial-to-initial result of the exact generated handle type. Direct literals
+outside that constructor or the tail results of checked same-resource
+transitions are rejected
+(`OAK-B0121`), as are zero-initialized handles, including handles nested in
+value aggregates and fixed arrays. A nested closure or same-named local
+callable inherits no constructor permission. Alternate fresh or trusted
+result contracts cannot manufacture the sealed type. Ordinary generated
+guarded transitions and protocol cycles still consume and return the handle.
+The designated constructor must have one actual Oak body; absent, foreign,
+and assembly-backed definitions are refused. A transition cannot use its
+result-construction permission to mint an extra local handle.
+
+This is a construction restriction, not backing-storage authority. It proves
+no allocation uniqueness, ordinary RAM, fault-free mapping, observer exclusion,
+or publication ordering. `Oak.SealedTypestate` separately proves that abstract
+handle derivations retain their designated-constructor premise and preserve
+resource/origin identity through transitions. That premise and nontrusted
+transition validation are explicit inputs; the calculus is not yet a
+refinement theorem for the Go checker or an arbitrary foreign ABI.
+Uncontracted or foreign calls can still yield typed values with unknown
+resource provenance; the designation does not turn those values into fresh
+authority or serve as a general interprocedural origin certificate.
 
 The handle parameter is spelled `handle` and the outcome variants
 `To<State>` and `Refused`; a payload may not be named `handle` (§1), and
@@ -822,6 +848,10 @@ The rules:
    written anywhere in the **initial state**, and otherwise only inside a
    via callable of a transition **into** that state (`OAK-B0121`). Only the
    transition may make the claim its target state represents.
+
+   This initial-literal compatibility rule applies to explicit-resource
+   protocols. Compiler-generated static handles use §2b's stricter sealed
+   constructor rule.
 
 5. A transition may **fail and hand the handle back**: its via callable
    returns `Result[Segment[To], Segment[From]]` — the handle in the target

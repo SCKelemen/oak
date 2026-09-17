@@ -1,0 +1,233 @@
+{
+  "date_local": "2026-09-17",
+  "recorded_at_utc": "2026-09-17T06:51:17Z",
+  "host": "Apple M4 Max",
+  "load_before": "63.09 36.99 23.26",
+  "load_after": "40.95 39.56 27.85",
+  "baseline_revision": "40558540074d9aab2c86a93a5276033c5f7ff844",
+  "candidate": "baseline plus proof-gated nativegen carry-loop-index transform; existing checker and verifier unchanged",
+  "os_revision": "37ba2112bd4e1558cae238d48de350301dbd353e",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "harness": "SCKelemen/os pilots/oak/stage2_bench.zig",
+  "harness_sha256": "6af17cac917ffbff88e51f7a7f7a9360df675ffe03bc1c11cbada0bb16483a88",
+  "object_sha256": {
+    "baseline": "a9408bbd77741a31452ad0500774af1940fa1aa8738ff0e784d5b1d8e022704f",
+    "candidate": "be6ac627b01e47f4398085496ad6b18f86fa2e91f377f66d7cd04b04a4e0b544"
+  },
+  "build": {
+    "oak": [
+      "build",
+      "-native"
+    ],
+    "candidate_verify_fresh": true,
+    "zig_version": "0.16.0",
+    "zig_flags": [
+      "-O",
+      "ReleaseFast",
+      "-lc"
+    ],
+    "shim_flags": [
+      "-std=c11",
+      "-O2"
+    ]
+  },
+  "protocol": {
+    "rounds": 7,
+    "order": "baseline,candidate on even rounds; candidate,baseline on odd rounds",
+    "translate_operations": 20000000,
+    "decoder_cycles": 2000000,
+    "within_binary_order": "Zig translate, Oak translate, Zig decoder cycle, Oak decoder cycle",
+    "warmups": "one full run per binary before samples",
+    "compiler_builds_during_samples": false,
+    "test_suites_during_samples": false,
+    "host_isolated": false
+  },
+  "selected_bodies": {
+    "alloc_table": {
+      "baseline_instructions": 127,
+      "candidate_instructions": 128,
+      "baseline_loop_instructions_per_word": 7,
+      "candidate_loop_instructions_per_word": 6,
+      "loop_stores_per_word": 1,
+      "loop_bounds_guards_per_word": 1,
+      "loop_words": 2048,
+      "frame_bytes": 80,
+      "baseline_verdict": "proven",
+      "candidate_verdict": "proven"
+    },
+    "translate": {
+      "baseline_instructions": 120,
+      "candidate_instructions": 120
+    },
+    "map_page": {
+      "baseline_instructions": 210,
+      "candidate_instructions": 210
+    },
+    "unmap_page": {
+      "baseline_instructions": 339,
+      "candidate_instructions": 339
+    }
+  },
+  "summary": {
+    "baseline_median_cycle_ns": 973,
+    "candidate_median_cycle_ns": 1099.6,
+    "median_paired_cycle_ratio": 1.001602169090461,
+    "cycle_pairs_faster": 3,
+    "baseline_median_translate_ns": 6.29,
+    "candidate_median_translate_ns": 7.32,
+    "interpretation": "Six instead of seven instructions per word, with one additional setup instruction; no reliable decoder-cycle timing gain on this loaded host. No translation gain claimed; its body is unchanged."
+  },
+  "differential_tests": {
+    "passed": 5,
+    "cases": [
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model PRNG operations",
+      "three isolated regimes"
+    ]
+  },
+  "samples": [
+    {
+      "round": 0,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.26,
+      "cycle_ns": 1239.6,
+      "zig_translate_ns": 1.51,
+      "zig_cycle_ns": 697.8,
+      "output": "stage2 translate (fair) x20000000: zig=1.51 ns/op  oak=6.26 ns/op  (oak/zig 4.157)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=697.8 ns/cycle  oak=1239.6 ns/cycle  (oak/zig 1.776)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 0,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 6.55,
+      "cycle_ns": 751.3,
+      "zig_translate_ns": 1.62,
+      "zig_cycle_ns": 439.5,
+      "output": "stage2 translate (fair) x20000000: zig=1.62 ns/op  oak=6.55 ns/op  (oak/zig 4.054)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=439.5 ns/cycle  oak=751.3 ns/cycle  (oak/zig 1.709)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 1,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 5.66,
+      "cycle_ns": 812.7,
+      "zig_translate_ns": 1.33,
+      "zig_cycle_ns": 417.4,
+      "output": "stage2 translate (fair) x20000000: zig=1.33 ns/op  oak=5.66 ns/op  (oak/zig 4.250)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=417.4 ns/cycle  oak=812.7 ns/cycle  (oak/zig 1.947)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 1,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 4.92,
+      "cycle_ns": 811.4,
+      "zig_translate_ns": 1.17,
+      "zig_cycle_ns": 376.2,
+      "output": "stage2 translate (fair) x20000000: zig=1.17 ns/op  oak=4.92 ns/op  (oak/zig 4.213)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=376.2 ns/cycle  oak=811.4 ns/cycle  (oak/zig 2.157)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 2,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.29,
+      "cycle_ns": 844,
+      "zig_translate_ns": 1.43,
+      "zig_cycle_ns": 452.1,
+      "output": "stage2 translate (fair) x20000000: zig=1.43 ns/op  oak=6.29 ns/op  (oak/zig 4.415)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=452.1 ns/cycle  oak=844.0 ns/cycle  (oak/zig 1.867)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 2,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 15.53,
+      "cycle_ns": 1179.5,
+      "zig_translate_ns": 1.93,
+      "zig_cycle_ns": 672.6,
+      "output": "stage2 translate (fair) x20000000: zig=1.93 ns/op  oak=15.53 ns/op  (oak/zig 8.027)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=672.6 ns/cycle  oak=1179.5 ns/cycle  (oak/zig 1.754)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 3,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 6.96,
+      "cycle_ns": 1345.2,
+      "zig_translate_ns": 1.96,
+      "zig_cycle_ns": 703,
+      "output": "stage2 translate (fair) x20000000: zig=1.96 ns/op  oak=6.96 ns/op  (oak/zig 3.545)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=703.0 ns/cycle  oak=1345.2 ns/cycle  (oak/zig 1.914)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 3,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 7.37,
+      "cycle_ns": 1432.5,
+      "zig_translate_ns": 1.62,
+      "zig_cycle_ns": 505,
+      "output": "stage2 translate (fair) x20000000: zig=1.62 ns/op  oak=7.37 ns/op  (oak/zig 4.548)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=505.0 ns/cycle  oak=1432.5 ns/cycle  (oak/zig 2.837)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 4,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 7.09,
+      "cycle_ns": 1222.7,
+      "zig_translate_ns": 1.76,
+      "zig_cycle_ns": 563.5,
+      "output": "stage2 translate (fair) x20000000: zig=1.76 ns/op  oak=7.09 ns/op  (oak/zig 4.031)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=563.5 ns/cycle  oak=1222.7 ns/cycle  (oak/zig 2.170)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 4,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 7.32,
+      "cycle_ns": 1099.6,
+      "zig_translate_ns": 1.71,
+      "zig_cycle_ns": 495.5,
+      "output": "stage2 translate (fair) x20000000: zig=1.71 ns/op  oak=7.32 ns/op  (oak/zig 4.272)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=495.5 ns/cycle  oak=1099.6 ns/cycle  (oak/zig 2.219)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 5,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 8.05,
+      "cycle_ns": 1123.4,
+      "zig_translate_ns": 2,
+      "zig_cycle_ns": 645.2,
+      "output": "stage2 translate (fair) x20000000: zig=2.00 ns/op  oak=8.05 ns/op  (oak/zig 4.033)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=645.2 ns/cycle  oak=1123.4 ns/cycle  (oak/zig 1.741)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 5,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 9.53,
+      "cycle_ns": 973,
+      "zig_translate_ns": 3.75,
+      "zig_cycle_ns": 607.8,
+      "output": "stage2 translate (fair) x20000000: zig=3.75 ns/op  oak=9.53 ns/op  (oak/zig 2.544)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=607.8 ns/cycle  oak=973.0 ns/cycle  (oak/zig 1.601)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 6,
+      "variant": "baseline",
+      "exit_code": 0,
+      "translate_ns": 6.12,
+      "cycle_ns": 883.6,
+      "zig_translate_ns": 1.44,
+      "zig_cycle_ns": 470,
+      "output": "stage2 translate (fair) x20000000: zig=1.44 ns/op  oak=6.12 ns/op  (oak/zig 4.259)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=470.0 ns/cycle  oak=883.6 ns/cycle  (oak/zig 1.880)  [sink=62226513897444096]\n"
+    },
+    {
+      "round": 6,
+      "variant": "candidate",
+      "exit_code": 0,
+      "translate_ns": 7.83,
+      "cycle_ns": 1071.4,
+      "zig_translate_ns": 1.74,
+      "zig_cycle_ns": 581.3,
+      "output": "stage2 translate (fair) x20000000: zig=1.74 ns/op  oak=7.83 ns/op  (oak/zig 4.487)  [sink=43033313257444096]\ndecoder cycle (fair) x2000000: zig=581.3 ns/cycle  oak=1071.4 ns/cycle  (oak/zig 1.843)  [sink=62226513897444096]\n"
+    }
+  ]
+}

@@ -18,6 +18,11 @@ type ResourceProtocolDeclaration struct {
 	States        []string
 	Initial       string
 	Transitions   []ResourceTransitionDeclaration
+	// SealedInitialConstructor optionally designates the one checked callable
+	// allowed to introduce fresh authority for the protocol's initial state.
+	// It is semantic metadata, not source syntax or backing-memory authority.
+	// A sealed protocol governs exactly one typestate-indexed resource template.
+	SealedInitialConstructor string
 	// Terminal lists the states a resource of this protocol must reach
 	// before its last name leaves scope (docs/spec/50-borrowing.md section
 	// 9, terminal-state obligations). Empty means the value may be dropped
@@ -132,12 +137,25 @@ type ResolvedResourceType struct {
 }
 
 type ResolvedResourceProtocol struct {
-	Name           string
-	States         []string
-	Initial        string
-	Terminal       []string
-	TypestateArity int
-	Transitions    []ResolvedResourceTransition
+	Name                     string
+	States                   []string
+	Initial                  string
+	SealedInitialConstructor string
+	Terminal                 []string
+	TypestateArity           int
+	Transitions              []ResolvedResourceTransition
+}
+
+// sealedResourceConstructor is the type-dependent resolution obligation for a
+// designated initial constructor. SemIR retains the callable designation and
+// validates its local transition shape; only the checked Oak type environment
+// can establish which typestate template the callable actually returns.
+type sealedResourceConstructor struct {
+	protocol string
+	template string
+	initial  string
+	callable string
+	arity    int
 }
 
 type ResolvedResourceParameter struct {
@@ -188,6 +206,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 	protocolNames := make(map[string]bool, len(declarations))
 	resourceProtocols := make(map[string]string)
 	resourceTypes := make(map[string]bool)
+	var sealedConstructors []sealedResourceConstructor
 
 	// Resolve resource-bearing nominal types first so transition validation may
 	// refer across protocols without depending on declaration order.
@@ -243,6 +262,38 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			resourceTypes[name] = true
 			resolved.Types = append(resolved.Types, ResolvedResourceType{Name: name, Protocol: declaration.Name})
 		}
+		if declaration.SealedInitialConstructor != "" {
+			if declaration.TypestateArity <= 0 {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q seals its initial constructor but is not typestate-indexed", declaration.Name)
+			}
+			if len(declaration.ResourceTypes) != 1 {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q seals its initial constructor but governs %d resource types; sealed constructor metadata identifies exactly one template", declaration.Name, len(declaration.ResourceTypes))
+			}
+			template := declaration.ResourceTypes[0]
+			definition := tc.recordTemplates[template]
+			if definition == nil || len(definition.TypeParams) != declaration.TypestateArity {
+				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q seals initial construction of %q with typestate arity %d, but that record template has %d type parameters", declaration.Name, template, declaration.TypestateArity, recordTemplateArity(definition))
+			}
+			sealedConstructors = append(sealedConstructors, sealedResourceConstructor{
+				protocol: declaration.Name,
+				template: template,
+				initial:  declaration.Initial,
+				callable: declaration.SealedInitialConstructor,
+				arity:    declaration.TypestateArity,
+			})
+		}
+	}
+	sort.Slice(sealedConstructors, func(i, j int) bool {
+		if sealedConstructors[i].template != sealedConstructors[j].template {
+			return sealedConstructors[i].template < sealedConstructors[j].template
+		}
+		return sealedConstructors[i].protocol < sealedConstructors[j].protocol
+	})
+	sealedByProtocol := make(map[string]sealedResourceConstructor, len(sealedConstructors))
+	sealedByTemplate := make(map[string]sealedResourceConstructor, len(sealedConstructors))
+	for _, sealed := range sealedConstructors {
+		sealedByProtocol[sealed.protocol] = sealed
+		sealedByTemplate[sealed.template] = sealed
 	}
 
 	sort.Slice(resolved.Types, func(i, j int) bool {
@@ -285,7 +336,20 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			seenTerminal[state] = true
 			terminal = append(terminal, state)
 		}
-		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial, Terminal: terminal, TypestateArity: declaration.TypestateArity}
+		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial, SealedInitialConstructor: declaration.SealedInitialConstructor, Terminal: terminal, TypestateArity: declaration.TypestateArity}
+		sealedConstructorMatches := 0
+		callableSources := make(map[string]map[string]bool)
+		callableTargets := make(map[string]map[string]bool)
+		for _, transition := range declaration.Transitions {
+			if callableSources[transition.Callable] == nil {
+				callableSources[transition.Callable] = make(map[string]bool)
+			}
+			if callableTargets[transition.Callable] == nil {
+				callableTargets[transition.Callable] = make(map[string]bool)
+			}
+			callableSources[transition.Callable][transition.From] = true
+			callableTargets[transition.Callable][transition.To] = true
+		}
 		transitionNames := make(map[string]bool, len(declaration.Transitions))
 		for _, transition := range declaration.Transitions {
 			if transition.Name == "" {
@@ -321,6 +385,37 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			function, ok := callableType.(*FunctionType)
 			if !ok {
 				return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q transition %q binds %q, which is not a function", declaration.Name, transition.Name, transition.Callable)
+			}
+			returnedSealedStates := tc.resourceTemplateStatesInType(function.ReturnType, sealedByTemplate)
+
+			// Sealed-constructor checks use a dedicated, unbounded-by-depth type
+			// walk. The ordinary resource aggregate projection intentionally has
+			// a smaller surface (and currently omits arrays), so it cannot be the
+			// authority for excluding alternate mint routes.
+			for _, sealed := range sealedConstructors {
+				designated := declaration.Name == sealed.protocol && transition.Callable == sealed.callable
+				if designated {
+					sealedConstructorMatches++
+					if transition.From != sealed.initial || transition.To != sealed.initial {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed initial constructor %q of protocol %q must be an %s -> %s transition", sealed.callable, sealed.protocol, sealed.initial, sealed.initial)
+					}
+					if !transition.ReturnsFresh {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed initial constructor %q of protocol %q must return fresh authority", sealed.callable, sealed.protocol)
+					}
+					if transition.Trusted {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed initial constructor %q of protocol %q cannot use trusted result identity", sealed.callable, sealed.protocol)
+					}
+					if !tc.isExactSealedInitialReturn(function.ReturnType, sealed) {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed initial constructor %q of protocol %q must return %s[%s] directly", sealed.callable, sealed.protocol, sealed.template, sealed.initial)
+					}
+					continue
+				}
+				if len(returnedSealedStates[sealed.template]) == 0 {
+					continue
+				}
+				if transition.ReturnsFresh || transition.Trusted {
+					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q is an alternate fresh or trusted mint route for sealed resource template %q", transition.Callable, sealed.template)
+				}
 			}
 
 			// A typestate-indexed resource is a resource in every state.
@@ -360,6 +455,45 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				}
 				if !resourceLike(function.ReturnType) {
 					return ResolvedResourceProgram{}, fmt.Errorf("resource callable %q marks an alias return but returns non-resource type %s", transition.Callable, function.ReturnType)
+				}
+				if sealed, isSealedProtocol := sealedByProtocol[declaration.Name]; isSealedProtocol && transition.Callable != sealed.callable {
+					if resolvedResourceParameterMode(parameters, transition.AliasesArgument) != ResourceParameterConsumed {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed resource callable %q must consume its aliased argument %d", transition.Callable, transition.AliasesArgument)
+					}
+					if !tc.isExactSealedState(function.Parameters[transition.AliasesArgument], sealed, transition.From) {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed resource callable %q argument %d must be exactly %s[%s]", transition.Callable, transition.AliasesArgument, sealed.template, transition.From)
+					}
+					states := returnedSealedStates[sealed.template]
+					if !states[transition.To] {
+						return ResolvedResourceProgram{}, fmt.Errorf("sealed resource callable %q result does not contain %s[%s] required by transition %q", transition.Callable, sealed.template, transition.To, transition.Name)
+					}
+					returnedTemplates := make([]string, 0, len(returnedSealedStates))
+					for template := range returnedSealedStates {
+						returnedTemplates = append(returnedTemplates, template)
+					}
+					sort.Strings(returnedTemplates)
+					for _, template := range returnedTemplates {
+						if template != sealed.template {
+							return ResolvedResourceProgram{}, fmt.Errorf("sealed resource callable %q result contains alternate sealed template %q instead of only %q", transition.Callable, template, sealed.template)
+						}
+					}
+					allowed := make(map[string]bool)
+					for state := range callableSources[transition.Callable] {
+						allowed[state] = true
+					}
+					for state := range callableTargets[transition.Callable] {
+						allowed[state] = true
+					}
+					returnedStates := make([]string, 0, len(states))
+					for state := range states {
+						returnedStates = append(returnedStates, state)
+					}
+					sort.Strings(returnedStates)
+					for _, state := range returnedStates {
+						if !allowed[state] {
+							return ResolvedResourceProgram{}, fmt.Errorf("sealed resource callable %q result contains undeclared %s state %q", transition.Callable, sealed.template, state)
+						}
+					}
 				}
 			}
 			borrows := normalizeIndexSet(transition.BorrowsArguments)
@@ -425,6 +559,9 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 				Receiver:         transition.Receiver,
 				Trusted:          transition.Trusted,
 			})
+		}
+		if declaration.SealedInitialConstructor != "" && sealedConstructorMatches != 1 {
+			return ResolvedResourceProgram{}, fmt.Errorf("resource protocol %q designates sealed initial constructor %q, but exactly one matching transition is required (found %d)", declaration.Name, declaration.SealedInitialConstructor, sealedConstructorMatches)
 		}
 		resolved.Protocols = append(resolved.Protocols, protocol)
 	}
@@ -615,6 +752,128 @@ func sameResolvedCallableResourceSemantics(left, right resolvedCallableResourceS
 		}
 	}
 	return true
+}
+
+func recordTemplateArity(template *ast.ADTType) int {
+	if template == nil {
+		return 0
+	}
+	return len(template.TypeParams)
+}
+
+// isExactSealedInitialReturn checks the type fact SemIR cannot carry: the
+// constructor returns the governed record template itself, not an aggregate
+// containing it, at the protocol's initial state and full typestate arity.
+func (tc *TypeChecker) isExactSealedInitialReturn(typ Type, sealed sealedResourceConstructor) bool {
+	return tc.isExactSealedState(typ, sealed, sealed.initial)
+}
+
+func (tc *TypeChecker) isExactSealedState(typ Type, sealed sealedResourceConstructor, state string) bool {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil {
+		return false
+	}
+	instantiation, known := tc.recordInstantiationArgs[record.Name]
+	if !known || instantiation.Template != sealed.template || len(instantiation.Args) != sealed.arity {
+		return false
+	}
+	template := tc.recordTemplates[sealed.template]
+	if template == nil || len(template.TypeParams) != sealed.arity {
+		return false
+	}
+	actual, concrete := typeAtom(instantiation.Args[0])
+	return concrete && actual == state
+}
+
+func resolvedResourceParameterMode(parameters []ResolvedResourceParameter, index int) ResourceParameterMode {
+	for _, parameter := range parameters {
+		if parameter.Index == index && parameter.Callable == nil {
+			return parameter.Mode
+		}
+	}
+	return ResourceParameterUnspecified
+}
+
+// resourceTemplateStatesInType returns every governed sealed record template
+// and state that typ carries. It follows arrays and actual record/ADT payloads
+// and uses cycle guards rather than a depth cutoff: signature validation must
+// not inherit the deliberately bounded projection used for ordinary aggregate
+// flow tracking. An empty state records a malformed or uninstantiated sealed
+// template and therefore fails the caller's exact-state checks.
+func (tc *TypeChecker) resourceTemplateStatesInType(typ Type, sealed map[string]sealedResourceConstructor) map[string]map[string]bool {
+	states := make(map[string]map[string]bool)
+	record := func(template, state string) {
+		if states[template] == nil {
+			states[template] = make(map[string]bool)
+		}
+		states[template][state] = true
+	}
+	seen := make(map[Type]bool)
+	activeADTs := make(map[string]bool)
+	var visit func(Type)
+	visit = func(current Type) {
+		if current == nil || seen[current] {
+			return
+		}
+		seen[current] = true
+		switch value := current.(type) {
+		case *RecordType:
+			if instantiation, known := tc.recordInstantiationArgs[value.Name]; known {
+				if authority, governed := sealed[instantiation.Template]; governed {
+					state := ""
+					if len(instantiation.Args) == authority.arity {
+						state, _ = typeAtom(instantiation.Args[0])
+					}
+					record(instantiation.Template, state)
+				}
+			} else if _, governed := sealed[value.Name]; governed {
+				record(value.Name, "")
+			}
+			for _, field := range value.Fields {
+				visit(field)
+			}
+			return
+		case *ArrayType:
+			if value.IsSlice || value.IsSpan || value.Length == 0 {
+				return
+			}
+			visit(value.ElementType)
+			return
+		case *UnionType:
+			for _, member := range value.Types {
+				visit(member)
+			}
+			return
+		case *IntersectionType:
+			for _, member := range value.Types {
+				visit(member)
+			}
+			return
+		}
+
+		name, _, arguments, isADT := adtInstantiation(current)
+		key := current.String()
+		if !isADT || tc.adtTypes == nil || activeADTs[key] {
+			return
+		}
+		definition := tc.adtTypes[name]
+		if definition == nil {
+			return
+		}
+		activeADTs[key] = true
+		defer delete(activeADTs, key)
+		bindings := make(map[string]Type, len(definition.TypeParams))
+		for i, parameter := range definition.TypeParams {
+			if i < len(arguments) {
+				bindings[parameter] = arguments[i]
+			}
+		}
+		for _, variant := range definition.Variants {
+			visit(tc.instantiatedVariantPayload(name, variant, bindings))
+		}
+	}
+	visit(typ)
+	return states
 }
 
 // nominalTypeName returns the authority-bearing nominal base. Structural

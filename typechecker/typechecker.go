@@ -629,6 +629,12 @@ type TypeChecker struct {
 	// compile-time constants, in declaration order, so later constant
 	// initializers may read them (typechecker/globals.go).
 	constantGlobals map[string]bool
+	// extentIntegerGlobals is the small, independently checked subset of
+	// never-mutated integer globals whose exact non-negative value the extent
+	// checker may use. mutatedGlobals is collected before bodies are checked,
+	// so a later function cannot retroactively invalidate an earlier proof.
+	extentIntegerGlobals map[string]int64
+	mutatedGlobals       map[string]bool
 	// measured lists the measured constants (docs/spec/60-effects-allocation.md
 	// section 10b) in declaration order.
 	measured []MeasuredConstant
@@ -884,6 +890,10 @@ func constParameterKind(param *ast.TypeParameter) string {
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+	// Bounds facts may use an exact global only when no statement anywhere in
+	// the program writes or addresses it. Collect that negative fact before
+	// declaration order starts checking function bodies (globals.go).
+	tc.mutatedGlobals = mutatedGlobalBindings(program)
 	tc.checkScalableLocality(program)
 	// Region parameters are erased first (typechecker/regions.go): every
 	// later phase sees View[T, R] as []T and a region-only type parameter as
@@ -985,6 +995,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		tc.checkStatement(stmt)
 		if isDecl {
+			if len(tc.Errors()) == before {
+				tc.recordExtentIntegerGlobal(decl)
+			}
 			tc.finishScalarGlobalDeclaration(decl, len(tc.Errors()) == before)
 		}
 	}

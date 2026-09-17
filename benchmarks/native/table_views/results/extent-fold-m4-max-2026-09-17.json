@@ -1,0 +1,1059 @@
+{
+  "schema": "oak-table-views-v1",
+  "baseline_revision": "d735d322aa483cff5a4f91caf8d641fd1a437a82",
+  "candidate_revision": "eec594520f2b1c49702fdee11a03b49703874a96",
+  "binaries": {
+    "baseline_emit": {
+      "sha256": "b70f3ec0edec55a1f673ce5dcb9080364a137fb4b1353ec9c4fa21822c2733cb",
+      "build_info": "/private/tmp/oak-table-constants-DTOhTm/baseline-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917100956-d735d322aa48\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=d735d322aa483cff5a4f91caf8d641fd1a437a82\n\tbuild\tvcs.time=2026-09-17T10:09:56Z\n\tbuild\tvcs.modified=false"
+    },
+    "baseline_oak": {
+      "sha256": "b06f7f6e34c165037db7f9b9e85d1fecdbd78c324367e298f52c27205a571390",
+      "build_info": "/private/tmp/oak-table-constants-DTOhTm/baseline-oak: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917100956-d735d322aa48\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tdep\tgolang.org/x/sys\tv0.38.0\th1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=\n\tdep\tgolang.org/x/term\tv0.37.0\th1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=d735d322aa483cff5a4f91caf8d641fd1a437a82\n\tbuild\tvcs.time=2026-09-17T10:09:56Z\n\tbuild\tvcs.modified=false"
+    },
+    "candidate_emit": {
+      "sha256": "6afae93b4dcd79a11c018b28f11d0ae6249d7531b964852498c1806b21a887ec",
+      "build_info": "/private/tmp/oak-table-constants-DTOhTm/candidate-emit: go1.27.1\n\tpath\tgithub.com/SCKelemen/oak/benchmarks/native/emit\n\tmod\tgithub.com/SCKelemen/oak\tv0.0.0-20260917102515-eec594520f2b\t\n\tdep\tgithub.com/SCKelemen/unicode\tv1.1.1\th1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=1\n\tbuild\tCGO_CFLAGS=\n\tbuild\tCGO_CPPFLAGS=\n\tbuild\tCGO_CXXFLAGS=\n\tbuild\tCGO_LDFLAGS=\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=darwin\n\tbuild\tGOARM64=v8.0\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=eec594520f2b1c49702fdee11a03b49703874a96\n\tbuild\tvcs.time=2026-09-17T10:25:15Z\n\tbuild\tvcs.modified=false"
+    }
+  },
+  "dirty_worktree": false,
+  "date": "2026-09-17T10:27:14.651215+00:00",
+  "cpu": "Apple M4 Max",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+  "c_flags": [
+    "-std=c11",
+    "-O3",
+    "-ffp-contract=off",
+    "-fno-fast-math"
+  ],
+  "fixture_sha256": "3b6fe0e4e898009ca6acf2a8d85d9b75d55f3837fee7a143b785413f78fcffa3",
+  "runner_sha256": "3a6bbabe22ce2021e93aba431f52ef1f6edd84a2107b681cae2eb005c2852aac",
+  "identity_disabled_transforms": [
+    "strength-reduce",
+    "optir-emit",
+    "elide-guards",
+    "reuse-flags",
+    "hoist-invariants",
+    "unroll-reductions",
+    "unroll-fills",
+    "vector-homes",
+    "loop-array-homes",
+    "loop-result-homes",
+    "late-cleanup",
+    "vectorize-reductions",
+    "vectorize-maps",
+    "unroll-vector-maps",
+    "vectorize-folds",
+    "unroll-constant",
+    "vector-blocks",
+    "share-vector-addresses",
+    "multiply-add",
+    "value-select",
+    "reallocate",
+    "schedule",
+    "fuse",
+    "fuse-exits",
+    "rotate-loops",
+    "carry-loop-index",
+    "elide-redundant-guards",
+    "share-record-bases"
+  ],
+  "sample_order": "all backend/distribution pairs interleaved, first pair rotated each round",
+  "core_affinity": "uncontrolled",
+  "cache_flush": false,
+  "native_bodies": {
+    "native-before": {
+      "verdict": "native backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  movz w20, #4893\n  movz w10, #3\n  udiv w2, w20, w10\n  adrl x9, data_grapheme_table\n  mov w3, wzr\n  movz w15, #3\n  movz w14, #4893\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  ldr w9, [x19, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}"
+    },
+    "native-identity": {
+      "verdict": "native backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  cbz w10, trap_3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  movz w10, #2\n  cbz w10, trap_3\n  udiv w9, w9, w10\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  movz w10, #4893\n  cmp w9, w10\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  movz w9, #4893\n  cmp w12, w9\n  b.hs trap_3\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  movz w12, #4893\n  cmp w9, w12\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}"
+    },
+    "native-after": {
+      "verdict": "native backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree",
+      "assembly": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  movz w2, #1631\n  movz w20, #4893\n  mov w3, wzr\n  movz w15, #3\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  ldr w9, [x19, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\n}"
+    }
+  },
+  "diagnostics": {
+    "native-before": "// refused strength-reduce+elide-guards form of grapheme_class (round 0): grapheme_class:15: ldr indexed by w9 without a dominating constant index guard: `cmp w9, #K` then `b.hs <exit>` bounds the array's index\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  lsr w9, w9, #1\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  ldr w9, [x19, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  ldr w9, [x19, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\n}\ngrapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  movz w20, #4893\n  movz w10, #3\n  udiv w2, w20, w10\n  adrl x9, data_grapheme_table\n  mov w3, wzr\n  movz w15, #3\n  movz w14, #4893\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  cmp w9, w14\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  ldr w9, [x19, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\ngrapheme_class:\n  missed    multiply-add       no site to transform\n  missed    reuse-flags        no site to transform\n  missed    unroll-reductions  no site to transform\n  missed    unroll-fills       no site to transform\n  missed    vectorize-reductions no site to transform\n  missed    vectorize-maps     no site to transform\n  missed    unroll-vector-maps no site to transform\n  missed    unroll-constant    no site to transform\n  missed    vectorize-folds    no site to transform\n  missed    fuse-exits         no site to transform\n  missed    vector-homes       no site to transform\n  missed    loop-array-homes   no site to transform\n  missed    carry-loop-index   no site to transform\n  missed    elide-redundant-guards no site to transform\n  missed    share-record-bases no site to transform\n  missed    value-select       no site to transform\n  missed    vector-blocks      no site to transform\n  missed    share-vector-addresses no site to transform\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+late-cleanup form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  passed    strength-reduce    2 site(s), proven\n  passed    elide-guards       2 site(s), proven\n                                 fact index-in-extent(((mid * u32(3)) + u32(1)), table) [checked, Oak.ExtentsRefinement.indexUnder_sound] at line 15:10\n  passed    hoist-invariants   1 site(s), proven\n  passed    rotate-loops       1 site(s), proven\n  passed    fuse               2 site(s), proven\n  passed    schedule           9 site(s), proven\n  passed    reallocate         6 site(s), proven\n  analysis  search             98 candidate(s) considered, 98 lowered, 1 verified; selected strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate (proven, cost 4802.0; identity 10199.0)\n  analysis  candidates         strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate cost  4802.0  instructions 43, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 22, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate+late-cleanup cost  4803.0  instructions 43, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 24, loop[12 instructions, 2 branches, 1 loads, 0 stores, 1 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+late-cleanup cost  5445.0  instructions 46, branches 6, loads 4, stores 1, multiplies 3, divides 1, guards 1, stalls 27, loop[15 instructions, 3 branches, 1 loads, 0 stores, 1 guards, 5 stalls]\n                               identity                         cost 10199.0  instructions 57, branches 10, loads 4, stores 1, multiplies 3, divides 2, guards 5, stalls 52, loop[19 instructions, 4 branches, 1 loads, 0 stores, 2 guards, 33 stalls]\n  analysis  metrics            instructions:      57 -> 43\n                               branches:          10 -> 6\n                               divides:           2 -> 1\n                               guards:            5 -> 1\n                               stalls:            52 -> 22\n                               loop instructions: 19 -> 12\n                               loop branches:     4 -> 2\n                               loop guards:       2 -> 1\n                               loop stalls:       33 -> 6\nnative backend: grapheme_class: layer A \u2014 strength reduction \u00d71 decided at the bit level\nnative backend: grapheme_class: 2 element guard(s) elided under the checker's own facts, the guards of line(s) 15 kept (the checker did not admit their elided form)\nnative backend: grapheme_class: 1 constant operation(s) strength-reduced, proven\nnative backend: grapheme_class: 1 loop(s) bottom-tested, proven\nnative backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 1 verdicts from the verdict cache\n",
+    "native-identity": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  add x19, x9, #0\n  movz w20, #4893\n  mov w9, w20\n  movz w10, #3\n  cbz w10, trap_3\n  udiv w2, w9, w10\n  mov w3, wzr\n  mov w4, w2\nloop_4:\n  cmp w3, w4\n  b.hs done_5\n  sub w9, w4, w3\n  movz w10, #2\n  cbz w10, trap_3\n  udiv w9, w9, w10\n  add w5, w3, w9\n  movz w10, #3\n  mul w9, w5, w10\n  add w9, w9, #1\n  movz w10, #4893\n  cmp w9, w10\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  add w10, w5, #1\n  cmp w9, w0\n  csel w3, w10, w3, lo\n  csel w4, w5, w4, hs\n  b loop_4\ndone_5:\n  mov w10, wzr\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  movz w9, #4893\n  cmp w12, w9\n  b.hs trap_3\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  movz w12, #4893\n  cmp w9, w12\n  b.hs trap_3\n  ldr w9, [x19, w9, uxtw #2]\n  mov w10, w9\n  b endif_7\nelse_6:\n  mov w9, wzr\n  mov w10, w9\nendif_7:\n  mov w0, w10\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1\n}\ngrapheme_class:\n  analysis  search             1 candidate(s) considered, 1 lowered, 1 verified; selected identity (proven, cost 10199.0; identity 10199.0)\nnative backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 1 verdicts from the verdict cache\n",
+    "native-after": "grapheme_class = {\n  bind w0 = scalar\n  clobber x9, x10, x11, x12, x13, x14, x15, x19, x20, x2, x3, x4, x5, x0\n  frame 80\n  sub sp, sp, #80\n  stp x19, x20, [sp]\nhead_1:\n  adrl x9, data_grapheme_table\n  movz w2, #1631\n  movz w20, #4893\n  mov w3, wzr\n  movz w15, #3\n  add x19, x9, #0\n  mov w4, w2\n  cmp w3, w4\n  b.hs done_5\nloop_4:\n  sub w9, w4, w3\n  add w5, w3, w9, lsr #1\n  mul w9, w5, w15\n  add w9, w9, #1\n  ldr w9, [x19, w9, uxtw #2]\n  cmp w9, w0\n  csinc w3, w3, w5, hs\n  csel w4, w5, w4, hs\n  cmp w3, w4\n  b.lo loop_4\ndone_5:\n  cmp w3, w2\n  b.hs else_6\n  movz w9, #3\n  mul w12, w3, w9\n  ldr w12, [x19, w12, uxtw #2]\n  cmp w12, w0\n  b.hi else_6\n  movz w12, #3\n  mul w9, w3, w12\n  add w9, w9, #2\n  ldr w9, [x19, w9, uxtw #2]\n  b endif_7\nelse_6:\n  mov w9, wzr\nendif_7:\n  mov w0, w9\nret_2:\n  ldp x19, x20, [sp]\n  add sp, sp, #80\n  ret\n}\ngrapheme_class:\n  missed    multiply-add       no site to transform\n  missed    reuse-flags        no site to transform\n  missed    unroll-reductions  no site to transform\n  missed    unroll-fills       no site to transform\n  missed    vectorize-reductions no site to transform\n  missed    vectorize-maps     no site to transform\n  missed    unroll-vector-maps no site to transform\n  missed    unroll-constant    no site to transform\n  missed    vectorize-folds    no site to transform\n  missed    fuse-exits         no site to transform\n  missed    vector-homes       no site to transform\n  missed    loop-array-homes   no site to transform\n  missed    carry-loop-index   no site to transform\n  missed    elide-redundant-guards no site to transform\n  missed    share-record-bases no site to transform\n  missed    value-select       no site to transform\n  missed    vector-blocks      no site to transform\n  missed    share-vector-addresses no site to transform\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+reallocate form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  missed    verify             the strength-reduce+elide-guards+hoist-invariants+late-cleanup form was not verified: the cheaper strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate form proved\n  passed    strength-reduce    2 site(s), proven\n  passed    elide-guards       3 site(s), proven\n                                 fact index-in-extent(((mid * u32(3)) + u32(1)), table) [checked, Oak.ExtentsRefinement.indexUnder_sound] at line 15:10\n  passed    hoist-invariants   1 site(s), proven\n  passed    rotate-loops       1 site(s), proven\n  passed    fuse               2 site(s), proven\n  passed    schedule           5 site(s), proven\n  passed    reallocate         4 site(s), proven\n  analysis  search             98 candidate(s) considered, 98 lowered, 1 verified; selected strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate (proven, cost 4145.0; identity 10199.0)\n  analysis  candidates         strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+schedule+reallocate cost  4145.0  instructions 38, branches 5, loads 4, stores 1, multiplies 3, guards 0, stalls 16, loop[10 instructions, 1 branches, 1 loads, 0 stores, 0 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+rotate-loops+fuse+reallocate cost  4145.0  instructions 38, branches 5, loads 4, stores 1, multiplies 3, guards 0, stalls 16, loop[10 instructions, 1 branches, 1 loads, 0 stores, 0 guards, 6 stalls]\n                               strength-reduce+elide-guards+hoist-invariants+late-cleanup cost  4786.0  instructions 41, branches 5, loads 4, stores 1, multiplies 3, guards 0, stalls 17, loop[13 instructions, 2 branches, 1 loads, 0 stores, 0 guards, 5 stalls]\n                               identity                         cost 10199.0  instructions 57, branches 10, loads 4, stores 1, multiplies 3, divides 2, guards 5, stalls 52, loop[19 instructions, 4 branches, 1 loads, 0 stores, 2 guards, 33 stalls]\n  analysis  metrics            instructions:      57 -> 38\n                               branches:          10 -> 5\n                               divides:           2 -> 0\n                               guards:            5 -> 0\n                               stalls:            52 -> 16\n                               loop instructions: 19 -> 10\n                               loop branches:     4 -> 1\n                               loop guards:       2 -> 0\n                               loop stalls:       33 -> 6\nnative backend: grapheme_class: layer A \u2014 strength reduction \u00d71 decided at the bit level\nnative backend: grapheme_class: 3 element guard(s) elided under the checker's own facts\nnative backend: grapheme_class: 1 constant operation(s) strength-reduced, proven\nnative backend: grapheme_class: 1 loop(s) bottom-tested, proven\nnative backend: asm unit grapheme_class: proven equal to its Oak body at the bit level \u2014 data-dependent loop coupled inductively (high\u2194r4, low\u2194r3) (loop 1 under the invariant (loop1.low ls loop1.high)), 0 concrete inputs agree\nnative backend: main left to the C backend (OAK_NATIVE_ONLY names other functions; this one is main)\nnative backend: 0 of 1 verdicts from the verdict cache\n"
+  },
+  "samples": [
+    {
+      "elapsed_ns": 52461000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 50.03070831298828
+    },
+    {
+      "elapsed_ns": 35280000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 33.6456298828125
+    },
+    {
+      "elapsed_ns": 39567000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 37.734031677246094
+    },
+    {
+      "elapsed_ns": 45421000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 43.31684112548828
+    },
+    {
+      "elapsed_ns": 41238000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 39.32762145996094
+    },
+    {
+      "elapsed_ns": 83224000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 79.36859130859375
+    },
+    {
+      "elapsed_ns": 87742000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 83.67729187011719
+    },
+    {
+      "elapsed_ns": 71537000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 68.2229995727539
+    },
+    {
+      "elapsed_ns": 67880000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 64.73541259765625
+    },
+    {
+      "elapsed_ns": 40616000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 38.73443603515625
+    },
+    {
+      "elapsed_ns": 32197000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 30.70545196533203
+    },
+    {
+      "elapsed_ns": 40249000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 0,
+      "calls": 1048576,
+      "ns_per_lookup": 38.384437561035156
+    },
+    {
+      "elapsed_ns": 86941000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 82.91339874267578
+    },
+    {
+      "elapsed_ns": 126722000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 120.85151672363281
+    },
+    {
+      "elapsed_ns": 43006000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 41.01371765136719
+    },
+    {
+      "elapsed_ns": 52441000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 50.011634826660156
+    },
+    {
+      "elapsed_ns": 40636000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 38.753509521484375
+    },
+    {
+      "elapsed_ns": 75328000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 71.83837890625
+    },
+    {
+      "elapsed_ns": 55692000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 53.112030029296875
+    },
+    {
+      "elapsed_ns": 63999000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 61.034202575683594
+    },
+    {
+      "elapsed_ns": 38548000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 36.762237548828125
+    },
+    {
+      "elapsed_ns": 35828000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 34.168243408203125
+    },
+    {
+      "elapsed_ns": 50784000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 48.431396484375
+    },
+    {
+      "elapsed_ns": 46386000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 1,
+      "calls": 1048576,
+      "ns_per_lookup": 44.23713684082031
+    },
+    {
+      "elapsed_ns": 65943000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 62.888145446777344
+    },
+    {
+      "elapsed_ns": 40574000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 38.69438171386719
+    },
+    {
+      "elapsed_ns": 42797000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 40.81439971923828
+    },
+    {
+      "elapsed_ns": 45173000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 43.08032989501953
+    },
+    {
+      "elapsed_ns": 74931000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 71.45977020263672
+    },
+    {
+      "elapsed_ns": 51258000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 48.88343811035156
+    },
+    {
+      "elapsed_ns": 88404000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 84.30862426757812
+    },
+    {
+      "elapsed_ns": 44176000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 42.1295166015625
+    },
+    {
+      "elapsed_ns": 32270000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 30.775070190429688
+    },
+    {
+      "elapsed_ns": 45000000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 42.91534423828125
+    },
+    {
+      "elapsed_ns": 36648000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 34.95025634765625
+    },
+    {
+      "elapsed_ns": 75713000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 2,
+      "calls": 1048576,
+      "ns_per_lookup": 72.2055435180664
+    },
+    {
+      "elapsed_ns": 52095000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 49.681663513183594
+    },
+    {
+      "elapsed_ns": 33872000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 32.3028564453125
+    },
+    {
+      "elapsed_ns": 42689000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 40.711402893066406
+    },
+    {
+      "elapsed_ns": 69689000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 66.46060943603516
+    },
+    {
+      "elapsed_ns": 66111000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 63.048362731933594
+    },
+    {
+      "elapsed_ns": 68569000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 65.39249420166016
+    },
+    {
+      "elapsed_ns": 44377000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 42.321205139160156
+    },
+    {
+      "elapsed_ns": 40140000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 38.280487060546875
+    },
+    {
+      "elapsed_ns": 37497000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 35.759925842285156
+    },
+    {
+      "elapsed_ns": 34855000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 33.240318298339844
+    },
+    {
+      "elapsed_ns": 32174000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 30.683517456054688
+    },
+    {
+      "elapsed_ns": 35395000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 3,
+      "calls": 1048576,
+      "ns_per_lookup": 33.75530242919922
+    },
+    {
+      "elapsed_ns": 34558000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 32.95707702636719
+    },
+    {
+      "elapsed_ns": 55393000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 52.826881408691406
+    },
+    {
+      "elapsed_ns": 101278000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 96.58622741699219
+    },
+    {
+      "elapsed_ns": 75414000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 71.92039489746094
+    },
+    {
+      "elapsed_ns": 88738000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 84.62715148925781
+    },
+    {
+      "elapsed_ns": 36946000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 35.23445129394531
+    },
+    {
+      "elapsed_ns": 45240000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 43.14422607421875
+    },
+    {
+      "elapsed_ns": 41865000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 39.925575256347656
+    },
+    {
+      "elapsed_ns": 30643000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 29.22344207763672
+    },
+    {
+      "elapsed_ns": 56812000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 54.180145263671875
+    },
+    {
+      "elapsed_ns": 32953000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 31.426429748535156
+    },
+    {
+      "elapsed_ns": 42768000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 4,
+      "calls": 1048576,
+      "ns_per_lookup": 40.7867431640625
+    },
+    {
+      "elapsed_ns": 41807000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 39.870262145996094
+    },
+    {
+      "elapsed_ns": 65791000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 62.743186950683594
+    },
+    {
+      "elapsed_ns": 50797000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 48.44379425048828
+    },
+    {
+      "elapsed_ns": 61893000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 59.02576446533203
+    },
+    {
+      "elapsed_ns": 39991000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 38.138389587402344
+    },
+    {
+      "elapsed_ns": 31680000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 30.21240234375
+    },
+    {
+      "elapsed_ns": 42290000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 40.33088684082031
+    },
+    {
+      "elapsed_ns": 52772000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 50.327301025390625
+    },
+    {
+      "elapsed_ns": 26609000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 25.376319885253906
+    },
+    {
+      "elapsed_ns": 30499000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 29.08611297607422
+    },
+    {
+      "elapsed_ns": 43448000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 41.43524169921875
+    },
+    {
+      "elapsed_ns": 40131000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 5,
+      "calls": 1048576,
+      "ns_per_lookup": 38.27190399169922
+    },
+    {
+      "elapsed_ns": 72065000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 68.7265396118164
+    },
+    {
+      "elapsed_ns": 66766000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 63.67301940917969
+    },
+    {
+      "elapsed_ns": 73405000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 70.00446319580078
+    },
+    {
+      "elapsed_ns": 36748000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 35.045623779296875
+    },
+    {
+      "elapsed_ns": 33685000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 32.12451934814453
+    },
+    {
+      "elapsed_ns": 47315000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 45.12310028076172
+    },
+    {
+      "elapsed_ns": 37125000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 35.40515899658203
+    },
+    {
+      "elapsed_ns": 65751000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 62.705039978027344
+    },
+    {
+      "elapsed_ns": 31546000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 30.084609985351562
+    },
+    {
+      "elapsed_ns": 43888000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 41.8548583984375
+    },
+    {
+      "elapsed_ns": 35785000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 34.127235412597656
+    },
+    {
+      "elapsed_ns": 102949000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 6,
+      "calls": 1048576,
+      "ns_per_lookup": 98.17981719970703
+    },
+    {
+      "elapsed_ns": 57374000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 54.71611022949219
+    },
+    {
+      "elapsed_ns": 70233000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 66.97940826416016
+    },
+    {
+      "elapsed_ns": 38845000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 37.04547882080078
+    },
+    {
+      "elapsed_ns": 34066000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 32.48786926269531
+    },
+    {
+      "elapsed_ns": 50739000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 48.38848114013672
+    },
+    {
+      "elapsed_ns": 32553000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 31.044960021972656
+    },
+    {
+      "elapsed_ns": 36680000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 34.98077392578125
+    },
+    {
+      "elapsed_ns": 33718000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 32.15599060058594
+    },
+    {
+      "elapsed_ns": 47486000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 45.28617858886719
+    },
+    {
+      "elapsed_ns": 35261000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 33.62751007080078
+    },
+    {
+      "elapsed_ns": 45914000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 43.78700256347656
+    },
+    {
+      "elapsed_ns": 79439000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 7,
+      "calls": 1048576,
+      "ns_per_lookup": 75.7589340209961
+    },
+    {
+      "elapsed_ns": 92635000,
+      "checksum": "00000000098b8700",
+      "backend": "native-identity",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 88.34362030029297
+    },
+    {
+      "elapsed_ns": 43563000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-after",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 41.54491424560547
+    },
+    {
+      "elapsed_ns": 41177000,
+      "checksum": "00000000004b6200",
+      "backend": "native-after",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 39.269447326660156
+    },
+    {
+      "elapsed_ns": 39472000,
+      "checksum": "00000000098b8700",
+      "backend": "native-after",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 37.6434326171875
+    },
+    {
+      "elapsed_ns": 32446000,
+      "checksum": "00000000000c0c00",
+      "backend": "c",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 30.942916870117188
+    },
+    {
+      "elapsed_ns": 40189000,
+      "checksum": "00000000004b6200",
+      "backend": "c",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 38.32721710205078
+    },
+    {
+      "elapsed_ns": 30280000,
+      "checksum": "00000000098b8700",
+      "backend": "c",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 28.87725830078125
+    },
+    {
+      "elapsed_ns": 42757000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-before",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 40.77625274658203
+    },
+    {
+      "elapsed_ns": 34251000,
+      "checksum": "00000000004b6200",
+      "backend": "native-before",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 32.66429901123047
+    },
+    {
+      "elapsed_ns": 42462000,
+      "checksum": "00000000098b8700",
+      "backend": "native-before",
+      "mode": 3,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 40.49491882324219
+    },
+    {
+      "elapsed_ns": 57053000,
+      "checksum": "00000000000c0c00",
+      "backend": "native-identity",
+      "mode": 1,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 54.40998077392578
+    },
+    {
+      "elapsed_ns": 60342000,
+      "checksum": "00000000004b6200",
+      "backend": "native-identity",
+      "mode": 2,
+      "round": 8,
+      "calls": 1048576,
+      "ns_per_lookup": 57.54661560058594
+    }
+  ],
+  "load_before": "12:27  up 5 days,  6:32, 21 users, load averages: 154.30 110.79 62.55",
+  "load_after": "12:27  up 5 days,  6:32, 21 users, load averages: 156.08 112.60 63.76"
+}

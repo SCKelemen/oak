@@ -149,6 +149,13 @@ structure OrdinaryBImmediateDecode where
   offset : (BitVec 64)
   deriving BEq, Inhabited, Repr
 
+structure CBZ32Decode where
+  encoding_valid : Bool
+  Rt : (BitVec 5)
+  imm19 : (BitVec 19)
+  offset : (BitVec 64)
+  deriving BEq, Inhabited, Repr
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

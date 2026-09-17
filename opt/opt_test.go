@@ -383,6 +383,21 @@ func TestCostPrefersShorterLoops(t *testing.T) {
 	}
 }
 
+func TestCostBoundedTripsAreNotDividedByStrideTwice(t *testing.T) {
+	costs := TargetCosts{Arithmetic: 1, LoopWeight: 256}
+	for _, stride := range []int{1, 2, 4, 8} {
+		metrics := Metrics{Instructions: 10, LoopInstructions: 10, Loops: 1,
+			LoopBodies: []LoopMetrics{{Instructions: 10, Stride: stride, MaxTrips: 4}}}
+		if got := costs.Estimate(metrics); got != 20 {
+			t.Fatalf("stride %d: got %v, want 10 instructions * 2 expected trips", stride, got)
+		}
+		metrics.LoopBodies[0].MaxTrips = 0
+		if got, want := costs.Estimate(metrics), 10*256/float64(stride); got != want {
+			t.Fatalf("unbounded stride %d: got %v, want %v", stride, got, want)
+		}
+	}
+}
+
 // A nested loop's body runs its trips for every trip of its outer loop:
 // an instruction saved there is worth LoopWeight times one saved in the
 // outer loop's own body, and the two loops' items are not double-counted.

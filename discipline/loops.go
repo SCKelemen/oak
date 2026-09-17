@@ -76,18 +76,8 @@ func describeLoopShape(loop *ast.WhileStatement) string {
 	if !ok {
 		return "the left side of the condition is not a counter variable"
 	}
-	switch bound := condition.Right.(type) {
-	case *ast.Identifier:
-		if bound.Value == counter.Value {
-			return "the bound is the counter itself"
-		}
-		if countAssignments(loop.Body, bound.Value) != 0 {
-			return fmt.Sprintf("the bound %s is reassigned inside the loop body", bound.Value)
-		}
-	default:
-		if !isIntegerConstant(condition.Right) {
-			return "the bound is neither a constant nor an unmodified variable"
-		}
+	if problem := loopBoundProblem(condition.Right, counter.Value, loop.Body); problem != "" {
+		return problem
 	}
 	switch n := countAssignments(loop.Body, counter.Value); {
 	case n == 0:
@@ -134,6 +124,33 @@ func isIntegerConstant(expr ast.Expression) bool {
 	return ok
 }
 
+// loopBoundProblem checks that the bound is fixed throughout the loop.
+// A quotient by a positive literal has the same fixed-bound argument as
+// its numerator; it admits the lane-strided kernel loop `s < T / G`.
+func loopBoundProblem(bound ast.Expression, counter string, body *ast.BlockStatement) string {
+	if div, ok := bound.(*ast.InfixExpression); ok && div.Operator == "/" {
+		denominator, ok := div.Right.(*ast.IntegerLiteral)
+		if !ok || denominator.Value <= 0 {
+			return "a quotient bound requires a positive literal divisor"
+		}
+		bound = div.Left
+	}
+	switch b := bound.(type) {
+	case *ast.Identifier:
+		if b.Value == counter {
+			return "the bound depends on the counter itself"
+		}
+		if countAssignments(body, b.Value) != 0 {
+			return fmt.Sprintf("the bound %s is reassigned inside the loop body", b.Value)
+		}
+	default:
+		if !isIntegerConstant(bound) {
+			return "the bound is neither a constant, an unmodified variable, nor their quotient by a positive literal"
+		}
+	}
+	return ""
+}
+
 // boundedWhileShape recognizes `while i < bound { ... i = i + k ... }`.
 func boundedWhileShape(loop *ast.WhileStatement) bool {
 	if loop == nil || loop.Body == nil {
@@ -148,17 +165,8 @@ func boundedWhileShape(loop *ast.WhileStatement) bool {
 		return false
 	}
 
-	// The bound must be fixed: an integer constant (a literal or
-	// `T(literal)`), or an identifier the body never reassigns.
-	switch bound := condition.Right.(type) {
-	case *ast.Identifier:
-		if bound.Value == counter.Value || countAssignments(loop.Body, bound.Value) != 0 {
-			return false
-		}
-	default:
-		if !isIntegerConstant(condition.Right) {
-			return false
-		}
+	if loopBoundProblem(condition.Right, counter.Value, loop.Body) != "" {
+		return false
 	}
 
 	// Exactly one assignment to the counter, advancing it by a positive
@@ -270,12 +278,21 @@ func forEachWhileInFunction(program *ast.Program, visit func(*ast.WhileStatement
 func countAssignments(block *ast.BlockStatement, name string) int {
 	count := 0
 	var walkStmt func(stmt ast.Statement)
+	var walkExpr func(expr ast.Expression)
 	walkStmt = func(stmt ast.Statement) {
 		switch s := stmt.(type) {
 		case *ast.AssignmentStatement:
 			if s.Name != nil && s.Name.Value == name {
 				count++
 			}
+			walkExpr(s.Value)
+		case *ast.VariableDeclaration:
+			walkExpr(s.Value)
+		case *ast.ExpressionStatement:
+			walkExpr(s.Expression)
+		case *ast.IndexAssignmentStatement:
+			walkExpr(s.Target)
+			walkExpr(s.Value)
 		case *ast.IfStatement:
 			if s.Consequence != nil {
 				for _, inner := range s.Consequence.Statements {
@@ -286,6 +303,7 @@ func countAssignments(block *ast.BlockStatement, name string) int {
 				walkStmt(s.Alternative)
 			}
 		case *ast.WhileStatement:
+			walkExpr(s.Condition)
 			if s.Body != nil {
 				for _, inner := range s.Body.Statements {
 					walkStmt(inner)
@@ -300,6 +318,40 @@ func countAssignments(block *ast.BlockStatement, name string) int {
 				for _, inner := range s.Body.Statements {
 					walkStmt(inner)
 				}
+			}
+		}
+	}
+	walkExpr = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.BlockExpression:
+			if e.Block != nil {
+				walkStmt(e.Block)
+			}
+		case *ast.MatchExpression:
+			walkExpr(e.Scrutinee)
+			for _, arm := range e.Arms {
+				walkExpr(arm.Body)
+			}
+		case *ast.InfixExpression:
+			walkExpr(e.Left)
+			walkExpr(e.Right)
+		case *ast.PrefixExpression:
+			walkExpr(e.Right)
+		case *ast.InvocationExpression:
+			walkExpr(e.Function)
+			for _, arg := range e.Arguments {
+				walkExpr(arg)
+			}
+		case *ast.IndexExpression:
+			walkExpr(e.Left)
+			walkExpr(e.Index)
+		case *ast.ArrayLiteral:
+			for _, elem := range e.Elements {
+				walkExpr(elem)
+			}
+		case *ast.RecordLiteral:
+			for _, field := range e.FieldOrder {
+				walkExpr(field.Value)
 			}
 		}
 	}

@@ -104,26 +104,45 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 			continue
 		}
 		b, ok := top[name]
-		// A scalar-replaced array (b.sa) owns no slot or register of its
-		// own — its elements are scalars bound under their own names —
-		// and its binding's zero offset is nobody's slot to recycle (the
-		// first frame slot, a live array's, went to the pool through it
-		// once: the blake3 compression's state word zero).
-		if !ok || b.arr != nil || b.rec != nil || b.sp != nil || b.sa != nil || b.freed {
+		if !ok || b.freed {
 			continue
 		}
-		switch {
-		case b.reg >= vecBase:
-			g.releaseVectorHome(b.reg)
-		case b.reg >= 0:
-			g.freeCallee = append(g.freeCallee, b.reg)
-		case b.offset >= 0 && b.typ.isVec:
-			g.freeSlots16 = append(g.freeSlots16, b.offset)
-		case b.offset >= 0:
-			g.freeSlots8 = append(g.freeSlots8, b.offset)
-			traceSlot("release-dead", name, b.offset, b.reg, g.nslots, len(g.freeSlots8))
+		if b.sa != nil {
+			// Only the hidden elements own storage. Their names do not
+			// occur in the source last-use map, so release their homes at
+			// the parent's last mention, in element order. Nested loop or
+			// arm uses belong to their enclosing statement, as for scalars.
+			// Never recycle the synthetic parent's offset or register.
+			for _, hidden := range b.sa.names {
+				g.releaseDeadScalar(top, hidden)
+			}
+			b.freed = true
+			top[name] = b
+			continue
 		}
-		b.freed = true
-		top[name] = b
+		g.releaseDeadScalar(top, name)
 	}
+}
+
+// releaseDeadScalar releases only an actual scalar home in this scope.
+// Marking it freed keeps a repeated release or popScope from returning the
+// same home twice; an outer binding is never reached through a name here.
+func (g *generator) releaseDeadScalar(top map[string]slotBinding, name string) {
+	b, ok := top[name]
+	if !ok || b.arr != nil || b.rec != nil || b.sp != nil || b.sa != nil || b.freed {
+		return
+	}
+	switch {
+	case b.reg >= vecBase:
+		g.releaseVectorHome(b.reg)
+	case b.reg >= 0:
+		g.freeCallee = append(g.freeCallee, b.reg)
+	case b.offset >= 0 && b.typ.isVec:
+		g.freeSlots16 = append(g.freeSlots16, b.offset)
+	case b.offset >= 0:
+		g.freeSlots8 = append(g.freeSlots8, b.offset)
+		traceSlot("release-dead", name, b.offset, b.reg, g.nslots, len(g.freeSlots8))
+	}
+	b.freed = true
+	top[name] = b
 }

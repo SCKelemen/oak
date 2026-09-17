@@ -43,9 +43,10 @@ type LoopShape struct {
 	// Stride is the elements one trip advances the index by (|Step|), 1
 	// when there is no index.
 	Stride int
-	// MaxTrips bounds the trips when the shape does, 0 when it does not:
+	// MaxTrips is a cost-only trip-bound estimate, 0 when unknown:
 	// a constant start against an immediate bound with an unsigned exit,
-	// or the remainder loop after a strided loop over the same index.
+	// or a smaller-stride remainder after a loop over the same index.
+	// Pattern-derived remainder hints are not verification authority.
 	MaxTrips int
 }
 
@@ -200,22 +201,22 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 		}
 		shapes = append(shapes, sh)
 	}
-	// Remainder loops: a stride-one loop right after a strided loop over
+	// Remainder loops: a smaller-stride loop right after a strided loop over
 	// the same induction web and the same bound runs fewer than the
 	// stride's trips.
 	for i := 1; i < len(shapes); i++ {
 		cur, prev := shapes[i], shapes[i-1]
-		if cur.Index == nil || prev.Index == nil || cur.Stride != 1 || prev.Stride <= 1 || cur.MaxTrips != 0 {
+		if cur.Index == nil || prev.Index == nil || cur.Index.Step <= 0 || prev.Index.Step <= 0 || cur.Stride >= prev.Stride || cur.MaxTrips != 0 || cur.Loop.Parent != prev.Loop.Parent {
 			continue
 		}
-		sameBound := cur.BoundReg == prev.BoundReg && cur.BoundIsImm == prev.BoundIsImm
+		sameBound := cur.BoundReg == prev.BoundReg && cur.BoundIsImm == prev.BoundIsImm && (!cur.BoundIsImm || cur.BoundImm == prev.BoundImm)
 		// A strided loop whose exit test the analysis could not read (a
 		// slack guard computed into a flag) still walks the same index to
 		// the same length as the remainder after it: the remainder runs
 		// fewer than the stride's trips (a cost, not a proof).
 		unreadBound := prev.BoundReg == (Reg{}) && !prev.BoundIsImm
 		if cur.Index.Web == prev.Index.Web && (sameBound || unreadBound) && prev.Loop.Header.Index < cur.Loop.Header.Index {
-			cur.MaxTrips = prev.Stride - 1
+			cur.MaxTrips = (prev.Stride - 1) / cur.Stride
 		}
 	}
 	return shapes, nil

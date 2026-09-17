@@ -258,8 +258,14 @@ func (g *generator) reloadPromoted(name string) error {
 // reports none: the free list first, then the unclaimed ones (the save
 // area then covers them), never a caller-saved register.
 func (g *generator) takeCalleeRegister() (int, bool) {
-	if len(g.freeCallee) > 0 {
-		r := g.freeCallee[len(g.freeCallee)-1]
+	// Scalar last-use/scope release also recycles caller homes here. A
+	// synthetic persistent home must not inherit their call-clobber class.
+	for i := len(g.freeCallee) - 1; i >= 0; i-- {
+		r := g.freeCallee[i]
+		if r < calleeLow || r > calleeHigh {
+			continue
+		}
+		copy(g.freeCallee[i:], g.freeCallee[i+1:])
 		g.freeCallee = g.freeCallee[:len(g.freeCallee)-1]
 		return r, true
 	}

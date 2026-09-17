@@ -35,25 +35,36 @@ const (
 
 // Transform names, as the optimization report spells them.
 const (
-	TransformStrength    = "strength-reduce"
-	TransformOptIR       = "optir-emit"
-	TransformElide       = "elide-guards"
-	TransformReuseFlags  = "reuse-flags"
-	TransformHoist       = "hoist-invariants"
-	TransformUnroll      = "unroll-reductions"
-	TransformVectorHomes = "vector-homes"
-	TransformCleanup     = "late-cleanup"
-	TransformVectorize   = "vectorize-reductions"
-	TransformVectorMaps  = "vectorize-maps"
-	TransformVectorFolds = "vectorize-folds"
-	TransformVecBlocks   = "vector-blocks"
-	TransformMultiplyAdd = "multiply-add"
-	TransformValueSelect = "value-select"
-	TransformReallocate  = "reallocate"
-	TransformSchedule    = "schedule"
-	TransformFuse        = "fuse"
-	TransformFuseExits   = "fuse-exits"
-	TransformRotate      = "rotate-loops"
+	TransformStrength        = "strength-reduce"
+	TransformOptIR           = "optir-emit"
+	TransformElide           = "elide-guards"
+	TransformReuseFlags      = "reuse-flags"
+	TransformHoist           = "hoist-invariants"
+	TransformUnroll          = "unroll-reductions"
+	TransformUnrollFills     = "unroll-fills"
+	TransformVectorHomes     = "vector-homes"
+	TransformLoopArrayHomes  = "loop-array-homes"
+	TransformLoopResultHomes = "loop-result-homes"
+	TransformCleanup         = "late-cleanup"
+	TransformVectorize       = "vectorize-reductions"
+	TransformVectorMaps      = "vectorize-maps"
+	TransformUnrollMaps      = "unroll-vector-maps"
+	TransformVectorFolds     = "vectorize-folds"
+	TransformUnrollConst     = "unroll-constant"
+	TransformUnrollSmall     = "unroll-small"
+	TransformVecBlocks       = "vector-blocks"
+	TransformVectorAddresses = "share-vector-addresses"
+	TransformMultiplyAdd     = "multiply-add"
+	TransformValueSelect     = "value-select"
+	TransformReallocate      = "reallocate"
+	TransformSchedule        = "schedule"
+	TransformFuse            = "fuse"
+	TransformFuseExits       = "fuse-exits"
+	TransformRotate          = "rotate-loops"
+	TransformCarryIndex      = "carry-loop-index"
+	TransformRedundantGuards = "elide-redundant-guards"
+	TransformRecordBases     = "share-record-bases"
+	TransformGlobalAddresses = "share-global-addresses"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -67,6 +78,9 @@ type laneTransform struct {
 	arches map[string]bool
 	// applied reports whether the configuration already has the transform.
 	applied func(Lane) bool
+	// eligible cheaply rejects a transform before candidate materialization.
+	// Nil means every configuration on the transform's lane is eligible.
+	eligible func(Lane) bool
 	// apply turns the transform on.
 	apply func(Lane) Lane
 	// fired counts the sites the transform changed in a lowered body.
@@ -82,7 +96,7 @@ func (t *laneTransform) Requirements() []opt.Requirement { return t.reqs }
 // lane or when already applied.
 func (t *laneTransform) Apply(c *opt.Candidate) *opt.Candidate {
 	lane, ok := c.Config.(Lane)
-	if !ok || !t.arches[laneArch(lane)] || t.applied(lane) {
+	if !ok || !t.arches[laneArch(lane)] || t.applied(lane) || (t.eligible != nil && !t.eligible(lane)) {
 		return nil
 	}
 	return c.With(t.name, t.apply(lane))
@@ -284,6 +298,18 @@ func Transforms() []opt.Transform {
 			fired:   Unrolled,
 		},
 		&laneTransform{
+			// Scalar blocked zero fills (nativegen/fill_unroll.go): four
+			// ordered u64 stores per main trip and the original remainder,
+			// licensed by Oak.BlockedFill.blocked_fill_eq. The stores remain
+			// scalar; pair-store custody is a separate, unmet obligation.
+			name: TransformUnrollFills, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:   bothLanes,
+			applied:  func(l Lane) bool { return l.UnrollFills },
+			eligible: func(l Lane) bool { return l.UnrollFillsEligible },
+			apply:    func(l Lane) Lane { l.UnrollFills = true; return l },
+			fired:    UnrolledFills,
+		},
+		&laneTransform{
 			// Reduction vectorization (nativegen/vector_reduction.go): the
 			// four accumulators as the lanes of fixed vectors — two
 			// simd.U64x2 or one simd.U32x4 — under the same license
@@ -318,6 +344,43 @@ func Transforms() []opt.Transform {
 			fired:   VectorizedMaps,
 		},
 		&laneTransform{
+			// Two consecutive blocks under one slack guard. This only changes
+			// a body with VectorMaps enabled; lane-wise semantics license it,
+			// without associativity or numerical relaxation.
+			name: TransformUnrollMaps, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UnrollVectorMaps },
+			apply:   func(l Lane) Lane { l.UnrollVectorMaps = true; return l },
+			fired:   UnrolledMaps,
+		},
+		&laneTransform{
+			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
+			// from zero to a literal bound becomes its trips, the index a
+			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
+			// — nothing of the body is assumed, so no fact is required. What
+			// it buys is downstream: constant indices where the loop's
+			// variable indexed a frame array, so the slot promotion can keep
+			// the array's words in registers. At the head of the loop phase,
+			// so the other loop rewrites see the trips.
+			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollConstant },
+			eligible: func(l Lane) bool { return !l.UnrollSmall },
+			apply:    func(l Lane) Lane { l.UnrollConstant = true; return l },
+			fired:    UnrolledConstant,
+		},
+		&gatedTransform{laneTransform: laneTransform{
+			// The same exact loop law with a bounded copy policy and a
+			// placement-only veto. Keep the full strategy as an alternative,
+			// never combine their rewrite or cache identities.
+			name: TransformUnrollSmall, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.UnrollSmall },
+			eligible: func(l Lane) bool { return !l.UnrollConstant },
+			apply:    func(l Lane) Lane { l.UnrollSmall = true; return l },
+			fired:    UnrolledSmall,
+		}},
+		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
 			// parameters — the dot product — computes one vector of element
@@ -341,7 +404,7 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.HoistInvariants = true; return l },
 			fired:   Hoisted,
 		},
-		&laneTransform{
+		&gatedTransform{laneTransform: laneTransform{
 			// Bottom-tested loops (nativegen/rotate.go; §9 "Bottom-tested
 			// loops"): a loop over a conjunction of simple tests runs its
 			// test at the tail as a conditional back edge, one branch an
@@ -353,7 +416,7 @@ func Transforms() []opt.Transform {
 			applied: func(l Lane) bool { return l.RotateLoops },
 			apply:   func(l Lane) Lane { l.RotateLoops = true; return l },
 			fired:   RotatedLoops,
-		},
+		}},
 		&laneTransform{
 			// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
 			// calling function's vector locals in v16–v31, saved around a
@@ -365,6 +428,27 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
+		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index u32/u64 array elements live in
+			// callee-saved registers for one loop (loop_array_homes.go).
+			// The full verifier compares the machine candidate with the
+			// unchanged Oak reference; unsupported shapes remain memory-backed.
+			name: TransformLoopArrayHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopArrayHomes },
+			apply:   func(l Lane) Lane { l.LoopArrayHomes = true; return l },
+			fired:   LoopArrayHomes,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Selected literal-index elements of an eligible result-buffer
+			// array live in callee-saved registers for one loop. This remains
+			// a separate machine candidate judged against the Oak reference.
+			name: TransformLoopResultHomes, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.LoopResultHomes },
+			apply:   func(l Lane) Lane { l.LoopResultHomes = true; return l },
+			fired:   LoopResultHomes,
+		}},
 		&gatedTransform{laneTransform: laneTransform{
 			// Global register reallocation and frame-slot promotion (package
 			// machine, Phase B): the body's def-use webs recolored by a
@@ -378,10 +462,49 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}, neutral: true},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformCarryIndex, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.CarryLoopIndices },
+			apply:   func(l Lane) Lane { l.CarryLoopIndices = true; return l },
+			fired:   CarriedLoopIndices,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRedundantGuards, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ElideRedundantGuards },
+			apply:   func(l Lane) Lane { l.ElideRedundantGuards = true; return l },
+			fired:   ElidedRedundantGuards,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformRecordBases, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareRecordBases },
+			apply:   func(l Lane) Lane { l.ShareRecordBases = true; return l },
+			fired:   SharedRecordBases,
+		}},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformGlobalAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareGlobalAddresses },
+			apply:   func(l Lane) Lane { l.ShareGlobalAddresses = true; return l },
+			fired:   SharedGlobalAddresses,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
+		&gatedTransform{laneTransform: laneTransform{
+			// Copy cleanup exposes private address temporaries. Retry load
+			// sharing and include stores, in place: no memory reordering.
+			// This is a new gated candidate, not more authority for the
+			// earlier load-only vecBlocksTransform.
+			name: TransformVectorAddresses, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.ShareVectorAddresses },
+			apply:   func(l Lane) Lane { l.ShareVectorAddresses = true; return l },
+			fired:   SharedVectorAddresses,
+		}},
 	}
 }
 
@@ -457,9 +580,16 @@ func PlainLane(lane Lane) Lane {
 	lane.ReuseFlags = false
 	lane.HoistInvariants = false
 	lane.RotateLoops = false
+	lane.CarryLoopIndices = false
+	lane.ElideRedundantGuards = false
+	lane.ShareRecordBases = false
+	lane.ShareGlobalAddresses = false
 	lane.VectorHomes = false
+	lane.LoopArrayHomes = false
+	lane.LoopResultHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false
+	lane.ShareVectorAddresses = false
 	lane.MultiplyAdd = false
 	lane.ValueSelect = false
 	lane.Reallocate = false
@@ -468,7 +598,11 @@ func PlainLane(lane Lane) Lane {
 	lane.FuseExits = false
 	lane.VectorReductions = false
 	lane.VectorMaps = false
+	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
+	lane.UnrollConstant = false
+	lane.UnrollSmall = false
+	lane.UnrollFills = false
 	lane.NoReductions = true
 	return lane
 }
@@ -558,7 +692,7 @@ func walkNodes(node ast.Node, visit func(ast.Node)) {
 // body and per loop, a loop being the items from a label to a branch back
 // to it (docs/notes/optimizer-search-2026-09.md §9). Each loop's stride is
 // read from the increment of the register its exit compares (an `add
-// wN, wN, #k`), and a stride-one loop right after a strided loop over the
+// wN, wN, #k`), and a smaller-stride loop right after a strided loop over the
 // same register — the remainder loop of an unrolling — is bounded by the
 // stride's trips. Both are the cost model's hints.
 func Metrics(fn *asm.Function) opt.Metrics {
@@ -705,9 +839,9 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				break
 			}
 		}
-		if k > 0 && body.Stride == 1 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from {
-			if prev := m.LoopBodies[k-1]; prev.Stride > 1 {
-				body.MaxTrips = prev.Stride - 1
+		if k > 0 && body.Stride > 0 && indices[k-1] == indices[k] && indices[k] >= 0 && loops[k-1].to < loop.from && outer[k-1] == outer[k] {
+			if prev := m.LoopBodies[k-1]; prev.Stride > body.Stride {
+				body.MaxTrips = (prev.Stride - 1) / body.Stride
 			}
 		}
 		for i := loop.from; i <= loop.to; i++ {
@@ -718,6 +852,9 @@ func Metrics(fn *asm.Function) opt.Metrics {
 		m.LoopStalls += body.Stalls
 		if label, ok := fn.Items[loop.from].(asm.Label); ok {
 			if sh := shapes[label.Name]; sh != nil && sh.Index != nil {
+				// The recurrence web is also the best identity for the
+				// cost-only constant-bound fallback below.
+				indices[k] = sh.Index.Reg.Num
 				// The analysis found the index: its stride and bound
 				// replace the heuristic's; a loop it could not read keeps
 				// the heuristic's reading.
@@ -727,9 +864,181 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				}
 			}
 		}
+		if body.MaxTrips == 0 && body.Stride > 0 && indices[k] >= 0 {
+			body.MaxTrips = constantLoopTrips(fn.Items, loop.from, loop.to, indices[k], body.Stride, labelAt)
+		}
 		m.LoopBodies = append(m.LoopBodies, body)
 	}
 	return m
+}
+
+// constantLoopTrips recovers a cost-only bound from the generator's closed
+// unsigned exit shapes when recurrence analysis leaves a computed constant
+// in a temporary. It grants no checker or verifier authority.
+func constantLoopTrips(items []asm.Item, from, to, index, stride int, labels map[string]int) int {
+	start, known := constantRegisterBefore(items, from, index, 0)
+	if !known || start < 0 || stride <= 0 {
+		return 0
+	}
+	for i := from + 1; i < to; i++ {
+		cmp, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction || cmp.Mnemonic != "cmp" || len(cmp.Operands) != 2 {
+			continue
+		}
+		left, isRegister := cmp.Operands[0].(asm.Register)
+		if !isRegister || left.Num != index || (left.Class != asm.ClassW && left.Class != asm.ClassX) {
+			continue
+		}
+		branch, isBranch := items[i+1].(asm.Instruction)
+		if !isBranch || (branch.Mnemonic != "b" && branch.Mnemonic != "b.") || (branch.Cond != "hs" && branch.Cond != "hi") {
+			continue
+		}
+		target, exists := labels[branchTarget(branch)]
+		if !exists || (target >= from && target <= to) {
+			continue
+		}
+		bound, known := constantLoopBound(items, from, to, i, cmp.Operands[1], left.Class)
+		if !known || bound < start {
+			continue
+		}
+		delta := bound - start
+		step := int64(stride)
+		var trips int64
+		if branch.Cond == "hi" {
+			trips = delta/step + 1
+		} else if delta > 0 {
+			trips = (delta + step - 1) / step
+		}
+		if trips > 0 && trips <= 1<<31 {
+			return int(trips)
+		}
+	}
+	return 0
+}
+
+// constantLoopBound resolves a compare operand at the branch, then permits
+// one cost-only look through the loop header for an invariant register. The
+// latter is fail closed: a definition anywhere in the loop, or a call that
+// may clobber an implicit caller-saved register, leaves the trip count unknown.
+func constantLoopBound(items []asm.Item, from, to, at int, operand asm.Operand, class asm.RegClass) (int64, bool) {
+	if value, known := constantOperandBefore(items, at, operand, class, 0); known {
+		return value, true
+	}
+	reg, isRegister := operand.(asm.Register)
+	if !isRegister || reg.Class != class {
+		return 0, false
+	}
+	for i := from; i <= to && i < len(items); i++ {
+		ins, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction {
+			continue
+		}
+		if isCall(asm.ArchArm64, ins) || writesGeneral(ins, reg.Num) {
+			return 0, false
+		}
+	}
+	return constantRegisterBefore(items, from, reg.Num, 0)
+}
+
+func constantOperandBefore(items []asm.Item, at int, operand asm.Operand, class asm.RegClass, depth int) (int64, bool) {
+	switch value := operand.(type) {
+	case asm.Immediate:
+		if value.Shift != 0 {
+			return 0, false
+		}
+		return value.Value, value.Value >= 0
+	case asm.Register:
+		if value.Class != class {
+			return 0, false
+		}
+		return constantRegisterBefore(items, at, value.Num, depth)
+	default:
+		return 0, false
+	}
+}
+
+// constantRegisterBefore follows only a nearest straight-line W/X
+// definition. Labels and control or memory instructions terminate the walk;
+// arithmetic that would wrap is refused rather than modeled.
+func constantRegisterBefore(items []asm.Item, at, register, depth int) (int64, bool) {
+	if depth > 4 {
+		return 0, false
+	}
+	for i := at - 1; i >= 0; i-- {
+		if _, isLabel := items[i].(asm.Label); isLabel {
+			return 0, false
+		}
+		ins, isInstruction := items[i].(asm.Instruction)
+		if !isInstruction {
+			return 0, false
+		}
+		if isCall("arm64", ins) || isLoad("arm64", ins) || isStore("arm64", ins) {
+			return 0, false
+		}
+		if isBranch("arm64", ins) {
+			// A conditional branch before this point either exits or falls
+			// through without changing a register. Along the only path that
+			// reaches `at`, its value is preserved. An unconditional edge can
+			// introduce a join the linear scan cannot model.
+			if ins.Cond == "" {
+				return 0, false
+			}
+			continue
+		}
+		if !writesGeneral(ins, register) {
+			continue
+		}
+		if len(ins.Operands) < 2 {
+			return 0, false
+		}
+		destination, ok := ins.Operands[0].(asm.Register)
+		if !ok || destination.Num != register || (destination.Class != asm.ClassW && destination.Class != asm.ClassX) {
+			return 0, false
+		}
+		limit := int64(^uint32(0))
+		if destination.Class == asm.ClassX {
+			limit = int64(^uint64(0) >> 1)
+		}
+		switch ins.Mnemonic {
+		case "mov":
+			source, ok := ins.Operands[1].(asm.Register)
+			if !ok || source.Class != destination.Class {
+				return 0, false
+			}
+			if source.ZeroRegister() {
+				return 0, true
+			}
+			return constantRegisterBefore(items, i, source.Num, depth+1)
+		case "movz":
+			immediate, ok := ins.Operands[1].(asm.Immediate)
+			if !ok || immediate.Value < 0 || immediate.Shift < 0 || immediate.Shift > 48 {
+				return 0, false
+			}
+			value := immediate.Value << immediate.Shift
+			return value, value >= 0 && value <= limit
+		case "add", "sub":
+			if len(ins.Operands) != 3 {
+				return 0, false
+			}
+			source, ok := ins.Operands[1].(asm.Register)
+			if !ok || source.Class != destination.Class {
+				return 0, false
+			}
+			base, known := constantRegisterBefore(items, i, source.Num, depth+1)
+			immediate, isImmediate := ins.Operands[2].(asm.Immediate)
+			if !known || !isImmediate || immediate.Value < 0 || immediate.Shift != 0 {
+				return 0, false
+			}
+			value := base + immediate.Value
+			if ins.Mnemonic == "sub" {
+				value = base - immediate.Value
+			}
+			return value, value >= 0 && value <= limit
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // isCompare reports an instruction that compares registers for a branch:

@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 // A scalar-replaced array (nativegen/scalar_arrays.go) owns no frame
@@ -13,8 +16,8 @@ import (
 // next spilled scalar landed on the first frame slot — a live array's —
 // and the blake3 compression came out wrong after its third quarter
 // round (benchmarks/kernels, 2026-09-16). Four inlined quarter rounds
-// over a sixteen-word state reproduce it: the body must be proven, and
-// agree with the C backend when run.
+// over a sixteen-word state reproduce it: the body must not disagree
+// with its reference, and must agree with the C backend when run.
 const nativeScalarArrayReleaseProgram = `
 rotr32: (x: u32, n: u32): u32 = (x >> n) | (x << (u32(32) - n))
 
@@ -91,5 +94,100 @@ func TestE2ENativeScalarArrayRelease(t *testing.T) {
 	_, viaC, abnormalC := buildAndRunFrom(t, "scalar_array_release_c", New().WithSource("release.oak", nativeScalarArrayReleaseProgram))
 	if abnormal || abnormalC || native != viaC {
 		t.Fatalf("native %d (abnormal %v), C backend %d (abnormal %v)\n%s", native, abnormal, viaC, abnormalC, joined)
+	}
+}
+
+// Sequential groups release their hidden scalar homes after each group's
+// last use. Outer arrays must instead survive every iteration and branch
+// that reads them, and a final expression must retain its array inputs.
+const nativeScalarArrayLifetimeProgram = `
+groups: (x: u32): u32 {
+  a: [2]u32 = [2]u32{ x, x + u32(1) }
+  total: u32 = a[0] + a[1]
+  b: [2]u32 = [2]u32{ total, x ^ u32(7) }
+  total = b[0] ^ b[1]
+  c: [2]u32 = [2]u32{ total + u32(3), total }
+  c[0] + c[1]
+}
+
+loop_groups: (x: u32): u32 {
+  outer: [2]u32 = [2]u32{ x, x + u32(1) }
+  total: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(5) {
+    a: [2]u32 = [2]u32{ outer[0] + i, outer[1] }
+    total = total + (a[0] ^ a[1])
+    b: [2]u32 = [2]u32{ total, i }
+    total = b[0] + b[1]
+    i = i + u32(1)
+  }
+  total + outer[0]
+}
+
+branch_groups: (x: u32): u32 {
+  outer: [2]u32 = [2]u32{ x, x + u32(1) }
+  total: u32 = u32(0)
+  x < u32(17) ? {
+    a: [2]u32 = [2]u32{ outer[0], outer[1] }
+    total = a[0] + a[1]
+  } | {
+    b: [2]u32 = [2]u32{ outer[0] ^ u32(1), outer[1] }
+    total = b[0] + b[1]
+  }
+  c: [2]u32 = [2]u32{ total, outer[0] }
+  c[0] ^ c[1]
+}
+
+main: (): i32 {
+  i: u32 = u32(0)
+  total: u32 = u32(0)
+  while i < u32(32) {
+    total = total + groups(i) + loop_groups(i) + branch_groups(i)
+    i = i + u32(1)
+  }
+  i32_bits_u32(total & u32(255))
+}
+`
+
+func TestE2ENativeScalarArrayLastUseLifetimes(t *testing.T) {
+	requireArm64Host(t)
+	comp := New().WithSource("lifetimes.oak", nativeScalarArrayLifetimeProgram).WithNativeBodies().WithNativeAsm()
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := map[string]*ast.FunctionStatement{}
+	symbols := map[string]bool{}
+	for _, statement := range model.Tree.Root.Statements {
+		if function, ok := statement.(*ast.FunctionStatement); ok {
+			functions[function.Name.Value] = function
+			symbols[function.Name.Value] = true
+		}
+	}
+	for _, name := range []string{"groups", "loop_groups", "branch_groups"} {
+		if verdict := model.NativeVerdicts[name]; verdict.Kind != asm.VerdictProven {
+			t.Fatalf("%s verdict = %s (%s), want proven", name, verdict.Kind, verdict.Message)
+		}
+		// Pin the direct lowering too: a selected OptIR alternative must
+		// not hide a broken scalar-array home lifetime in the base lane.
+		source := functions[name]
+		if source == nil {
+			t.Fatalf("missing %s source", name)
+		}
+		body, err := nativegen.CompileFor(nativegen.Lane{Arch: asm.ArchArm64}, source, functions, nil, nil, nil, model.TypeChecker)
+		if err != nil {
+			t.Fatalf("%s direct lowering: %v", name, err)
+		}
+		if findings := asm.Check(body, source, symbols); len(findings) != 0 {
+			t.Fatalf("%s direct lowering admission: %v", name, findings)
+		}
+		if verdict := asm.Verify(body, source, source.Body); verdict.Kind != asm.VerdictProven {
+			t.Fatalf("%s direct lowering verdict = %s (%s), want proven", name, verdict.Kind, verdict.Message)
+		}
+	}
+	_, native, abnormal := buildAndRunFrom(t, "scalar_array_lifetimes", comp)
+	_, viaC, abnormalC := buildAndRunFrom(t, "scalar_array_lifetimes_c", New().WithSource("lifetimes.oak", nativeScalarArrayLifetimeProgram))
+	if abnormal || abnormalC || native != viaC {
+		t.Fatalf("native %d (abnormal %v), C backend %d (abnormal %v)", native, abnormal, viaC, abnormalC)
 	}
 }

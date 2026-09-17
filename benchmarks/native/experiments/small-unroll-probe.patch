@@ -1,0 +1,174 @@
+diff --git a/compiler/native_stable_unroll_probe_test.go b/compiler/native_stable_unroll_probe_test.go
+new file mode 100644
+--- /dev/null
++++ b/compiler/native_stable_unroll_probe_test.go
+@@ -0,0 +1,169 @@
++package compiler
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/SCKelemen/oak/asm"
++	"github.com/SCKelemen/oak/ast"
++	"github.com/SCKelemen/oak/codegen"
++	"github.com/SCKelemen/oak/nativegen"
++	"github.com/SCKelemen/oak/opt"
++	"github.com/SCKelemen/oak/target"
++)
++
++// Temporary diagnostic: materialize a specific unroll candidate without
++// altering production search or accepting weaker semantic evidence.
++func TestNativeStableUnrollProbe(t *testing.T) {
++	const approvedDirectory = "/tmp/oak-stable-unroll.kT73G4"
++	directory := os.Getenv("OAK_UNROLL_PROBE_DIR")
++	if directory == "" {
++		t.Skip("set OAK_UNROLL_PROBE_DIR explicitly for the temporary diagnostic")
++	}
++	if directory != approvedDirectory {
++		t.Fatalf("probe output directory must be exactly %s", approvedDirectory)
++	}
++	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
++		t.Fatalf("probe directory is unavailable: %v", err)
++	}
++	t.Setenv("OAK_VERIFY_CACHE", "0")
++	t.Setenv("OAK_VERIFY_BUDGET", "")
++	packageDirectory, err := filepath.Abs("../benchmarks/kernels/oak")
++	if err != nil {
++		t.Fatal(err)
++	}
++	comp := New().WithPackageDir(packageDirectory).
++		WithTarget(target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}).WithNativeAsm()
++	comp.options.InlineHelpers = true
++	comp.options.NativeBodies = false
++	model, err := comp.SemanticModel().Get()
++	if err != nil {
++		t.Fatal(err)
++	}
++	root, tc := model.Tree.Root, model.TypeChecker
++	functions := map[string]*ast.FunctionStatement{}
++	externs := map[string]*ast.FunctionStatement{}
++	records := map[string]*ast.RecordLiteral{}
++	adts := map[string]*ast.ADTType{}
++	templates := map[string]*ast.ADTType{}
++	symbols := map[string]bool{}
++	for _, statement := range root.Statements {
++		if adt, ok := statement.(*ast.ADTType); ok && adt.Name != nil {
++			if len(adt.TypeParams) > 0 {
++				templates[adt.Name.Value] = adt
++			} else if record, ok := recordShape(adt); ok {
++				records[adt.Name.Value] = record
++			} else {
++				adts[adt.Name.Value] = adt
++			}
++			continue
++		}
++		function, ok := statement.(*ast.FunctionStatement)
++		if !ok || function.Name == nil {
++			continue
++		}
++		symbols[function.Name.Value] = true
++		if function.ExternSymbol != "" {
++			externs[function.Name.Value] = function
++		} else if function.Receiver == nil && len(function.TypeParams) == 0 {
++			functions[function.Name.Value] = function
++			if nativegen.VectorContract(function) {
++				symbols[nativegen.NativeSymbolFor(asm.ArchArm64, function)] = true
++			}
++		}
++	}
++	specializeInstantiations(tc, templates, records, adts)
++	source := functions[nativeBlake3CompressName]
++	if source == nil {
++		t.Fatal("real BLAKE3 compression function was not loaded")
++	}
++	constants := constantGlobals(root, tc)
++	globals, aggregates, _ := addressableGlobals(root, tc, constants, records)
++	tables, data := nativeGlobalArrays(root)
++	verified, fromCache := 0, 0
++	driver := &nativeDriver{
++		source: source, functions: functions, externs: externs, records: records, adts: adts,
++		constants: constants, tc: tc, symbols: symbols, declarations: programDeclarations(root),
++		cacheDir: "", verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache,
++	}
++	lane := nativegen.Lane{
++		Arch: asm.ArchArm64, PackedStackArgs: true, NoReductions: true,
++		UnrollSmall: true, Reallocate: true, HoistInvariants: true, Cleanup: true,
++		Globals: globals, Aggregates: aggregates, Tables: tables,
++	}
++	candidate := &opt.Candidate{Config: lane, Applied: []string{
++		nativegen.TransformUnrollSmall, nativegen.TransformReallocate,
++		nativegen.TransformHoist, nativegen.TransformCleanup,
++	}}
++	if err := driver.Materialize(candidate); err != nil {
++		t.Fatalf("candidate materialization failed: %v", err)
++	}
++	body := candidate.Body.(*asm.Function)
++	outputDirectory, err := os.MkdirTemp(directory, "unroll-probe-")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Logf("probe output: %s", outputDirectory)
++	write := func(name string, contents []byte) {
++		t.Helper()
++		file, err := os.OpenFile(filepath.Join(outputDirectory, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if _, err := file.Write(contents); err != nil {
++			_ = file.Close()
++			t.Fatal(err)
++		}
++		if err := file.Close(); err != nil {
++			t.Fatal(err)
++		}
++	}
++	write("compress.oakasm", []byte(nativegen.Describe(body)))
++	metrics := driver.Measure(candidate)
++	if findings := driver.Check(candidate); len(findings) != 0 {
++		write("proof.txt", []byte("seam refused:\n"+strings.Join(findings, "\n")+"\n"))
++		t.Fatalf("seam refused, no object emitted: %v", findings)
++	}
++	result := driver.Validate(candidate)
++	verdict := driver.verdicts[body]
++	report, err := json.MarshalIndent(struct {
++		Candidate      string
++		Metrics        opt.Metrics
++		Frame          int64
++		PromotedSlots  int
++		Unrolled       int
++		Verdict        string
++		Proof          string
++		Verified       int
++		CacheHits      int
++		ExplicitUnits  int
++		MaterializedAs string
++	}{candidate.Name(), metrics, body.Frame, nativegen.PromotedSlots(body), nativegen.UnrolledSmall(body),
++		fmt.Sprint(verdict.Kind), verdict.Message, verified, fromCache, len(model.AsmFunctions), comp.options.PackageName}, "", "  ")
++	if err != nil {
++		t.Fatal(err)
++	}
++	write("metrics.json", append(report, '\n'))
++	write("proof.txt", []byte(verdict.Message+"\n"))
++	if result.Outcome != opt.Proven || verdict.Kind != asm.VerdictProven ||
++		!strings.Contains(verdict.Message, "all 8 result chunks") || fromCache != 0 || nativegen.UnrolledSmall(body) == 0 {
++		t.Fatalf("candidate is not an independently proven unroll of every result chunk; no object emitted: %s", verdict.Message)
++	}
++	units := append(append([]*asm.Function(nil), model.AsmFunctions...), body)
++	generator := codegen.New(comp.options.PackageName, tc)
++	generator.SetNativeGlobals(asm.AddressedGlobals(units))
++	encoded, err := asm.EncodeFunctions(units, generator.AsmSymbol)
++	if err != nil {
++		t.Fatal(err)
++	}
++	object, err := asm.WriteObjectWith(asm.MachO, encoded, comp.objectOptions(nativeData(data, generator.CFunctionName)))
++	if err != nil {
++		t.Fatal(err)
++	}
++	write("kernels.o", object)
++	t.Logf("proven candidate object: %s", filepath.Join(outputDirectory, "kernels.o"))
++}

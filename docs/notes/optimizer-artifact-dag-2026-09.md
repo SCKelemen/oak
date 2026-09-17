@@ -257,7 +257,11 @@ Completed:
    path; artifact identity alone never licenses emission.
 3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP
    analyzes that exact key, and the exact-evidence SCCP rewrite publishes CFG
-   v1. Loop analysis and GVN/DCE consume v1; GVN/DCE publishes CFG v2, a second
+   v1. SCCP revision v2 adds closed constant-result scalar identities; its
+   revision also flows into the composite memory-cleanup key, so old analysis
+   or cleanup payloads cannot be reused under the new transfer rules. No new
+   artifact node is needed. Loop analysis and GVN/DCE consume v1;
+   GVN/DCE publishes CFG v2, a second
    loop node analyzes v2, and LICM consumes both v2 artifacts. LICM no
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or

@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"sort"
@@ -232,13 +233,14 @@ type spanImage struct {
 	lenReg   int
 	elem     int64
 	writable bool
+	record   string
 	hasMin   bool
 	minLen   int64
 	lens     map[int]bool
 }
 
 func (img *spanImage) equal(other *spanImage) bool {
-	return img.lenReg == other.lenReg && img.elem == other.elem && img.writable == other.writable && img.hasMin == other.hasMin && img.minLen == other.minLen && equalSet(img.lens, other.lens)
+	return img.lenReg == other.lenReg && img.elem == other.elem && img.writable == other.writable && img.record == other.record && img.hasMin == other.hasMin && img.minLen == other.minLen && equalSet(img.lens, other.lens)
 }
 
 func newGuardState() *guardState {
@@ -248,7 +250,7 @@ func newGuardState() *guardState {
 func (c *checker) guardSnapshot() *guardState {
 	gs := newGuardState()
 	for base, fact := range c.spans {
-		gs.spans[base] = &spanImage{lenReg: fact.lenReg, elem: fact.elem, writable: fact.writable, hasMin: fact.hasMin, minLen: fact.minLen, lens: copyMap(fact.lenRegs)}
+		gs.spans[base] = &spanImage{lenReg: fact.lenReg, elem: fact.elem, writable: fact.writable, record: fact.record, hasMin: fact.hasMin, minLen: fact.minLen, lens: copyMap(fact.lenRegs)}
 	}
 	gs.idx = copyMap(c.idxFacts)
 	gs.slotIdx = copyMap(c.slotIdx)
@@ -273,7 +275,7 @@ func (c *checker) guardSnapshot() *guardState {
 func (c *checker) applyGuards(gs *guardState) {
 	c.spans = map[int]*spanFact{}
 	for base, img := range gs.spans {
-		c.spans[base] = &spanFact{lenReg: img.lenReg, elem: img.elem, writable: img.writable, hasMin: img.hasMin, minLen: img.minLen, lenRegs: copyMap(img.lens)}
+		c.spans[base] = &spanFact{lenReg: img.lenReg, elem: img.elem, writable: img.writable, record: img.record, hasMin: img.hasMin, minLen: img.minLen, lenRegs: copyMap(img.lens)}
 	}
 	c.idxFacts = copyMap(gs.idx)
 	c.slotIdx = copyMap(gs.slotIdx)
@@ -316,7 +318,7 @@ func meetGuards(a, b *guardState) *guardState {
 	out := newGuardState()
 	for base, imgA := range a.spans {
 		imgB, ok := b.spans[base]
-		if !ok || imgA.elem != imgB.elem || imgA.writable != imgB.writable {
+		if !ok || imgA.elem != imgB.elem || imgA.writable != imgB.writable || imgA.record != imgB.record {
 			continue
 		}
 		lens := map[int]bool{}
@@ -335,7 +337,7 @@ func meetGuards(a, b *guardState) *guardState {
 				}
 			}
 		}
-		img := &spanImage{lenReg: primary, elem: imgA.elem, writable: imgA.writable, lens: lens}
+		img := &spanImage{lenReg: primary, elem: imgA.elem, writable: imgA.writable, record: imgA.record, lens: lens}
 		if imgA.hasMin && imgB.hasMin {
 			img.hasMin = true
 			img.minLen = min(imgA.minLen, imgB.minLen)
@@ -816,6 +818,10 @@ type spanParam struct {
 	lenReg   int
 	elem     int64
 	writable bool
+	// record is the exact nominal composite element type, or empty for a
+	// scalar span. It is compiler-derived layout provenance, not memory
+	// ownership or permission.
+	record string
 }
 
 // spanFact is the live knowledge about a bound span base register. hasMin
@@ -849,14 +855,23 @@ type region struct {
 	// source is the exact data symbol whose address formed this region.
 	// It survives aliases and constant-offset narrowing.
 	source string
+	// record and recordOffset identify an exact tail of one nominal record
+	// element. They are provenance only: they grant no extra access and say
+	// nothing about ordinary memory, privacy, publication, or observers.
+	record       string
+	recordOffset int64
 }
 
 type spanFact struct {
 	lenReg   int // the primary length register (messages)
 	elem     int64
 	writable bool
-	hasMin   bool
-	minLen   int64
+	// record is the exact nominal composite element type, when any. Same-
+	// sized record types remain distinct across aliases and control-flow
+	// meets; the name itself grants no memory authority.
+	record string
+	hasMin bool
+	minLen int64
 	// lenRegs: every w register currently holding this span's length — the
 	// bound one and its copies (`mov wD, wL`). Shared between a base and its
 	// copies (`mov xD, xBase`): they describe one span.
@@ -906,7 +921,7 @@ func (f *spanFact) dropLen(n int) {
 // copy is the fact for a copied base register: the same span, the same
 // length registers.
 func (f *spanFact) copy() *spanFact {
-	return &spanFact{lenReg: f.lenReg, elem: f.elem, writable: f.writable, hasMin: f.hasMin, minLen: f.minLen, lenRegs: f.lenRegs}
+	return &spanFact{lenReg: f.lenReg, elem: f.elem, writable: f.writable, record: f.record, hasMin: f.hasMin, minLen: f.minLen, lenRegs: f.lenRegs}
 }
 
 // cmpFact remembers a 32-bit `cmp wA, #N` or `cmp wA, wB` for exactly the
@@ -1026,6 +1041,27 @@ func (c *checker) spanShapeOf(expr ast.Expression) (elem int64, writable bool, o
 	return comp.Size, marker.Value == "*", true
 }
 
+// recordSpanName returns the exact nominal composite element type of a span
+// or view. The compiler-supplied composite table, the source type, and the
+// classified ABI stride must all agree; an empty result carries no nominal
+// provenance. This is never memory-access authority.
+func recordSpanName(comps map[string]Composite, expr ast.Expression, elem int64) string {
+	indexExpr, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || indexExpr.Dot {
+		return ""
+	}
+	marker, isMarker := indexExpr.Index.(*ast.Identifier)
+	if !isMarker || (marker.Value != "*" && marker.Value != "") {
+		return ""
+	}
+	name := typeText(indexExpr.Left)
+	comp, known := comps[name]
+	if !known || comp.Size <= 0 || comp.Size != elem {
+		return ""
+	}
+	return name
+}
+
 func (c *checker) errorf(line int, format string, args ...interface{}) {
 	c.errors = append(c.errors, fmt.Sprintf("%s:%d: %s", c.fn.Name, line, fmt.Sprintf(format, args...)))
 }
@@ -1142,7 +1178,7 @@ func (c *checker) bindContract() {
 			ints = append(ints, intParam{param: param, class: arg.class, comp: &compositeParam{regs: arg.class.Words, size: arg.comp.Size, indirect: arg.indirect}})
 		case argSpan:
 			c.paramClass[param.Name.Value] = ClassX
-			ints = append(ints, intParam{param: param, class: arg.class, span: &spanParam{elem: arg.elem, writable: arg.writable}})
+			ints = append(ints, intParam{param: param, class: arg.class, span: &spanParam{elem: arg.elem, writable: arg.writable, record: recordSpanName(c.fn.Composites, param.Type, arg.elem)}})
 		case argVector:
 			c.paramClass[param.Name.Value] = ClassV
 			c.paramView[param.Name.Value] = floatView(param.Type)
@@ -1266,7 +1302,7 @@ func (c *checker) bindContract() {
 			}
 			c.bound[span.baseReg] = true
 			c.bound[span.lenReg] = true
-			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable, lenRegs: map[int]bool{span.lenReg: true}}
+			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable, record: span.record, lenRegs: map[int]bool{span.lenReg: true}}
 			continue
 		}
 		if comp, isComposite := c.compositeParams[binding.Param]; isComposite {
@@ -1371,7 +1407,7 @@ func (c *checker) incomingRead(instr Instruction, mem Memory, regs []Register, s
 		c.write(instr, dest)
 		switch {
 		case sp.span != nil && addr == off && size == 8:
-			fact := &spanFact{lenReg: -1, elem: sp.span.elem, writable: sp.span.writable, lenRegs: map[int]bool{}}
+			fact := &spanFact{lenReg: -1, elem: sp.span.elem, writable: sp.span.writable, record: sp.span.record, lenRegs: map[int]bool{}}
 			c.spans[dest.Num] = fact
 			c.stackSpanFacts[sp.name] = append(c.stackSpanFacts[sp.name], fact)
 		case sp.span != nil && addr == off+8 && size == 4:
@@ -2325,6 +2361,11 @@ func (c *checker) instruction(instr Instruction) bool {
 	if len(regs) >= 2 {
 		priorRegion, hadRegion = c.regions[regs[1].Num]
 	}
+	// Address operands are read before the destination is written, even
+	// when allocation reuses the base, index, stride, or length register.
+	// Derive the bounded result now; keep none of the overwritten inputs'
+	// old authority after write invalidates their facts.
+	element, hasElement := c.elementBeforeWrite(instr, dest)
 	c.write(instr, dest)
 	if instr.Mnemonic == "cset" && guard.valid && c.flagsValid && len(instr.Operands) == 2 {
 		if cond, isCond := instr.Operands[1].(Condition); isCond {
@@ -2346,6 +2387,9 @@ func (c *checker) instruction(instr Instruction) bool {
 	c.applyArithmeticFacts(dest, newUpper, newIdx, newMid)
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest, priorRegion, hadRegion)
+	if hasElement {
+		c.regions[dest.Num] = element
+	}
 	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
 	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
@@ -2720,7 +2764,7 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 		if primary < 0 {
 			return
 		}
-		derived := &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+		derived := &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, record: fact.record, lenRegs: lens}
 		// A count register holding a constant is the derived span's exact
 		// length: the fixed-size page `subslice(keys, start, u32(512))`
 		// has minimum length 512, so an index guarded below the constant
@@ -2734,14 +2778,11 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 	}
 }
 
-// deriveElement advances the array-of-records idiom, producing a bounded
-// writable region for one element of a frame array (docs/spec/94-assembler.md
-// §9): `movz wK, #c` / `mov wK, #c` records the constant; `add xE, xB, wI,
-// uxtw #s` over a frame address xB with wI guarded below a constant K and
-// base + K·2^s inside the frame makes xE a 2^s-byte region; `umaddl xE, wI,
-// wK, xB` likewise with the stride c in wK makes xE a c-byte region; `add
-// xD, xS, #imm` over a region of n bytes with 0 <= imm <= n makes xD the
-// region's tail of n - imm bytes (a field inside the element). It also
+// deriveElement records constants and immediate region tails after a write:
+// `movz wK, #c` / `mov wK, #c` records the constant; `add xD, xS, #imm`
+// over the source's saved region of n bytes with 0 <= imm <= n makes xD
+// its n-imm byte tail. Indexed ADD/UMADDL addresses are derived separately
+// by elementBeforeWrite, before any input facts can be invalidated. It also
 // folds `udiv` of two known constants, which is how the entry count of a
 // constant table reaches the compare that guards the search
 // (docs/spec/94-assembler.md §7, "the divided bound").
@@ -2776,20 +2817,17 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 			return
 		}
 		switch tail := instr.Operands[2].(type) {
-		case Extended:
-			if dest.Num == base.Num || tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
-				return
-			}
-			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
 			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
 			// bytes into a large element) narrows the region by the value —
 			// in place too (`add xA, xA, #48`, the second add reaching a
 			// field past one immediate: the OS pilot's N8), read from the
 			// region the source held before the write.
-			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
-				if value := tail.Value << uint(tail.Shift); value <= priorRegion.size {
-					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable, source: priorRegion.source}
+			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) {
+				if value, exact := shiftedNonnegative(tail.Value, tail.Shift); exact {
+					if narrowed, ok := narrowRegion(priorRegion, value); ok {
+						c.regions[dest.Num] = narrowed
+					}
 				}
 			}
 		}
@@ -2811,23 +2849,48 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 		if knownN && knownD && n >= 0 && d >= 1 {
 			c.constFacts[dest.Num] = n / d
 		}
+	}
+}
+
+// elementBeforeWrite derives only an address result, from the complete
+// pre-instruction state. It never mutates that state or preserves the base's
+// span/length authority in the destination. The same elementRegionOf decision
+// applies whether or not the destination aliases any input register.
+func (c *checker) elementBeforeWrite(instr Instruction, dest Register) (region, bool) {
+	if dest.Class != ClassX || dest.ZeroRegister() {
+		return region{}, false
+	}
+	switch instr.Mnemonic {
+	case "add":
+		if len(instr.Operands) != 3 {
+			return region{}, false
+		}
+		base, okB := instr.Operands[1].(Register)
+		tail, okT := instr.Operands[2].(Extended)
+		if okB && okT && base.Class == ClassX && !base.ZeroRegister() &&
+			tail.Kind == "uxtw" && tail.Reg.Class == ClassW && !tail.Reg.ZeroRegister() &&
+			tail.Amount >= 0 && tail.Amount <= 4 {
+			return c.elementRegion(base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
+		}
 	case "umaddl":
-		if dest.Class != ClassX || len(instr.Operands) != 4 {
-			return
+		if len(instr.Operands) != 4 {
+			return region{}, false
 		}
 		index, okI := instr.Operands[1].(Register)
 		stride, okS := instr.Operands[2].(Register)
 		base, okB := instr.Operands[3].(Register)
-		if !okI || !okS || !okB || index.Class != ClassW || stride.Class != ClassW || base.Class != ClassX || dest.Num == base.Num {
-			return
+		if !okI || !okS || !okB || index.Class != ClassW || stride.Class != ClassW ||
+			base.Class != ClassX || index.ZeroRegister() || stride.ZeroRegister() || base.ZeroRegister() {
+			return region{}, false
 		}
 		if size, known := c.constFacts[stride.Num]; known && size > 0 {
-			c.elementRegion(dest, base, index.Num, size)
+			return c.elementRegion(base, index.Num, size)
 		}
 	}
+	return region{}, false
 }
 
-// elementRegion records xE = xB + wI·size as a region of size bytes: over
+// elementRegion derives xE = xB + wI·size as a region of size bytes: over
 // a frame address xB when wI is guarded below a constant K and every one
 // of the K elements lies inside the declared frame; over a span at xB
 // whose elements are size bytes when wI is guarded below the span's
@@ -2835,10 +2898,10 @@ func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion re
 // element of a span of records, writable iff the span is; over a bounded
 // region at xB (a constant table, docs/spec/94-assembler.md §9) when wI
 // is guarded below a constant K with K·size inside the region.
-func (c *checker) elementRegion(dest, base Register, index int, size int64) {
+func (c *checker) elementRegion(base Register, index int, size int64) (region, bool) {
 	bound, guarded := c.idxFacts[index]
 	if !guarded {
-		return
+		return region{}, false
 	}
 	// A bound against a register proven equal to this span's length
 	// (`cmp wA, wB; b.ne`, lenEqual) is a bound against the length: the
@@ -2856,11 +2919,10 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 	}
 	var extent *region
 	if r, isRegion := c.regions[base.Num]; isRegion {
+		r = narrowRecordArrayRegion(c.fn.Composites, r)
 		extent = &r
 	}
-	if derived, ok := elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size); ok {
-		c.regions[dest.Num] = derived
-	}
+	return elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size)
 }
 
 // elementRegionOf is the decision of elementRegion over the facts on the
@@ -2894,7 +2956,11 @@ func elementRegionOf(frame int64, frameAddr *int64, span *spanFact, extent *regi
 		// element (Oak.Assembler.slack_guard needs its hypothesis).
 		inBounds := (!bound.slack && bound.boundReg >= 0 && span.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && span.hasMin && bound.bound <= span.minLen)
 		if inBounds {
-			return region{size: size, writable: span.writable}, true
+			out := region{size: size, writable: span.writable}
+			if place, exact := exactSpanRecord(span, bound, size); exact {
+				out.record, out.recordOffset = place.name, place.offset
+			}
+			return out, true
 		}
 		return region{}, false
 	}
@@ -2902,6 +2968,66 @@ func elementRegionOf(frame int64, frameAddr *int64, span *spanFact, extent *regi
 		return region{size: size, writable: extent.writable}, true
 	}
 	return region{}, false
+}
+
+// recordPlace is nominal byte provenance within one exact record element.
+// It is deliberately not a permission, ownership, memory-type, or publication
+// fact and is not accepted solely from assembly text: the checked Oak
+// signature and compiler-supplied composite layout must agree first.
+type recordPlace struct {
+	name   string
+	offset int64
+}
+
+// shiftedNonnegative computes an int64 left shift without allowing a negative
+// input, an invalid count, or signed overflow to wrap into a plausible offset.
+func shiftedNonnegative(value, shift int64) (int64, bool) {
+	if value < 0 || shift < 0 || shift >= 63 || value > math.MaxInt64>>uint(shift) {
+		return 0, false
+	}
+	return value << uint(shift), true
+}
+
+// exactSpanRecord returns nominal provenance only for the ordinary one-element
+// branch of elementRegionOf. Slack-derived multi-element regions intentionally
+// lose it: one record-relative offset cannot describe several elements.
+func exactSpanRecord(span *spanFact, bound idxFact, size int64) (recordPlace, bool) {
+	if span == nil || span.record == "" || span.elem != size || bound.slack {
+		return recordPlace{}, false
+	}
+	inBounds := (bound.boundReg >= 0 && span.holdsLen(bound.boundReg)) ||
+		(bound.boundReg < 0 && span.hasMin && bound.bound <= span.minLen)
+	if !inBounds {
+		return recordPlace{}, false
+	}
+	return recordPlace{name: span.record}, true
+}
+
+// narrowRecordPlace advances exact nominal provenance by a nonnegative byte
+// offset. Signed overflow or malformed provenance fails closed.
+func narrowRecordPlace(place recordPlace, offset int64) (recordPlace, bool) {
+	if place.name == "" || place.offset < 0 || offset < 0 {
+		return recordPlace{}, false
+	}
+	next := place.offset + offset
+	if next < place.offset {
+		return recordPlace{}, false
+	}
+	return recordPlace{name: place.name, offset: next}, true
+}
+
+// narrowRegion is the current immediate-add tail rule with provenance carried
+// only when its nonnegative arithmetic remains exact. Invalid provenance is
+// discarded without changing the pre-existing byte-region decision.
+func narrowRegion(extent region, offset int64) (region, bool) {
+	if offset < 0 || offset > extent.size {
+		return region{}, false
+	}
+	out := region{size: extent.size - offset, writable: extent.writable, source: extent.source}
+	if place, ok := narrowRecordPlace(recordPlace{name: extent.record, offset: extent.recordOffset}, offset); ok {
+		out.record, out.recordOffset = place.name, place.offset
+	}
+	return out, true
 }
 
 // regionAdmits is the arithmetic of regionAccess (Oak.CheckerRefinement.regionAdmits):
@@ -3129,6 +3255,9 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 	if mem.Index != nil {
 		// An array inside the region, walked by a guarded element index:
 		// `[xR, wJ, uxtw #t]` with wJ < K' and K'·2^t inside the region.
+		// A selected direct-u64 field is bounded by its own declaration;
+		// later fields in the containing record add no array elements.
+		extent = narrowRecordArrayRegion(c.fn.Composites, extent)
 		index := *mem.Index
 		c.read(instr, index)
 		if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {

@@ -26,6 +26,7 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1161,6 +1162,10 @@ type linearForm struct {
 	width    int
 	coeffs   map[string]uint64
 	constant uint64
+	// atoms is the term behind each name in coeffs — the parameter or the
+	// memory read — so a form can be spelled back as one canonical term
+	// (canonicalLinear).
+	atoms map[string]*term
 }
 
 // linearAt computes the form modulo 2^w. A mask by at least w bits is
@@ -1186,7 +1191,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 	m := mask(w)
 	switch t.kind {
 	case termParam:
-		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}, atoms: map[string]*term{t.name: t}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
 	case termSelect:
@@ -1200,7 +1205,8 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if t.width > w {
 			return nil
 		}
-		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+		atom := t.selectAtom()
+		return &linearForm{width: w, coeffs: map[string]uint64{atom: 1}, atoms: map[string]*term{atom: t}}
 	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
@@ -1242,7 +1248,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if l == nil || r == nil {
 			return nil
 		}
-		out := &linearForm{width: w, coeffs: map[string]uint64{}}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, atoms: mergeAtoms(l, r)}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = c
 		}
@@ -1275,7 +1281,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		if l == nil {
 			return nil
 		}
-		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor.value) & m}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor.value) & m, atoms: l.atoms}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = (c * factor.value) & m
 		}
@@ -1289,7 +1295,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 			return nil
 		}
 		factor := uint64(1) << (t.right.value % uint64(t.width))
-		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor) & m}
+		out := &linearForm{width: w, coeffs: map[string]uint64{}, constant: (l.constant * factor) & m, atoms: l.atoms}
 		for name, c := range l.coeffs {
 			out.coeffs[name] = (c * factor) & m
 		}
@@ -1380,6 +1386,40 @@ func (t *term) knownBits() int {
 	return t.width
 }
 
+// selectAtom names a memory read as an atom of the linear normal form:
+// the memory and its index in the index's own linear normal form when it
+// has one, so two reads whose index terms differ in spelling but agree
+// modulo the index width — the machine's `49152 * (dom and 0xFFFFFFFF) +
+// (((t#hi shl 16) or t) and 65535) shl 11 + i` and the Oak side's
+// `49152 * dom + (t and 65535) shl 11 + i` for `s[dom].pages[cell(t, i)]`
+// (the OS pilot's get_page_entry) — are one unknown. Indices are
+// compared at their own width, which is the width the element is chosen
+// at, so equal forms read the same element. An index without a form
+// keeps its spelling.
+func (t *term) selectAtom() string {
+	if t.left != nil && t.left.width > 0 {
+		if index := t.left.linearAt(t.left.width); index != nil {
+			return t.name + "[" + index.compact() + "]"
+		}
+	}
+	return t.String()
+}
+
+// mergeAtoms joins the atoms of two forms (the same name is the same term
+// up to spelling; either spelling serves, canonicalLinear respells it).
+func mergeAtoms(l, r *linearForm) map[string]*term {
+	out := make(map[string]*term, len(l.atoms)+len(r.atoms))
+	for name, t := range l.atoms {
+		out[name] = t
+	}
+	for name, t := range r.atoms {
+		if _, seen := out[name]; !seen {
+			out[name] = t
+		}
+	}
+	return out
+}
+
 func (f *linearForm) trim() *linearForm {
 	for name, c := range f.coeffs {
 		if c == 0 {
@@ -1401,6 +1441,30 @@ func (f *linearForm) String() string {
 	}
 	parts = append(parts, strconv.FormatUint(f.constant, 10))
 	return strings.Join(parts, " + ") + fmt.Sprintf(" (mod 2^%d)", f.width)
+}
+
+// compact spells the form without the unit coefficients, the zero
+// constant, and the modulus: `dom` for a parameter index, `49152*dom + i
+// + 2048*t` for a scaled one. It names select atoms, where the width is
+// the index's own.
+func (f *linearForm) compact() string {
+	names := make([]string, 0, len(f.coeffs))
+	for name := range f.coeffs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if f.coeffs[name] == 1 {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%d*%s", f.coeffs[name], name))
+		}
+	}
+	if f.constant != 0 || len(parts) == 0 {
+		parts = append(parts, strconv.FormatUint(f.constant, 10))
+	}
+	return strings.Join(parts, " + ")
 }
 
 func (f *linearForm) equal(g *linearForm) bool {
@@ -1947,6 +2011,36 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			spans[TableName(symbol)] = table.Elem
 		}
 	}
+	// The program's writable top-level arrays likewise (declareGlobalArrays
+	// on the Oak side): the array's address binds to the span base `&NAME`
+	// (bindGlobalAddress), and the checker bounds its elements as it
+	// bounds a frame array's.
+	for name, global := range fn.Globals {
+		if elem, _, _, isArray := globalArrayShape(global); isArray {
+			if _, shadowed := spans[name]; !shadowed {
+				spans[name] = elem
+			}
+		}
+	}
+	// The body's large owned arrays (Function.FrameObjects with a name):
+	// spans named by the local, zero at entry (frameSpanAccess).
+	var frameSpans []frameSpan
+	zeroSpans, localSpans := map[string]bool{}, map[string]bool{}
+	for _, obj := range fn.FrameObjects {
+		if obj.Name == "" || obj.Elem <= 0 || obj.Size/obj.Elem <= largeArrayElements {
+			continue
+		}
+		if _, shadowed := spans[obj.Name]; shadowed {
+			continue
+		}
+		spans[obj.Name] = obj.Elem
+		zeroSpans[obj.Name], localSpans[obj.Name] = true, true
+		frameSpans = append(frameSpans, frameSpan{name: obj.Name, offset: obj.Offset, size: obj.Size, elem: obj.Elem})
+		if state.writes == nil {
+			state.writes = map[string][]*spanWrite{}
+		}
+		state.writes[obj.Name] = []*spanWrite{{memory: zeroMemory}}
+	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
 		// A record result of one chunk comes back in x0, of two in x0 and
@@ -2000,6 +2094,7 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	exec.floatResult = floatResult
 	exec.resultChunk = chunk
 	exec.resultArea = resultArea
+	exec.frameSpans, exec.zeroSpans, exec.localSpans = frameSpans, zeroSpans, localSpans
 	if resultArea != nil {
 		_, exec.resultChunks, _ = resultComposite(fn, sig)
 	}
@@ -2047,7 +2142,24 @@ const (
 	// rather than unrolled, so the guards of the loops that do unroll
 	// (at most 64 trips a level) get sixteen paths' worth.
 	guardBudget = 16 * pathBudget
+	// joinedPathBudget bounds the paths of the run that merges at the
+	// joins (executeBodyChunkJoining): a fork whose sides meet again
+	// costs one merged state, not two paths kept to the end, so the
+	// count may run sixteen times as far — a parser's few hundred
+	// sequential conditionals (cnf_ite, peek_precedence, the step_*_p
+	// family) refused "more paths than the verifier's budget" on the
+	// merged run too under the flat budget.
+	joinedPathBudget = 16 * pathBudget
 )
+
+// pathLimit is the run's path budget: the joined run's when the paths
+// merge at their joins.
+func (x *pathExecutor) pathLimit() int {
+	if x.joins != nil {
+		return joinedPathBudget
+	}
+	return pathBudget
+}
 
 // pathExecutor unfolds a body into its paths: a conditional branch forks
 // the state, the taken path continuing at the label under the branch's
@@ -2079,6 +2191,18 @@ type pathExecutor struct {
 	// reads are the body's reads of span memory through the write log, by
 	// node (spanRead), for the aligned fast path's alignReads.
 	reads map[*term]spanRead
+	// frameSpans are the large owned arrays read and written as spans
+	// (frameSpanAccess); zeroSpans the spans whose entry contents are zero
+	// (such an array, on either side); localSpans the spans that are the
+	// body's own arrays, whose final memory decideSpans leaves undecided.
+	frameSpans []frameSpan
+	zeroSpans  map[string]bool
+	localSpans map[string]bool
+	// carriedCells are the package cells the loop being summarized
+	// carries (summarizeLoop), which a call in its body may write;
+	// calleeCells memoizes the cells each callee's Oak body assigns.
+	carriedCells map[string]bool
+	calleeCells  map[string][]string
 	// deferMemory asks decideSpans to leave the memory decision of a span
 	// whose logs differ in length to deferredSpans (verifyChunk runs the
 	// body again merging at the joins first, whose logs align).
@@ -2500,6 +2624,9 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 		defer func() { state.disp -= mem.Offset }()
 	default:
 		addr = -state.disp + mem.Offset
+		if fs, off, in := x.frameSpanAt(mem.Offset); in {
+			return x.frameSpanAccess(instr, state, fs, off, mem)
+		}
 	}
 	return x.frameAccessAt(instr, state, addr)
 }
@@ -2760,6 +2887,9 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 		return "a frame address moved by pre/post-index", false
 	}
 	addr := base + mem.Offset
+	if fs, off, in := x.frameSpanAt(addr + state.disp); in {
+		return x.frameSpanAccess(instr, state, fs, off, mem)
+	}
 	if mem.Index != nil {
 		index, ok := state.read(*mem.Index)
 		if !ok {
@@ -3074,7 +3204,7 @@ func isFrameMemory(instr Instruction) bool {
 // written), merged across the paths.
 func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, string, bool) {
 	x.paths++
-	if x.paths > pathBudget {
+	if x.paths > x.pathLimit() {
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {
@@ -3345,6 +3475,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		}
 		if hasVectorOperand(instr) {
 			if reason, ok := x.stepVector(instr, state); !ok {
+				return nil, nil, atInstruction(reason, instr), false
+			}
+			continue
+		}
+		if handled, reason, ok := x.bindGlobalAddress(instr, state); handled {
+			if !ok {
 				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
@@ -3974,16 +4110,27 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			if int64(1)<<uint(mem.Shift) != stride || size != stride {
 				return fmt.Sprintf("an indexed load through a record argument (%s) whose scale is not the element size", prefix), false
 			}
-			bound, isBounded := state.bounds[mem.Index.Num]
-			if !isBounded || int64(bound) > length {
-				return "an indexed load through a record argument without a dominating constant index guard", false
-			}
 			idx, okIndex := state.read(*mem.Index)
 			if !okIndex {
 				return "unbound register read", false
 			}
 			index := truncate(idx, 32)
-			for k := length - 1; k >= 0; k-- {
+			first, last := int64(0), length-1
+			if index.kind == termConst {
+				// A decided guard (including one in an unrolled counted
+				// loop) records no symbolic bound. The constant itself
+				// selects one leaf, still within this array field.
+				if index.value >= uint64(length) {
+					return "an indexed load through a record argument past the array field", false
+				}
+				first, last = int64(index.value), int64(index.value)
+			} else {
+				bound, isBounded := state.bounds[mem.Index.Num]
+				if !isBounded || bound > uint64(length) {
+					return "an indexed load through a record argument without a dominating constant index guard", false
+				}
+			}
+			for k := last; k >= first; k-- {
 				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
 				if !okLeaf {
 					return "an indexed load through a record argument cutting through a field", false
@@ -4185,10 +4332,44 @@ func elementBaseOf(t *term) (param string, baseOffset int64, index *term, shift 
 // element is the span element at an index term; in a concrete run the
 // witness memory's value.
 func (x *pathExecutor) element(span string, index *term, width int) *term {
+	if x.zeroSpans[span] {
+		return constTerm(0, width) // a zero-filled owned array's entry contents
+	}
 	if x.concrete && index.kind == termConst {
 		return constTerm(elementValue(span, index.value&mask(32), width), width)
 	}
 	return selectTerm(span, index, width)
+}
+
+// bindGlobalAddress executes `add xA, xN, :lo12:G` for a top-level array
+// G the executor reads as a span (globalArrayShape): xA is the span base
+// `&G`, which the loads and stores through it read as a span parameter's
+// (step binds every other global's address to `&global:G`).
+func (x *pathExecutor) bindGlobalAddress(instr Instruction, state *symbolicState) (handled bool, reason string, ok bool) {
+	if instr.Mnemonic != "add" || len(instr.Operands) != 3 {
+		return false, "", false
+	}
+	sym, isSym := instr.Operands[2].(Symbol)
+	if !isSym || !sym.Lo12 {
+		return false, "", false
+	}
+	global, known := x.globals[sym.Name]
+	if !known {
+		return false, "", false
+	}
+	if _, _, _, isArray := globalArrayShape(global); !isArray {
+		return false, "", false
+	}
+	if _, isSpan := x.spans[sym.Name]; !isSpan {
+		return false, "", false
+	}
+	dest := instr.Operands[0].(Register)
+	base, bound := operandTerm(state, instr.Operands[1], 64)
+	if !bound || base.kind != termParam || base.name != globalPageName(sym.Name) {
+		return true, "add :lo12: over a register that does not hold the symbol's page", false
+	}
+	state.write(dest, paramTerm(spanBaseName(sym.Name), 64))
+	return true, "", true
 }
 
 // step executes one data-processing instruction on the state.
@@ -4700,8 +4881,12 @@ type oakLowering struct {
 	// element counts; a table reads as a span (spans holds its contract)
 	// whose length is the constant (declareTables).
 	tableLens map[string]int64
-	locals    map[string]*oakLocal // statement-body locals, in declaration scope
-	concrete  map[string]uint64    // a witness run: parameters are these constants
+	// declaredTables distinguishes read-only table roots from mutable global
+	// arrays, whose lengths also live in tableLens. Tables may additionally
+	// have Globals entries retained for source declaration provenance.
+	declaredTables map[string]bool
+	locals         map[string]*oakLocal // statement-body locals, in declaration scope
+	concrete       map[string]uint64    // a witness run: parameters are these constants
 	// work counts the loop iterations this lowering has run, its inlined
 	// callees' included (loweringWorkBudget): a body whose unrolled loops
 	// inline callees that unroll their own (the BDD apply's, sixty-four
@@ -4711,6 +4896,22 @@ type oakLowering struct {
 	loops     []*loopEvent   // data-dependent loops met, in creation order
 	loopStack []int          // indices of the loops whose bodies are being lowered
 	fresh     map[string]int // loop-carried fresh symbols -> width
+	// externSite and externSeq name an extern binding's result: the
+	// source line of the call the outermost inlined callee was entered
+	// at (the machine's `bl` line for a call summary) and the extern
+	// call's sequence within that callee's lowering (lowerExternCall).
+	externSite int
+	externSeq  int
+	externs    map[string]*ast.FunctionStatement // the program's extern bindings, by Oak name (Function.Externs)
+	// zeroSpans are the spans whose entry contents are zero (a zero-filled
+	// owned array past largeArrayElements, declared as a span); localSpans
+	// those that are the body's own arrays, or an inlined callee's
+	// (declareLocal), with their element widths in localSpanWidths, which
+	// outlive the callee's scope: the loop proof meets the callee's array
+	// as a marked memory of the caller's body.
+	zeroSpans       map[string]bool
+	localSpans      map[string]bool
+	localSpanWidths map[string]int
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
@@ -5132,6 +5333,11 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 		}
 		return out, "", true
 	case *ast.Identifier, *ast.IndexExpression:
+		if ident, isIdent := expr.(*ast.Identifier); isIdent && lo.localSpans[ident.Value] {
+			// A large owned array declared as a span, read whole: each
+			// element through the log (localSpanValue).
+			return lo.localSpanValue(ident.Value), "", true
+		}
 		place, reason, ok := lo.readPlace(expr)
 		if !ok {
 			return nil, reason, false
@@ -5250,6 +5456,13 @@ func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason 
 		return true, reason, ok
 	}
 	callee := lo.functions[ident.Value]
+	if callee == nil {
+		callee = lo.externs[ident.Value]
+	}
+	if callee != nil && callee.ExternSymbol != "" && callee.ReturnType == nil {
+		_, reason, ok := lo.lowerExternCall(callee, call, 0)
+		return true, reason, ok
+	}
 	if callee == nil || !unitFunction(callee) || callee.Body == nil {
 		return false, "", false
 	}
@@ -6342,6 +6555,44 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		lo.locals[s.Name.Value] = &oakLocal{value: value, width: typ.width, signed: typ.signed}
 		return "", true
 	}
+	if typ.kind == oakArray && typ.elem != nil && typ.elem.kind == oakScalar && !typ.elem.float && typ.elem.width >= 8 && typ.length > largeArrayElements {
+		// A large owned array of integer scalars is a span memory named
+		// by the local, zero at entry, rather than thousands of
+		// loop-carried leaves (docs/spec/94-assembler.md §9); the machine
+		// side reads its frame object the same way (frameSpanAccess). An
+		// initializer is the elements written in order, as the machine
+		// copies them.
+		name := s.Name.Value
+		var init *oakValue
+		if s.Value != nil {
+			value, reason, ok := lo.aggregateValue(s.Value, typ)
+			if !ok {
+				return reason, false
+			}
+			init = value
+		}
+		delete(lo.locals, name)
+		delete(lo.views, name)
+		lo.spans[name] = spanContract{elemWidth: typ.elem.width, signed: typ.elem.signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = typ.length
+		if lo.zeroSpans == nil {
+			lo.zeroSpans, lo.localSpans, lo.localSpanWidths = map[string]bool{}, map[string]bool{}, map[string]int{}
+		}
+		lo.zeroSpans[name], lo.localSpans[name] = true, true
+		lo.localSpanWidths[name] = typ.elem.width
+		lo.writableSpans[name] = true
+		if lo.writes == nil {
+			lo.writes = map[string][]*spanWrite{}
+		}
+		lo.writes[name] = []*spanWrite{{memory: zeroMemory}}
+		if init != nil {
+			return lo.writeLocalSpanWhole(name, typ, init)
+		}
+		return "", true
+	}
 	if s.Value == nil {
 		// Value-less storage is zero (docs/spec/90-backend.md §6): an
 		// array's elements, a record's fields, a sum's tag and payloads,
@@ -6363,15 +6614,53 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 // derived), `w: []T = subslice(v, start, n)` an alias of v's root at the
 // offset start (plus v's) of length n, the C helper's check a trap
 // obligation. The local's reads, writes, and `len` translate to the root
-// (asm/derived_spans.go); a view over an owned array stays outside.
+// (asm/derived_spans.go). Aggregate locals use declareView; a read-only
+// view of a declared constant table uses the table's root and exact length.
 func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, bool) {
 	name := s.Name.Value
-	elem, _, ok := spanShape(s.Type)
+	elem, writable, ok := spanShape(s.Type)
 	if !ok {
 		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
 	}
 	if handled, reason, ok := lo.declareView(s, elem); handled {
 		return reason, ok // a view over an aggregate local (asm/agg_views.go)
+	}
+	if root, indexExpr, path, isField := elementFieldOperand(s.Value); isField {
+		record, isRecordSpan := lo.recordSpans[root]
+		_, shadowed := lo.locals[root]
+		if !isRecordSpan || shadowed {
+			return fmt.Sprintf("the span local %s over %s, which is not an unshadowed record span", name, root), false
+		}
+		field, isArray := record.arrayNamed(path)
+		if !isArray {
+			return fmt.Sprintf("the span local %s: %s is not an array field of %s's element", name, path, root), false
+		}
+		if int(elem)*8 != field.first.width {
+			return fmt.Sprintf("the span local %s over %s with %d-bit elements where %d-bit ones are declared", name, path, field.first.width, elem*8), false
+		}
+		index, reason, ok := lo.lower(indexExpr, 32)
+		if !ok {
+			return reason, false
+		}
+		if lo.concrete != nil {
+			lo.addTrap(cmpTerm("hs", index, lo.spanLenTerm(root, 32)))
+			if lo.witnessTrapped {
+				return fmt.Sprintf("the span local %s indexes past len(%s) on this input", name, root), false
+			}
+		}
+		delete(lo.locals, name)
+		delete(lo.views, name)
+		lo.spans[name] = spanContract{elemWidth: field.first.width, signed: strings.HasPrefix(typeText(s.Type.(*ast.IndexExpression).Left), "i")}
+		if lo.spanAlias == nil {
+			lo.spanAlias = map[string]string{}
+		}
+		if lo.spanOffset == nil {
+			lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+		}
+		lo.spanAlias[name] = lo.spanRoot(root) + path
+		lo.spanOffset[name] = binaryTerm("mul", index, constTerm(uint64(field.length), 32))
+		lo.spanLen[name] = constTerm(uint64(field.length), 32)
+		return "", true
 	}
 	bind := func(src string, offset, length *term) (string, bool) {
 		delete(lo.views, name)
@@ -6405,6 +6694,29 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	}
 	if src, isIdent := s.Value.(*ast.Identifier); isIdent {
 		return bind(src.Value, lo.spanOffset[src.Value], nil)
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall && !writable {
+		// Tables are already symbolic memories on both sides. This only
+		// names an alias; it grants no authority to an arbitrary pointer,
+		// mutable global, or a parameter/local shadowing the table.
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" {
+			src := addressOfOperand(call)
+			count, isTable := lo.tableLens[src]
+			_, isParam := lo.params[src]
+			_, isAlias := lo.spanAlias[src]
+			if isTable && lo.declaredTables[src] && !isParam && !isAlias && count >= 0 && uint64(count) <= mask(32) {
+				return bind(src, nil, constTerm(uint64(count), 32))
+			}
+		}
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall {
+		// `view(&chunk)` or `span(&chunk)` over a large owned array
+		// declared as a span: the local is the span whole.
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && (fn.Value == "view" || fn.Value == "span") {
+			if src := addressOfOperand(call); src != "" && lo.localSpans[src] {
+				return bind(src, nil, nil)
+			}
+		}
 	}
 	sub, isSub := subsliceOf(s.Value)
 	if !isSub {
@@ -6530,6 +6842,17 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 // assignLocal executes `x = e`: a scalar local at its width, an aggregate
 // local by copy.
 func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
+	if lo.localSpans[s.Name.Value] {
+		// A whole assignment to a large owned array declared as a span
+		// (`a = [65]u32{…}`): every element written in order.
+		contract := lo.spans[s.Name.Value]
+		typ := &oakType{kind: oakArray, elem: &oakType{kind: oakScalar, width: contract.elemWidth, signed: contract.signed}, length: lo.tableLens[s.Name.Value]}
+		value, reason, ok := lo.aggregateValue(s.Value, typ)
+		if !ok {
+			return reason, false
+		}
+		return lo.writeLocalSpanWhole(s.Name.Value, typ, value)
+	}
 	local, isLocal := lo.locals[s.Name.Value]
 	if !isLocal {
 		return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
@@ -6543,6 +6866,35 @@ func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
 	}
 	local.value = value
 	return "", true
+}
+
+// writeLocalSpanWhole writes an aggregate value's elements into a large
+// owned array declared as a span, in index order, under the path.
+func (lo *oakLowering) writeLocalSpanWhole(name string, typ *oakType, value *oakValue) (string, bool) {
+	if value == nil || int64(len(value.elems)) != typ.length {
+		return fmt.Sprintf("a value of %d elements for the array %s of %d", len(value.elems), name, typ.length), false
+	}
+	for k, elem := range value.elems {
+		if elem == nil || elem.scalar == nil {
+			return fmt.Sprintf("element %d of the array %s without a value", k, name), false
+		}
+		lo.writes = appendWrite(lo.writes, name, constTerm(uint64(k), 32), truncate(elem.scalar, typ.elem.width), lo.path)
+	}
+	return "", true
+}
+
+// localSpanValue reads a large owned array declared as a span as an
+// aggregate value: each element through the log at its constant index.
+func (lo *oakLowering) localSpanValue(name string) *oakValue {
+	contract := lo.spans[name]
+	elemType := &oakType{kind: oakScalar, width: contract.elemWidth, signed: contract.signed}
+	length := lo.tableLens[name]
+	out := &oakValue{typ: &oakType{kind: oakArray, elem: elemType, length: length}, elems: make([]*oakValue, length)}
+	for k := int64(0); k < length; k++ {
+		index := constTerm(uint64(k), 32)
+		out.elems[k] = &oakValue{typ: elemType, scalar: memoryAt(lo.writes[name], index, constTerm(0, contract.elemWidth))}
+	}
+	return out
 }
 
 // assignIndexed executes `p.f = e` / `arr[k] = e` / `pool[k].f = e` over
@@ -7029,7 +7381,9 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		span := lo.spanRoot(index.Left.(*ast.Identifier).Value)
 		_, k, _ := elementParam(name)
 		entry := paramTerm(name, contract.elemWidth)
-		if lo.concrete != nil {
+		if lo.zeroSpans[span] {
+			entry = constTerm(0, contract.elemWidth)
+		} else if lo.concrete != nil {
 			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
 			// Past the length, Oak traps on this input (a witness run
 			// notes it; the value stands in for nothing).
@@ -7067,6 +7421,9 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		return lo.noteRead(span, len(lo.writes[span]), idx, memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth))), contract, "", true
 	}
 	entry := selectTerm(span, idx, contract.elemWidth)
+	if lo.zeroSpans[span] {
+		entry = constTerm(0, contract.elemWidth)
+	}
 	if !lo.trapsTracked {
 		// The asm verifier's side: reads split over a conditional in the
 		// index, as the machine's branches read (selectSplit). The theorem
@@ -7199,6 +7556,9 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 // and recursion fail closed.
 func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
 	name := callee.Name.Value
+	if callee.ExternSymbol != "" {
+		return lo.lowerExternCall(callee, call, width)
+	}
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
@@ -7225,6 +7585,115 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		return extendTerm(result, resultWidth, width, resultSigned), "", true
 	}
 	return truncate(result, width), "", true
+}
+
+// lowerExternCall lowers a call to an extern binding (`name: (…): c.T
+// effects { Host.… } = c.extern("symbol")`, docs/spec/92-ffi.md): the
+// result is a fresh parameter of the result's width, named by the
+// symbol, the outermost inlined callee's call line and the call's
+// sequence within it (`extern:symbol@line#k`), and the call has no
+// effect on Oak memory. The gate is the declared effect row: every
+// effect in the `Host` namespace and no writable span parameter, so the
+// call's effects are the host's alone. Both sides of the verifier lower
+// the same callee Oak body (a caller's inline, a call summary), so the
+// names agree and the proof is relative to the extern behaving alike on
+// both — as it is relative to the callee's Oak body. The arguments are
+// lowered for their traps (a subslice past its span, an element read);
+// their values do not reach the result, which the extern alone decides.
+// An extern outside the gate leaves the body trusted, as before.
+func (lo *oakLowering) lowerExternCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
+	name := callee.Name.Value
+	if !callee.EffectsDeclared {
+		return nil, fmt.Sprintf("a call to the extern %s without a declared effect row", name), false
+	}
+	for _, effect := range callee.Effects {
+		if effect.Namespace != "Host" {
+			return nil, fmt.Sprintf("a call to the extern %s with the effect %s (outside the host)", name, effect.String()), false
+		}
+	}
+	for _, param := range callee.Parameters {
+		if isWritableSpan(param.Type) {
+			return nil, fmt.Sprintf("a call to the extern %s, which takes the writable span %s", name, param.Name.Value), false
+		}
+	}
+	// The arguments are the type checker's business (`c.span_of(v)`
+	// stands for two C parameters, the pointer and the count); here each
+	// is lowered for its traps alone.
+	for _, arg := range call.Arguments {
+		if reason, ok := lo.lowerExternArgument(arg); !ok {
+			return nil, fmt.Sprintf("a call to the extern %s whose argument contains %s", name, reason), false
+		}
+	}
+	if callee.ReturnType == nil {
+		return nil, "", true
+	}
+	resultWidth, ok := cScalarWidth(typeText(callee.ReturnType))
+	if !ok {
+		return nil, fmt.Sprintf("a call to the extern %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	symbol := fmt.Sprintf("extern:%s@%d#%d", callee.ExternSymbol, lo.externSite, lo.externSeq)
+	lo.externSeq++
+	lo.fresh[symbol] = resultWidth
+	return adaptWidth(paramTerm(symbol, resultWidth), width), "", true
+}
+
+// lowerExternArgument lowers an extern call's argument for its traps: a
+// `c.*` conversion or `c.span_of` wraps the Oak value; a subslice records
+// its bounds against its span; a name, a literal or a view of a local
+// traps on nothing; any other expression lowers as a scalar.
+func (lo *oakLowering) lowerExternArgument(arg ast.Expression) (string, bool) {
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		if access, isAccess := call.Function.(*ast.IndexExpression); isAccess && len(call.Arguments) == 1 {
+			if lib, isIdent := access.Left.(*ast.Identifier); isIdent && lib.Value == "c" {
+				return lo.lowerExternArgument(call.Arguments[0])
+			}
+		}
+		if sub, isSub := subsliceOf(arg); isSub {
+			if _, isSpan := lo.spans[sub.span]; !isSpan {
+				return fmt.Sprintf("a subslice of %s, which is not a span", sub.span), false
+			}
+			start, reason, ok := lo.lower(sub.start, 32)
+			if !ok {
+				return reason, false
+			}
+			count, reason, ok := lo.lower(sub.count, 32)
+			if !ok {
+				return reason, false
+			}
+			length := lo.spanLenTerm(sub.span, 32)
+			lo.addTrap(cmpTerm("hi", start, length))
+			lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+			if lo.witnessTrapped {
+				return fmt.Sprintf("a subslice of %s past its length on this input", sub.span), false
+			}
+			return "", true
+		}
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" && len(call.Arguments) == 1 {
+			return "", true
+		}
+	}
+	switch arg.(type) {
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
+		return "", true
+	}
+	_, reason, ok := lo.lower(arg, 64)
+	return reason, ok
+}
+
+// cScalarWidth is the width of a `c.*` integer type an extern returns
+// (docs/spec/92-ffi.md section 2.2).
+func cScalarWidth(typeName string) (int, bool) {
+	switch strings.TrimPrefix(typeName, "c.") {
+	case "Int64", "UInt64", "Size", "SSize", "Long", "ULong", "Ptr", "IntPtr", "UIntPtr":
+		return 64, true
+	case "Int32", "UInt32", "Int", "UInt":
+		return 32, true
+	case "Int16", "UInt16", "Short", "UShort":
+		return 16, true
+	case "Int8", "UInt8", "Char", "UChar", "Bool":
+		return 8, true
+	}
+	return 0, false
 }
 
 // describe spells a type for a message: its name, or its shape.
@@ -7283,6 +7752,12 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
+	}
+	if len(lo.inlining) == 0 {
+		// The outermost inlined callee: the extern results met inside it
+		// are named by this call's line, as the machine side names them
+		// by the `bl`'s line when it summarizes the same callee.
+		lo.externSite, lo.externSeq = call.Token.Line, 0
 	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
@@ -7663,6 +8138,184 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 			lo.tableLens = map[string]int64{}
 		}
 		lo.tableLens[name] = table.Size / table.Elem
+		if lo.declaredTables == nil {
+			lo.declaredTables = map[string]bool{}
+		}
+		lo.declaredTables[name] = true
+	}
+}
+
+// largeArrayElements is the element count past which an owned array of
+// integer scalars is a span memory on both sides of the verifier rather
+// than a set of loop-carried leaves (docs/spec/94-assembler.md §9): a
+// loop filling `chunk: [4096]u8` carried thousands of slots into the
+// coupling; below the threshold the leaf model proves the small arrays
+// it proves today.
+const largeArrayElements = 64
+
+// frameSpan is a large owned array in the frame the executor reads and
+// writes as the span named by the local: its sp-relative extent and its
+// element size (Function.FrameObjects).
+type frameSpan struct {
+	name         string
+	offset, size int64
+	elem         int64
+}
+
+// frameSpanAt reports the large array an sp-relative address falls in
+// and the byte offset within it.
+func (x *pathExecutor) frameSpanAt(spRel int64) (frameSpan, int64, bool) {
+	for _, fs := range x.frameSpans {
+		if spRel >= fs.offset && spRel < fs.offset+fs.size {
+			return fs, spRel - fs.offset, true
+		}
+	}
+	return frameSpan{}, 0, false
+}
+
+// frameSpanAccess executes a load or store of a large owned array as an
+// access of the span named by the local: the element index is the byte
+// offset over the element size, plus the register index when the access
+// scales it by the element size; a load reads the log over a zero entry
+// (the array is zero-filled), a store joins the log at the element's
+// width; the fill's wider zero stores (`stp xzr, xzr, [sp, #off]`) split
+// into element writes of zero. Any other width, or an index the checker
+// did not bound, is refused: the model never widens an access.
+func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, fs frameSpan, off int64, mem Memory) (string, bool) {
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if len(regs) == 0 || regs[0].Class == ClassV || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || mem.Mode != MemOffset {
+		return fmt.Sprintf("an access to the array %s outside the modeled subset (%s)", fs.name, instr.Mnemonic), false
+	}
+	if off%fs.elem != 0 {
+		return fmt.Sprintf("an access to the array %s off its element grid", fs.name), false
+	}
+	var index *term
+	if mem.Index != nil {
+		reg, ok := state.read(*mem.Index)
+		if !ok {
+			return "unbound register read", false
+		}
+		if int64(1)<<uint(mem.Shift) != fs.elem {
+			return fmt.Sprintf("an access to the array %s scaled by %d, not its element size", fs.name, int64(1)<<uint(mem.Shift)), false
+		}
+		if reg.kind != termConst {
+			if _, bounded := state.bounds[mem.Index.Num]; !bounded {
+				return fmt.Sprintf("an access to the array %s at an index the checker did not bound", fs.name), false
+			}
+		}
+		index = binaryTerm("add", constTerm(uint64(off/fs.elem), 32), truncate(reg, 32))
+	} else {
+		index = constTerm(uint64(off/fs.elem), 32)
+	}
+	width := int(fs.elem) * 8
+	if isStoreMnemonic(instr.Mnemonic) {
+		// memorySize is the access's whole width: a pair store's two
+		// registers each write half of it.
+		size := memorySize(instr.Mnemonic, regs[0].Class) / int64(len(regs))
+		at := off
+		for _, reg := range regs {
+			value, ok := state.read(reg)
+			if !ok {
+				return "unbound register read", false
+			}
+			switch {
+			case size == fs.elem:
+				k := index
+				if at != off {
+					k = binaryTerm("add", index, constTerm(uint64((at-off)/fs.elem), 32))
+				}
+				state.writes = appendWrite(state.writes, fs.name, k, truncate(value, width), nil)
+			case size%fs.elem == 0 && mem.Index == nil && value.kind == termConst && value.value == 0:
+				for e := int64(0); e < size/fs.elem; e++ {
+					state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(at/fs.elem+e), 32), constTerm(0, width), nil)
+				}
+			default:
+				return fmt.Sprintf("a %d-byte store into the %d-byte elements of the array %s", size, fs.elem, fs.name), false
+			}
+			at += size
+		}
+		return "", true
+	}
+	if !isLoad(instr.Mnemonic) && instr.Mnemonic != "ldp" {
+		return fmt.Sprintf("an access to the array %s outside the modeled subset (%s)", fs.name, instr.Mnemonic), false
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class) / int64(len(regs))
+	if size != fs.elem {
+		return fmt.Sprintf("a %d-byte load of the %d-byte elements of the array %s", size, fs.elem, fs.name), false
+	}
+	for k, reg := range regs {
+		// A pair load's second register reads the next element.
+		at := index
+		if k > 0 {
+			at = binaryTerm("add", index, constTerm(uint64(k), 32))
+		}
+		value := x.noteRead(fs.name, len(state.writes[fs.name]), at, memoryAt(state.writes[fs.name], at, x.element(fs.name, at, width)))
+		if isSignExtendingLoad(instr.Mnemonic) {
+			state.write(reg, extendTerm(value, width, widthOf(reg.Class), true))
+		} else {
+			state.write(reg, zeroExtend(value, widthOf(reg.Class)))
+		}
+	}
+	return "", true
+}
+
+// globalArrayShape reads a writable top-level array's shape from its
+// declared type text (`(u8[64])`, the type printer's spelling of
+// `[64]u8`): the element size in bytes, the element count, and the
+// element's signedness. Only arrays of integer scalars are spans; a
+// record or an array of records stays outside.
+func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok bool) {
+	if !global.Aggregate {
+		return 0, 0, false, false
+	}
+	m := globalArrayType.FindStringSubmatch(global.Type)
+	if m == nil {
+		return 0, 0, false, false
+	}
+	count, err := strconv.ParseInt(m[2], 10, 64)
+	if err != nil || count <= 0 {
+		return 0, 0, false, false
+	}
+	switch m[1] {
+	case "u8", "i8":
+		elem = 1
+	case "u16", "i16":
+		elem = 2
+	case "u32", "i32":
+		elem = 4
+	case "u64", "i64":
+		elem = 8
+	default:
+		return 0, 0, false, false
+	}
+	if elem*count != global.Size {
+		return 0, 0, false, false
+	}
+	return elem, count, m[1][0] == 'i', true
+}
+
+var globalArrayType = regexp.MustCompile(`^\(?([ui](?:8|16|32|64))\[([0-9]+)\]\)?$`)
+
+// declareGlobalArrays makes the program's writable top-level arrays
+// readable and writable as spans named by the global (the machine side
+// binds `adrp`/`add :lo12:` of such a global to the span base `&NAME`,
+// bindGlobalAddress): NAME[k] is the element, len(NAME) the declared
+// count, and the stores through it are compared as a span parameter's
+// are (decideSpans). A parameter or a table of the name shadows it.
+func (lo *oakLowering) declareGlobalArrays(globals map[string]Global) {
+	for name, global := range globals {
+		elem, count, signed, isArray := globalArrayShape(global)
+		if !isArray {
+			continue
+		}
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue
+		}
+		lo.spans[name] = spanContract{elemWidth: int(elem) * 8, signed: signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = count
 	}
 }
 
@@ -7678,6 +8331,9 @@ func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
 	if !isIdent || !argIsIdent || fn.Value != "len" {
 		return 0, false
+	}
+	if lo.spanLen[arg.Value] != nil {
+		return 0, false // the derived extent, not the whole root table
 	}
 	length, isTable := lo.tableLens[lo.spanRoot(arg.Value)]
 	return length, isTable
@@ -7871,6 +8527,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := lo.functions[ident.Value]; known {
 				return lo.inlineCall(callee, e, width)
+			}
+			if extern, isExtern := lo.externs[ident.Value]; isExtern {
+				return lo.lowerExternCall(extern, e, width)
 			}
 			if guard, isGuard := lo.guards[ident.Value]; isGuard && len(e.Arguments) == 1 {
 				return lo.lowerGuard(ident.Value, guard, e.Arguments[0], width)
@@ -8978,8 +9637,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// back after the body (asm/span_args.go).
 	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
+	lo.externs = x.fn.Externs
 	lo.declareTables(x.fn.Tables)
+	lo.declareGlobalArrays(x.fn.Globals)
 	lo.inlining = map[string]bool{name: true}
+	lo.externSite = instr.Line // the externs met in the callee are named by this call's line (lowerExternCall)
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
 	// (docs/spec/94-assembler.md §9).
@@ -9255,6 +9917,35 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 						}
 						lo.spanOffset[param.Name.Value] = binaryTerm("mul", truncate(index, 32), constTerm(uint64(count), 32))
 						lo.spanLen[param.Name.Value] = constTerm(uint64(count), 32)
+						break
+					}
+				}
+			}
+			if !whole && hasBase && hasLen {
+				// A view or subslice of the caller's large owned array,
+				// which both sides read as the span named by the local
+				// (frameSpanAccess): the callee's parameter is an alias of
+				// that span at the byte offset's element with the length
+				// term, as a derived span of a parameter is; the callee's
+				// reads and writes land in the caller's log.
+				if addr, isFrame := frameAddressOf(base); isFrame {
+					if fs, off, in := x.frameSpanAt(addr + state.disp); in && fs.elem == arg.elem && off%fs.elem == 0 {
+						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+						lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+						if lo.spanAlias == nil {
+							lo.spanAlias = map[string]string{}
+						}
+						lo.spanAlias[param.Name.Value] = fs.name
+						if lo.spanOffset == nil {
+							lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+						}
+						if off != 0 {
+							lo.spanOffset[param.Name.Value] = constTerm(uint64(off/fs.elem), 32)
+						}
+						lo.spanLen[param.Name.Value] = truncate(length, 32)
+						if isWritableSpan(param.Type) {
+							lo.writableSpans[param.Name.Value] = true
+						}
 						break
 					}
 				}
@@ -9628,7 +10319,9 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.globals = fn.Globals
 	lowering.bindRecordSpans(fn, sig)
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.externs = fn.Externs
 	lowering.declareTables(fn.Tables)
+	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
@@ -9830,6 +10523,9 @@ func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
 func (lo *oakLowering) spanMemoryWidth(memory string) (int, bool) {
 	if width, isLeaf := lo.recordLeafWidth(memory); isLeaf {
 		return width, true
+	}
+	if width, isLocal := lo.localSpanWidths[memory]; isLocal {
+		return width, true // a large owned array of the body or an inlined callee
 	}
 	contract, isSpan := lo.spans[memory]
 	return contract.elemWidth, isSpan
@@ -10288,7 +10984,8 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
 		case termBinary:
-			if t.op == "mul" && left.width == t.width {
+			out = canonicalBitwise(t, left, right)
+			if out == nil && t.op == "mul" && left.width == t.width {
 				switch {
 				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))

@@ -1,0 +1,165 @@
+{
+  "schema": "oak-blake3-native-coverage-investigation-v1",
+  "date": "2026-09-16",
+  "cpu": "Apple M4 Max",
+  "compiler_current": "e1898e092f46dd6e05abe44e3a080a5b399f7ee4",
+  "compiler_baseline": "aade7acd12ac0db7dc33577312aec0fb38f643c9",
+  "coverage_expansion_commit": "63569c6afe8a01685df6344eca23e5ef2848f47e",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "c_flags": [
+    "-std=c99",
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "size": 1048576,
+  "rounds": 5,
+  "samples": 7,
+  "sample_order": "interleaved implementations, rotating first implementation each sample",
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "baseline_adjustments": [
+    "Use the current emit driver to accept a package directory.",
+    "Stub unrelated bench_tiled to avoid its documented historical verifier refusal. BLAKE3 source is unchanged."
+  ],
+  "native_only": {
+    "historical-coverage": [
+      "hash__blake3_ustart_uflag",
+      "bench_blake3"
+    ],
+    "compress-only": [
+      "hash__blake3_ucompress"
+    ]
+  },
+  "variants": [
+    "c",
+    "old",
+    "historical-coverage",
+    "compress-only",
+    "current"
+  ],
+  "native_blake3_units": {
+    "c": [],
+    "old": [
+      "hash__blake3_ustart_uflag",
+      "bench_blake3"
+    ],
+    "historical-coverage": [
+      "hash__blake3_ustart_uflag",
+      "bench_blake3"
+    ],
+    "compress-only": [
+      "hash__blake3_ucompress"
+    ],
+    "current": [
+      "hash__blake3_ug",
+      "hash__blake3_upermute",
+      "hash__blake3_ucompress",
+      "hash__blake3_uwords",
+      "hash__blake3_ufirst8",
+      "hash__blake3_uinit",
+      "hash__blake3_ustart_uflag",
+      "hash__blake3_uabsorb_ublock",
+      "hash__blake3_uchunk_ucv",
+      "hash__blake3_uparent_uwords",
+      "hash__blake3_upush_uchunk",
+      "hash__blake3_ufinal",
+      "bench_blake3"
+    ]
+  },
+  "selected_compression": {
+    "frame_bytes": 448,
+    "instructions": 527,
+    "ldr": 156,
+    "ldp": 17,
+    "str": 141,
+    "stp": 17,
+    "eor": 34,
+    "ror": 32,
+    "bl": 0,
+    "stack_relative_memory_instructions": 305
+  },
+  "results": [
+    {
+      "impl": "current-c",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 2574200.0,
+      "samples": [
+        2320000.0,
+        2377600.0,
+        2579800.0,
+        3006400.0,
+        2607200.0,
+        2574200.0,
+        2390000.0
+      ]
+    },
+    {
+      "impl": "native-aade7acd",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 4583600.0,
+      "samples": [
+        4174200.0,
+        4320200.0,
+        5342000.0,
+        4509200.0,
+        4583600.0,
+        4718200.0,
+        4749800.0
+      ]
+    },
+    {
+      "impl": "current-historical-coverage",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 3855800.0,
+      "samples": [
+        3828800.0,
+        3769200.0,
+        4385800.0,
+        4446600.0,
+        3865200.0,
+        3843400.0,
+        3855800.0
+      ]
+    },
+    {
+      "impl": "current-compress-only",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 7084600.0,
+      "samples": [
+        6451400.0,
+        8270800.0,
+        6987800.0,
+        7084600.0,
+        6961600.0,
+        7146800.0,
+        7429600.0
+      ]
+    },
+    {
+      "impl": "current-full-native",
+      "kernel": "blake3",
+      "size": 1048576,
+      "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+      "ns_per_op_median": 8629400.0,
+      "samples": [
+        7885200.0,
+        8354600.0,
+        8630800.0,
+        10120600.0,
+        9672400.0,
+        8629400.0,
+        8150200.0
+      ]
+    }
+  ],
+  "hash_source_sha256": "c662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55",
+  "runner_sha256": "89d24ab549de05b2cd8992bb8fdd13406ea2503772175fbd67cc6cd64fba70c3"
+}

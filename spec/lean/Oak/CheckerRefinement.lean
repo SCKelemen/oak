@@ -59,6 +59,14 @@ structure SpanFact where
 
 def SpanFact.holdsLen (f : SpanFact) (n : Int) : Bool := f.lenRegs.contains n
 
+/-- Nominal byte provenance within one exact record element. This companion
+fact is not memory authority: it says neither private/unpublished custody nor
+anything about the memory type or external observers. -/
+structure RecordPlace where
+  name : String
+  offset : Int
+  deriving Repr, DecidableEq
+
 /-- What the checker's fact maps say about the base register, consulted
     in `elementRegion`'s order: a frame address (`frameAddrs`), a span
     (`spans`), a bounded region (`regions`). -/
@@ -114,6 +122,25 @@ def elementRegion (frame : Int) (base : Base) (guard : Option IdxFact) (size : I
         match base.region with
         | some extent => regionElement extent bound size
         | none => none
+
+/-- The nominal companion to the ordinary one-element span branch. A widened
+slack region intentionally has no single-record provenance. The Go checker
+also requires `name` to come from its compiler-supplied composite table. -/
+def exactSpanRecord (name : String) (fact : SpanFact) (bound : IdxFact)
+    (size : Int) : Option RecordPlace :=
+  if name ≠ "" ∧ fact.elem = size ∧ bound.slack = false ∧
+      ((bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true) ∨
+       (bound.boundReg < 0 ∧ fact.hasMin = true ∧ bound.bound ≤ fact.minLen)) then
+    some ⟨name, 0⟩
+  else none
+
+/-- Advance exact nominal provenance by a nonnegative byte offset. Lean's
+integers are unbounded; the synchronized Go helper additionally rejects signed
+`int64` overflow. -/
+def narrowRecordPlace (place : RecordPlace) (offset : Int) : Option RecordPlace :=
+  if place.name ≠ "" ∧ 0 ≤ place.offset ∧ 0 ≤ offset then
+    some ⟨place.name, place.offset + offset⟩
+  else none
 
 /-- `asm.checker.regionAccess`, its arithmetic: `[xR, #off]` (no index) or
     `[xR, wJ, uxtw]` under a constant guard `wJ < bound` (a register bound
@@ -215,6 +242,40 @@ theorem spanElement_writable (fact : SpanFact) (bound : IdxFact) (size : Int)
       subst r
       rfl
     · simp at h
+
+/-- Any returned exact-span provenance retains the nonempty nominal identity
+and starts at byte zero of that record element. -/
+theorem exactSpanRecord_sound (name : String) (fact : SpanFact)
+    (bound : IdxFact) (size : Int) (place : RecordPlace)
+    (h : exactSpanRecord name fact bound size = some place) :
+    place.name = name ∧ name ≠ "" ∧ place.offset = 0 ∧ fact.elem = size ∧
+      bound.slack = false ∧
+        ((bound.boundReg ≥ 0 ∧ fact.holdsLen bound.boundReg = true) ∨
+         (bound.boundReg < 0 ∧ fact.hasMin = true ∧ bound.bound ≤ fact.minLen)) := by
+  unfold exactSpanRecord at h
+  split at h
+  · rename_i accepted
+    simp only [Option.some.injEq] at h
+    subst place
+    exact ⟨rfl, accepted.1, rfl, accepted.2.1, accepted.2.2.1,
+      accepted.2.2.2⟩
+  · simp at h
+
+/-- Narrowing keeps the nominal identity and advances, never retreats, within
+the exact record-relative byte coordinate. -/
+theorem narrowRecordPlace_sound (place narrowed : RecordPlace) (offset : Int)
+    (h : narrowRecordPlace place offset = some narrowed) :
+    narrowed.name = place.name ∧ narrowed.offset = place.offset + offset ∧
+      place.offset ≤ narrowed.offset := by
+  unfold narrowRecordPlace at h
+  split at h
+  · rename_i accepted
+    simp only [Option.some.injEq] at h
+    subst narrowed
+    refine ⟨rfl, rfl, ?_⟩
+    change place.offset ≤ place.offset + offset
+    omega
+  · simp at h
 
 /-- A region element: the region is one element, inside the parent. -/
 theorem regionElement_sound (extent : Region) (bound : IdxFact) (size : Int) (r : Region)
@@ -350,6 +411,12 @@ example : elementRegion 0 ⟨none, (some ⟨8, true, true, 4, [1]⟩), none⟩ (
 example : elementRegion 0 ⟨none, (some ⟨4, true, false, 0, [1]⟩), none⟩ (some ⟨1, 0, false, 0⟩) 8 = none := by decide
 example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 32, false, 0⟩) 1 = some ⟨1, false⟩ := by decide
 example : elementRegion 0 ⟨none, none, (some ⟨32, false⟩)⟩ (some ⟨(-1), 33, false, 0⟩) 1 = none := by decide
+example : exactSpanRecord "Regime" ⟨2072, true, false, 0, [1]⟩ ⟨1, 0, false, 0⟩ 2072 = some ⟨"Regime", 0⟩ := by decide
+example : exactSpanRecord "Regime" ⟨2072, true, true, 4, [1]⟩ ⟨1, 4, true, 0⟩ 2072 = none := by decide
+example : exactSpanRecord "Regime" ⟨2072, true, false, 0, [1]⟩ ⟨1, 0, false, 0⟩ 8 = none := by decide
+example : narrowRecordPlace ⟨"Regime", 0⟩ 0 = some ⟨"Regime", 0⟩ := by decide
+example : narrowRecordPlace ⟨"Regime", 0⟩ 16 = some ⟨"Regime", 16⟩ := by decide
+example : narrowRecordPlace ⟨"Regime", 0⟩ (-1) = none := by decide
 example : regionAdmits ⟨12, true⟩ false 4 4 none = true := by decide
 example : regionAdmits ⟨12, true⟩ false 12 4 none = false := by decide
 example : regionAdmits ⟨12, false⟩ true 0 4 none = false := by decide

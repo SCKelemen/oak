@@ -260,6 +260,15 @@ kernel-pins sixteen production outcomes, including alias/count/memo corruption
 hidden behind false roots. Full Go admission/coverage refinement and compiler
 verdict authority remain separate; this does not add a compiler consumer.
 
+`Oak.CNFMetadataSettled.check` now gates settled equality with the complete
+header check. Its returned ordered parameters are the ones used by word
+projection; `check_sound` derives their validity, exact names, and equal word
+widths/values for every typed input from one acceptance. Twenty-four production
+fixtures kernel-pin the composition, including malformed unused metadata,
+disabled modes, changed declared widths, allocation failures, and true/pending
+roots. Recording coverage still needs binding to this same semantic snapshot;
+this does not establish full Go admission or verdict authority.
+
 The constructor metadata seam now has `Oak.CNFReplayHeader`: exact ordered
 names, explicit index presence, widths, unique keys/counts, and disabled modes
 yield valid parameters with no extra table keys. The Go check rejects missing
@@ -274,6 +283,16 @@ pins. Neither equal counts nor equal scalar snapshots establish content
 integrity or producer immutability; same-size forged state is an explicit
 accepted numeric counterexample. Universal Go trace/map/pointer/key projection,
 full intermediate-root traversal and complete admission remain unrefined.
+The production checked stores are now isolated as `recordTerm`, `inputEdge`
+and `gateEdge`, with their original lookup/root/range checks and no trace
+storage. `Oak.CNFReplayRecording` models their repeated-key updates and proves
+an accepted event run from empty establishes the admitted-state invariant.
+`Oak.CNFReplayRecordedCoverage.check_exact` derives exact term-root/input/gate
+coverage from that executable run plus checked counts/finish, without assuming
+reachability. Bounded actual helper sequences are kernel-pinned, and a source
+structure regression confines replay-map writes to the checked helper sites.
+This does not universally prove the Go walker's control flow, aliases, trace
+projection or producer immutability; bookkeeping is not root semantics.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
@@ -492,6 +511,17 @@ and individual alignment. It does not prove architectural PC, the X30 write,
 `PostDecode`, `BranchTo`, target mapping, source-CFG labels, object/link
 correctness, or observation.
 
+The 32-bit `CBZ W` guard has a separate partial seam.
+`Oak.AArch64CompareBranchEncoding` proves its XML-row field packing, while
+generated Sail Lean proves exact decode, signed displacement, and zero-test
+equality with `Oak.AssemblerSemantics.cbz` on supplied register bits. The
+BBM guard is `CBZ W1,+28`; its predicate tests only the supplied low-32-bit
+length, independently of the upper X1 bits. WZR yields zero; CBNZ and CBZ X
+are not admitted to this decoder. Complete official-source routes and Sail
+regeneration are checked independently of the Go local-encoder cases. Dynamic
+register/PC provenance, `PostDecode`/`BranchTo`, fall-through, trap execution,
+and BBM memory effects are not proved by this slice.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an
@@ -558,7 +588,9 @@ normal eight-byte store parameters, X31-as-zero, and the final official
 but cannot create, each external descriptor occurrence/action witness.
 
 The separate offset-form STP64 increment is deliberately not connected to
-code generation or the semantic verifier. `Oak.AArch64Encoding` pins the
+code generation or the semantic verifier. Production blocked zero fills use
+four ordered scalar stores and the original scalar tail; they do not consume
+this pair-store evidence. `Oak.AArch64Encoding` pins the
 XML-generated `STP_64_ldstpair_off` base/mask and signed scaled `imm7` layout,
 and computes `STP XZR, XZR, [X0]` and `[X0, #16]` as `0xa9007c1f` and
 `0xa9017c1f`. The official-Sail source gate pins the corresponding 64-bit
@@ -577,9 +609,53 @@ access covers two adjacent in-span u64 cells; synchronized examples admit
 offsets 0 and 16 of a four-cell region and refuse offset 24 and a read-only
 region. That is only byte bounds and writability metadata. It proves no
 ordinary-memory, privacy, or unpublished custody, so generic and record-span
-pair stores remain refused. A lowering still requires exact record-field
-provenance and trap preservation, verifier support, scalar-tail lowering,
+pair stores remain refused. The checker transports compiler-derived nominal
+record identity through exact record elements and their nonnegative byte-tail
+aliases; control-flow meets reject same-sized but differently named records,
+and widened multi-record regions carry no single-record identity. This is
+non-authoritative metadata only. Exact direct-`u64` field selection now narrows
+indexed accesses to the field declaration, so following record fields cannot
+extend the array bound. Unsupported layouts retain the original generic
+checker behavior and yield no exact field fact. `Oak.RecordArrayRegion`
+formalizes the selected geometry and four-cell loop decision, proves field and
+record containment and nonwrapping 32-bit indices, and composes them with the
+staged four-write final-state law. Declaration lookup/uniqueness itself remains
+outside that theorem, and no instruction uses the quad predicate as permission.
+A lowering still requires trap preservation, verifier support, scalar-tail lowering,
 alias/observer exclusion, and private/unpublished ordinary-memory authority.
+`Oak.PairStoreEffects` closes one later final-state edge in isolation: its log
+uses the verifier's exact 32-bit modular indices, and under explicit no-wrap
+premises applying one pair equals `storePair` while two adjacent zero pairs
+equal four scalar writes. A synchronized Go helper builds those entries in
+operand/address order, including the wrap case, but no instruction handler can
+reference it; an AST gate permits only its declaration, and direct verifier
+tests pin both existing pair-store refusals. It therefore proves neither
+architectural occurrence nor component or observer order, and grants no
+verifier or code-generation authority.
+
+Generated static-protocol handles now have a sealed initial-constructor
+designation carried through resolved resources, SemIR validation, and a
+whole-program construction gate before resource flow. Direct initial literals,
+uninitialized roots (including value aggregates/fixed arrays), and alternate
+fresh/trusted result contracts cannot bypass the designated constructor;
+checked same-resource transitions retain reconstruction permission only for
+tail results, never independently bound local handles. Designated constructors
+must have actual checked Oak bodies, with no foreign or assembly replacement.
+Explicit-resource protocols keep their existing literal rules. The separate
+`Oak.SealedTypestate` calculus proves that derivations retain an externally
+supplied designated-mint premise and that transitions preserve resource/origin
+identity. It is not a Go implementation refinement and establishes no actual
+allocation, ordinary RAM, fault-free mapping, or CPU/DMA/external-observer
+exclusion. Uncontracted/foreign typed return values can still have unknown
+provenance; their origin is not established by this construction gate and no
+fresh authority follows from their type alone. No native or asm admission
+consumes this designation. Native lowering
+currently precedes borrow/resource/effect gates and cannot consume such an
+authority result; check-before-lowering and exact-region certificate transport
+remain separate prerequisites. The explicit `ResourceSemIR` stage also checks
+its injected declarations after `check(nil)` and needs its own ordering fix.
+An eventual private-to-published transition must consume storage custody;
+reclaiming published storage needs a separate completion/quiescence proof.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied
@@ -660,7 +736,14 @@ the pre-`Mem` Sail request proves successful architectural memory execution,
 PTE provenance/alignment beyond the source base fact, virtual-to-physical
 translation, endianness, faults, permissions, tags, exclusives, MMIO, CAT `ca`/`inv-scope`
 membership, TLBI effects, DSB completion, publication, or ISB synchronization.
-There is no Darwin/Mach-O object oracle or privileged Apple EL2 execution gate.
+The Darwin/ARM64 Mach-O oracle now requires the same complete BBM words, guard,
+and trailing trap in a single-leaf instruction section, with its sole external
+symbol at the start and no text relocations. It also pins the six barrier
+leaves, TLBI leaf, context-sync slice, and both cold-entry examples. Metadata,
+relocation, and instruction mutations must fail. The strict verified profile
+still refuses the trusted BBM object on both ELF and Mach-O. This executable
+source-to-object regression witness neither proves the final linked bytes nor
+executes privileged code; a privileged Apple EL2 execution gate remains open.
 
 The fixed Oak context-sync example has a bootstrap C system-instruction order
 gate and an independent native zero-overhead gate: the bootstrap C lane retains

@@ -16,7 +16,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 const nativeRecordLoopStoreProgram = `Table: type = struct {
@@ -338,20 +340,86 @@ func TestE2ENativeStage2AllocTableProven(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
+	if !strings.Contains(joined, "alloc_table: layer A — fill unrolling ×1 under Oak.BlockedFill.blocked_fill_eq") {
+		t.Errorf("alloc_table must select the proved blocked-fill rewrite:\n%s", joined)
+	}
 	// Only the leaf memories an iteration can write are loop-carried; the
 	// untouched siblings are framed at their exact entry values — the store
 	// before the loop (`free_count - 1`) among them, so the verdict names
 	// s.free_count as a memory the body writes.
-	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") || !strings.Contains(joined, "the package state it writes (st)") || !strings.Contains(joined, "the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)") {
+	if !strings.Contains(joined, "asm unit alloc_table: proven equal to its Oak body at the bit level — 2 data-dependent loops coupled inductively") || !strings.Contains(joined, "the package state it writes (st)") || !strings.Contains(joined, "the span memory it writes (s.entry_count, s.free_count, s.high_water, s.pages)") {
 		t.Errorf("alloc_table must be proven with its cell and written leaf memories:\n%s", joined)
 	}
 	if !strings.Contains(joined, "asm unit walk: proven equal to its Oak body at the bit level — data-dependent loop coupled inductively") {
 		t.Errorf("walk must prove the callee's guarded loop through its call summary:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
+	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body at the bit level — 5 data-dependent loops coupled inductively") {
 		t.Errorf("reset's inducted loops must be proven:\n%s", joined)
 	}
 	if strings.Contains(joined, "disagrees") {
 		t.Errorf("a false mismatch:\n%s", joined)
+	}
+}
+
+func TestNativeLargeBlockedFillBacksOffUnprovenRotation(t *testing.T) {
+	t.Setenv("OAK_NATIVE_ONLY", "alloc_table")
+	const source = `
+entries: u32 = u32(2048)
+max_pages: u16 = u16(24)
+Regime: type = struct {
+  pages: [49152]u64
+  free_stack: [24]u16
+  free_count: u16
+  high_water: u16
+  entry_count: [24]u16
+}
+st: u8
+cell: (table: u16, idx: u32): u32 { u32(table) * entries + idx }
+alloc_table: (s: [*]Regime, dom: u32): u16 {
+  idx: u16 = u16(0)
+  none: Bool = s[dom].free_count == u16(0)
+  none ? { st = u8(1) } | { }
+  ok: Bool = st == u8(0)
+  ok ? {
+    s[dom].free_count = s[dom].free_count - u16(1)
+    idx = s[dom].free_stack[u32(s[dom].free_count)]
+    j: u32 = u32(0)
+    while j < entries {
+      s[dom].pages[cell(idx, j)] = u64(0)
+      j = j + u32(1)
+    }
+    s[dom].entry_count[u32(idx)] = u16(0)
+    iu: u16 = max_pages - s[dom].free_count
+    hw: Bool = iu > s[dom].high_water
+    hw ? { s[dom].high_water = iu } | { }
+  } | { }
+  idx
+}
+`
+	compilation := nativeShapeCompilation("large_blocked_fill.oak", source)
+	compilation.options.InlineHelpers = true
+	model, err := compilation.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := model.NativeVerdicts["alloc_table"]
+	if verdict.Kind != asm.VerdictProven {
+		t.Fatalf("large blocked fill must remain proven: %s (%s)", verdict.Kind, verdict.Message)
+	}
+	var selected *asm.Function
+	for _, fn := range model.AsmFunctions {
+		if fn.Name == "alloc_table" {
+			selected = fn
+			break
+		}
+	}
+	if selected == nil {
+		t.Fatal("missing native alloc_table")
+	}
+	if sites := nativegen.UnrolledFills(selected); sites != 1 {
+		t.Fatalf("selected blocked-fill sites = %d, want 1", sites)
+	}
+	if loops := nativegen.RotatedLoops(selected); loops != 0 {
+		t.Fatalf("selected the unproved rotated shape (%d loops)", loops)
 	}
 }

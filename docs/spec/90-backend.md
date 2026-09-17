@@ -41,6 +41,11 @@ C is not Oak's semantic definition and should not prevent future native/LLVM/etc
 
 ## 2a. Targets and cross builds
 
+The C/native target set below now has an experimental sibling, `core/wasm32`.
+It emits Wasm bytes directly, not C or ELF/Mach-O, and is specified separately
+in [91-wasm.md](91-wasm.md). Existing C/native target theorems do not yet cover
+this extension. See the [target maturity matrix](../targets.md).
+
 Status: implemented (`target`, `toolchain`; `oak build -target os/arch`;
 `compiler/e2e_cross_test.go`, `Oak.Target`). Motivated by dbs ask 6
 (`docs/notes/dbs-feedback-2026-09.md`): AArch64 and RISC-V are its only
@@ -419,7 +424,14 @@ locals, `__inl<N>_a<i>` for copied arguments, `__inl<N>_r` for the result,
 three spellings that cannot meet (a local named `a1` or `r` once collided
 with the temporaries) — a plain
 identifier argument substitutes for a parameter the helper never assigns
-(so the caller's facts about it apply unchanged), so does an integer
+(so the caller's facts about it apply unchanged) when the caller declares
+it with the parameter's own type spelling: the pass runs before the type
+checker, and a substituted name is the one argument no seam remains to
+check, so a name of another spelling, or one the pass has no declaration
+for (a pattern binding), binds through the typed temporary below, whose
+declaration the checker types as it types a call's argument (`Buffer[Device]`
+passed for `Buffer[Staging]` is rejected whether or not the helper inlines);
+so does an integer
 literal — `u32(8)` as written, or a bare literal wrapped in the parameter's
 type — so the merged body reads `v[u32(8) + u32(3)]` under
 `len(v) >= u32(8) + u32(4)`, constant sums the extents checker folds and
@@ -713,7 +725,14 @@ projections.
 The SCCP analysis validates its operation vocabulary before computing exact
 constants and executable CFG edges. Its folds use Oak's exact fixed-width
 signed/unsigned arithmetic and trap boundaries rather than host or target
-arithmetic. A separate, bounded transform consumes only exact independently
+arithmetic. Closed total operations additionally admit exact-SSA self
+subtraction/XOR and integer/Bool reflexive comparisons, multiplication/AND by
+zero, and OR with width-correct all-ones. Absorbing transfers wait for both
+operands to leave lattice-unknown, preserving monotonicity when a later phi
+input changes an apparent absorber. They do not apply to floating point,
+division, shifts, unknown attributes, or effectful operations. Calls, loads,
+and traps producing now-unused operands still execute on reachable paths.
+A separate, bounded transform consumes only exact independently
 recomputed evidence to replace known closed total-pure results, select known
 branches, remove unreachable blocks, and clean SSA blocks/trampolines. It
 preserves effectful and trapping operations and independently verifies its

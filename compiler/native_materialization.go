@@ -26,7 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v6")
+	// v23 composes v22's separate small-unroll strategy and placement veto with
+	// scalar-global address sharing. Preserve every recipe input to avoid
+	// reusing another candidate's body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v23")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -50,7 +53,11 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 	}{
 		{"vector-reductions", lane.VectorReductions},
 		{"vector-maps", lane.VectorMaps},
+		{"unroll-vector-maps", lane.UnrollVectorMaps},
+		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
+		{"unroll-constant", lane.UnrollConstant},
+		{"unroll-small", lane.UnrollSmall},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
@@ -58,11 +65,20 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"elide-proven", lane.ElideProven},
 		{"reuse-flags", lane.ReuseFlags},
 		{"rotate-loops", lane.RotateLoops},
+		{"carry-loop-indices", lane.CarryLoopIndices},
+		{"elide-redundant-guards", lane.ElideRedundantGuards},
 		{"strength", lane.Strength},
 		{"vector-homes", lane.VectorHomes},
+		{"loop-array-homes", lane.LoopArrayHomes},
+		{"loop-result-homes", lane.LoopResultHomes},
+		{"share-record-bases", lane.ShareRecordBases},
+		{"share-global-addresses", lane.ShareGlobalAddresses},
 		{"vector-blocks", lane.VectorBlocks},
+		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},
 		{"value-select", lane.ValueSelect},
+		{"fuse", lane.Fuse},
+		{"fuse-exits", lane.FuseExits},
 		{"cleanup", lane.Cleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},

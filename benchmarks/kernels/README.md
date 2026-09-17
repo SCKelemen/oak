@@ -11,6 +11,15 @@ C shell, so a kernel's row is native only where its whole call tree is), Go
 library only). Every implementation prints the checksum of its result and the
 driver refuses to record a timing until all agree.
 
+For each kernel the driver takes one sample from each implementation,
+then repeats, rotating which implementation runs first. It checks the
+checksum of every sample, retains samples in observation order, and
+computes each median from a sorted copy. Reports name this protocol in
+`sample_order`. Earlier versions of this driver collected all samples of
+one implementation before moving to the next; those ratios can reflect
+load drift between the groups of samples. Interleaving reduces that bias
+but does not control core placement or contention.
+
 | Kernel | Workload | Shape it stands for |
 | --- | --- | --- |
 | `crc32c` | CRC-32C of 1 MiB | page checksum (dbs) |

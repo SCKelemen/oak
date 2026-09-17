@@ -28,7 +28,7 @@ open CompareOp
 open BranchRegisterExecutionTarget
 open BarrierExecutionTarget
 
-/-- Type quantifiers: k_ex26235_ : Bool, k_ex26234_ : Bool -/
+/-- Type quantifiers: k_ex26671_ : Bool, k_ex26670_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -178,7 +178,7 @@ def ConditionHolds (cond : (BitVec 4)) (nzcv : (BitVec 4)) : Bool :=
   then (! result)
   else result
 
-/-- Type quantifiers: k_ex26419_ : Bool, k_ex26418_ : Bool, k_datasize : Nat, k_datasize ∈
+/-- Type quantifiers: k_ex26855_ : Bool, k_ex26854_ : Bool, k_datasize : Nat, k_datasize ∈
   {32, 64} -/
 def integer_conditional_select (condition : (BitVec 4)) (nzcv : (BitVec 4)) (else_inc : Bool) (else_inv : Bool) (operand1 : (BitVec k_datasize)) (operand2 : (BitVec k_datasize)) : (BitVec k_datasize) :=
   let result : (BitVec k_datasize) := operand2
@@ -194,7 +194,7 @@ def integer_conditional_select (condition : (BitVec 4)) (nzcv : (BitVec 4)) (els
     then (BitVec.addInt result 1)
     else result)
 
-/-- Type quantifiers: k_ex26435_ : Bool, k_datasize : Nat, k_datasize ∈ {32, 64} -/
+/-- Type quantifiers: k_ex26871_ : Bool, k_datasize : Nat, k_datasize ∈ {32, 64} -/
 def integer_conditional_compare_register (condition : (BitVec 4)) (nzcv : (BitVec 4)) (flags__arg : (BitVec 4)) (operand1 : (BitVec k_datasize)) (operand2__arg : (BitVec k_datasize)) (sub_op : Bool) : (BitVec 4) :=
   let flags : (BitVec 4) := flags__arg
   let operand2 : (BitVec k_datasize) := operand2__arg
@@ -339,7 +339,7 @@ def vector_transfer_integer_dup (datasize : Nat) (elements : Nat) (esize : Nat) 
     loop_vars := (aset_Elem result e esize element)
   (pure loop_vars)
 
-/-- Type quantifiers: k_ex26574_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex27010_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_add_wrapping_single (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (sub_op : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -362,7 +362,7 @@ def vector_arithmetic_binary_uniform_add_wrapping_single (datasize : Nat) (eleme
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex26642_ : Bool, k_ex26641_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex27078_ : Bool, k_ex27077_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_single (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (minimum : Bool) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -387,7 +387,7 @@ def vector_arithmetic_binary_uniform_maxmin_single (datasize : Nat) (elements : 
     (pure loop_vars) ) : Id (Int × Int × Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex26693_ : Bool, k_ex26692_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex27129_ : Bool, k_ex27128_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_cmp_int (cmp_eq : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -416,7 +416,7 @@ def vector_arithmetic_binary_uniform_cmp_int (cmp_eq : Bool) (datasize : Nat) (e
     (pure loop_vars) ) : Id (Int × Int × (BitVec datasize) × Bool) )
   (pure result)
 
-/-- Type quantifiers: k_ex26739_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex27175_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_cmp_bitwise (and_test : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -495,7 +495,7 @@ def vector_arithmetic_unary_cmp_int_bulk (comparison : CompareOp) (datasize : Na
     (pure loop_vars) ) : Id (Int × (BitVec datasize) × Bool) )
   (pure result)
 
-/-- Type quantifiers: k_ex26868_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
+/-- Type quantifiers: k_ex27304_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ≥ 1
   ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_sub_saturating (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -518,7 +518,7 @@ def vector_arithmetic_binary_uniform_sub_saturating (datasize : Nat) (elements :
     (pure loop_vars) ) : Id (Int × Int × Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex26919_ : Bool, shift : Int, k_ex26917_ : Bool, k_ex26916_ : Bool, datasize
+/-- Type quantifiers: k_ex27355_ : Bool, shift : Int, k_ex27353_ : Bool, k_ex27352_ : Bool, datasize
   : Nat, elements : Nat, esize : Nat, esize ≥ 1 ∧
   elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_shift_right (accumulate : Bool) (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (accumulator : (BitVec datasize)) (round : Bool) (shift : Int) (is_unsigned : Bool) : (BitVec datasize) := Id.run do
@@ -548,7 +548,7 @@ def vector_shift_right (accumulate : Bool) (datasize : Nat) (elements : Nat) (es
     (pure loop_vars) ) : Id (Int × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex26972_ : Bool, datasize : Nat, elements : Nat, elements ≥ 1 ∧
+/-- Type quantifiers: k_ex27408_ : Bool, datasize : Nat, elements : Nat, elements ≥ 1 ∧
   (elements * 8) = datasize ∧ datasize ≤ 128 -/
 def vector_transfer_vector_table (datasize : Nat) (elements : Nat) (is_tbl : Bool) (indices : (BitVec datasize)) (table : (BitVec 128)) (dst : (BitVec datasize)) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) :=
@@ -572,7 +572,7 @@ def vector_transfer_vector_extract (datasize : Nat) (hi : (BitVec datasize)) (lo
   let concat : (BitVec (2 * datasize)) := (hi +++ lo)
   (BitVec.slice concat position datasize)
 
-/-- Type quantifiers: k_ex27004_ : Bool, k_ex27003_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex27440_ : Bool, k_ex27439_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ≥ 1 ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_reduce_intmax (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (min : Bool) (is_unsigned : Bool) : (BitVec esize) := Id.run do
   let maxmin : Int := 0
@@ -628,7 +628,7 @@ def num_of_LogicalOp (arg_ : LogicalOp) : Int :=
   | .LogicalOp_EOR => 1
   | .LogicalOp_ORR => 2
 
-/-- Type quantifiers: k_ex27062_ : Bool, datasize : Nat, datasize ≥ 1 -/
+/-- Type quantifiers: k_ex27498_ : Bool, datasize : Nat, datasize ≥ 1 -/
 def vector_arithmetic_binary_uniform_logical_andorr (datasize : Nat) (invert : Bool) (operand1 : (BitVec datasize)) (operand2__arg : (BitVec datasize)) (op : LogicalOp) : (BitVec datasize) :=
   let operand2 : (BitVec datasize) := operand2__arg
   let result : (BitVec datasize) := (Zeros datasize)
@@ -701,7 +701,7 @@ def FPNeg (op : (BitVec k_N)) : (BitVec k_N) :=
 def FPAbs (op : (BitVec k_N)) : (BitVec k_N) :=
   (0#1 +++ (BitVec.slice op 0 ((Sail.BitVec.length op) -i 1)))
 
-/-- Type quantifiers: k_ex27221_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex27657_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_add_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -731,7 +731,7 @@ def vector_arithmetic_binary_uniform_add_fp (datasize : Nat) (elements : Nat) (e
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex27328_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex27764_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_sub_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (abs : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -779,7 +779,7 @@ def vector_arithmetic_binary_uniform_mul_fp_product (datasize : Nat) (elements :
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex27502_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex27938_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_mul_fp_fused (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (operand3 : (BitVec datasize)) (fpcr : (BitVec 32)) (sub_op : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -805,7 +805,7 @@ def vector_arithmetic_binary_uniform_mul_fp_fused (datasize : Nat) (elements : N
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex27578_ : Bool, k_ex27577_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex28014_ : Bool, k_ex28013_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ∈ {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_fp_1985 (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (minimum : Bool) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -837,7 +837,7 @@ def vector_arithmetic_binary_uniform_maxmin_fp_1985 (datasize : Nat) (elements :
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex27676_ : Bool, k_ex27675_ : Bool, datasize : Nat, elements : Nat, esize :
+/-- Type quantifiers: k_ex28112_ : Bool, k_ex28111_ : Bool, datasize : Nat, elements : Nat, esize :
   Nat, esize ∈ {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_binary_uniform_maxmin_fp_2008 (datasize : Nat) (elements : Nat) (esize : Nat) (operand1 : (BitVec datasize)) (operand2 : (BitVec datasize)) (fpcr : (BitVec 32)) (minimum : Bool) (pair : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -887,7 +887,7 @@ def vector_arithmetic_unary_special_sqrt (datasize : Nat) (elements : Nat) (esiz
     (pure loop_vars) ) : Id ((BitVec esize) × (BitVec datasize)) )
   (pure result)
 
-/-- Type quantifiers: k_ex27823_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
+/-- Type quantifiers: k_ex28259_ : Bool, datasize : Nat, elements : Nat, esize : Nat, esize ∈
   {32, 64} ∧ elements ≥ 1 ∧ (elements * esize) = datasize -/
 def vector_arithmetic_unary_diffneg_fp (datasize : Nat) (elements : Nat) (esize : Nat) (operand : (BitVec datasize)) (neg : Bool) : (BitVec datasize) := Id.run do
   let result : (BitVec datasize) := (Zeros datasize)
@@ -962,7 +962,7 @@ def big_endian_reverse64_pure (value_name : (BitVec 64)) : (BitVec 64) :=
                 value_name 40 8) +++ ((BitVec.slice value_name 48 8) +++ (BitVec.slice value_name 56
                   8))))))))
 
-/-- Type quantifiers: k_ex28067_ : Bool -/
+/-- Type quantifiers: k_ex28503_ : Bool -/
 def str64_aligned_normal_write_memory_arguments_pure (big_endian : Bool) (paddress : (BitVec 52)) (pre_mem_data : (BitVec 64)) : ((BitVec 56) × (BitVec 64)) :=
   let write_data : (BitVec 64) :=
     if (big_endian : Bool)
@@ -1241,7 +1241,7 @@ def undefined_PlainERETDecode (_ : Unit) : SailM PlainERETDecode := do
           pac := ← (undefined_bool ())
           use_key_a := ← (undefined_bool ()) })
 
-/-- Type quantifiers: k_ex28326_ : Bool -/
+/-- Type quantifiers: k_ex28762_ : Bool -/
 def decode64_plain_eret_pure (op_code : (BitVec 32)) (at_el0 : Bool) : PlainERETDecode :=
   let op4 : (BitVec 5) := (BitVec.slice op_code 0 5)
   let Rn : (BitVec 5) := (BitVec.slice op_code 5 5)
@@ -1317,8 +1317,8 @@ def decode64_system_write_vttbr_el2_pure (op_code : (BitVec 32)) : (Bool × Syst
   then (system_register_vttbr_el2_target_pure o0 op1 CRn CRm op2 Rt)
   else (false, SystemRegisterWriteTarget_VTTBR_EL2, Rt)
 
-/-- Type quantifiers: k_ex29025_ : Bool, k_ex29024_ : Bool, k_ex29023_ : Bool, k_ex29022_ : Bool, k_ex29021_
-  : Bool, k_ex29020_ : Bool -/
+/-- Type quantifiers: k_ex29461_ : Bool, k_ex29460_ : Bool, k_ex29459_ : Bool, k_ex29458_ : Bool, k_ex29457_
+  : Bool, k_ex29456_ : Bool -/
 def aarch64_sysregwrite_vttbr_el2_pure (at_el1 : Bool) (hcr_nv : Bool) (hcr_nv2 : Bool) (hcr_tge : Bool) (scr_ns : Bool) (scr_eel2 : Bool) (old_value : (BitVec 64)) (val_name : (BitVec 64)) : (Bool × (BitVec 64)) :=
   let redirected : Bool :=
     (at_el1 && (hcr_nv && (hcr_nv2 && ((! hcr_tge) && (scr_ns || scr_eel2)))))
@@ -1342,8 +1342,8 @@ def decode64_system_write_vtcr_el2_pure (op_code : (BitVec 32)) : (Bool × Syste
   then (system_register_vtcr_el2_target_pure o0 op1 CRn CRm op2 Rt)
   else (false, SystemRegisterWriteTarget_VTCR_EL2, Rt)
 
-/-- Type quantifiers: k_ex29147_ : Bool, k_ex29146_ : Bool, k_ex29145_ : Bool, k_ex29144_ : Bool, k_ex29143_
-  : Bool, k_ex29142_ : Bool -/
+/-- Type quantifiers: k_ex29583_ : Bool, k_ex29582_ : Bool, k_ex29581_ : Bool, k_ex29580_ : Bool, k_ex29579_
+  : Bool, k_ex29578_ : Bool -/
 def aarch64_sysregwrite_vtcr_el2_pure (at_el1 : Bool) (hcr_nv : Bool) (hcr_nv2 : Bool) (hcr_tge : Bool) (scr_ns : Bool) (scr_eel2 : Bool) (old_value : (BitVec 32)) (val_name : (BitVec 64)) : (Bool × (BitVec 32)) :=
   let redirected : Bool :=
     (at_el1 && (hcr_nv && (hcr_nv2 && ((! hcr_tge) && (scr_ns || scr_eel2)))))
@@ -1386,8 +1386,8 @@ def decode64_system_write_cntvoff_el2_pure (op_code : (BitVec 32)) : (Bool × Sy
   then (system_register_cntvoff_el2_target_pure o0 op1 CRn CRm op2 Rt)
   else (false, SystemRegisterWriteTarget_CNTVOFF_EL2, Rt)
 
-/-- Type quantifiers: k_ex29383_ : Bool, k_ex29382_ : Bool, k_ex29381_ : Bool, k_ex29380_ : Bool, k_ex29379_
-  : Bool, k_ex29378_ : Bool -/
+/-- Type quantifiers: k_ex29819_ : Bool, k_ex29818_ : Bool, k_ex29817_ : Bool, k_ex29816_ : Bool, k_ex29815_
+  : Bool, k_ex29814_ : Bool -/
 def aarch64_sysregwrite_cntvoff_el2_pure (at_el1 : Bool) (hcr_nv : Bool) (hcr_nv2 : Bool) (hcr_tge : Bool) (scr_ns : Bool) (scr_eel2 : Bool) (old_value : (BitVec 64)) (val_name : (BitVec 64)) : (Bool × (BitVec 64)) :=
   let redirected : Bool :=
     (at_el1 && (hcr_nv && (hcr_nv2 && ((! hcr_tge) && (scr_ns || scr_eel2)))))
@@ -1411,8 +1411,8 @@ def decode64_system_write_sp_el1_pure (op_code : (BitVec 32)) : (Bool × SystemR
   then (system_register_sp_el1_target_pure o0 op1 CRn CRm op2 Rt)
   else (false, SystemRegisterWriteTarget_SP_EL1, Rt)
 
-/-- Type quantifiers: k_ex29505_ : Bool, k_ex29504_ : Bool, k_ex29503_ : Bool, k_ex29502_ : Bool, k_ex29501_
-  : Bool, k_ex29500_ : Bool -/
+/-- Type quantifiers: k_ex29941_ : Bool, k_ex29940_ : Bool, k_ex29939_ : Bool, k_ex29938_ : Bool, k_ex29937_
+  : Bool, k_ex29936_ : Bool -/
 def aarch64_sysregwrite_sp_el1_pure (at_el1 : Bool) (hcr_nv : Bool) (hcr_nv2 : Bool) (hcr_tge : Bool) (scr_ns : Bool) (scr_eel2 : Bool) (old_value : (BitVec 64)) (val_name : (BitVec 64)) : (Bool × (BitVec 64)) :=
   let redirected : Bool :=
     (at_el1 && (hcr_nv && (hcr_nv2 && ((! hcr_tge) && (scr_ns || scr_eel2)))))
@@ -1474,8 +1474,8 @@ def decode64_system_write_hcr_el2_pure (op_code : (BitVec 32)) : (Bool × System
   then (system_register_hcr_el2_target_pure o0 op1 CRn CRm op2 Rt)
   else (false, SystemRegisterWriteTarget_HCR_EL2, Rt)
 
-/-- Type quantifiers: k_ex29855_ : Bool, k_ex29854_ : Bool, k_ex29853_ : Bool, k_ex29852_ : Bool, k_ex29851_
-  : Bool, k_ex29850_ : Bool -/
+/-- Type quantifiers: k_ex30291_ : Bool, k_ex30290_ : Bool, k_ex30289_ : Bool, k_ex30288_ : Bool, k_ex30287_
+  : Bool, k_ex30286_ : Bool -/
 def aarch64_sysregwrite_hcr_el2_pure (at_el1 : Bool) (old_hcr_nv : Bool) (old_hcr_nv2 : Bool) (old_hcr_tge : Bool) (scr_ns : Bool) (scr_eel2 : Bool) (old_value : (BitVec 64)) (val_name : (BitVec 64)) : (Bool × (BitVec 64)) :=
   let redirected : Bool :=
     (at_el1 && (old_hcr_nv && (old_hcr_nv2 && ((! old_hcr_tge) && (scr_ns || scr_eel2)))))
@@ -1514,7 +1514,7 @@ def undefined_ColdEntryRegisterSequenceResult (_ : Unit) : SailM ColdEntryRegist
           write6 := ← (undefined_SystemRegisterWriteTarget ())
           write7 := ← (undefined_SystemRegisterWriteTarget ()) })
 
-/-- Type quantifiers: k_ex29877_ : Bool, k_ex29876_ : Bool, k_ex29875_ : Bool, k_ex29874_ : Bool -/
+/-- Type quantifiers: k_ex30313_ : Bool, k_ex30312_ : Bool, k_ex30311_ : Bool, k_ex30310_ : Bool -/
 def eret_nv_trap_route_pure (have_nv_ext : Bool) (el2_enabled : Bool) (at_el1 : Bool) (hcr_nv : Bool) : Bool :=
   (((have_nv_ext && el2_enabled) && at_el1) && hcr_nv)
 
@@ -1523,14 +1523,14 @@ def undefined_PlainERETInputsAtEL2 (_ : Unit) : SailM PlainERETInputsAtEL2 := do
           target := ← (undefined_bitvector 64)
           spsr := ← (undefined_bitvector 32) })
 
-/-- Type quantifiers: k_ex29881_ : Bool, k_ex29880_ : Bool -/
+/-- Type quantifiers: k_ex30317_ : Bool, k_ex30316_ : Bool -/
 def aarch64_plain_eret_at_el2_inputs_pure (have_nv_ext : Bool) (el2_enabled : Bool) (state : ColdEntryRegisterState) : PlainERETInputsAtEL2 :=
   let hcr_nv : Bool := ((BitVec.access state.hcr_el2 42) == 1#1)
   { dedicated_nv_trap := (eret_nv_trap_route_pure have_nv_ext el2_enabled false hcr_nv)
     target := state.elr_el2
     spsr := state.spsr_el2 }
 
-/-- Type quantifiers: k_ex29885_ : Bool, k_ex29884_ : Bool -/
+/-- Type quantifiers: k_ex30321_ : Bool, k_ex30320_ : Bool -/
 def aarch64_cold_entry_register_sequence_at_el2_pure (old_state : ColdEntryRegisterState) (inputs : ColdEntryRegisterInputs) (scr_ns : Bool) (scr_eel2 : Bool) : ColdEntryRegisterSequenceResult :=
   let old_hcr_nv : Bool := ((BitVec.access old_state.hcr_el2 42) == 1#1)
   let old_hcr_nv2 : Bool := ((BitVec.access old_state.hcr_el2 45) == 1#1)
@@ -1675,6 +1675,32 @@ def decode64_ordinary_bl_immediate_pure (op_code : (BitVec 32)) : OrdinaryBImmed
     imm26 := imm26
     op := op
     offset := (branch26_offset_pure imm26) }
+
+def undefined_CBZ32Decode (_ : Unit) : SailM CBZ32Decode := do
+  (pure { encoding_valid := ← (undefined_bool ())
+          Rt := ← (undefined_bitvector 5)
+          imm19 := ← (undefined_bitvector 19)
+          offset := ← (undefined_bitvector 64) })
+
+def branch19_offset_pure (imm19 : (BitVec 19)) : (BitVec 64) :=
+  let scaled : (BitVec 21) := (imm19 +++ 0b00#2)
+  (Sail.BitVec.signExtend scaled 64)
+
+def decode64_cbz32_pure (op_code : (BitVec 32)) : CBZ32Decode :=
+  let Rt : (BitVec 5) := (BitVec.slice op_code 0 5)
+  let imm19 : (BitVec 19) := (BitVec.slice op_code 5 19)
+  let encoding_valid : Bool := ((op_code &&& 0xFF000000#32) == 0x34000000#32)
+  { encoding_valid := encoding_valid
+    Rt := Rt
+    imm19 := imm19
+    offset := (branch19_offset_pure imm19) }
+
+def cbz32_condition_pure (Rt : (BitVec 5)) (rt_value : (BitVec 64)) : Bool :=
+  let operand1 : (BitVec 32) :=
+    if ((Rt == 0b11111#5) : Bool)
+    then (Zeros 32)
+    else (BitVec.slice rt_value 0 32)
+  (operand1 == (Zeros 32))
 
 def initialize_registers (_ : Unit) : Unit :=
   ()

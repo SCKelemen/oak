@@ -141,10 +141,6 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
-	if err := applyOptLevel(opt); err != nil {
-		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
-		return 2
-	}
 	tgt, err := target.FromEnv(targetFlag, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -162,6 +158,14 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: -link takes c, oak, or oak-image, got %q\n", linkMode)
 		return 2
 	}
+	if tgt.CoreWasm() && (verified || nativeBodies || asmGiven || linkMode != "c" || cpu != "" || opt != "" || emitC || strings.HasSuffix(output, ".c") || header != "" || leanOut != "" || metalOut != "" || metalCheck || lines) {
+		fmt.Fprintln(os.Stderr, "oak build: core/wasm32 scalar v0 does not support -verified, native/C/link/CPU/optimization/extraction options")
+		return 2
+	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+		return 2
+	}
 	if verified && linkMode == "c" {
 		linkMode = "oak"
 	}
@@ -175,6 +179,10 @@ func buildPackage(args []string) int {
 	}
 	if len(targets) > 1 && (output != "" || header != "" || leanOut != "" || metalOut != "") {
 		fmt.Fprintln(os.Stderr, "oak build: -o, -header, -lean, and -metal apply to a single package")
+		return 2
+	}
+	if tgt.CoreWasm() && len(targets) != 1 {
+		fmt.Fprintln(os.Stderr, "oak build: core/wasm32 requires exactly one package")
 		return 2
 	}
 	for _, dir := range targets {
@@ -201,6 +209,22 @@ func buildOne(dir, output, header, leanOut, leanNS, leanFloats, metalOut, profil
 		return 1
 	}
 	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).WithTarget(tgt).WithCPU(cpu)
+	if tgt.CoreWasm() {
+		module, err := comp.EmitWasm().Get()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if output == "" {
+			output = "out.wasm"
+		}
+		if err := os.WriteFile(output, module.Bytes, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "Wasm %s: source checked; translation NOT formally verified (%d bytes)\n", module.Profile, len(module.Bytes))
+		return 0
+	}
 	if lines {
 		comp = comp.WithLineDirectives()
 	}

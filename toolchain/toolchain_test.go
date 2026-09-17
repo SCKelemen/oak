@@ -24,6 +24,9 @@ func envOf(pairs map[string]string) func(string) string {
 }
 
 func TestResolveOrder(t *testing.T) {
+	if _, err := Resolve(target.Target{OS: target.OSCore, Arch: target.ArchWasm32}, Options{}, lookupOf("zig", "cc"), envOf(nil)); err == nil {
+		t.Fatal("Wasm selected a C toolchain")
+	}
 	rv := target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}
 	none := envOf(nil)
 	// Explicit OAK_CC wins over everything and is taken as targeting rv.
