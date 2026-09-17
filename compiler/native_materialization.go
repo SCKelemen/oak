@@ -26,9 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v15 adds independently keyed loop-local result-array homes to v14's
-	// private-array homes, frame-pair initializer, and W-word promotion recipe.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v15")
+	// v16 keys the late carried-index, redundant-guard, and record-base
+	// MachineIR candidates independently. A transform flag omitted here can
+	// incorrectly reuse another candidate's cached body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v16")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -66,6 +67,9 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"vector-homes", lane.VectorHomes},
 		{"loop-array-homes", lane.LoopArrayHomes},
 		{"loop-result-homes", lane.LoopResultHomes},
+		{"carry-loop-index", lane.CarryLoopIndices},
+		{"elide-redundant-guards", lane.ElideRedundantGuards},
+		{"share-record-bases", lane.ShareRecordBases},
 		{"vector-blocks", lane.VectorBlocks},
 		{"share-vector-addresses", lane.ShareVectorAddresses},
 		{"multiply-add", lane.MultiplyAdd},
