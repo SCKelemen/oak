@@ -75,8 +75,25 @@ func TestNativeBlake3LoopResultHomesExperiment(t *testing.T) {
 				selected = fn
 			}
 		}
-		if selected == nil || nativegen.LoopResultHomes(selected) == 0 || nativegen.LoopArrayHomes(selected) != 0 {
-			t.Fatal("expected exact result homes, not private-frame homes")
+		if selected == nil || nativegen.LoopResultHomes(selected) != 2 || nativegen.LoopArrayHomes(selected) != 0 {
+			t.Fatal("expected two exact result homes, not private-frame homes")
+		}
+		stackMemory := 0
+		for _, item := range selected.Items {
+			if ins, ok := item.(asm.Instruction); ok && (strings.HasPrefix(ins.Mnemonic, "ld") || strings.HasPrefix(ins.Mnemonic, "st")) {
+				for _, operand := range ins.Operands {
+					if mem, ok := operand.(asm.Memory); ok && mem.Base.Class == asm.ClassSP {
+						stackMemory++
+					}
+				}
+			}
+		}
+		// Six homes displaced message-word promotions and raised SP traffic
+		// to 46. A smaller budget must retain those promotions, not just
+		// improve the cost model's weighted total of memory operations.
+		if selected.Frame > 144 || stackMemory > 32 || nativegen.PromotedSlots(selected) < 11 || nativegen.Metrics(selected).Instructions > 307 {
+			t.Fatalf("result-home pressure regression: frame=%d SP-memory=%d promoted=%d metrics=%s",
+				selected.Frame, stackMemory, nativegen.PromotedSlots(selected), nativegen.Metrics(selected))
 		}
 		if first != nil && (first.Frame != selected.Frame || !reflect.DeepEqual(first.Items, selected.Items)) {
 			t.Fatal("nondeterministic result-home selection")

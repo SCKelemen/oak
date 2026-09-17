@@ -5865,8 +5865,11 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v15 keys
-it independently from private-frame `loop-array-homes`. It remains a
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v16 keys
+it independently from private-frame `loop-array-homes` and records the smaller
+two-result-home budget (the combined frame/result cap remains eight). The
+budget resets per loop and leaves uncached cells on the memory path; it is a
+profitability restriction, not new memory authority. It remains a
 non-neutral, verifier-gated mechanical candidate; generic admission can still
 be Witnessed, so enabling it is not a proof-only compilation policy.
 
@@ -5907,6 +5910,13 @@ C and is Witnessed, not Proven. Opt-in BLAKE3 remains Proven for all eight
 result chunks. Despite a smaller loop, higher stack traffic and inconclusive,
 regressed native timings keep this candidate off by default; the measurements
 are in `benchmarks/native/results/blake3-loop-result-homes-2026-09-17.json`.
+The subsequent two-home budget preserves all eleven BLAKE frame-word
+promotions and reduces experimental SP-memory instructions from 46 to 30,
+while all eight result chunks still prove. Selected and unselected result
+writes are tested together. The same arbitrary-selected-set Lean law applies;
+no caller/ASL/ordering premises change. Timing remains inconclusive and default
+output unchanged; the follow-up sweep is recorded in
+`benchmarks/native/results/blake3-result-home-budget-2026-09-17.json`.
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array

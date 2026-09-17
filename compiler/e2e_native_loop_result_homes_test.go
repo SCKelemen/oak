@@ -23,6 +23,8 @@ cached: (seed: %[1]s): [%[2]d]%[1]s {
   while i < %[1]s(%[4]d) {
     v[0] = (v[0] + v[1]) ^ (seed + i)
     v[1] = (v[1] + v[0]) ^ (seed + %[1]s(3))
+    v[2] = v[2] + v[0] + i
+    v[3] = v[3] ^ v[1]
     i = i + %[1]s(1)
   }
   k: %[1]s = seed & %[1]s(%[5]d)
@@ -144,6 +146,8 @@ cached: (input: [16]u32, seed: u32, count: u32): [16]u32 {
   while i < n {
     v[0] = (v[0] + v[1]) ^ (seed + i)
     v[1] = (v[1] + input[0]) ^ (v[0] + n)
+    v[2] = v[2] + v[0] + i
+    v[3] = v[3] ^ v[1]
     i = i + u32(1)
   }
   v
@@ -158,17 +162,21 @@ main: (): i32 {
     input0: u32 = words[0]
     expected0: u32 = words[0]
     expected1: u32 = words[1]
+    expected2: u32 = words[2]
+    expected3: u32 = words[3]
     i: u32 = 0
     while i < count {
       expected0 = (expected0 + expected1) ^ (seed + i)
       expected1 = (expected1 + input0) ^ (expected0 + count)
+      expected2 = expected2 + expected0 + i
+      expected3 = expected3 ^ expected1
       i = i + u32(1)
     }
     words = cached(words, seed, n)
     assert(words[0] == expected0)
     assert(words[1] == expected1)
-    assert(words[2] == u32(3))
-    assert(words[3] == u32(4))
+    assert(words[2] == expected2)
+    assert(words[3] == expected3)
     assert(words[4] == u32(5))
     assert(words[5] == u32(6))
     assert(words[6] == u32(7))
