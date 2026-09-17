@@ -7522,6 +7522,24 @@ whole value was a parameter kept the renamed temporary;
 538, evidence 100, trusted 329, no disagreement, no body left at a
 record-returning callee; the rows identical.
 
+**Memory-returned calls inside loops (2026-09-17).** The loop's frame
+inventory includes the leaves a callee returns through x8, not just
+explicit SP stores (`addCallResultSlots`). The address is reconstructed
+through 64-bit moves and immediate add/sub instructions in one basic
+block, rooted in SP that the loop never moves or in a loop-invariant
+callee-saved register holding a frame address. This includes the caller's
+own result area. Unknown writes, joins and varying bases are refused;
+the existing exclusions for unions and RV64 memory results remain.
+Explicit and implicit store ranges are split into disjoint pieces before
+they receive fresh loop symbols, so a narrow field overlapping a wider
+spill loses neither value. Bool occupies its four-byte ABI cell; padding
+is carried only where an explicit store reaches it. Each field's header
+and next value still passes the ordinary inductive coupling, using the
+callee's Oak body for the next value. Repeated and conditional calls,
+parked and forwarded result areas, overlapping widths and wrong offsets
+are pinned by `TestVerifyMemoryReturnedCallee`; address invalidation and
+field widths by `TestLoopCallResultAddress` and `TestLoopCallResultSlotWidths`.
+
 **One loop event per site (2026-09-15).** The executor enumerates paths
 by forking at every undecided branch, and every path reaching a loop
 head — or a call whose callee has loops — appended an event of its own,

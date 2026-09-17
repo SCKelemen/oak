@@ -684,6 +684,39 @@ data-dependent index: the chaining-value stack read at `top + k`), and
 through the callee, which the verifier does not yet count as a store to
 the result area). Both are the next seams on this body.
 
+### Call-result fields carried through loops (2026-09-17)
+
+The call summary already stores every returned field. The missing step
+was the loop's store inventory: it named explicit SP stores but omitted
+the result area written by a call. `addCallResultSlots` now includes
+those fields when x8 is formed from a fixed frame address, including a
+parked caller result area. A local chain of moves and immediate address
+arithmetic is accepted; joins, changing bases and unknown writes stop
+the reconstruction. The stored fields are carried at their ABI widths,
+with overlapping spills split into disjoint pieces before freshening.
+
+Five reduced cases that previously stopped at witness checking now
+prove: repeated calls, conditional calls, a parked result area, direct
+forwarding into the caller's result area, and a spill overlapping a
+narrow returned field. Wrong offsets are refuted. Pointer clobbers and
+ambiguous addresses stay outside the supported form. Bool's four-byte
+cell, byte and halfword fields, and untouched padding have separate
+range checks (`TestVerifyMemoryReturnedCallee`, `TestLoopCallResult*`).
+
+Fresh emission at `34f1a405` plus this change moves the plain
+`hash__blake3_uupdate` from trusted to witness-checked on 305 inputs.
+Its inductive proof still fails to couple `next.cv[0]` in the nested
+call events. The guard-elided candidates still lose `.stack_len` after
+an indexed store forgets the remainder of the result area. Search now
+selects the stronger plain verdict: 547 instructions and four guards,
+against the previous trusted selection's 537 instructions and one
+guard. This is additional proof coverage, **not a performance win**;
+the optimized forms need their own verification before selection can
+recover those checks. Constant aggregate leaves also have a separate
+loop-coupling limitation; the reduced loop tests use changing leaves.
+The selections, diagnostics, artifact hashes and baseline failures are
+recorded in `benchmarks/native/results/loop-call-result-coverage-2026-09-17.json`.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

@@ -1117,6 +1117,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 		}
 	}
+	if reason, ok := x.addCallResultSlots(shape, state, writtenSlots); !ok {
+		return nil, reason, false
+	}
 	ev := &loopEvent{index: eventIndex, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}, reached: state.pathCondition(), at: shape.header}
 	if n := len(x.loopStack); n > 0 {
 		ev.parent = x.loopStack[n-1]
