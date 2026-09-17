@@ -39,6 +39,9 @@ func TestFloatTyping(t *testing.T) {
 		// Constructors and conversions (section 11.3.4).
 		{"widening constructor", "a: f32 = 1.5\nb: f64 = f64(a)", false, ""},
 		{"narrowing constructor rejected", "a: f64 = 1.5\nb: f32 = f32(a)", true, "f32_round_f64"},
+		{"negated literal in constructor", "a: f32 = f32(-0.5)\nb: f64 = f64(-2.5e3)", false, ""},
+		{"negated literal constructor overflow", "a: f32 = f32(-1e39)", true, "does not fit in type f32"},
+		{"negated variable in constructor still narrows", "a: f64 = 1.5\nb: f32 = f32(-a)", true, "f32_round_f64"},
 		{"integer constructor rejected", "n: i32 = 2\nb: f32 = f32(n)", true, "f32_round_i32"},
 		{"round from integer", "n: i32 = 2\nb: f32 = f32_round_i32(n)\nc: f64 = f64_round_u64(u64(7))", false, ""},
 		{"round from wider float", "a: f64 = 1.5\nb: f32 = f32_round_f64(a)", false, ""},

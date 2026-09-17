@@ -184,6 +184,14 @@ func (tc *TypeChecker) checkFloatConstructor(typeName string, arg ast.Expression
 	switch lit := arg.(type) {
 	case *ast.FloatLiteral:
 		return tc.checkFloatLiteral(lit, target)
+	case *ast.PrefixExpression:
+		// A negated literal is a literal of the constructor's width:
+		// f32(-0.5) types exactly as f32(0.5) does, the sign being part
+		// of the spelling rather than an f64 negation to narrow
+		// (docs/spec/20-types.md section 11.3.4).
+		if inner, isLiteral := lit.Right.(*ast.FloatLiteral); isLiteral && lit.Operator == "-" {
+			return tc.checkFloatLiteral(inner, target)
+		}
 	case *ast.IntegerLiteral:
 		tc.addError(lit, "%s(%d) is not a floating-point literal; spell it %d.0", typeName, lit.Value, lit.Value)
 		return nil
