@@ -21,7 +21,7 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 | `darwin/amd64`, `linux/amd64`, `freestanding/amd64` | C backend/external compiler; platform-dependent execution/cross-build tests | Shared frontend proof work applies where stated. No Oak amd64 native semantic-verification lane or complete C→machine proof | External C compiler performs machine optimization; no Oak-native amd64 optimization claim |
 | `freestanding/arm` | C/external compiler; Cortex-M emulator fixtures (STM32-class direction) | Shared frontend/data-model work, not verified ARM32 instruction lowering or arbitrary STM32 hardware | External C compiler; MCU runtime/code-size/power benchmarking still needed |
 | `freestanding/riscv32` | C/external compiler; RV32 emulator fixtures | Shared frontend/data-model work, not an Oak RV32 native verifier | External C compiler; no mature RV32 hardware performance suite |
-| `core/wasm32` | Experimental direct scalar OptIR→Wasm; independent engine execution tests | Source checks and engine validation only. No Wasm translation-refinement proof; verified-only mode refuses | Raw CFG dispatch baseline; no Wasm optimization or performance-parity claim |
+| `core/wasm32` | Experimental direct scalar OptIR→Wasm; independent bounded Go byte/type validator and engine execution tests | Source checks and byte/type validation, not formal decoder or translation refinement. Verified-only mode refuses | Raw CFG dispatch baseline; no Wasm optimization or performance-parity claim |
 
 ## Embeddings and adjacent outputs
 

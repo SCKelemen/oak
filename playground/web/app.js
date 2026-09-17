@@ -79,6 +79,13 @@ $("run").onclick = () => {
       if (response.module.translationVerified !== false) {
         throw Error("Unexpected verification claim.");
       }
+      const byteCheck = response.module.byteValidation;
+      if (
+        byteCheck?.validator !== "oak.wasm.check.v0" ||
+        byteCheck.sha256 !== response.moduleSHA256
+      ) {
+        throw Error("Missing or mismatched byte-validation report.");
+      }
       const raw = atob(response.module.bytes);
       if (raw.length > 1048576) throw Error("Module exceeds playground limit.");
       artifact = Uint8Array.from(raw, (c) => c.charCodeAt(0));
@@ -86,13 +93,14 @@ $("run").onclick = () => {
         throw Error("Engine rejected emitted bytes.");
       }
       $("verification").textContent =
-        "Source checked. Wasm engine validated the bytes. Translation NOT formally verified.";
+        "Source checked. Oak byte validator accepted. Wasm engine validated the bytes. Translation NOT formally verified.";
       $("artifact").textContent = JSON.stringify(
         {
           profile: response.module.profile,
           bytes: artifact.length,
           sourceSHA256: response.sourceSHA256,
           moduleSHA256: response.moduleSHA256,
+          byteValidation: byteCheck,
           exports: response.module.exports,
         },
         null,

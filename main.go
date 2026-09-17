@@ -222,7 +222,7 @@ func buildOne(dir, output, header, leanOut, leanNS, leanFloats, metalOut, profil
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "Wasm %s: source checked; translation NOT formally verified (%d bytes)\n", module.Profile, len(module.Bytes))
+		fmt.Fprintf(os.Stderr, "Wasm %s: source checked; bytes validated; translation NOT formally verified (%d bytes)\n", module.Profile, len(module.Bytes))
 		return 0
 	}
 	if lines {

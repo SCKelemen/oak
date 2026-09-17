@@ -10,6 +10,9 @@ func TestCompile(t *testing.T) {
 	if r.Error != "" || !r.SourceChecked || r.Module == nil || r.Module.TranslationVerified || len(r.SourceSHA256) != 64 || len(r.ModuleSHA256) != 64 {
 		t.Fatalf("unexpected result: %+v", r)
 	}
+	if r.Module.ByteValidation == nil || r.Module.ByteValidation.SHA256 != r.ModuleSHA256 {
+		t.Fatal("byte validation not bound to downloaded module")
+	}
 	for _, s := range []string{"import \"https://example.invalid/evil\"", "data: u32 = 1", "main: (): i32 = missing()", strings.Repeat("x", MaxSourceBytes+1)} {
 		if r := Compile(s); r.Error == "" || r.SourceChecked || r.Module != nil {
 			t.Fatalf("unsupported input accepted: %+v", r)

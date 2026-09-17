@@ -61,3 +61,43 @@ func TestFailClosedCFG(t *testing.T) {
 		t.Fatal("empty module accepted")
 	}
 }
+
+func TestWasmByteManifest(t *testing.T) {
+	cfg := optir.CFG{Name: "f", Entry: 1, Results: []optir.Type{"i32"}, Blocks: []optir.Block{{ID: 1, Parameters: []optir.Value{{ID: 1, Type: "i32"}}, Terminator: optir.Terminator{Kind: optir.TerminatorReturn, Values: []optir.ValueID{1}}}}}
+	makeModule := func() Module {
+		t.Helper()
+		m, err := Emit([]optir.CFG{cfg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	m := makeModule()
+	if m.ByteValidation == nil || m.ByteValidation.SHA256 == "" || m.TranslationVerified {
+		t.Fatal("missing byte evidence or false translation claim")
+	}
+	for name, mutate := range map[string]func(*Module){
+		"bytes":            func(m *Module) { m.Bytes[0] = 1 },
+		"name":             func(m *Module) { m.Exports[0].Name = "other" },
+		"parameter width":  func(m *Module) { m.Exports[0].Parameters[0] = "u64" },
+		"result width":     func(m *Module) { m.Exports[0].Result = "u64" },
+		"result arity":     func(m *Module) { m.Exports[0].Result = "()" },
+		"parameter arity":  func(m *Module) { m.Exports[0].Parameters = nil },
+		"export arity":     func(m *Module) { m.Exports = nil },
+		"profile":          func(m *Module) { m.Profile = "other" },
+		"unlicensed proof": func(m *Module) { m.TranslationVerified = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := makeModule()
+			mutate(&m)
+			if _, err := m.ValidateBytes(); err == nil {
+				t.Fatal("stale or forged manifest accepted")
+			}
+		})
+	}
+	// The saved report is diagnostic, not authority. It cannot excuse bad bytes.
+	m.ByteValidation.SHA256 = "forged"
+	if r, err := m.ValidateBytes(); err != nil || r.SHA256 == "forged" {
+		t.Fatal("relied on saved report", err)
+	}
+}

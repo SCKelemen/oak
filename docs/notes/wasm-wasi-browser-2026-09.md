@@ -53,8 +53,9 @@ Primary references, checked 2026-09-17:
 ```text
 source → existing checks → checked raw OptIR CFG → Wasm bytes
                                                     │
-                           current: engine decode/validate + execution tests
-                           future: independent decoder + refinement checker
+                           current: independent bounded byte/type validator
+                                    + engine validation/execution tests
+                           future: decoder refinement + translation checker
 ```
 
 Reuse the existing checked OptIR projection; do not add an AST-to-Wasm compiler.
@@ -78,7 +79,9 @@ are additional implementation and proof work, not automatically solved by Wasm.
 1. **Executable profile:** actual bytes validate in an independent runtime;
    differential/edge-case tests cover the admitted operations. Current level.
 2. **Decoded-byte boundary:** bounded independent decoder and validator, formal
-   correspondence to the pinned rules, malformed-input/fuzz coverage. Matching
+   correspondence to the pinned rules, malformed-input/fuzz coverage. The Go
+   decoder/validator and test infrastructure are implemented; the formal
+   correspondence remains open. Matching
    an encoder and decoder is insufficient if they share the same mistake.
 3. **Translation refinement:** source-to-OptIR and OptIR-to-decoded-Wasm behavior,
    including traps, calls, loops, divergence and state. No value-only proof
@@ -147,7 +150,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | --- | --- | --- |
 | W0 | Scalar raw-CFG emitter, direct `.wasm` CLI/API, fail-closed profile, independent runtime tests | Initial implementation |
 | B0 | Local compiler/editor/runner prototype; cancellation; explicit unverified status | Initial implementation |
-| W1 | Pinned Core semantics, independent bounded decoder, malformed-byte suite, formal decoder/validator correspondence | Planned |
+| W1 | Pinned Core rules, independent bounded decoder/type validator, malformed-byte/engine/fuzz tests; formal decoder/validator correspondence still required | Partial implementation; no formal refinement |
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Planned |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
