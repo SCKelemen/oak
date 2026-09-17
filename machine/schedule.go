@@ -20,6 +20,8 @@ var flagsReg = Reg{Class: 9, Num: 0}
 // Schedule reorders the instructions of every block and reports how many
 // left their original position. The function is rewritten in place.
 func (f *Function) Schedule() int {
+	f.regs = f.regsOfAll()
+	defer func() { f.regs = nil }()
 	moved := 0
 	for _, b := range f.Blocks {
 		moved += f.scheduleBlock(b)
@@ -172,55 +174,76 @@ func (f *Function) units(region []*Instr) [][]*Instr {
 }
 
 // dependence reports whether b must stay after a, and the cycles b must
-// wait after a issues.
+// wait after a issues. The instructions' registers are f.regs's, computed
+// once for the scheduling (Schedule): the region scheduler asks for
+// every pair, and two maps per instruction per pair were the scheduler's
+// time.
 func (f *Function) dependence(a, b *Instr) (int, bool) {
 	weight, dep := 0, false
-	aDefs, aUses := f.regsOf(a)
-	bDefs, bUses := f.regsOf(b)
-	for r := range aDefs {
-		if bUses[r] { // read after write
+	ra, rb := &f.regs[a.Index], &f.regs[b.Index]
+	for _, r := range ra.defs {
+		if hasReg(rb.uses, r) { // read after write
 			dep = true
 			if lat := f.t.latency(a.Asm); lat > weight {
 				weight = lat
 			}
 		}
-		if bDefs[r] { // write after write
+		if hasReg(rb.defs, r) { // write after write
 			dep = true
 		}
 	}
-	for r := range aUses {
-		if bDefs[r] { // write after read
+	for _, r := range ra.uses {
+		if hasReg(rb.defs, r) { // write after read
 			dep = true
 		}
 	}
 	// Memory: a store orders against every memory instruction.
-	aMem, aStore := memoryOf(a.Asm)
-	bMem, bStore := memoryOf(b.Asm)
-	if aMem && bMem && (aStore || bStore) {
+	if ra.mem && rb.mem && (ra.store || rb.store) {
 		dep = true
 	}
 	return weight, dep
 }
 
-// regsOf collects the registers an instruction writes and reads,
-// including the flags pseudo-register. sp and the zero register are not
-// lifted as registers: an sp write is a barrier, an sp read (a frame
-// access) needs no edge.
-func (f *Function) regsOf(ins *Instr) (defs, uses map[Reg]bool) {
-	defs, uses = map[Reg]bool{}, map[Reg]bool{}
-	for _, d := range ins.Defs {
-		defs[d.Reg] = true
+func hasReg(regs []Reg, r Reg) bool {
+	for _, x := range regs {
+		if x == r {
+			return true
+		}
 	}
-	for _, u := range ins.Uses {
-		uses[u.Reg] = true
+	return false
+}
+
+// instrRegs is an instruction's registers as the scheduler reads them:
+// the ones it writes and reads, including the flags pseudo-register (sp
+// and the zero register are not lifted as registers: an sp write is a
+// barrier, an sp read — a frame access — needs no edge), and whether it
+// touches memory and stores.
+type instrRegs struct {
+	defs, uses []Reg
+	mem, store bool
+}
+
+// regsOfAll collects every instruction's registers, indexed by the
+// instruction's index.
+func (f *Function) regsOfAll() []instrRegs {
+	regs := make([]instrRegs, len(f.Instrs))
+	for _, ins := range f.Instrs {
+		r := &regs[ins.Index]
+		for _, d := range ins.Defs {
+			r.defs = append(r.defs, d.Reg)
+		}
+		for _, u := range ins.Uses {
+			r.uses = append(r.uses, u.Reg)
+		}
+		if f.t.writesFlags(ins.Asm) {
+			r.defs = append(r.defs, flagsReg)
+		}
+		if f.t.readsFlags(ins.Asm) || (ins.Branch && f.t.conditional(ins.Asm)) {
+			r.uses = append(r.uses, flagsReg)
+		}
+		r.mem, r.store = memoryOf(ins.Asm)
 	}
-	if f.t.writesFlags(ins.Asm) {
-		defs[flagsReg] = true
-	}
-	if f.t.readsFlags(ins.Asm) || (ins.Branch && f.t.conditional(ins.Asm)) {
-		uses[flagsReg] = true
-	}
-	return defs, uses
+	return regs
 }
 
 // memoryOf reports whether an instruction touches memory and whether it
@@ -272,12 +295,12 @@ func (f *Function) Stalls() (total int, byBlock map[*Block]int) {
 			}
 		}
 	}
+	regs := f.regsOfAll()
 	for j := 1; j < len(instrs); j++ {
-		_, bUses := f.regsOf(instrs[j])
+		bUses := regs[instrs[j].Index].uses
 		for k := j - 1; k >= 0 && j-k <= 8; k-- {
-			aDefs, _ := f.regsOf(instrs[k])
-			for r := range aDefs {
-				if bUses[r] {
+			for _, r := range regs[instrs[k].Index].defs {
+				if hasReg(bUses, r) {
 					if stall := f.t.latency(instrs[k].Asm) - (j - k); stall > 0 {
 						total += stall
 						if producer, consumer := blockOf[instrs[k]], blockOf[instrs[j]]; producer == consumer || loopOf[producer] == loopOf[consumer] {
