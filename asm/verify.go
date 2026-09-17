@@ -1913,7 +1913,12 @@ func zeroExtend(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value&mask(t.width), width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
+		// A view narrower than the declared input has already discarded
+		// bits. Widening the parameter node itself would recover those bits
+		// from the input environment, so preserve the truncation as a mask.
+		if t.declaredWidth() <= t.width {
+			return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
+		}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
