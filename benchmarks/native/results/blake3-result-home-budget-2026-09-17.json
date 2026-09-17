@@ -2,7 +2,20 @@
   "schema": "oak-blake3-result-home-budget-v1",
   "date": "2026-09-17",
   "compiler_base": "0ee3b6b587ee2ff686788a53a89820a3f0aba647",
-  "candidate": "working tree: result-only budget2, materialization v16, unchanged default-off policy",
+  "candidate": "isolated working tree: result-only budget2; finalized as integrated materialization v18 with unchanged default-off policy",
+  "integration": {
+    "upstream": "9530ae6f",
+    "compiler_source_commit": "3f2db1ba",
+    "recipe": "oak.native.materialization.v18",
+    "default_and_optin_object_sha256": "ff7329aacc06b5dfef28c05dd99ddc5980dd97c88250f8324d0490135df44c33",
+    "instructions": 283,
+    "frame_bytes": 160,
+    "sp_memory_instructions": 10,
+    "selected_result_homes": 0,
+    "verdict": "Proven for all8 result chunks",
+    "boundary_checks_against_c_passed": true,
+    "timing_claim": "None: upstream improvements supersede the isolated candidates; their timings are not transferred to this different object."
+  },
   "native_only": [
     "hash__blake3_ucompress"
   ],

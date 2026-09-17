@@ -150,6 +150,8 @@ cached: (input: [16]u32, seed: u32, count: u32): [16]u32 {
     v[3] = v[3] ^ v[1]
     i = i + u32(1)
   }
+  k: u32 = count & u32(3)
+  v[k] = v[k] ^ seed
   v
 }
 
@@ -171,6 +173,19 @@ main: (): i32 {
       expected2 = expected2 + expected0 + i
       expected3 = expected3 ^ expected1
       i = i + u32(1)
+    }
+    k: u32 = count & u32(3)
+    k == u32(0) ? {
+      expected0 = expected0 ^ seed
+    }
+    k == u32(1) ? {
+      expected1 = expected1 ^ seed
+    }
+    k == u32(2) ? {
+      expected2 = expected2 ^ seed
+    }
+    k == u32(3) ? {
+      expected3 = expected3 ^ seed
     }
     words = cached(words, seed, n)
     assert(words[0] == expected0)

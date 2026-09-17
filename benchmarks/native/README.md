@@ -1018,8 +1018,9 @@ before considering default promotion. The downstream pin is unchanged.
 
 **Result-home register budget follow-up (2026-09-17).** The experimental
 candidate now caps result homes at **two per loop**, independently of private
-frame homes (the combined cap stays eight). Materialization v16 records the
-new recipe. It still requires the same alias, trap and verifier checks and is
+frame homes (the combined cap stays eight). Integrated materialization v18
+records the new recipe alongside upstream late-machine flags. It still
+requires the same alias, trap and verifier checks and is
 still disabled unless `OAK_NATIVE_LOOP_RESULT_HOMES=1`.
 
 Testing budgets 1, 2, 3, 4, 5, 6 and 8 showed that two had the lowest selected
@@ -1046,10 +1047,18 @@ mix writes to cached and uncached result cells, verify all returned chunks,
 refute a missing flush, and compare all 16 runtime cells against an independent
 C-only caller computation. Unit tests pin deterministic subset selection,
 uncached-memory fallback, independent frame-home capacity and per-loop budget
-reset. The opt-in BLAKE test requires two homes, all eight chunks Proven,
-at least 11 promoted slots, at most 32 SP-memory instructions and no larger
-frame. Shared-memory ordering, Arm ASL coverage and the downstream pin are
-unchanged; default BLAKE output remains the earlier object.
+reset. The isolated two-home BLAKE body retains all eight chunks Proven and
+the dedicated fixtures require the bounded homes. Shared-memory ordering,
+Arm ASL coverage and the downstream pin are unchanged.
+
+Integration onto `9530ae6f` supersedes that isolated BLAKE comparison: upstream
+scalar replacement, inlining and frame-store cleanup select a 283-instruction
+body with ten SP-memory instructions, a 160-byte frame, and all eight chunks
+Proven. Offering result homes changes neither instructions nor object bytes;
+no result homes fire. The BLAKE regression permits this better strategy and
+pins the 283/10/160 bounds, while the dedicated fixture uses a computed
+post-flush access to keep the actual two-home path covered. This integrated
+body differs from all timed variants above: no speedup is transferred to it.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows

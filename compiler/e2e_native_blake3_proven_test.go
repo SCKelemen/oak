@@ -66,7 +66,10 @@ func TestNativeBlake3CompressionProven(t *testing.T) {
 			}
 		}
 	}
-	if rotateAt < 0 || selected.Frame > 144 || stackMemory > 32 || nativegen.PromotedSlots(selected) == 0 {
+	// Integrated scalar replacement reserves a 160-byte frame but removes
+	// body stack traffic: only ten callee-save/restore memory instructions
+	// remain. Pin the smaller body and traffic as well as that frame bound.
+	if rotateAt < 0 || selected.Frame > 160 || stackMemory > 10 || nativegen.Metrics(selected).Instructions > 283 || nativegen.PromotedSlots(selected) == 0 {
 		t.Fatalf("proof must retain frame-word promotion: rotate=%d frame=%d stack memory=%d promoted=%d",
 			rotateAt, selected.Frame, stackMemory, nativegen.PromotedSlots(selected))
 	}
