@@ -5533,6 +5533,28 @@ Runtime acceptance uses the same-compiler `native-no-address-sharing` control
 and short-input measurements, recorded in `benchmarks/native/exact_fma/README.md`.
 These static counts alone do not establish a speedup or a claim for RV64.
 
+**Paired-load liveness (2026-09-17, AArch64 lane).** Shared native
+register bookkeeping distinguishes both `ldp`/`ldpsw` data outputs from
+their address inputs. A destination that also supplies the memory base
+is still read through the memory operand, but a destination-only second
+register does not keep an earlier value live. Copy propagation preserves
+both loaded outputs, and register reservation includes both even when
+neither is read. SIMD register numbers do not alias general-register
+numbers. Pre/post-indexed bases remain read/write operands; cleanup and
+LICM do not propagate a base copy by moving writeback to its source.
+Conditional `b` instructions retain both target and fallthrough liveness.
+
+These fixes restore one address for the four `sum32` vector loads without
+weakening its existing shape assertion or semantic verifier. On the measured
+fixture the main loop has twelve rather than fourteen instructions;
+`sum64` is unchanged. The materialization producer advances to v12. Unit
+tests pin operand roles, output/base aliases, writeback, register classes,
+copy propagation and conditional paths; native execution tests cover empty,
+vector-boundary and tail lengths with wrapping u32/u64 inputs. Runtime
+measurements, including controls where the assembly does not change, live
+in `benchmarks/native/paired_loads/README.md`. Fewer instructions alone are
+not a performance claim.
+
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
 indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr

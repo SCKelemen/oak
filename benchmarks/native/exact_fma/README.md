@@ -138,13 +138,13 @@ which also preserve the strict-map controls.
 
 Validation includes nativegen/machine/opt/harness tests, targeted compiler
 map/fold/unrolling execution and materialization tests, race checks and vet.
-A broader existing test,
-`TestE2ENativeVectorReduction`, still expects one sum32 address where the
-compiler selects two. Replaying the original matcher with late sharing
-disabled produces the same failing shape. Its old liveness analysis counts
-the second destination of a paired load as a source, keeping an index
-temporary live unnecessarily. That separate limitation is not fixed or
-hidden by weakening the shape test in this increment.
+A broader existing test, `TestE2ENativeVectorReduction`, exposed a pre-existing
+two-address sum32 shape during this increment. Replaying the original matcher
+with late sharing disabled produced the same failure: liveness counted a
+paired load's second destination as an input. The subsequent
+[paired-load bookkeeping fix](../paired_loads/README.md) resolves it, and the
+original one-address assertion now passes unchanged. The historical map
+measurements above retain their original compiler revision.
 
 ## Two-vector map candidate
 
