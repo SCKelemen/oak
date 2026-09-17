@@ -1602,6 +1602,9 @@ type Lane struct {
 	// proves less falls back to the top-tested form
 	// (docs/spec/94-assembler.md §9 "Bottom-tested loops").
 	RotateLoops bool
+	// CarryLoopIndices replaces recomputed base+i indices in scalar fills
+	// with a carried index and modular endpoint. Selected only when proven.
+	CarryLoopIndices bool
 	// GuardLines names source lines whose element accesses keep their
 	// guards under ElideProven: the compiler adds the line of an access
 	// the checker could not admit and lowers again, so the accesses the
@@ -1845,19 +1848,21 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// Late copy and branch cleanup (nativegen/cleanup.go).
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
 		}
-		if !lane.Reallocate {
-			return scheduleLane(lane, out)
-		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
 		// refuses leaves this configuration without a lowering.
-		re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
-		if rerr != nil {
-			return nil, unsupported("%v", rerr)
+		if lane.Reallocate {
+			re, alloc, rerr := machine.ReallocateWith(out, FrameObjects(out))
+			if rerr != nil {
+				return nil, unsupported("%v", rerr)
+			}
+			out.Items, out.Clobbers = re.Items, re.Clobbers
+			reallocated[out] = alloc.Sites()
+			promotedSlots[out] = alloc.Promoted
 		}
-		out.Items, out.Clobbers = re.Items, re.Clobbers
-		reallocated[out] = alloc.Sites()
-		promotedSlots[out] = alloc.Promoted
+		if lane.CarryLoopIndices {
+			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
+		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
 		var out *asm.Function

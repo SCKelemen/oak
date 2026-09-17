@@ -68,6 +68,37 @@ from `pilots/oak`, with separate build/cache directories for each compiler;
 alternate the resulting binaries. Do not substitute the vendored generated
 C for the newly built native object.
 
+## OS stage-2: carry the page-zeroing index, 2026-09-17
+
+Against `40558540`, the proof-gated `carry-loop-index` candidate removes
+the repeated `base + j` calculation from `alloc_table`'s zeroing loop.
+The carried index and endpoint use modular `u32` arithmetic; every scalar
+store and bounds guard stays in source order. The existing verifier proves
+the candidate, without a new verification rule or a weakened gate.
+
+| Selected code | Before | After |
+| --- | ---: | ---: |
+| Zeroing loop instructions per word | 7 | 6 |
+| `alloc_table` total instructions | 127 | 128 |
+| `alloc_table` frame bytes | 80 | 80 |
+| `translate` / `map_page` / `unmap_page` instructions | 120 / 210 / 339 | unchanged |
+
+The extra instruction is setup outside the 2,048-iteration loop. The
+unchanged OS pilot and harness (`37ba2112`, same build settings as above)
+passed all five differential tests. After one warmup per binary, seven
+pairs alternated which binary ran first; no compiler builds or test suites
+ran during the samples. System load averaged roughly 41–63, without host
+isolation.
+
+**No reliable decoder-cycle speedup is established.** Separate medians
+were 973.0 ns baseline and 1099.6 ns candidate, while the median *paired*
+ratio was 1.002 and only three of seven pairs improved. Even the unchanged
+translation body fluctuated substantially. This records reduced dynamic
+instruction work, not a measured OS latency improvement or a claimed
+regression from these noisy observations.
+
+[Raw observations and provenance](results/stage2-affine-index-m4-max-2026-09-17.json).
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup

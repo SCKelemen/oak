@@ -55,6 +55,7 @@ const (
 	TransformFuse        = "fuse"
 	TransformFuseExits   = "fuse-exits"
 	TransformRotate      = "rotate-loops"
+	TransformCarryIndex  = "carry-loop-index"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -389,6 +390,13 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
 			fired:   Reallocated,
 		}, neutral: true},
+		&gatedTransform{laneTransform: laneTransform{
+			name: TransformCarryIndex, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.CarryLoopIndices },
+			apply:   func(l Lane) Lane { l.CarryLoopIndices = true; return l },
+			fired:   CarriedLoopIndices,
+		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
@@ -468,6 +476,7 @@ func PlainLane(lane Lane) Lane {
 	lane.ReuseFlags = false
 	lane.HoistInvariants = false
 	lane.RotateLoops = false
+	lane.CarryLoopIndices = false
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.VectorBlocks = false

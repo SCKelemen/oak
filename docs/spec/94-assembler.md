@@ -5679,6 +5679,39 @@ pairs, and still proven); `TestE2ENativePairCopies` agrees with the C
 backend. The RV64 lane keeps its word copies (no pair form in its base
 contract).
 
+**Carried scalar-fill indices (2026-09-17, AArch64 lane).** The
+`carry-loop-index` candidate (`nativegen/affine_index.go`) replaces a
+recomputed `base + i` in a rotated scalar fill with a carried index and an
+endpoint `base + N`. Both are modular `u32` values; an equality exit, not
+an unsigned-order comparison, handles a wrapping endpoint. The original
+zero-based counter must have a dominating initializer, unit step, and a
+positive immediate bound no greater than 4095. The matcher accepts one
+scalar store with its original bounds guard; no additional entry or body
+instruction, calls, live-out temporaries, or overlapping counter/base
+registers. The old counter's register holds the endpoint. All memory
+accesses retain their order and width, including writes before a bounds
+trap; this is not blocked-fill or pair-store authorization.
+
+This is a **verdict-gated** machine candidate: the existing verifier must
+prove the affine coupling, loop-condition agreement under the inductive
+counter bound, and the guards and write effects. There is no new checker
+or verifier authority. `asm/affine_index_loop_test.go` proves the modular
+shape and refuses wrong endpoints, strides, and values; the native matcher
+tests pin aliases, live-outs, extra entries, and initialization refusals.
+The compiler's record-field fill agrees with C, preserves neighboring
+words/records/fields, and still traps on invalid table/domain indices.
+
+The actual OS stage-2 `alloc_table` is selected and `proven`: its zeroing
+loop falls from seven to six instructions per word (one scalar store and
+one bounds guard remain), with one additional setup instruction, unchanged
+register footprint, and the same 80-byte frame. Translation, map, and unmap
+bodies are unchanged. Seven alternating whole-pilot benchmark pairs on a
+loaded M4 Max do **not** establish a decoder-cycle speedup: the median
+paired candidate/baseline ratio is 1.002, with three of seven pairs faster.
+See `benchmarks/native/results/stage2-affine-index-m4-max-2026-09-17.json`
+for raw timings and provenance. Static work removed is not a measured
+whole-OS timing claim.
+
 **Bottom-tested loops (2026-09-15, AArch64 lane).** A `while` whose
 condition is a conjunction of simple tests — comparisons of simple
 operands, Bool variables in registers, their negations — is lowered with
