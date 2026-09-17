@@ -7908,6 +7908,36 @@ proven 562, evidence 139, trusted 265, the path-budget bodies down to
 fifty-one (the rest fork in loop bodies or unfold loops), the
 verifier's time unchanged.
 
+**Frame bytes at joins (2026-09-17).** Two paths may know the same bytes
+through different store widths: a record-returning callee writes 32-bit
+leaves where another arm copies 64-bit words. `mergeTwo` retains the
+intersection of their known byte ranges (`mergeFrameSlots`), selecting
+each common piece under the path condition. Sorted, disjoint intervals
+give a linear walk after sorting; unequal extents split into naturally
+aligned pieces of at most eight bytes. Identical extents retain their
+layout and shared terms. Gaps and bytes known on only one side stay
+unbound; overlapping or invalid incoming layouts cannot merge.
+
+A loop's body paths start with its fresh header frame. If a carried
+slot is absent at an end, `valueOfVar` no longer substitutes the header
+value: the loop summary stops with the lost value named. Otherwise a
+join that forgot changed memory could invent an unchanged-field invariant.
+`asm/frame_join_test.go` exercises both branch orders, narrow and wide
+stores, unaligned overlaps, gaps, result-area and stack addresses, invalid
+layouts and the lost-slot refusal. Its mixed-width loop proves, while a
+wrong value stored by one arm is refuted.
+
+Restoring the changed fields also restores the dependencies of their call
+results. The coupling search caches the machine loop symbols each raw
+next-value or continue condition mentions, including the symbols in their
+chosen replacements, and defers preliminary valuations until they are
+paired. It still checks the substituted value before building the full
+obligation. A substitution could erase a raw dependency,
+so deferring can miss an early refutation; every complete candidate
+still faces the same guard and preservation implications under the same
+budgets. This avoids rebuilding a large unresolved expression at each
+intervening search depth.
+
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine
 trapped, on the claim that Oak traps there too, on the same guard; the

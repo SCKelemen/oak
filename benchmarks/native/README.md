@@ -2086,6 +2086,26 @@ a runtime speedup claim. The compressor proof and native package/reference
 checks pass; [the evidence record](results/blake3-packed-record-leaves-2026-09-17.json)
 contains the artifact hashes, search examples and validation commands.
 
+**Chaining-value fields at branch joins (2026-09-17).** Tracing the next
+coupling failure found that all eight `next.cv` fields were present at
+the loop header but absent after a branch join. The chunk-push summary
+stores 32-bit fields; the other arm copies 64-bit words. The join kept
+only stores with identical addresses and widths, then the loop summary
+treated the missing fields as unchanged header values.
+
+The verifier now intersects known byte ranges across both arms and refuses
+a loop summary when a carried value is lost. A reduced mixed-width loop
+goes from witness evidence to proof, and storing the wrong value on one
+arm is refuted. Restoring the real dependencies also exposed repeated
+preparation of unresolved coupling obligations; caching dependencies of
+both source terms and chosen replacements avoids that work.
+
+The full update still exhausts its normal coupling budget, with **307
+agreeing witness inputs, 528 instructions and one guard**. Its native
+object is byte-identical to `98faccd3`; this finding does not establish a
+runtime gain. [The evidence record](results/blake3-frame-joins-2026-09-17.json)
+records the diagnosis, artifact comparison and validation.
+
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 
 At baseline `65477201`, the existing guarded input loop becomes `memcpy`
