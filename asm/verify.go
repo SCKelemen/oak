@@ -8226,6 +8226,16 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 				}
 				state.writes = appendWrite(state.writes, fs.name, k, truncate(value, width), nil)
 			case size%fs.elem == 0 && mem.Index == nil && value.kind == termConst && value.value == 0:
+				// The fill: zero over a memory that is zero from its marker
+				// changes nothing, and logging it would hand every later
+				// symbolic read a chain of thousands of constant-index
+				// writes (a 4096-byte chunk's fill took the prover's tally
+				// past twenty gigabytes). Logged only once the log holds a
+				// real write.
+				log := state.writes[fs.name]
+				if len(log) == 1 && log[0].memory == zeroMemory {
+					break
+				}
 				for e := int64(0); e < size/fs.elem; e++ {
 					state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(at/fs.elem+e), 32), constTerm(0, width), nil)
 				}

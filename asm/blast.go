@@ -281,6 +281,10 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
 func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
+	var form *linearForm
+	if index != nil {
+		form = index.linearAt(32)
+	}
 	for _, known := range bl.selects {
 		if known.span != span || len(known.idx) != len(idx) {
 			continue
@@ -290,6 +294,15 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 			if idx[i] != known.idx[i] {
 				same = false
 				break
+			}
+		}
+		if !same && form != nil && known.index != nil && len(known.vars) == width {
+			// Two reads whose indices are one linear form (`dom*K + t*2048
+			// + i` spelled two ways by the two sides) read one element: one
+			// block, rather than two tied by a consistency implication over
+			// the index bits.
+			if equalIndex, decided := indexRelation(form, known.index); decided && equalIndex {
+				same = true
 			}
 		}
 		if same {

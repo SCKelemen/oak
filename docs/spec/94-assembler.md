@@ -7694,6 +7694,15 @@ prover's flush shape — a 4096-byte chunk copied in a loop, viewed,
 subsliced and handed through `host_write_all` to the extern — with both
 loops coupled through the chunk, while the flush itself, a 4192-byte
 frame, stays with the C backend by the native backend's own limit.
+Two corrections followed the first prover tally of the model: the fill's
+split zero stores are not logged while the array's log is still its
+marker (zero over zero changes nothing, and a 4096-byte chunk's fill had
+handed every later symbolic read a chain of thousands of constant-index
+writes — the tally passed twenty gigabytes), and the blaster gives two
+reads of one span whose indices are one linear form spelled two ways one
+block rather than two tied by a consistency implication over the index
+bits (`selectBits`): the OS pilot's `unmap_page`, evidence at the node
+budget since its pin, proves in 1.9 million nodes.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
