@@ -1842,10 +1842,18 @@ func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			return 0, unsupported("a shift of a signed operand")
 		}
 		count, isConst := constantValue(e.Right)
-		if isConst {
-			if count < 0 || count >= int64(typ.bits) {
-				return 0, unsupported("a constant shift count of %d", count)
+		if isConst && (count < 0 || count >= int64(typ.bits)) {
+			return 0, unsupported("a constant shift count of %d", count)
+		}
+		if !isConst {
+			// A named constant's count folds as a literal's does (the
+			// AArch64 lane, nativegen.go); one at or beyond the width keeps
+			// the run-time trap.
+			if named, ok := g.constantOperand(e.Right, typ); ok && named < uint64(typ.bits) {
+				count, isConst = int64(named), true
 			}
+		}
+		if isConst {
 			op := pick(typ.bits != 32, "slli", "slliw")
 			if e.Operator == ">>" {
 				op = pick(typ.bits != 32, "srli", "srliw")

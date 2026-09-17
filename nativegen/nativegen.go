@@ -7072,10 +7072,21 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			return 0, unsupported("a shift of a signed operand")
 		}
 		count, isConst := constantValue(e.Right)
-		if isConst {
-			if count < 0 || count >= int64(typ.bits) {
-				return 0, unsupported("a constant shift count of %d", count)
+		if isConst && (count < 0 || count >= int64(typ.bits)) {
+			return 0, unsupported("a constant shift count of %d", count)
+		}
+		if !isConst {
+			// A named constant's count folds the same way (`ipa >> l0_shift`
+			// for `l0_shift: u64 = u64(25)`, the page walkers' index
+			// extraction): one immediate shift, no register for the count
+			// and no range check before it. A named count at or beyond the
+			// width keeps the run-time path, which traps as the semantics
+			// say (10-syntax.md §3b).
+			if named, ok := g.constantOperand(e.Right, typ); ok && named < uint64(typ.bits) {
+				count, isConst = int64(named), true
 			}
+		}
+		if isConst {
 			op := "lsl"
 			if e.Operator == ">>" {
 				op = "lsr"
