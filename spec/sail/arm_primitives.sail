@@ -12,7 +12,7 @@
  * `spec/lean/Oak/ArmASL.lean` is proved equal.
  *
  * The adaptations, all listed here, make the fragment self-contained and
- * pure except for the explicitly retained no-device RAM wrapper; none
+ * pure except for the explicitly retained RAM wrappers and selector register; none
  * changes a computed value:
  *   - `UInt`/`SInt`/`__GetSlice_int`/`IsZero`/`Zeros` come from Arm's
  *     prelude, written against Sail 0.8; they are restated over the Sail
@@ -32,6 +32,9 @@
  *   - `__WriteRAM` is copied from `model/no_devices.sail`, including its
  *     external `write_ram` binding. Its generated effect is interpreted by
  *     the pinned Sail Lean sequential runtime, not by the Arm CAT model.
+ *   - `__WriteMemory` and `__defaultRAM` are retained from aarch_mem.sail,
+ *     including the register read and the official no-device trace helper.
+ *     Register initialization and reaching this wrapper are not assumed.
  */
 
 default Order dec
@@ -911,6 +914,26 @@ val __WriteRAM : forall 'n 'm.
 function __WriteRAM(addr_length, bytes, hex_ram, addr, data) =
 {
   ___WriteRAM(addr_length, bytes, hex_ram, addr, data)
+}
+
+/* Exact register-reading wrapper and the selected model's trace helper.
+ * The register remains in the generated state; it is not replaced by an
+ * explicit argument or an assumed initialized constant.
+ */
+register __defaultRAM : bits(56)
+
+val __TraceMemoryWrite : forall 'n 'm.
+  (atom('n), bits('m), bits(8 * 'n)) -> unit
+
+function __TraceMemoryWrite(bytes, addr, data) = ()
+
+val __WriteMemory : forall ('N : Int).
+  (int('N), bits(56), bits(8 * 'N)) -> unit effect {rreg, wmem}
+
+function __WriteMemory (N, address, val_name) = {
+    __WriteRAM(56, N, __defaultRAM, address, val_name);
+    __TraceMemoryWrite(N, address, val_name);
+    return()
 }
 
 /* ---------------------------------------------------------------------

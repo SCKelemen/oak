@@ -1129,10 +1129,23 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment itself has an empty register vocabulary. This runtime
+the generated fragment itself has one RAM-selector register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
+
+The generated `__WriteMemory` wrapper now retains its real `__defaultRAM` read
+and the selected no-device trace helper. A checked case split proves the same
+eight-byte footprint and state preservation when the register is initialized,
+and Sail's `Unreachable` error with unchanged state when it is missing. Normal
+return is equivalent to an initialized register entry; ignoring the selector
+in the lower runtime does not allow skipping this read. Break/make projections
+compose with the new effectful wrapper under both endian choices, retaining
+the actual register-lookup premise. No full architectural register bank or
+initialization proof is implied, and this runtime error is not an Arm Data
+Abort. Exact-source/mutation gates pin the register, write/trace/return order,
+and the complete no-op trace expression, including continuation lines.
+
 Descriptor/PA/default-RAM provenance, translation correctness, dynamic route
 reachability, architectural memory effects, atomicity/non-tearing, unique
 architectural writes, tags/device behavior, CAT membership, completion,

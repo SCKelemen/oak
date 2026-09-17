@@ -168,9 +168,16 @@ structure SoftwareBreakpointArguments where
   vect_offset : Int
   deriving BEq, Inhabited, Repr
 
-abbrev Register := PEmpty
-abbrev RegisterType : Register -> Type := PEmpty.elim
+inductive Register : Type where
+  | __defaultRAM
+  deriving DecidableEq, Hashable, Repr
+open Register
 
+abbrev RegisterType : Register → Type
+  | .__defaultRAM => (BitVec 56)
+
+instance : Inhabited (RegisterRef RegisterType (BitVec 56)) where
+  default := .Reg __defaultRAM
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception

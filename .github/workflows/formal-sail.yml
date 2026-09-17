@@ -17,6 +17,8 @@ name: Formal Verification (Sail)
 #     its two separately projected pre-Mem address/data requests
 #   - asm/sail_ram_effect_test.go: the exact no-device RAM wrapper and the
 #     separate Lem backend's plain-write requests (not a CAT refinement)
+#   - asm/sail_write_memory_effect_test.go: the actual RAM-selector read,
+#     write/trace/return order, and the official no-device trace expression
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -146,7 +148,7 @@ jobs:
       - name: Run the oracle tests, every oracle required
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailNoDeviceRAMWrapperExactAndMutated|TestSailLemRAMRequestsRemainPlain|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailNoDeviceRAMWrapperExactAndMutated|TestSailLemRAMRequestsRemainPlain|TestSailRegisterMemoryWrapperExactAndMutated|TestSailNoDeviceWriteTraceExactAndMutated|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
 
   rv64-bridge:
     name: RV64 bridge against the Sail export
