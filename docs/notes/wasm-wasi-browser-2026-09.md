@@ -66,7 +66,9 @@ CFG. Exact reprojection binds them before recursive structured regions may guide
 emission. Existing raw-CFG recognizers handle direct blocks, diamonds, forward
 regions and one-loop regions; nested source loops/conditionals use the bound
 structured tree. Raw unmatched/irreducible CFGs use an i32 program counter and
-structured dispatch loop. Each SSA value has a Wasm local. Edge and region-yield
+structured dispatch loop. Raw-CFG routes defer eligible pure, total, single-use
+same-block SSA trees to Wasm's operand stack and compact their locals; shared,
+cross-block, effectful and trapping values remain locals. Edge and region-yield
 arguments are read before any destination is assigned, preserving parallel phi
 copies and cycles. A future general structurizer remains untrusted and must
 produce output validated against the same input identity.
@@ -194,7 +196,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, bounded acyclic CFGs, compact/acyclic-body loops and recursively nested reducible source control; executable baseline/size gates and preliminary warmed V8 timings. Raw irreducible-CFG structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Direct returning blocks, bounded acyclic CFGs, compact/acyclic-body loops and recursively nested reducible source control; total pure single-use same-block expressions stackify on raw-CFG paths and their locals are compacted. Raw irreducible-CFG structurization, broader local reuse, structured-tree stackification, formal translation validation and representative runtime measurements remain open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -324,3 +326,16 @@ Deno/V8 runs measured median structured/dispatcher ratios of 0.087–0.100; this
 microbenchmark is not a Chrome or application-wide claim. Recursive input is
 preflight-bounded and output bytes still pass independent admission. Encoding is
 v8; scalar/check profiles remain v1 and translation verification remains open.
+
+Stack-expression increment (2026-09-18): raw-CFG emission paths now defer total,
+pure, single-use same-block SSA trees directly to their use on Wasm's operand
+stack, then compact the removed result locals without changing parameter indices
+or lexical aliases. Calls, memory-tagged/effectful/trapping operations,
+division/remainder operands, shared values and cross-block values stay in locals.
+The recursive structured-tree fallback remains unchanged pending lexical-region
+use accounting. A retained v8 loop/helper module shrinks 258→161 bytes and
+88→56 Wasm instructions; independent execution agrees on ordinary and large
+inputs. Three longer Deno/V8 runs were inconclusive (median ratios 0.884–1.519
+with extreme noise), so this is a static-size result rather than a runtime claim.
+Encoding is v9; final-byte admission, scalar/check profiles and unverified
+translation status are unchanged.

@@ -29,12 +29,14 @@ host was noisy, its CPU model probe was unavailable, and only one small kernel
 was timed under Deno 2.9.6 / V8 15.0.245.2-rusty. It is not evidence of the same
 gain in Chrome, other Wasm engines or representative applications.
 
-Counter, sum, swap and GCD modules also shrink by 61–63 bytes and 34 Wasm
-instructions each. The code-size difference includes section-length LEB changes.
+With recipe-v9 stack expressions, counter, sum, swap and GCD now shrink
+87–117 bytes and 38–52 Wasm instructions relative to their retained dispatcher
+baselines. The code-size difference includes section-length LEB changes.
 Nested reducible source loops now use the structured-region path below. Raw
 unmatched/irreducible CFGs still use the dispatcher; formal source-to-Wasm
-translation verification, general structurization, local reuse and stackification
-remain open.
+translation verification, general structurization and broader local reuse remain
+open. The recorded structured-loop timings predate stack expressions and isolate
+that earlier control-flow increment.
 
 ## Four-block conditionals
 
@@ -55,9 +57,11 @@ retain all four local processes: the initially noisy run had a ratio of medians
 of 0.073, while three repeats gave 0.134–0.136. These are Deno/V8 microbenchmark
 observations on a shared Darwin/arm64 host, not a general speedup guarantee.
 
-Choice, guarded-division and arithmetic-join fixtures lose 68 bytes and 39 Wasm
-instructions each. The complete timed module shrinks from 327 to 258 bytes;
-its code-size delta also includes a body-length LEB change. The tests retain
+The simple-choice fixture remains 133→65 bytes/55→16 instructions; recipe-v9
+stack expressions take guarded division to 68 bytes/16 instructions, the
+arithmetic join to 71/20, and the complete kernel from 327 to 161 bytes and
+127 to 56 instructions. The historical timing record isolates the earlier
+diamond increment. The tests retain
 untaken traps, short-circuit evaluation, Unit calls and merge computations;
 neither faster execution nor smaller bytes grant a formal translation verdict.
 
@@ -65,9 +69,11 @@ neither faster execution nor smaller bytes grant a formal translation verdict.
 
 `compiler/wasm_forward_test.go` retains dispatcher bytes from `65477201` for
 nested/sequential conditionals and a loop calling a nested conditional helper.
-The caller loop is structured in both versions. Static fixture gates show
-253→167 bytes for the nested function, 248→160 for the sequential function,
-and 421→335 for the complete kernel. Each loses 48 Wasm instructions.
+The caller loop is structured in both versions. Recipe-v9 static fixture gates
+show 253→129 bytes for the nested function, 248→130 for the sequential
+function, and 421→214 for the complete kernel; instruction counts fall
+114→54, 112→54 and 174→86. The recorded timing samples isolate the earlier
+forward-control increment.
 
 ```sh
 OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
@@ -90,11 +96,12 @@ verification.
 
 ## Pre-test loops with acyclic bodies
 
-`compiler/wasm_region_loop_test.go` retains dispatcher bytes from `bd89ea49`
-and compares them with v7 region-loop lowering. Conditional and nested-body
-modules shrink 342→251 and 436→312 bytes; instruction counts fall 144→93 and
-191→122. Normal tests execute both versions against independent wrapping-u32
-oracles and cover zero trips and boundary values.
+`compiler/wasm_region_loop_test.go` retains dispatcher bytes from `bd89ea49`.
+With recipe-v9 stack expressions, conditional and nested-body modules shrink
+342→153 and 436→192 bytes; instruction counts fall 144→61 and 191→82.
+Normal tests execute both versions against independent wrapping-u32 oracles and
+cover zero trips and boundary values. The recorded timing samples isolate the
+earlier v7 region-loop control lowering.
 
 ```sh
 OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
@@ -138,3 +145,24 @@ structured/dispatcher ratios of 0.087–0.100 under Deno 2.9.6 / V8
 15.0.245.2-rusty. This small quadratic-loop microbenchmark on a shared
 Darwin/arm64 host is not a stable speedup estimate, Chrome result, representative
 application result, timing CI gate or formal proof.
+
+## Pure single-use stack expressions
+
+`compiler/wasm_stack_test.go` retains production recipe-v8 bytes from
+`5185645c` and compares them with recipe v9. The candidate emits total, pure,
+single-use same-block SSA trees directly at their use and removes the resulting
+locals. The complete loop/conditional-helper module shrinks 258→161 bytes and
+88→56 Wasm instructions. Normal tests independently execute both lanes on
+ordinary and large inputs and final candidate bytes pass the separate validator.
+
+```sh
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
+  go test ./compiler -run '^TestWasmStackExpressionTiming$' -count=3 -v
+```
+
+The longer timing protocol uses a fresh engine per test, twenty warmup batches,
+seven alternating samples and eight calls of roughly ten million iterations.
+[All three raw runs](stack-expression-2026-09-18.json) had extreme outliers in
+both lanes; ratios of medians ranged from 0.884 to 1.519. This does not establish
+a runtime improvement. The deterministic module/instruction reduction is the
+result; elapsed time remains an observation rather than a gate.
