@@ -87,13 +87,41 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 	if typed == nil {
 		typed = constTerm(1, 1)
 	}
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	check := func(premise, machineTrap, oakTrap *term) bool {
-		bad := binaryTerm("and", trapOrFalse(substitute(machineTrap, sigma)), notTerm(trapOrFalse(oakTrap)))
-		holds, decided := implies(premise, bad, constTerm(0, 1))
-		if (!decided || !holds) && os.Getenv("OAK_VERIFY_TRACE") != "" {
-			fmt.Fprintf(os.Stderr, "verify loop trap domain: decided=%v premise=%s machine=%s oak=%s\n", decided, premise, trapOrFalse(substitute(machineTrap, sigma)), trapOrFalse(oakTrap))
+		machine, oak := trapOrFalse(substitute(machineTrap, sigma)), trapOrFalse(oakTrap)
+		bad := binaryTerm("and", machine, notTerm(oak))
+		if holds, decided := implies(premise, bad, constTerm(0, 1)); decided && holds {
+			return true
 		}
-		return decided && holds
+		// The whole disjunction of trapping ends against the whole
+		// disjunction of source traps exceeds the diagrams around a walker
+		// (map_page's fourteen ends); as verifyTrapDomain decides the
+		// non-loop obligation, each machine end is decided on its own: the
+		// end's path is a premise, under which the implication decider
+		// settles the source traps' guards from the path's facts before
+		// any diagram, and the claim is that some source trap holds there.
+		for k, end := range trapDisjuncts(bad) {
+			if end.kind == termBinary && end.op == "and" {
+				path := binaryTerm("and", premise, end.left)
+				// The syntactic decision first: it costs a walk, where the
+				// diagrams over a walker's end ran for minutes.
+				if sourceTrapOnPath(path, oak) {
+					continue
+				}
+				if holds, decided := implies(path, oak, constTerm(1, 1)); decided && holds {
+					continue
+				}
+			}
+			if holds, decided := implies(premise, end, constTerm(0, 1)); decided && holds {
+				continue
+			}
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify loop trap domain: end %d undecided (end kind %d op %s; %d source traps); premise=%s machine=%s oak=%s\n", k, end.kind, end.op, len(source.traps), premise, machine, oak)
+			}
+			return false
+		}
+		return true
 	}
 	for k, machine := range exec.loops {
 		oak := source.loops[k]
@@ -197,6 +225,16 @@ func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expr
 		// decision blasted the chains whole and exceeded its budget on
 		// protocol_line_done's stack pointer read back after each push.
 		if end.kind == termBinary && end.op == "and" {
+			// The syntactic decision first (sourceTrapOnPath, as the loop
+			// obligations decide their ends): a walk over the end's path
+			// and the source traps, where the diagrams over unmap_page's
+			// ends exceeded their budget.
+			if sourceTrapOnPath(end.left, oakTrap) {
+				if trace {
+					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven on its path\n", fn.Name, k)
+				}
+				continue
+			}
 			if holds, decided := impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven by implication\n", fn.Name, k)
@@ -217,6 +255,263 @@ func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expr
 		}
 	}
 	return result
+}
+
+// sourceTrapOnPath decides, without a diagram, that some source trap
+// holds on a machine trap end's path: the source traps pruned under the
+// path's facts and respelled (the span case split's canonicalLinear, to a
+// fixpoint) are compared disjunct by disjunct with the path's conjuncts
+// respelled the same way. The machine's bound on a page-table leaf index
+// (`((d and mask) sub base) shr 14) and 0xFFFFFFFF) and 65535) hs 4`) and
+// the Oak side's (`… and 65535) and 65535) hs 4`) are one term once the
+// masks are folded, where their bit-level implication exceeded the
+// budget. A disjunct that is the constant 1 after pruning holds outright.
+func sourceTrapOnPath(path, oak *term) bool {
+	return sourceTrapOnPathDepth(path, oak, sourceTrapSplitDepth)
+}
+
+// sourceTrapSplitDepth bounds the conditional facts a path is split on:
+// a machine end whose path holds `(c ? X : Y)` as a fact is two paths,
+// `c and X` and `not c and Y`, each of which must reach a source trap.
+const sourceTrapSplitDepth = 8
+
+func sourceTrapOnPathDepth(path, oak *term, depth int) bool {
+	// Respelled before pruning: the machine's index masks and the Oak
+	// side's meet only once both are in the one spelling, and the facts
+	// are read from the respelled path.
+	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	path = respell(canonicalMemo(truncate(path, 1), cmemo, cbool))
+	oak = respell(canonicalMemo(truncate(oak, 1), cmemo, cbool))
+	// Each conjunct of the path is settled by the others (a call
+	// summary's result carries the callee's branch as a conditional, and
+	// the path holds the branch as a fact), then respelled again.
+	facts := conjunctsOf(path)
+	// Each fact's conditionals are settled by the other facts' spellings
+	// first (`(d0 invalid ? free_count ne 0 : 1)` under the fact `d0
+	// invalid`), so only a conditional the path leaves open is split on.
+	for i := range facts {
+		others := make([]*term, 0, len(facts)-1)
+		others = append(others, facts[:i]...)
+		others = append(others, facts[i+1:]...)
+		facts[i] = respell(canonicalMemo(truncate(settleBySpelling(facts[i], others), 1), cmemo, cbool))
+	}
+	facts = conjunctsOf(conjoinAll(facts))
+	for i, fact := range facts {
+		if fact.kind == termIte && depth > 0 {
+			rest := make([]*term, 0, len(facts))
+			rest = append(rest, facts[:i]...)
+			rest = append(rest, facts[i+1:]...)
+			taken := append(append([]*term{}, rest...), truncate(fact.cond, 1), truncate(fact.left, 1))
+			skipped := append(append([]*term{}, rest...), notTerm(truncate(fact.cond, 1)), truncate(fact.right, 1))
+			return sourceTrapOnPathDepth(conjoinAll(taken), oak, depth-1) && sourceTrapOnPathDepth(conjoinAll(skipped), oak, depth-1)
+		}
+	}
+	for i, fact := range facts {
+		var others *term
+		for j, other := range facts {
+			if j == i {
+				continue
+			}
+			if others == nil {
+				others = other
+			} else {
+				others = binaryTerm("and", others, other)
+			}
+		}
+		if others != nil {
+			facts[i] = respell(canonicalMemo(truncate(pruneUnderFacts(others, []*term{fact})[0], 1), cmemo, cbool))
+		}
+	}
+	path = facts[0]
+	for _, fact := range facts[1:] {
+		if fact.kind == termConst && fact.value&1 == 0 {
+			// A conjunct the others refute: the path is infeasible (the
+			// executor keeps such ends in the trap disjunction) and traps
+			// nowhere.
+			return true
+		}
+		path = binaryTerm("and", path, fact)
+	}
+	if facts[0].kind == termConst && facts[0].value&1 == 0 {
+		return true
+	}
+	pruned := pruneUnderFacts(path, []*term{oak})[0]
+	// The facts settle the source traps' conditionals by spelling too:
+	// the pruner's structural match is bounded (sameTermBudget), and a
+	// page-table index runs past it, so `(leaf eq root) ? 0 : guard`
+	// under the fact `leaf ne root` was left in place.
+	settled := settleBySpelling(respell(canonicalMemo(truncate(pruned, 1), cmemo, cbool)), facts)
+	traps := disjunctsOf(respell(canonicalMemo(truncate(settled, 1), cmemo, cbool)))
+	// Spellings compare as text: a comparison is read at one bit on one
+	// side and at its operands' width on the other, and equalTerms keeps
+	// the widths apart where the value is the same.
+	spelled := make([]string, len(facts))
+	for i, f := range facts {
+		spelled[i] = f.String()
+	}
+	negation := func(t *term) (string, bool) {
+		if t.kind == termBinary && t.op == "xor" && t.right.kind == termConst && t.right.value == 1 {
+			return t.left.String(), true
+		}
+		if neg := negatedCmp(t); neg != nil {
+			return neg.String(), true
+		}
+		return "", false
+	}
+	// A path that asserts a fact and its complement (the executor keeps
+	// infeasible paths in the trap disjunction) traps nowhere: vacuous.
+	for i, f := range facts {
+		if not, ok := negation(f); ok {
+			for j, text := range spelled {
+				if j != i && text == not {
+					return true
+				}
+			}
+		}
+	}
+	onPath := func(t *term) bool {
+		if t.kind == termConst {
+			return t.value&1 == 1
+		}
+		text := t.String()
+		for _, fact := range spelled {
+			if fact == text {
+				return true
+			}
+		}
+		return false
+	}
+	// A source trap is a conjunction (its guards and the bound); it holds
+	// on the path when each conjunct does.
+	for _, trap := range traps {
+		holds := true
+		for _, part := range conjunctsOf(trap) {
+			if !onPath(part) {
+				holds = false
+				break
+			}
+		}
+		if holds {
+			return true
+		}
+	}
+	if os.Getenv("OAK_VERIFY_TRACE_TRAPS") != "" {
+		// The respelled source traps and path facts of an undecided end.
+		for _, trap := range traps {
+			if trap.kind != termConst {
+				fmt.Fprintf(os.Stderr, "  source trap: %s\n", trap)
+			}
+		}
+		for _, fact := range spelled {
+			if fact != "1" {
+				fmt.Fprintf(os.Stderr, "  path fact: %s\n", fact)
+			}
+		}
+	}
+	return false
+}
+
+// settleBySpelling rewrites the one-bit conditionals and conjuncts of t
+// that the facts decide by their spelling: a conditional whose condition
+// is a fact takes its then-arm, one whose condition's negation is a fact
+// its else-arm, and a conjunct that is a fact is 1. Spellings carry no
+// widths, so a comparison read at one bit on one side and at its
+// operands' width on the other still meets.
+func settleBySpelling(t *term, facts []*term) *term {
+	holds, refuted := map[string]bool{}, map[string]bool{}
+	for _, f := range facts {
+		holds[f.String()] = true
+		if f.kind == termBinary && f.op == "xor" && f.right.kind == termConst && f.right.value == 1 {
+			refuted[f.left.String()] = true
+		}
+		if neg := negatedCmp(f); neg != nil {
+			refuted[neg.String()] = true
+		}
+	}
+	memo := map[*term]*term{}
+	var walk func(*term) *term
+	walk = func(t *term) *term {
+		if t == nil {
+			return nil
+		}
+		if done, seen := memo[t]; seen {
+			return done
+		}
+		out := t
+		switch t.kind {
+		case termIte:
+			cond := walk(t.cond)
+			switch text := cond.String(); {
+			case holds[text]:
+				out = adaptWidth(walk(t.left), t.width)
+			case refuted[text]:
+				out = adaptWidth(walk(t.right), t.width)
+			default:
+				left, right := walk(t.left), walk(t.right)
+				if cond != t.cond || left != t.left || right != t.right {
+					out = iteTerm(cond, left, right)
+				}
+			}
+		case termBinary:
+			if (t.op == "and" || t.op == "or") && (t.width == 1 || booleanValued(t, map[*term]bool{})) {
+				left, right := walk(t.left), walk(t.right)
+				value := func(x *term) *term {
+					if holds[x.String()] {
+						return constTerm(1, x.width)
+					}
+					if refuted[x.String()] {
+						return constTerm(0, x.width)
+					}
+					return x
+				}
+				left, right = value(left), value(right)
+				if left != t.left || right != t.right {
+					out = binaryTerm(t.op, left, right)
+				}
+			} else {
+				left, right := walk(t.left), walk(t.right)
+				if left != t.left || right != t.right {
+					out = binaryTerm(t.op, left, right)
+				}
+			}
+		}
+		memo[t] = out
+		return out
+	}
+	return walk(t)
+}
+
+// disjunctsOf flattens a Boolean or-chain; conjunctsOf an and-chain (a
+// Boolean read at a wider width, `(a and b) and c` over comparisons,
+// flattens the same).
+func disjunctsOf(t *term) []*term {
+	if t.kind == termBinary && t.op == "or" && (t.width == 1 || booleanValued(t, map[*term]bool{})) {
+		return append(disjunctsOf(t.left), disjunctsOf(t.right)...)
+	}
+	return []*term{t}
+}
+
+func conjunctsOf(t *term) []*term {
+	if t.kind == termBinary && t.op == "and" && (t.width == 1 || booleanValued(t, map[*term]bool{})) {
+		return append(conjunctsOf(t.left), conjunctsOf(t.right)...)
+	}
+	return []*term{t}
+}
+
+// conjoinAll is the and-chain of the terms (1 for none).
+func conjoinAll(terms []*term) *term {
+	var out *term
+	for _, t := range terms {
+		if out == nil {
+			out = t
+		} else {
+			out = binaryTerm("and", out, t)
+		}
+	}
+	if out == nil {
+		return constTerm(1, 1)
+	}
+	return out
 }
 
 // trapDisjuncts splits `and(or(a, or(b, c)), n)` into `and(a, n)`,

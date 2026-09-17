@@ -7356,6 +7356,30 @@ budget cannot produce `Proven`; it remains labelled evidence. Concrete
 trap mismatches are still early refutations. The verdict-cache namespace
 changes so old admissions are not reused.
 
+A loop proof's trap-domain obligations (root and per-iteration,
+`decideLoopTrapDomains`) are decided end by end as the non-loop
+obligation is: the machine trap is a disjunction of its trapping ends'
+path conditions, and each end's path is a premise under which some
+source trap must hold. Where the diagrams exceed their budget — a page
+walker's fourteen ends, each carrying its status checks and two
+table-entry reads — the end is decided without one (`sourceTrapOnPath`):
+the path's conjuncts are pruned under one another and respelled
+(`canonicalLinear`, to a fixpoint), the source traps are pruned under the
+path's facts and respelled the same way, and a source trap holds when each
+of its conjuncts is a fact of the path; a path that refutes one of its own
+conjuncts (the executor keeps infeasible ends in the disjunction) traps
+nowhere. The facts themselves read a comparison of a two-constant
+conditional as its condition (`((c ? 4 : 0) eq 0)` is `not c`, the
+machine's `((c ? 1 : 0) eq 0)` likewise) and a zero test as the one-bit
+value it tests, so the Oak side's status chains and the machine's
+materialized Bools meet. The same fact-pruned respelling backs a loop's
+store indices, values, and guards and the results after the loops where
+their bit-level decision is undecided (`sameUnderFacts`): a call summary's
+conditional result, `((free_count ne 0) ? free_stack[…] : 0) or (hi shl
+16)) and 65535`, is the Oak side's `free_stack[…]` where the premise holds
+the branch (`asm/trap_domain_facts_test.go`,
+`compiler/e2e_native_map_page_cases_test.go`).
+
 `Oak.TrapDomainAdmission.admit_on_source_returns` proves the admission rule
 assuming the collected predicates are sound and the value/effect equality
 holds on the machine-returning domain. It is not a formal verification of

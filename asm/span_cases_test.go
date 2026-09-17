@@ -50,6 +50,14 @@ func TestCanonicalLinearRespellsMasksAndForms(t *testing.T) {
 	if reads := canonicalLinear(selectTerm("s.pages", oakIndex, 64), memo); !equalTerms(reads, canonicalLinear(selectTerm("s.pages", asmIndex, 64), memo)) {
 		t.Fatalf("a read's index is respelled too: %s", reads)
 	}
+	// A mask every bit of which an or-constant sets is the constant.
+	desc := binaryTerm("or", binaryTerm("or", paramTerm("pa", 64), constTerm(2, 64)), constTerm(1, 64))
+	if c := canonicalLinear(binaryTerm("and", desc, constTerm(1, 64)), map[*term]*term{}); c.kind != termConst || c.value != 1 {
+		t.Fatalf("((pa or 2) or 1) and 1 is 1: %s", c)
+	}
+	if c := canonicalLinear(binaryTerm("and", desc, constTerm(4, 64)), map[*term]*term{}); c.kind == termConst {
+		t.Fatalf("a bit the or-constants do not set stays symbolic: %s", c)
+	}
 	// A comparison of two constants is its value, and an equality whose
 	// sides are one term structurally — an index outside the linear form,
 	// `(ipa shr 25) and 1` — is true.
