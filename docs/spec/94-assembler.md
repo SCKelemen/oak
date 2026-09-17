@@ -9111,6 +9111,19 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**The carried leaves of a record (2026-09-17).** A loop that assigned
+into a record local carried every leaf of the record as a loop variable,
+the fields it never wrote included: `sha256_update`'s whole-block loop
+writes `next.h` and reads `next.filled` in its condition, and the
+coupling, finding no register the loop writes as an image of
+`next.filled`, left the unit witnessed. The Oak side now lists the field
+paths the body assigns (`next.h`; `next.block` for `next.block[i] = …`;
+the local itself for a whole assignment; a view's owner whole) and
+carries only the leaves under one (`assignedFieldPaths`,
+`underAssignedPath`); a leaf the loop never writes keeps its header
+value, as the machine's unwritten slot or register does, and the event
+fails closed if the body left it changed after all.
+
 **The bound a conditional gives (2026-09-17).** A store into a frame
 array at a data-dependent index stays a write to the array's slots only
 under a bound on the index: the checker's trap guard (`cmp wI, #K; b.hs
