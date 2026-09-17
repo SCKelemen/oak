@@ -53,3 +53,39 @@ rotating the first pair each round.
 Core placement, cache residency and host contention are uncontrolled. Static
 instruction counts are not a runtime result. Interpret timings with their
 spread and repeat them; do not infer a workload-wide win from this one lookup.
+
+## Measurements: 2026-09-17
+
+Clean baseline `efb4a203f2dc448121e4b8f1d616593bf4acde84`; clean candidate
+`8a4e223b7b101ae1396e1b7a0eef8ebac7b97c60`, M4 Max, Apple clang 21.0.0.
+Two complete nine-sample runs used the same frozen binaries. All oracle and
+cross-backend checksum checks passed. Native identity and native after were
+proven; native before retained its explicitly trusted fallback.
+
+Medians in ns/lookup; negative changes mean less elapsed time:
+
+| Distribution | C | Native before | Native identity | Native after | Time change | Repeat time change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ASCII | 24.26 | 33.69 | 49.27 | 30.86 | −8.4% | −14.8% |
+| Unicode | 20.42 | 28.93 | 43.14 | 27.09 | −6.4% | −8.6% |
+| Boundaries | 24.02 | 33.93 | 48.69 | 30.54 | −10.0% | −13.2% |
+
+The repeat's before/after medians were 39.46/33.62, 31.74/29.01 and
+36.55/31.72 ns respectively. Both runs show lower median time for every
+distribution. Native still takes about 1.27–1.33× the C time in the first
+run: this does not establish parity with C or a whole-program improvement.
+
+Host contention is substantial: one-minute load fell from 153 to 146 in
+the first run and 141 to 119 in the repeat. Distributions overlap and the
+repeat has large outliers (for example, Unicode native-after ranges from
+25.44 to 76.77 ns). These are observed host-specific gains, not a controlled
+regression guarantee. An earlier dirty-binary three-sample probe, concurrent
+with compiler/test work at load above 230, was too noisy for a speed claim
+and is not used in this table. No compiler/test builds were launched during
+the two recorded timing runs.
+
+The [primary report](results/table-views-m4-max-2026-09-17.json) and
+[repeat report](results/table-views-repeat-m4-max-2026-09-17.json) retain all
+raw samples, verdicts, selected assembly and provenance. Focused verifier and
+compiler tests, their race checks, nativegen/MachineIR/optimizer suites, vet
+and benchmark-harness tests pass; the full repository suite was not run.
