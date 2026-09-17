@@ -1129,7 +1129,7 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment itself has one RAM-selector register. This runtime
+the generated fragment contains a RAM selector and the general-register bank. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1141,10 +1141,23 @@ and Sail's `Unreachable` error with unchanged state when it is missing. Normal
 return is equivalent to an initialized register entry; ignoring the selector
 in the lower runtime does not allow skipping this read. Break/make projections
 compose with the new effectful wrapper under both endian choices, retaining
-the actual register-lookup premise. No full architectural register bank or
+the actual register-lookup premise. No full architectural register state or
 initialization proof is implied, and this runtime error is not an Arm Data
 Abort. Exact-source/mutation gates pin the register, write/trace/return order,
 and the complete no-op trace expression, including continuation lines.
+
+`RegisterBridge.lean` separately proves the copied, mechanically generated
+`aget_X` against the actual `_R` bank: direct exported-vector slot selection,
+low-bit reads at the four supported widths, unchanged full state, missing-bank
+failure, and XZR zero without any bank read. The source width/index domain is
+retained explicitly in the theorems. Its non-SP STR operand adapter composes
+these reads and matches the existing pure request, deriving the X0/XZR and
+X0/X2 pairs from the bank. It is not the original instruction body and makes
+no `Mem` call: SP, PostDecode, syndrome updates, translation, faults, register
+provenance and architectural events remain open. A checked wrapping-address
+example records the 64-bit arithmetic; it supplies no physical-address
+translation by truncation. Upstream/local source-mutation gates pin the exact
+bank, getter, and overload, and the existing Sail CI builds the proof (§126).
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
