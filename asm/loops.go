@@ -2704,6 +2704,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 				takenState.assume(taken, fork, true)
 				bindZeroTest(instr, takenState, true)
 				bindZeroTest(instr, st, false)
+				noteBranchBound(instr, takenState, st)
 				st.assume(notTaken, fork, false)
 				if join, hasJoin := x.bodyJoins()[pc]; hasJoin && target > pc && join > pc && join < shape.bodyEnd && (cur.group == nil || join <= cur.group.join) {
 					// Both sides run to the join and park there.

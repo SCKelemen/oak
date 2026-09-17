@@ -9007,6 +9007,22 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**The bound a conditional gives (2026-09-17).** A store into a frame
+array at a data-dependent index stays a write to the array's slots only
+under a bound on the index: the checker's trap guard (`cmp wI, #K; b.hs
+trap`) gave it (`noteTrapGuard`), and a loop body with such a store keeps
+the slots as loop-carried state. Once the guard is elided under the
+source conditional that proves it (`a.filled < 64 ? { a.block[a.filled]
+= … }`, §9 "Check elision"), the store had no bound and forgot the
+region, so the elided, hoisted forms of the byte-absorber (`feed`,
+`TestNativeShapesForwarding*`) fell to witnessed while the plain form
+proved, and the search kept the plain form. The fork on a conditional
+now records the bound its compare establishes on the side that holds it
+— `cmp wI, #K; b.hs L` bounds wI below K on the fall-through side, `b.lo`
+on the taken side, `b.hi`/`b.ls` below K+1, `bgeu`/`bltu` alike on the
+RV64 lane (`noteBranchBound`) — in straight-line bodies and in loop
+bodies, so the elided form is proven and taken.
+
 **A field's address as an aggregate argument (2026-09-16).** A callee
 taking an owned array or record by reference may receive the address of
 a field inside the caller's own record parameter (`state.cv`, an `[8]u32`,

@@ -2788,10 +2788,64 @@ func (s *symbolicState) noteTrapGuard(instr Instruction) {
 	if instr.Mnemonic != "b." || (instr.Cond != "hs" && instr.Cond != "cs") || s.flags == nil || s.flags.unknown || s.flags.indexReg < 0 || s.flags.kind != "" {
 		return
 	}
+	s.noteIndexBelow(s.flags.indexReg, s.flags.bound)
+}
+
+// noteIndexBelow records that register index holds a value below bound:
+// the index bound of a frame array (registerFrameAccess).
+func (s *symbolicState) noteIndexBelow(index int, bound uint64) {
 	if s.bounds == nil {
 		s.bounds = map[int]uint64{}
 	}
-	s.bounds[s.flags.indexReg] = s.flags.bound
+	s.bounds[index] = bound
+}
+
+// noteBranchBound records, on the side of a fork that a compare against a
+// constant decides, the index bound the branch establishes — `cmp wI, #K;
+// b.hs L` bounds wI below K on the fall-through side, `b.lo L` on the
+// taken side, `b.hi`/`b.ls` below K+1 — the fact a trap guard gives
+// (noteTrapGuard) when the guard is a source conditional instead
+// (docs/spec/94-assembler.md §9 "Check elision": an element access under
+// the conditional that proves it keeps the frame array a memory).
+func noteBranchBound(instr Instruction, taken, fallThrough *symbolicState) {
+	if instr.Mnemonic == "bgeu" || instr.Mnemonic == "bltu" {
+		if len(instr.Operands) != 3 {
+			return
+		}
+		index, okI := instr.Operands[0].(Register)
+		limit, okK := instr.Operands[1].(Register)
+		if !okI || !okK {
+			return
+		}
+		bound, ok := fallThrough.read(limit)
+		if !ok || bound.kind != termConst {
+			return
+		}
+		if instr.Mnemonic == "bgeu" {
+			fallThrough.noteIndexBelow(index.Num, bound.value)
+		} else {
+			taken.noteIndexBelow(index.Num, bound.value)
+		}
+		return
+	}
+	f := fallThrough.flags
+	if instr.Mnemonic != "b." || f == nil || f.unknown || f.indexReg < 0 || f.kind != "" {
+		return
+	}
+	switch instr.Cond {
+	case "hs", "cs":
+		fallThrough.noteIndexBelow(f.indexReg, f.bound)
+	case "lo", "cc":
+		taken.noteIndexBelow(f.indexReg, f.bound)
+	case "hi":
+		if f.bound < ^uint64(0) {
+			fallThrough.noteIndexBelow(f.indexReg, f.bound+1)
+		}
+	case "ls":
+		if f.bound < ^uint64(0) {
+			taken.noteIndexBelow(f.indexReg, f.bound+1)
+		}
+	}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -3558,6 +3612,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// Each side learns what the branch decided about its register.
 			bindZeroTest(instr, takenState, true)
 			bindZeroTest(instr, state, false)
+			noteBranchBound(instr, takenState, state)
 			// The fall-through side runs first at a forward fork: the
 			// layout's order, which is the Oak body's (`c ? then | else`
 			// lays the then block after the branch and jumps to the else
