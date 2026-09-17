@@ -230,6 +230,24 @@ func TestSailDecodeCoverage(t *testing.T) {
 	}
 	mnemonics := disassembleAll(t, llvmMC, words)
 
+	// A name the disassembler gives an encoding the table assembles under
+	// another mnemonic is the table's spelling for this count: a newer
+	// disassembler names the hint-space encodings the ISA release the
+	// table is generated from left as `hint #n` (LLVM 23's `stcph` for
+	// 0xd503269f, `stshh`), and the table reaches them as `hint`.
+	tableSpelling := func(word uint32) string {
+		for i := range isaEncodings {
+			encoding := &isaEncodings[i]
+			if word&encoding.Mask != encoding.Value {
+				continue
+			}
+			if _, ok := instructionTable[encoding.Mnemonic]; ok {
+				return encoding.Mnemonic
+			}
+		}
+		return ""
+	}
+	spelled := map[string]string{}
 	byMnemonic := map[string]map[string]bool{}
 	covered := make([]bool, len(classes))
 	for i, mnemonic := range mnemonics {
@@ -237,6 +255,12 @@ func TestSailDecodeCoverage(t *testing.T) {
 			continue
 		}
 		covered[owner[i]] = true
+		if _, ok := instructionTable[mnemonic]; !ok && !strings.HasPrefix(mnemonic, "b.") {
+			if spelling := tableSpelling(words[i]); spelling != "" {
+				spelled[mnemonic] = spelling
+				mnemonic = spelling
+			}
+		}
 		if byMnemonic[mnemonic] == nil {
 			byMnemonic[mnemonic] = map[string]bool{}
 		}
@@ -273,6 +297,9 @@ func TestSailDecodeCoverage(t *testing.T) {
 		if !covered[i] {
 			uncovered++
 		}
+	}
+	if len(spelled) > 0 {
+		t.Logf("disassembler names spelled by the table under another mnemonic: %v", spelled)
 	}
 	t.Logf("decode classes: %d (%d yielded no defined encoding in %d samples); mnemonics reached: %d; in table: %d; excluded by design: %d",
 		len(classes), uncovered, 64, len(byMnemonic), len(present), len(byMnemonic)-len(present)-len(missing))
