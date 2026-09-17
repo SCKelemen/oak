@@ -22,9 +22,10 @@ Zero divisors trap; signed overflow preserves Oak's wrapping result. The page
 requires matching v1 profile/validator reports. Rebuild the compiler assets and
 reload the page together after updating; stale v0 reports are not accepted.
 
-Single returning blocks and simple four-block loops now omit the dispatcher and
-program-counter local; other CFGs keep the dispatch baseline. See the
-[measured fixture sizes](../docs/spec/91-wasm.md#four-block-structured-loops) and
+Single returning blocks, simple four-block loops, and four-block conditionals
+with a returning join omit the dispatcher and program-counter local; other CFGs
+keep the dispatch baseline. See the
+[measured fixture sizes](../docs/spec/91-wasm.md#four-block-conditionals-with-a-join) and
 [preliminary engine timings](../benchmarks/wasm/README.md). This does not reduce
 the Go compiler payload or establish a general browser runtime speedup.
 

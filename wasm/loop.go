@@ -13,19 +13,12 @@ func (f *function) matchLoop() (loopShape, bool) {
 	if len(f.cfg.Blocks) != 4 || f.entry.Terminator.Kind != optir.TerminatorBranch {
 		return loopShape{}, false
 	}
-	block := func(id optir.BlockID) (optir.Block, bool) {
-		i, ok := f.blocks[id]
-		if !ok || i < 0 || i >= len(f.cfg.Blocks) {
-			return optir.Block{}, false
-		}
-		return f.cfg.Blocks[i], true
-	}
-	header, ok := block(f.entry.Terminator.True.Target)
+	header, ok := f.lookupBlock(f.entry.Terminator.True.Target)
 	if !ok || header.Terminator.Kind != optir.TerminatorCondBranch {
 		return loopShape{}, false
 	}
-	a, aOK := block(header.Terminator.True.Target)
-	b, bOK := block(header.Terminator.False.Target)
+	a, aOK := f.lookupBlock(header.Terminator.True.Target)
+	b, bOK := f.lookupBlock(header.Terminator.False.Target)
 	if !aOK || !bOK || len(map[optir.BlockID]bool{f.entry.ID: true, header.ID: true, a.ID: true, b.ID: true}) != 4 {
 		return loopShape{}, false
 	}

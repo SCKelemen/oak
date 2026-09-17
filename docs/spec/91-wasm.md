@@ -80,11 +80,13 @@ revision, not a change to the Core Wasm binary-version header.
 The emitter checks CFG/SSA structure and the existing closed scalar operation
 typing rules, applies profile limits, and emits deterministic type/function/
 export/code sections. A single-block CFG ending in return emits directly,
-without a program-counter local or dispatch loop. The four-block loop shape
-below also emits directly; all other accepted CFGs retain the dispatch-loop
-baseline. Edge values are pushed before any phi local is
-overwritten. This is a first bounded code-size optimization, not a mature
-throughput-optimized backend.
+without a program-counter local or dispatch loop. The four-block loop and
+conditional shapes below also emit directly; other accepted CFGs retain the
+dispatch-loop baseline. Edge values are pushed before any phi local is
+overwritten. These are bounded lowering improvements, not a mature
+throughput-optimized backend. Shape recognition stays inside versioned
+materialization; blocks do not become separate artifact-DAG nodes. Lookup,
+operation admission, edge copies and return emission are shared across paths.
 
 ### Direct returning-block emission
 
@@ -97,7 +99,7 @@ Bool argument checks remain before the body, including for unused arguments;
 Unit results do not suppress calls or traps. Returning a parameter does not skip
 preceding operations. The function's final `end` returns its declared result.
 
-The encoding recipe is now `oak.wasm.encode.v4`; scalar/check profiles remain
+The encoding recipe is now `oak.wasm.encode.v5`; scalar/check profiles remain
 v1 because neither the accepted vocabulary nor the byte-validation rules
 changed. Independent final-byte admission is unchanged, and translation
 verification remains false.
@@ -118,7 +120,6 @@ Wasm instructions, not native JIT instructions or dynamic execution counts.
 | Unit return | 60 → 40 | 15 → 3 |
 | signed i64 division | 82 → 62 | 27 → 15 |
 | caller plus add callee | 126 → 86 | 40 → 16 |
-| conditional fixture | 133, unchanged | 55, unchanged |
 
 These are deterministic code-size gates, not a measured wall-clock speedup or
 formal equivalence proof. The loop increment below adds a first, narrow runtime
@@ -162,6 +163,41 @@ was noisy; this is one microbenchmark, not a browser/application performance
 guarantee. [Raw samples and reproduction](../../benchmarks/wasm/README.md) retain
 the engine version, protocol and limits. Timing is not a CI pass/fail threshold.
 This lowering remains untrusted and execution-tested, not formally refined.
+
+### Four-block conditionals with a join
+
+A second four-block shape is entry → true/false arms → common merge → return.
+Entry must conditionally branch; each arm must unconditionally branch to the
+same returning merge block. All four blocks must be distinct and exhaust the
+CFG. Arbitrary block IDs/order work. Shared arms, cross edges, backedges,
+returning arms, conditional arms and extra blocks do not match.
+
+Entry operations and the condition execute once. Wasm `if/else` evaluates only
+the selected arm, with its incoming edge copies, operations and outgoing join
+copies. The merge executes once after the conditional and returns. No eager
+evaluation of untaken calls/division is introduced, and no operation is removed
+because a constant condition predicts it will not execute. Unsupported effects
+in a constant-untaken arm still refuse the whole module. This is not SSA
+optimization-candidate admission and carries no new proof authority.
+
+Tests cover retained dispatcher binaries versus reference results, both branch
+polarities, shuffled blocks, multiple arm/join parameters, mixed i32/i64 locals,
+Bool guards (including unused arguments), Unit calls, short-circuit operators,
+condition/arm/merge traps, constant selectors and nested-conditional fallback.
+
+| Conditional fixture | Module bytes, before → after | Wasm instructions, before → after |
+| --- | ---: | ---: |
+| simple choice | 133 → 65 | 55 → 16 |
+| guarded division | 154 → 86 | 61 → 22 |
+| i64 arithmetic after join | 157 → 89 | 65 → 26 |
+| loop plus conditional helper | 327 → 258 | 127 → 88 |
+
+The opt-in helper-call benchmark retains a structured caller loop in both
+versions. The initial noisy Deno/V8 process measured a median new/old time ratio
+of 0.073; three repeated processes measured 0.134–0.136. [All raw samples and the
+method](../../benchmarks/wasm/README.md#four-block-conditionals) are retained.
+This single-kernel result is not a general browser/application speed claim, a
+CI timing threshold or a formal translation proof.
 
 ### Execution and proof coverage
 

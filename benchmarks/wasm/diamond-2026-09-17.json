@@ -1,0 +1,48 @@
+{
+  "date": "2026-09-17",
+  "host": "shared Darwin arm64 host; CPU model unavailable in sandbox",
+  "engine": {"deno": "2.9.6", "v8": "15.0.245.2-rusty", "typescript": "6.0.3"},
+  "baseline": "specification b95bdffb; saved modules in compiler/wasm_branch_test.go; caller loop already structured, conditional helper still dispatches",
+  "candidate": "oak.wasm.encode.v5; four-block diamond helper",
+  "semantics": "u32 sum of pick(i), i=0..n-1, modulo 2^32; pick(x) is 3*x+1 for even x and x+7 for odd x",
+  "method": {
+    "warmup_batches_per_lane": 20,
+    "calls_per_batch": 8,
+    "warmup_iterations_per_call": "10000 + j*97, j=0..7",
+    "timed_iterations_per_call": "1000000 + j*97, j=0..7",
+    "samples_per_lane_per_process": 7,
+    "ordering": "alternating dispatcher/diamond then diamond/dispatcher",
+    "clock": "performance.now()",
+    "includes": "8 guest calls and wrapping-u32 reference-result comparisons per sample",
+    "excludes": "Oak compilation, engine module compilation/instantiation, warmup, browser startup/download"
+  },
+  "static_fixtures": [
+    {"name": "choice", "bytes_before": 133, "bytes_after": 65, "instructions_before": 55, "instructions_after": 16},
+    {"name": "guarded division", "bytes_before": 154, "bytes_after": 86, "instructions_before": 61, "instructions_after": 22},
+    {"name": "i64 arithmetic join", "bytes_before": 157, "bytes_after": 89, "instructions_before": 65, "instructions_after": 26},
+    {"name": "loop plus conditional helper", "bytes_before": 327, "bytes_after": 258, "instructions_before": 127, "instructions_after": 88}
+  ],
+  "runs": [
+    {
+      "dispatcher_ms": [29.38820799999999, 80.88891699999999, 51.973832999999956, 144.73120899999998, 71.63012500000008, 51.05620900000008, 29.419416999999953],
+      "diamond_ms": [4.390083000000004, 4.699957999999981, 3.7977089999999976, 3.79279200000002, 3.382833000000005, 3.3772089999999935, 3.7172500000000355],
+      "ratio_of_medians": 0.07297502956920693
+    },
+    {
+      "dispatcher_ms": [22.082832999999994, 27.265625, 24.24237499999998, 27.09483399999999, 26.574374999999975, 25.08441700000003, 23.558791999999983],
+      "diamond_ms": [3.5762080000000083, 3.5730000000000075, 3.418375000000026, 3.4212499999999864, 3.3783750000000055, 3.5688749999999914, 3.401708000000042],
+      "ratio_of_medians": 0.13638945645019304
+    },
+    {
+      "dispatcher_ms": [26.61099999999999, 24.96645799999999, 22.178833000000026, 23.836000000000013, 40.981291, 26.683667000000014, 23.73083300000002],
+      "diamond_ms": [3.4005830000000117, 3.236957999999987, 3.3815839999999753, 3.380790999999988, 3.4485840000000394, 3.449374999999975, 3.3802909999999997],
+      "ratio_of_medians": 0.13544508396024685
+    },
+    {
+      "dispatcher_ms": [26.02116700000002, 26.496916, 25.537292000000008, 29.432292000000018, 23.082291999999995, 24.236333000000002, 29.21550000000002],
+      "diamond_ms": [3.4978749999999934, 3.494792000000018, 3.4384999999999764, 3.6022080000000187, 3.5832920000000286, 4.454250000000002, 3.4336250000000064],
+      "ratio_of_medians": 0.1344242170230102
+    }
+  ],
+  "qualification": "One parity-branch helper kernel, four fresh engine processes on a shared host. Initial dispatcher samples were particularly noisy; all samples are retained. Three repeated runs gave ratios 0.1344-0.1364. No general Chrome/browser/application/native-parity or formal verification claim. No timing threshold in CI."
+}

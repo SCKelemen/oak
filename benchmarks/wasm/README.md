@@ -33,3 +33,28 @@ Counter, sum, swap and GCD modules also shrink by 61–63 bytes and 34 Wasm
 instructions each. The code-size difference includes section-length LEB changes.
 Broader loop shapes still use the dispatcher; formal source-to-Wasm translation
 verification, general structurization, local reuse and stackification remain open.
+
+## Four-block conditionals
+
+`compiler/wasm_branch_test.go` retains pre-change bytes from `b95bdffb`. The timed
+kernel sums calls to a parity-based conditional helper. Its caller already uses
+structured loop lowering in both versions: this comparison isolates replacing
+the helper's dispatcher with direct `if/else` and a shared join.
+
+```sh
+OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=deno OAK_WASM_BENCHMARKS=1 \
+  go test ./compiler -run '^TestWasmDiamondTiming$' -count=3 -v
+```
+
+It uses the same warmup, alternating ordering, seven samples and eight calls of
+roughly one million iterations as the loop test. Both versions are checked
+against wrapping-u32 reference results. [Raw samples](diamond-2026-09-17.json)
+retain all four local processes: the initially noisy run had a ratio of medians
+of 0.073, while three repeats gave 0.134–0.136. These are Deno/V8 microbenchmark
+observations on a shared Darwin/arm64 host, not a general speedup guarantee.
+
+Choice, guarded-division and arithmetic-join fixtures lose 68 bytes and 39 Wasm
+instructions each. The complete timed module shrinks from 327 to 258 bytes;
+its code-size delta also includes a body-length LEB change. The tests retain
+untaken traps, short-circuit evaluation, Unit calls and merge computations;
+neither faster execution nor smaller bytes grant a formal translation verdict.

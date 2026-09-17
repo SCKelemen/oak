@@ -36,7 +36,7 @@ func loopTestCFG() optir.CFG {
 	}}
 }
 
-func loopTestFunction(cfg optir.CFG) *function {
+func shapeTestFunction(cfg optir.CFG) *function {
 	f := &function{cfg: cfg, blocks: map[optir.BlockID]int{}}
 	for i, b := range cfg.Blocks {
 		f.blocks[b.ID] = i
@@ -66,7 +66,7 @@ func TestWasmLoopShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := loopTestCFG()
 			mutate(&cfg)
-			if _, ok := loopTestFunction(cfg).matchLoop(); ok {
+			if _, ok := shapeTestFunction(cfg).matchLoop(); ok {
 				t.Fatal("over-broad structured-loop match")
 			}
 		})
@@ -94,7 +94,7 @@ func TestWasmLoopPolarityOrderAndPhiCycle(t *testing.T) {
 			if shuffled {
 				cfg.Blocks = []optir.Block{cfg.Blocks[3], cfg.Blocks[2], cfg.Blocks[0], cfg.Blocks[1]}
 			}
-			if shape, ok := loopTestFunction(cfg).matchLoop(); !ok || shape.header.ID != 20 || shape.body.ID != 30 || shape.exit.ID != 40 {
+			if shape, ok := shapeTestFunction(cfg).matchLoop(); !ok || shape.header.ID != 20 || shape.body.ID != 30 || shape.exit.ID != 40 {
 				t.Fatal("valid shape not recognized", inverted, shuffled)
 			}
 			m, err := Emit([]optir.CFG{cfg})

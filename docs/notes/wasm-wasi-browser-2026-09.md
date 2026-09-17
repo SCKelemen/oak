@@ -189,7 +189,7 @@ certificate replay. Gate stronger features on their actual evidence.
 | W2 | Integer/control-flow source-to-decoded-bytes refinement; authoritative certificate admission | Planned |
 | B1 | CI browser tests, incremental diagnostics, accessible editing, measured payload/startup/latency | Partial: bounded reusable sessions, source-linked diagnostics, request timing instrumentation and deterministic lifecycle CI; expanded Chrome harness awaits rerun; incremental compilation, memory measurements and browser CI open |
 | W3 | Memory/spans/aggregates, pointer and allocator contracts; wider source coverage | Planned |
-| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial direct returning-block and four-block-loop emission, executable baseline/size gates, preliminary warmed V8 sum timings. General structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
+| W4 | Validated structured lowering, local reuse, direct stack expression emission; measured speed/size gates | Initial direct returning blocks, four-block loops and conditionals; executable baseline/size gates and preliminary warmed V8 sum/helper-call timings. General structurization, local reuse, stackification, formal translation validation and representative runtime measurements open |
 | H0 | Minimal browser import contracts, explicit capabilities and observable traces | Planned |
 | H1 | Selected versioned WASI interfaces and runtime conformance tests | Planned |
 | C0 | WIT mapping and component generation, explicit borrowed/owned resources and Canonical ABI | Planned |
@@ -198,7 +198,7 @@ certificate replay. Gate stronger features on their actual evidence.
 Native speed and Wasm speed are separate measurements. A browser's JIT chooses
 physical allocation, scheduling and ISA instructions. Measure guest runtime,
 module size, compiler download/startup, compilation latency and memory separately.
-The current direct-block/structured-loop/dispatch-fallback implementation makes no
+The current direct-block/structured-control/dispatch-fallback implementation makes no
 native-parity claim.
 
 Initial execution evidence (2026-09-17): actual bytes pass V8 engine tests;
@@ -271,3 +271,15 @@ median new/old execution time from 0.151 to 0.436. [Recorded samples and method]
 make this reproducible without implying general browser performance or imposing
 a noisy CI timing threshold. The encoding identity is v4; byte profiles remain
 v1 and formal translation verification is still open.
+
+Conditional increment (2026-09-17): complete four-block diamonds now lower to
+`if/else` plus a shared returning join. Only the chosen arm executes; edge copies,
+operation checks and return emission reuse the existing helpers. Nested or
+otherwise unmatched shapes keep the dispatcher. Fixed fixtures lose 68 bytes
+and 39 instructions each. A loop calling a conditional helper (its loop already
+structured in both versions) shrinks from 327 to 258 bytes. Three repeated local
+Deno/V8 processes measured new/old median time ratios of 0.134–0.136; the initial
+noisy run's 0.073 ratio is also retained in the [raw samples](../../benchmarks/wasm/diamond-2026-09-17.json).
+This remains a microbenchmark, not general browser performance evidence. The
+encoding recipe is v5, scalar/check profiles remain v1, and semantic translation
+verification is still open.

@@ -244,7 +244,8 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	// claims it is unreachable: this emitter consumes the checked raw CFG.
 	direct := len(f.cfg.Blocks) == 1 && f.entry.Terminator.Kind == optir.TerminatorReturn
 	loop, structuredLoop := f.matchLoop()
-	dispatch := !direct && !structuredLoop
+	diamond, structuredDiamond := f.matchDiamond()
+	dispatch := !direct && !structuredLoop && !structuredDiamond
 	extra := 0
 	if dispatch {
 		extra = 1
@@ -283,6 +284,12 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 		}
 		return b, nil
 	}
+	if structuredDiamond {
+		if err := f.diamondBody(&b, diamond, functions); err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
 	b.i32(int32(f.blocks[f.cfg.Entry]))
 	b.local(0x21, pc)
 	b.op(0x03, 0x40) // loop, empty block type
@@ -313,6 +320,15 @@ func (f *function) body(functions map[string]*function) (binary, error) {
 	}
 	b.op(0x00, 0x0b, 0x00, 0x0b) // invalid PC traps; unreachable after loop; function end
 	return b, nil
+}
+
+// Structural recognizers share bounds-checked lookup, not reachability guesses.
+func (f *function) lookupBlock(id optir.BlockID) (optir.Block, bool) {
+	i, ok := f.blocks[id]
+	if !ok || i < 0 || i >= len(f.cfg.Blocks) {
+		return optir.Block{}, false
+	}
+	return f.cfg.Blocks[i], true
 }
 
 func (f *function) operations(b *binary, block optir.Block, functions map[string]*function) error {
