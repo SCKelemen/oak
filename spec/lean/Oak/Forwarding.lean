@@ -69,6 +69,19 @@ theorem narrow_load_after_store (f : Frame) (off bits value : Nat) :
     loadUnsigned (storeNarrow f off bits value) off bits = lowBits bits value := by
   simp [loadUnsigned, storeNarrow, lowBits, store]
 
+/-- A value is already represented at a cell's unsigned width. The native
+mask-elision candidate does not establish this premise: its unchanged
+whole-body verifier must prove the corresponding typed source fact. -/
+def Normalized (bits value : Nat) : Prop := lowBits bits value = value
+
+/-- When the stored value is already width-normalized, the narrow memory
+round trip returns the original register value and its mask can be omitted. -/
+theorem narrow_load_of_normalized (f : Frame) (off bits value : Nat)
+    (h : Normalized bits value) :
+    loadUnsigned (storeNarrow f off bits value) off bits = value := by
+  rw [narrow_load_after_store]
+  exact h
+
 /-- A full-register store/load round trip needs no truncation. -/
 theorem full_load_after_store (value : Nat) : value = value := by
   rfl

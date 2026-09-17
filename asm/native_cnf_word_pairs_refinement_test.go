@@ -219,6 +219,9 @@ func TestNativeCNFReplayWordPairsMatchesLean(t *testing.T) {
 	truncated.width = 8
 	shared := binary(16, "xor", narrow, constTerm(0xa500, 16))
 	cases = append(cases,
+		wordCase{name: "parameter_truncate_then_zero_extend", names: []string{"wide"}, widths: map[string]int{"wide": 64},
+			left: zeroExtend(truncate(paramTerm("wide", 64), 8), 64), right: binary(64, "and", paramTerm("wide", 64), constTerm(0xff, 64)),
+			values: []uint64{0x123456789abcdef1}, want: [2]uint64{0xf1, 0xf1}},
 		wordCase{name: "parameter_zero_extension", names: []string{"byte"}, widths: map[string]int{"byte": 8},
 			left: &widened, right: binary(64, "or", narrow, constTerm(0, 64)), values: []uint64{0x81}, want: [2]uint64{0x81, 0x81}},
 		wordCase{name: "parameter_truncation", names: []string{"wide"}, widths: map[string]int{"wide": 64},

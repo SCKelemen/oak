@@ -86,10 +86,20 @@ strings is insufficient. Source edits or Stop invalidate in-flight hash work;
 old completion cannot restore an artifact. These are integrity and operational
 checks, not a signature, trusted compiler certificate or sandbox proof.
 
+The browser now reuses only the loaded compiler worker for bounded sessions,
+not checked inputs or DAG artifacts. Each call constructs a fresh compilation.
+The versioned worker protocol, request/worker identity checks and cancellation
+controller are browser-host concerns, not new semantic artifact nodes. Structured
+diagnostics reuse the compiler's diagnostic sink and UTF-16 ranges; source hashes
+bind even failed requests before diagnostic navigation. Cold/warm request timing
+is displayed separately from semantic admission. See the
+[playground contract](../../playground/README.md) for budgets and lifecycle tests.
+
 ## Next increments
 
-1. Add structured diagnostics and reusable browser compiler sessions with
-   explicit cancellation/ownership and latency/memory measurements.
+1. Extend browser measurements to memory and deployment payloads; add real
+   browser CI and incremental editing. Bounded sessions, structured diagnostics
+   and initial cold/warm request timings are implemented.
 2. Broaden Wasm semantics and implement validated structured lowering; connect
    generic optimized candidates only with appropriate target evidence.
 3. Evolve target descriptions into explicit layout/feature/ABI contracts as

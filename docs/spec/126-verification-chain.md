@@ -701,14 +701,32 @@ translation, fault, exclusive, MTE, trickbox/counter routing, `aset__Mem`, and
 and selected no-device forwarding wrapper. A further generated pure projection
 selects `(56, 8, defaultRAM, ZeroExtend(PA), data)` at the external `write_ram`
 boundary, retaining zero for break and the same endian-dependent make data.
-This is not route/call-reachability or memory-effect evidence.
+This pure projection is not route/call-reachability or memory-effect evidence.
 Occurrence-level decorators retain an external route predicate indexed by the
 same event, virtual address, endian result, PA, and data; extraction returns it
 and the original descriptor occurrence unchanged.
+
+A separate effectful seam, `spec/sail/lean/MemoryBridge.lean`, now proves the
+mechanically generated no-device `__WriteRAM` wrapper's normal return against
+the pinned Sail Lean runtime's actual `write_ram`. For arbitrary prior memory,
+it writes exactly eight consecutive bytes, least-significant byte first,
+preserves memory outside that footprint, and leaves every non-memory state
+field unchanged. A generic runtime theorem also covers arbitrary register and
+choice-state types, beyond the generated fragment's empty register vocabulary.
+The selected break/make projections compose with this effect, including Arm's
+pre-call endian conversion; a 52-bit PA plus seven cannot wrap the 56-bit call
+address. This runtime ignores the RAM selector, as another theorem explicitly
+records: the byte map provides no RAM-namespace provenance or storage custody.
+Exact-source/mutation gates pin the external binding and forwarding body, plus
+the separate Lem backend's `Write_plain` requests. Those requests are not
+release writes, and no Lean-to-Lem/CAT refinement is established here.
+
 Alignment, normal fault-free translation and PA/default-RAM provenance,
-special-route exclusion, wrapper/external return, RAM mutation, byte placement,
-atomicity/non-tearing, unique writes, CAT event/tag identity,
-visibility, completion, and publication remain open.
+special-route exclusion, dynamic instruction-to-wrapper reachability, and
+architectural RAM effects remain open. The sequential byte updates prove
+neither atomicity/non-tearing nor architectural event count/identity, CAT
+membership, visibility, completion, or publication. The C runtime and Arm's
+concurrent memory model are outside this new theorem's semantics.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is

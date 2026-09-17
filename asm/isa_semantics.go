@@ -280,7 +280,14 @@ func stepISA(instr Instruction, state *symbolicState) (handled bool, reason stri
 // extendTerm zero- or sign-extends the low `from` bits of a term to width.
 func extendTerm(t *term, from, width int, signed bool) *term {
 	var low *term
-	if from == width {
+	if t.kind == termParam && t.declaredWidth() > t.width && from == t.width && width > from {
+		// Fuse widening a truncated parameter view with the explicit low-bit
+		// mask. Unlike a bare zeroExtend, this cannot recover discarded bits:
+		// the mask immediately discards exactly the same high bits again.
+		// Keep the single-mask representation used by LoweringRefinement.
+		wide := &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
+		low = binaryTerm("and", wide, constTerm(mask(from), width))
+	} else if from == width {
 		// The type's identity extension, kept as the mask the lowering
 		// model spells (Oak.LoweringRefinement: `x and mask`, then for a
 		// signed type `shl 0`/`sar 0`), not folded as the constructors

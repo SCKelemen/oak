@@ -28,31 +28,43 @@ func (f *Function) Simplify() (propagated, eliminated int, err error) {
 			return propagated, eliminated, werr
 		}
 		f.Liveness(webs)
-		p := f.propagateCopies(webs)
-		propagated += p
-		if p > 0 {
-			// The webs changed: rebuild before deciding what is dead.
-			if webs, werr = f.Webs(); werr != nil {
-				return propagated, eliminated, werr
+		copyDst := f.propagateCopy(webs)
+		copied := copyDst != nil
+		if copied {
+			propagated++
+			copy := copyDst.Defs[0].Instr
+			if copy.Defs[0].Reg == copy.Uses[0].Reg {
+				// A self-copy can have distinct source and destination webs.
+				// Respelled reads still reach its definition in that case.
+				if webs, werr = f.Webs(); werr != nil {
+					return propagated, eliminated, werr
+				}
+				copyDst = nil
 			}
 		}
-		e := f.eliminateDead(webs)
+		// Only the copy's destination became unread. The source is still
+		// read by the copy, and every transferred read reaches its existing
+		// definitions. DCE can use the original webs except this destination;
+		// ranges, widths and pinning are rebuilt at the next round.
+		e := f.eliminateDead(webs, copyDst)
 		eliminated += e
-		if p == 0 && e == 0 {
+		if !copied && e == 0 {
 			return propagated, eliminated, nil
 		}
 	}
 	return propagated, eliminated, nil
 }
 
-// propagateCopies rewrites the reads of a copy's destination to its
-// source when the source has exactly one definition (so it is unchanged
-// wherever the destination is read: a use with one reaching definition is
-// dominated by it), the destination is defined only by the copy, every
+// propagateCopy rewrites the reads of a copy's destination to its
+// source when the source still holds the copied value at every read,
+// the destination is defined only by the copy, every
 // read can be respelled (none is a contract's implicit read), and the copy
-// is as wide as what flows through it. The copy itself is left for
-// dead-code elimination.
-func (f *Function) propagateCopies(webs []*Web) int {
+// is as wide as what flows through it. It returns the destination web, or nil
+// if nothing propagated. When the physical source and destination differ,
+// the destination is now unread: DCE may use the original webs excluding it.
+// A self-copy needs fresh webs even for DCE. The copy itself is left for
+// elimination; further propagation always needs fresh webs.
+func (f *Function) propagateCopy(webs []*Web) *Web {
 	siteWeb := map[site]*Web{}
 	for _, w := range webs {
 		for _, d := range w.Defs {
@@ -64,7 +76,6 @@ func (f *Function) propagateCopies(webs []*Web) int {
 			siteWeb[site{u.Instr, u.Access, false}] = w
 		}
 	}
-	count := 0
 	for _, ins := range f.Instrs {
 		if !ins.Copy || len(ins.Defs) != 1 || len(ins.Uses) < 1 {
 			continue
@@ -110,8 +121,7 @@ func (f *Function) propagateCopies(webs []*Web) int {
 		for _, u := range dst.Uses {
 			f.t.setRegAt(&u.Instr.Asm, u.Access, src.Reg)
 		}
-		// The destination's reads now belong to the source: refresh the
-		// accesses so a later copy in this round sees them.
+		// Refresh the lifted accesses for the next analysis.
 		for _, u := range dst.Uses {
 			for k := range u.Instr.Uses {
 				if u.Instr.Uses[k] == u.Access {
@@ -119,12 +129,10 @@ func (f *Function) propagateCopies(webs []*Web) int {
 				}
 			}
 		}
-		count++
-		// One propagation per round per source keeps the bookkeeping
-		// simple; the next round takes the rest.
-		break
+		// Keep the original single-copy order and fixpoint bound.
+		return dst
 	}
-	return count
+	return nil
 }
 
 // holdsBetween reports that register r, read by the copy at from, is
@@ -152,11 +160,12 @@ func (f *Function) holdsBetween(r Reg, from, to *Instr) bool {
 // eliminateDead removes the instructions whose every definition no one
 // reads, when the instruction is pure on this lane: no store, call,
 // branch, compare, atomic, or system effect, and no load from anywhere
-// but the frame.
-func (f *Function) eliminateDead(webs []*Web) int {
+// but the frame. copyDst, if non-nil, is the single-definition destination
+// whose every read propagateCopy just transferred to its source.
+func (f *Function) eliminateDead(webs []*Web, copyDst *Web) int {
 	live := map[site]bool{}
 	for _, w := range webs {
-		if len(w.Uses) == 0 {
+		if w == copyDst || len(w.Uses) == 0 {
 			continue
 		}
 		for _, d := range w.Defs {

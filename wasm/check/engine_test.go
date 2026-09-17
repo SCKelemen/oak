@@ -4,40 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
-	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/SCKelemen/oak/internal/wasmtest"
 )
 
 // Validate, never execute, adversarial modules in a second implementation.
 // The implication is one-way: our bounded profile is narrower than Core Wasm.
 func TestWasmEngineValidation(t *testing.T) {
-	var runtime string
-	var args []string
-	for _, name := range []string{"node", "deno"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		err = exec.CommandContext(ctx, path, "--version").Run()
-		cancel()
-		if err == nil {
-			runtime = path
-			args = []string{"-e"}
-			if name == "deno" {
-				args = []string{"eval"}
-			}
-			break
-		}
-	}
-	if runtime == "" {
-		if os.Getenv("OAK_REQUIRE_WASM_TESTS") == "1" {
-			t.Fatal("independent engine required")
-		}
-		t.Skip("a working Node or Deno is required")
-	}
+	engine := wasmtest.Require(t)
 	type row struct {
 		Data     []byte `json:"data"`
 		Accepted bool   `json:"accepted"`
@@ -79,9 +55,9 @@ if((r.accepted&&!engine)||(r.exact&&r.accepted!==engine))throw Error("validation
 }`
 	// Node's -e is CommonJS, so avoid top-level await in the shared program.
 	script = "(async()=>{" + script + "})().catch(e=>{console.error(e);" + "if(typeof Deno!==\"undefined\")Deno.exit(1);else process.exit(1);});"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, runtime, append(args, script)...)
+	cmd := engine.Command(ctx, script)
 	cmd.Stdin = bytes.NewReader(data)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("independent engine: %v\n%s", err, output)

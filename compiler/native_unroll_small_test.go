@@ -178,6 +178,20 @@ func TestNativeBlake3SmallUnrollCandidateProven(t *testing.T) {
 	if fullCost, rolledCost := opt.AArch64Costs.Estimate(driver.Measure(full)), opt.AArch64Costs.Estimate(rolledMetrics); fullCost >= rolledCost {
 		t.Fatalf("exact trip costing did not favor full unrolling: full=%v rolled=%v", fullCost, rolledCost)
 	}
+	hits, proofs := driver.compileSession.ReallocationStats().Hits, verified
+	warmFull := opt.Identity(fullLane)
+	if err := driver.Materialize(warmFull); err != nil {
+		t.Fatal(err)
+	}
+	if driver.compileSession.ReallocationStats().Hits != hits+1 || driver.Key(warmFull) != driver.Key(full) {
+		t.Fatal("full BLAKE3 allocation was not reused without changing its candidate")
+	}
+	if findings := driver.Check(warmFull); len(findings) != 0 {
+		t.Fatalf("reused full candidate seam refused: %v", findings)
+	}
+	if proof := driver.Validate(warmFull); proof.Outcome != opt.Proven || !strings.Contains(proof.Message, "all 8 result chunks") || verified != proofs+1 || fromCache != 0 {
+		t.Fatalf("reused full candidate did not independently prove all chunks: %+v", proof)
+	}
 
 	// Preserve the candidate's legal footprint but alter its computation. The
 	// verifier must refute the changed rotate rather than recognize the source

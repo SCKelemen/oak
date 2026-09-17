@@ -9,6 +9,8 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background:
 button { padding: .6rem .9rem; font: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .5; }
 .controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+#diagnostics { padding-left: 1.2rem; overflow-wrap: anywhere; }
+#diagnostics button { text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
 section > p { color: #777; font-size: .9rem; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
 @media (prefers-color-scheme: dark) { section > p { color: #bbb; } }
