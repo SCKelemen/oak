@@ -87,14 +87,14 @@ func TestSpanEqualByCasesSplitsOnSmallComparisons(t *testing.T) {
 	c4, v4 := branch(binaryTerm("and", not(rx), not(rw)), 192, 1<<53|1<<54)
 	machine := iteTerm(c1, v1, iteTerm(c2, v2, iteTerm(c3, v3, iteTerm(c4, v4, entry))))
 	premise := cmpTerm("lo", paramTerm("va", 64), constTerm(1<<32, 64))
-	equal, decided := spanEqualByCases("map_page", "s.pages", premise, oak, machine)
+	equal, decided := spanEqualByCases("map_page", "s.pages", premise, oak, machine, nil)
 	if !decided || !equal {
 		t.Fatalf("the four permission cases must close: equal=%v decided=%v", equal, decided)
 	}
 	// A machine that writes the wrong bits in one case is not proven.
 	_, v3wrong := branch(binaryTerm("and", rx, not(rw)), 64, 1<<53)
 	wrong := iteTerm(c1, v1, iteTerm(c2, v2, iteTerm(c3, v3wrong, iteTerm(c4, v4, entry))))
-	if _, decided := spanEqualByCases("map_page", "s.pages", premise, oak, wrong); decided {
+	if _, decided := spanEqualByCases("map_page", "s.pages", premise, oak, wrong, nil); decided {
 		t.Fatal("a case that is not one term must stay undecided")
 	}
 	conds := spanSplitConditions(premise, []*term{oak, machine}, spanCaseSplitLimit)

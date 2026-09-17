@@ -31,7 +31,7 @@ const spanCaseConditionNodes = 8
 
 // spanEqualByCases decides oak = machine under premise by the case split
 // described above; decided is false when some case does not close.
-func spanEqualByCases(fn string, name string, premise, oak, machine *term) (equal, decided bool) {
+func spanEqualByCases(fn string, name string, premise, oak, machine *term, implies func(premise, a, b *term) (bool, bool)) (equal, decided bool) {
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	conditions := spanSplitConditions(premise, []*term{oak, machine}, spanCaseSplitLimit)
 	for assignment := 0; assignment < 1<<len(conditions); assignment++ {
@@ -49,6 +49,16 @@ func spanEqualByCases(fn string, name string, premise, oak, machine *term) (equa
 		a := canonicalLinear(canonicalMemo(pruned[0], cmemo, cbool), memo)
 		b := canonicalLinear(canonicalMemo(pruned[1], cmemo, cbool), memo)
 		if !equalTerms(a, b) {
+			// Not one term: the case's respelled memories are still far
+			// smaller than the originals (the facts settled the status
+			// chains, the forms settled the indices), so the bit-level
+			// implication is tried on them under the case before the
+			// whole decision is given up.
+			if implies != nil {
+				if holds, known := implies(p, a, b); known && holds {
+					continue
+				}
+			}
 			if trace {
 				fmt.Fprintf(os.Stderr, "verify %s: span %s by cases: case %d of %d over %v is not one term\n  oak: %s\n  asm: %s\n", fn, name, assignment, 1<<len(conditions), conditions, a, b)
 			}
