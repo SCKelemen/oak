@@ -8,6 +8,15 @@ import (
 	"github.com/SCKelemen/oak/target"
 )
 
+func TestTargetDescriptionRejectsUnsupportedExplicitToolchain(t *testing.T) {
+	_, err := Resolve(target.Target{OS: "unknown", Arch: "unknown"}, Options{},
+		func(string) (string, error) { t.Fatal("unsupported target reached tool lookup"); return "", nil },
+		func(string) string { return "/tools/cc" })
+	if err == nil {
+		t.Fatal("explicit C compiler bypassed target description")
+	}
+}
+
 func lookupOf(names ...string) Lookup {
 	return func(name string) (string, error) {
 		for _, n := range names {

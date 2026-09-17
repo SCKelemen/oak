@@ -48,5 +48,5 @@ func deciderInputs(model *compiler.SemanticModel, name string) (*ast.FunctionSta
 		return nil, nil, nil, asm.Declarations{}, "", fmt.Errorf("prove: no theorem %s", name)
 	}
 	stated, callees, guards, reason := forDecider(model.TypeChecker, theorem, functions)
-	return stated, callees, guards, declarationsOf(model.Tree.Root), reason, nil
+	return stated, callees, guards, declarationsOf(model.Tree.Root, model.TypeChecker), reason, nil
 }

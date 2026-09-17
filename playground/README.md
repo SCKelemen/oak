@@ -17,6 +17,12 @@ The example sums 0 through 99 and returns 4950. Run invokes a zero-argument
 [scalar profile](../docs/spec/91-wasm.md) is accepted. The CLI alternative is
 `oak build -target core/wasm32 -o program.wasm program.oak`.
 
+“Compile only” produces a downloadable module without executing it or requiring
+`main`. Artifact information includes the compiler's target and DAG provenance.
+The page checks hashes against the actual source and module bytes before
+publishing the artifact; editing or stopping discards stale hash completions.
+Serve over localhost or HTTPS for WebCrypto's secure-context requirement.
+
 Source checking, Oak byte/type validation and engine validation are shown
 separately from the missing
 formal translation proof. This is **not** a fully verified backend or a
@@ -36,7 +42,8 @@ deno run --allow-read --allow-write=/tmp --allow-net=127.0.0.1 --allow-run playg
 
 The engine tests need a working Node or Deno. The browser smoke test needs the
 built assets and Chrome/Chromium; it uses a disposable profile and loopback
-server to test execution, infinite-loop cancellation and invalid-source cleanup.
+server to test execution, compile-only, corrupt reports, stale asynchronous
+hashing, infinite-loop cancellation and invalid-source cleanup.
 CI requires engine execution and builds the browser assets; browser smoke CI is
 still planned. The initial Go compiler module is approximately 39 MiB
 uncompressed on the development build: deployment size is not optimized yet.

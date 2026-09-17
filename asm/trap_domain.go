@@ -2,9 +2,126 @@ package asm
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 )
+
+func trapOrFalse(trap *term) *term {
+	if trap == nil {
+		return constTerm(0, 1)
+	}
+	return truncate(trap, 1)
+}
+
+func disjoinTraps(traps []*term) *term {
+	var result *term
+	for _, trap := range traps {
+		if result == nil {
+			result = truncate(trap, 1)
+		} else {
+			result = binaryTerm("or", result, truncate(trap, 1))
+		}
+	}
+	return result
+}
+
+// nil sink is used only for the frame-slot discovery probe, whose traps
+// are collected afresh during the actual symbolic iteration.
+func recordLoopTrap(sink **term, path, taken *term) {
+	if sink == nil {
+		return
+	}
+	trap := binaryTerm("and", truncate(path, 1), truncate(taken, 1))
+	if *sink == nil {
+		*sink = trap
+	} else {
+		*sink = binaryTerm("or", *sink, trap)
+	}
+}
+
+// firstIterationTrap projects only a reached loop's first header/body to
+// the surrounding source scope. Body predicates require source entry.
+// A residual state of this loop or a nested loop is not an entry fact.
+func firstIterationTrap(ev *loopEvent, lastLoop int) (*term, bool) {
+	trap := binaryTerm("or", trapOrFalse(ev.headerTrap), binaryTerm("and", truncate(ev.cond, 1), trapOrFalse(ev.bodyTrap)))
+	entry, known := ev.entryPredicate(trap)
+	if !known {
+		return nil, false
+	}
+	seen := map[*term]bool{}
+	var closed func(*term) bool
+	closed = func(t *term) bool {
+		if t == nil || seen[t] {
+			return true
+		}
+		seen[t] = true
+		if t.kind == termParam || t.kind == termSelect {
+			for k := ev.index; k <= lastLoop; k++ {
+				prefix := fmt.Sprintf("loop%d", k)
+				if strings.HasPrefix(t.name, prefix+".") || strings.HasPrefix(t.name, prefix+"[") {
+					return false
+				}
+			}
+		}
+		return closed(t.cond) && closed(t.left) && closed(t.right)
+	}
+	if !closed(entry) {
+		return nil, false
+	}
+	return entry, true
+}
+
+// decideLoopTrapDomains uses the selected coupling, but no machine path
+// condition, no !machineTrap premise, and no loop exit premise. Its
+// deliberately stronger source-only premises avoid circular admission.
+func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[string]*term, implies func(*term, *term, *term) (bool, bool)) (string, bool) {
+	if !source.trapDomainTracked {
+		return "source loop traps were not collected", false
+	}
+	// The only input-domain restriction here is well-typed source tags.
+	domainSource := *source
+	domainSource.machineTrap = nil
+	typed := domainSource.domainCondition()
+	if typed == nil {
+		typed = constTerm(1, 1)
+	}
+	check := func(premise, machineTrap, oakTrap *term) bool {
+		bad := binaryTerm("and", trapOrFalse(substitute(machineTrap, sigma)), notTerm(trapOrFalse(oakTrap)))
+		holds, decided := implies(premise, bad, constTerm(0, 1))
+		if (!decided || !holds) && os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify loop trap domain: decided=%v premise=%s machine=%s oak=%s\n", decided, premise, trapOrFalse(substitute(machineTrap, sigma)), trapOrFalse(oakTrap))
+		}
+		return decided && holds
+	}
+	for k, machine := range exec.loops {
+		oak := source.loops[k]
+		premise := typed
+		for at := k; at >= 0; at = source.loops[at].parent - 1 {
+			ev := source.loops[at]
+			if ev.oakPath != nil {
+				premise = binaryTerm("and", premise, truncate(ev.oakPath, 1))
+			}
+			if at != k {
+				premise = binaryTerm("and", premise, truncate(ev.cond, 1))
+			}
+		}
+		if !check(premise, machine.headerTrap, oak.headerTrap) {
+			return fmt.Sprintf("loop %d header trap-domain obligation is not proven", k+1), false
+		}
+		bodyPremise := binaryTerm("and", premise, truncate(oak.cond, 1))
+		// A source header trap also prevents this iteration from returning.
+		oakTrap := binaryTerm("or", trapOrFalse(oak.headerTrap), trapOrFalse(oak.bodyTrap))
+		if !check(bodyPremise, machine.bodyTrap, oakTrap) {
+			return fmt.Sprintf("loop %d body trap-domain obligation is not proven", k+1), false
+		}
+	}
+	if !check(typed, exec.trap, disjoinTraps(source.traps)) {
+		return "root trap-domain obligation around the loops is not proven", false
+	}
+	return "", true
+}
 
 // verifyTrapDomain admits a non-loop value/effect proof only after proving
 // that every excluded machine-trap input also traps in the source. The
@@ -13,8 +130,8 @@ import (
 //
 // This is a one-way, partial-correctness obligation, not equality of trap
 // behavior, exception handlers, or effects before a trap. Summarized loops
-// retain their existing verifier contract; their per-iteration trap-domain
-// obligations need a separate extension to the coupling proof.
+// check their root and per-iteration scopes in decideLoopTrapDomains after
+// selecting the coupling, before admitting any value/effect proof.
 func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, result Verdict) Verdict {
 	if result.Kind != VerdictProven || exec == nil || exec.trap == nil || len(exec.loops) != 0 {
 		return result

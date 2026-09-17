@@ -106,6 +106,21 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   scheduling and allocation candidates beat BLAKE3's previously underpriced
   seven-round/eight-tail loops; measured results and the increased emission
   cost are recorded in `benchmarks/native/README.md`.
+- Candidate materialization reuses identical register-allocation inputs within
+  one function's search (`nativegen.CompileSession`,
+  `machine.ReallocationCache`). The exact key includes architecture, frame,
+  clobbers, the explicit frame-object layout and every ordered instruction
+  field/operand, including checked-fact references, call-site IDs and lines.
+  A closed, bounded encoder preserves raw string bytes and floating-point bits;
+  unsupported shapes take the uncached path. Only deeply copied machine items,
+  clobbers and allocation counters are reused, never source metadata, webs or
+  verdicts. The fresh candidate remains subject to ordinary admission, costing
+  and semantic-validation policy. The cache retains at most 32 entries and
+  16 MiB of canonical input/output payload (not a Go heap limit); trace mode bypasses it.
+  Standalone `CompileFor` remains uncached, and there is no global or persistent
+  allocation cache. Candidate and verdict identities are unchanged. The BLAKE3
+  comparison in `benchmarks/native/README.md` checks byte-identical output while
+  measuring the reduction in repeated allocation work.
 - `compiler/native_search.go` and `compiler/native_bodies.go` — the
   hand-written fallback ladder (elide, then hoist, then reuse, then
   strength, then the plain reduction) is replaced by one search per
@@ -257,6 +272,17 @@ Both refused wrong forms in their first tests — a propagation across a
 call's clobber, an elided callee-saved restore — before the liveness and
 the restore rule were added; the checker would have refused the bodies,
 but the pass should not propose them.
+
+The reaching-definition analysis stores immutable, sorted sets of definition
+sites (2026-09-17). Block states share those sets; a definition replaces a
+register's set with a preallocated singleton, and joins reuse equal or empty
+sets while building other unions in new storage. A union never appends into
+either input's storage. This avoids deep-copying per-register maps and
+allocating a map at every assignment, which was costly when `Simplify` rebuilt
+webs after each propagated copy.
+Entry values, unreachable roots, loop back-edges, tied operands, call clobbers,
+web ordering and the cleanup fixpoint are unchanged. Measurements and emitted
+object comparisons are recorded in `benchmarks/native/README.md`.
 
 Second increment: machine-level loop-invariant code motion on the loop
 tree (`machine.HoistInvariants`). Innermost loop first, an instruction

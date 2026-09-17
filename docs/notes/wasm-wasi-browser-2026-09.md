@@ -51,11 +51,13 @@ Primary references, checked 2026-09-17:
 ## Compiler architecture
 
 ```text
-source → existing checks → checked raw OptIR CFG → Wasm bytes
-                                                    │
-                           current: independent bounded byte/type validator
-                                    + engine validation/execution tests
-                           future: decoder refinement + translation checker
+source → existing checks → owned checked raw OptIR CFG ─┐
+                                                      ├→ materialization
+                         checked target description ──┘        │
+                                                              ▼
+                                            independent byte/type admission
+                                                              │
+                                                         Wasm bytes
 ```
 
 Reuse the existing checked OptIR projection; do not add an AST-to-Wasm compiler.
@@ -64,6 +66,11 @@ general CFGs. Each SSA value has a Wasm local. Edge arguments are read before
 any destination is assigned, preserving parallel phi copies and cycles.
 This is intentionally simple, not an optimized structurizer. Preserve natural
 structured regions or introduce a validated structurizer later.
+
+The target, input, materialization and admission nodes now use the shared typed
+artifact DAG, with diagnostic recipe/dependency reporting. Frontend checks stay
+linear; native selection retains its stronger verifier policy. See the
+[Go-inspired target pipeline boundary](target-pipeline-2026-09.md).
 
 Do not consume optimized candidates merely because their CFG validates.
 Future optimization admission must bind preservation/equivalence evidence to
@@ -129,6 +136,12 @@ It rejects imports/globals before resolution and never runs user code. A
 separate disposable worker runs the final module with an empty import object.
 The page receives diagnostics, typed exports, hashes and bytes; user text is
 rendered with `textContent`, never HTML or JavaScript evaluation.
+
+“Compile only” runs no guest code and needs no `main`; it returns the same
+admitted module and pipeline report for inspection/download. Before publishing
+an artifact, the page hashes the actual source/module bytes and compares them
+to the response. Stale asynchronous digest results are discarded after edits
+or Stop. This detects mismatched artifacts, not malicious-compilation semantics.
 
 Current budgets: 32 KiB source, 1 MiB executable module, 90 seconds compiler
 startup, 10 seconds compilation, 2 seconds execution. Stop terminates workers;

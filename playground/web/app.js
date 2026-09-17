@@ -7,6 +7,7 @@ function stop() {
   compiler?.terminate();
   runner?.terminate();
   compiler = runner = null;
+  $("compile").disabled = false;
   $("run").disabled = false;
   $("stop").disabled = true;
 }
@@ -30,7 +31,13 @@ $("source").oninput = () => {
 $("stop").onclick = () => {
   error("Stopped. Workers discarded.");
 };
-$("run").onclick = () => {
+async function sha256(bytes) {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+$("compile").onclick = () => compile(false);
+$("run").onclick = () => compile(true);
+function compile(runAfter) {
   stop();
   const current = sequence;
   artifact = null;
@@ -39,11 +46,13 @@ $("run").onclick = () => {
   $("verification").textContent =
     "Source not checked. Module not validated. Translation not formally verified.";
   const source = $("source").value;
-  if (new TextEncoder().encode(source).length > 32768) {
+  const sourceBytes = new TextEncoder().encode(source);
+  if (sourceBytes.length > 32768) {
     error("Source exceeds 32 KiB.");
     return;
   }
   $("run").disabled = true;
+  $("compile").disabled = true;
   $("stop").disabled = false;
   $("output").textContent = "Loading local compiler…";
   compiler = new Worker("compiler-worker.js");
@@ -51,7 +60,7 @@ $("run").onclick = () => {
     if (current === sequence) error(event.message);
   };
   deadline(90000, "Compiler startup exceeded 90 seconds.");
-  compiler.onmessage = ({ data }) => {
+  compiler.onmessage = async ({ data }) => {
     if (current !== sequence) return;
     if (data.kind === "ready") {
       $("output").textContent = "Checking source and compiling…";
@@ -71,12 +80,18 @@ $("run").onclick = () => {
     compiler.terminate();
     compiler = null;
     const response = data.response;
-    if (response.error) {
-      error(response.error);
-      return;
-    }
     try {
-      if (response.module.translationVerified !== false) {
+      if (!response || typeof response !== "object") {
+        throw Error("Malformed compiler response.");
+      }
+      if (response.error) {
+        error(response.error);
+        return;
+      }
+      if (
+        response.sourceChecked !== true ||
+        response.module.translationVerified !== false
+      ) {
         throw Error("Unexpected verification claim.");
       }
       const byteCheck = response.module.byteValidation;
@@ -86,12 +101,30 @@ $("run").onclick = () => {
       ) {
         throw Error("Missing or mismatched byte-validation report.");
       }
+      if (
+        typeof response.module.bytes !== "string" ||
+        response.module.bytes.length > 1398104
+      ) {
+        throw Error("Encoded module exceeds playground limit.");
+      }
       const raw = atob(response.module.bytes);
       if (raw.length > 1048576) throw Error("Module exceeds playground limit.");
-      artifact = Uint8Array.from(raw, (c) => c.charCodeAt(0));
-      if (!WebAssembly.validate(artifact)) {
+      const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+      const [sourceHash, moduleHash] = await Promise.all([
+        sha256(sourceBytes),
+        sha256(bytes),
+      ]);
+      if (current !== sequence) return; // edited/stopped while hashing
+      if (
+        sourceHash !== response.sourceSHA256 ||
+        moduleHash !== response.moduleSHA256
+      ) {
+        throw Error("Source or module hash does not match actual bytes.");
+      }
+      if (!WebAssembly.validate(bytes)) {
         throw Error("Engine rejected emitted bytes.");
       }
+      artifact = bytes;
       $("verification").textContent =
         "Source checked. Oak byte validator accepted. Wasm engine validated the bytes. Translation NOT formally verified.";
       $("artifact").textContent = JSON.stringify(
@@ -101,12 +134,19 @@ $("run").onclick = () => {
           sourceSHA256: response.sourceSHA256,
           moduleSHA256: response.moduleSHA256,
           byteValidation: byteCheck,
+          pipeline: response.pipeline,
           exports: response.module.exports,
         },
         null,
         2,
       );
       $("download").disabled = false;
+      if (!runAfter) {
+        $("output").textContent = "Compiled " + artifact.length +
+          " bytes. Not executed.";
+        stop();
+        return;
+      }
       const main = response.module.exports.find((e) => e.name === "main");
       if (!main || main.parameters.length) {
         error("Compiled successfully. Add a zero-argument main to run.");
@@ -136,10 +176,10 @@ $("run").onclick = () => {
       deadline(2000, "Execution exceeded 2 seconds. Worker terminated.");
       runner.postMessage({ bytes: artifact });
     } catch (failure) {
-      error(failure);
+      if (current === sequence) error(failure);
     }
   };
-};
+}
 $("download").onclick = () => {
   if (!artifact) return;
   const url = URL.createObjectURL(

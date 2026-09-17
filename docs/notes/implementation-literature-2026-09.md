@@ -161,19 +161,22 @@ worth more when a fact that holds on one path survives the next label.
 **And the follow-through, 2026-09-16, says something sharper than
 expected.** The missing rule was written (`94-assembler.md` §9.aj): a
 divided bound the checker follows through a `udiv` by any constant, and
-an index multiplied back by it. On one and the same body it reports a
-single refusal where the checker before it reported three, and across the
-program it removes 21 trap branches and proves one more unit. But the
-three bodies it was written for come out **worse**, because admitting
-more candidates changes which bodies survive the search's frontier and
-the better form the base happened to find is no longer among them.
+an index multiplied back by it. On its own it made the program very
+slightly worse — one more trap branch emitted, three bodies keeping a
+guard they had been eliding — and the cause was not the rule but a
+precedence bug it exposed: the typechecker's proof for an indexed operand
+was consulted only when the checker held no fact of its own, so a new
+fact displaced a stronger proof. With the proof consulted whenever the
+local fact does not admit the access, the pair removes three trap
+branches and eight instructions, elides three more guards, and leaves
+eight fewer candidate forms refused, with no body anywhere worse.
 
-So the lesson is not simply "facts beat machinery". It is that on this
-compiler a local improvement is not yet a global one: the search prunes
-by cost before validation and keeps no memory of the best body it has
-seen, so every new fact rule perturbs selection in ways its own
-measurement has to check body by body. That is the item this note should
-carry next, ahead of any further borrowed mechanism.
+So the lesson is not "facts beat machinery". It is that a fact rule is
+only as good as the order in which the checker consults what it knows,
+and that on this compiler the aggregate counters lie: the whole-dump trap
+count moved 21 in the rule's favour while the emitted code got worse,
+because the dump also holds every refused candidate form. Count over the
+emitted bodies, body by body, or do not count.
 
 It is not the multi-versioning that `mojo-futhark-optimization-2026-09.md` §8
 already records from Futhark's incremental flattening, and the two should not

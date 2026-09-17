@@ -129,7 +129,7 @@ func TheoremsWith(model *compiler.SemanticModel, cases int, deferred bool) ([]Re
 			functions[fn.Name.Value] = fn
 		}
 	}
-	decls := declarationsOf(model.Tree.Root)
+	decls := declarationsOf(model.Tree.Root, model.TypeChecker)
 	// Each theorem is prepared in order (its domains through the checker
 	// and the interpreter), then decided — the enumeration or the bit-level
 	// rung — on a worker per CPU, since deciding reads shared state only.
@@ -950,7 +950,7 @@ func GoEnumeration(model *compiler.SemanticModel, name string, cases int) (Resul
 	if theorem == nil {
 		return Result{}, false
 	}
-	p := prepare(env, model.TypeChecker, functions, declarationsOf(model.Tree.Root), theorem, cases, false)
+	p := prepare(env, model.TypeChecker, functions, declarationsOf(model.Tree.Root, model.TypeChecker), theorem, cases, false)
 	if p.settled != nil || p.open != nil {
 		return Result{}, false
 	}
@@ -1076,10 +1076,13 @@ func forDecider(tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, fun
 // declarationsOf collects the checked program's record and sum-type
 // declarations for the decider, which binds parameters of those types as
 // aggregates of scalar leaves.
-func declarationsOf(program *ast.Program) asm.Declarations {
-	decls := asm.Declarations{Records: map[string]*ast.RecordLiteral{}, ADTs: map[string]*ast.ADTType{}}
+func declarationsOf(program *ast.Program, tc *typechecker.TypeChecker) asm.Declarations {
+	decls := asm.Declarations{Records: map[string]*ast.RecordLiteral{}, ADTs: map[string]*ast.ADTType{}, Constants: map[string]asm.Constant{}}
 	if program == nil {
 		return decls
+	}
+	if tc != nil {
+		decls.Constants = compiler.ConstantGlobals(program, tc)
 	}
 	for _, stmt := range program.Statements {
 		adt, isADT := stmt.(*ast.ADTType)

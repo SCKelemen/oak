@@ -21,6 +21,15 @@ not a certificate. Native/assembly/CPU options are incompatible;
 the CLI also rejects native/C/link/optimization/extraction switches for this
 target. `-verified` is unavailable and must fail, never fall back.
 
+`EmitWasmWithReport()` additionally returns diagnostic target and artifact-DAG
+provenance. A checked target description and owned raw-CFG snapshots feed a
+materialization node; a separately revisioned admission node validates its
+actual bytes/manifest before anything is returned. `wasm.EncodeCandidate` is
+the explicitly untrusted encoding API; ordinary callers use `wasm.Emit` for
+combined encoding and admission. Neither a recipe key nor this graph grants
+translation-verification authority. See the
+[target pipeline boundary](../notes/target-pipeline-2026-09.md).
+
 ## 2. Admitted subset
 
 - Concrete function declarations with direct calls and one Oak result.

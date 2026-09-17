@@ -7104,13 +7104,52 @@ assuming the collected predicates are sound and the value/effect equality
 holds on the machine-returning domain. It is not a formal verification of
 the Go collector or decider. The rule is one-way partial correctness:
 source-trapping inputs do not acquire a result/effect obligation, and it
-does not equate trap kinds or effects before trapping. Summarized loops
-retain the existing coupling contract; their per-iteration trap-domain
-obligations remain open. Architectural exception entry, handler
-non-resumption, and concurrent memory ordering are separate obligations.
+does not equate trap kinds or effects before trapping. Architectural
+exception entry, handler non-resumption, and concurrent memory ordering
+are separate obligations.
 Regressions include unseen and misplaced traps, matching guards, span
 reads/writes, vector returns, SIMD index overflow, and strict-profile
 refusal before ELF or Mach-O emission.
+
+**Summarized-loop trap admission (2026-09-17).** The same rare-trap
+counterexample existed at iteration 1234: the loop summarizer dropped the
+trap branch, then proved the remaining counter transition inductively.
+Machine events now retain path-conditioned header and body trap predicates,
+including dropped body paths; substitution, event merging, symbol-use
+analysis, and term budgets preserve those predicates. Source lowering
+collects separate root, header, and body scopes. A hypothetical trap in a
+nested loop cannot justify an unrelated trap in its parent or outside it.
+
+After selecting the loop coupling, `decideLoopTrapDomains` checks header
+traps even on exiting iterations and body traps only under the source
+continue condition. A machine body trap must imply a collected source
+header or body trap; a header trap must imply a source header trap. Root
+traps are checked separately. A source loop contributes to its enclosing
+scope only its first-iteration trap instantiated at saved entry values and
+exact entry memories, with body traps guarded by source continuation. A
+projection that still mentions this loop's or a descendant's fresh state
+is refused. This permits valid peeled guards but rejects trapping on a
+zero-trip loop or using a later iteration's assertion to justify an early
+trap. Premises use only typed source inputs and
+source reach/ancestor-continue conditions, never machine-returning paths,
+machine reach exclusions, or loop exit facts. This deliberately stronger
+check can leave valid loops as evidence; failure or budget exhaustion is
+not a proof, nor itself a concrete counterexample. The cache namespace is
+advanced again to discard earlier loop admissions.
+
+`Oak.TrapDomainAdmission.admit_loop_iteration` proves this phase rule under
+explicit source-collector soundness assumptions. `admit_loop_prefix` proves
+composition along finite source-safe prefixes under source reachability
+preservation. `first_iteration_trap_sound` supplies the entry-projection
+rule under explicit projection and collector premises. None establishes
+the Go coupling/collector/decider, termination, or an architectural
+exception's non-resumption. Regressions
+cover iteration-1234 traps, exiting-header checks, wrong conditional arms,
+nested scope separation, root traps, memory-only loops, metadata merging,
+and strict ELF/Mach-O refusal; matching source guards still prove.
+The record-span collector also retains an array field's own element bound,
+not just its enclosing span bound. This keeps the page-zeroing affine-index
+and hoisted forms proven without weakening their trap obligations.
 
 Explicit `.oakasm` units now retain their verdicts in `NativeVerdicts`
 alongside compiler-generated bodies. Previously those verdicts were only
@@ -7134,7 +7173,7 @@ on which every guard holds. An assert is therefore a no-op on the Oak
 side of the verifier: the trapping inputs are outside the equivalence on
 both sides, exactly as an element guard's or a divisor's are. The
 theorem decider's reading (a trap obligation to prove impossible) is
-unchanged. This exclusion now requires the independent non-loop admission
+unchanged. This exclusion now requires the independent trap-domain admission
 obligation above; witness agreement alone is insufficient. Proven bodies
 at that historical increment rose to 201 on AArch64 and 179 on RV64; the
 asserting callees that remain trusted do so for their span arguments,
@@ -8915,51 +8954,48 @@ Three rules close it, each a generalization of one already there.
   and an offset raises the bound: `wI < B` leaves `wI + j < B + j`. Both
   cap below 2^31, so neither 32-bit result wraps.
 
+**A precedence bug found on the way, and the reason this section is worth
+reading twice.** The typechecker's own proof for an indexed operand
+(`checkedIndexBound`) was consulted only when the checker held no fact of
+its own. That was invisible while the checker had few facts to offer. Give
+a scaled table index a bound of its own and the proof stops being read,
+the weaker local bound is what the access is judged against, and three
+binary searches keep a guard they had been eliding. The fix is that the
+proof is consulted exactly when the checker's own fact does not admit the
+access, so a fact derived from the machine code can never displace a
+stronger one proved upstream (`provenIndexBound`). Being present is not
+enough to be preferred — the first attempt at this fix kept the local
+fact whenever it was a slack fact, and that was still wrong, because the
+rule above produces exactly such a fact where the array paths cannot use
+one at all.
+
 Measured on the stdlib-bearing program against the commit this branch
-merged (`9893f1d5`), with the verdict cache off, in the shipping
-configuration (beam 4):
+merged (`9893f1d5`), with the verdict cache off. Counted over the emitted
+bodies, not over the whole dump, which also holds the refused candidate
+forms:
 
-| | base | after |
-|---|---|---|
-| trap branches emitted | 1682 | **1661** |
-| units proven equal | 337 | **338** |
-| bodies eliding a guard | 64 | **65** |
-| refused elided forms | 300 | **298** |
-| element guards elided | 157 | 156 |
+| | base | rule alone | rule and fix |
+|---|---|---|---|
+| trap branches emitted | 780 | 781 | **777** |
+| instructions emitted | 33366 | 33371 | **33358** |
+| element guards elided | 157 | 156 | **160** |
+| refused candidate forms | 300 | 298 | **292** |
+| units proven equal | 337 | 338 | **338** |
 
-The checker is strictly more precise, and that is the part this section
-claims: run both checkers over one and the same body — the un-hoisted
-form of `grapheme_class` taken from the dump — and this one reports a
-single refusal where the previous one reported three.
+The middle column is why the fix belongs in the same change: the rule on
+its own made the program slightly worse. With both, no body anywhere
+gains a trap branch, two lose them — `normalize_find` from two to none
+and `unicode_lookup` from five to four — and all 314 units keep their
+verdicts.
 
-**The selection does not follow, and the honest reading is that the
-three bodies this rule was written for come out worse.** `grapheme_class`
-and `normalize_props` go from 55 instructions and no trap branch to 59 or
-60 instructions and one; `normalize_compose_pair` from 133 and none to
-137 and two. Two other bodies improve — `normalize_find` from two trap
-branches to none, `unicode_lookup` from five to four — and across the
-program 21 trap branches go. So the aggregate improves while the named
-targets regress.
-
-The cause is not precision and not the beam width. The base compiles a
-form of these bodies in which the loop-invariant `movz wK, #3` is hoisted
-and the loop is bottom-tested, and on that form the checker already
-elided every guard before this rule existed. Admitting more candidates
-changes which bodies survive the search's frontier, and the hoisted form
-is no longer among them; the body that wins instead is cheaper on the
-cost model's reading than the alternatives it was compared against, but
-worse than the body the base found. Widening the beam to eight does not
-recover it, and makes the whole program worse (2111 trap branches against
-1682), because the validation budget is then spent on candidates that do
-not pay.
-
-That is a property of the search rather than of this rule: an admission
-that is strictly better locally can cost a better body globally, because
-the frontier is pruned by cost before validation and a transform that
-would have applied to the pruned parent never fires. Recording it here
-because it will recur with every new fact rule, and because the fix
-belongs to the search — carrying the best body seen for a region
-regardless of frontier churn — not to the checker.
+Where the gain actually falls is worth stating plainly. The three bodies
+this rule was written for elide the same guards they did before: their
+indices were already admitted through the typechecker's proof, and what
+this rule adds there is a second, independent route to the same
+admission. The new elisions are in `normalize_find` and `unicode_lookup`,
+and the eight candidate forms no longer refused are forms the search no
+longer has to work around. The RV64 lane is unchanged on every count, as
+its checker shares none of this machinery.
 
 What stays refused is the read inside the search loop. There the bound
 register is rewritten on the back edge by a conditional select, so no

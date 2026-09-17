@@ -1,0 +1,146 @@
+{
+  "schema": "oak-allocation-reuse-emission-v1",
+  "date": "2026-09-17",
+  "base_commit": "8c30d7b660f05645c76ef5f61b6fe7d8178e94dc",
+  "measurement_source": "Before is base_commit. After is that base plus this commit's allocation-reuse implementation, before integration of later specification changes (including the independent immutable-reaching-set optimization and verifier/checker changes). These isolated percentages must not be added to the independent Webs measurements. Both emitters were built before timing; after production sources were frozen for all measured runs.",
+  "decision": "Retain search-local bounded reuse of identical allocation proposals; ordinary candidate admission and validation policies are unchanged. No verdict or source authority is reused by this cache.",
+  "scope": "Compiler emission only, including checking, native candidate search, verification, C-source and native-object writing. No C compilation, linking or application-runtime timing. Existing faster full-unroll BLAKE3 output is preserved, not made faster at runtime by this patch.",
+  "platform": {
+    "os": "macOS 26.3.1, Darwin 25.3.0 arm64",
+    "go": "go1.27.1 darwin/arm64",
+    "affinity": "uncontrolled",
+    "frequency": "uncontrolled",
+    "limitations": "Shared host busy with other work; no compiler builds/tests from this experiment overlapped measurements. Light read-only inspection and documentation work occurred during timings. Host load was not sampled per run; wall-time variability is substantial. No confidence bounds or universal wall-time speedup claim."
+  },
+  "protocol": {
+    "instrument": "/usr/bin/time -l",
+    "input": "benchmarks/kernels/oak",
+    "order": ["before", "after", "after2", "before2", "seven-before", "seven-after"],
+    "execution": "Separate sequential non-overlapping emitter processes with distinct output prefixes; before and after emitters reused unchanged across scopes.",
+    "environment": {
+      "OAK_VERIFY_CACHE": "0",
+      "OAK_VERIFY_BUDGET": "",
+      "OAK_OPT_SKIP": "",
+      "OAK_NATIVE_UNROLL_SMALL": "0",
+      "OAK_NATIVE_LOOP_RESULT_HOMES": "0",
+      "OAK_NATIVE_TIMING": "1"
+    },
+    "validation": "cmp verified identical .o and .c across all four BLAKE3 runs and separately across both seven-kernel runs. BLAKE3 freshly Proven for all eight chunks every run; 0 of 1 verdicts from cache. Seven-kernel runs each reported 0 of 12 verdicts from cache; evidence grades were unchanged.",
+    "cpu_definition": "Total CPU seconds = user + system; CPU can exceed elapsed time due to Go parallel work.",
+    "memory_definition": "Maximum resident set size from time -l is process memory, not retained cache size. Cache PayloadBytes counts canonical input plus output, not Go heap."
+  },
+  "artifacts": {
+    "emitter_before_sha256": "698c208e775f045f92175d17e593bca0627efd3bef2a1ec01ccd1a36a6fc9802",
+    "emitter_after_sha256": "1ba9fe3689abcdf1d07d28e39216e13aa5e1bcbf6ee3984e6e700fd4814c9d60",
+    "kernels_oak_sha256": "53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b",
+    "oak_mod_sha256": "8edc5ce544cb3088cd5be5fd22ce8f38e0f993cbf8b5f31af019af90d2e9a494",
+    "blake3_object_sha256_all_four": "3924b110636ed7cb04b73b427264b2cafbd3238a58e58d9123ccea1bc86743e1",
+    "blake3_c_sha256_all_four": "4e057f67fe3a6e90d9b2c01890a75418a4ea050fb7283fbf36f0f148bd5e2b0e",
+    "seven_object_sha256_both": "5a3637a9c060b4e7715100cf118196e2488335fd588e843ab82a03dcaeedc790",
+    "seven_c_sha256_both": "ed9e9295a58d9e78ce0a5575b33b12ba44fe1d63f0afe9c9b539b142e246140e"
+  },
+  "blake3": {
+    "native_only": "hash__blake3_ucompress",
+    "runs": [
+      {
+        "name": "before",
+        "elapsed_seconds": 176.95,
+        "user_seconds": 246.28,
+        "system_seconds": 3.91,
+        "total_cpu_seconds": 250.19,
+        "maximum_rss_bytes": 555352064,
+        "instructions_retired": 2205864331552,
+        "cycles_elapsed": 610366611704,
+        "proof_diagnostic": "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 0.48s (proven)"
+      },
+      {
+        "name": "after",
+        "elapsed_seconds": 57.67,
+        "user_seconds": 65.07,
+        "system_seconds": 1.10,
+        "total_cpu_seconds": 66.17,
+        "maximum_rss_bytes": 568655872,
+        "instructions_retired": 549965980706,
+        "cycles_elapsed": 158562209321,
+        "allocation": {"requests": 22, "hits": 18, "entries": 4, "payload_bytes": 1204729},
+        "proof_diagnostic": "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 0.59s (proven)"
+      },
+      {
+        "name": "after2",
+        "elapsed_seconds": 75.17,
+        "user_seconds": 66.36,
+        "system_seconds": 1.95,
+        "total_cpu_seconds": 68.31,
+        "maximum_rss_bytes": 576929792,
+        "instructions_retired": 556094919514,
+        "cycles_elapsed": 162547946782,
+        "allocation": {"requests": 22, "hits": 18, "entries": 4, "payload_bytes": 1204729},
+        "proof_diagnostic": "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate): 0.68s (proven)"
+      },
+      {
+        "name": "before2",
+        "elapsed_seconds": 333.71,
+        "user_seconds": 263.14,
+        "system_seconds": 10.04,
+        "total_cpu_seconds": 273.18,
+        "maximum_rss_bytes": 566689792,
+        "instructions_retired": 2264506199688,
+        "cycles_elapsed": 647390130684,
+        "proof_diagnostic": "timing: hash__blake3_ucompress (unroll-constant+schedule+reallocate+late-cleanup): 1.48s (proven)"
+      }
+    ],
+    "final_verdict_all_four": "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)",
+    "recipe_label_note": "before2 reported late-cleanup in addition to full unrolling, scheduling and reallocation; output bytes were identical in all four runs.",
+    "interpretation": "Paired total CPU reductions are 73.55% and 74.99%, with approximately 75% fewer retired instructions. Elapsed reductions are observed but uncontrolled. RSS rises by about 10-13 MiB. No additional application-runtime speedup is claimed."
+  },
+  "seven_kernel_check": {
+    "native_only": "bench_dot,bench_sum,bench_search,bench_page_probe,bench_bitmap,bench_dispatch,bench_tiled",
+    "runs": [
+      {
+        "name": "seven-before",
+        "elapsed_seconds": 25.57,
+        "user_seconds": 30.10,
+        "system_seconds": 2.49,
+        "total_cpu_seconds": 32.59,
+        "maximum_rss_bytes": 1436303360,
+        "instructions_retired": 162739581454,
+        "cycles_elapsed": 78582851377
+      },
+      {
+        "name": "seven-after",
+        "elapsed_seconds": 29.87,
+        "user_seconds": 26.18,
+        "system_seconds": 2.93,
+        "total_cpu_seconds": 29.11,
+        "maximum_rss_bytes": 1511997440,
+        "instructions_retired": 147901885722,
+        "cycles_elapsed": 73582955365
+      }
+    ],
+    "allocation_after": {
+      "bench_dot": {"requests": 13, "hits": 9, "entries": 4, "payload_bytes": 37587},
+      "bench_sum": {"requests": 22, "hits": 14, "entries": 8, "payload_bytes": 104223},
+      "bench_search": {"requests": 22, "hits": 19, "entries": 3, "payload_bytes": 26079},
+      "bench_page_probe": {"requests": 22, "hits": 19, "entries": 3, "payload_bytes": 42805},
+      "bench_dispatch": {"requests": 14, "hits": 9, "entries": 5, "payload_bytes": 41719},
+      "bench_tiled": {"requests": 13, "hits": 10, "entries": 3, "payload_bytes": 56716}
+    },
+    "evidence_grades_both": {
+      "bench_dot": "Proven",
+      "bench_sum": "Proven",
+      "bench_search": "Witnessed",
+      "bench_page_probe": "Witnessed",
+      "bench_bitmap": "C fallback: instruction function arm64.cnt64 in value position",
+      "bench_dispatch": "Proven",
+      "bench_tiled": "Witnessed"
+    },
+    "interpretation": "Byte identity and unchanged evidence grades, with 10.68% less CPU but 16.82% more elapsed time in this single loaded-host pair. Not evidence of a general elapsed-time improvement; no claim that all seven are proven native."
+  },
+  "reproduction": [
+    "Build benchmarks/native/emit at base_commit and at base_commit plus this commit's allocation-reuse patch, preserving any unrelated work. Later branch changes are outside this measurement.",
+    "Store emitters as /tmp/oak-reuse-repeat/emit-before and emit-after in a newly created scratch directory (choose an unused path). Before timing, record emitter and input hashes.",
+    "/usr/bin/time -l env OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_VERIFY_BUDGET= OAK_OPT_SKIP= OAK_NATIVE_UNROLL_SMALL=0 OAK_NATIVE_LOOP_RESULT_HOMES=0 OAK_NATIVE_TIMING=1 /tmp/oak-reuse-repeat/emit-before benchmarks/kernels/oak /tmp/oak-reuse-repeat/before > /tmp/oak-reuse-repeat/before.stdout 2> /tmp/oak-reuse-repeat/before.log",
+    "Repeat sequentially with emit-after / after, emit-after / after2, and emit-before / before2. Keep all other flags equal, do not overlap experiment builds/tests, and compare each .o and .c using cmp and SHA256.",
+    "Repeat before then after with OAK_NATIVE_ONLY=bench_dot,bench_sum,bench_search,bench_page_probe,bench_bitmap,bench_dispatch,bench_tiled and distinct seven-before/seven-after prefixes. Preserve and compare evidence grades as well as artifact bytes."
+  ]
+}

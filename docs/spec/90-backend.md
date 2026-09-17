@@ -46,6 +46,14 @@ It emits Wasm bytes directly, not C or ELF/Mach-O, and is specified separately
 in [91-wasm.md](91-wasm.md). Existing C/native target theorems do not yet cover
 this extension. See the [target maturity matrix](../targets.md).
 
+`Target.Describe()` now supplies an explicit checked baseline description of
+the backend route, environment, container, native ISA and width/byte-order
+metadata. C/native translation-unit entry points and external-toolchain
+resolution reject unsupported descriptions; Wasm shares the descriptor and
+uses a typed materialization/admission DAG. This does not yet generalize native
+instruction semantics or extend the `Oak.Target` refinement theorem. Details:
+[target pipeline boundary](../notes/target-pipeline-2026-09.md).
+
 Status: implemented (`target`, `toolchain`; `oak build -target os/arch`;
 `compiler/e2e_cross_test.go`, `Oak.Target`). Motivated by dbs ask 6
 (`docs/notes/dbs-feedback-2026-09.md`): AArch64 and RISC-V are its only

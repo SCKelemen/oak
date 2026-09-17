@@ -1,6 +1,9 @@
 package machine
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // seg is one live range, inclusive of both positions.
 type seg struct{ from, to int }
@@ -79,24 +82,27 @@ func (f *Function) Webs() ([]*Web, error) {
 			addEntry(d.Reg, d.Bits)
 		}
 	}
-	defSite := map[*Instr]map[int]int{} // instruction → def access index → site
+	defSite := make(map[*Instr]int, len(f.Instrs)) // first definition site per instruction
 	for _, ins := range f.Instrs {
-		defSite[ins] = map[int]int{}
-		for k, d := range ins.Defs {
-			defSite[ins][k] = len(sites)
+		defSite[ins] = len(sites)
+		for _, d := range ins.Defs {
 			sites = append(sites, site{Instr: ins, Access: d, Def: true})
 		}
 	}
-	// Reaching definitions per block over sets of sites keyed by register.
-	type rd map[Reg]map[int]bool
+	// Reaching sets are sorted and immutable. Transfers replace a register's
+	// whole set, and joins allocate only when the sets differ. States can
+	// therefore share their sets without a deep copy at every block or a
+	// singleton allocation at every definition. Simplify rebuilds these webs
+	// after each propagated copy, making those allocations particularly costly.
+	singletons := make([]int, len(sites))
+	for i := range singletons {
+		singletons[i] = i
+	}
+	type rd map[Reg][]int
 	clone := func(s rd) rd {
-		out := rd{}
+		out := make(rd, len(s))
 		for r, set := range s {
-			m := make(map[int]bool, len(set))
-			for k := range set {
-				m[k] = true
-			}
-			out[r] = m
+			out[r] = set
 		}
 		return out
 	}
@@ -106,7 +112,8 @@ func (f *Function) Webs() ([]*Web, error) {
 		state = clone(state)
 		for _, ins := range b.Instrs {
 			for k, d := range ins.Defs {
-				state[d.Reg] = map[int]bool{defSite[ins][k]: true}
+				s := defSite[ins] + k
+				state[d.Reg] = singletons[s : s+1]
 			}
 		}
 		return state
@@ -128,17 +135,12 @@ func (f *Function) Webs() ([]*Web, error) {
 				// reaches. A loop whose header is the entry block merges
 				// its back edges below as well.
 				for r, s := range entry {
-					merged[r] = map[int]bool{s: true}
+					merged[r] = singletons[s : s+1]
 				}
 			}
 			for _, p := range b.Preds {
 				for r, set := range out[p.Index] {
-					if merged[r] == nil {
-						merged[r] = map[int]bool{}
-					}
-					for k := range set {
-						merged[r][k] = true
-					}
+					merged[r] = mergeReachingSites(merged[r], set)
 				}
 			}
 			in[i] = merged
@@ -165,8 +167,8 @@ func (f *Function) Webs() ([]*Web, error) {
 	union := func(a, b int) { parent[find(a)] = find(b) }
 	useOf := map[int][]site{} // root → uses (filled after unions settle)
 	type pendingUse struct {
-		s    site
-		defs []int
+		s     site
+		first int
 	}
 	var uses []pendingUse
 	for i, b := range f.Blocks {
@@ -181,18 +183,12 @@ func (f *Function) Webs() ([]*Web, error) {
 					// is a register outside the files.
 					return nil, fmt.Errorf("machine: line %d: read of %s with no definition", ins.Asm.Line, u.Reg)
 				}
-				var defs []int
-				first := -1
-				for k := range set {
-					defs = append(defs, k)
-					if first < 0 {
-						first = k
-					} else {
-						union(first, k)
-					}
+				first := set[0]
+				for _, k := range set[1:] {
+					union(first, k)
 				}
 				reaching[u] = first
-				uses = append(uses, pendingUse{site{Instr: ins, Access: u}, defs})
+				uses = append(uses, pendingUse{site{Instr: ins, Access: u}, first})
 			}
 			for k, d := range ins.Defs {
 				// An operand both read and written (an accumulating form, a
@@ -200,15 +196,17 @@ func (f *Function) Webs() ([]*Web, error) {
 				// web it reads.
 				if !d.Implicit {
 					if from, ok := reaching[d]; ok {
-						union(defSite[ins][k], from)
+						union(defSite[ins]+k, from)
 					}
 				}
-				state[d.Reg] = map[int]bool{defSite[ins][k]: true}
+				s := defSite[ins] + k
+				state[d.Reg] = singletons[s : s+1]
 			}
 		}
 	}
 	for _, pu := range uses {
-		useOf[find(pu.defs[0])] = append(useOf[find(pu.defs[0])], pu.s)
+		root := find(pu.first)
+		useOf[root] = append(useOf[root], pu.s)
 	}
 	webOf := map[int]*Web{}
 	var webs []*Web
@@ -234,19 +232,44 @@ func (f *Function) Webs() ([]*Web, error) {
 	return webs, nil
 }
 
-func sameRD(a, b map[Reg]map[int]bool) bool {
+// mergeReachingSites returns the sorted union of two immutable sets. Empty
+// and equal sets share storage; a changed union owns new storage. In particular,
+// append must never use either input as its destination, even with spare capacity.
+func mergeReachingSites(a, b []int) []int {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 || slices.Equal(a, b) {
+		return a
+	}
+	merged := make([]int, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			merged = append(merged, a[i])
+			i++
+		case b[j] < a[i]:
+			merged = append(merged, b[j])
+			j++
+		default:
+			merged = append(merged, a[i])
+			i++
+			j++
+		}
+	}
+	merged = append(merged, a[i:]...)
+	return append(merged, b[j:]...)
+}
+
+func sameRD(a, b map[Reg][]int) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for r, sa := range a {
 		sb, ok := b[r]
-		if !ok || len(sa) != len(sb) {
+		if !ok || !slices.Equal(sa, sb) {
 			return false
-		}
-		for k := range sa {
-			if !sb[k] {
-				return false
-			}
 		}
 	}
 	return true

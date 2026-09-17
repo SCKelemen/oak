@@ -1505,6 +1505,116 @@ nonzero starts and uneven strides. The loop-array-home competition regression
 now uses the measured full-unroll and rolled profiles above, retaining its
 proof, stack-count nonregression and deterministic-selection checks.
 
+### Lower allocation cost in reaching definitions (2026-09-17)
+
+The compilation profile above led to `machine.Webs`: reaching-definition
+analysis allocated a map at each definition and deep-copied per-register sets
+at each block transfer. `Simplify` repeated that work after every propagated
+copy. Reaching sets now use immutable sorted slices, with shared singleton
+storage and new storage for unions of differing nonempty sets. The analysis,
+copy-propagation order, search configuration and proof requirements are unchanged.
+
+Frozen binaries at `8c30d7b6` and that base with this change ran the same
+fixtures in before/after/after/before order. Each invocation collected five
+samples of three iterations, giving ten samples per implementation. The Webs
+fixtures contain 1,024 copy sites; Simplify processes 128 and checks that every
+iteration propagates and removes all 128 copies. Medians on the loaded M4 Max:
+
+| Workload | Before ms/op | After ms/op | Before allocations/op | After allocations/op |
+| --- | ---: | ---: | ---: | ---: |
+| Webs, straight line | 12.929 | 5.349 | 42,962 | 13,612 |
+| Webs, 64 blocks | 23.261 | 9.217 | 86,119.5 | 15,820 |
+| Webs, loop | 11.296 | 6.752 | 53,929 | 14,177 |
+| Simplify, 128 copies | 469.226 | 277.427 | 1,532,974 | 587,662 |
+
+The Webs fixtures use **68–82% fewer allocations** and take 40–60% less time
+in these samples. Simplify uses 62% fewer allocations and 33% fewer allocated
+bytes, with 41% less elapsed time. These are compiler microbenchmarks.
+
+One full BLAKE3 emission comparison reduced **CPU time from 275.24 to 204.40
+seconds (26%)**. Wall time increased from 398.44 to 479.10 seconds while
+one-minute host load went from 93→72 during the baseline to 101→170 during the
+candidate. This is not a controlled wall-time speedup; scheduling and frequency
+were uncontrolled. No other builds or tests from this experiment overlapped
+timing. The full process's peak resident size did not decrease.
+
+The emitted **C companion and native compression object are byte-identical**,
+including the same full-unroll/schedule/reallocate selection, and both emitters
+freshly prove all eight result chunks with the normal budget and cache off.
+The change has no runtime-speed claim. Regressions cover 1,024 set unions with
+input-storage checks, branch joins, independent successors, loops, unreachable
+roots, call clobbers and tied vector operands.
+
+[The experiment record](results/blake3-webs-cost-2026-09-17.json) contains all
+microbenchmark samples, CPU and wall observations, resource counters, source and
+binary hashes, proof diagnostics and reproduction instructions. The permanent
+fixtures are in `machine/webs_benchmark_test.go`.
+
+## Reusing allocation proposals, 2026-09-17
+
+The preceding full-unroll runtime improvement made candidate materialization
+expensive: sibling configurations repeatedly allocated the same machine body
+before differing in later scheduling or cleanup. A search-local cache now
+reuses that deterministic stage, without changing which proposals are offered
+or bypassing their seam checks, costs or semantic verdicts.
+
+On base `8c30d7b6`, before integration of subsequent branch changes, four
+separate emitter processes ran in **before → after → after → before** order.
+Only `hash__blake3_ucompress` was allowed native. The verdict cache was disabled,
+the proof budget unchanged, and both experimental small-unroll and
+loop-result-home modes off. `/usr/bin/time -l` measured emission (checking,
+candidate search, proof, C-source and native-object writing), not C compilation,
+linking or application execution. No builds/tests from this experiment
+overlapped the measurements; other shared-host work and uncontrolled cores and
+frequency remained substantial limitations.
+
+| Run | Elapsed seconds | User + system CPU seconds | Maximum RSS, MiB |
+| --- | ---: | ---: | ---: |
+| Before A | 176.95 | 250.19 | 529.6 |
+| After A | 57.67 | 66.17 | 542.3 |
+| After B | 75.17 | 68.31 | 550.2 |
+| Before B | 333.71 | 273.18 | 540.4 |
+
+Total CPU fell **74–75%** in both comparisons, as did retired instructions.
+Elapsed time improved in both, but its large variation precludes a stable
+wall-clock multiplier claim. Both after runs reused **18 of 22 allocation
+requests**, retaining four entries and 1,204,729 bytes of canonical payload.
+Peak RSS increased by about 10–13 MiB in the paired observations; the cache is
+not free. Its 32-entry/16-MiB limit bounds canonical retained input/output,
+**not Go heap usage**.
+
+All four builds produced **byte-identical native objects and C companions**
+and freshly proved all eight BLAKE3 result chunks. The full-unroll winner from
+the preceding experiment is preserved; this change claims **no additional
+application-runtime speedup**. The final before run reported a `late-cleanup`
+recipe label while emitting the same bytes as the other three.
+
+A separate seven-kernel before/after check also preserved byte-identical C and
+native objects. Its CPU time fell 32.59 → 29.11 seconds while elapsed time rose
+25.57 → 29.87 seconds and RSS rose 1370 → 1442 MiB. This single, loaded-host pair
+does not establish a general wall-clock benefit. Evidence grades were unchanged:
+dot, sum and dispatch proven; search, page-probe and tiled witnessed; bitmap
+left to C. Neither this comparison nor allocation reuse promotes weaker grades
+to proof.
+
+The key contains exact machine inputs, including every instruction field and
+operand, explicit frame objects, clobbers and architecture. Only deeply copied
+items, clobbers and reporting counts are retained; each hit keeps the fresh
+candidate's source metadata. Trace mode bypasses reuse. Regression coverage
+compares cold/hit/uncached AArch64 and RV64 output, checks mutation isolation
+and bounded admission, and freshly refutes a deliberately changed candidate
+after a hit.
+
+[The measurement record](results/blake3-allocation-reuse-2026-09-17.json)
+contains counters, hashes, evidence and commands. Reproduce with emitters built
+at `8c30d7b6` and that base plus this commit's allocation-reuse patch. These
+timings do not include the independent immutable-reaching-set optimization
+above or subsequent verifier/checker changes; the percentages are not additive.
+Use
+`OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_NATIVE_TIMING=1`,
+unset any verifier-budget override, and emit `benchmarks/kernels/oak` into
+distinct output prefixes. Compare both `.o` and `.c` files, not just diagnostics.
+
 ## The refuted kernel
 
 At the measurement revision (aade7acd) the native build refused

@@ -17,11 +17,12 @@ import (
 const MaxSourceBytes = 32768
 
 type Response struct {
-	Module        *wasm.Module `json:"module,omitempty"`
-	Error         string       `json:"error,omitempty"`
-	SourceSHA256  string       `json:"sourceSHA256"`
-	ModuleSHA256  string       `json:"moduleSHA256,omitempty"`
-	SourceChecked bool         `json:"sourceChecked"`
+	Module        *wasm.Module             `json:"module,omitempty"`
+	Error         string                   `json:"error,omitempty"`
+	SourceSHA256  string                   `json:"sourceSHA256"`
+	ModuleSHA256  string                   `json:"moduleSHA256,omitempty"`
+	SourceChecked bool                     `json:"sourceChecked"`
+	Pipeline      *compiler.EmissionReport `json:"pipeline,omitempty"`
 }
 
 // Compile never runs user code, resolves imports or spawns external tools.
@@ -48,13 +49,15 @@ func Compile(source string) Response {
 			return out
 		}
 	}
-	module, err := compiler.New().WithSource("playground.oak", source).EmitWasm().Get()
+	emission, err := compiler.New().WithSource("playground.oak", source).EmitWasmWithReport().Get()
 	if err != nil {
 		out.Error = err.Error()
 		return out
 	}
 	out.SourceChecked = true
+	module := emission.Module
 	out.Module = &module
+	out.Pipeline = &emission.Pipeline
 	hash = sha256.Sum256(module.Bytes)
 	out.ModuleSHA256 = hex.EncodeToString(hash[:])
 	return out

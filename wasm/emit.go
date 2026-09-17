@@ -54,6 +54,23 @@ func valueType(t optir.Type) (byte, error) {
 // Emit is all-or-nothing. It uses the checked raw CFG, not an optimized
 // candidate whose equivalence has not been established for this target.
 func Emit(cfgs []optir.CFG) (Module, error) {
+	out, err := EncodeCandidate(cfgs)
+	if err != nil {
+		return Module{}, err
+	}
+	report, err := out.ValidateBytes()
+	if err != nil {
+		return Module{}, fmt.Errorf("wasm: emitted bytes refused: %w", err)
+	}
+	out.ByteValidation = &report
+	return out, nil
+}
+
+// EncodeCandidate is untrusted materialization for a compiler artifact graph.
+// It enforces the input subset but does NOT independently admit output bytes.
+// Use Emit for the safe combined API, or gate this result with ValidateBytes.
+// Its result has no ByteValidation report or translation-verification authority.
+func EncodeCandidate(cfgs []optir.CFG) (Module, error) {
 	if len(cfgs) == 0 || len(cfgs) > 128 {
 		return Module{}, fmt.Errorf("wasm: need 1..128 functions")
 	}
@@ -172,11 +189,6 @@ func Emit(cfgs []optir.CFG) (Module, error) {
 	b.section(7, exports)
 	b.section(10, code)
 	out.Bytes = []byte(b)
-	report, err := out.ValidateBytes()
-	if err != nil {
-		return Module{}, fmt.Errorf("wasm: emitted bytes refused: %w", err)
-	}
-	out.ByteValidation = &report
 	return out, nil
 }
 
