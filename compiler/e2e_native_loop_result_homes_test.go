@@ -151,20 +151,46 @@ cached: (input: [16]u32, seed: u32, count: u32): [16]u32 {
 
 main: (): i32 {
   words: [16]u32 = [16]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }
-  acc: u32 = 0
   n: u32 = 0
   while n < u32(8) {
-    words = cached(words, u32(23) + n, n)
-    acc = ((acc * u32(31)) ^ words[0]) + words[1] + words[15]
+    seed: u32 = u32(23) + n
+    count: u32 = n & u32(7)
+    input0: u32 = words[0]
+    expected0: u32 = words[0]
+    expected1: u32 = words[1]
+    i: u32 = 0
+    while i < count {
+      expected0 = (expected0 + expected1) ^ (seed + i)
+      expected1 = (expected1 + input0) ^ (expected0 + count)
+      i = i + u32(1)
+    }
+    words = cached(words, seed, n)
+    assert(words[0] == expected0)
+    assert(words[1] == expected1)
+    assert(words[2] == u32(3))
+    assert(words[3] == u32(4))
+    assert(words[4] == u32(5))
+    assert(words[5] == u32(6))
+    assert(words[6] == u32(7))
+    assert(words[7] == u32(8))
+    assert(words[8] == u32(9))
+    assert(words[9] == u32(10))
+    assert(words[10] == u32(11))
+    assert(words[11] == u32(12))
+    assert(words[12] == u32(13))
+    assert(words[13] == u32(14))
+    assert(words[14] == u32(15))
+    assert(words[15] == u32(16))
     n = n + u32(1)
   }
-  i32_bits_u32(acc & u32(255))
+  42
 }
 `
 
 func TestE2ENativeLoopResultHomes(t *testing.T) {
 	requireArm64Host(t)
 	t.Setenv("OAK_VERIFY_CACHE", "0")
+	t.Setenv("OAK_NATIVE_ONLY", "cached")
 	t.Setenv("OAK_NATIVE_LOOP_RESULT_HOMES", "1")
 	t.Setenv("OAK_OPT_SKIP", strings.Join([]string{
 		nativegen.TransformElide, nativegen.TransformHoist, nativegen.TransformRotate,
@@ -190,7 +216,7 @@ func TestE2ENativeLoopResultHomes(t *testing.T) {
 	}
 	_, native, abnormal := buildAndRunFrom(t, "loop_result_homes", nativeComp)
 	_, viaC, abnormalC := buildAndRunFrom(t, "loop_result_homes_c", comp)
-	if abnormal || abnormalC || native != viaC {
-		t.Fatalf("dynamic counts and input snapshot: native=%d (%v), C=%d (%v)", native, abnormal, viaC, abnormalC)
+	if abnormal || abnormalC || native != 42 || viaC != 42 {
+		t.Fatalf("dynamic counts and input snapshot: native=%d (%v), C=%d (%v), want 42", native, abnormal, viaC, abnormalC)
 	}
 }

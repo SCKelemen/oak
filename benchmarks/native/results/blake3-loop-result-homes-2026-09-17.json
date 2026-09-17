@@ -2,7 +2,15 @@
   "schema": "oak-blake3-loop-result-homes-v1",
   "date": "2026-09-17",
   "compiler_base": "e29948c5323712e42a3c9398f93d519b8c5765a7",
-  "compiler_candidate": "working tree: isolated loop-result-homes candidate; later default-off and trap exclusions must reproduce identical object",
+  "compiler_candidate": "working tree: isolated loop-result-homes candidate, later restricted and made default-off",
+  "integrated_validation": {
+    "commit": "eff2acd33cd8cd7f22202222b5e943174e8ebf84",
+    "upstream": "26289668",
+    "default_and_optin_objects_identical_to_recorded_hashes": true,
+    "default_enable_environment": "OAK_NATIVE_LOOP_RESULT_HOMES=0",
+    "experimental_enable_environment": "OAK_NATIVE_LOOP_RESULT_HOMES=1",
+    "both_selected_compressors": "Proven for all 8 result chunks"
+  },
   "native_only": [
     "hash__blake3_ucompress"
   ],

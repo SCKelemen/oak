@@ -863,6 +863,9 @@ and stack-memory instructions from 28 to 46; the frame stays 144 bytes.
 The static cost model prefers it (1469 → 1431.5). The existing default
 stack-traffic regression test correctly rejected that choice; its bound was
 not relaxed. Default search therefore retains the earlier body.
+Rebuilding after the trap exclusions and integration onto `26289668` reproduces
+both recorded object hashes byte-for-byte: the default body is unchanged, and
+the opt-in body is exactly the measured experiment.
 
 Three same-process 1 MiB sessions on the M4 Max did **not** establish a speedup:
 the candidate/baseline median ratios were 1.53, 1.27, and 2.01. Host load was
