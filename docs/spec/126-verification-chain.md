@@ -511,6 +511,17 @@ and individual alignment. It does not prove architectural PC, the X30 write,
 `PostDecode`, `BranchTo`, target mapping, source-CFG labels, object/link
 correctness, or observation.
 
+The 32-bit `CBZ W` guard has a separate partial seam.
+`Oak.AArch64CompareBranchEncoding` proves its XML-row field packing, while
+generated Sail Lean proves exact decode, signed displacement, and zero-test
+equality with `Oak.AssemblerSemantics.cbz` on supplied register bits. The
+BBM guard is `CBZ W1,+28`; its predicate tests only the supplied low-32-bit
+length, independently of the upper X1 bits. WZR yields zero; CBNZ and CBZ X
+are not admitted to this decoder. Complete official-source routes and Sail
+regeneration are checked independently of the Go local-encoder cases. Dynamic
+register/PC provenance, `PostDecode`/`BranchTo`, fall-through, trap execution,
+and BBM memory effects are not proved by this slice.
+
 Live stage-2 maintenance has a separate restricted proof layer.
 `Oak.AArch64Stage2Maintenance` projects the pinned CAT `BBM` sequence for one
 old descriptor event and proves that DSB ISH-classified occurrences around an

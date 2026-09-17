@@ -158,6 +158,12 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 	if os.Getenv("OAK_NATIVE_LOOP_RESULT_HOMES") != "1" {
 		skipped[nativegen.TransformLoopResultHomes] = true
 	}
+	// Small unrolling has promising compressor timings, but not yet a broad
+	// quiet-host suite. Keep its bounded expansion and stable array placement
+	// independently selectable without changing ordinary builds.
+	if os.Getenv("OAK_NATIVE_UNROLL_SMALL") != "1" {
+		skipped[nativegen.TransformUnrollSmall] = true
+	}
 	if skip := os.Getenv("OAK_OPT_SKIP"); skip != "" {
 		// For experiments and benchmarks: the named transforms (by their
 		// report names, comma-separated) propose nothing; unknown names are
@@ -212,6 +218,7 @@ var setAside = map[string]string{
 	nativegen.TransformUnrollMaps:      "keeps one vector per map trip",
 	nativegen.TransformVectorFolds:     "keeps its scalar fold",
 	nativegen.TransformUnrollConst:     "keeps its constant-trip loops",
+	nativegen.TransformUnrollSmall:     "keeps its small constant-trip loops",
 	nativegen.TransformVecBlocks:       "addresses each vector load",
 	nativegen.TransformVectorAddresses: "keeps separate vector access addresses",
 	nativegen.TransformMultiplyAdd:     "keeps its multiply and add apart",

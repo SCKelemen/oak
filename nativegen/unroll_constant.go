@@ -35,6 +35,10 @@ import (
 // maxConstantTrips bounds the copies one loop may become.
 const maxConstantTrips = 16
 
+// maxConstantExpansion limits the small strategy's copied expression-walker nodes per body.
+// It is a profitability heuristic, not a bound on the complete output AST.
+const maxConstantExpansion = 512
+
 // constantLoop is one recognized loop: its index variable, trip count,
 // and the locals its body declares, which each trip's copy renames.
 type constantLoop struct {
@@ -50,12 +54,24 @@ func tripName(name string, k int64) string { return name + "_t" + itoa(int(k)) }
 // unrollConstantLoops returns the body with its constant-trip loops
 // unrolled, and whether any was.
 func unrollConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+	return unrollConstantLoopsWithBudget(fn, body, 0)
+}
+
+// unrollSmallConstantLoops uses the same matcher and law, but spends a
+// fixed copy budget across the body. Refused loops do not consume it.
+func unrollSmallConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Expression, bool) {
+	return unrollConstantLoopsWithBudget(fn, body, maxConstantExpansion)
+}
+
+// A zero budget retains the full strategy's original unlimited policy.
+func unrollConstantLoopsWithBudget(fn *ast.FunctionStatement, body ast.Expression, budget int) (ast.Expression, bool) {
 	block, isBlock := body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil {
 		return body, false
 	}
 	changed := false
 	expansions := 0
+	remaining := budget
 	generated := map[string]bool{}
 	var rewrite func(stmts []ast.Statement) []ast.Statement
 	rewrite = func(stmts []ast.Statement) []ast.Statement {
@@ -70,6 +86,16 @@ func unrollConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Ex
 					// generated names the outer match cannot freshen.
 					beforeInner := expansions
 					s.Body.Statements = rewrite(s.Body.Statements)
+					cost := 0
+					if budget > 0 {
+						nodes := 0
+						walk(s.Body, func(ast.Node) {
+							if nodes <= budget {
+								nodes++
+							}
+						})
+						cost = nodes * int(c.trips)
+					}
 					// Original-body freshness alone cannot see names made
 					// by an earlier, separately scoped loop in this rewrite.
 					fresh := true
@@ -83,7 +109,8 @@ func unrollConstantLoops(fn *ast.FunctionStatement, body ast.Expression) (ast.Ex
 							names[trip] = true
 						}
 					}
-					if fresh && expansions == beforeInner {
+					if fresh && expansions == beforeInner && cost <= remaining {
+						remaining -= cost
 						expansions++
 						for name := range names {
 							generated[name] = true

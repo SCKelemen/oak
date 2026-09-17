@@ -1062,7 +1062,7 @@ before considering default promotion. The downstream pin is unchanged.
 
 **Result-home register budget follow-up (2026-09-17).** The experimental
 candidate now caps result homes at **two per loop**, independently of private
-frame homes (the combined cap stays eight). Integrated materialization v22
+frame homes (the combined cap stays eight). Integrated materialization v23
 records the new recipe alongside upstream extent folding, sparse record-base
 sharing, and late-machine flags. It still
 requires the same alias, trap and verifier checks and is
@@ -1253,6 +1253,68 @@ its encoded object links against the baseline C companion with
 Use `blake3_same_process.c` with absolute baseline/candidate/control library
 paths and the rounds/sample counts above. No experimental flag or weaker
 verdict was made a default.
+
+### Small unrolling with stable array placement (2026-09-17)
+
+The follow-up at `c212716f` keeps the pre-unroll array-placement decisions:
+BLAKE3's result state stays in the result area and its message words keep
+their scalar homes. Only the small final mixing loop expands; the seven-round
+loop stays rolled. Unlike the preceding experiment, there is no added frame
+traffic: both bodies have a 160-byte frame and ten SP-relative accesses.
+The candidate has 324 assembler instructions (328 encoded), versus the
+baseline's 283 (287 encoded). Static size alone would miss this opportunity.
+
+The actual candidate passed the ordinary seam check and freshly proved all
+eight result chunks before encoding, with no cache hit or larger verifier
+budget. The integrated `unroll-small` implementation reproduced its object
+byte-for-byte. A regression also requires a changed rotate to be refuted.
+The final machine proof uses the partially unrolled body, with the existing
+`Oak.ConstantUnroll.loop_eq_unrolled` law licensing the source rewrite;
+the pre-unroll tree is only an additional placement refusal.
+
+Three sequential same-process runs compared that candidate, the baseline,
+and a C control. Each used 100 calls per sample and 21 samples, rotating the
+variants; run B reversed library order. All 32 digest bytes agreed with C at
+fourteen lengths through 1 MiB and after every timed sample. No agent builds
+or tests ran during timing. Only compression was Oak-native, using the same
+C companion for both native variants.
+
+| Run | Baseline ms/MiB | Candidate ms/MiB | Ratio of medians | Median paired ratio | C control ms/MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 7.758 | 6.273 | 0.809 | 0.924 | 5.938 |
+| B, reversed | 6.105 | 5.219 | 0.855 | 0.922 | 4.592 |
+| C | 6.033 | 5.263 | 0.872 | 0.924 | 4.167 |
+
+The paired statistic is the median of candidate/baseline sample ratios,
+not the ratio of the two medians. Both favor the candidate in all three
+runs, but the shared host was busy (one-minute load 56.88 before run A),
+with large timing spreads. The roughly 7.6% paired advantage is provisional,
+not a quiet-host speed guarantee or a whole-native-suite result. Raw samples,
+library order, hashes and exact scope are in
+[the experiment record](results/blake3-small-unroll-2026-09-17.json).
+
+The strategy is retained as a separate, verdict-gated **experiment**, offered
+with `OAK_NATIVE_UNROLL_SMALL=1`; `OAK_OPT_SKIP=unroll-small` suppresses it.
+Full `unroll-constant` remains unchanged. Default emission reproduced the
+baseline object exactly. Opt-in search still selected that baseline: the
+current static model prices the measured candidate at 1570 versus 1523.
+In particular, it charges a bounded loop half its maximum trips even for
+the final loop that starts at zero and always executes eight times. This
+underprices the rolled form. Correctly distinguishing exact trip counts
+from upper bounds is a follow-up, not a policy override in this change.
+The timings above are therefore **not** timings of opt-in search's selected
+body; they are of the independently proven explicit candidate.
+
+For reproduction, the inert
+[candidate probe](experiments/small-unroll-probe.patch) adds an opt-in test
+to the integrated revision. It loads the checked benchmark package and emits
+only after fresh admission and proof. Its historical scratch directory is
+`/tmp/oak-stable-unroll.kT73G4`; use a new approved scratch directory when
+repeating the experiment. Link its object with the unchanged baseline C
+companion using `cc -dynamiclib -std=c99 -O3 -DNDEBUG
+-Dmain=oak_unused_main`, then pass absolute baseline/candidate/control library
+paths to `blake3_same_process.c` with `100 21`. Broader quiet-host and selection
+measurements remain necessary before enabling this strategy by default.
 
 ## The refuted kernel
 

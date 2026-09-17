@@ -491,6 +491,22 @@ Clang nor an Apple host and never execute privileged instructions. They provide
 source-to-relocatable-byte evidence, not final linked-image correctness or a
 privileged Apple EL2 execution gate.
 
+The BBM guard now has a narrow generated Sail bridge of its own.
+`Oak.AArch64CompareBranchEncoding` proves the `CBZ W` field packer and exact
+`CBZ W1,+28` word (`0x340000e1`); generated Lean recovers its register and
+signed byte displacement. The generated zero predicate equals
+`Oak.AssemblerSemantics.cbz` on the supplied register's low 32 bits, with
+register 31 treated as WZR rather than SP. For arbitrary upper X1 bits and a
+supplied 32-bit span length, the guard predicate is true exactly when the
+length is zero. `CBNZ W`, `CBZ X`, and the zero word are rejected by this
+restricted decoder. The source gate pins Arm's SEE-1176 clause, complete
+compare-branch decode/execution bodies and signatures, `aget_X`/`X`, and
+`IsZero`; the regeneration gate checks the committed Lean against Sail output.
+This proves the pure predicate and displacement, not the runtime provenance of
+X1 or PC, execution of `PostDecode`/`BranchTo`, fall-through, arrival at the
+trap, or absence of memory effects along a dynamic trace. The whole BBM body
+therefore remains outside the strict verified profile.
+
 The two official catalogue tests validate generic pinned CAT BBM ordering and
 diagnostic behavior only. Their maintenance instruction is stage-1
 `TLBI VAAE1IS`, not Oak's stage-2 `VMALLS12E1IS`. They establish no Oak

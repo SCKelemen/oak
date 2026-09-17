@@ -26,10 +26,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v22 adds scalar-global address sharing to v21's explicit late-machine
-	// recipe. Preserve every recipe input to avoid reusing another candidate's
-	// body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v22")
+	// v23 composes v22's separate small-unroll strategy and placement veto with
+	// scalar-global address sharing. Preserve every recipe input to avoid
+	// reusing another candidate's body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v23")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -57,6 +57,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"unroll-fills", lane.UnrollFills},
 		{"vector-folds", lane.VectorFolds},
 		{"unroll-constant", lane.UnrollConstant},
+		{"unroll-small", lane.UnrollSmall},
 		{"use-optir", lane.UseOptIR},
 		{"no-reductions", lane.NoReductions},
 		{"hoist-invariants", lane.HoistInvariants},
