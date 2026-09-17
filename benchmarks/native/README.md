@@ -754,6 +754,47 @@ result labels when comparing. The harness checks distinct entry points and
 uses the generated `View`, `Span`, enum-`Bool` ABI. It is a local diagnostic,
 not a portable ABI or a production runtime performance gate.
 
+**Rejected: block-local copy propagation (2026-09-17, baseline
+`efb4a203`).** A prototype admits copies from loop-carried/multiple-definition
+GPR values when every destination read is later in the same basic block and
+the physical source remains unchanged. Tied operands, implicit/nonlocal uses,
+source clobbers, narrowing and reserved registers refuse it. Removing a dead
+callee-saved copy additionally requires a later full overwrite before any
+read, barrier or exit. The existing eight-round simplification limit stays.
+
+This removes six copies from the compressor's seven-round loop:
+**311 → 305 instructions**, **31 → 25 moves**. Memory instructions stay at
+130 (28 SP-relative), and the frame stays 144 bytes. Both source and candidate
+still prove all eight result chunks at the normal budget. Join/loop fixtures,
+wrong-result refutation and the machine suite pass. But the clock does not
+justify shipping it:
+
+| Sequential same-process run | Samples × rounds | Before ms/MiB | After | After / before |
+| --- | ---: | ---: | ---: | ---: |
+| C | 101 × 5 | 4.336 | 4.339 | 1.001 |
+| D, reversed library order | 101 × 5 | 4.367 | 4.747 | 1.087 |
+
+The medians of within-sample after/before ratios are 1.014 and 1.019;
+affinity, frequency and external host load remain uncontrolled. The first
+two exploratory sessions overlapped and are **not acceptance evidence**;
+their raw samples are retained too. C may overlap a small local test run;
+D runs without another local benchmark or compiler test. Every full digest
+agrees at the existing block/chunk/tree boundaries and after every sample.
+Only compression is native here, with the same C wrapper in both variants.
+
+**The prototype is not enabled or compiled into Oak.** The shipping copy pass
+is restored byte-for-byte; no new option or proof-policy change was added.
+The [exact prototype and tests](experiments/local-copy-propagation.patch) are
+an inert, unapplied patch against the named baseline, kept so a later allocator
+or scheduling change can be evaluated without reconstructing this experiment.
+In a disposable checkout of that revision, review the patch, use
+`git apply --check` before applying, then follow the preceding same-process
+build recipe with the baseline and patched emitters. The final safety-tightened
+prototype emits the exact timed object. [All raw samples and artifact hashes](results/blake3-local-copies-rejected-2026-09-17.json)
+record the proof scope, excluded sessions and rejection. The cause of the
+runtime difference is not isolated: fewer moves and smaller code are not, by
+themselves, evidence of a faster implementation.
+
 **Loop-scoped array homes (2026-09-17, isolated at `def4003e`).** The
 `loop-array-homes` AArch64 candidate preloads selected literal-index elements
 of a private frame array, uses scalar registers during one loop, and flushes

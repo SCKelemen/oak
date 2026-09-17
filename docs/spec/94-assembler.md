@@ -3327,6 +3327,15 @@ mask's ones are the bits a term can have set (`knownBits`), and an `or`,
 as `4096*index + pool_base` rather than left as evidence where the
 64-bit sum of two unknowns exceeded the bit-level budget
 (`asm/linear_form_test.go`, `compiler/e2e_native_linear_mask_test.go`).
+A memory read at a symbolic index is an atom of the form named by its
+memory and its index's own normal form (`s.pages[49152*dom + i + 2048*t]`), taken at the index's width: the
+machine reads `s[dom].pages[cell(t, i)]` (the OS pilot's
+`get_page_entry`) at `49152 * ((dom and 0xFFFFFFFF) and 0xFFFFFFFF) +
+(((t#hi shl 16) or t) and 65535) shl 11 + i`, the Oak side at
+`49152 * dom + (t and 65535) shl 11 + i`, and the two spellings are one
+form, so the two reads are one unknown and the unit is proven where the
+bit-level decision over the 49152-element memory exceeded its budget
+(`compiler/e2e_native_select_index_linear_test.go`).
 
 **Thirty-first increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
