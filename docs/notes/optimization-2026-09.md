@@ -559,19 +559,26 @@ their first unproven step. Three closed today, each a small rule:
 
 What remains, in order of what it would prove:
 
-1. **A bound the invariant gives.** `sha256_update`'s byte loop stores
-   `next.block[next.filled] = src[i]` with its guard elided under the
-   typechecker's proof of `filled < 64` (the field's refinement, kept by
-   the reset at 64). The summarizer takes an index bound from a trap
-   guard or a conditional's compare only; with neither it forgets the
-   block's region, the block's slots are not loop-carried on the machine
-   side, and the Oak chunks `next.block[0..7]…` have no image — the
-   coupling search walks affine pairings until the work meter ends it.
-   The fix is a bound from the loop's own invariant and the parameters'
-   refinements (the domain premise), established for the store's index
-   term the way `loop1.j ls n` is for a counter: prove
-   `premise → index < N` once at the store, then write the slots under
-   it. Proves `sha256_update` and every absorber with a reset counter.
+1. **The block loop's headers after the block loop.** (Refined
+   2026-09-18; the earlier reading was wrong.) `sha256_update`'s byte
+   loop does carry its block since #585 (the probe runs on a body that
+   calls), and `next.h`'s slots are equality candidates in the first
+   loop since #583. What still ends the search on its budget is the
+   second loop's header values: on the machine side a slot's header
+   after loop 1 is `reached₁ ? loop1.s : entry` (the not-run pin,
+   "loops that never ran keep their variables"), on the Oak side
+   `loop1.next.h[k]` outright, so no chunk of `next.h` has an equality
+   candidate in loop 2 and every one is offered as an affine image with
+   a symbolic offset — the search then refutes them one by one
+   (`r26 = next.h[6..7] + …` thirty-eight times) until the work meter
+   ends it. The fix is to make the two spellings one for `headersEqual`:
+   substitute the not-run pin's fact (the loop ran, or the Oak symbol
+   equals its header) before comparing, or give the Oak side the same
+   `reached ? loop : header` shape. A ranking change alone (an equality
+   with a non-constant header first, symbolic offsets last) was
+   measured neutral on the kernels and not landed. Proves
+   `sha256_update`, and any two-loop body whose second loop starts from
+   the first one's exit state.
 2. **One loop reached on two paths.** `sha256_final`'s fill loop follows
    the `filled > 56` arm; the arm holds a loop and a call, and the two
    paths do not merge at the fill loop's header, so the machine records
