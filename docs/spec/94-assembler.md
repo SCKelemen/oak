@@ -376,6 +376,23 @@ verification of straight-line bodies against `Oak.Intrinsics`.
 
 ## 8. Semantic verification of asm bodies (seven increments implemented)
 
+**Fixed bitwise normalization (2026-09-17).** Before structural comparison,
+`asm/canonical_bitwise.go` gives fixed 32/64-bit rotates the Oak shift-and-OR
+spelling, folds same-width shifts whose evaluator-normalized count is zero,
+and removes repeated identical constant masks at the same width. It also
+normalizes `((lo | (hi << k)) >> k)` (either OR order) to
+`hi & mask(w-k)` only when all operation/operand widths agree, both constant
+counts are exactly the same, `0 < k < w`, and the conservative significant-bit
+bound proves that `lo` fits below bit `k`. The final mask is omitted only when
+`hi` also fits; a declared-wide input retains it. Shared subterms remain shared.
+These exact identities let the native standard-library BLAKE3 compressor prove
+all eight result chunks structurally, without changing its selected assembly
+or increasing decision budgets. A legal but wrong rotate is still refuted.
+`Oak.BitwiseCanonical` proves the underlying bitvector algebra, including the
+explicit distinction between evaluator-modulo counts and Lean's raw shifts;
+it does not refine the Go implementation or establish an end-to-end ASL path.
+No checker, memory-effect, ordering, or authority admission is widened.
+
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
 verifier and labels its verdict — **proven** when both sides normalize to
@@ -574,9 +591,17 @@ distributivity case can still need a certificate, so refusal is not inequality.
 `TestNativeCNFReplaySettledMatchesLean` pins sixteen production outcomes to the
 kernel, including identity, commuted gates, width adaptation, high-bit
 constants, true/pending roots, malformed widths/constants, and allocator/memo
-corruption behind false roots. The native audit's complete header and
+corruption behind false roots. `Oak.CNFMetadataSettled.check` additionally gates
+this path with the complete header check, including unused metadata for
+constant-only words. `check_sound` derives valid parameters, exact ordered
+names, and equal word widths/values using the same checked parameters.
+Twenty-four production fixtures kernel-pin the combined decisions, including
+malformed tables, unsupported modes, changed used widths, and refusal despite
+valid metadata when allocation or settled equality fails. The native audit's
 pointer/intermediate-root coverage policy, arbitrary Go-to-model refinement,
 source/ISA closure, and compiler verdict authority remain separate obligations.
+In particular, the checked recording trace is not yet bound to the same
+semantic allocation and word roots by this composition.
 
 `Oak.CNFReplayHeader` now models the constructor's metadata check separately
 from gate/memo validation. It checks disabled abstraction modes, unique
@@ -603,6 +628,29 @@ including that limitation. Faithful map/pointer/key projection, a proof that
 the actual Go recording trace is admitted against unchanged producer contents,
 full graph traversal/intermediate-root coverage, and settled admission remain
 open. These bookkeeping laws are distinct from the final-root semantic theorem.
+
+The three production recording sites now live in private checked helpers:
+`recordTerm` compares exact producer roots before updating the replay memo,
+and `inputEdge`/`gateEdge` require present, in-range, safely doubled outputs
+before recording their keys. The recursive walker and binary replay use these
+helpers; the refactor adds no trace storage or extra whole-graph pass.
+`Oak.CNFReplayRecording` models those guarded updates, including repeated
+keys, and proves that every accepted step preserves admitted coverage against
+a fixed producer. Its executable event run starts from empty and establishes
+the invariant. `Oak.CNFReplayRecordedCoverage.check_exact` composes that run
+with the actual projected counts and numeric completion check to derive exact
+domains/root lookups without a caller-supplied reachability premise.
+
+`TestNativeCNFReplayRecordingMatchesLean` kernel-pins bounded sequences of
+actual helper calls, their returned edges and projected map contents, including
+repeated writes and refused steps. Refusing a step leaves its input state
+unchanged; it does not roll back earlier successful writes. A separate source
+structure regression keeps replay-map writes at the checked helper sites.
+Neither test is a universal Go control-flow or aliasing proof. Faithful
+pointer/key/signed-field projection, the whole walker's trace correspondence,
+producer immutability and all semantic/serialization/verdict seams above
+remain separate. In particular, these helpers do not authorize arbitrary
+producer roots merely because their bookkeeping agrees.
 
 `Oak.CNFFinalObligation` separately models already-decoded trap and claim roots.
 It proves the exact four-way decision—true-trap refutation takes precedence
@@ -1113,10 +1161,40 @@ the intended non-overlapping offsets 0 and 16 of a four-cell region and refuses
 the overflowing and read-only cases. This still supplies no memory-type or
 custody fact: a writable span may name published page tables, device memory,
 or externally observed storage. The verifier therefore continues to refuse
-pair stores through spans and record spans. A future lowering still needs exact
-record-field provenance, trap preservation, verifier support, scalar-tail
-lowering, and explicit ordinary private-memory authority proving the storage
-has not yet been published—never a live descriptor-update protocol.
+pair stores through spans and record spans. The checker now preserves one
+narrow part of the future provenance obligation: an exact record-span element
+retains its compiler-derived nominal record identity, and nonnegative field
+offsets retain the exact record-relative byte position. Same-sized nominal
+types do not meet, widened multi-record regions lose the identity, and signed
+offset overflow clears it. This metadata grants no access and is not accepted
+from assembly alone: the checked Oak signature and compiler-supplied composite
+layout must agree. Exact direct-`u64` array selection now uses that nominal
+identity and record-relative offset to narrow indexed accesses to the declared
+field, excluding later sibling bytes. Selection checks the declaration's
+shape, unique name/start, alignment, lengths, and nonoverlap; unsupported
+layouts retain the original generic checker behavior and supply no field
+proof. `Oak.RecordArrayRegion.valid_quad_sound` proves the selected geometry
+and a four-cell loop bound keep all four words in the field and below the
+32-bit index modulus. Its `quad_writes_eq_fillWords_four` composes that bound
+with the staged pair-write final-state law. The declaration lookup itself is
+not formalized, and neither predicate grants instruction admission or custody.
+A future lowering still needs trap preservation, verifier support,
+scalar-tail lowering, and explicit
+ordinary private-memory authority proving the storage has not yet been
+published—never a live descriptor-update protocol.
+
+`Oak.PairStoreEffects` now models the verifier-side final-state expansion
+separately: one pair is exactly two append-order logical word writes, applying
+that log equals `storePair`, and two adjacent zero pairs equal the four scalar
+stores in one blocked-fill iteration, under explicit one-pair/four-word
+no-wrap premises. The synchronized Go helper constructs the same exact 32-bit
+modular entries—including the wrap boundary—and is deliberately unreachable
+from instruction execution. An AST source gate fails on any production
+identifier reference to the helper, while direct verifier tests pin both
+pair-store refusals. Thus this closes only the conditional write-log algebra,
+not any admission, occurrence, component/observer order, atomicity,
+non-tearing, byte-address wrap, fault, translation, memory-type, CAT, ASL
+`Mem`, visibility, completion, or publication obligation.
 
 The event-control seam also computes `arm64.daifset_irq()` as
 `0xd50342df`. The generated local Sail bridge selects DAIFSet with operand
@@ -3741,6 +3819,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The sixty-second increment is a computed condition operand in any arm of
+a chain (§9 "If-conversion"): a later arm's comparison operand is
+evaluated before the chain when it is speculable, where it used to leave
+the chain unrecognized and the first arm branching. 1.8 times faster on
+an unpredictable three-arm chain, free where it predicts.
+
 The sixty-first increment is value-position select forms (§9 "Select
 forms"): a compare and one `csel` — or `csinc`, `csneg`, `csinv` where
 the arms share a variable — where the lowering branched over two moves.
@@ -4648,6 +4732,21 @@ the shifted add — and through a second add in place (`add xA, xA, #48`),
 reading the region the source held before the write (the OS pilot's N2,
 a 409 600-byte regime, and N8's field at 393 264 bytes).
 
+**An element address may consume its inputs (2026-09-17).** The checker's
+indexed `add xD, xB, wI, uxtw #s` and `umaddl xD, wI, wK, xB` derive
+their result from the complete pre-write state. The destination may therefore
+reuse the base, index, stride, or length register: all operands are read
+before that register is written. The usual write invalidation still removes
+the old span, index, constant, and length facts; only the derived bounded
+region is installed afterwards, with its writability and nominal record
+provenance intact. The existing `elementRegionOf` decision and its
+`Oak.CheckerRefinement` model are unchanged; this is implementation coverage,
+not a new aliasing or memory-permission assumption. Refusal tests retain
+guards, exact strides, read-only restrictions, and field boundaries.
+This lets the reallocated stage-2 `translate` be selected and remain `proven`:
+137 instructions and 25 `mov`s become 120 and 8. Loaded-host timings and
+their limitations are recorded in `benchmarks/native/README.md`.
+
 **Array fields of elements, read anywhere.** `pool[i].f[j]` — an owned
 array inside a record element of a span, view, or array — is addressed
 once, when the access is lowered: the element idiom, then the field
@@ -5002,6 +5101,66 @@ nine: the exit test, the index's add, the element guard, `str xzr, [x17,
 w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
 did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
 
+**The chain's assignment cap (2026-09-17).** A chain of more than four
+assignments is left to the branch form. The bound reads as register
+pressure, and by that measure it is loose — a right-hand side already in
+a register is read where it lies and needs no temporary — but counting
+only the values that need one, and converting the chains that then fit,
+is slower: nothing where the comparison is unpredictable, and a factor
+of 1.6 to 2.8 where it is not (`benchmarks/native/README.md` "The chain
+assignment cap"). A branch skips the arms after it, while a converted
+chain's selects all execute and, per variable, form a serial dependency
+that lengthens a loop's critical path. The cap stays at four.
+
+**A computed condition operand in any arm (2026-09-16, AArch64 lane;
+`nativegen/select.go`).** The chain's compares are emitted before its
+selects, so a condition operand the compare cannot take directly — a
+register or a small immediate — is evaluated there. Only the first arm's
+could be: the recognizer admitted a computed operand for the first arm
+alone, and the lowering evaluated only the first group's, so a later arm
+needing one left the whole chain unrecognized. The first arm then
+branched and the else body was re-recognized as a chain of its own, which
+is how a two-comparison chain came out half converted:
+
+```
+cmp  w6, w2                          add  w9, w6, #1
+b.hs +8                              cmp  w9, w3
+b    +20                        ->   csel w10, w2, w7, hs
+add  w9, w6, #1                      csel w11, w3, w10, lo
+cmp  w9, w3                          cmp  w6, w2
+csel w10, w2, w7, hs                 csel w7,  w6, w11, lo
+csel w6,  w3, w10, lo
+```
+
+Widening it exposed a fall-through the chain's representation had always
+had, and the fix comes with it. The groups are applied outward, the
+earliest last, so a variable takes its value from the earliest group
+whose taken arm assigns it — but a group whose taken arm does *not*
+assign it leaves whatever the later groups computed, where the source
+leaves the value it held before the chain. In
+`a < b ? { m = a } | c < d ? { n = c } | { n = 9 }` the second
+comparison set `n` even where the first arm matched. The verifier
+refused such a body, so the native build failed rather than
+miscompiling, and it failed on `specification` before this change too —
+the widening only made the shape reachable more often. A variable a
+later group assigns must now be assigned by every arm of every earlier
+group that can be taken; an outcome no arm of a group covers is a real
+fall-through and is not in question.
+
+Every group's computed operands are now evaluated, and a later arm's
+operand is admitted when it is `speculable` — the condition for it is
+the arms' own: the first arm's condition is where the source evaluates
+it too, while a later arm's runs only where the arms before it did not
+match, so evaluating it ahead of the chain is speculation. A call in a
+later arm's condition keeps the branch.
+
+Measured on a three-arm chain in a loop over 2^12 `u32` elements
+(`benchmarks/native/README.md` "Chain condition operands"): where the
+comparisons are unpredictable the loop goes from 1.01–1.10 ns an element
+to 0.54–0.62, and where they always take one arm the two are the same
+within noise — the same shape as the select forms above, for the same
+reason.
+
 **Select forms (2026-09-16, AArch64 lane;
 `nativegen/value_select.go`).** A conditional in value position lowered
 to a branch over two moves, where the machine selects between two
@@ -5158,7 +5317,8 @@ E(…); i = i + u32(1) }`, `E` over elements at `i` of span parameters of
 one element type (a zip reads several: `dst[i] = a[i] + b[i]`),
 loop-invariant scalars of that type, and constants under `+`, `-`, `&`,
 `|`, `^` for `u8`, `u16`, `u32`, or `u64` lanes (sixteen, eight, four,
-or two a trip) and `+`, `-`, `*`, `/` for `f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
+or two a trip) and `+`, `-`, `*`, `/`, or an explicit builtin `fma` for
+`f32` or `f64` lanes; `dst` a writable span; the index a `u32`; every span read
 or written the loop's own span `a` or one known to have its length from
 an enclosing `len(dst) == len(a) && len(b) == len(a) ? { … }` (the
 equalities close transitively), or `dst` itself in place (`v[i] = (v[i]
@@ -5188,6 +5348,41 @@ shifts, and the remainder loop of a map this rewrite made (the loop
 after a slack guard over the same span and index). One vector a trip, not four: a map carries nothing across trips,
 and the four-element trip runs 2.2–3.6× the scalar loop over 2^20
 elements (`benchmarks/native/README.md`, "Map vectorization").
+
+Explicit FMA maps (2026-09-17) keep one fused rounding per lane; they do
+not contract an ordinary multiply/add. The matcher requires the checked
+builtin width at the invocation's source position, exactly three recursively
+lane-wise arguments, and the map's element width. Same-spelled user calls,
+effectful arguments and unsupported intrinsics are not reinterpreted. The
+process-local rewrite cache also keys on checker identity; materialization
+revision v7 records the changed lowering. Nested FMA and zip arguments use
+the same map theorem, with no associativity assumption and the scalar tail
+unchanged. Host tests cover f32/f64, zero and tail lengths, cancellation,
+signed zeros, subnormals, infinities and NaNs (classification, not payload
+identity). Measured map and reduction results are kept separately in
+`benchmarks/native/exact_fma/README.md`: fewer instructions did not make
+the scalar dot-product contraction profitable on the measured host.
+
+**Two-vector maps (2026-09-17; `unroll-vector-maps`).** An additional
+candidate groups two consecutive vectors under `len(a) >= 2*L &&
+i <= len(a) - 2*L`, stores the blocks at `i` and `i+L`, and advances
+by `2*L`. It then runs the original one-vector cleanup and scalar tail.
+The same checked lane-wise vocabulary and equal-length/borrow conditions
+apply. `Oak.Map.two_blocks_eq` and `grouped_eq` compose the map blocks;
+`grouped_bounds` bounds both accesses and the updated index without u32
+wraparound. No floating arithmetic is contracted or reassociated. The
+three loops and their destination memory must prove under the existing
+verifier; unproved or unprofitable candidates do not displace the prior
+forms. The transform is enabled in AArch64 search, not RV64 search.
+
+The grouping flag is part of both the rewrite cache key and materialization
+recipe v9. Cost-only recurrence hints recognize smaller-vector cleanup as
+bounded: a stride-8 loop followed by stride-4 and scalar loops suggests at
+most one vector-cleanup trip and three scalar trips. Bounded `MaxTrips`
+values count trips, so the cost model must not divide them by stride a
+second time. Metric/cost artifact revisions are v2. These estimates confer
+no semantic authority. `benchmarks/native/exact_fma/README.md` records the
+one-vector control, timings, code-size tradeoffs, and rejected experiments.
 
 **Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
 `spec/lean/Oak/Fold.lean`, the `vectorize-folds` candidate).** A float
@@ -5320,6 +5515,32 @@ percent on a 16 KiB array that fits L1 (0.039–0.042 against
 where a core with less spare issue than an M4 — the RV64 lane, an MCU —
 would feel it.
 
+**Late vector address sharing (2026-09-17, AArch64 lane;
+`share-vector-addresses`).** After late copy cleanup, another candidate
+retries address sharing for `ldr q` and `str q`. Cleanup can remove temporary
+W-register writes that previously prevented retaining an X-register address.
+The second access then uses `[kept_address, #16]`, dropping its private index
+and address adds. Memory accesses remain in their original order; neither
+loads nor stores are moved or combined, and floating arithmetic is unchanged.
+
+This is a separate verifier-gated transform, not an extension of the earlier
+load-only pass's authority. Both use conservative register-version and
+liveness checks: a kept address must not consume its base/root register;
+resolved index roots must still denote the same value; dropped temporaries
+must have no other intervening readers and be dead afterward. Calls, atomics,
+system operations and unknown instructions bound the sharing region. Immediate
+offsets are range-checked before shifting. The candidate still needs ordinary
+seam admission and the search's semantic verdict gate; an unsupported or
+unprofitable form leaves an earlier candidate available. Materialization v10
+keys the new lane flag and changed matcher behavior.
+
+For the two-vector f32/f64 maps, the selected proven main loop has 13 rather
+than 17 instructions, still two loads and two stores. The explicit-FMA body
+shrinks from 244 to 228 encoded bytes with its 144-byte frame unchanged.
+Runtime acceptance uses the same-compiler `native-no-address-sharing` control
+and short-input measurements, recorded in `benchmarks/native/exact_fma/README.md`.
+These static counts alone do not establish a speedup or a claim for RV64.
+
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
 indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
@@ -5376,6 +5597,27 @@ records; that summary is the next step for the SHA-256 path, whose
 `sha256_rounds`, `sha256_compress`, `sha256_block`, `sha256_compress_view`,
 `sha256_init`, `sha256_update`, and `sha256_final` this increment moves
 from the C backend to the native lane.
+**In-place array permutations (2026-09-17, AArch64 lane;
+`nativegen/array_permutation.go`).** A whole assignment of an owned frame
+array whose right-hand side is exactly a permutation of that same array no
+longer builds a second array and copies it back. The recognizer accepts a
+direct array literal or the one-expression block aggregate-helper inlining
+produces, and only when every element is a constant in-range read of the
+destination, every source index occurs exactly once, the optional literal
+type is the destination type, and the destination is writable frame storage.
+Any statement, call, repeated or missing index, other source, dynamic index,
+record element, by-reference array, or unsupported element representation
+uses the ordinary value-copy lowering unchanged. For each nontrivial cycle,
+the lowering retains its first value in one scalar register and walks the
+cycle with a second, writing `new[i] = old[source[i]]`; fixed points emit
+nothing. The exact recognition makes all source reads pure and proves that no
+write can destroy a value not retained by its cycle. The checker and semantic
+verifier still judge the resulting ordinary frame loads and stores against the
+unmodified Oak body. BLAKE3's sixteen-word message permutation consists of two
+eight-cycles: its per-round assignment is 32 scalar memory instructions rather
+than 32 literal loads/stores plus an eight-instruction array copy, removes its
+64-byte temporary, and saves 48 dynamic instructions over the six rounds that
+permute.
 **Rotates (2026-09-16, AArch64 lane; `Oak.AssemblerSemantics.ror_spelling`).**
 A rotation spelled with shifts — `(x >> k) | (x << (W - k))` or the
 mirrored `(x << k) | (x >> (W - k))` over an unsigned `x` of 32 or 64
@@ -5401,6 +5643,21 @@ counts "N rotation(s) lowered to ror"). The RV64 lane keeps the shifts
 (`rori` is Zbb, outside its base contract). SHA-256's compression has six
 rotations per round: the saving is forty-two instructions a round, and
 the trap guards leave the loop with them.
+
+The verifier canonicalizes a constant `ror` back to this exact source
+spelling before comparing terms (`asm/rotate_canonical_test.go`). This
+entry requires 32- or 64-bit operations and operands of that same width.
+The integrated `canonicalBitwise` also handles zero/wrapped constant
+counts under `Oak.BitwiseCanonical`'s modulo-width laws; symbolic counts
+and mixed-width terms do not enter it. There is no change to proof
+budgets, decision order, or verdict authority. Independently
+parsed one- and seven-quarter-round integer fixtures now prove by
+structural equality instead of exhausting the bit-level budget; an
+incorrect rotation is still refuted. This is a verifier-time improvement,
+not a new machine optimization. The isolated rotate experiment predates
+the fuller BLAKE3 normalization described below. Timings and scope:
+`benchmarks/native/results/rotate-verifier-2026-09-17.json`.
+
 **Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
 `spec/lean/Oak/Forwarding.lean`).** The generator keeps, per frame slot
 addressed from `sp`, the integer register whose value the slot holds: a
@@ -5467,6 +5724,36 @@ result stored into existing storage, `next.h = f(next.h, …)`, whose
 target may alias an argument passed in place — the temp stays; a callee
 with a writable span parameter; a parameter the callee passes to its own
 recursive call.
+
+The named-local result-area rule also admits integer arrays on AArch64
+(`nativegen/array_result.go`, 2026-09-17). The local must have the exact
+indirect-result layout, `u32/i32/u64/i64` elements, and an extent above
+16 and at most 4080 bytes, divisible by eight. Zero, literal, and copied
+initializers write through the array's actual base; the name is bound
+only after initialization. Exact eight-byte extents keep zeroing from
+writing frame padding beyond the caller's result buffer. Any whole-array
+assignment, including in a nested arm or loop, keeps the frame path so
+the existing in-place permutation lowering is not disabled. Element
+stores remain eligible. Parameters, address-taken locals, nonmatching
+layouts, narrow/float arrays and the RV64 lane keep their previous paths.
+
+The caller's existing by-value snapshot rules are unchanged: assigning
+`words = copy_words(words)` still receives the call into distinct storage
+before overwriting `words`. External callers must obey the same result
+area/input non-aliasing ABI contract as for returned records. Regression
+fixtures require both direct and selected bodies to be proven, including
+a partial result write, a real native call, and a later result read/write
+through the parked result pointer. The array-storage change itself does
+not promote evidence grades; this is not a new
+universal implementation-refinement theorem. The existing
+`Oak.BoundaryCopies.build_in_place` is the content/location model law.
+
+Integrated with the bitwise normalization, the real BLAKE3 compression
+body using this storage is proven for all eight result chunks; the
+wrong-rotate mutant is refuted (`TestNativeBlake3CompressionProven`).
+This does not extend the claim to the surrounding hash API or final
+linked executable.
+
 
 **Pair copies (2026-09-16, AArch64 lane; `spec/lean/Oak/PairCopies.lean`).**
 An aggregate copy — between two locations (`copyBytes`: a record or array
@@ -6678,6 +6965,21 @@ small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
 
+**Constant register indices into record arguments (2026-09-17).** A
+record-array load whose register index is a known constant reads that
+element directly, after checking the constant against the selected array
+field's length. A decided bounds branch records no symbolic guard; this
+previously left even an in-range read in an unrolled counted loop outside
+the verifier. Symbolic indices still require the dominating constant
+guard, and neither path may reach a sibling field. The record-index tests
+cover first, last, and offset-field elements, a counted sum, a wrong
+element, and both constant and symbolic indices past the field. The native
+array-value end-to-end test proves a counted sum over an array parameter
+and runs it against C. BLAKE3 compression now reaches witness comparison
+and admits scheduling and reallocation under the existing evidence policy;
+its full bit-level proof still exceeds the node budget. The measured
+effect is recorded in `benchmarks/native/README.md`.
+
 **Indexed loads through record arguments; the Bits family's cost
 (2026-09-16).** Sixteen bodies of the prover's `Bits` family (`not_bits`,
 `rotate_right`, `shift_const`, `count_leading_zeros`, …) stopped at "an
@@ -6803,7 +7105,97 @@ witness input's two sides. The prover tally itself waits: since
 gigabytes in `pruneWritesUnder`/`pruneUnderFacts` (the unit verified in
 5.6 s a candidate on the morning's binary), and a full build's optimizer
 materialization holds ten more at its end on either binary; the last
-complete tally stands at 536 proven, 205 evidence, 216 trusted.
+complete tally with the candidates stood at 536 proven, 205 evidence,
+216 trusted. Tallied on 2026-09-17 with every optimizer transform skipped
+(`OAK_OPT_SKIP` naming all twelve, so each body verifies once as its
+identity candidate; 43 minutes, 9.6 GB peak, where the build with the
+candidates passes twenty gigabytes): 964 bodies, proven 573, evidence
+193, trusted 198, no disagreement — `protocol_line_done` proven in 2 s,
+`ap_certificate_after_proven` evidence in 5 s, `add_bits` and `add_carry`
+evidence in 1.4 s each. The slowest bodies are `le_intern_consts` (162 s,
+proven) and `utf8_valid` (58 s).
+
+**Top-level arrays as span memories; pair loads in a loop header
+(2026-09-17).** The prover's write family — forty bodies from
+`write_byte` and `write_flush` up through `sat_emit_text` and the `txt_*`
+reporters — stopped at "an index into out_buf (not a span parameter)":
+`out_buf` is a writable top-level array, and neither side modeled one
+(the lowering knew constant tables as spans, the executor refused "a
+store into a top-level record or array (not modeled)"). Such an array is
+now a span named by the global on both sides. The machine binds
+`adrp`/`add :lo12:` of the array to the span base `&NAME`
+(`bindGlobalAddress`, ahead of `step` at the main run, the loop-header
+walk and the body summarizer), so the loads and stores through it are
+the span's, under the checker's bounds as a frame array's are; the
+lowering declares it as it declares a table (`declareGlobalArrays`), its
+declared count the length; the stores are compared in `decideSpans` as a
+span parameter's are, and a callee's stores to it reach the caller
+through the summary, which lowers the callee over the caller's write
+log. `TestE2ENativeGlobalArrayProven` proves a byte buffer's writer, a
+caller of two writes, and a loop summing the buffer. Only arrays of
+integer scalars qualify; a top-level record, or an array of records,
+stays trusted. Alongside, fifteen bodies (`solve`, `project`, `ts_sum`,
+the `sat_*` and `sr_*` walkers) stopped at "instruction ldp": a record
+copied by `ldp`/`stp` ahead of a loop's exit test, which the loop-header
+walk dispatched to `step`; it goes to `loadPair` as the body summarizer's
+does. A caller declares the arrays its callees address as it declares
+the cells they touch (`withArrayAggregates` in the backend's
+reachability walk), since `write_byte` never names `out_buf` itself.
+The tally held at 574 proven, 196 evidence, 194 trusted: the write
+family passed the array and stopped one call deeper, at the extern
+binding under `host_write_all` (`oak_host_write`, "a call"), which
+neither side summarizes yet — an extern call would need its scalar
+arguments and the contents of the views it is handed proven equal on
+the two sides, its result an uninterpreted function of them, and its
+declared effects (`Host.Write`) outside Oak memory taken on trust; that
+is the next design, not an increment. `ts_sum` and its kin passed the
+pair load and stop at "a loop whose shape differs between two paths".
+
+**The coupling search takes an array's slots in order (2026-09-17).**
+The largest evidence bucket (67 bodies: "the loop proof's diagram budget
+ran out in the coupling search", "the coupling search exceeded its
+budget") has the `Bits` family at its core: `shift_const`'s loop fills
+`out: Bits`, whose sixty-four leaves all start at zero, so every slot of
+the result area was a candidate for every leaf pair and the search
+permuted thirty-two slots until the budget ended. A slot that is a run
+of an array's leaves now prefers the frame slot at the leaf's own offset
+(`preferredSlot`: the result area's slot at the leaf's offset, else the
+candidate whose rank among the candidates' addresses is the leaf's
+index), and the search takes the identity pairing at depth one. What
+stops `shift_const` after that is the obligation itself: one iteration
+preserving `out.at[0..1]` compares two sixty-four-way selects over the
+record argument (`a.at[i - k]`, `a.at[i + k]`) under `left`, which every
+variable order exceeds at the implication's allowance and the congruence
+rule cannot close (the machine's eight-byte slot pairs pack the halves
+differently from the Oak leaves). Coupling such arrays per element, or
+a larger allowance for a select-heavy obligation, is the next step for
+the family; `fill_chunk`'s nested loops sharing `n` are a different,
+genuine search problem.
+
+**Extern bindings as fresh results (2026-09-17).** A call to an extern
+binding (`oak_host_write: (fd: c.Int64, data: c.Ptr, count: c.Size):
+c.Int64 effects { Host.Write } = c.extern("oak_host_write_call")`,
+docs/spec/92-ffi.md) made every caller trusted at "a call": the write
+family flushes through `host_write_all`, whose loop calls it. The
+lowering now takes such a call, when the binding's effect row is
+declared and every effect is in the `Host` namespace and no parameter
+is a writable span, as a fresh parameter of the result's width with no
+effect on Oak memory (`lowerExternCall`), named by the symbol, the
+outermost inlined callee's call line and the call's sequence within it
+(`extern:oak_host_write_call@47#0`) — the machine side names the same
+call by its `bl`'s line when it summarizes the callee, so the two
+lowerings of one callee body agree. The arguments lower for their traps
+alone (a subslice against its span's length, an element read); their
+values do not reach the result, which the extern decides. The trust
+boundary is the effect row: an extern declared host-only is taken not to
+write Oak memory, as a callee is taken at its Oak body. The backend
+hands the verifier the program's extern bindings (`Function.Externs`,
+beside `Callees`, which holds only functions with bodies).
+`TestE2ENativeExternCallProven` proves a caller of a push and a flush
+through the host; the flush's own unit still stops at the call summary's
+binding of a frame array view with a symbolic length
+(`frameArrayArgument`: "its length is not a constant"), the next gap on
+the write family's path.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -6956,6 +7348,22 @@ rewrites the verifier still checks against the original body:
   declarations that follow; closed scopes return theirs. A function without
   calls keeps vector locals in the caller-saved vector registers too,
   leaving four to expression temporaries.
+
+Scalar-replaced arrays share that lifetime with their hidden element homes
+(`nativegen/scalar_arrays.go`). At the parent's last source mention,
+`releaseDead` returns each actual element home in the declaring scope to
+its pool and marks it freed, so scope exit cannot return it twice. The
+synthetic array binding owns no storage: its offset/register must never
+enter either pool. Enclosing-loop/branch and trailing-result mentions
+retain every element just as they retain an ordinary scalar. This releases
+short-lived inlined quarter-round results before the next group is declared,
+instead of keeping every group's homes until the enclosing block ends.
+Tests require both the direct lowering and selected bodies of sequential,
+loop and branch fixtures to be `proven`, check native/C execution agreement,
+and pin repeated release, scope ownership and spill-slot reuse. These are
+translation-validation results for the fixtures, not a universal refinement
+theorem for the Go liveness implementation or a proof of the whole BLAKE3
+body; its existing verifier refusal remains explicit.
 
 Measured (`benchmarks/native/`): the flattened validator has no call and
 runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at

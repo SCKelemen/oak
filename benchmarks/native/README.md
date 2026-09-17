@@ -7,6 +7,67 @@ emitted C), how far behind is it, and why? The OS pilot is moving to the
 native backend, so this is the gap that decides whether the golden-case
 results hold there.
 
+## Numerical optimization experiments
+
+[Measured FMA maps and reductions](exact_fma/README.md) compare C, native
+identity, native without map vectorization, and native optimized, with
+interleaved timings and raw assembly/verdict reports. At clean revision
+`1ef944b1` on an M4 Max, extending map vectorization to checked explicit
+FMA improved its f32/f64 kernels by 3.40×/1.70× over the no-map control,
+with proven verdicts. Native still trails C. Sequential byte-dot FMA was
+slower, so automatic contraction was not enabled. These loaded-host
+microbenchmarks do not replace a representative-suite performance gate.
+
+The next increment at `c3c217b6` groups two vectors per map trip, retaining
+one-vector cleanup and the scalar tail under `Oak.Map.grouped_eq`. Against
+the previous one-vector control, 4,096-element explicit-FMA maps take 12.6%
+less time for f32 and 14.3% less for f64 (nine interleaved samples, M4 Max).
+Strict multiply/add maps also improve without contraction. Encoded FMA
+bodies grow from 156 to 244 bytes, and short-input measurements do not show
+a reliable gain. [Raw results and tradeoffs](exact_fma/README.md#two-vector-measurements-2026-09-17)
+retain the C comparison, which native still trails, and all selected map
+bodies' proven verdicts.
+
+## OS stage-2: unblock input-consuming allocation, 2026-09-17
+
+At baseline `b0b0cdc6`, stage-2 `translate` rejected the reallocated
+candidate at `umaddl x0, w11, w9, x0`: the seam did not derive an element
+region when the destination consumed the span base. The checker now derives
+indexed ADD/UMADDL results from the pre-write facts and installs only the
+bounded result after normal invalidation. The same optimizer's reallocated
+candidate is selected and remains `proven`; no checks or proof gates were
+disabled. The frame stays 80 bytes.
+
+| Selected body | Before | After |
+| --- | ---: | ---: |
+| `translate` instructions, including prologue/epilogue/trap | 137 | 120 |
+| `translate` `mov` instructions | 25 | 8 |
+| `alloc_table` / `map_page` / `unmap_page` instructions | 127 / 210 / 339 | unchanged |
+
+The actual OS pilot (`SCKelemen/os` at `37ba2112`) was built using both
+compiler binaries, then linked with its unchanged `stage2_native_shim.c`,
+`ring_bench_time.c`, and `stage2_bench.zig`; Zig 0.16.0, ReleaseFast, C shim
+`-O2`. Seven pairs alternated baseline-first and candidate-first. Each binary
+times 20 million translations and two million decoder cycles, with the Zig
+oracle in the same process. The M4 Max's load average was roughly 85–108;
+the host was not isolated. No compiler builds ran during these samples.
+
+Median translation time was **7.31 → 6.76 ns/op** (7.5% lower), but the
+median *paired* candidate/baseline ratio was **0.962** (3.8% lower), with
+five of seven pairs improving. Treat this as a noisy trend, not a precise
+speedup claim. Decoder medians were 955.4 and 928.2 ns/cycle, with mixed
+paired results: **no decoder-cycle gain is claimed**. Its dominant
+page-zeroing loop has not changed. All checksums agree, and the candidate
+passes all five OS differential tests: round trip, invalid addresses, pool
+exhaustion, shadow-model random operations, and three-regime isolation.
+
+[Raw observations and provenance](results/stage2-inplace-m4-max-2026-09-17.json).
+To reproduce with each compiler, use the OS pilot's existing
+`zig build bench-stage2-native -Doptimize=ReleaseFast -Doakc=/path/to/oak`
+from `pilots/oak`, with separate build/cache directories for each compiler;
+alternate the resulting binaries. Do not substitute the vendored generated
+C for the newly built native object.
+
 ## The case
 
 `utf8_valid.oak` is `stdlib/utf8.oak`'s validator with its four lookup
@@ -33,10 +94,84 @@ The validator's body went from 611 lines to 330: fifty `orr` register
 copies (every vector read into a scratch and every result back to its
 home) to none, fifty frame-slot loads and stores to thirty-six, twenty-six
 constant splats from `movz; and; dup` to one `movi` each; every unit stays
-proven at the bit level. What remains is the slot traffic of the five
-vector locals the register file did not hold (the flattened kernel's live
-set peaks past the twenty homes; the liveness allocator of program item 2)
-and the loop's scalar bookkeeping.
+proven at the bit level. What remained then was the slot traffic of the
+five vector locals the register file did not hold. That is gone; see the
+next section for what is left, which is not it.
+
+## Where the validator's last 1.27x is, 2026-09-17
+
+Re-measured on the same 64 MB input after the increments since:
+
+| Backend | ns/byte | GB/s |
+| --- | ---: | ---: |
+| C backend, clang `-O2` over the emitted C | 0.11 | 8.76 |
+| Native backend | 0.14 | 7.33 |
+
+The recorded cause no longer holds. The validator's main loop reads four
+`ldr q` and advances sixty-four bytes, and its only memory operands are
+those four loads: no frame slot is touched between the loop label and the
+back edge. The twenty-nine `sp` accesses in the unit are all prologue,
+epilogue, and blocks outside the loop. Vector operands read in place
+closed that.
+
+What is left is dependency height, and the compiler already measures it.
+The search's own report for `valid_with`:
+
+```
+selected schedule+reallocate (proven, cost 125.5; identity 142.0)
+  schedule+reallocate   instructions 101, loads 4, stores 4, stalls 17
+  schedule              instructions 103, loads 4, stores 4, stalls 18
+```
+
+Seventeen stalls, and scheduling sixty-six sites removes one of them.
+The loop is 108 instructions for 64 bytes, and at 0.14 ns a byte that is
+roughly 39 cycles on a 4.4 GHz core for those 108 instructions — about
+2.8 issued a cycle, on a core that will do two or three times that. It is
+not short of work to issue; it is waiting.
+
+So the next thing this kernel wants is a scheduler that shortens the
+critical path rather than one that fills slots. It is the same lesson as
+the chain assignment cap below, from the other side: instruction count
+has stopped predicting this backend's speed in either direction.
+
+### What it is not: false dependencies, 2026-09-17
+
+The obvious suspect was register reuse. Scratch registers are handed out
+last-in-first-out, so a released temporary comes straight back: the
+validator's main loop wrote 24 registers in 108 instructions with 81
+redefinitions, `v16` alone 24 times, and `w9` 73 times over the whole
+unit. Every redefinition is a write-after-write edge and every read
+between them a write-after-read edge, and the scheduler runs after
+allocation, so it cannot break any of them — which looked like the
+reason it removes one stall out of eighteen.
+
+Releasing a vector scratch register to the front of the free list makes
+the pool round-robin instead, and it does what it should to the code:
+the most-written vector register goes from `v16` 35 times to `v29` 16
+times, spread across `v16`–`v31`, at the same number live at once. It
+makes no difference at all to the clock — 0.10 ns a byte either way,
+alternated four times:
+
+| | ns/byte | GB/s |
+| --- | ---: | ---: |
+| last-in-first-out (as it is) | 0.09–0.10 | 9.7–11.1 |
+| round-robin | 0.10 | 9.7–10.2 |
+
+The reason is that this core renames registers in hardware. A
+write-after-write or write-after-read hazard on an architectural
+register costs an out-of-order core nothing, so spreading the
+architectural names spreads nothing real. Only true dependencies —
+a value actually feeding the next instruction — are left, and those the
+allocator cannot move.
+
+Two things follow. Post-allocation scheduling has less to offer on this
+lane than the stall count suggests, since the ordering it is pinned by
+is largely false. And the same change is not pointless everywhere: on a
+genuinely in-order core a write-after-write hazard does cost, so the
+free-list discipline is worth revisiting for the RV64 lane and the MCU
+profile, where it can be measured against a core that has no renamer.
+It was not landed here, having nothing to show on the lane it was
+written for.
 
 Apple arm64, 2026-09-13.
 
@@ -92,7 +227,10 @@ goes through the native backend, and the C backend's build of the same
 package is the control. The runner is `benchmarks/kernels/runner.c` with
 the emitted C included and the companion object linked; the two runners
 were run alternately, three rounds each of three samples over three inner
-rounds, 1 MiB per kernel, and the checksums agree on every row.
+rounds, 2^20 input elements per kernel, and the checksums agree on every
+row. An element is a byte for hashes and `dispatch`, an `f32` for `dot`
+and `tiled`, and a `u64` for the other kernels. The tables divide elapsed
+time by this input element count, not by the buffers' byte sizes.
 
 Apple M4 Max, Apple clang 21.0.0, 2026-09-14, revision aade7acd. The host
 was loaded (load average 35–40 from another session's test suites), so
@@ -101,7 +239,7 @@ is the same C-realized helper (`arm64.cnt64`) on both sides, bounds the
 noise at about twenty percent. Raw samples:
 `results/kernels-m4-max-2026-09-14.jsonl`.
 
-| Kernel | C backend ns/byte | Native ns/byte | Native / C | Verdict on the native body |
+| Kernel | C backend ns/element | Native ns/element | Native / C | Verdict on the native body |
 | --- | --- | --- | --- | --- |
 | `crc32c` | 0.144 | 3.311 → 0.817 after the dispatch fix | 23.0 → 5.7 | trusted (indexes a package table) |
 | `sha256` | 0.639 | 0.719 → 0.646 after the dispatch fix | 1.12 → 1.00 | trusted (indexes a package table) |
@@ -209,6 +347,335 @@ reconciles them (`meetIdx`), the page's key read is unguarded under
 rotation, and the three-loop body selects the hoisted rotated form
 (six percent below the hoisted unrotated one by the model, at the
 calibrated loop weight).
+
+**The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
+runner and package, seven samples of five rounds, 2^20 input elements per
+kernel, with matching checksums. The host was loaded (reported load average
+40–50), and this run collected each implementation's samples together,
+so both times and ratios may include load drift. Raw samples:
+[`kernels-m4-max-2026-09-16.json`](results/kernels-m4-max-2026-09-16.json).
+
+| Kernel | C backend ns/element | Native ns/element | Native / C | Native / C on 2026-09-14 |
+| --- | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.160 | 0.162 | 1.01 | 5.7 |
+| `sha256` | 0.714 | 0.707 | 0.99 | 1.00 |
+| `blake3` | 3.211 | 10.117 | 3.15 | 1.54 |
+| `dot` | 0.901 | 1.124 | 1.25 | 3.24 |
+| `sum` | 0.130 | 0.140 | 1.08 | 3.40 |
+| `search` | 11.841 | 12.918 | 1.09 | 1.76 |
+| `page_probe` | 9.681 | 16.084 | 1.66 | 1.93 |
+| `bitmap` | 0.260 | 0.235 | 0.90 | 1.19 |
+| `dispatch` | 10.763 | 9.044 | 0.84 | 0.83 |
+| `tiled` | 0.187 | 0.199 | 1.07 | 2.8 |
+
+The loop kernels' measured ratios improved; BLAKE3's worsened from 1.54
+to 3.15. The compression-body inspection reported 530 instructions
+against 519 earlier that day. That comparison covers two September 16
+builds; the September 14 baseline did not lower compression natively.
+
+**BLAKE3 investigation (2026-09-16, compiler e1898e09).** Rebuilding
+`aade7acd` shows that only `bench_blake3` and `blake3_start_flag` were
+native in its BLAKE3 path: compression stayed in C because the native
+backend did not accept its array parameters. The arrays-as-values
+increment (`63569c6a`, PR #472) admitted those bodies. The hash source
+is unchanged between the baseline and this investigation.
+
+The following comparison uses the same C runner and input, seven samples
+of five rounds over 1 MiB, interleaving all five variants and rotating
+which runs first. Every sample has the same checksum. The two restricted
+current builds use `OAK_NATIVE_ONLY`; their other functions stay in C.
+Raw samples, revisions, filters, and emitted native-unit lists:
+[`blake3-native-coverage-2026-09-16.json`](results/blake3-native-coverage-2026-09-16.json).
+
+| Build | ms per 1 MiB | Relative to current C |
+| --- | ---: | ---: |
+| Current C | 2.574 | 1.00 |
+| September 14 native baseline, rebuilt | 4.584 | 1.78 |
+| Current compiler, only the baseline's two BLAKE3 units native | 3.856 | 1.50 |
+| Current compiler, only `blake3_compress` native | 7.085 | 2.75 |
+| Current native build | 8.629 | 3.35 |
+
+The coverage experiment identifies native compression as the main added
+cost. Keeping the old native coverage restores its approximate ratio;
+moving compression alone out of C accounts for most of the gap. The
+selected compression body has a 448-byte frame and 527 instructions,
+including 156 `ldr`, 141 `str`, 17 `ldp`, 17 `stp`, 34 `eor`, and 32
+`ror`; 305 instructions access memory through `sp`. These are counts
+from the emitted object, not timings attributed to individual operations.
+The verifier reports an indexed load through a record argument without
+a dominating constant index guard, so the scheduling and register
+reallocation candidates remain trusted and are not selected. The next
+compiler work is to discharge that proof obligation and reduce the
+compression body's frame traffic; the performance gap is still open.
+
+The baseline rebuild uses the current directory-aware emit driver and
+stubs the unrelated `bench_tiled` body, matching its documented historical
+verifier refusal; BLAKE3 is unchanged. Core placement and contention
+remain uncontrolled. The benchmark driver now actually interleaves
+implementations, retains samples in observation order, and checks every
+sample's checksum (`benchmarks/kernels/README.md`). The earlier 1fcaba66
+record above retains its original samples and sampling order.
+
+**Scalar-array homes released at last use (2026-09-17, baseline
+`7060402898b0e17d5191165871d384743ed59a0e`).** Short-lived scalar-replaced
+arrays had retained their hidden element registers/slots until scope exit:
+the source last-use map names the array, not those hidden locals. Releasing
+the actual element homes at the parent's last use lets the next inlined
+quarter round reuse them. The synthetic parent still owns no storage and
+must never release a frame slot. Loop/branch uses retain their enclosing
+statement's lifetime; trailing results remain live.
+
+On Apple M4 Max, the retained change alone gives the following interleaved
+comparison (1 MiB, 30 rounds per sample, 15 samples per implementation,
+rotating which runs first). Every sample's full checksum agrees:
+
+| BLAKE3 | Before | After | C backend |
+| --- | ---: | ---: | ---: |
+| Median ms per 1 MiB | 10.707 | 6.639 | 3.020 |
+| Repeat run, median ms per 1 MiB | 10.274 | 7.302 | 3.079 |
+| Compression instructions | 527 | 406 | — |
+| Compression instructions accessing `sp` memory | 305 | 152 | — |
+| Compression frame bytes | 448 | 272 | — |
+
+That is 29–38% less elapsed time in these comparisons, not parity with C:
+native remains about 2.20–2.37× its time. The native-unit symbol lists are
+identical before and after; no added C fallback accounts for the gain.
+Two preliminary comparisons measured 38–46% less time with the same
+compression body. Those also included a separate integer multiply-add
+experiment outside compression, which was removed before the final build.
+Core placement, frequency and competing host work were not controlled;
+timings of unchanged kernels drift too. Raw rotating samples, binary
+hashes, static counts and the rejected experiment are recorded in
+[`scalar-array-lifetime-2026-09-17.json`](results/scalar-array-lifetime-2026-09-17.json).
+
+Correctness evidence is deliberately scoped. Direct and selected native
+bodies for sequential, loop and branch lifetime fixtures must receive
+`proven` verdicts; native/C execution and allocation-pool regressions also
+pass. This is not a universal implementation-refinement proof of the
+liveness walk. In builds with only the lifetime change, BLAKE3 compression
+reports its unguarded indexed-record-load verifier refusal, and its gated scheduling
+and reallocation candidates remain unavailable. No proof gate or source
+arithmetic semantics changed.
+
+The rejected experiment admitted non-power-of-two integer constants to
+`madd`/`msub`/`mneg`. Its overflow fixtures and dispatch body were proven,
+and dispatch lost one instruction, but the two timed comparisons were
+8.340 → 8.513 ms and 7.837 → 7.819 ms: no repeatable speedup. The matcher
+change was removed rather than counting the shorter assembly as a runtime
+improvement.
+
+**Constant record indices unblock BLAKE3 optimization (2026-09-17).**
+The rejected read was `cv[i]` in compression's final counted loop. The
+verifier unrolls that loop, decides its bounds branches, and records no
+symbolic guard for the now-constant index. Record loads nevertheless
+required that guard. They now select a known element directly after
+checking its index against the array field's length; symbolic indices
+keep their guard requirement, and reads into a sibling field stay outside.
+
+Compression advances from trusted to witnessed: every verifier witness
+agrees, while the full bit-level proof still exceeds the node budget.
+The existing optimizer policy admits scheduling and register reallocation
+on that evidence. Its emitted body shrinks from 527 to 373 instructions,
+with 169 stack-relative memory instructions instead of 305; the frame
+remains 448 bytes. Native BLAKE3 coverage is unchanged.
+
+This comparison isolates the verifier fix before the scalar-array lifetime
+change above. It rebuilds `fca1c239` with and without the verifier fix,
+using the same runner, seven samples of five rounds over 1 MiB, and all
+five variants interleaved with rotating starts. The restricted builds
+make only `blake3_compress` native. All samples agree, as do checks at 13
+input sizes spanning empty input, block boundaries, and chunk-tree
+boundaries. Raw samples, source hashes, native-unit lists, and instruction
+counts: [`blake3-constant-record-index-2026-09-17.json`](results/blake3-constant-record-index-2026-09-17.json).
+
+| Build | ms per 1 MiB | Relative to C |
+| --- | ---: | ---: |
+| C control | 2.834 | 1.00 |
+| Only compression native, before | 8.479 | 2.99 |
+| Only compression native, after | 4.361 | 1.54 |
+| Full native build, before | 11.991 | 4.23 |
+| Full native build, after | 6.545 | 2.31 |
+
+The full native median falls by 45%, and the restricted build's by 49%.
+The M4 Max had a load average of 95–97 and uncontrolled core placement;
+the raw samples show substantial scatter. This is a loaded-host result.
+The remaining gap includes compression's frame traffic and the surrounding
+native helpers; the full proof and parity with C remain open.
+
+Rebased over the scalar-array lifetime change (`a80fe399`), the selected
+compression body has 342 instructions, 152 stack-relative memory
+instructions, and a 272-byte frame. It retains the witnessed verdict and
+agrees with C at the same 13 boundary sizes plus 1 MiB. The timings above
+measure the verifier change independently of that lifetime improvement.
+
+The next frame reduction is the message permutation itself. At `2323cc1b`,
+the inlined `m = blake3_permute(m)` built a 64-byte literal temporary and
+copied it back every round. The in-place cycle lowering
+(`docs/spec/94-assembler.md` §9 "In-place array permutations") changes the
+selected compression body from 342 to 334 instructions, its stack-relative
+memory instructions from 152 to 144, and its frame from 272 to 208 bytes; the
+witnessed verdict and native coverage are unchanged. The eight static
+instructions are inside the six-round permutation path, hence 48 fewer
+instructions per compression. Two interleaved restricted-build runs on the M4
+Max agreed on the 1 MiB checksum. Their candidate/base medians were 0.967×
+(seven samples, twenty inner rounds) and 0.854× (nine samples, fifty inner
+rounds), with wide overlapping ranges under uncontrolled load; the clock says
+the change helps but does not support a precise speedup. The raw samples and
+the invariant machine-shape counts are in
+[`blake3-in-place-permutation-2026-09-17.json`](results/blake3-in-place-permutation-2026-09-17.json).
+
+The full native build also benefits from the permutation change. Two further
+interleaved runs compare C, `dfd119cd`, and that same baseline with only the
+permutation lowering, using fifteen samples of thirty rounds over 1 MiB:
+
+| Run | C ms per 1 MiB | Native before | Native after | Native elapsed-time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2.794 | 5.603 | 5.361 | 4.3% |
+| 2 | 3.006 | 6.687 | 6.109 | 8.6% |
+
+The timed implementation was developed independently of `a1783bba`. Applying
+the landed lowering to the same baseline reproduces the measured native object
+and complete runner byte-for-byte; generated C differs only in source-location
+comments. All samples agree, and a rebuilt runner agrees with C at fourteen
+sizes from empty input through 1 MiB, including block/chunk/tree boundaries.
+Native coverage is unchanged. Load averages were 24–25, core placement was
+uncontrolled, and sample ranges overlap; these medians do not establish a fixed
+speedup. Raw samples and reconstruction hashes:
+[`blake3-array-permutation-2026-09-17.json`](results/blake3-array-permutation-2026-09-17.json).
+
+Regression coverage now proves every permutation of five arbitrary words (120
+orders), mixed cycles at 32/64-bit signed and unsigned widths, and long cycles.
+Gathers and helpers with preceding statements retain snapshot semantics. A
+repeated sixteen-word BLAKE3 permutation loop has a proven native body with one
+message-array home and passes in native and C builds. These timings predate the full
+compression proof described below.
+
+**The kernels re-measured (2026-09-16, revision 1fcaba66).** The same
+runner and package, seven samples of five rounds, 1 MiB per kernel,
+checksums agreeing on every row; the host was loaded again (load
+average 40–50 from another session's test suites), so the ratios are
+the measurement. Raw samples: `results/kernels-m4-max-2026-09-16.json`.
+
+| Kernel | C backend ns/byte | Native ns/byte | Native / C | Native / C on 2026-09-14 |
+| --- | ---: | ---: | ---: | ---: |
+| `crc32c` | 0.160 | 0.162 | 1.01 | 5.7 |
+| `sha256` | 0.714 | 0.707 | 0.99 | 1.00 |
+| `blake3` | 3.211 | 10.117 | 3.15 | 1.54 |
+| `dot` | 0.901 | 1.124 | 1.25 | 3.24 |
+| `sum` | 0.130 | 0.140 | 1.08 | 3.40 |
+| `search` | 11.841 | 12.918 | 1.09 | 1.76 |
+| `page_probe` | 9.681 | 16.084 | 1.66 | 1.93 |
+| `bitmap` | 0.260 | 0.235 | 0.90 | 1.19 |
+| `dispatch` | 10.763 | 9.044 | 0.84 | 0.83 |
+| `tiled` | 0.187 | 0.199 | 1.07 | 2.8 |
+
+The loop kernels closed most of the gap in two days — `sum` and `tiled`
+within ten percent of the C backend, `dot` within a quarter, `crc32c`
+at parity now that the chunk body is proven and the dispatch stays with
+the C backend — and `page_probe` keeps the largest remaining gap of the
+proven bodies. `blake3` went the other way, from 1.5 to 3.2 times the C
+backend, with the same body shapes (the compress body is 530
+instructions at this revision against 519 at the morning's, 156 loads
+and 141 stores around 34 xors and 32 rotates either way) and none of
+the new transforms selected for it (their forms were judged trusted and
+set aside). The runner refused to time the native row between
+825e9e3e (2026-09-15 16:10) and 3d4e7807 (2026-09-16 05:14), where
+its checksum disagreed with the C backend's; the row agreed again and
+ran at 3.4× from c1283ce6 (13:43) through 1fcaba66, and at f4f8c791
+the next morning (the in-place message permutation, a1783bba, among
+the night's changes) `blake3` measures 5.85 ms/op against the C
+backend's 3.48 — 1.68×, the 2026-09-14 ratio again. The commit that
+cost the factor of two in between was not isolated.
+
+**BLAKE3 compression equivalence (2026-09-17).** The selected standard-library
+`hash__blake3_ucompress` now proves all eight returned 64-bit chunks by structural
+equality, at the ordinary verification budget. The comparison canonicalizer
+spells fixed 32/64-bit rotates as shift-and-OR, recovers a packed high word only
+under exact width/count/low-bit bounds, and removes zero-count shifts and
+repeated identical masks. This avoids bit-blasting the entire seven-round hash.
+The selected companion object is byte-for-byte identical before and after this
+verifier change: 330 instructions by the optimization report's count, 144
+stack-relative memory instructions, and a 208-byte frame. No runtime speedup is
+claimed. `TestNativeBlake3CompressionProven` uses the actual library body and
+refutes a changed rotate; `TestE2ENativeBlake3CompressionBoundaries` compares the
+compressor-native path and C against the existing reference at thirteen input
+lengths from 0 to 5000 bytes, including block/chunk/tree boundaries.
+
+`Oak.BitwiseCanonical` proves the normalization algebra, not a refinement of
+the Go canonicalizer or a complete source-to-Arm-ASL execution theorem. The
+surrounding hash API is not claimed fully native or proven, and memory-effect
+admission, ordering/custody requirements, and the downstream compiler pin are
+unchanged. Repeated state traffic and physical message permutations remain
+performance work.
+
+**Exact rotate normalization in the verifier (2026-09-17, baseline
+`40558540`).** A constant 32/64-bit machine rotate now canonicalizes to
+the source's two shifts and or, under the existing
+`Oak.AssemblerSemantics.ror_spelling` law. There is no reassociation or
+numeric relaxation, no raised budget, and no reordered proof stage.
+Independent source/assembly quarter-round fixtures change from witnessed
+to proven by structural equality; a wrong rotate count still refutes.
+
+| Scalar quarter rounds | Before, median Verify time | After | Verdict |
+| --- | ---: | ---: | --- |
+| 1 | 653 ms | 1.64 ms | witnessed → proven |
+| 7 | 706 ms | 9.08 ms | witnessed → proven |
+
+Three one-iteration Go benchmark samples per fixture, parsing outside the
+timer, same base budget. Before/after groups were not interleaved and host
+load/core placement were uncontrolled. Allocation per verification drops
+from roughly 1.34 GB to 0.44/0.70 MB respectively because the whole-word
+bit-level fallback is avoided. These are **verification costs**, not
+application speedups. Full BLAKE3 compression was still witnessed in this
+isolated experiment. The later `def4003e` normalization above supersedes
+its narrower rotate rule; the independent fixtures/benchmark are retained.
+The byte-exact baseline
+overlay, source hashes, protocol, proof scope, and raw benchmark output are
+recorded in
+[`rotate-verifier-2026-09-17.json`](results/rotate-verifier-2026-09-17.json).
+
+**Returned arrays built in the result area (2026-09-17, baseline
+`40558540`).** Eligible integer-array locals now use the caller's result
+buffer directly, avoiding a separate frame array and its final copy.
+Whole-array replacements remain frame-backed, preserving the permutation
+optimization above; caller self-assignment still uses snapshot storage.
+See `docs/spec/94-assembler.md` §9, "Copies at the boundary", for guards
+and proof scope.
+
+Only `hash__blake3_ucompress` was native in these comparisons; the rest
+of the unchanged package used C in both variants. Compression changes
+from 334 to 308 instructions, 208 to 144 frame bytes, and 170 to 162 static
+memory instructions. Stack-relative accesses fall from 144 to 60, but most
+of that is a change of memory base to the result buffer, not eliminated
+loads/stores. Both measured compression bodies were **witnessed**, not
+proven; this historical report predates `def4003e`.
+
+| Interleaved run | Samples × rounds | Before ms / MiB | After | After / before |
+| --- | ---: | ---: | ---: | ---: |
+| A | 15 × 30 | 4.939 | 4.454 | 0.902 |
+| B | 15 × 50 | 4.160 | 4.037 | 0.971 |
+| C | 15 × 50 | 4.801 | 4.842 | 1.008 |
+| D | 21 × 50 | 4.159 | 4.003 | 0.962 |
+
+All full-digest checks agree with the C control, including 13 boundary
+sizes around blocks, chunks and tree merges. Host load and core placement
+were uncontrolled; C overlapped local regression suites and D ran after
+they finished. Three medians improve, one is effectively flat, with
+overlapping sample ranges: a modest gain is plausible, a precise speedup
+is not established. These are not whole-native-suite results or proof of
+parity with C. The final D C control was 3.065 ms/MiB.
+All candidate builds emitted the same compression object, including after
+conservative extent/call-lifetime hardening. Raw samples, binary/source
+hashes, build protocol, counters and proof limits:
+[`blake3-array-result-2026-09-17.json`](results/blake3-array-result-2026-09-17.json).
+
+After integration with `def4003e`, the **same 308-instruction compression
+object is proven for all eight result chunks**, with the result-area
+optimization retained. The real-compressor wrong-rotate test still refutes,
+and native/C boundary tests pass. The object hash is identical to the timed
+candidate; the report records this later integration separately rather than
+relabeling earlier evidence as proof. The broader upstream canonicalizer
+is used directly, without a duplicate rotate rule.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
@@ -365,6 +832,64 @@ about eight percent. What the increment really buys is the instruction
 count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
+
+## The chain assignment cap, measured and kept, 2026-09-17
+
+If-conversion rejects a chain of more than four assignments
+(`maxSelectAssigns`, `nativegen/select.go`), so a three-arm chain
+writing two variables branches on its first arm and converts only the
+rest. The stated reason is register pressure, and it looked pessimistic:
+where every right-hand side is a variable already in a register the
+lowering reads it in place and allocates nothing, so the count could
+have been of the values that actually need a scratch register. Counting
+that way converts the chain whole — eight straight-line instructions in
+the loop body against a branch, two moves and four selects — and it is
+proven either way.
+
+It is slower. A three-arm chain writing `small` and `big` over 2^12
+`u32` elements, best of seven over three runs:
+
+| which arm the data takes | capped (first arm branches) | converted whole |
+| --- | ---: | ---: |
+| unpredictable, the arms about even | 1.27–1.43 ns/element | 1.27–1.44 |
+| always the last arm | 0.79–0.83 | 1.21–1.64 |
+| always the first arm | 0.80–0.86 | 1.30–2.29 |
+
+Nothing to gain where the branch is unpredictable, and a factor of 1.6
+to 2.8 to lose where it is not. The cap earns its keep for a reason
+beyond registers: a branch *skips* the arms after it, while the selects
+of a converted chain all execute, and per variable they form a serial
+dependency — `csel` feeding `csel` feeding `csel` — that lengthens the
+loop's critical path. The two increments above won by removing a
+mispredict that cost more than the work they added; this one adds work
+and removes a branch that was already free.
+
+So the cap stays, and the measurement is the argument for it. The
+per-variable serialization is also the thing a port-pressure or
+dependency-chain term in the cost model would have to capture
+(item 26); the static instruction count says converted is cheaper here,
+and the clock says otherwise in two rows out of three.
+
+## Chain condition operands, 2026-09-16
+
+A three-arm chain whose second condition needs a computed operand,
+`x < lo ? { a = x } | x + 1 < hi ? { a = hi } | { a = lo }`, inside a
+loop. The whole chain is if-converted where before the first arm branched
+and only the remainder was (`docs/spec/94-assembler.md` §9
+"If-conversion"): twelve body instructions with two branches become
+eleven with none.
+
+| three-arm chain over 2^12 `u32` elements, best of seven over three runs | half converted | converted |
+| --- | ---: | ---: |
+| the comparisons always take one arm | 0.48–0.71 ns/element | 0.52–0.63 |
+| the comparisons are unpredictable | 1.01–1.10 | 0.54–0.62 |
+
+A factor of 1.8 where the data decides the arm, and nothing where it does
+not — one instruction fewer is again below the noise, and the mispredict
+is again the whole of the win. Two increments in a row have now come out
+this way, which is worth stating as a rule for this backend: on a wide
+core the branches are what the clock sees, and the instruction counts the
+cost model ranks by are a proxy that happens to point the same direction.
 
 ## Select forms, 2026-09-16
 

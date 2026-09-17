@@ -143,6 +143,20 @@ theorem scaled2_under_bound (i j K M c U₁ U₂ len : Nat) (hi : i < U₁) (hj 
   have := Nat.mul_le_mul_right M h2
   omega
 
+/-- A local binding of a two-dimensional affine index inherits the maximum
+    of its two loop bounds when that complete maximum fits its unsigned word.
+    The word premise makes the modular initializer equal to the natural
+    expression (`scaled2DeclarationBound`); the resulting literal fact can
+    then discharge an access through `scaled2_under_bound`. -/
+theorem scaled2_binding_upper (i j K M c U₁ U₂ w : Nat) (hi : i < U₁) (hj : j < U₂)
+    (hword : (U₁ - 1) * K + (U₂ - 1) * M + c + 1 ≤ 2 ^ w) :
+    (i * K + j * M + c) % 2 ^ w < (U₁ - 1) * K + (U₂ - 1) * M + c + 1 := by
+  have hnatural : i * K + j * M + c < (U₁ - 1) * K + (U₂ - 1) * M + c + 1 :=
+    scaled2_under_bound i j K M c U₁ U₂ _ hi hj (by omega)
+  have hfits : i * K + j * M + c < 2 ^ w := Nat.lt_of_lt_of_le hnatural hword
+  rw [Nat.mod_eq_of_lt hfits]
+  exact hnatural
+
 /-- A masked index is below every length above the mask: from `M < len`,
     `x &&& M < len`, for any `x` (`recordIndexProof`, `maskedIndex`). -/
 theorem masked_under_length (x M len : Nat) (hM : M < len) : x &&& M < len :=

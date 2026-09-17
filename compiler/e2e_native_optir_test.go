@@ -66,15 +66,18 @@ func TestE2ENativeSelectsAndExecutesSpilledOptIR(t *testing.T) {
 	}
 }
 
+// Repeated multiplication gives SSA sharing a real cost advantage. The older
+// (x+1)+(x+1) fixture can legitimately prefer native strength reduction, so it
+// does not reliably test selection of the SSA candidate.
 const nativeOptIRProgram = `
 common: (x: u32): u32 {
-  left: u32 = x + u32(1)
-  right: u32 = x + u32(1)
+  left: u32 = x * u32(3)
+  right: u32 = x * u32(3)
   dead: u32 = x * u32(2)
   left + right
 }
 
-main: (): i32 = i32_bits_u32(common(u32(20)))
+main: (): i32 = i32_bits_u32(common(u32(7)))
 `
 
 func TestE2ENativeSelectsVerifiedOptimizedOptIR(t *testing.T) {

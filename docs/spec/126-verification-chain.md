@@ -260,6 +260,15 @@ kernel-pins sixteen production outcomes, including alias/count/memo corruption
 hidden behind false roots. Full Go admission/coverage refinement and compiler
 verdict authority remain separate; this does not add a compiler consumer.
 
+`Oak.CNFMetadataSettled.check` now gates settled equality with the complete
+header check. Its returned ordered parameters are the ones used by word
+projection; `check_sound` derives their validity, exact names, and equal word
+widths/values for every typed input from one acceptance. Twenty-four production
+fixtures kernel-pin the composition, including malformed unused metadata,
+disabled modes, changed declared widths, allocation failures, and true/pending
+roots. Recording coverage still needs binding to this same semantic snapshot;
+this does not establish full Go admission or verdict authority.
+
 The constructor metadata seam now has `Oak.CNFReplayHeader`: exact ordered
 names, explicit index presence, widths, unique keys/counts, and disabled modes
 yield valid parameters with no extra table keys. The Go check rejects missing
@@ -274,6 +283,16 @@ pins. Neither equal counts nor equal scalar snapshots establish content
 integrity or producer immutability; same-size forged state is an explicit
 accepted numeric counterexample. Universal Go trace/map/pointer/key projection,
 full intermediate-root traversal and complete admission remain unrefined.
+The production checked stores are now isolated as `recordTerm`, `inputEdge`
+and `gateEdge`, with their original lookup/root/range checks and no trace
+storage. `Oak.CNFReplayRecording` models their repeated-key updates and proves
+an accepted event run from empty establishes the admitted-state invariant.
+`Oak.CNFReplayRecordedCoverage.check_exact` derives exact term-root/input/gate
+coverage from that executable run plus checked counts/finish, without assuming
+reachability. Bounded actual helper sequences are kernel-pinned, and a source
+structure regression confines replay-map writes to the checked helper sites.
+This does not universally prove the Go walker's control flow, aliases, trace
+projection or producer immutability; bookkeeping is not root semantics.
 `Oak.CNFFinalObligation` proves
 the exact four-way construction and that a pending decoded-root clause is
 satisfied exactly when a trap fires or the claim is false. `Oak.CNFTermRoot`
@@ -577,9 +596,53 @@ access covers two adjacent in-span u64 cells; synchronized examples admit
 offsets 0 and 16 of a four-cell region and refuse offset 24 and a read-only
 region. That is only byte bounds and writability metadata. It proves no
 ordinary-memory, privacy, or unpublished custody, so generic and record-span
-pair stores remain refused. A lowering still requires exact record-field
-provenance and trap preservation, verifier support, scalar-tail lowering,
+pair stores remain refused. The checker transports compiler-derived nominal
+record identity through exact record elements and their nonnegative byte-tail
+aliases; control-flow meets reject same-sized but differently named records,
+and widened multi-record regions carry no single-record identity. This is
+non-authoritative metadata only. Exact direct-`u64` field selection now narrows
+indexed accesses to the field declaration, so following record fields cannot
+extend the array bound. Unsupported layouts retain the original generic
+checker behavior and yield no exact field fact. `Oak.RecordArrayRegion`
+formalizes the selected geometry and four-cell loop decision, proves field and
+record containment and nonwrapping 32-bit indices, and composes them with the
+staged four-write final-state law. Declaration lookup/uniqueness itself remains
+outside that theorem, and no instruction uses the quad predicate as permission.
+A lowering still requires trap preservation, verifier support, scalar-tail lowering,
 alias/observer exclusion, and private/unpublished ordinary-memory authority.
+`Oak.PairStoreEffects` closes one later final-state edge in isolation: its log
+uses the verifier's exact 32-bit modular indices, and under explicit no-wrap
+premises applying one pair equals `storePair` while two adjacent zero pairs
+equal four scalar writes. A synchronized Go helper builds those entries in
+operand/address order, including the wrap case, but no instruction handler can
+reference it; an AST gate permits only its declaration, and direct verifier
+tests pin both existing pair-store refusals. It therefore proves neither
+architectural occurrence nor component or observer order, and grants no
+verifier or code-generation authority.
+
+Generated static-protocol handles now have a sealed initial-constructor
+designation carried through resolved resources, SemIR validation, and a
+whole-program construction gate before resource flow. Direct initial literals,
+uninitialized roots (including value aggregates/fixed arrays), and alternate
+fresh/trusted result contracts cannot bypass the designated constructor;
+checked same-resource transitions retain reconstruction permission only for
+tail results, never independently bound local handles. Designated constructors
+must have actual checked Oak bodies, with no foreign or assembly replacement.
+Explicit-resource protocols keep their existing literal rules. The separate
+`Oak.SealedTypestate` calculus proves that derivations retain an externally
+supplied designated-mint premise and that transitions preserve resource/origin
+identity. It is not a Go implementation refinement and establishes no actual
+allocation, ordinary RAM, fault-free mapping, or CPU/DMA/external-observer
+exclusion. Uncontracted/foreign typed return values can still have unknown
+provenance; their origin is not established by this construction gate and no
+fresh authority follows from their type alone. No native or asm admission
+consumes this designation. Native lowering
+currently precedes borrow/resource/effect gates and cannot consume such an
+authority result; check-before-lowering and exact-region certificate transport
+remain separate prerequisites. The explicit `ResourceSemIR` stage also checks
+its injected declarations after `check(nil)` and needs its own ordering fix.
+An eventual private-to-published transition must consume storage custody;
+reclaiming published storage needs a separate completion/quiescence proof.
 
 The next conditional Sail projection stops at the selected arguments of the
 ordinary aligned size-eight `__WriteMemory` arm. For an externally supplied

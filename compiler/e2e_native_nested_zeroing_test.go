@@ -113,4 +113,7 @@ func TestE2ENativeNestedZeroingLoopProven(t *testing.T) {
 	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body") {
 		t.Errorf("reset must be proven at the scale that unrolls:\n%s", joined)
 	}
+	if !strings.Contains(joined, "reset: 1 element guard(s) elided under the checker's own facts") {
+		t.Errorf("reset's inlined cell index must carry the two loop bounds into native lowering:\n%s", joined)
+	}
 }

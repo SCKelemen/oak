@@ -253,7 +253,7 @@ func (tc *TypeChecker) recordRefinedIndexProof(expr *ast.IndexExpression, arr *A
 	if !ok || bound > arr.Length {
 		return
 	}
-	name, _ := pathOf(expr.Left)
+	name, _ := extentContainerPath(expr.Left)
 	tc.recordCheckedIndexProof(expr.Token, name, arr, "index-in-extent", "checked refinement predicate", "refinement="+prim.Refinement)
 }
 

@@ -69,12 +69,9 @@ jobs:
       - name: Test path
         run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
       # The whole compiler package runs under the race detector in ci.yml,
-      # sharded; here the race run covers every other package plus the
-      # compiler's standard-library and extraction tests.
-      - name: Test standard library packages under the race detector
-        run: |
-          go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
-          go test -race -timeout 90m ./compiler -run 'Stdlib|Lean|Hash|Text'
+      # exhaustively sharded; this job covers every other package.
+      - name: Test non-compiler packages under the race detector
+        run: go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
       - name: Check formatting
         if: always()
         run: |

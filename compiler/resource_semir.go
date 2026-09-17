@@ -105,9 +105,10 @@ func emitResourceSemIR(resources typechecker.ResolvedResourceProgram) (semir.Mod
 
 	for _, resourceProtocol := range resources.Protocols {
 		protocol := semir.Protocol{
-			Name:           resourceProtocol.Name,
-			Initial:        resourceProtocol.Initial,
-			TypestateArity: resourceProtocol.TypestateArity,
+			Name:                     resourceProtocol.Name,
+			Initial:                  resourceProtocol.Initial,
+			SealedInitialConstructor: resourceProtocol.SealedInitialConstructor,
+			TypestateArity:           resourceProtocol.TypestateArity,
 		}
 		for _, state := range resourceProtocol.States {
 			protocol.States = append(protocol.States, semir.State{Name: state})

@@ -441,6 +441,22 @@ a loop; unsupported dynamic bindings fail closed. A temporary copy of ml's
 `canon` package replaces the handwritten `canonical_sum` body with
 `reduce.lanes`; its extraction passes Lean. ml's checkout is unchanged.
 
+## Ask 5.25 follow-up (2026-09-16): lane-strided stores
+
+**Implemented for the quotient-loop form** (`56-kernels.md` §6).
+`out[gid * T + s * G + lane(G)]` is admitted under `while s < T / G`,
+with the counter changed only as the body's last statement, the literal
+stride matching the group size, and an immutable tile width. The base,
+lane, and bounded offset may be held in immutable locals. Stores execute
+in every owning lane. A partial row tail is untouched; arbitrary
+offset guards remain outside this rule, and buffer bounds checks remain.
+
+`compiler/e2e_kernel_strided_test.go` compares C, the interpreter, and
+Metal across three rows with zero, short, divisible, and nondivisible
+widths. Regressions reject mismatched strides and bounds, changed aliases
+and counters, and span reads outside the proven row. `Oak.Kernel` proves
+the offset bound, disjoint grid positions, and disjoint lanes.
+
 ## Ask 5.27 follow-up (2026-09-16): extraction namespaces
 
 **Implemented** (`95-extraction.md` §1). `oak build -lean out.lean

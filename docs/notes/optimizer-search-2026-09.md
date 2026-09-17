@@ -393,7 +393,12 @@ the slack fact names the primary (`w1`). And with no guard left to peel,
 the invariant pass hoists the condition's invariant half instead of
 leaving it in the header for the rotation to copy into the tail. The
 loop is sixteen instructions for four elements, one compare a trip,
-priced 1789 against the identity's 5537, proven.
+priced 1789 against the identity's 5537, proven. On the clock
+(`benchmarks/kernels/RESULTS.md`, three alternated runs): `dot`'s native
+time falls eight to twelve percent, from 1.10× the C backend to 1.03× —
+clang's loop is the same shape at sixteen products a trip, and both are
+bound by the one ordered `fadd` an element, so the remaining gap is the
+loop's overhead, not its arithmetic.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
@@ -432,6 +437,23 @@ guard. The increment's cost was in the verifier, not the rewrite: the
 hoisted form's remainder loop proved only once a premise could say that
 a skipped loop leaves its variables at their header values.
 
+Explicit builtin FMA now participates in this lane-wise map vocabulary.
+Checked invocation identity/width is required; every argument must itself be
+lane-wise, and the vector form keeps the scalar intrinsic's single rounding.
+This is an instance of the existing map theorem, not implicit contraction,
+reassociation, or a new numerical-error license. Measurements and the rejected
+scalar-dot contraction experiment are in `benchmarks/native/exact_fma/README.md`.
+
+`unroll-vector-maps` (2026-09-17) is a separate bounded candidate: two
+consecutive vectors per main trip, then one-vector cleanup and the original
+scalar remainder. `Oak.Map.grouped_eq` composes the two blocks without
+reassociation; `grouped_bounds` supplies the extent/next-index inequalities.
+The existing seam checker and verifier still gate emission. Cleanup stays a
+loop: a conditional cleanup made the joins of several maps harder to verify.
+The cost-only recurrence hints now recognize descending vector strides
+(8 → 4 → 1), and actual `MaxTrips` bounds are not divided by stride twice.
+The one-vector form remains available and is an explicit benchmark control.
+
 ### Phase C, checked projection and first analysis: `optir/`
 
 The target-neutral structured representation now exists independently of
@@ -458,6 +480,16 @@ evidence to replace known closed total-pure results, select known branches,
 remove unreachable blocks, and perform bounded SSA-aware block/trampoline
 cleanup. The transformed CFG verifies independently and still authorizes no
 emission without the ordinary candidate gates.
+
+The analysis includes closed total constant-result identities: exact-SSA self
+subtraction/XOR, reflexive integer/Bool comparisons, multiplication/AND by zero,
+and OR with width-correct all-ones. Unknown operands defer an absorbing transfer
+until both inputs have lattice information, keeping later phi refinement
+monotone. These rules expose branch/zero-trip-loop removal through the existing
+rewrite and post-memory cleanup; no target-specific pass or new search dimension
+is needed. An unused call/load/trap result never licenses deleting its producer,
+and two calls to the same function are not the same SSA value. Floats, division,
+shifts, and attributed/effectful operations receive no such identity rule.
 
 Before GVN, unused non-entry block parameters and their exact incoming edge
 positions are removed to a bounded fixed point; proof facts count as uses. Then
@@ -1228,9 +1260,24 @@ The existing native optimizations should be migrated into the candidate interfac
   this run with a large measured win: 3.4 times on a clamp whose
   comparison is unpredictable, and free where it predicts. Both arms are
   evaluated before the compare, so `speculable` gates it as it gates
-  if-conversion. The statement form (`nativegen/select.go`) still wants
-  every condition in a chain to compare the same two operands, which is
-  the next thing to widen;
+  if-conversion. The statement form (`nativegen/select.go`) already groups
+  a chain's conditions, sharing a compare between consecutive arms that
+  compare the same two operands; its real limit was that only the first
+  arm's condition operand could be computed, **widened 2026-09-16**: a
+  later arm's is evaluated before the chain when it is speculable, so a
+  two-comparison chain converts whole instead of branching on its first
+  arm and re-recognizing the rest. 1.8 times on an unpredictable
+  three-arm chain in a loop. The assignment cap that
+  remains — `maxSelectAssigns` is 4, so a chain assigning two variables
+  across three arms still splits — was **measured and kept 2026-09-17**
+  (`benchmarks/native/README.md` "The chain assignment cap"): counting
+  only the right-hand sides that need a scratch register converts such a
+  chain whole and proves it, and it is nothing to gain where the branch
+  is unpredictable and a factor of 1.6 to 2.8 to lose where it is not. A
+  branch skips the arms after it while a converted chain's selects all
+  execute, and per variable they serialize. That is the third measured
+  reminder that this backend's wins are mispredicts, not instructions,
+  and the first case where the instruction count points the wrong way;
 - scheduling alternatives;
 - allocation alternatives;
 - late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
@@ -1431,7 +1478,10 @@ This phase targets the measured UTF-8 call/spill gap directly.
     body"), so the form comes back trusted and the proven scalar loop
     keeps winning; the transform stays AArch64 only until the RV64
     verifier takes `vse` in loops), elements at `i ± k`
-    (stencils), and more than one vector a trip;
+    (stencils). Two vectors per trip landed 2026-09-17 as the separate
+    `unroll-vector-maps` candidate under `Oak.Map.grouped_eq`, followed by
+    one-vector cleanup and the scalar remainder; larger grouping factors
+    remain future work;
 25. SLP-like straight-line packing;
 26. vector-aware cost model — **first calibration landed 2026-09-16**:
     `LoopWeight`, the trips a data-dependent loop is assumed to run, was

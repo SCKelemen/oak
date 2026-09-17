@@ -7,6 +7,7 @@ package asm
 // disequality root without calling blaster.blast during replay.
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -265,12 +266,11 @@ func (r *nativeCNFReplay) term(t *term) ([]int, error) {
 				return nil, fmt.Errorf("parameter %q input index overflows int", t.name)
 			}
 			source := bit*stride + position
-			dimacs, allocated := r.bl.cnf.inputs[source]
-			if !allocated || dimacs < 1 || dimacs > r.bl.cnf.variables || dimacs > r.maxInt/2 {
-				return nil, fmt.Errorf("parameter %q bit %d has no valid CNF input allocation", t.name, bit)
+			edge, err := r.inputEdge(source)
+			if err != nil {
+				return nil, fmt.Errorf("parameter %q bit %d %w", t.name, bit, err)
 			}
-			r.inputs[source] = true
-			out[bit] = 2 * dimacs
+			out[bit] = edge
 		}
 	case termBinary:
 		if t.name != "" || t.value != 0 || t.declared != 0 || t.cond != nil || t.left == nil || t.right == nil {
@@ -308,11 +308,9 @@ func (r *nativeCNFReplay) term(t *term) ([]int, error) {
 		return nil, fmt.Errorf("term kind %d is outside parameters, constants, and pointwise and/or/xor", t.kind)
 	}
 
-	producer, present := r.bl.memo[t]
-	if !present || !sameReplayBits(producer, out) {
-		return nil, fmt.Errorf("producer term memo does not contain the replayed roots")
+	if err := r.recordTerm(t, out); err != nil {
+		return nil, err
 	}
-	r.terms[t] = out
 	return out, nil
 }
 
@@ -353,9 +351,43 @@ func (r *nativeCNFReplay) apply(operation, x, y int) (int, error) {
 		}
 	}
 	key := cnfKey{op: operation, x: x, y: y, z: -1}
+	return r.gateEdge(key)
+}
+
+// Keep failure construction out of the small per-bit recording helpers.
+var (
+	errNativeReplayTermRoots       = errors.New("producer term memo does not contain the replayed roots")
+	errNativeReplayInputAllocation = errors.New("has no valid CNF input allocation")
+	errNativeReplayGateMemo        = errors.New("non-folded gate has no valid exact memo entry")
+)
+
+// These helpers are the only writes to the replay's recording-map entries.
+// Each recording follows its existing producer admission check. The
+// CNFReplayRecording model reasons about such recordings against a fixed
+// producer; it does not establish Go map/trace projection or content
+// immutability from finish's scalar snapshot comparison.
+func (r *nativeCNFReplay) recordTerm(t *term, out []int) error {
+	producer, present := r.bl.memo[t]
+	if !present || !sameReplayBits(producer, out) {
+		return errNativeReplayTermRoots
+	}
+	r.terms[t] = out
+	return nil
+}
+
+func (r *nativeCNFReplay) inputEdge(source int) (int, error) {
+	dimacs, allocated := r.bl.cnf.inputs[source]
+	if !allocated || dimacs < 1 || dimacs > r.bl.cnf.variables || dimacs > r.maxInt/2 {
+		return 0, errNativeReplayInputAllocation
+	}
+	r.inputs[source] = true
+	return 2 * dimacs, nil
+}
+
+func (r *nativeCNFReplay) gateEdge(key cnfKey) (int, error) {
 	gate, present := r.bl.cnf.memo[key]
 	if !present || gate < 1 || gate > r.bl.cnf.variables || gate > r.maxInt/2 {
-		return 0, fmt.Errorf("non-folded gate has no valid exact memo entry")
+		return 0, errNativeReplayGateMemo
 	}
 	r.gateKeys[key] = true
 	return 2 * gate, nil

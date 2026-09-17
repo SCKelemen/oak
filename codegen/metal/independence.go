@@ -13,7 +13,8 @@ package metal
 //   - a tile per thread: every span access is at `gid * T + k` (either
 //     operand order, or through a local `base: u32 = gid * T`), where `k`
 //     is the counter of an enclosing `while k < T` loop and `T` is a
-//     scalar parameter or a literal.
+//     scalar parameter or a literal. In a group kernel, the offset may
+//     also be `lane(T)`, or `s * G + lane(G)` under `while s < T / G`.
 //
 // Views are read-only and impose nothing. The fault word is shared by
 // design and is not a buffer of the program. A span handed to a helper
@@ -64,7 +65,12 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 			}
 		}
 	}
-	in := &independenceWalk{em: em, gid: gid, spans: spans, scalars: scalars, spanRecords: spanRecords, tileBases: map[string]string{}, tileIndices: map[string]string{}, functions: em.functions, body: fn.Body, shape: "element", fusing: em.fusing}
+	in := &independenceWalk{
+		em: em, gid: gid, spans: spans, scalars: scalars, spanRecords: spanRecords,
+		tileBases: map[string]string{}, tileIndices: map[string]string{},
+		tileOffsets: map[string]string{}, laneWidths: map[string]int64{},
+		functions: em.functions, body: fn.Body, shape: "element", fusing: em.fusing,
+	}
 	if len(spans) == 0 {
 		return in.shape, nil
 	}
@@ -97,14 +103,22 @@ type independenceWalk struct {
 	// under a loop bounding k by T, so `y[i]` is the tile shape by name.
 	tileBases   map[string]string
 	tileIndices map[string]string
+	// tileOffsets records an immutable local's bound at its declaration,
+	// so a later counter change cannot invalidate that saved value.
+	tileOffsets map[string]string
+	laneWidths  map[string]int64
 	functions   map[string]*ast.FunctionStatement
 	body        ast.Node
 	// shape is "element" until a tile access is admitted, then "tile T".
 	shape string
 }
 
-// loopBound is an enclosing `while k < T` in scope.
-type loopBound struct{ counter, bound string }
+// loopBound is an enclosing `while k < T / divisor` in scope. A plain
+// `while k < T` has divisor 1.
+type loopBound struct {
+	counter, bound string
+	divisor        int64
+}
 
 func (in *independenceWalk) fail(node ast.Node, format string, args ...interface{}) error {
 	return &IndependenceError{Msg: fmt.Sprintf("%s (at %s)", fmt.Sprintf(format, args...), node.String())}
@@ -129,8 +143,14 @@ func (in *independenceWalk) stmt(s ast.Statement, loops []loopBound) error {
 				return in.fail(v, "local %s windows the span %s, hiding its indices; index the span parameter in the kernel body", v.Name.Value, src)
 			}
 			if !assignsName(in.body, v.Name.Value) {
+				if g, ok := in.laneWidth(v.Value); ok {
+					in.laneWidths[v.Name.Value] = g
+				}
 				if t, ok := in.tileProduct(v.Value); ok {
 					in.tileBases[v.Name.Value] = t
+				}
+				if t, ok := in.tileOffset(indexTerms(v.Value), loops); ok {
+					in.tileOffsets[v.Name.Value] = t
 				}
 				if t, ok := in.tileIndex(v.Value, loops); ok {
 					in.tileIndices[v.Name.Value] = t
@@ -154,8 +174,8 @@ func (in *independenceWalk) stmt(s ast.Statement, loops []loopBound) error {
 		// the body's last statement and nothing else (the canonical shape
 		// the loop rule already requires) and the bound is never assigned.
 		inner := loops
-		if counter, bound, ok := in.counterBound(v.Condition); ok && !assignsName(in.body, bound) && counterOnlyLast(v.Body, counter) {
-			inner = append(append([]loopBound{}, loops...), loopBound{counter, bound})
+		if bound, ok := in.counterBound(v.Condition); ok && !assignsName(in.body, bound.bound) && counterOnlyLast(v.Body, bound.counter) {
+			inner = append(append([]loopBound{}, loops...), bound)
 		}
 		if v.Body != nil {
 			return in.block(v.Body.Statements, inner)
@@ -294,7 +314,7 @@ func (in *independenceWalk) access(ix *ast.IndexExpression, loops []loopBound) e
 		in.shape = "tile " + t
 		return nil
 	}
-	return in.fail(ix, "span %s is accessed at %s, which is neither the grid position nor gid * T + k under a loop `while k < T`; positions could overlap", base.Value, ix.Index.String())
+	return in.fail(ix, "span %s is accessed at %s, which is neither the grid position nor gid * T plus a proven offset below T (a loop counter, lane(T), or s * G + lane(G) under `while s < T / G`); positions could overlap", base.Value, ix.Index.String())
 }
 
 // tileProduct recognizes `gid * T` or `T * gid` with T a scalar parameter
@@ -328,61 +348,124 @@ func (in *independenceWalk) tileWidth(e ast.Expression) (string, bool) {
 	return "", false
 }
 
-// tileIndex recognizes `gid * T + k`, `k + gid * T`, `base + k`, `k + base`
-// with base a recorded tile base of T and k a counter bounded by T,
-// returning T.
+// tileIndex recognizes a tile base plus a bounded offset, including the
+// left-associated spelling `gid * T + s * G + lane(G)`.
 func (in *independenceWalk) tileIndex(e ast.Expression, loops []loopBound) (string, bool) {
-	inf, ok := e.(*ast.InfixExpression)
-	if !ok || inf.Operator != "+" {
+	terms := indexTerms(e)
+	if len(terms) < 2 || len(terms) > 3 {
 		return "", false
 	}
-	for _, pair := range [][2]ast.Expression{{inf.Left, inf.Right}, {inf.Right, inf.Left}} {
-		t, isBase := in.tileProduct(pair[0])
+	for i, term := range terms {
+		t, isBase := in.tileProduct(term)
 		if !isBase {
-			if id, isIdent := pair[0].(*ast.Identifier); isIdent {
+			if id, isIdent := term.(*ast.Identifier); isIdent {
 				t, isBase = in.tileBases[id.Value]
 			}
 		}
 		if !isBase {
 			continue
 		}
-		// lane(G) is a counter bounded by G (docs/spec/56-kernels.md
-		// section 2a): position g's lanes touch g * G + l for l < G.
-		if call, isCall := pair[1].(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
-			if id, isIdent := call.Function.(*ast.Identifier); isIdent && id.Value == "lane" {
-				if g, isLit := call.Arguments[0].(*ast.IntegerLiteral); isLit && fmt.Sprint(g.Value) == t {
-					return t, true
+		offset := append(append([]ast.Expression{}, terms[:i]...), terms[i+1:]...)
+		if bound, ok := in.tileOffset(offset, loops); ok && bound == t {
+			return t, true
+		}
+	}
+	return "", false
+}
+
+// indexTerms flattens only addition. All admitted terms are nonnegative,
+// and the launch obligation grid * T <= u32's maximum prevents wrapping.
+func indexTerms(e ast.Expression) []ast.Expression {
+	if inf, ok := e.(*ast.InfixExpression); ok && inf.Operator == "+" {
+		return append(indexTerms(inf.Left), indexTerms(inf.Right)...)
+	}
+	return []ast.Expression{e}
+}
+
+// tileOffset returns a bound T for an offset known to be below T. The
+// strided rule is s < T/G and l < G => s*G+l < T; it does not require
+// T to be divisible by G (the quotient loop leaves a partial tail alone).
+func (in *independenceWalk) tileOffset(terms []ast.Expression, loops []loopBound) (string, bool) {
+	if len(terms) == 1 {
+		if k, ok := terms[0].(*ast.Identifier); ok {
+			if t, known := in.tileOffsets[k.Value]; known {
+				return t, true
+			}
+			for _, l := range loops {
+				if l.counter == k.Value && l.divisor == 1 {
+					return l.bound, true
 				}
 			}
 		}
-		k, isIdent := pair[1].(*ast.Identifier)
-		if !isIdent {
+		if g, ok := in.laneWidth(terms[0]); ok {
+			return fmt.Sprint(g), true
+		}
+	}
+	if len(terms) != 2 {
+		return "", false
+	}
+	for i, term := range terms {
+		g, isLane := in.laneWidth(term)
+		product, isProduct := terms[1-i].(*ast.InfixExpression)
+		if !isLane || !isProduct || product.Operator != "*" {
 			continue
 		}
-		for _, l := range loops {
-			if l.counter == k.Value && l.bound == t {
-				return t, true
+		for _, pair := range [][2]ast.Expression{{product.Left, product.Right}, {product.Right, product.Left}} {
+			k, isCounter := pair[0].(*ast.Identifier)
+			stride, isLiteral := pair[1].(*ast.IntegerLiteral)
+			if !isCounter || !isLiteral || stride.Value != g {
+				continue
+			}
+			for _, l := range loops {
+				if l.counter == k.Value && l.divisor == g {
+					return l.bound, true
+				}
 			}
 		}
 	}
 	return "", false
 }
 
-// counterBound reads `k < T` from a loop condition.
-func (in *independenceWalk) counterBound(cond ast.Expression) (string, string, bool) {
+// laneWidth recognizes lane(G), or an immutable local holding its value.
+// groupShape checks that G is a supported size shared by the whole kernel.
+func (in *independenceWalk) laneWidth(e ast.Expression) (int64, bool) {
+	if id, ok := e.(*ast.Identifier); ok {
+		g, known := in.laneWidths[id.Value]
+		return g, known
+	}
+	if call, ok := e.(*ast.InvocationExpression); ok && len(call.Arguments) == 1 {
+		if id, ok := call.Function.(*ast.Identifier); ok && id.Value == "lane" {
+			if g, ok := call.Arguments[0].(*ast.IntegerLiteral); ok && g.Value > 0 {
+				return g.Value, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// counterBound reads `k < T` or `k < T / G` from a loop condition.
+func (in *independenceWalk) counterBound(cond ast.Expression) (loopBound, bool) {
 	inf, ok := cond.(*ast.InfixExpression)
 	if !ok || inf.Operator != "<" {
-		return "", "", false
+		return loopBound{}, false
 	}
 	k, isIdent := inf.Left.(*ast.Identifier)
 	if !isIdent {
-		return "", "", false
+		return loopBound{}, false
 	}
-	t, isT := in.tileWidth(inf.Right)
+	width, divisor := inf.Right, int64(1)
+	if div, ok := width.(*ast.InfixExpression); ok && div.Operator == "/" {
+		g, ok := div.Right.(*ast.IntegerLiteral)
+		if !ok || g.Value <= 0 {
+			return loopBound{}, false
+		}
+		width, divisor = div.Left, g.Value
+	}
+	t, isT := in.tileWidth(width)
 	if !isT {
-		return "", "", false
+		return loopBound{}, false
 	}
-	return k.Value, t, true
+	return loopBound{counter: k.Value, bound: t, divisor: divisor}, true
 }
 
 // spanSource names the span a declaration's value windows or aliases.

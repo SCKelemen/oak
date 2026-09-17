@@ -23,6 +23,17 @@ Digest: type = struct {
 // A 32-byte array parameter arrives by reference and is read in place.
 sum8: (h: [8]u32) -> u32 = h[0] + h[1] + h[2] + h[3] + h[4] + h[5] + h[6] + h[7]
 
+// The verifier unrolls this loop: h[i] then has a constant register index.
+sum8_loop: (h: [8]u32) -> u32 {
+  total: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(8) {
+    total = total + h[i]
+    i = i + u32(1)
+  }
+  total
+}
+
 // An 8-byte array arrives in one register chunk, a 16-byte one in two.
 pair_sum: (v: [2]u32) -> u32 = v[0] + v[1]
 quad_sum: (v: [4]u32) -> u32 = v[0] + v[1] * u32(2) + v[2] * u32(3) + v[3] * u32(4)
@@ -55,6 +66,7 @@ main: (): i32 {
   d = step(step(d))
   total: u32 = sum8(d.h)
   assert(total == u32(52))
+  assert(sum8_loop(d.h) == total)
   h2: [2]u32 = halves(u32(0x00030002))
   assert(pair_sum(h2) == u32(5))
   q: [4]u32 = [4]u32{ 1, 1, 1, 1 }
@@ -79,12 +91,12 @@ func TestE2ENativeArrayValues(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native array values: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, fn := range []string{"sum8", "pair_sum", "quad_sum", "bump", "halves", "step", "main"} {
+	for _, fn := range []string{"sum8", "sum8_loop", "pair_sum", "quad_sum", "bump", "halves", "step", "main"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, fn := range []string{"sum8", "pair_sum", "quad_sum", "halves"} {
+	for _, fn := range []string{"sum8", "sum8_loop", "pair_sum", "quad_sum", "halves"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body (array leaves as parameters, a chunked array result); diagnostics:\n%s", fn, joined)
 		}

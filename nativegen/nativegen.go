@@ -1560,6 +1560,9 @@ type Lane struct {
 	// vector main loop and the scalar remainder (nativegen/vector_map.go);
 	// the verifier judges the lowering against the rewritten body.
 	VectorMaps bool
+	// UnrollVectorMaps processes two vectors per map trip. It has no effect
+	// without VectorMaps; scalar and single-vector forms remain candidates.
+	UnrollVectorMaps bool
 	// VectorFolds rewrites the lane-wise float reductions over span
 	// parameters into a vector main loop whose lanes are added in order
 	// and the scalar remainder (nativegen/vector_fold.go); the verifier
@@ -1632,6 +1635,9 @@ type Lane struct {
 	// verifier judge the body, and the search keeps the per-load form
 	// where they refuse it.
 	VectorBlocks bool
+	// ShareVectorAddresses retries address sharing after copy cleanup and
+	// includes stores. The search requires a semantic verdict for this lane.
+	ShareVectorAddresses bool
 	// Cleanup runs the late copy and branch cleanup over the lowered items
 	// on the AArch64 lane (nativegen/cleanup.go): a copy read once by the
 	// next instruction is forwarded, a definition copied once writes its
@@ -1809,7 +1815,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 			// The ordinary lowering supplies only checked signature/ABI metadata.
 			// Its executable items are discarded by the selector.
 			var template *asm.Function
-			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false)
+			template, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, false, nil, false, false, false, lane.Tables, lane.PackedStackArgs, false, false, false, false, false, false, false, false, false, false)
 			if err == nil {
 				template.Callees = functions
 				if lane.OptIRMemory == nil {
@@ -1829,11 +1835,11 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
-				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
-			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds)
+			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps)
 		}
 		if err != nil {
 			return out, err
@@ -1841,6 +1847,9 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 		if lane.Cleanup {
 			// Late copy and branch cleanup (nativegen/cleanup.go).
 			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
+		}
+		if lane.ShareVectorAddresses {
+			out.Items, sharedVectorAddressCount[out] = shareVectorAddresses(out.Items)
 		}
 		if !lane.Reallocate {
 			return scheduleLane(lane, out)
@@ -1893,7 +1902,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 				}
 			}
 			if err == nil {
-				out.Globals = verificationGlobals(fn, functions, lane.Globals, out.Globals)
+				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
 				optIRLowered[out] = lane.OptIRChanges
 			}
 		} else {
@@ -1977,7 +1986,7 @@ func (lane Lane) machineOptIRRegionGlobals() map[optir.RegionID]machine.OptIRReg
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false, false, false, false, false, false, false, false, false)
 }
 
 // scheduleLane applies the machine scheduler under Lane.Schedule; a lift
@@ -2123,14 +2132,14 @@ var rotatedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
 	// most rewritten shape tried first; a lowering a rewritten shape makes
 	// unsupported falls back to the shape before it, the source last.
-	for _, stage := range rewriteStages(fn, functions, true, unroll, vectorize, vmaps, vfolds, strength) {
+	for _, stage := range rewriteStages(fn, functions, tc, true, unroll, vectorize, vmaps, unrollMaps, vfolds, strength) {
 		if stage.body == fn.Body {
 			break
 		}
@@ -3753,7 +3762,37 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 // global the body never addresses admits nothing at the checker: a fact
 // arises only from an `adrp` of the name. Nil when there are none.
 func (g *generator) reachableGlobals() map[string]asm.Global {
-	return verificationGlobals(g.fn, g.functions, g.globals, g.usedGlobals)
+	return verificationGlobals(g.fn, g.functions, withArrayAggregates(g.globals, g.aggregates), g.usedGlobals)
+}
+
+// withArrayAggregates is the globals map with the program's top-level
+// arrays of scalars added as aggregate globals (their type text and
+// size, as globalAggregatePlace declares them): the verifier reads such
+// an array as a span memory (asm.declareGlobalArrays), and a caller
+// whose callee writes it — write_byte through write_flush's out_buf —
+// must declare it too, as it declares the cells a callee touches. The
+// scalar globals map itself stays as it is: the backend's own lookups
+// (globalOf) and the optimizer read it as the cells.
+func withArrayAggregates(globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration) map[string]asm.Global {
+	if len(aggregates) == 0 {
+		return globals
+	}
+	out := make(map[string]asm.Global, len(globals)+len(aggregates))
+	for name, global := range globals {
+		out[name] = global
+	}
+	for name, decl := range aggregates {
+		if decl == nil || decl.Type == nil {
+			continue
+		}
+		if _, has := out[name]; has {
+			continue
+		}
+		if elem, length, isArray := arrayOf(decl.Type); isArray {
+			out[name] = asm.Global{Type: decl.Type.String(), Aggregate: true, Size: length * int64(elem.bits/8)}
+		}
+	}
+	return out
 }
 
 // verificationGlobals retains declarations needed to interpret the original
@@ -4270,7 +4309,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		if err != nil {
 			return err
 		}
-		arr := g.allocArray(elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		dst, _ := g.arrayAsRecord(arr)
 		if from.layout != dst.layout {
 			return unsupported("an array local %s initialized from a %s", s.Name.Value, from.layout.name)
@@ -4299,7 +4338,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		return g.declareScalarArray(s, elem, length, literal)
 	}
 	if s.Value == nil {
-		arr := g.declareArray(s.Name.Value, elem, length)
+		arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 		zero, err := g.alloc(scalars["u64"])
 		if err != nil {
 			return err
@@ -4309,12 +4348,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		words := (bytes + 7) / 8
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.zeroPair(zero, g.slotMem(arr.offset+8*w))
+				g.zeroPair(zero, g.memOf(arr.loc().plus(8*w)))
 			} else {
-				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
+				g.emit("str", xr(zero), g.memOf(arr.loc().plus(8*w)))
 			}
 		}
 		g.release(zero)
+		g.bindArray(s.Name.Value, arr)
 		return nil
 	}
 	literal, isLiteral := s.Value.(*ast.ArrayLiteral)
@@ -4326,13 +4366,13 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	}
 	// The elements evaluate one at a time into storage reserved before the
 	// name is bound (an initializer never sees the array it fills).
-	arr := g.allocArray(elem, length)
+	arr := g.arrayDeclarationStorage(s.Name.Value, elem, length)
 	for i, element := range literal.Elements {
 		r, err := g.expr(element, &elem)
 		if err != nil {
 			return err
 		}
-		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
+		g.emit(storeOf(elem), reg(r, elem), g.memOf(arr.loc().plus(int64(i)*int64(elem.bits/8))))
 		g.release(r)
 	}
 	g.bindArray(s.Name.Value, arr)
@@ -4473,11 +4513,12 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.promoteFields(name, rec)
 }
 
-// returnSlotLocal names the record local a function builds in its result
-// area: the body's tail is the bare name of a local declared once, at the
-// body's top level, of the result type, not from a literal (a literal
-// fills frame slots), and whose address is never taken — the local then
-// is the area the caller passed in x8, and the return copies nothing.
+// returnSlotLocal selects a record or array local for the result area:
+// the body's tail is its bare name, declared once at the body's top level
+// with the result type, and its address is never taken. Record literals
+// are excluded because their initializer fills frame storage; array
+// literals remain candidates under arrayDeclarationStorage's additional
+// type, extent, and whole-assignment guards.
 func returnSlotLocal(fn *ast.FunctionStatement) string {
 	block, isBlock := fn.Body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
@@ -5672,6 +5713,9 @@ func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel strin
 			}
 			if dst.readOnly {
 				return unsupported("an assignment to the read-only array %s", s.Name.Value)
+			}
+			if source, isPermutation := g.selfPermutation(s.Name.Value, arr, s.Value); isPermutation {
+				return g.lowerSelfPermutation(arr, source)
 			}
 			from, err := g.recordValueAs(s.Value, dst.layout)
 			if err != nil {
@@ -8505,6 +8549,7 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 // load's destination, so it is returned separately).
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *token.Token) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
+	elide := g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
 		// A constant element: its place — rebased through a temporary when
 		// the offset is past the load's immediate (a field far into a large
@@ -8530,8 +8575,12 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 		} else {
 			g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 		}
-		if err := g.constantGuard(home, arr.length); err != nil {
-			return asm.Memory{}, 0, 0, err
+		if elide {
+			g.elided++
+		} else {
+			if err := g.constantGuard(home, arr.length); err != nil {
+				return asm.Memory{}, 0, 0, err
+			}
 		}
 		idx := wr(home)
 		return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, -1, base, nil
@@ -8548,7 +8597,7 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression, tok *tok
 	// bound, Oak.Assembler.masked_index_bound) or the compiler keeps this
 	// line's guards.
 	guard := true
-	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
+	if elide {
 		guard = false
 		g.elided++
 	}

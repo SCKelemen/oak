@@ -109,7 +109,8 @@ mismatched-signature groups, and lowering for binding/variant-pattern arms.
 Every loop must have a statically evident bound (Power of Ten rule 2).
 Enforced: the canonical bounded counter shape — `while i < bound` (or `<=`)
 advancing `i` exactly once per iteration by a positive constant, with the
-bound an integer constant or an identifier the body never reassigns — is
+bound an integer constant, an identifier the body never reassigns, or
+either divided by a positive literal (such as `while s < cols / 32`) — is
 recognized as carrying its own bound (`Oak.BoundedLoop` proves such a loop
 runs at most `bound - i` iterations). Every other `while` records the
 obligation `OAK-D0103` (warning), which the strict profile rejects.

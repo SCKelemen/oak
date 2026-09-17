@@ -2,10 +2,13 @@ package asm
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // The seam checker's region decisions against their Lean transliteration
@@ -114,8 +117,116 @@ func TestCheckerDecisionsMatchLeanTransliteration(t *testing.T) {
 			missing = append(missing, tc.name+":\n  "+line)
 		}
 	}
+	type recordCase struct {
+		name  string
+		span  *spanFact
+		bound idxFact
+		size  int64
+	}
+	record := span(2072, true, false, 0, 1)
+	record.record = "Regime"
+	slackRecord := span(2072, true, true, 4, 1)
+	slackRecord.record = "Regime"
+	for _, tc := range []recordCase{
+		{"one exact Regime element", record, reg(1, 0, false), 2072},
+		{"a slack region has no single-record provenance", slackRecord, reg(1, 4, true), 2072},
+		{"a different stride has no Regime provenance", record, reg(1, 0, false), 8},
+	} {
+		place, ok := exactSpanRecord(tc.span, tc.bound, tc.size)
+		want := "none"
+		if ok {
+			want = fmt.Sprintf("some ⟨%q, %d⟩", place.name, place.offset)
+		}
+		line := fmt.Sprintf("example : exactSpanRecord %q %s %s %d = %s := by decide", tc.span.record, renderSpanFact(tc.span), renderIdx(tc.bound), tc.size, want)
+		if !strings.Contains(text, line) {
+			missing = append(missing, tc.name+":\n  "+line)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		place  recordPlace
+		offset int64
+	}{
+		{"the pages field offset", recordPlace{name: "Regime"}, 0},
+		{"a field tail offset", recordPlace{name: "Regime"}, 16},
+		{"negative offsets are refused", recordPlace{name: "Regime"}, -1},
+	} {
+		place, ok := narrowRecordPlace(tc.place, tc.offset)
+		want := "none"
+		if ok {
+			want = fmt.Sprintf("some ⟨%q, %d⟩", place.name, place.offset)
+		}
+		line := fmt.Sprintf("example : narrowRecordPlace ⟨%q, %d⟩ %s = %s := by decide", tc.place.name, tc.place.offset, renderInt(tc.offset), want)
+		if !strings.Contains(text, line) {
+			missing = append(missing, tc.name+":\n  "+line)
+		}
+	}
 	if len(missing) != 0 {
 		t.Fatalf("%d decision(s) not stated in spec/lean/Oak/CheckerRefinement.lean — update the Lean file or the checker:\n%s", len(missing), strings.Join(missing, "\n"))
+	}
+}
+
+func TestCheckerNominalRecordProvenanceFailsClosed(t *testing.T) {
+	spanType := &ast.IndexExpression{Left: &ast.Identifier{Value: "Regime"}, Index: &ast.Identifier{Value: "*"}}
+	composites := map[string]Composite{
+		"Regime": {Size: 2072},
+		"Decoy":  {Size: 2072},
+	}
+	unit, parseErrors := ParseUnit("provenance.oakasm", "touch: (s: [*]Regime) -> () = {\n  bind x0, w1 = s\n  ret\n}\n")
+	if len(parseErrors) != 0 {
+		t.Fatal(parseErrors)
+	}
+	unit.Functions[0].Composites = composites
+	bound := &checker{fn: unit.Functions[0]}
+	bound.bindContract()
+	if len(bound.errors) != 0 || bound.spans[0] == nil || bound.spans[0].record != "Regime" {
+		t.Fatalf("checked record-span binding did not retain Regime provenance: errors=%v fact=%+v", bound.errors, bound.spans[0])
+	}
+	roundTrip := &checker{}
+	roundTrip.applyGuards(bound.guardSnapshot())
+	if roundTrip.spans[0] == nil || roundTrip.spans[0].record != "Regime" {
+		t.Fatalf("guard-state round trip lost Regime provenance: %+v", roundTrip.spans[0])
+	}
+	if got := recordSpanName(composites, spanType, 2072); got != "Regime" {
+		t.Fatalf("exact record span name = %q, want Regime", got)
+	}
+	if got := recordSpanName(composites, spanType, 2048); got != "" {
+		t.Fatalf("mismatched record stride retained provenance %q", got)
+	}
+	if _, ok := shiftedNonnegative(math.MaxInt64, 12); ok {
+		t.Fatal("a shifted immediate that overflows int64 retained provenance")
+	}
+	if got, ok := shiftedNonnegative(4095, 12); !ok || got != 4095<<12 {
+		t.Fatalf("legal shifted immediate = (%d, %v), want (%d, true)", got, ok, 4095<<12)
+	}
+
+	base := &spanFact{lenReg: 1, elem: 2072, writable: true, record: "Regime", lenRegs: map[int]bool{1: true}}
+	exact, ok := elementRegionOf(0, nil, base, nil, idxFact{boundReg: 1}, 2072)
+	if !ok || exact.record != "Regime" || exact.recordOffset != 0 || exact.size != 2072 {
+		t.Fatalf("exact record element = %+v, ok=%v", exact, ok)
+	}
+	base.hasMin, base.minLen = true, 4
+	widened, ok := elementRegionOf(0, nil, base, nil, idxFact{boundReg: 1, bound: 4, slack: true, need: 4}, 2072)
+	if !ok || widened.record != "" || widened.recordOffset != 0 || widened.size != 4*2072 {
+		t.Fatalf("slack-derived multi-record region retained provenance: %+v, ok=%v", widened, ok)
+	}
+
+	tail, ok := narrowRegion(exact, 2048)
+	if !ok || tail.record != "Regime" || tail.recordOffset != 2048 || tail.size != 24 {
+		t.Fatalf("record tail = %+v, ok=%v", tail, ok)
+	}
+	malformed := region{size: 8, writable: true, record: "Regime", recordOffset: math.MaxInt64}
+	overflow, ok := narrowRegion(malformed, 1)
+	if !ok || overflow.record != "" || overflow.recordOffset != 0 || overflow.size != 7 {
+		t.Fatalf("overflowing provenance must be cleared without widening bytes: %+v, ok=%v", overflow, ok)
+	}
+
+	a := newGuardState()
+	b := newGuardState()
+	a.spans[0] = &spanImage{lenReg: 1, elem: 2072, writable: true, record: "Regime", lens: map[int]bool{1: true}}
+	b.spans[0] = &spanImage{lenReg: 1, elem: 2072, writable: true, record: "Decoy", lens: map[int]bool{1: true}}
+	if _, retained := meetGuards(a, b).spans[0]; retained {
+		t.Fatal("same-sized nominally different record spans met as one fact")
 	}
 }
 
@@ -145,14 +256,18 @@ func renderBase(frameAddr *int64, span *spanFact, extent *region) string {
 		frame = "(some " + renderInt(*frameAddr) + ")"
 	}
 	if span != nil {
-		var lens []string
-		for l := range span.lenRegs {
-			lens = append(lens, fmt.Sprintf("%d", l))
-		}
-		sp = fmt.Sprintf("(some ⟨%d, %v, %v, %d, [%s]⟩)", span.elem, span.writable, span.hasMin, span.minLen, strings.Join(lens, ", "))
+		sp = "(some " + renderSpanFact(span) + ")"
 	}
 	if extent != nil {
 		reg = fmt.Sprintf("(some ⟨%d, %v⟩)", extent.size, extent.writable)
 	}
 	return fmt.Sprintf("⟨%s, %s, %s⟩", frame, sp, reg)
+}
+
+func renderSpanFact(span *spanFact) string {
+	var lens []string
+	for l := range span.lenRegs {
+		lens = append(lens, fmt.Sprintf("%d", l))
+	}
+	return fmt.Sprintf("⟨%d, %v, %v, %d, [%s]⟩", span.elem, span.writable, span.hasMin, span.minLen, strings.Join(lens, ", "))
 }

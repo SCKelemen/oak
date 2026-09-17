@@ -46,6 +46,44 @@ func TestMetricsStrideIsTheInductionVariable(t *testing.T) {
 	}
 }
 
+func TestMetricsSmallerVectorCleanup(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Class: asm.ClassW, Num: n} }
+	for _, test := range []struct {
+		name                               string
+		middleStep, middleReg, middleTrips int
+	}{
+		{"vector cleanup", 4, 9, 1},
+		{"different index", 4, 10, 0},
+		{"equal stride", 8, 9, 0},
+		{"larger stride", 16, 9, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fn := &asm.Function{Arch: asm.ArchArm64}
+			for k, step := range []int{8, test.middleStep, 1} {
+				reg := 9
+				if k == 1 {
+					reg = test.middleReg
+				}
+				label := fmt.Sprintf("loop_%d", k)
+				fn.Items = append(fn.Items,
+					asm.Label{Name: label},
+					ins("cmp", w(reg), w(20)),
+					asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: fmt.Sprintf("loop_%d", k+1)}}},
+					ins("add", w(reg), w(reg), asm.Immediate{Value: int64(step)}),
+					ins("b", asm.Symbol{Name: label}))
+			}
+			fn.Items = append(fn.Items, asm.Label{Name: "loop_3"}, ins("ret"))
+			metrics := Metrics(fn)
+			if len(metrics.LoopBodies) != 3 || metrics.LoopBodies[1].MaxTrips != test.middleTrips {
+				t.Fatalf("unexpected cleanup metrics: %+v", metrics.LoopBodies)
+			}
+			if test.name == "vector cleanup" && metrics.LoopBodies[2].MaxTrips != 3 {
+				t.Fatalf("scalar tail lost its bound: %+v", metrics.LoopBodies[2])
+			}
+		})
+	}
+}
+
 // A loop inside a loop: the inner loop's items are its own (depth 1,
 // outer 1), the outer loop counts the rest.
 func TestMetricsNestedLoops(t *testing.T) {
@@ -164,10 +202,20 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 19 {
+	if got := len(registry.Transforms()); got != 21 {
 		t.Fatalf("%d transforms", got)
 	}
 	plain := PlainLane(Lane{Arch: asm.ArchArm64, OptIR: &optir.CFG{}, OptIRFingerprint: "cfg", OptIRChanges: 1, UseOptIR: true, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true, VectorBlocks: true, MultiplyAdd: true, ValueSelect: true, VectorReductions: true, VectorMaps: true, Fuse: true, FuseExits: true, Schedule: true})
+	if PlainLane(Lane{UnrollVectorMaps: true}).UnrollVectorMaps {
+		t.Fatal("plain lane retained map unrolling")
+	}
+	if PlainLane(Lane{ShareVectorAddresses: true}).ShareVectorAddresses {
+		t.Fatal("plain lane retained late address sharing")
+	}
+	sharing, _ := registry.Lookup(TransformVectorAddresses)
+	if gated, ok := sharing.(opt.Gated); !ok || !gated.NeedsVerdict() {
+		t.Fatal("late address sharing must require a semantic verdict")
+	}
 	if plain.UseOptIR || plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || plain.VectorBlocks || plain.MultiplyAdd || plain.ValueSelect || plain.VectorReductions || plain.VectorMaps || plain.Fuse || plain.FuseExits || plain.Schedule || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}

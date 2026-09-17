@@ -44,6 +44,34 @@ def cpu_model():
     return platform.processor() or "unknown"
 
 
+def sample_kernel(commands, size, rounds, samples):
+    """Interleave implementations, rotating which runs first each sample."""
+    if not commands or samples < 1:
+        raise ValueError("benchmark needs an implementation and at least one sample")
+    rows = [None] * len(commands)
+    checksum = None
+    for sample in range(samples):
+        for offset in range(len(commands)):
+            index = (sample + offset) % len(commands)
+            row = json.loads(capture(commands[index] + [str(size), str(rounds), "1"]))
+            if checksum is None:
+                checksum = row["checksum"]
+            elif row["checksum"] != checksum:
+                raise ValueError(
+                    f"{row['kernel']}: implementations disagree at sample {sample + 1}: "
+                    f"{row['impl']} returned {row['checksum']}, expected {checksum}"
+                )
+            if rows[index] is None:
+                rows[index] = dict(row)
+                rows[index]["samples"] = []
+            rows[index]["samples"].extend(row["samples"])
+    for row in rows:
+        # Keep raw samples in observation order so load drift is visible.
+        ordered = sorted(row["samples"])
+        row["ns_per_op_median"] = ordered[len(ordered) // 2]
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--size", type=int, default=1 << 20, help="elements per kernel (bytes, floats, or words)")
@@ -74,25 +102,10 @@ def main():
                 runs.append([str(build / "go-runner"), impl, kernel])
             if kernel in RUST_KERNELS:
                 runs.append([str(build / "rust-runner"), kernel])
-            rows = []
-            for command in runs:
-                # Alternate the order across samples by running each implementation
-                # once per outer sample, interleaved, so drift affects all alike.
-                merged = None
-                for _ in range(args.samples):
-                    line = capture(command + [str(args.size), str(args.rounds), "1"])
-                    row = json.loads(line)
-                    if merged is None:
-                        merged = dict(row)
-                        merged["samples"] = []
-                    merged["samples"].extend(row["samples"])
-                merged["samples"].sort()
-                merged["ns_per_op_median"] = merged["samples"][len(merged["samples"]) // 2]
-                rows.append(merged)
-            checksums = {row["checksum"] for row in rows}
-            if len(checksums) != 1:
-                sys.exit(f"{kernel}: implementations disagree: {[(r['impl'], r['checksum']) for r in rows]}")
-            results.extend(rows)
+            try:
+                results.extend(sample_kernel(runs, args.size, args.rounds, args.samples))
+            except ValueError as err:
+                sys.exit(str(err))
     report = {
         "schema": "oak-kernels-benchmark-v1",
         "machine": platform.machine(), "platform": platform.platform(), "cpu": cpu_model(),
@@ -101,6 +114,7 @@ def main():
         "go": capture(["go", "version"]), "rustc": capture(["rustc", "--version"]),
         "c_flags": flags, "rust_flags": ["-O"], "go_flags": [],
         "size": args.size, "rounds": args.rounds, "samples": args.samples,
+        "sample_order": "interleaved implementations, rotating first implementation each sample",
         "core_affinity": "not controlled", "cache_flush": False,
         "results": results,
     }

@@ -26,6 +26,7 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1947,6 +1948,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			spans[TableName(symbol)] = table.Elem
 		}
 	}
+	// The program's writable top-level arrays likewise (declareGlobalArrays
+	// on the Oak side): the array's address binds to the span base `&NAME`
+	// (bindGlobalAddress), and the checker bounds its elements as it
+	// bounds a frame array's.
+	for name, global := range fn.Globals {
+		if elem, _, _, isArray := globalArrayShape(global); isArray {
+			if _, shadowed := spans[name]; !shadowed {
+				spans[name] = elem
+			}
+		}
+	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
 		// A record result of one chunk comes back in x0, of two in x0 and
@@ -3349,6 +3361,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			continue
 		}
+		if handled, reason, ok := x.bindGlobalAddress(instr, state); handled {
+			if !ok {
+				return nil, nil, atInstruction(reason, instr), false
+			}
+			continue
+		}
 		if reason, ok := step(instr, state); !ok {
 			return nil, nil, atInstruction(reason, instr), false
 		}
@@ -3974,16 +3992,27 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 			if int64(1)<<uint(mem.Shift) != stride || size != stride {
 				return fmt.Sprintf("an indexed load through a record argument (%s) whose scale is not the element size", prefix), false
 			}
-			bound, isBounded := state.bounds[mem.Index.Num]
-			if !isBounded || int64(bound) > length {
-				return "an indexed load through a record argument without a dominating constant index guard", false
-			}
 			idx, okIndex := state.read(*mem.Index)
 			if !okIndex {
 				return "unbound register read", false
 			}
 			index := truncate(idx, 32)
-			for k := length - 1; k >= 0; k-- {
+			first, last := int64(0), length-1
+			if index.kind == termConst {
+				// A decided guard (including one in an unrolled counted
+				// loop) records no symbolic bound. The constant itself
+				// selects one leaf, still within this array field.
+				if index.value >= uint64(length) {
+					return "an indexed load through a record argument past the array field", false
+				}
+				first, last = int64(index.value), int64(index.value)
+			} else {
+				bound, isBounded := state.bounds[mem.Index.Num]
+				if !isBounded || bound > uint64(length) {
+					return "an indexed load through a record argument without a dominating constant index guard", false
+				}
+			}
+			for k := last; k >= first; k-- {
 				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
 				if !okLeaf {
 					return "an indexed load through a record argument cutting through a field", false
@@ -4189,6 +4218,37 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 		return constTerm(elementValue(span, index.value&mask(32), width), width)
 	}
 	return selectTerm(span, index, width)
+}
+
+// bindGlobalAddress executes `add xA, xN, :lo12:G` for a top-level array
+// G the executor reads as a span (globalArrayShape): xA is the span base
+// `&G`, which the loads and stores through it read as a span parameter's
+// (step binds every other global's address to `&global:G`).
+func (x *pathExecutor) bindGlobalAddress(instr Instruction, state *symbolicState) (handled bool, reason string, ok bool) {
+	if instr.Mnemonic != "add" || len(instr.Operands) != 3 {
+		return false, "", false
+	}
+	sym, isSym := instr.Operands[2].(Symbol)
+	if !isSym || !sym.Lo12 {
+		return false, "", false
+	}
+	global, known := x.globals[sym.Name]
+	if !known {
+		return false, "", false
+	}
+	if _, _, _, isArray := globalArrayShape(global); !isArray {
+		return false, "", false
+	}
+	if _, isSpan := x.spans[sym.Name]; !isSpan {
+		return false, "", false
+	}
+	dest := instr.Operands[0].(Register)
+	base, bound := operandTerm(state, instr.Operands[1], 64)
+	if !bound || base.kind != termParam || base.name != globalPageName(sym.Name) {
+		return true, "add :lo12: over a register that does not hold the symbol's page", false
+	}
+	state.write(dest, paramTerm(spanBaseName(sym.Name), 64))
+	return true, "", true
 }
 
 // step executes one data-processing instruction on the state.
@@ -4711,6 +4771,13 @@ type oakLowering struct {
 	loops     []*loopEvent   // data-dependent loops met, in creation order
 	loopStack []int          // indices of the loops whose bodies are being lowered
 	fresh     map[string]int // loop-carried fresh symbols -> width
+	// externSite and externSeq name an extern binding's result: the
+	// source line of the call the outermost inlined callee was entered
+	// at (the machine's `bl` line for a call summary) and the extern
+	// call's sequence within that callee's lowering (lowerExternCall).
+	externSite int
+	externSeq  int
+	externs    map[string]*ast.FunctionStatement // the program's extern bindings, by Oak name (Function.Externs)
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
@@ -5250,6 +5317,13 @@ func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason 
 		return true, reason, ok
 	}
 	callee := lo.functions[ident.Value]
+	if callee == nil {
+		callee = lo.externs[ident.Value]
+	}
+	if callee != nil && callee.ExternSymbol != "" && callee.ReturnType == nil {
+		_, reason, ok := lo.lowerExternCall(callee, call, 0)
+		return true, reason, ok
+	}
 	if callee == nil || !unitFunction(callee) || callee.Body == nil {
 		return false, "", false
 	}
@@ -7199,6 +7273,9 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 // and recursion fail closed.
 func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
 	name := callee.Name.Value
+	if callee.ExternSymbol != "" {
+		return lo.lowerExternCall(callee, call, width)
+	}
 	if callee.ReturnType == nil {
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
@@ -7225,6 +7302,115 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		return extendTerm(result, resultWidth, width, resultSigned), "", true
 	}
 	return truncate(result, width), "", true
+}
+
+// lowerExternCall lowers a call to an extern binding (`name: (…): c.T
+// effects { Host.… } = c.extern("symbol")`, docs/spec/92-ffi.md): the
+// result is a fresh parameter of the result's width, named by the
+// symbol, the outermost inlined callee's call line and the call's
+// sequence within it (`extern:symbol@line#k`), and the call has no
+// effect on Oak memory. The gate is the declared effect row: every
+// effect in the `Host` namespace and no writable span parameter, so the
+// call's effects are the host's alone. Both sides of the verifier lower
+// the same callee Oak body (a caller's inline, a call summary), so the
+// names agree and the proof is relative to the extern behaving alike on
+// both — as it is relative to the callee's Oak body. The arguments are
+// lowered for their traps (a subslice past its span, an element read);
+// their values do not reach the result, which the extern alone decides.
+// An extern outside the gate leaves the body trusted, as before.
+func (lo *oakLowering) lowerExternCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
+	name := callee.Name.Value
+	if !callee.EffectsDeclared {
+		return nil, fmt.Sprintf("a call to the extern %s without a declared effect row", name), false
+	}
+	for _, effect := range callee.Effects {
+		if effect.Namespace != "Host" {
+			return nil, fmt.Sprintf("a call to the extern %s with the effect %s (outside the host)", name, effect.String()), false
+		}
+	}
+	for _, param := range callee.Parameters {
+		if isWritableSpan(param.Type) {
+			return nil, fmt.Sprintf("a call to the extern %s, which takes the writable span %s", name, param.Name.Value), false
+		}
+	}
+	// The arguments are the type checker's business (`c.span_of(v)`
+	// stands for two C parameters, the pointer and the count); here each
+	// is lowered for its traps alone.
+	for _, arg := range call.Arguments {
+		if reason, ok := lo.lowerExternArgument(arg); !ok {
+			return nil, fmt.Sprintf("a call to the extern %s whose argument contains %s", name, reason), false
+		}
+	}
+	if callee.ReturnType == nil {
+		return nil, "", true
+	}
+	resultWidth, ok := cScalarWidth(typeText(callee.ReturnType))
+	if !ok {
+		return nil, fmt.Sprintf("a call to the extern %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	symbol := fmt.Sprintf("extern:%s@%d#%d", callee.ExternSymbol, lo.externSite, lo.externSeq)
+	lo.externSeq++
+	lo.fresh[symbol] = resultWidth
+	return adaptWidth(paramTerm(symbol, resultWidth), width), "", true
+}
+
+// lowerExternArgument lowers an extern call's argument for its traps: a
+// `c.*` conversion or `c.span_of` wraps the Oak value; a subslice records
+// its bounds against its span; a name, a literal or a view of a local
+// traps on nothing; any other expression lowers as a scalar.
+func (lo *oakLowering) lowerExternArgument(arg ast.Expression) (string, bool) {
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		if access, isAccess := call.Function.(*ast.IndexExpression); isAccess && len(call.Arguments) == 1 {
+			if lib, isIdent := access.Left.(*ast.Identifier); isIdent && lib.Value == "c" {
+				return lo.lowerExternArgument(call.Arguments[0])
+			}
+		}
+		if sub, isSub := subsliceOf(arg); isSub {
+			if _, isSpan := lo.spans[sub.span]; !isSpan {
+				return fmt.Sprintf("a subslice of %s, which is not a span", sub.span), false
+			}
+			start, reason, ok := lo.lower(sub.start, 32)
+			if !ok {
+				return reason, false
+			}
+			count, reason, ok := lo.lower(sub.count, 32)
+			if !ok {
+				return reason, false
+			}
+			length := lo.spanLenTerm(sub.span, 32)
+			lo.addTrap(cmpTerm("hi", start, length))
+			lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+			if lo.witnessTrapped {
+				return fmt.Sprintf("a subslice of %s past its length on this input", sub.span), false
+			}
+			return "", true
+		}
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && fn.Value == "view" && len(call.Arguments) == 1 {
+			return "", true
+		}
+	}
+	switch arg.(type) {
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.StringLiteral:
+		return "", true
+	}
+	_, reason, ok := lo.lower(arg, 64)
+	return reason, ok
+}
+
+// cScalarWidth is the width of a `c.*` integer type an extern returns
+// (docs/spec/92-ffi.md section 2.2).
+func cScalarWidth(typeName string) (int, bool) {
+	switch strings.TrimPrefix(typeName, "c.") {
+	case "Int64", "UInt64", "Size", "SSize", "Long", "ULong", "Ptr", "IntPtr", "UIntPtr":
+		return 64, true
+	case "Int32", "UInt32", "Int", "UInt":
+		return 32, true
+	case "Int16", "UInt16", "Short", "UShort":
+		return 16, true
+	case "Int8", "UInt8", "Char", "UChar", "Bool":
+		return 8, true
+	}
+	return 0, false
 }
 
 // describe spells a type for a message: its name, or its shape.
@@ -7283,6 +7469,12 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
+	}
+	if len(lo.inlining) == 0 {
+		// The outermost inlined callee: the extern results met inside it
+		// are named by this call's line, as the machine side names them
+		// by the `bl`'s line when it summarizes the same callee.
+		lo.externSite, lo.externSeq = call.Token.Line, 0
 	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
@@ -7666,6 +7858,66 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 	}
 }
 
+// globalArrayShape reads a writable top-level array's shape from its
+// declared type text (`(u8[64])`, the type printer's spelling of
+// `[64]u8`): the element size in bytes, the element count, and the
+// element's signedness. Only arrays of integer scalars are spans; a
+// record or an array of records stays outside.
+func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok bool) {
+	if !global.Aggregate {
+		return 0, 0, false, false
+	}
+	m := globalArrayType.FindStringSubmatch(global.Type)
+	if m == nil {
+		return 0, 0, false, false
+	}
+	count, err := strconv.ParseInt(m[2], 10, 64)
+	if err != nil || count <= 0 {
+		return 0, 0, false, false
+	}
+	switch m[1] {
+	case "u8", "i8":
+		elem = 1
+	case "u16", "i16":
+		elem = 2
+	case "u32", "i32":
+		elem = 4
+	case "u64", "i64":
+		elem = 8
+	default:
+		return 0, 0, false, false
+	}
+	if elem*count != global.Size {
+		return 0, 0, false, false
+	}
+	return elem, count, m[1][0] == 'i', true
+}
+
+var globalArrayType = regexp.MustCompile(`^\(?([ui](?:8|16|32|64))\[([0-9]+)\]\)?$`)
+
+// declareGlobalArrays makes the program's writable top-level arrays
+// readable and writable as spans named by the global (the machine side
+// binds `adrp`/`add :lo12:` of such a global to the span base `&NAME`,
+// bindGlobalAddress): NAME[k] is the element, len(NAME) the declared
+// count, and the stores through it are compared as a span parameter's
+// are (decideSpans). A parameter or a table of the name shadows it.
+func (lo *oakLowering) declareGlobalArrays(globals map[string]Global) {
+	for name, global := range globals {
+		elem, count, signed, isArray := globalArrayShape(global)
+		if !isArray {
+			continue
+		}
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue
+		}
+		lo.spans[name] = spanContract{elemWidth: int(elem) * 8, signed: signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = count
+	}
+}
+
 // tableLength recognizes len(T) over a constant table, or over a callee's
 // span parameter aliased to one (`sum_view(view(&TABLE))`): the element
 // count.
@@ -7871,6 +8123,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := lo.functions[ident.Value]; known {
 				return lo.inlineCall(callee, e, width)
+			}
+			if extern, isExtern := lo.externs[ident.Value]; isExtern {
+				return lo.lowerExternCall(extern, e, width)
 			}
 			if guard, isGuard := lo.guards[ident.Value]; isGuard && len(e.Arguments) == 1 {
 				return lo.lowerGuard(ident.Value, guard, e.Arguments[0], width)
@@ -8978,8 +9233,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// back after the body (asm/span_args.go).
 	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
+	lo.externs = x.fn.Externs
 	lo.declareTables(x.fn.Tables)
+	lo.declareGlobalArrays(x.fn.Globals)
 	lo.inlining = map[string]bool{name: true}
+	lo.externSite = instr.Line // the externs met in the callee are named by this call's line (lowerExternCall)
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
 	// (docs/spec/94-assembler.md §9).
@@ -9628,7 +9886,9 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.globals = fn.Globals
 	lowering.bindRecordSpans(fn, sig)
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.externs = fn.Externs
 	lowering.declareTables(fn.Tables)
+	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
@@ -10288,7 +10548,8 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
 		case termBinary:
-			if t.op == "mul" && left.width == t.width {
+			out = canonicalBitwise(t, left, right)
+			if out == nil && t.op == "mul" && left.width == t.width {
 				switch {
 				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))

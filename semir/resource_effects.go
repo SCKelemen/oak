@@ -419,9 +419,11 @@ func decodeResourceArgument(effect Effect) (int, error) {
 // protocol-local transition label cannot accidentally affect an unrelated
 // source callable with the same spelling.
 func (m Module) ValidateResourceSemantics() error {
+	sealedCallables := make(map[string]string)
 	for _, protocol := range m.Protocols {
+		constructorMatches := 0
 		for _, transition := range protocol.Transitions {
-			_, present, err := transition.ResourceSemantics()
+			semantics, present, err := transition.ResourceSemantics()
 			if err != nil {
 				return fmt.Errorf("protocol %q transition %q: %w", protocol.Name, transition.Name, err)
 			}
@@ -432,7 +434,54 @@ func (m Module) ValidateResourceSemantics() error {
 					transition.Name,
 				)
 			}
+			if protocol.SealedInitialConstructor == "" {
+				continue
+			}
+			if transition.Callable == protocol.SealedInitialConstructor {
+				constructorMatches++
+				if transition.From != protocol.Initial || transition.To != protocol.Initial {
+					return fmt.Errorf(
+						"protocol %q sealed initial constructor %q must be an %s -> %s transition",
+						protocol.Name,
+						protocol.SealedInitialConstructor,
+						protocol.Initial,
+						protocol.Initial,
+					)
+				}
+				if !present || !semantics.ReturnsFresh {
+					return fmt.Errorf("protocol %q sealed initial constructor %q must return fresh authority", protocol.Name, protocol.SealedInitialConstructor)
+				}
+				if semantics.ReturnTrusted {
+					return fmt.Errorf("protocol %q sealed initial constructor %q cannot use trusted result identity", protocol.Name, protocol.SealedInitialConstructor)
+				}
+				continue
+			}
+			if present && (semantics.ReturnsFresh || semantics.ReturnTrusted) {
+				return fmt.Errorf("protocol %q transition %q is an alternate fresh or trusted mint route beside sealed initial constructor %q", protocol.Name, transition.Name, protocol.SealedInitialConstructor)
+			}
 		}
+		if protocol.SealedInitialConstructor == "" {
+			continue
+		}
+		if protocol.TypestateArity <= 0 {
+			return fmt.Errorf("protocol %q seals its initial constructor but is not typestate-indexed", protocol.Name)
+		}
+		if constructorMatches != 1 {
+			return fmt.Errorf("protocol %q designates sealed initial constructor %q, but exactly one matching transition is required (found %d)", protocol.Name, protocol.SealedInitialConstructor, constructorMatches)
+		}
+		resourceDefinitions := 0
+		for _, definition := range m.Definitions {
+			if definition.Protocol == protocol.Name && definition.Authority.Resource != ResourceAuthorityUnspecified {
+				resourceDefinitions++
+			}
+		}
+		if resourceDefinitions != 1 {
+			return fmt.Errorf("protocol %q seals its initial constructor but governs %d resource definitions; exactly one is required", protocol.Name, resourceDefinitions)
+		}
+		if previous, exists := sealedCallables[protocol.SealedInitialConstructor]; exists {
+			return fmt.Errorf("sealed initial constructor %q is designated by both protocols %q and %q", protocol.SealedInitialConstructor, previous, protocol.Name)
+		}
+		sealedCallables[protocol.SealedInitialConstructor] = protocol.Name
 	}
 	return nil
 }

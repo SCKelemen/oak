@@ -423,6 +423,14 @@ values for every typed input from accepted allocation, projection, and a
 replayed false difference. It needs no clauses or RUP. Sixteen production
 outcomes are kernel-pinned, including malformed allocation hidden by constant
 folds. True and pending roots refuse this checker without implying inequality.
+`Oak.CNFMetadataSettled.check_sound` now composes complete header admission
+with this equality-only path: the same returned ordered parameters are valid,
+match the header's names, and bind the equal words. Twenty-four production
+fixtures kernel-pin the combined decisions, including malformed unused
+metadata and unsupported modes behind constant-only equality. Valid metadata
+also cannot excuse a changed used width, malformed allocation, or a
+true/pending root. Connecting recording coverage to the same semantic
+snapshot remains separate.
 This does not close arbitrary Go admission/coverage, source-to-machine
 refinement, or verdict authority; native certificate material remains audit-only.
 
@@ -440,6 +448,17 @@ maps that pass numeric finish. That counterexample is important: scalar
 snapshot equality does not establish content immutability. Faithful Go
 graph/map/key projection and an implementation theorem for the actual admitted
 recording trace remain open; this is not full replay or native-verifier closure.
+The next executable-model slice isolates the actual checked recording stores
+in private Go helpers, retaining their checks and adding no trace buffer.
+`Oak.CNFReplayRecording` proves their accepted updates preserve the admitted
+invariant and that a checked event run from empty establishes it.
+`Oak.CNFReplayRecordedCoverage.check_exact` then derives exact coverage from
+the run and checked completion counts instead of assuming reachability.
+Actual helper sequences, returned edges and projected states are kernel-pinned;
+a syntactic write-site regression guards the helper boundary. The modeled
+recording invariant is now derived, while universal Go helper/walker
+correspondence, projection, aliasing and immutability remain unproved.
+This is not a universal Go execution theorem or root-semantics proof.
 `Oak.CNFFinalObligation` proves the four total
 decoded-root outcomes, exact trap/claim clause order, and pending
 counterexample semantics. `Oak.CNFTermRoot` proves evaluation preservation and
@@ -613,11 +632,48 @@ writable-pair theorem: `span_element_then_pair64_store` turns an admitted
 16-byte access over eight-byte span elements into bounds for exactly two
 adjacent cells, and the synchronized Go/Lean examples pin the intended
 non-overlapping offsets 0 and 16 of a four-cell region plus overflow and
-read-only refusals. No checker behavior changed. In particular, writability is
-not ordinary-RAM, private, or
-unpublished custody; pair stores through generic and record spans remain
-outside the semantic verifier until that authority and exact record-field
-provenance are explicit.
+read-only refusals. That arithmetic theorem admitted no wider access. In
+particular, writability is not ordinary-RAM, private, or unpublished custody;
+pair stores through generic and record spans remain outside the semantic
+verifier. The checker now retains compiler-derived nominal identity for one
+exact record-span element and exact record-relative offsets for its
+nonnegative tail aliases. Same-sized different record types do not meet,
+widened multi-record regions lose the identity, and overflow clears it. This
+metadata never broadens an access decision; it can only discard an ambiguous
+fact at a meet and supplies no authority. Exact direct-`u64` array selection
+now checks the nominal layout and exact field start, narrowing indexed access
+to the field's own size. Unsupported layouts keep the original generic bounds
+and supply no exact field fact. `Oak.RecordArrayRegion.valid_quad_sound`
+proves that valid selected geometry and the staged quad bound contain four
+adjacent cells in the field/record without 32-bit index wrap; its composition
+theorem relates their pair log to four scalar final-state writes. The lookup's
+uniqueness/direct-`u64` classification is still a compiler-supplied premise,
+and the quad predicate has no instruction-admission consumer. This does not
+close private/unpublished custody or any ordering/publication obligation.
+
+The next final-state bridge is staged but intentionally unreachable:
+`Oak.PairStoreEffects.apply_pair64_writes_eq_storePair` proves that applying
+two exact 32-bit modular logical entries equals the abstract pair store under
+an explicit no-wrap premise; the block theorems likewise require all four
+indices not to wrap. Go constructs the same normal and wrap-boundary sequences
+under a synchronized test, while an AST source gate allows no production
+identifier reference to the helper and direct verifier tests pin the generic-
+and record-span pair refusals. This is conditional write-log algebra
+only—not instruction occurrence, component/observer ordering,
+atomicity/non-tearing, bounds, traps, translation, ASL `Mem`, CAT, visibility,
+completion, or publication authority.
+
+Generated static-protocol handles now carry a checked sealed-initial-constructor
+designation through resolution and SemIR. A whole-program gate rejects direct
+literals and zero-initialized handle values outside its construction rules,
+including nested value aggregates and fixed arrays; alternate fresh/trusted
+result contracts are rejected. Explicit-resource literal compatibility is
+unchanged. `Oak.SealedTypestate` proves origin-premise retention and identity
+preservation in a separate abstract calculus, with mint and transition
+validation as explicit premises. This is neither refinement of the Go gate
+nor storage custody: allocation, memory type, observer exclusion, native
+authority transport, and ordering/publication remain open. STP admission is
+unchanged.
 
 There is not yet a complete theorem for the emitted AArch64 subset of the
 form `decode (encode instruction) = instruction` against the machine-readable

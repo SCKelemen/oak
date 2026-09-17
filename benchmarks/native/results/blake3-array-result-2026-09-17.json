@@ -1,0 +1,582 @@
+{
+  "schema": "oak-native-array-result-benchmark-v1",
+  "date": "2026-09-17",
+  "integration": {
+    "base_revision": "bb02f122 (specification, including def4003e and late vector address sharing)",
+    "normalization": "Retain upstream canonicalBitwise; remove this experiment's duplicate narrower rotate rule.",
+    "materialization_version": "v11",
+    "compression_verdict": "VerdictProven, all8resultchunks; altered rotate VerdictMismatch",
+    "regressions": "TestNativeBlake3CompressionProven, TestE2ENativeBlake3CompressionBoundaries, TestE2ENativeArrayResultStorage pass on combined sources.",
+    "object_identical_to_measured_candidate": true,
+    "measurement_scope": "Original runtime runs/proof grades above remain the historical pre-integration snapshot; no new whole-program speed claim.",
+    "build": {
+      "emission_seconds": 2.0742653339984827,
+      "metrics": {
+        "instructions": 308,
+        "stack_accesses": 60,
+        "frame_bytes": 144
+      },
+      "diagnostics": [
+        "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup): 0.35s (proven)",
+        "native backend: asm unit hash__blake3_ucompress: proven equal to its Oak body (the same term on both sides) (all 8 result chunks)"
+      ],
+      "emitter_sha256": "7f206f0386768794d9bdcfe79b636240f7443ac98ef1084ae9463a486d8adad3",
+      "object_sha256": "cae22962b8bc951ebae72d19a869ecb50b7e8fdfafee958feb0604c8226a028b",
+      "runner_sha256": "a31caeee59bceee5dde87426d470faee91cba9efbdbe46ed592f4e1e5576bb72",
+      "native_only": [
+        "hash__blake3_ucompress"
+      ]
+    }
+  },
+  "cpu": "Apple M4 Max",
+  "baseline_revision": "40558540074d9aab2c86a93a5276033c5f7ff844",
+  "change": "Construct eligible returned integer arrays directly in the caller's result area; preserve argument/assignment snapshots, exact extent, and frame-backed whole-array assignments.",
+  "scope": {
+    "arch": "AArch64",
+    "native_only": [
+      "hash__blake3_ucompress"
+    ],
+    "other_functions": "C backend in all timed variants; this isolates compression lowering, not a whole-native-program comparison",
+    "source_and_runner": "unchanged",
+    "eligibility": "unique top-level bare-tail local, address never taken, u32/i32/u64/i64, exact indirect result layout, extent >16 and <=4080 bytes divisible by8, no whole-array assignment",
+    "semantics": "no floating relaxation, alias contract change, or weaker proof policy"
+  },
+  "build": {
+    "emitter": "go build -o EMITTER ./benchmarks/native/emit",
+    "native": "OAK_NATIVE_ONLY=hash__blake3_ucompress OAK_VERIFY_CACHE=0 OAK_NATIVE_TIMING=1 EMITTER benchmarks/kernels/oak PREFIX",
+    "runner": "cc -std=c99 -O3 -DNDEBUG -DOAK_IMPL=LABEL -IPREFIX_DIR -o RUNNER benchmarks/kernels/runner.c PREFIX.o -lm",
+    "c": "go run . build -o PREFIX_DIR/kernels.c benchmarks/kernels/oak; same C flags and runner without native object",
+    "fp_contraction": "off in generated C"
+  },
+  "artifacts": {
+    "baseline": {
+      "emission_seconds": 2.347378625010606,
+      "metrics": {
+        "instructions": 334,
+        "stack_accesses": 144,
+        "frame_bytes": 208
+      },
+      "diagnostics": [
+        "timing: hash__blake3_ucompress (hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup): 0.00s (witness-checked, cached)",
+        "timing: hash__blake3_ucompress (hoist-invariants+rotate-loops+schedule+reallocate): 0.00s (witness-checked, cached)",
+        "timing: hash__blake3_ucompress (identity): 0.00s (witness-checked, cached)",
+        "native backend: asm unit hash__blake3_ucompress: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)"
+      ],
+      "emitter_sha256": "109cb8228c3db3569897a9b26bd86b1f193ce8a78b46e3492a200e8e4f9658c7",
+      "object_sha256": "f4dd8127565c6cffa5c5d4fa2036d41e433d54a11c163b21b5b11bbfd2107433",
+      "runner_sha256": "ba62d3710aa7ad97e407b2ebb05ec70e96a561c62625f2297f69a0e16ce75dc1",
+      "native_only": [
+        "hash__blake3_ucompress"
+      ]
+    },
+    "final": {
+      "emission_seconds": 4.914705625036731,
+      "metrics": {
+        "instructions": 308,
+        "stack_accesses": 60,
+        "frame_bytes": 144
+      },
+      "diagnostics": [
+        "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate+late-cleanup): 0.78s (witness-checked)",
+        "timing: hash__blake3_ucompress (elide-guards+hoist-invariants+rotate-loops+schedule+reallocate): 0.74s (witness-checked)",
+        "timing: hash__blake3_ucompress (identity): 0.73s (witness-checked)",
+        "native backend: asm unit hash__blake3_ucompress: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)"
+      ],
+      "emitter_sha256": "39d9e17136ce1aac2f1b07e89629dc094d446ced908a95d9db9c7cb680a11ba9",
+      "object_sha256": "cae22962b8bc951ebae72d19a869ecb50b7e8fdfafee958feb0604c8226a028b",
+      "runner_sha256": "62b4bbac2db1a3066c8a900532d154b9fedc847c7210cfb5fdc4dd9f3db46d30",
+      "native_only": [
+        "hash__blake3_ucompress"
+      ]
+    },
+    "source_hashes": "5d25ea0828b79dbf3340ce2acd8b165c2a2403bda289a11089eaa5e7ae0b337d  nativegen/array_result.go\nb3970f95d46d78474dac447a2b281434b77f0b535cd2d68b37861be0b60ca27c  nativegen/nativegen.go\n4975e51c6589d0ae791033360413793c0e2afc8a5d3df3b174864d8ab03d0b29  compiler/native_materialization.go\nc662c14a36961201fe2a792f5435dd838b8f126511567a3e38e8c63dd94dfc55  stdlib/hash.oak\n89d24ab549de05b2cd8992bb8fdd13406ea2503772175fbd67cc6cd64fba70c3  benchmarks/kernels/runner.c\nf8f64619cea196d665726c43464e4c0244cbc153bd6649bc98dc09da0d11a30e  benchmarks/kernels/run.py\n53c580f348872e8201d3f1dbfbf9326c2f8a699d8ad15746a0b359344045cc2b  benchmarks/kernels/oak/kernels.oak\nea3021e0c38e80af342e1f8c20d3c492043d40b2dd08b29c2126b6c41978ed24  /tmp/oak-perf-next.arcnVB/emit-result\n",
+    "warning": "baseline emission time includes cache hits and is not a valid compile-time comparison; no full-compression verification-time speedup claimed"
+  },
+  "static_metrics": {
+    "method": "count instruction lines and memory mnemonics in otool -tv compression body; code_bytes=4*instructions; stack accesses contain [sp",
+    "before": {
+      "instructions": 334,
+      "code_bytes": 1336,
+      "memory_instructions": 170,
+      "stack_relative_memory_instructions": 144,
+      "frame_bytes": 208
+    },
+    "after": {
+      "instructions": 308,
+      "code_bytes": 1232,
+      "memory_instructions": 162,
+      "stack_relative_memory_instructions": 60,
+      "frame_bytes": 144
+    },
+    "caveat": "Most stack-relative accesses move to the result-area register, not disappear. Total static memory instructions fall by8, not84. Static metrics do not establish runtime speed."
+  },
+  "proof_scope": {
+    "law": "Oak.BoundaryCopies.build_in_place supplies the existing aggregate content/location model law; no universal Go implementation-refinement theorem added.",
+    "direct_and_selected_proven_fixtures": [
+      "literal_words",
+      "zero_words",
+      "copy_words",
+      "signed_words",
+      "call_live_words",
+      "permuted_words (excluded from result storage; existing optimization preserved)"
+    ],
+    "other_regressions": "loops, call initialization, caller self-assignment, parameter/borrow exclusions, whole-array replacements, exact bounds and parked result lifetime",
+    "full_compression": "VerdictWitnessed before and after; strict verified lane still requires VerdictProven."
+  },
+  "measurement": {
+    "unit": "nanoseconds per 1 MiB BLAKE3 invocation",
+    "sampler": "benchmarks/kernels/run.py:sample_kernel; one warmup process per variant",
+    "sample_order": "rotating interleaved variants",
+    "core_affinity": "not controlled",
+    "competing_work": "not controlled; run C overlapped local regression suites; run D after those completed",
+    "cache_flush": false,
+    "checksums": "full digest checked for every timed sample and13 block/chunk/tree boundary sizes",
+    "interpretation": "Three of four candidate medians are lower, one effectively flat/slightly higher; ranges overlap under uncontrolled load. Evidence for a modest gain, not a precise or universal speedup.",
+    "iterations": "A:15samplesx30rounds; B,C:15x50; D:21x50",
+    "candidate_equivalence": "A/B used an earlier candidate before conservative eligibility hardening. All candidates emitted the same compression object SHA256 cae22962b8bc951ebae72d19a869ecb50b7e8fdfafee958feb0604c8226a028b; C/D final runner SHA256 also identical."
+  },
+  "runs": [
+    {
+      "id": "a",
+      "candidate_over_baseline": 0.9018742432525462,
+      "schema": "oak-compression-experiment-v1",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "size": 1048576,
+      "rounds": 30,
+      "samples": 15,
+      "sample_order": "rotating interleaved variants after one warm-up process each",
+      "core_affinity": "not controlled",
+      "cache_flush": false,
+      "binary_sha256": {
+        "compress-control": "ba62d3710aa7ad97e407b2ebb05ec70e96a561c62625f2297f69a0e16ce75dc1",
+        "compress-result": "3f8bba38a9ca5b7e6a9bd64222d47a825af026f7279a7121604d1f7967188d62",
+        "c-control": "5d672906dae9244e345641f4644baf526a2bf0f19e16ae36db6a584d13491d17"
+      },
+      "boundary_checksums": {
+        "0": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        "1": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65",
+        "63": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09",
+        "64": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d",
+        "65": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735",
+        "1023": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916",
+        "1024": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539",
+        "1025": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b",
+        "2048": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362",
+        "2049": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b",
+        "3072": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183",
+        "4096": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8",
+        "5000": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+      },
+      "results": [
+        {
+          "impl": "compress-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4938900,
+          "samples": [
+            3833300,
+            5035233.3,
+            4204433.3,
+            5595933.3,
+            15650100,
+            4474000,
+            6164566.7,
+            11289700,
+            9475133.3,
+            4632166.7,
+            4318766.7,
+            4274633.3,
+            4938900,
+            5907366.7,
+            4627500
+          ]
+        },
+        {
+          "impl": "compress-result",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4454266.7,
+          "samples": [
+            4389000,
+            4828900,
+            4408900,
+            5936066.7,
+            3978333.3,
+            6829800,
+            4328933.3,
+            5096433.3,
+            14087066.7,
+            5783000,
+            6526900,
+            4395500,
+            4158900,
+            4454266.7,
+            4020733.3
+          ]
+        },
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 3566833.3,
+          "samples": [
+            3566833.3,
+            3275633.3,
+            4949100,
+            2966766.7,
+            3510633.3,
+            4812966.7,
+            3650766.7,
+            3264200,
+            6886733.3,
+            3290566.7,
+            3556800,
+            3685133.3,
+            3820766.7,
+            3685833.3,
+            3206033.3
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "candidate_over_baseline": 0.9705520351548602,
+      "schema": "oak-compression-experiment-v1",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "size": 1048576,
+      "rounds": 50,
+      "samples": 15,
+      "sample_order": "rotating interleaved variants after one warm-up process each",
+      "core_affinity": "not controlled",
+      "cache_flush": false,
+      "binary_sha256": {
+        "compress-control": "ba62d3710aa7ad97e407b2ebb05ec70e96a561c62625f2297f69a0e16ce75dc1",
+        "compress-result": "3f8bba38a9ca5b7e6a9bd64222d47a825af026f7279a7121604d1f7967188d62",
+        "c-control": "5d672906dae9244e345641f4644baf526a2bf0f19e16ae36db6a584d13491d17"
+      },
+      "boundary_checksums": {
+        "0": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        "1": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65",
+        "63": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09",
+        "64": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d",
+        "65": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735",
+        "1023": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916",
+        "1024": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539",
+        "1025": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b",
+        "2048": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362",
+        "2049": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b",
+        "3072": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183",
+        "4096": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8",
+        "5000": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+      },
+      "results": [
+        {
+          "impl": "compress-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4159880,
+          "samples": [
+            5062440,
+            4201980,
+            4392860,
+            3915760,
+            4295540,
+            3939180,
+            4238300,
+            3581020,
+            3261780,
+            3389640,
+            4106320,
+            3737640,
+            11059820,
+            4159880,
+            4274360
+          ]
+        },
+        {
+          "impl": "compress-result",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4037380,
+          "samples": [
+            4461280,
+            4332480,
+            4037380,
+            4187120,
+            4299100,
+            4214500,
+            3940680,
+            4265980,
+            3308040,
+            3653120,
+            3904100,
+            3399820,
+            5525280,
+            3680860,
+            3953120
+          ]
+        },
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 2992540,
+          "samples": [
+            3069800,
+            3459420,
+            2916740,
+            3019660,
+            3349480,
+            2992540,
+            3008940,
+            2820140,
+            2450900,
+            2776580,
+            2948960,
+            2885540,
+            2921460,
+            3155020,
+            4557680
+          ]
+        }
+      ]
+    },
+    {
+      "id": "c",
+      "candidate_over_baseline": 1.008448099177685,
+      "schema": "oak-compression-experiment-v1",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "size": 1048576,
+      "rounds": 50,
+      "samples": 15,
+      "sample_order": "rotating interleaved variants after one warm-up process each",
+      "core_affinity": "not controlled",
+      "cache_flush": false,
+      "binary_sha256": {
+        "compress-control": "ba62d3710aa7ad97e407b2ebb05ec70e96a561c62625f2297f69a0e16ce75dc1",
+        "compress-final": "62b4bbac2db1a3066c8a900532d154b9fedc847c7210cfb5fdc4dd9f3db46d30",
+        "c-control": "5d672906dae9244e345641f4644baf526a2bf0f19e16ae36db6a584d13491d17"
+      },
+      "boundary_checksums": {
+        "0": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        "1": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65",
+        "63": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09",
+        "64": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d",
+        "65": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735",
+        "1023": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916",
+        "1024": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539",
+        "1025": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b",
+        "2048": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362",
+        "2049": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b",
+        "3072": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183",
+        "4096": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8",
+        "5000": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+      },
+      "results": [
+        {
+          "impl": "compress-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4801080,
+          "samples": [
+            3962620,
+            5175700,
+            4801080,
+            5191120,
+            5148240,
+            4695600,
+            3970920,
+            3986680,
+            3760580,
+            3541300,
+            4108940,
+            5520160,
+            5450660,
+            8787540,
+            6269920
+          ]
+        },
+        {
+          "impl": "compress-final",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4841640,
+          "samples": [
+            5414820,
+            5551660,
+            4718560,
+            4799260,
+            4634180,
+            5184440,
+            5402660,
+            4327220,
+            3815740,
+            3913700,
+            3850600,
+            11167500,
+            7299940,
+            9568980,
+            4841640
+          ]
+        },
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 3360220,
+          "samples": [
+            2821160,
+            4243920,
+            3678080,
+            3136760,
+            3120540,
+            3262800,
+            3626440,
+            3411380,
+            3117160,
+            3360220,
+            3050800,
+            2845340,
+            6174460,
+            3374260,
+            3421480
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d",
+      "candidate_over_baseline": 0.9624354449370558,
+      "schema": "oak-compression-experiment-v1",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "size": 1048576,
+      "rounds": 50,
+      "samples": 21,
+      "sample_order": "rotating interleaved variants after one warm-up process each",
+      "core_affinity": "not controlled",
+      "cache_flush": false,
+      "binary_sha256": {
+        "compress-control": "ba62d3710aa7ad97e407b2ebb05ec70e96a561c62625f2297f69a0e16ce75dc1",
+        "compress-final": "62b4bbac2db1a3066c8a900532d154b9fedc847c7210cfb5fdc4dd9f3db46d30",
+        "c-control": "5d672906dae9244e345641f4644baf526a2bf0f19e16ae36db6a584d13491d17"
+      },
+      "boundary_checksums": {
+        "0": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+        "1": "7baacf06b12883b439363d15ca4a83d6adc5d0b5b2373222cd0171c9328bfd65",
+        "63": "96490f8a97719fe56f1eb3329005836b34f3e0b21c13161c27a9e58396babd09",
+        "64": "f7db8bf5a3a752887d981421f3c306e97f6c461737ad098a1a68b99fab3e323d",
+        "65": "993d662f28691b7888093c8eb99e4a21d8c2ced610b93be40d7cab6faccf1735",
+        "1023": "bdec5683e6d14c8cd1f9f99c9c708e10b926e7e68f3fcede76d65153dcead916",
+        "1024": "025f2a86d9cedf11aee6f346a7c1c0ffcb9d0b5a8dfecd1bdac7ed8dd7175539",
+        "1025": "15bcbe184e5d35369bfd4697c3fa5ba9ddf84178f95d71d194c92259c8f0337b",
+        "2048": "7866da379a38f86bbd6b614ce7f57e56282fc690123729495297b83c0161e362",
+        "2049": "faa81e0ac51648031fe6948a9fc7adad953da28352e943a285d42d2628f9fb3b",
+        "3072": "784d7204c366142fed1164eec6c4a1dcf319892f4f32752ddc6513be52c43183",
+        "4096": "244546d543d1ad22cb672f7a405a25e89111607876b59ae2c24d81ac4572b2f8",
+        "5000": "f6417945a812b16baef6fa16429428e48e57818589d2db4f4ba5d2f8b32a36c4"
+      },
+      "results": [
+        {
+          "impl": "compress-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4159240,
+          "samples": [
+            3473260,
+            3665240,
+            3538840,
+            3889420,
+            3595740,
+            3492300,
+            3815800,
+            4291780,
+            3725300,
+            4299620,
+            4159240,
+            4160180,
+            4113460,
+            4472660,
+            4115100,
+            4705780,
+            4458100,
+            5585300,
+            4246980,
+            4206200,
+            4183000
+          ]
+        },
+        {
+          "impl": "compress-final",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 4003000,
+          "samples": [
+            3403100,
+            3369100,
+            3487940,
+            3904080,
+            3981300,
+            4020060,
+            3684560,
+            4003000,
+            3785540,
+            3896280,
+            4571080,
+            4385480,
+            4324260,
+            4025780,
+            4084900,
+            4643240,
+            4121200,
+            4475080,
+            3892080,
+            4117180,
+            3973560
+          ]
+        },
+        {
+          "impl": "c-control",
+          "kernel": "blake3",
+          "size": 1048576,
+          "checksum": "034af3c6d91c698275cc2644b421b3081554747835b349c60cc8d9d90558a172",
+          "ns_per_op_median": 3064660,
+          "samples": [
+            3039880,
+            2564240,
+            2578220,
+            2600940,
+            3157580,
+            2564300,
+            3420120,
+            2810320,
+            2853980,
+            2943700,
+            2931560,
+            4329820,
+            4231040,
+            3413440,
+            4130140,
+            4133940,
+            3080580,
+            3144480,
+            3064660,
+            3064480,
+            3286260
+          ]
+        }
+      ]
+    }
+  ]
+}

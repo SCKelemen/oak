@@ -97,6 +97,19 @@ func TestResourceModelFromSemIRDerivesTypesAndResolvedCallables(t *testing.T) {
 	}
 }
 
+func TestResourceModelFromSemIRProjectsSealedInitialConstructor(t *testing.T) {
+	module := resourceSemanticModule()
+	module.Protocols[0].TypestateArity = 1
+	module.Protocols[0].SealedInitialConstructor = "renew"
+	model, err := ResourceModelFromSemIR(module)
+	if err != nil {
+		t.Fatalf("sealed resource model derivation failed: %v", err)
+	}
+	if got := model.SealedInitialConstructors["Handle"]; got != "renew" {
+		t.Fatalf("sealed constructor = %q, want renew", got)
+	}
+}
+
 func TestCheckProgramWithSemIRAutomaticallyRejectsUseAfterConsume(t *testing.T) {
 	input := `
 Handle: type = struct { id: u32 }

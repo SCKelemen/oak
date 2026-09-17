@@ -474,7 +474,24 @@ func evaluateSCCPOperation(operation Operation, values map[ValueID]latticeValue)
 	operands := make([]latticeValue, len(operation.Operands))
 	for i, operand := range operation.Operands {
 		operands[i] = values[operand]
-		if operands[i].state == LatticeOverdefined {
+	}
+	// An unresolved operand of an absorbing operation may still become zero
+	// or all-ones. Do not irreversibly join the result with Overdefined before
+	// that input arrives, or infer a constant before both inputs arrive: the
+	// apparent absorber itself may later become Overdefined. This keeps the
+	// transfer monotone. The flat lattice and iteration bound are unchanged.
+	if sccpAbsorbingOperation(operation) {
+		for _, operand := range operands {
+			if operand.state == LatticeUnknown {
+				return unknown(), nil
+			}
+		}
+	}
+	if value, known := evaluateSCCPIdentity(operation, operands); known {
+		return constant(value), nil
+	}
+	for _, operand := range operands {
+		if operand.state == LatticeOverdefined {
 			return overdefined(), nil
 		}
 	}

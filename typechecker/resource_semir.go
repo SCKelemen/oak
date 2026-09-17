@@ -52,13 +52,22 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 			}
 			targets[transition.Callable][transition.To] = true
 		}
+		var governedTypes []string
 		for typeName, protocolName := range protocolOf {
 			if protocolName == protocol.Name && protocol.Initial != "" {
+				governedTypes = append(governedTypes, typeName)
 				model.MarkInitial(typeName, protocol.Initial)
 				if protocol.TypestateArity > 0 {
 					model.MarkTypestate(typeName, protocol.TypestateArity)
 				}
 			}
+		}
+		sort.Strings(governedTypes)
+		if protocol.SealedInitialConstructor != "" {
+			if len(governedTypes) != 1 {
+				return ResourceModel{}, fmt.Errorf("protocol %q seals its initial constructor but governs %d resource types in the executable model", protocol.Name, len(governedTypes))
+			}
+			model.MarkSealedInitialConstructor(governedTypes[0], protocol.SealedInitialConstructor)
 		}
 	}
 	sortedTargets := func(callable string) []string {

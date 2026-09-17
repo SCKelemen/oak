@@ -130,7 +130,7 @@ type selectCondition struct {
 
 // selectConditionOf reads a chain condition; computed operands are
 // admitted only when allowed (the first condition, evaluated on every path).
-func (g *generator) selectConditionOf(cond ast.Expression, computed bool) (selectCondition, bool) {
+func (g *generator) selectConditionOf(cond ast.Expression, first bool) (selectCondition, bool) {
 	switch e := cond.(type) {
 	case *ast.Identifier:
 		if v, inReg := g.regs[e.Value]; inReg && v >= 0 && v < vecBase {
@@ -143,7 +143,7 @@ func (g *generator) selectConditionOf(cond ast.Expression, computed bool) (selec
 		if e.Operator != "!" {
 			return selectCondition{}, false
 		}
-		inner, ok := g.selectConditionOf(e.Right, computed)
+		inner, ok := g.selectConditionOf(e.Right, first)
 		if !ok || inner.leftExpr != nil || inner.rightExpr != nil {
 			return selectCondition{}, false
 		}
@@ -168,17 +168,26 @@ func (g *generator) selectConditionOf(cond ast.Expression, computed bool) (selec
 			}
 		}
 		sc := selectCondition{left: left, right: right, typ: operand, operator: e.Operator}
-		switch {
-		case leftOK && rightOK:
-		case computed:
+		if !leftOK || !rightOK {
+			// A computed operand is evaluated before the chain runs. The
+			// first arm's condition runs there in the source too, so
+			// anything goes; a later arm's runs only where the arms before
+			// it did not match, so evaluating it ahead of the chain is
+			// speculation and it must be safe on a path the source would
+			// not have taken — the same condition the arms' own right-hand
+			// sides meet (speculable).
 			if !leftOK {
+				if !first && !g.speculable(e.Left) {
+					return selectCondition{}, false
+				}
 				sc.leftExpr = e.Left
 			}
 			if !rightOK {
+				if !first && !g.speculable(e.Right) {
+					return selectCondition{}, false
+				}
 				sc.rightExpr = e.Right
 			}
-		default:
-			return selectCondition{}, false
 		}
 		return sc, true
 	}
@@ -297,6 +306,45 @@ func (g *generator) recognizeSelectChain(arms []chainArm, final []ast.Statement)
 	}
 	if chain.assigns == 0 || chain.assigns > maxSelectAssigns {
 		return nil, false
+	}
+	// Across groups a variable falls through. The groups are applied
+	// outward, the earliest last, so a variable takes its value from the
+	// earliest group whose taken arm assigns it — but a group whose taken
+	// arm does not assign it leaves whatever the later groups computed,
+	// where the source leaves the value it held before the chain. So a
+	// variable a later group assigns must be assigned by every arm of
+	// every earlier group that can be taken. An outcome no arm of a group
+	// covers is a real fall-through and is not in question.
+	//
+	// Without this, `a < b ? { m = a } | c < d ? { n = c } | { n = 9 }`
+	// set n from the second comparison even where the first arm matched,
+	// which the verifier refuses — the native build of such a program
+	// failed rather than miscompiling.
+	assignsName := func(arm *selectArm, name string) bool {
+		for k := range arm.assigns {
+			if arm.assigns[k].name == name {
+				return true
+			}
+		}
+		return false
+	}
+	for k := range chain.groups {
+		for later := k + 1; later < len(chain.groups); later++ {
+			for _, arm := range chain.groups[later].arms {
+				if arm.mask == 0 {
+					continue
+				}
+				for ai := range arm.assigns {
+					name := arm.assigns[ai].name
+					for e := range chain.groups[k].arms {
+						earlier := &chain.groups[k].arms[e]
+						if earlier.mask != 0 && !assignsName(earlier, name) {
+							return nil, false
+						}
+					}
+				}
+			}
+		}
 	}
 	// An arm taken whenever its group is reached assigns its value as a
 	// value: the increment forms are conditional instructions.
@@ -463,22 +511,27 @@ func (g *generator) lowerSelectChain(chain *selectChain) error {
 	release := func(r int) {
 		g.release(r)
 	}
-	first := &chain.groups[0]
-	if first.leftExpr != nil {
-		r, err := g.expr(first.leftExpr, &first.typ)
-		if err != nil {
-			return err
+	// Every group's computed operands, before any compare: a group's
+	// compare is emitted with its selects, and the operand has to hold its
+	// value from here to there.
+	for gi := range chain.groups {
+		group := &chain.groups[gi]
+		if group.leftExpr != nil {
+			r, err := g.expr(group.leftExpr, &group.typ)
+			if err != nil {
+				return err
+			}
+			group.left = reg(r, group.typ)
+			owned = append(owned, r)
 		}
-		first.left = reg(r, first.typ)
-		owned = append(owned, r)
-	}
-	if first.rightExpr != nil {
-		r, err := g.expr(first.rightExpr, &first.typ)
-		if err != nil {
-			return err
+		if group.rightExpr != nil {
+			r, err := g.expr(group.rightExpr, &group.typ)
+			if err != nil {
+				return err
+			}
+			group.right = reg(r, group.typ)
+			owned = append(owned, r)
 		}
-		first.right = reg(r, first.typ)
-		owned = append(owned, r)
 	}
 	live, mark := g.liveFlags, len(g.items)
 	for gi := range chain.groups {
