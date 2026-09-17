@@ -640,6 +640,22 @@ the source asks. The next increments are those three, then a
 bottom-tested loop shape for the verifier's recognizer.
 
 
+## Two vectors a trip in the dot product's fold, 2026-09-17 (night)
+
+`dot` with the head tree against the same tree withholding the fold
+unrolling (`OAK_OPT_SKIP=unroll-vector-folds`), three alternated runs of
+three rounds of five samples, 1 MiB, on a host at load average 65–120 —
+noise on the order of the effect. Checksums agree.
+
+| Kernel | oak-native, two vectors | oak-native, one vector | native / C, two | native / C, one |
+| --- | ---: | ---: | ---: | ---: |
+| dot | 1014 / 997 / 971 µs | 983 / 949 / 1009 µs | 0.97 / 1.05 / 1.09 (median 1.05×) | 1.10 / 1.06 / 1.13 (median 1.10×) |
+
+The ratios lean toward the two-vector loop and the native times do not
+separate; the loop is bound by the one ordered `fadd` an element either
+way, and the trip's test and index step are what the second vector
+amortizes. To be remeasured on a quiet host.
+
 ## The lane-wise accumulators on the tiled reduction, 2026-09-17 (night)
 
 `tiled` with the head tree against the same tree withholding the lane

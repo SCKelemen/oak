@@ -843,7 +843,10 @@ the frontier the earlier ones built, so the unrolling had to be
 registered after the fold vectorization to ever meet a fold candidate;
 registered before it, it fired on the identity alone and reported no
 site. Composed, it wins for the `f32` dot at 1640 against the one-vector
-form's 1781, proven.
+form's 1781, proven. On the harness under a load average past sixty the
+ratios lean its way (1.05× against 1.10× the C backend, three interleaved
+runs) and the native times do not separate; the loop is bound by its one
+ordered `fadd` an element either way.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
