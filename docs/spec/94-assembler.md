@@ -6998,6 +6998,42 @@ candidates passes twenty gigabytes): 964 bodies, proven 573, evidence
 evidence in 1.4 s each. The slowest bodies are `le_intern_consts` (162 s,
 proven) and `utf8_valid` (58 s).
 
+**Top-level arrays as span memories; pair loads in a loop header
+(2026-09-17).** The prover's write family — forty bodies from
+`write_byte` and `write_flush` up through `sat_emit_text` and the `txt_*`
+reporters — stopped at "an index into out_buf (not a span parameter)":
+`out_buf` is a writable top-level array, and neither side modeled one
+(the lowering knew constant tables as spans, the executor refused "a
+store into a top-level record or array (not modeled)"). Such an array is
+now a span named by the global on both sides. The machine binds
+`adrp`/`add :lo12:` of the array to the span base `&NAME`
+(`bindGlobalAddress`, ahead of `step` at the main run, the loop-header
+walk and the body summarizer), so the loads and stores through it are
+the span's, under the checker's bounds as a frame array's are; the
+lowering declares it as it declares a table (`declareGlobalArrays`), its
+declared count the length; the stores are compared in `decideSpans` as a
+span parameter's are, and a callee's stores to it reach the caller
+through the summary, which lowers the callee over the caller's write
+log. `TestE2ENativeGlobalArrayProven` proves a byte buffer's writer, a
+caller of two writes, and a loop summing the buffer. Only arrays of
+integer scalars qualify; a top-level record, or an array of records,
+stays trusted. Alongside, fifteen bodies (`solve`, `project`, `ts_sum`,
+the `sat_*` and `sr_*` walkers) stopped at "instruction ldp": a record
+copied by `ldp`/`stp` ahead of a loop's exit test, which the loop-header
+walk dispatched to `step`; it goes to `loadPair` as the body summarizer's
+does. A caller declares the arrays its callees address as it declares
+the cells they touch (`withArrayAggregates` in the backend's
+reachability walk), since `write_byte` never names `out_buf` itself.
+The tally held at 574 proven, 196 evidence, 194 trusted: the write
+family passed the array and stopped one call deeper, at the extern
+binding under `host_write_all` (`oak_host_write`, "a call"), which
+neither side summarizes yet — an extern call would need its scalar
+arguments and the contents of the views it is handed proven equal on
+the two sides, its result an uninterpreted function of them, and its
+declared effects (`Host.Write`) outside Oak memory taken on trust; that
+is the next design, not an increment. `ts_sum` and its kin passed the
+pair load and stop at "a loop whose shape differs between two paths".
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
