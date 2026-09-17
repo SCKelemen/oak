@@ -5634,6 +5634,13 @@ same values (the inliner's substitution, `Oak.Inlining.eval_subst`, with
 two identity copies removed), so the verifier judges the body as the
 copy form's.
 
+**A constant table as a value (2026-09-17, `asm/verify.go` `tableValue`).**
+The Oak side reads an identifier naming a constant table, in aggregate
+position (`next.cv = BLAKE3_IV`), as the array of its elements, each the
+element term `T[k]` the span reading of the table gives — the same term
+the asm side's load through the table's address yields — for tables of
+at most sixty-four elements.
+
 **Peephole fusion (2026-09-16, AArch64 lane; `machine/fuse.go`, the
 `fuse` candidate).** Two instructions the lowering spells one after the
 other become the one instruction that does both, where the lifted webs
