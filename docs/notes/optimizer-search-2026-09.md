@@ -831,6 +831,20 @@ search keeps a proof over a cheaper witness (cost 821 against 568). The
 inverted CRC in a register the loop carries unchanged is the next fact
 the loop proof needs; the count-down loop is a source-shape question.
 
+### Two vectors a trip in the fold (2026-09-17, night)
+
+`dot` at 1.08× was the fold at four elements a trip: the loop's test and
+index step amortized over one vector. `unroll-vector-folds` mirrors
+upstream's `unroll-vector-maps`: a two-vector main loop, a one-vector loop
+cleaning up, the scalar remainder, the lanes still added in element order
+— the same law, `Oak.Fold.blocked_eq`, over each loop in turn. The
+search composes same-phase transforms in registry order, applying each to
+the frontier the earlier ones built, so the unrolling had to be
+registered after the fold vectorization to ever meet a fold candidate;
+registered before it, it fired on the identity alone and reported no
+site. Composed, it wins for the `f32` dot at 1640 against the one-vector
+form's 1781, proven.
+
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
 The kernel harness (`benchmarks/kernels/run.py`) refuses timings until

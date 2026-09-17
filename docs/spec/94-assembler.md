@@ -5577,7 +5577,11 @@ equals the sequential fold for any lane function and any accumulation —
 and the verifier proves the assembly against the rewritten body, reading
 the lane moves (`mov sD, vN.s[k]`) as the lanes. A bare element
 (`acc = acc + v[i]`) saves no work as a vector and is left to the scalar
-loop. `bench_dot`'s selected loop is sixteen instructions for four
+loop. With `unroll-vector-folds` (registered after the fold, so the search
+composes them) the main loop takes two vectors of elements a trip, the
+lanes still added in element order, and a one-vector loop cleans up before
+the remainder — each loop the blocked fold over what the loops before it
+left, the same law. `bench_dot`'s selected loop is sixteen instructions for four
 elements against the scalar loop's seven for one: two vector loads, one
 `fmul.4s`, four lane moves and four `fadd`, the index step, and one slack
 test — the second span's lanes stand under the first span's test, the

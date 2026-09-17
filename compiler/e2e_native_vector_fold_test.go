@@ -129,8 +129,10 @@ func TestE2ENativeVectorFold(t *testing.T) {
 				compares++
 			}
 		}
-		if vecMuls != 1 || laneMoves != shape.lanes || adds != shape.lanes || scalarMuls != 0 {
-			t.Errorf("%s's main loop must be one vector multiply, %d lane moves and %d adds, no scalar multiply; got %d, %d, %d, %d:\n%s", shape.unit, shape.lanes, shape.lanes, vecMuls, laneMoves, adds, scalarMuls, nativegen.Describe(units[shape.unit]))
+		// One vector a trip, or two under the fold unrolling
+		// (unroll-vector-folds): the lane moves and adds follow.
+		if (vecMuls != 1 && vecMuls != 2) || laneMoves != shape.lanes*vecMuls || adds != shape.lanes*vecMuls || scalarMuls != 0 {
+			t.Errorf("%s's main loop must be one or two vector multiplies with %d lane moves and adds each, no scalar multiply; got %d, %d, %d, %d:\n%s", shape.unit, shape.lanes, vecMuls, laneMoves, adds, scalarMuls, nativegen.Describe(units[shape.unit]))
 		}
 		// One compare a trip: the rotated loop's slack test. The second
 		// span's lanes stand under the first's test (the arm's
