@@ -47,6 +47,7 @@ const (
 	TransformVectorMaps      = "vectorize-maps"
 	TransformUnrollMaps      = "unroll-vector-maps"
 	TransformVectorFolds     = "vectorize-folds"
+	TransformUnrollConst     = "unroll-constant"
 	TransformVecBlocks       = "vector-blocks"
 	TransformVectorAddresses = "share-vector-addresses"
 	TransformMultiplyAdd     = "multiply-add"
@@ -330,6 +331,21 @@ func Transforms() []opt.Transform {
 			fired:   UnrolledMaps,
 		},
 		&laneTransform{
+			// Constant-trip unrolling (nativegen/unroll_constant.go): a loop
+			// from zero to a literal bound becomes its trips, the index a
+			// literal in each, licensed by Oak.ConstantUnroll.loop_eq_unrolled
+			// — nothing of the body is assumed, so no fact is required. What
+			// it buys is downstream: constant indices where the loop's
+			// variable indexed a frame array, so the slot promotion can keep
+			// the array's words in registers. At the head of the loop phase,
+			// so the other loop rewrites see the trips.
+			name: TransformUnrollConst, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.UnrollConstant },
+			apply:   func(l Lane) Lane { l.UnrollConstant = true; return l },
+			fired:   UnrolledConstant,
+		},
+		&laneTransform{
 			// Fold vectorization (nativegen/vector_fold.go): a float
 			// reduction whose element expression is lane-wise over span
 			// parameters — the dot product — computes one vector of element
@@ -494,6 +510,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorMaps = false
 	lane.UnrollVectorMaps = false
 	lane.VectorFolds = false
+	lane.UnrollConstant = false
 	lane.NoReductions = true
 	return lane
 }

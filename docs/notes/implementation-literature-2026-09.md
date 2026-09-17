@@ -158,6 +158,23 @@ The mechanism is kept, gated to the findings a lost guard could explain,
 because the shapes it does fix are real and because each new fact rule is
 worth more when a fact that holds on one path survives the next label.
 
+**And the follow-through, 2026-09-16, says something sharper than
+expected.** The missing rule was written (`94-assembler.md` §9.aj): a
+divided bound the checker follows through a `udiv` by any constant, and
+an index multiplied back by it. On one and the same body it reports a
+single refusal where the checker before it reported three, and across the
+program it removes 21 trap branches and proves one more unit. But the
+three bodies it was written for come out **worse**, because admitting
+more candidates changes which bodies survive the search's frontier and
+the better form the base happened to find is no longer among them.
+
+So the lesson is not simply "facts beat machinery". It is that on this
+compiler a local improvement is not yet a global one: the search prunes
+by cost before validation and keeps no memory of the best body it has
+seen, so every new fact rule perturbs selection in ways its own
+measurement has to check body by body. That is the item this note should
+carry next, ahead of any further borrowed mechanism.
+
 It is not the multi-versioning that `mojo-futhark-optimization-2026-09.md` §8
 already records from Futhark's incremental flattening, and the two should not
 be conflated. That versioning chooses between whole implementations of one

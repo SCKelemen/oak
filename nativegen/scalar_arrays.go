@@ -20,8 +20,11 @@ import (
 // per iteration. The Oak side of the verifier models the array as an
 // aggregate either way; the equivalence is over the same values.
 
-// scalarArrayLimit bounds the elements replaced (the register pools).
-const scalarArrayLimit = 8
+// scalarArrayLimit bounds the elements replaced: the pools give the
+// first elements registers and the rest frame slots of their own, which
+// cost what the array's did — so past the pools the gain is the elements
+// that fit. Sixteen is a hash compression's state.
+const scalarArrayLimit = 16
 
 // scalarArray is a replaced array: its element type, length, and the
 // hidden names of its elements in index order.
@@ -34,13 +37,18 @@ type scalarArray struct {
 // scalarReplaceable reports whether every use of the array local name in
 // the function body is an element at a constant index in [0, length) or
 // `len(name)`: the identifier appears only as the left of such an index
-// expression or as len's argument, and no assignment rebinds the whole.
+// expression or as len's argument, and no assignment rebinds the whole —
+// or, once, as the body's result expression, which the lowering writes
+// element by element into the result area (resultRecordExpr).
 func scalarReplaceable(fn *ast.FunctionStatement, name string, length int64) bool {
 	if fn == nil || fn.Body == nil || length <= 0 || length > scalarArrayLimit {
 		return false
 	}
 	mentions, admitted := 0, 0
 	ok := true
+	if result, isResult := resultIdentifier(fn.Body); isResult && result == name {
+		admitted++
+	}
 	walk(fn.Body, func(n ast.Node) {
 		switch e := n.(type) {
 		case *ast.Identifier:
@@ -148,4 +156,22 @@ func (g *generator) declareScalarArray(s *ast.VariableDeclaration, elem scalar, 
 	g.scalarArrays[name] = sa
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, reg: -1, sa: sa}
 	return nil
+}
+
+// resultIdentifier names the identifier a body yields as its result: the
+// last statement's expression when it is a bare identifier.
+func resultIdentifier(body ast.Expression) (string, bool) {
+	block, isBlock := body.(*ast.BlockExpression)
+	if !isBlock || block.Block == nil || len(block.Block.Statements) == 0 {
+		return "", false
+	}
+	es, isExpr := block.Block.Statements[len(block.Block.Statements)-1].(*ast.ExpressionStatement)
+	if !isExpr || es.Discard {
+		return "", false
+	}
+	ident, isIdent := es.Expression.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	return ident.Value, true
 }
