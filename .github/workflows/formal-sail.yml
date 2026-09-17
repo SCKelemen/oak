@@ -19,6 +19,8 @@ name: Formal Verification (Sail)
 #     separate Lem backend's plain-write requests (not a CAT refinement)
 #   - asm/sail_write_memory_effect_test.go: the actual RAM-selector read,
 #     write/trace/return order, and the official no-device trace expression
+#   - lem-ram-traces (separate job): execute the official Arm Lem RAM wrapper
+#     against the pinned Sail prompt runtime; request traces, NOT CAT effects
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -150,6 +152,59 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestSailArmBarrierDispatchSource|TestSailArmVMALLS12E1ISDispatchSource|TestSailArmSTR64StoreRequestSource|TestSailArmSTR64WriteMemoryArgumentsSource|TestSailNoDeviceRAMWrapperExactAndMutated|TestSailLemRAMRequestsRemainPlain|TestSailRegisterMemoryWrapperExactAndMutated|TestSailNoDeviceWriteTraceExactAndMutated|TestSailArmSTP64StoreRequestsSource|TestSailArmDAIFSetDispatchSource|TestSailArmVTTBREL2WriteDispatchSource|TestSailArmHCREL2WriteDispatchSource|TestSailArmVTCREL2WriteDispatchSource|TestSailArmCNTHCTLEL2WriteDispatchSource|TestSailArmCNTVOFFEL2WriteDispatchSource|TestSailArmSPEL1WriteDispatchSource|TestSailArmELREL2WriteDispatchSource|TestSailArmSPSREL2WriteDispatchSource|TestSailArmPlainERETDispatchSource|TestSailArmOrdinaryRETDispatchSource|TestSailArmDirectBDispatchSource|TestSailArmDirectBLDispatchSource|TestAArch64DirectBranchLocalEncodingMatchesLean|TestAArch64CallBranchLocalEncodingMatchesLean|TestColdEntryRegisterSequenceMatchesNativePrefix|TestSailColdEntryRegisterSequenceProjection|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+
+  lem-ram-traces:
+    name: Arm Lem RAM request traces
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OCaml build prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends opam libgmp-dev pkg-config z3
+
+      - name: Restore the pinned Lem and Sail runtime
+        id: lem-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: arm-lem-ram-sail-0.20.2-lem-2026-05-01-ocaml-${{ env.OCAML_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build the pinned Lem and Sail runtime
+        if: steps.lem-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          opam init --yes --no-setup --bare --disable-sandboxing
+          opam switch create arm-lem "ocaml-base-compiler.${OCAML_VERSION}" --yes
+          opam install --switch arm-lem --yes sail.0.20.2 libsail.0.20.2 lem.2026-05-01 ocamlfind
+
+      - name: Put the pinned switch on PATH
+        run: echo "$HOME/.opam/arm-lem/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch Arm's pinned Lem wrapper
+        run: |
+          set -euo pipefail
+          git init -q external/sail-arm
+          git -C external/sail-arm remote add origin https://github.com/rems-project/sail-arm.git
+          git -C external/sail-arm sparse-checkout init --cone
+          git -C external/sail-arm sparse-checkout set arm-v8.5-a/model
+          git -C external/sail-arm fetch -q --depth 1 --filter=blob:none origin "${SAIL_ARM_COMMIT}"
+          git -C external/sail-arm checkout -q FETCH_HEAD
+          test -f external/sail-arm/arm-v8.5-a/aarch64_extras.lem
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Execute official RAM request traces and reject mutated wrappers
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailLemRAMTraces$' -count=1 -v -timeout=10m
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

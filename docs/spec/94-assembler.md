@@ -1167,6 +1167,19 @@ invalidation, publication, and context synchronization remain open. Sequential
 byte-map updates are not architectural events, and this does not verify the C
 runtime.
 
+The separate `TestSailLemRAMTraces` executable oracle translates the pinned
+official Lem wrapper and runs it against Sail 0.20.2's prompt runtime. It checks
+the exact plain address-then-data request trace, byte layout, and rejection of
+wrong or reordered events; source mutations must compile before failing trace
+assertions. It also pins distinctions needed by any later event bridge:
+`hasTrace` includes failures/exceptions; a false write acknowledgement still
+returns normally; malformed values can fail after the address request; and
+the external interface can preserve undefined data bits or a size/payload
+mismatch. Two calls retain both request pairs. This is a required, separately
+pinned CI oracle, not a kernel proof or an architectural event interpretation.
+Neither normal return nor these two requests establish committed writes,
+atomicity, CAT membership, or page-table publication (§126 records its scope).
+
 A Darwin/ARM64 Mach-O regression oracle now checks
 the complete instruction sections of the six barrier leaves, TLBI leaf,
 context-sync and BBM slices, and both cold-entry examples. Each is emitted as a

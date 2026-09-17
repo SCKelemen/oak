@@ -764,6 +764,35 @@ neither atomicity/non-tearing nor architectural event count/identity, CAT
 membership, visibility, completion, or publication. The C runtime and Arm's
 concurrent memory model are outside this new theorem's semantics.
 
+`TestSailLemRAMTraces` now executes the separate **Lem request interface**:
+Lem translates the whole hash-pinned official `aarch64_extras.lem`, and an
+OCaml harness links its actual `write_ram` to Sail 0.20.2's prompt runtime.
+The event matcher, bind, byte conversions, and instruction-kind sources are
+checksum-pinned in both Lem and installed generated OCaml form. CI installs
+Lem 2026-05-01 and makes this oracle mandatory in its own job. The harness
+checks exact plain-write address/data request order, little-endian bytes,
+missing/reordered/duplicated/extra events, and mismatched kind/address/size/data.
+Mutated wrappers must compile and then fail a trace assertion.
+
+The results expose limits a future event bridge must preserve: the wrapper
+discards the data-write Boolean acknowledgement, so either value returns
+normally; `hasTrace` includes `Fail` and `Exception`, not just `Done`.
+An undefined address fails before any event, while a non-byte-sized value
+fails after its address request. Undefined data bits can remain in a byte
+request, and this external interface does not itself require the payload's
+byte count to equal its declared size. The RAM selector and address-width
+argument are ignored. These malformed-input cases describe the external
+interface, not well-typed Sail calls. Two sequential calls retain both request
+pairs even when final RAM contents could discard the first value.
+
+This is bounded executable regression evidence, not a kernel proof of Lem,
+OCaml, or the runtime, nor a Lean-to-Lem or ASL-to-CAT refinement. An address
+request plus a data request are not two architectural writes; even a normal
+wrapper return is not evidence of architectural commitment or publication.
+No new optimizer permission or strict-profile admission follows from this
+oracle. Full instruction reachability and architectural event interpretation
+remain open.
+
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
 `Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly
