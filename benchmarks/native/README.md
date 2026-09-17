@@ -2046,6 +2046,23 @@ fourteen boundary lengths and after every sample; assembler, native reference
 and RV64 checks pass. The conflicting timings need a quiet-host follow-up.
 [All samples, selections, hashes and validation](results/blake3-loop-bounds-2026-09-17.json).
 
+**Packed record leaves (2026-09-17).** The assigned-field loop fix in
+`40aaaf83` removes the earlier nested `next.cv[0]` preservation failure;
+at `0973619d`, the update instead exhausts the coupling-search budget.
+Its frame reloads still spell packed input bytes as shifts and masks, so
+the search tries unrelated fields before the correct byte slot. Recognizing
+widened parameters inside a pack by their declared widths recovers the
+original leaves: the first search now pairs all 64 block bytes directly
+with their frame slots, up from eight. Unbounded and overlapping placements
+remain refused.
+
+The update still exhausts the normal coupling budget around its chaining-value
+fields. Its C companion and native object are unchanged: **528 instructions,
+one guard, 307 agreeing witness inputs**. This is verifier progress without
+a runtime speedup claim. The compressor proof and native package/reference
+checks pass; [the evidence record](results/blake3-packed-record-leaves-2026-09-17.json)
+contains the artifact hashes, search examples and validation commands.
+
 ## BLAKE3: counted interior copies rejected, 2026-09-17
 
 At baseline `65477201`, the existing guarded input loop becomes `memcpy`

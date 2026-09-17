@@ -135,6 +135,9 @@ func extractedLane(t *term) (*term, bool) {
 // of a comparison keep one spelling for one lane and decide as the same
 // term where a diagram of the lanes would be beyond the budget.
 func unpackLane(word *term, shift, bits int) (*term, bool) {
+	if word.kind == termParam {
+		return nil, false // a bare scalar's mask is not an aggregate extraction
+	}
 	lanes := map[int]*term{}
 	if !unpackWord(word, bits, lanes) {
 		return nil, false
@@ -150,8 +153,14 @@ func unpackLane(word *term, shift, bits int) (*term, bool) {
 // — into lanes by shift; false when the word is not such a pack (an or of
 // two vectors' words, say, whose lanes overlap).
 func unpackWord(word *term, bits int, lanes map[int]*term) bool {
+	if word.width != 64 {
+		return false // placement shifts must have the word's 64-bit semantics
+	}
 	if word.kind == termConst && word.value == 0 {
 		return true
+	}
+	if word.kind == termParam {
+		return placeLane(word, 0, bits, lanes)
 	}
 	if word.kind != termBinary {
 		return false
@@ -185,8 +194,15 @@ func placeLane(placed *term, shift, bits int, lanes map[int]*term) bool {
 
 // placedLane recognizes widenLane's placement of a lane at bit 0 of a
 // 64-bit word — the lane zero-extended and masked to its width — and
-// returns the lane at its width.
+// returns the lane at its width. A widened, bounded record parameter is
+// also a placement when it occurs inside a pack.
 func placedLane(t *term, bits int) (*term, bool) {
+	// A widened record leaf retains its declared width without an
+	// explicit mask. It is a lane only when that declaration bounds all
+	// its bits; a full-width parameter could overlap the next placement.
+	if t.kind == termParam && t.width == 64 && t.declaredWidth() <= bits {
+		return adaptWidth(t, bits), true
+	}
 	if t.kind == termConst {
 		if t.value>>uint(bits) != 0 {
 			return nil, false

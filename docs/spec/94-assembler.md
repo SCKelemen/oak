@@ -1764,7 +1764,14 @@ recognizable pack** — a vector spilled and reloaded, a frame word
 assembled from byte slots, a loop-carried register the substitution made
 the pack of its Oak lanes — is the lane term itself (`unpackLane`,
 `extractedLane`, applied at extraction and at substitution), not a mask
-over a shift over the pack. **Bitwise vector operations** run at the
+over a shift over the pack. As of 2026-09-17, this includes record parameters
+widened into a 64-bit pack without explicit masks: their declared widths must
+fit the lane, and every placement must be distinct and aligned. The word's
+operations must be 64-bit; a bare scalar adapter remains outside this
+recognition. Overlapping or unbounded placements are refused. The regression
+in `asm/packed_declared_lanes_test.go` checks byte, halfword and word reloads
+against their original leaves and concrete values, plus those refusals.
+**Bitwise vector operations** run at the
 finer of their operands' lane widths, and byte by byte over two words
 that are packs of nothing recognizable (two loop symbols), since bitwise
 operations distribute over lanes: the machine then spells `error |
