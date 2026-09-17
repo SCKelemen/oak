@@ -1018,8 +1018,8 @@ before considering default promotion. The downstream pin is unchanged.
 
 **Result-home register budget follow-up (2026-09-17).** The experimental
 candidate now caps result homes at **two per loop**, independently of private
-frame homes (the combined cap stays eight). Integrated materialization v18
-records the new recipe alongside upstream late-machine flags. It still
+frame homes (the combined cap stays eight). Integrated materialization v19
+records the new recipe alongside upstream extent folding and late-machine flags. It still
 requires the same alias, trap and verifier checks and is
 still disabled unless `OAK_NATIVE_LOOP_RESULT_HOMES=1`.
 

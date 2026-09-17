@@ -2,7 +2,7 @@
   "schema": "oak-blake3-result-home-budget-v1",
   "date": "2026-09-17",
   "compiler_base": "0ee3b6b587ee2ff686788a53a89820a3f0aba647",
-  "candidate": "isolated working tree: result-only budget2; finalized as integrated materialization v18 with unchanged default-off policy",
+  "candidate": "isolated working tree: result-only budget2; finalized as integrated materialization v19 with unchanged default-off policy",
   "integration": {
     "upstream": "9530ae6f",
     "compiler_source_commit": "3f2db1ba",

@@ -5865,7 +5865,7 @@ An independent **experimental** `loop-result-homes` candidate (2026-09-17)
 caches selected literal-index cells of that exact result array in callee-saved
 registers for one loop, then flushes written cells before later memory uses.
 The compiler offers it only under `OAK_NATIVE_LOOP_RESULT_HOMES=1`; an explicit
-`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v18 keys
+`OAK_OPT_SKIP=loop-result-homes` overrides the opt-in. Materialization v19 keys
 it independently from private-frame `loop-array-homes` and records the smaller
 two-result-home budget (the combined frame/result cap remains eight). The
 budget resets per loop and leaves uncached cells on the memory path; it is a
