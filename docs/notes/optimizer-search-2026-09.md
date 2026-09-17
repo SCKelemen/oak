@@ -902,8 +902,13 @@ lists the functions no entry point reaches; on the kernel program that is
 eight bodies — `blake3_g`, `permute`, `rotr32`, `crc32c_word_at`, and
 their like — helpers the compiler's expansion has already inlined into
 every caller, lowered natively all the same, each with its own search,
-for code nothing runs: the next compile-time saving, once the tests that
-pin those units' verdicts are read the same way.
+for code nothing runs. Those bodies are left to the C backend now, the
+reachability read conservatively — every identifier naming a function is
+an edge, a call's with its site, a dispatch clause's realizations are
+edges from the dispatching function, and kernels are roots beside `main`
+and the exported functions — so a function used as a value or selected at
+startup stays reachable. The emit's CPU time did not move for the kernel
+program (eight small bodies of some fifty); the report is the gain.
 
 ### Found by the harness: a miscompile in the plain lowering (2026-09-16)
 
