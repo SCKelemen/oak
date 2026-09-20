@@ -538,6 +538,21 @@ while ready {
 }
 ```
 
+`break` leaves the innermost enclosing `while` (`85-discipline.md` §3a):
+legal only in a loop body, it runs the block's pending deferred statements
+(§4b) and continues after the loop. A scan that has found its answer
+breaks rather than carrying a done flag into the condition:
+
+```oak
+while i < count {
+  hit ? { found = i; break } | {}
+  i = i + u32(1)
+}
+```
+
+There is no early exit from a *function* other than the tail expression,
+a value-position match's arm (§3a), and `try` (§2d).
+
 There is no file-wide syntax mode. Explicit braces dominate indentation inside the explicit block.
 
 Data-construction braces remain explicit:
