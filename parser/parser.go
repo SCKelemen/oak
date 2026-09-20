@@ -297,6 +297,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return nil
 	case token.BREAK:
 		return &ast.BreakStatement{Token: p.currentToken}
+	case token.RETURN:
+		return p.parseReturnStatement()
 	case token.DEFER:
 		return p.parseDeferStatement()
 	case token.UNSAFE:
@@ -999,6 +1001,7 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 	if lit.Body == nil {
 		return nil
 	}
+	p.lowerReturns(lit.Body, lit.ReturnType, lit.ReturnType != nil)
 	return lit
 }
 
@@ -3965,7 +3968,9 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 	// For expressions, this is the expression's last token
 	// For blocks, we'd need to track the closing brace
 	stmt.EndToken = p.currentToken
-
+	if block, isBlock := stmt.Body.(*ast.BlockExpression); isBlock {
+		p.lowerReturns(block.Block, stmt.ReturnType, true)
+	}
 	return stmt
 }
 
@@ -4990,6 +4995,10 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		return nil
 	}
 	stmt.EndToken = p.currentToken
+	if block, isBlock := stmt.Body.(*ast.BlockExpression); isBlock {
+		// A missing annotation is the unit type here (`main: () { … }`).
+		p.lowerReturns(block.Block, stmt.ReturnType, true)
+	}
 	if symbol, ok := externBindingSymbol(stmt.Body); ok {
 		stmt.ExternSymbol = symbol
 	}

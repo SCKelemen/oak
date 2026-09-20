@@ -89,6 +89,7 @@ const (
 	FN
 	PUB
 	TRY
+	RETURN
 	_keywords_end
 )
 
@@ -160,6 +161,7 @@ var tokens = [...]string{
 	FN:        "fn",
 	PUB:       "pub",
 	TRY:       "try",
+	RETURN:    "return",
 }
 
 func (token TokenKind) String() string {

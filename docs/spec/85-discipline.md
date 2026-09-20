@@ -155,6 +155,13 @@ The backends agree by construction — statement-position conditionals lower
 to `if`/`else` and loops to `while`, so C's `break` leaves exactly the Oak
 loop, and the interpreter consumes the break at the loop it belongs to.
 
+### 3b. `return`
+
+An early `return` (`10-syntax.md` §2e) is lowered by the parser to a
+nested conditional or to a flag and a `break`, so the strict profile sees
+only those: a certified loop that returns early is a certified loop that
+breaks early, bounded as before.
+
 ## 4. Allocation phase
 
 No dynamic allocation after initialization (Power of Ten rule 3,
