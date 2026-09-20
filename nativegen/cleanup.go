@@ -360,20 +360,6 @@ func cleanupOnce(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
 				continue
 			}
 		}
-		// Rule 9: a Bool materialized only to be selected on. `cset wT,
-		// cond; …; cmp wT, #0; csel wD, wA, wB, ne` reads the flags the
-		// cset read: the select takes cond (`eq` after the compare: its
-		// inverse). The instructions between must not set flags or touch
-		// wT, and wT must be dead after the select.
-		if fused, span, ok := fuseFlagSelect(items, i); ok && dead(i+span-1, fusedRegister(ins)) {
-			for j := i + 1; j < i+span-1; j++ {
-				out = append(out, items[j])
-			}
-			out = append(out, fused)
-			removed += 2
-			i += span
-			continue
-		}
 		if i+2 < len(items) {
 			second, secondOK := items[i+1].(asm.Instruction)
 			third, thirdOK := items[i+2].(asm.Instruction)
@@ -493,68 +479,12 @@ func fuseBitTest(mask, compare, branch asm.Instruction) (asm.Instruction, bool) 
 	return asm.Instruction{Mnemonic: mnemonic, Operands: []asm.Operand{bitReg, asm.Immediate{Value: k}, target}, Line: branch.Line}, true
 }
 
-// fuseFlagSelect reads, from the cset at items[i], the shape `cset wT,
-// cond; (moves and constants); cmp wT, #0; csel wD, wA, wB, ne|eq` and
-// returns the select on the cset's condition and the number of items the
-// shape spans. Only `mov`/`movz`/`movk` that neither set flags nor mention
-// wT may lie between.
-func fuseFlagSelect(items []asm.Item, i int) (asm.Instruction, int, bool) {
-	set, ok := items[i].(asm.Instruction)
-	if !ok || set.Mnemonic != "cset" || set.Cond != "" || len(set.Operands) != 2 {
-		return asm.Instruction{}, 0, false
-	}
-	dst, dstOK := generalReg(set.Operands[0])
-	cond, condOK := set.Operands[1].(asm.Condition)
-	if !dstOK || !condOK || dst.Class != asm.ClassW {
-		return asm.Instruction{}, 0, false
-	}
-	j := i + 1
-	for ; j < len(items) && j <= i+3; j++ {
-		ins, isIns := items[j].(asm.Instruction)
-		if !isIns {
-			return asm.Instruction{}, 0, false
-		}
-		if ins.Mnemonic == "cmp" {
-			break
-		}
-		if (ins.Mnemonic != "mov" && ins.Mnemonic != "movz" && ins.Mnemonic != "movk") || readsGeneral(ins, dst.Num) || writesGeneral(ins, dst.Num) {
-			return asm.Instruction{}, 0, false
-		}
-	}
-	if j+1 >= len(items) {
-		return asm.Instruction{}, 0, false
-	}
-	compare, cmpOK := items[j].(asm.Instruction)
-	sel, selOK := items[j+1].(asm.Instruction)
-	if !cmpOK || !selOK || compare.Mnemonic != "cmp" || len(compare.Operands) != 2 || sel.Mnemonic != "csel" || len(sel.Operands) != 4 {
-		return asm.Instruction{}, 0, false
-	}
-	tested, testedOK := generalReg(compare.Operands[0])
-	zero, zeroOK := compare.Operands[1].(asm.Immediate)
-	selCond, selCondOK := sel.Operands[3].(asm.Condition)
-	if !testedOK || !zeroOK || !selCondOK || tested.Num != dst.Num || tested.Class != asm.ClassW || zero.Value != 0 || zero.Shift != 0 {
-		return asm.Instruction{}, 0, false
-	}
-	if readsGeneral(sel, dst.Num) {
-		return asm.Instruction{}, 0, false
-	}
-	code := cond.Code
-	switch selCond.Code {
-	case "ne":
-	case "eq":
-		inverted, known := invertedCondition[code]
-		if !known {
-			return asm.Instruction{}, 0, false
-		}
-		code = inverted
-	default:
-		return asm.Instruction{}, 0, false
-	}
-	fused := sel
-	fused.Operands = append([]asm.Operand(nil), sel.Operands...)
-	fused.Operands[3] = asm.Condition{Code: code}
-	return fused, j + 2 - i, true
-}
+// A Bool materialized only to be selected on (`cset wT, cond; …; cmp wT,
+// #0; csel …, ne`) is deliberately not fused into a select on the cset's
+// condition: the fused shape lands the verifier's decision of the OS
+// walker `translate`'s status cell past its node budget (the plain form
+// decides at 1.9M nodes, the fused one not at all under the escalated
+// budget), and the stage2 walkers gain nothing from it.
 
 // blockReadsFlags reports a label whose block begins with a conditional
 // branch: the flags reach it from a compare before a branch to it, which a
