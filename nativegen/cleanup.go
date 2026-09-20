@@ -56,6 +56,24 @@ func cleanupItems(items []asm.Item) ([]asm.Item, int) {
 // source as an allocatable value and spilled a whole body around one.
 func cleanupItemsWith(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
 	removed := 0
+	// The local rules expose the shapes the fold reads (a copy forwarded
+	// into its compare, a Bool fused into its branch), and the fold exposes
+	// shapes for the rules (a decided branch leaving a copy dead), so the
+	// two alternate to a fixpoint.
+	for pass := 0; pass < constPassLimit; pass++ {
+		folded, n := foldConstantBranches(items)
+		ruled, m := cleanupItemsRules(folded, zeroStores)
+		items = ruled
+		removed += n + m
+		if n == 0 && m == 0 {
+			break
+		}
+	}
+	return items, removed
+}
+
+func cleanupItemsRules(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
+	removed := 0
 	for {
 		next, n := cleanupOnce(items, zeroStores)
 		if n == 0 {
@@ -389,21 +407,17 @@ func cleanupOnce(items []asm.Item, zeroStores bool) ([]asm.Item, int) {
 				continue
 			}
 			// Rule 8: a zero moved into a register only to be stored is the
-			// zero register stored (`mov x9, xzr; str x9, [x14]`).
-			if d, s, isMove := isRegisterOrZeroMove(ins); isMove && zeroStores && s.ZeroRegister() && strings.HasPrefix(next.Mnemonic, "str") && len(next.Operands) == 2 && dead(i+1, d.Num) {
-				if src, isReg := next.Operands[0].(asm.Register); isReg && src.Num == d.Num && src.Class == d.Class {
-					if mem, isMem := next.Operands[1].(asm.Memory); isMem && !memoryMentions(mem, d.Num) {
-						renamed := next
-						zero := wr(31)
-						if d.Class == asm.ClassX {
-							zero = xr(31)
-						}
-						renamed.Operands = []asm.Operand{zero, mem}
-						out = append(out, renamed)
-						removed++
-						i++
-						continue
+			// zero register stored (`mov x9, xzr; str x9, [x14]`), the
+			// scheduler's independent instructions between them kept.
+			if d, s, isMove := isRegisterOrZeroMove(ins); isMove && zeroStores && s.ZeroRegister() {
+				if at, store, ok := zeroStoreAfter(items, i, d); ok && dead(at, d.Num) {
+					for j := i + 1; j < at; j++ {
+						out = append(out, items[j])
 					}
+					out = append(out, store)
+					removed++
+					i = at
+					continue
 				}
 			}
 			// Rule 1: a copy read once by the next instruction.
@@ -560,6 +574,37 @@ func blockReadsFlags(items []asm.Item, label string) bool {
 		}
 	}
 	return false
+}
+
+// zeroStoreAfter finds, within a few items after the zero move at i, the
+// store of the moved register — `str wD/xD, [mem]` with mem not reading D
+// — with only instructions that neither mention D nor touch memory
+// between, and returns the store rewritten to store the zero register.
+func zeroStoreAfter(items []asm.Item, i int, d asm.Register) (int, asm.Instruction, bool) {
+	for j := i + 1; j < len(items) && j <= i+4; j++ {
+		ins, isIns := items[j].(asm.Instruction)
+		if !isIns {
+			return 0, asm.Instruction{}, false
+		}
+		if strings.HasPrefix(ins.Mnemonic, "str") && len(ins.Operands) == 2 {
+			src, isReg := ins.Operands[0].(asm.Register)
+			mem, isMem := ins.Operands[1].(asm.Memory)
+			if isReg && isMem && src.Num == d.Num && src.Class == d.Class && !memoryMentions(mem, d.Num) {
+				zero := wr(31)
+				if d.Class == asm.ClassX {
+					zero = xr(31)
+				}
+				renamed := ins
+				renamed.Operands = []asm.Operand{zero, mem}
+				return j, renamed, true
+			}
+			return 0, asm.Instruction{}, false
+		}
+		if readsGeneral(ins, d.Num) || writesGeneral(ins, d.Num) || strings.HasPrefix(ins.Mnemonic, "ld") || strings.HasPrefix(ins.Mnemonic, "st") || isBranchMnemonic(ins.Mnemonic) {
+			return 0, asm.Instruction{}, false
+		}
+	}
+	return 0, asm.Instruction{}, false
 }
 
 // memoryMentions reports a memory operand reading the register.

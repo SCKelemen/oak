@@ -212,6 +212,10 @@ func TestCleanupLabelRunsBitTestsAndZeroStores(t *testing.T) {
 	if n != 1 || !strings.Contains(out, "str xzr, [x14]") {
 		t.Fatalf("a zero moved only to be stored is the zero register stored (%d removed):\n%s", n, out)
 	}
+	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  add x14, x14, #8\n  str x9, [x14]\n  ret")
+	if n != 1 || !strings.Contains(out, "str xzr, [x14]") || !strings.Contains(out, "add x14, x14, #8") {
+		t.Fatalf("an independent scheduled instruction between the move and the store is kept (%d removed):\n%s", n, out)
+	}
 	out, n = postScheduleCleanupText(t, "  mov x9, xzr\n  str x9, [x14]\n  add x0, x9, #1\n  ret")
 	if strings.Contains(out, "str xzr") {
 		t.Fatalf("a zero read after the store keeps its register:\n%s", out)
