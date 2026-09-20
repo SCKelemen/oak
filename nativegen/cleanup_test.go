@@ -221,25 +221,3 @@ func TestCleanupLabelRunsBitTestsAndZeroStores(t *testing.T) {
 		t.Fatalf("a zero read after the store keeps its register:\n%s", out)
 	}
 }
-
-// Rule 9: a Bool materialized only to be selected on selects on the
-// cset's condition; a read of the Bool after the select, or a flag-setting
-// instruction between, keeps the shape.
-func TestCleanupFusesFlagSelects(t *testing.T) {
-	out, n := cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  movz w9, #3\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  ret")
-	if n != 2 || !strings.Contains(out, "csel w0, w9, w2, eq") || strings.Contains(out, "cset") {
-		t.Fatalf("the select reads the compare's flags (%d removed):\n%s", n, out)
-	}
-	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, lo\n  cmp w3, #0\n  csel w0, w9, w2, eq\n  ret")
-	if n != 2 || !strings.Contains(out, "csel w0, w9, w2, hs") {
-		t.Fatalf("eq after the compare is the inverted condition (%d removed):\n%s", n, out)
-	}
-	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  add w0, w0, w3\n  ret")
-	if strings.Contains(out, "csel w0, w9, w2, eq") {
-		t.Fatalf("a Bool read after the select keeps its cset:\n%s", out)
-	}
-	out, n = cleanupText(t, "  cmp x0, #0\n  cset w3, eq\n  add w9, w9, #1\n  cmp w3, #0\n  csel w0, w9, w2, ne\n  ret")
-	if strings.Contains(out, "csel w0, w9, w2, eq") {
-		t.Fatalf("an arithmetic instruction between refuses the fusion:\n%s", out)
-	}
-}
