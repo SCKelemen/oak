@@ -6675,7 +6675,9 @@ tests before marking: a condition reading a leaf the body never stores
 (`while i < s[dom].count`, the body storing `s[dom].slots`) read the
 marker on one side and the entry memory on the other. The OS pilots'
 scans (`grant`, `timer`) wrote a done flag into the loop condition by
-hand for want of a verified `break`; the two shapes now prove alike
+hand for want of a verified `break`; the two shapes now prove alike, and
+so does an early `return` from inside a loop, which the parser lowers to
+this flag form (`10-syntax.md` §2e; `compiler/e2e_native_return_test.go`)
 (`compiler/e2e_native_break_test.go`: a counted scan, a span search, a
 store before and after the break, a nested loop's break, on both lanes).
 

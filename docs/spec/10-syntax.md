@@ -201,6 +201,56 @@ The variadic form of §3 is the other spelling of the same thing:
 `dims(28, 28)` and `dims([28, 28])` reach a `dims: (shape: ...u32)` or
 `dims: (shape: []u32)` callee as the same two-element view.
 
+## 2e. Early return
+
+`return e` leaves the function with the value `e` from anywhere in its
+body; `return` alone leaves a unit function. Functions stay
+tail-expression valued: a `return` is a spelling of the shapes the
+language already has, and the parser lowers it before any analysis
+(`parser/return.go`), as it reorders `defer` (§4b). What it lowers to:
+
+```oak
+find: (v: [*]u32, want: u32): u32 {
+  len(v) == u32(0) ? { return u32(0) }     // a guard clause
+  i: u32 = u32(0)
+  while i < len(v) {
+    v[i] == want ? { return i }            // from inside a loop
+    i = i + u32(1)
+  }
+  len(v)
+}
+```
+
+- A return in a conditional's arm, outside any loop, nests the rest of
+  the block into the arm that did not return, and the conditional becomes
+  the block's value: `c ? { return e } | {}; rest; tail` is
+  `c ? { e } | { rest; tail }` (the `try` lowering's move, §2d). A guard
+  clause therefore costs one branch, no flag. Statements after a return in
+  its own block are unreachable and dropped.
+- A return inside a `while` sets two function-scoped locals the lowering
+  declares first — the value cell `return__value: T` (T the declared
+  return type; a scalar starts at zero) and the flag `return__done: Bool`
+  — runs the deferred statements of every block the exit leaves, and
+  `break`s the innermost loop; after the loop the lowering places
+  `return__done ? { return return__value }`, which the enclosing context
+  lowers in turn: a break again inside an outer loop, a nesting at the
+  function level. The native lane proves the result as it proves a written
+  flag (`94-assembler.md` §9 "Loops that break"), and its constant-branch
+  fold removes the flag tests on the paths that decide them.
+- A block's deferred statements stay at its end, so a return runs them
+  after its value, as §4b says; a `break` the lowering places is preceded
+  by the deferred statements of the blocks it leaves, as a written `break`
+  is.
+
+The rules: `return` is legal only inside a function body (a function
+literal owns its returns); a value in a unit function, or none in a valued
+one, is a diagnostic at the `return`; a value returned from inside a loop
+of a function literal without a return annotation needs the annotation
+(the cell needs a type; a guard clause does not). Type errors surface
+through the ordinary checker on the lowered form. The names
+`return__value` and `return__done` are the lowering's; a program that
+declares them itself collides with it.
+
 ## 3. Functions
 
 A function is an ordinary declaration: a name bound to a function interface
@@ -550,8 +600,8 @@ while i < count {
 }
 ```
 
-There is no early exit from a *function* other than the tail expression,
-a value-position match's arm (§3a), and `try` (§2d).
+A function leaves early with `return` (§2e), a value-position match's arm
+(§3a), or `try` (§2d).
 
 There is no file-wide syntax mode. Explicit braces dominate indentation inside the explicit block.
 
