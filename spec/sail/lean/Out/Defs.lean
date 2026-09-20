@@ -20,6 +20,35 @@ inductive option (k_a : Type) where
   deriving Inhabited, BEq, Repr
   open option
 
+structure ProcState where
+  N : (BitVec 1)
+  Z : (BitVec 1)
+  C : (BitVec 1)
+  V : (BitVec 1)
+  D : (BitVec 1)
+  A : (BitVec 1)
+  I : (BitVec 1)
+  F : (BitVec 1)
+  PAN : (BitVec 1)
+  UAO : (BitVec 1)
+  DIT : (BitVec 1)
+  TCO : (BitVec 1)
+  BTYPE : (BitVec 2)
+  SS : (BitVec 1)
+  IL : (BitVec 1)
+  EL : (BitVec 2)
+  nRW : (BitVec 1)
+  SP : (BitVec 1)
+  Q : (BitVec 1)
+  GE : (BitVec 4)
+  SSBS : (BitVec 1)
+  IT : (BitVec 8)
+  J : (BitVec 1)
+  T : (BitVec 1)
+  E : (BitVec 1)
+  M : (BitVec 5)
+  deriving BEq, Inhabited, Repr
+
 inductive CompareOp where | CompareOp_GT | CompareOp_GE | CompareOp_EQ | CompareOp_LE | CompareOp_LT
   deriving BEq, Inhabited, Repr
   open CompareOp
@@ -170,14 +199,22 @@ structure SoftwareBreakpointArguments where
 
 inductive Register : Type where
   | __defaultRAM
+  | __LSISyndrome
+  | PSTATE
   | _R
   deriving DecidableEq, Hashable, Repr
 open Register
 
 abbrev RegisterType : Register → Type
   | .__defaultRAM => (BitVec 56)
+  | .__LSISyndrome => (BitVec 11)
+  | .PSTATE => ProcState
   | ._R => (Vector (BitVec 64) 31)
 
+instance : Inhabited (RegisterRef RegisterType ProcState) where
+  default := .Reg PSTATE
+instance : Inhabited (RegisterRef RegisterType (BitVec 11)) where
+  default := .Reg __LSISyndrome
 instance : Inhabited (RegisterRef RegisterType (BitVec 56)) where
   default := .Reg __defaultRAM
 instance : Inhabited (RegisterRef RegisterType (Vector (BitVec 64) 31)) where

@@ -76,7 +76,9 @@ func (f *function) forwardRegion(b *binary, order []optir.BlockID, functions map
 			if depth > 127 {
 				return fmt.Errorf("region branch depth exceeds scalar profile")
 			}
-			f.edgeValues(b, e)
+			if err := f.edgeValues(b, e, functions); err != nil {
+				return err
+			}
 			if ok && target == i+1 && !conditional {
 				return nil // unconditional fallthrough to the next label
 			}
@@ -86,7 +88,9 @@ func (f *function) forwardRegion(b *binary, order []optir.BlockID, functions map
 		}
 		switch t := block.Terminator; t.Kind {
 		case optir.TerminatorReturn:
-			f.returnValue(b, t)
+			if err := f.returnValue(b, t, functions); err != nil {
+				return err
+			}
 			if i != len(order)-1 || !returnAtEnd {
 				b.op(0x0f) // early return must skip remaining blocks
 			}
@@ -95,7 +99,9 @@ func (f *function) forwardRegion(b *binary, order []optir.BlockID, functions map
 				return err
 			}
 		case optir.TerminatorCondBranch:
-			f.get(b, t.Condition)
+			if err := f.emitValue(b, t.Condition, functions); err != nil {
+				return err
+			}
 			b.op(0x04, 0x40)
 			if err := edge(t.True, true); err != nil {
 				return err

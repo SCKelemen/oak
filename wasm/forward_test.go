@@ -153,12 +153,6 @@ func TestWasmForwardDepthLimit(t *testing.T) {
 		modules = append(modules, base64.StdEncoding.EncodeToString(m.Bytes))
 		// Pin the route: the 128-block graph must keep the dispatcher. The
 		// admitted 127-block graph must not silently retreat from this boundary.
-		prefix := binary{}
-		locals := n*4 - 2 + 1 // SSA values less entry parameters, plus dead division
-		if n > maxForwardBlocks {
-			locals++
-		}
-		prefix.u(uint64(locals))
 		// Inspect the materialized body through the same private helper setup as
 		// EncodeCandidate; byte admission above separately checks actual nesting.
 		f := shapeTestFunction(cfg)
@@ -184,8 +178,40 @@ func TestWasmForwardDepthLimit(t *testing.T) {
 			}
 		}
 		body, err := f.body(map[string]*function{"forward": f})
-		if err != nil || len(body) < len(prefix) || string(body[:len(prefix)]) != string(prefix) {
+		if err != nil {
 			t.Fatal("wrong control-depth fallback route", n, err)
+		}
+		at := 0
+		readULEB := func() (uint64, bool) {
+			var value uint64
+			for shift := uint(0); shift < 35 && at < len(body); shift += 7 {
+				c := body[at]
+				at++
+				value |= uint64(c&0x7f) << shift
+				if c&0x80 == 0 {
+					return value, true
+				}
+			}
+			return 0, false
+		}
+		groups, ok := readULEB()
+		for i := uint64(0); ok && i < groups; i++ {
+			_, ok = readULEB()
+			if ok && at < len(body) {
+				at++ // value type
+			} else {
+				ok = false
+			}
+		}
+		want := byte(0x02) // first nested forward block
+		if n > maxForwardBlocks {
+			want = 0x41 // dispatcher PC initialization
+		}
+		if !ok || at >= len(body) {
+			t.Fatalf("wrong control-depth fallback route %d: malformed locals prefix", n)
+		}
+		if body[at] != want {
+			t.Fatalf("wrong control-depth fallback route %d: first opcode %#x, want %#x", n, body[at], want)
 		}
 	}
 	data, err := json.Marshal(modules)

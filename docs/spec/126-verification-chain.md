@@ -712,7 +712,8 @@ the pinned Sail Lean runtime's actual `write_ram`. For arbitrary prior memory,
 it writes exactly eight consecutive bytes, least-significant byte first,
 preserves memory outside that footprint, and leaves every non-memory state
 field unchanged. A generic runtime theorem also covers arbitrary register and
-choice-state types, beyond the generated fragment's RAM selector and GPR bank.
+choice-state types, beyond the generated fragment's RAM selector, GPR bank,
+processor state, and load/store syndrome registers.
 The selected break/make projections compose with this effect, including Arm's
 pre-call endian conversion; a 52-bit PA plus seven cannot wrap the 56-bit call
 address. This runtime ignores the RAM selector, as another theorem explicitly
@@ -759,12 +760,48 @@ establish that the original instruction executes this adapter. The kernel
 examples cover narrow/high-bit reads, X30/XZR, missing state, aliased operands,
 the largest unsigned immediate, and 64-bit virtual-address wrap. No physical
 address or RAM call is obtained by truncating the result. SP selection,
-PostDecode, syndrome updates, `Mem`, translation, faults, architectural event
+PostDecode, the instruction's syndrome call, `Mem`, translation, faults, architectural event
 identity, and a Lean/Lem register-state refinement remain open. Exact-source
 gates reject altered banks, accessors, continuation effects, and overloads in
 both upstream and local copies; CI requires those gates and the new module.
 Checked axiom reports admit only Lean's standard logical axioms, not `sorry`
 or native-evaluation axioms, for the accessor and its main compositions.
+
+`SyndromeBridge.lean` closes the next individual STR dependency: the original
+`MakeLSInstructionSyndrome` and `AArch64_SetLSInstructionSyndrome`. The full
+26-field `ProcState` record, `PSTATE`, `__LSISyndrome`, and the EL0/EL1 constants
+are retained from the pinned Arm model, not replaced by a supplied privilege
+flag. For all supported byte sizes (1/2/4/8), register numbers 0–31, and three
+Boolean flags, the generated maker returns the exact ISV/SAS/SSE/SRT/SF/AR
+fields with unchanged state. The original assertions and undefined size
+initializer remain; this unchanged-state result uses the export's existing
+trivial choice source, not a general nondeterministic-runtime refinement.
+Out-of-domain size/register examples fail the retained assertions.
+
+The generated setter reads the actual initialized `PSTATE` entry: EL0/EL1
+write exactly the syndrome entry (including insertion when previously absent),
+whereas EL2/EL3 preserve the complete state. Missing `PSTATE` returns the
+unchanged-state runtime `Unreachable` error. All unrelated register lookups,
+including their absence, and all non-register fields are preserved. Checked
+STR64 examples give syndrome `0x77e` for XZR and `0x70a` for X2 at low EL;
+they do not construct an ESR or prove exception handling. A clearly labeled
+`str64GPDependencies` adapter composes the existing operand reads with the
+actual generated setter, including exact EL2 no-op and missing-PSTATE results.
+It is **not the original instruction body**: PostDecode, SP/MTE handling,
+the call to this dependency from the instruction, `Mem`, translation/faults,
+and architectural event/ordering semantics remain open. No RAM address is
+derived by truncating its virtual operand address.
+
+The required CI source gate checks complete upstream/local declarations and
+rejects 41 mutation families, including altered privilege guards, field
+layouts, assertions, register destinations, and appended effects. These are
+source-audit mutants, not compiled runtime mutants. The default Sail Lean
+build includes the new module; checked axiom reports contain only standard
+logical axioms. Regeneration now invokes Sail on a temporary copy under a
+stable relative filename so retained assertion messages are reproducible
+across checkout locations, without rewriting generated output or weakening
+the byte-for-byte freshness check. No compiler pin or verified-admission
+boundary changes are part of this dependency proof.
 
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span

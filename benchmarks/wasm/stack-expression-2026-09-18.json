@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-18",
+  "baseline_commit": "5185645ccb9a52248c85bf9f54df2c05ffd0452b",
+  "baseline_recipe": "oak.wasm.encode.v8",
+  "candidate_recipe": "oak.wasm.encode.v9",
+  "host": "shared Darwin/arm64; CPU model unavailable",
+  "engine": {"deno":"2.9.6","v8":"15.0.245.2-rusty","typescript":"6.0.3"},
+  "method": "compiler/wasm_stack_test.go TestWasmStackExpressionTiming; retained baseline bytes; fresh engine per process; compilation and instantiation excluded",
+  "warmup": "20 batches per lane, 8 calls per batch, 100000 iterations",
+  "calls_per_sample": 8,
+  "iterations": "10000000+j*97",
+  "sample_order": "seven rounds, alternating local-SSA/stack-expression and stack-expression/local-SSA",
+  "static": {
+    "local_ssa_bytes": 258,
+    "stack_expression_bytes": 161,
+    "local_ssa_instructions": 88,
+    "stack_expression_instructions": 56
+  },
+  "checks": "both lanes checked against a wrapping-u32 reference result on every call",
+  "caveat": "extreme timing variance prevented a stable runtime conclusion; the repeatable result is module/instruction reduction, not a speedup, Chrome result, timing gate or formal proof",
+  "runs": [
+    {
+      "local_ssa_ms": [358.06820799999997,120.67012499999987,390.1650830000001,295.69916699999976,184.1582910000002,40.28154100000029,403.89950000000044],
+      "stack_expression_ms": [124.40858300000002,234.6702919999999,185.7723329999999,336.2058750000001,603.2662910000004,276.97762499999953,320.2217089999999],
+      "median_ratio": 0.9366872007454785
+    },
+    {
+      "local_ssa_ms": [207.29545799999994,240.60729100000003,267.0238750000001,162.42429200000015,320.8646669999998,40.90887500000008,426.7348340000003],
+      "stack_expression_ms": [40.26470799999993,476.785125,293.379375,421.7045000000003,365.45612500000016,368.20533399999977,268.34270800000013],
+      "median_ratio": 1.5188904853261496
+    },
+    {
+      "local_ssa_ms": [41.192207999999965,183.90208299999995,187.46500000000003,303.269417,167.16545799999994,236.31104199999982,210.76675000000023],
+      "stack_expression_ms": [138.015583,349.5832500000001,210.902292,40.25787500000001,165.8081669999999,293.51195800000005,110.21187499999996],
+      "median_ratio": 0.8844753260608641
+    }
+  ]
+}

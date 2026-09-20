@@ -1129,7 +1129,8 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment contains a RAM selector and the general-register bank. This runtime
+the generated fragment contains a RAM selector, the general-register bank,
+`PSTATE`, and the load/store syndrome register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1153,11 +1154,24 @@ failure, and XZR zero without any bank read. The source width/index domain is
 retained explicitly in the theorems. Its non-SP STR operand adapter composes
 these reads and matches the existing pure request, deriving the X0/XZR and
 X0/X2 pairs from the bank. It is not the original instruction body and makes
-no `Mem` call: SP, PostDecode, syndrome updates, translation, faults, register
+no `Mem` call: SP, PostDecode, the instruction's syndrome call, translation, faults, register
 provenance and architectural events remain open. A checked wrapping-address
 example records the 64-bit arithmetic; it supplies no physical-address
 translation by truncation. Upstream/local source-mutation gates pin the exact
 bank, getter, and overload, and the existing Sail CI builds the proof (§126).
+
+`SyndromeBridge.lean` retains and proves the original syndrome maker/setter,
+with the complete Arm `ProcState` record and actual `PSTATE`/`__LSISyndrome`
+register entries. It proves the six encoded fields for supported sizes and
+registers, EL0/EL1's exact syndrome-only update, EL2/EL3's unchanged full state,
+and missing-PSTATE failure. Original assertions and the undefined initializer
+remain; the proof uses the generated trivial choice source. A dependency-only
+adapter composes the register reads and setter, including the EL2 no-op; it is
+not generated STR execution and makes no `Mem` call. Exception/ESR construction,
+PostDecode, SP/MTE handling, translation/faults, architectural events and
+ordering remain open. Required upstream/local source-mutation gates and
+standard-axiom checks cover the new module. Sail regeneration uses a relative
+temporary input filename to keep assertion locations reproducible (§126).
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
@@ -7181,6 +7195,22 @@ carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
 
+**A call's result register as a loop variable (2026-09-18).** The
+result registers of a summarized call were temporaries without
+exception, and a value that travels through the call's argument and
+result register with no move between the iterations was therefore no
+loop variable at all: `crc32c_update` with its registers reallocated
+keeps `state` in w0 into `crc32c_chunk` and out of it, the summarizer
+read the header's value for w0 at every iteration, `state` had no
+pairing, and every optimized form of the body was set aside as
+witnessed while the identity was kept. A call's result register the
+body reads before it writes — a call reads its argument registers, an
+instruction its sources and memory bases (`callCarriedResults`) — is
+now a loop-carried register at the callee's result width; one the body
+consumes stays a temporary. The rotated, fused, scheduled, reallocated
+form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
+Pinned: `compiler/e2e_native_call_result_carried_test.go`.
+
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
 refused, and with the loops themselves recognized it was the largest
@@ -7992,6 +8022,28 @@ so deferring can miss an early refutation; every complete candidate
 still faces the same guard and preservation implications under the same
 budgets. This avoids rebuilding a large unresolved expression at each
 intervening search depth.
+
+**Declared-width equality through shared terms (2026-09-18).** The restored
+BLAKE3 chaining-value slots all find their identity pairings. The first
+preservation implication still exhausted the diagram budget: its canonical
+terms differed only at the 64 block bytes, read at 32 bits on the Oak side
+and eight on the machine side, with the same eight-bit declarations.
+`equalTermsAtDeclaredWidths` checks the shared term pairs structurally,
+allowing same-name parameter views only when they retain the same declared
+bits. It leaves every operation's result width intact. Comparisons and
+float operations also require equal operand widths; quantifiers use strict
+structural equality because a bound name may shadow the declaration.
+The rule neither rewrites terms nor changes global structural identity.
+
+`TestImpliesEqualDeclaredByteViewsInSharedDAG` proves the reduced shared
+arithmetic graph within 2,000 proof nodes, where the previous decider ran
+out. Changed output bits, discarded high bits, signed comparisons, float
+conversions, unknown bounds and quantifier shadowing remain distinct. The
+full update now proves all four nested loops within the normal budgets.
+The search also stops when its shared diagram or implication allowance
+runs out, preserving that cause instead of continuing until the candidate
+limit hides it. The equality rule alone leaves the native update unchanged;
+measurements and validation are in `benchmarks/native/results/blake3-declared-equality-2026-09-18.json`.
 
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine
@@ -9857,3 +9909,21 @@ first would be a bug of the same family as this section's, the second a
 gap of the §9.al family. Deciding it needs the reallocated body of one
 case read against its original, which is the next piece of work, and it
 should be done before either class is called out of subset.
+
+One hypothesis is already ruled out, which narrows that work. The obvious
+candidate was that reallocation renames the web holding a parameter and
+leaves the body's `bind` behind, so the entry register is never written.
+It does not: `Web.pin` pins any web with a def whose instruction is nil —
+"holds a value at entry" — and pins a call's arguments, results and
+clobbers besides, so the registers the ABI delivers keep their colours
+(`machine/webs.go`). Whatever loses the written set, it is not the entry
+binding.
+
+The case to start from, read off the dump of `buffer_read_into`: the
+refusal is a `cmp w10, #1` at a label whose only visible predecessor is a
+branch two instructions after `ldr w10, [sp, #104]` writes it. Either
+that label has a second predecessor arriving without the write, in which
+case the checker is right and the renaming has moved a read above its
+def, or the written set is lost at that label for another reason.
+Reading the label's arrivals in the reallocated body against the original
+settles it in one pass.
