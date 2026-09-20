@@ -69,7 +69,18 @@ type loopShape struct {
 	// first, so the summary over "entry tests and header tests" is the
 	// machine's loop. Empty when entryEnd <= entryStart.
 	entryStart, entryEnd int
+	// breaks marks a body that leaves the loop before its back edge — a
+	// branch inside the body to exitLabel, Oak's `break`. The summary
+	// carries a one-bit variable for it (breakVar): an iteration that
+	// breaks sets it and the continue condition reads it first, which is
+	// the loop the Oak side lowers `break` to (asm/verify.go breakForm).
+	breaks bool
 }
+
+// breakVar names the carried flag of a loop whose body breaks, on both
+// sides: 0 at the header, 1 after an iteration that broke, read first in
+// the continue condition so the exit tests are not evaluated again.
+const breakVar = "#brk"
 
 // globalStateValue is a package cell's value in a symbolic state: a write on
 // the path, or the declared entry value when the sparse state has no entry.
@@ -365,6 +376,7 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 		exitIndex := exits[0]
 		cmpIndex := -1
 		bodyWhy := ""
+		hasBreak := false
 		for i := bodyStart; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
 			if !isInstr {
@@ -379,7 +391,10 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 				bodyWhy = "the body calls or returns (" + instr.Mnemonic + ")"
 			case "b", "j", "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
-				if !ok || target >= back {
+				if ok && target == exitLabel {
+					// A break: the body leaves to the loop's own exit label.
+					hasBreak = true
+				} else if !ok || target >= back {
 					// A guard's branch to the trap block is not an exit: the
 					// path it takes delivers no result (docs/spec/94-assembler.md §8).
 					if !ok || !isTrapBlock(items, target) || isUnconditionalJump(instr.Mnemonic) {
@@ -400,7 +415,7 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 			reject(back, bodyWhy)
 			continue
 		}
-		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart}
+		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart, breaks: hasBreak}
 		// The entry-only tests right before the header: exits too, met
 		// first.
 		shape.entryStart, shape.entryEnd = invariantEntryTests(items, labels, header, exitLabel, header, back), header
@@ -1341,6 +1356,23 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		return nil, reason, false
 	}
 	ev.cond = cond
+	if shape.breaks {
+		// The break flag: 0 at the header, set by an iteration that
+		// broke (the merge below), read before the exit tests — an
+		// iteration that broke evaluates them no more, and neither do
+		// their traps.
+		fresh := paramTerm(ev.freshName(breakVar), 1)
+		x.declared[fresh.name] = 1
+		ev.vars = append(ev.vars, breakVar)
+		ev.width[breakVar] = 1
+		ev.header[breakVar] = constTerm(0, 1)
+		ev.fresh[breakVar] = fresh
+		notBroken := binaryTerm("xor", fresh, constTerm(1, 1))
+		ev.cond = binaryTerm("and", notBroken, truncate(cond, 1))
+		if ev.headerTrap != nil {
+			ev.headerTrap = binaryTerm("and", notBroken, truncate(ev.headerTrap, 1))
+		}
+	}
 	// A header temporary the body reads — the exit test's operand setup,
 	// such as the zero-extended index `slli z, i, 32; srli z, z, 32; bgeu
 	// z, norm` whose z the RV64 lane's elided element access then scales
@@ -1519,13 +1551,22 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		delete(ev.writes, span)
 		delete(ev.entry, span)
 	}
+	valueOfVar := func(end bodyEnd, name string) *term {
+		if name == breakVar {
+			if end.broke {
+				return constTerm(1, 1)
+			}
+			return constTerm(0, 1)
+		}
+		return end.valueOfVar(name, freshState)
+	}
 	for _, name := range ev.vars {
-		merged := ends[len(ends)-1].valueOfVar(name, freshState)
+		merged := valueOfVar(ends[len(ends)-1], name)
 		if merged == nil {
 			return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
 		}
 		for i := len(ends) - 2; i >= 0; i-- {
-			value := ends[i].valueOfVar(name, freshState)
+			value := valueOfVar(ends[i], name)
 			if value == nil {
 				return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
 			}
@@ -2216,6 +2257,7 @@ const (
 type bodyEnd struct {
 	cond  *term
 	state *symbolicState
+	broke bool // the path left the body through a break (loopShape.breaks)
 }
 
 // valueOf is a register's value at the end of the path; a register the
@@ -2748,6 +2790,11 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 			if target >= shape.bodyStart && target < shape.bodyEnd {
 				return false, ""
 			}
+			if shape.breaks && target == shape.exitLabel {
+				// A break: the path ends here, an iteration that sets the
+				// break flag (the end below reads pc at the exit label).
+				return false, ""
+			}
 			if isTrapBlock(x.items, target) {
 				recordLoopTrap(traps, cond, constTerm(1, 1))
 				dropped = true
@@ -2791,7 +2838,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 				}
 				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				inner, isLoopExit := x.loopExits[pc]
-				if branch.kind == termConst && !(isLoopExit && branch.value == 0 && x.summarizeCounted(inner, instr, st)) {
+				if branch.kind == termConst && !(isLoopExit && branch.value == 0 && (inner.breaks || x.summarizeCounted(inner, instr, st))) {
 					if branch.value != 0 {
 						if outside, reason := leaves(target); outside {
 							if reason != "" {
@@ -2999,7 +3046,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 			// the body's range would not have been taken): an end.
 			arrived(cur.group)
 		}
-		ends = append(ends, bodyEnd{cond: cond, state: st})
+		ends = append(ends, bodyEnd{cond: cond, state: st, broke: shape.breaks && pc == shape.exitLabel})
 	}
 	return ends, "", true
 }
@@ -3217,6 +3264,19 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		storedSpans = append(storedSpans, span)
 	}
 	sort.Strings(storedSpans)
+	// The condition is lowered before the markers are placed, as the
+	// machine side evaluates its exit tests (headerCondition) before
+	// marking: a condition reading a leaf the body never stores (`while i
+	// < s[dom].count`, the body storing `s[dom].slots`) reads the entry
+	// memory on both sides, where the marker — dropped again below for an
+	// unwritten leaf, but captured by the condition's term meanwhile —
+	// left the two conditions provably unequal.
+	cond, reason, ok := lo.lowerCondition(loop.Condition)
+	if !ok {
+		return reason, false
+	}
+	ev.headerTrap = disjoinTraps(lo.traps)
+	lo.traps = nil
 	before := map[string]int{}
 	ev.entry = map[string][]*spanWrite{}
 	for _, span := range storedSpans {
@@ -3233,12 +3293,6 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
-	cond, reason, ok := lo.lowerCondition(loop.Condition)
-	if !ok {
-		return reason, false
-	}
-	ev.headerTrap = disjoinTraps(lo.traps)
-	lo.traps = nil
 	ev.cond = truncate(cond, 1)
 	entryCond, entryKnown := ev.entryCondition()
 	if !entryKnown {
@@ -3401,6 +3455,8 @@ func bodyMayStore(body *ast.BlockStatement) bool {
 		case *ast.WhileStatement:
 			expr(v.Condition)
 			block(v.Body)
+		case *ast.BreakStatement:
+			// A break stores nothing (its loop's flag form is a local).
 		default:
 			stores = true
 		}

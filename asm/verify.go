@@ -3793,7 +3793,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// against a budget of eight events — so it is summarized
 				// as a loop like a data-dependent one, and the Oak side
 				// summarizes the same loop (lowerWhile).
-				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && x.summarizeCounted(shape, instr, state) {
+				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && (shape.breaks || x.summarizeCounted(shape, instr, state)) {
 					return x.loopEvent(shape, instr, state)
 				}
 				if cond.value != 0 {
@@ -5360,9 +5360,13 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params map[string]int
-	signed map[string]bool
-	spans  map[string]spanContract
+	// breakForms caches the flag form of each loop whose body breaks
+	// (asm/break_form.go); breakNames refuses two such loops on one line.
+	breakForms map[*ast.WhileStatement]*breakForm
+	breakNames map[string]*ast.WhileStatement
+	params     map[string]int
+	signed     map[string]bool
+	spans      map[string]spanContract
 	// writableSpans names the function's `[*]T` parameters: the spans a
 	// loop body may store through, which take a loop's memory marker on
 	// both sides (loopEvent, summarizeLoop).
@@ -7634,6 +7638,33 @@ func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, b
 // lowerWhile unrolls a counted loop: the condition must fold to a
 // constant before every iteration.
 func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
+	form, has, reason := lo.breakForm(loop)
+	if reason != "" {
+		return reason, false
+	}
+	if has {
+		// A body with `break`: the loop with the carried flag
+		// (breakForm), its declaration lowered right before it. A
+		// symbolic run summarizes it whether or not it is counted — the
+		// machine side does too (its executor's branch handling), since
+		// an unrolled iteration's break leaves the counter a select the
+		// Oak side cannot count with — unless its condition is false at
+		// entry. A witness run unrolls it: the flag is concrete there.
+		if reason, ok := lo.declareLocal(form.decl); !ok {
+			return reason, false
+		}
+		loop = form.loop
+		if lo.concrete == nil {
+			entry, reason, ok := lo.lowerCondition(form.original)
+			if !ok {
+				return reason, false
+			}
+			if entry.kind == termConst && entry.value == 0 {
+				return "", true
+			}
+			return lo.loopEvent(loop)
+		}
+	}
 	for iteration := 0; ; iteration++ {
 		if iteration > loopBudget || (lo.concrete != nil && iteration > witnessLoopBudget) {
 			return "a loop beyond the verifier's unrolling budget", false

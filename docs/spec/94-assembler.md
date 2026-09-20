@@ -6653,6 +6653,32 @@ are general: the taken path of `b.cond` after a compare knows what the
 fall-through of `b.inverse` would, so a `b.hi header` back edge carries
 the slack fact as `b.lo header` carries the index fact.
 
+**Loops that break (2026-09-20, both lanes; `asm/break_form.go`,
+`loopShape.breaks`).** A `while` whose body leaves it early — Oak's
+`break` (`85-discipline.md` §3a), lowered as a branch from the body to
+the loop's exit label — was refused on both sides: the recognizer's body
+may branch only within itself, and the Oak lowering met a statement it did
+not lower. Both sides now summarize such a loop as the loop that carries a
+one-bit flag, which is what a `break` is once the exit is not a jump:
+`#brk` is 0 at the header, an iteration that breaks sets it (the machine
+side reads a body path ending at the exit label as that iteration; the
+Oak side rewrites the body once, `break` to `#brk = true` and the
+statements after the statement that broke under `!#brk`), and the
+continue condition reads it first — `!#brk && c` — so the exit tests and
+their traps are not evaluated after a break. The coupling pairs the two
+flags (`#brk@L↔#brk`, L the loop's line). A counted loop with a break is
+summarized rather than unrolled on both sides: unrolled, the machine forks
+at the break and each path keeps a constant counter, where the Oak side's
+merged selects lose the count. The Oak side lowers a loop's condition
+before placing its memory markers, as the machine evaluates its exit
+tests before marking: a condition reading a leaf the body never stores
+(`while i < s[dom].count`, the body storing `s[dom].slots`) read the
+marker on one side and the entry memory on the other. The OS pilots'
+scans (`grant`, `timer`) wrote a done flag into the loop condition by
+hand for want of a verified `break`; the two shapes now prove alike
+(`compiler/e2e_native_break_test.go`: a counted scan, a span search, a
+store before and after the break, a nested loop's break, on both lanes).
+
 **Two copies removed (2026-09-15).** A widening from a narrow unsigned
 type to a wide one wrote `mov wR, wR` to clear the upper half; a value a
 w instruction just computed has it clear already, so only a value that
