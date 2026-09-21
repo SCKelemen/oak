@@ -1245,11 +1245,26 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow
-the checker does not perform: a participating binding that is a global (a
-callee could reassign it), a scope that reassigns a participating binding
-(except the loop's trailing increment), a non-literal bound, or a
-condition of any other shape. The true arm of the `?` sugar is the
-fall-through under the check; the false arm receives nothing.
+the checker does not perform: a participating binding that is a global
+*container*, a scope that reassigns a participating binding (except the
+loop's trailing increment), a non-literal bound, or a condition of any
+other shape. The true arm of the `?` sugar is the fall-through under the
+check; the false arm receives nothing.
+
+A cursor that is a global (2026-09-21) — a top-level unsigned scalar
+variable such as a builder's `struct_len` — may stand in a fact's *index*
+position: `ok: Bool = struct_len <= struct_cap - u32(4)` proves
+`structure[struct_len + u32(3)]` under `ok` as it would for a local. The
+dataflow the rule needs is the one the checker already performs for
+locals, plus one kill: a fact over a global dies at any assignment to the
+global and at any call to a program function (a callee may write it) —
+before the statement that calls, and on entry to a loop that calls
+anywhere, whose condition then establishes nothing about globals
+(`typechecker/extents.go` globalIndexBinding, killGlobalIndexFacts).
+Scalar constructors, conversions, `len`, `span`, `view`, `subslice`, and
+`assert` are not program calls. A widening of a bounded index keeps its
+bound: `free_stack[u32(i)]` under `i < max_pages` for `i: u16` is proven
+(widenedIndex; the widening is the identity on the value).
 
 In the emitted C a proven access is `( v ).base[ i ]` or `regs[ i ]`; an
 unproven one keeps `oak_view_index_*`, `oak_span_index_*`, `oak_index`, or
