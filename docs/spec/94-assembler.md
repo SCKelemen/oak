@@ -5619,8 +5619,15 @@ recipe v9. Cost-only recurrence hints recognize smaller-vector cleanup as
 bounded: a stride-8 loop followed by stride-4 and scalar loops suggests at
 most one vector-cleanup trip and three scalar trips. Bounded `MaxTrips`
 values count trips, so the cost model must not divide them by stride a
-second time. Metric/cost artifact revisions are v2. These estimates confer
-no semantic authority. `benchmarks/native/exact_fma/README.md` records the
+second time. A guard's branch into the trap block is not an exit the exact
+count reads (2026-09-21, `machine/exact_trips.go`): it aborts the function
+on an invalid input and every trip runs it alike, so a counted loop keeps
+its exact trips with its guards in place and is charged the same trips
+once a proof removes them — read as an early exit, the guard made a
+guarded body cost half of the same body without the guards, and the
+search kept the OS virq scan's four redundant span guards per element
+although their elision fired and the checker admitted it. Metric/cost
+artifact revisions are v2. These estimates confer no semantic authority. `benchmarks/native/exact_fma/README.md` records the
 one-vector control, timings, code-size tradeoffs, and rejected experiments.
 
 **Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
