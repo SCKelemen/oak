@@ -165,12 +165,10 @@ func TestE2ENativeArrayResultStorage(t *testing.T) {
 				t.Fatalf("result-pointer lifetime fixture must retain one native call, got %d", calls)
 			}
 		}
-		objects := nativegen.FrameObjects(body)
-		if name == "permuted_words" {
-			if len(objects) != 1 || objects[0].Size != 32 {
-				t.Fatalf("permutation must keep its one frame array, without a temporary copy: %+v", objects)
-			}
-		} else if len(objects) != 0 {
+		// A permutation of the array's own elements is scalar-replaced
+		// like the rest (nativegen/scalar_arrays.go): no frame array is
+		// left, not even the one the in-place walk once kept.
+		if objects := nativegen.FrameObjects(body); len(objects) != 0 {
 			t.Fatalf("%s still allocates array frame backing: %+v", name, objects)
 		}
 	}
