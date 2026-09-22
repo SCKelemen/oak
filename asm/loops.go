@@ -7315,8 +7315,14 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 }
 
 // smallSides is the size, in term nodes, up to which an implication's two
-// sides are first decided without the premise.
-const smallSides = 64
+// sides are first decided without the premise. Four hundred takes in a
+// guard over a sixteen-lane select (`m & bucket_bit(j)` in literals.oak's
+// verify_first, 141 and 151 nodes): the sides agree on their own, and
+// under the premise — the inner loops' exit facts, a callee's reach
+// condition, the children's postconditions — every order ran out of
+// diagram (2026-09-22; the proof had held at sixty-four until #537 grew
+// the premise).
+const smallSides = 400
 
 // relevantPremise keeps the premise's conjuncts that can bear on a = b:
 // those mentioning a symbol of a or b, and, to a fixpoint, those sharing
