@@ -1,6 +1,7 @@
 package nativegen
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/SCKelemen/oak/asm"
@@ -295,6 +296,12 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 	// the loop; the body begins after the last exit branch.
 	bodyStart := h + 1
 	exitPure := true
+	inner := map[string]bool{} // the labels inside the loop: a branch to one is the body's
+	for i := h + 1; i < b; i++ {
+		if label, isLabel := items[i].(asm.Label); isLabel {
+			inner[label.Name] = true
+		}
+	}
 	for i := h + 1; i <= b; i++ {
 		ins, isIns := items[i].(asm.Instruction)
 		if !isIns {
@@ -305,8 +312,8 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		}
 		if ins.Mnemonic == "b." || ins.Mnemonic == "cbz" || ins.Mnemonic == "cbnz" || ins.Mnemonic == "tbz" || ins.Mnemonic == "tbnz" {
 			target := branchTarget(ins)
-			if target == trap {
-				break // a guard: the body has begun
+			if target == trap || inner[target] {
+				break // a guard, or a branch within the body: the body has begun
 			}
 			bodyStart = i + 1
 			continue
@@ -349,35 +356,78 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		}
 		return len(body)
 	}
-	// readOutside reports a read of reg anywhere in the loop — the exit
-	// tests included — outside the body range [from, to): a value whose
-	// definition leaves the loop must have no reader the block does not
-	// hold, on any path, including the next iteration's header.
-	readOutside := func(from, to, reg int) bool {
-		for i := h + 1; i < bodyStart; i++ {
-			if ins, isIns := items[i].(asm.Instruction); isIns && readsGeneral(ins, reg) {
-				return true
-			}
+	// readOutside reports whether the value reg holds at the end of the
+	// def's block [from, to) — the def is at from-1 — can be read outside
+	// it: a walk over the body's blocks from the block's successors (the
+	// fall-through, a branch's target inside the body, the back edge into
+	// the header's tests and the body's first block) that stops where a
+	// block writes reg before reading it. A read in another block that
+	// the def cannot reach (both arms of a select write w9 before the join
+	// reads it) does not pin the def to its register.
+	labelAt := map[string]int{}
+	for j, item := range body {
+		if label, isLabel := item.(asm.Label); isLabel {
+			labelAt[label.Name] = j
 		}
-		for j := 0; j < len(body); j++ {
-			if j >= from && j < to {
-				continue
+	}
+	readOutside := func(from, to, reg int) bool {
+		visited := map[int]bool{}
+		var reaches func(start int) bool
+		// leave follows the successors of the block ending at end.
+		leave := func(end int) bool {
+			if end >= len(body) {
+				return reaches(len(body))
 			}
-			ins, isIns := body[j].(asm.Instruction)
-			if !isIns || removed[j] {
-				continue
+			if last, isIns := body[end-1].(asm.Instruction); isIns && isBranchMnemonic(last.Mnemonic) && branchTarget(last) != trap {
+				if at, inside := labelAt[branchTarget(last)]; inside && reaches(at) {
+					return true
+				}
+				if last.Mnemonic == "b" {
+					return false
+				}
 			}
-			if readsGeneral(ins, reg) {
-				// A read the same block writes first (`ldrh w10; lsl w10,
-				// w10, #11` before the zero copy into w10) reads that
-				// write, not the value that left.
-				if j < from && writtenEarlierInBlock(body, removed, j, reg) {
+			return reaches(end)
+		}
+		reaches = func(start int) bool {
+			if visited[start] {
+				return false
+			}
+			visited[start] = true
+			if start >= len(body) {
+				// The back edge: the header's tests, then the body again.
+				for i := h + 1; i < bodyStart; i++ {
+					ins, isIns := items[i].(asm.Instruction)
+					if !isIns {
+						continue
+					}
+					if readsGeneral(ins, reg) {
+						return true
+					}
+					if writesGeneral(ins, reg) {
+						return false
+					}
+				}
+				return reaches(0)
+			}
+			end := blockEnd(start)
+			for j := start; j < end; j++ {
+				if j == from-1 {
+					return false // the def itself
+				}
+				ins, isIns := body[j].(asm.Instruction)
+				if !isIns || removed[j] {
 					continue
 				}
-				return true
+				if readsGeneral(ins, reg) {
+					return true
+				}
+				if writesGeneral(ins, reg) {
+					return false
+				}
 			}
+			return leave(end)
 		}
-		return false
+		return leave(to)
 	}
 	// renameUses renames the reads of old (of class cls) to new from index
 	// from to the next write of old in the same block; reports whether the
@@ -432,6 +482,19 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		return !readOutside(from, end, old)
 	}
 	missed := 0
+	// shared: the invariants already in the preheader, by what they
+	// compute — the five element bases of one record are one `movz #80`
+	// and one `umaddl` under five names — so a second computation of a
+	// hoisted value takes no register and no instruction: it disappears
+	// and its readers take the first's name (§9 "The register budget").
+	shared := map[string]asm.Register{}
+	// pending: the destinations of the invariants a register would have
+	// hoisted. Their dependents (the element base behind a missed `movz
+	// #80`) are wanted too, so the count the second lowering reserves for
+	// covers the whole chain, not its first instruction; a later write to
+	// the register that is not itself pending ends the pretense.
+	pending := map[int]bool{}
+	pendingAt := map[int]bool{}
 	free := func() (asm.Register, bool) {
 		r, ok := pool.take(hasCall)
 		if ok {
@@ -602,6 +665,13 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		}
 	}
 	for i := 0; i < len(body); i++ {
+		if i > 0 && !pendingAt[i-1] && !removed[i-1] {
+			if prev, isIns := body[i-1].(asm.Instruction); isIns {
+				for _, r := range writtenGeneral(prev) {
+					delete(pending, r)
+				}
+			}
+		}
 		ins, isIns := body[i].(asm.Instruction)
 		if !isIns || removed[i] {
 			continue
@@ -625,10 +695,13 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 			continue
 		}
 		sources := sourceRegisters(ins)
-		allInvariant := true
+		allInvariant, allPending := true, true
 		for _, s := range sources {
 			if !invariant(s) {
 				allInvariant = false
+				if !pending[s.Num] {
+					allPending = false
+				}
 			}
 		}
 		// A copy (`mov wD, wS`, or `add xD, xS, #0`, a field at offset
@@ -661,7 +734,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 				continue
 			}
 		}
-		if !allInvariant {
+		if !allInvariant && !allPending {
 			continue
 		}
 		// A movz followed by movk into the same register: the whole
@@ -689,9 +762,30 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		if !canRename(from, dest.Num, dest.Class, false) {
 			continue
 		}
+		key := ""
+		if len(chain) == 0 && !scalarGlobalLoad(bodyStart+i, ins) {
+			key = invariantKey(ins, dest)
+		}
+		if prior, seen := shared[key]; seen && key != "" && allInvariant {
+			removed[i] = true
+			renameUses(from, dest.Num, dest.Class, prior, false)
+			continue
+		}
+		wantRegister := func() {
+			missed++
+			pending[dest.Num] = true
+			pendingAt[i] = true
+			for _, at := range chain {
+				pendingAt[at] = true
+			}
+		}
+		if !allInvariant {
+			wantRegister() // hoistable once its pending sources are
+			continue
+		}
 		r, ok := free()
 		if !ok {
-			missed++
+			wantRegister()
 			continue
 		}
 		renamed := asm.Register{Text: dest.Text[:1] + itoa(r.Num), Class: dest.Class, Num: r.Num}
@@ -711,6 +805,9 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 		preheader = append(preheader, hoisted)
 		moved = append(moved, movedItem{at: i, item: hoisted})
 		removed[i] = true
+		if key != "" {
+			shared[key] = renamed
+		}
 		for _, at := range chain {
 			k := body[at].(asm.Instruction)
 			k.Operands = append([]asm.Operand(nil), k.Operands...)
@@ -797,6 +894,24 @@ func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes m
 	}
 	out = append(out, items[b:]...)
 	return out, used, missed, headerChanged
+}
+
+// invariantKey names what a pure instruction computes — its mnemonic,
+// the class of its destination, and its source operands as the body
+// spells them after the earlier renames — so two hoisted instructions
+// with equal keys hold equal values in the preheader.
+func invariantKey(ins asm.Instruction, dest asm.Register) string {
+	var b strings.Builder
+	b.WriteString(ins.Mnemonic)
+	if dest.Class == asm.ClassX {
+		b.WriteString(" x:")
+	} else {
+		b.WriteString(" w:")
+	}
+	for _, operand := range ins.Operands[1:] {
+		fmt.Fprintf(&b, " %#v", operand)
+	}
+	return b.String()
 }
 
 func itoa(n int) string {
@@ -1135,25 +1250,4 @@ func zeroStoreReaders(body []asm.Item, removed map[int]bool, from, end, dest int
 		}
 	}
 	return readers > 0
-}
-
-// writtenEarlierInBlock reports a write of reg between the start of the
-// basic block holding index at and at itself (no label between).
-func writtenEarlierInBlock(body []asm.Item, removed map[int]bool, at, reg int) bool {
-	for k := at - 1; k >= 0; k-- {
-		if _, isLabel := body[k].(asm.Label); isLabel {
-			return false
-		}
-		ins, isIns := body[k].(asm.Instruction)
-		if !isIns || removed[k] {
-			continue
-		}
-		if isBranchMnemonic(ins.Mnemonic) && ins.Mnemonic != "b." && ins.Mnemonic != "cbz" && ins.Mnemonic != "cbnz" && ins.Mnemonic != "tbz" && ins.Mnemonic != "tbnz" {
-			return false // an unconditional transfer: another block
-		}
-		if writesGeneral(ins, reg) {
-			return true
-		}
-	}
-	return false
 }
