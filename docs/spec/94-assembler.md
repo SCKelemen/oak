@@ -2023,7 +2023,14 @@ compares. The arm rule itself takes conditions that are each other's
 economies of the decision: **small sides are decided without the
 premise first** (`g < n` against `¬(g ≥ n)` under a conjunction of four
 inner loops' exit facts over their element reads, which cost every order
-its budget for nothing); the premise's **conjuncts sharing no symbol**
+its budget for nothing; up to four hundred term nodes since 2026-09-22,
+where sixty-four left out `verify_first`'s `m & bucket_bit(j)`, a
+sixteen-lane select whose sides agree on their own and whose premise —
+grown by the callee reach conditions and children's postconditions of
+2026-09-16 — ran every order out at a million nodes); a **valuation
+refutes no obligation with one term on both sides** (the viability pass
+walked an outer loop's premise of thirty-one postconditions for `g + 1`
+against `g + 1`); the premise's **conjuncts sharing no symbol**
 with the sides, even through other conjuncts, are dropped for a first
 attempt (`relevantPremise`, a weaker premise so a proof under it is a
 proof); a coupling's **offset that normalizes to a constant**
