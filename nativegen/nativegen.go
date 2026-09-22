@@ -2405,8 +2405,11 @@ func compileArm64Body(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	}
 	// The loop-invariant pass reports the values it could not hoist for
 	// want of a register (nativegen/licm.go): a second lowering reserves
-	// that many callee-saved registers for them, four at most.
-	reserve := min(wanted, 4)
+	// that many callee-saved registers for them. The reserve is bounded by
+	// the callee-saved registers left after the parameters and yields to
+	// every other taker (variables, field homes, span pairs, overflow
+	// scratch: reclaimReserve), so it only ever holds what would sit idle.
+	reserve := wanted
 	if spare == 0 && reserve == 0 {
 		return first, nil
 	}

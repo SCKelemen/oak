@@ -5292,9 +5292,20 @@ see the unrolled shape. A pure instruction (a constant, a global's address, an e
 address, arithmetic) whose sources the loop never writes is hoisted, its
 destination renamed to a scratch register the whole function never names
 and its readers in the block renamed with it — either the old destination
-is written again in the same block, or no instruction anywhere in the
-loop reads it, the exit tests and the next iteration's header included,
-so no path reaches a reader through the old name. A copy of a register
+is written again in the same block, or no reader the old name can reach
+is left: a walk over the body's blocks from the block's successors (the
+fall-through, a branch's target in the body, the back edge into the exit
+tests and the body's first block) that stops where a block writes the
+register before reading it, so a read in another block that every path
+writes first (the join after two arms that each set `w9`) does not pin
+the value to its register (2026-09-22; before, any read outside the block
+did, which left two of `next_pending`'s five field bases in the loop). Two
+hoisted instructions that compute the same value — the same mnemonic,
+destination class, and source operands as the body spells them after the
+earlier renames — hold it once: the second disappears and its readers
+take the first's name (`shared`; the five field bases of one record are
+one `movz #80`, one `umaddl`, and four offsets, in six registers rather
+than fourteen). A copy of a register
 (`mov wD, wS`, `add xD, xS, #0`) is propagated instead of moved when the
 source holds until the copy's last reader: its readers take the source
 and the copy disappears; a copy of the zero register makes `str xzr`. The
@@ -5317,8 +5328,12 @@ x24` before a `bl`, and the linked program faulted where the verifier's
 witnesses had not reached). A hoisted value takes a scratch register the
 function never names, or one of the callee-saved registers the lowering
 reserves for the pass: the first lowering reports the values it could
-not place, and the second reserves that many (four at most), saved and
-restored with the variables'. A loop that calls hoists nothing into a
+not place — a value it could not place and every value that would have
+followed it, so the count covers the chain behind a missed constant, not
+its first instruction — and the second reserves that many, bounded only
+by the callee-saved registers left after the parameters, saved and
+restored with the variables'; the reserve yields to every other taker
+("The register budget" below), so it only ever holds what would sit idle. A loop that calls hoists nothing into a
 scratch register (a call clobbers every one); its copies still propagate
 and its guard still peels, and its reserved registers survive the call.
 A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
@@ -6749,7 +6764,8 @@ a length, a subslice's guard — so `let x = a in f x` is `f a`
 (`Oak.SpanForward.let_forward`); a lowering the rewrite makes unsupported
 falls back to the body before it, and the verifier reads the body as
 written. And the callee-saved registers the second lowering pass reserves
-for the loop invariants (up to four) yield to a declaration that would
+for the loop invariants (as many as it wanted, of those left after the
+parameters) yield to a declaration that would
 otherwise refuse the body or fall to a slot: a span local's pair, an
 overflowing scratch, a scalar's home take them back (`reclaimReserve`,
 `takeCalleePair`), and the pass hoists into what remains.
