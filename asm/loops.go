@@ -4931,6 +4931,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// a nested event is compared while its parent iteration is active.
 	for k, oakEv := range oakLoops {
 		asmEv := asmLoops[k]
+		if asmEv.oakDerived && len(asmEv.entry) == 0 && len(asmEv.writes) == 0 {
+			// A callee's loop that stores nothing carries no reach condition
+			// (summarizeCall): the same summary on both sides, its values
+			// coupled below, its result under each side's path in the terms.
+			continue
+		}
 		premise := constTerm(1, 1)
 		if oakEv.parent > 0 {
 			premise = binaryTerm("and", premise, bodyPremise(oakEv.parent-1, sigma, true))

@@ -5038,7 +5038,14 @@ is unguarded on the machine's path and guarded by `ok` on the Oak side,
 and the two agree exactly there (the OS pilot's `alloc_table`). A callee's
 loop taken from its Oak body at a call summary is reached where the
 machine's path reached the call and the callee's own arm holds, and the
-premises assume both (`walk_leaf` calling `alloc_table` under `create`). Counted loops past the 64-trip
+premises assume both (`walk_leaf` calling `alloc_table` under `create`) —
+for a loop that stores, whose entry memories agree only there. A callee
+loop that stores nothing carries no reach condition and its reach is not
+compared: the two sides hold the same summary of the same body, its values
+couple by identity, and the call's result stands under each side's own
+path in the terms the verdict compares. Carrying the caller's path — a
+select over sixteen lanes in `literals.oak`'s `verify_first` — into every
+premise of the nest cost the proof five seconds of six (2026-09-23). Counted loops past the 64-trip
 unrolling limit use the same per-leaf markers on both sides; the Oak
 lowering treats the record-span root as memory rather than a carried
 local, and an inlined callee's parameter resolves through its alias to

@@ -10800,6 +10800,15 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		// store before the loop inside `ok ? { … }` is unguarded on the
 		// machine's side and guarded by ok on the Oak side, and the two
 		// agree exactly there (walk_leaf calling alloc_table).
+		if len(ev.entry) == 0 && len(ev.writes) == 0 {
+			// A loop that stores nothing couples on its values alone: the
+			// same summary stands on both sides, and the call's result is
+			// under each side's own path in the terms the verdict compares.
+			// The caller's path — a select over sixteen lanes in
+			// literals.oak's verify_first — would only weigh on every
+			// premise of the nest (docs/spec/94-assembler.md §8).
+			continue
+		}
 		ev.reached = ev.oakPath
 		if callPath := state.pathCondition(); callPath != nil {
 			if ev.reached != nil {
