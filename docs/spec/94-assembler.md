@@ -3425,7 +3425,18 @@ and two calls on one source line — `c ? f(…) | g(…)`, `f(…) || g(…)` �
 are two sites, where keyed by the line they were one, the second's loops
 merged into the first's or stood as an unrolled instance, and eight of
 the prover's bodies were refused for a loop count that was not the Oak
-side's. Third, `ab_push` shifts by
+side's. And a loop whose condition calls a function with a loop (`while
+b > base && rname_less(…)`, the prover's insertion sorts) numbers that
+callee's loops after its own event and nests them under the enclosing
+loop, as the machine side does when it meets the call in the header: the
+Oak side took the event's index before lowering the condition but
+registered the event after it, so the callee's loop took the same index
+and their fresh symbols collided ("the loop's entry condition could not
+be reconstructed", seven bodies), and the while's entry test, which
+lowers the condition once before the summary lowers it again, left the
+callee's loops behind as events of their own (one loop more than the
+machine). Both are gone (2026-09-23): `rname_less` and `str_less` prove
+inside their callers, and the callers reach verdicts. Third, `ab_push` shifts by
 `(at % 4) * 8` — a data-dependent count, which the verifier refused
 because Oak traps at the width where the machine wraps. A syntactic range
 bound (asm/range.go: constants, masks, products and sums by constants,
