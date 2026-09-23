@@ -8556,7 +8556,20 @@ traps' guards from the path's facts and prunes the reads' chains under
 them before any diagram; only an end the implication leaves undecided
 goes to the flat decision. `protocol_line_done`'s ends every one prove
 by implication and the body is proven write by write again
-(`TestE2ENativeGuardedWrites`). Aligning the machine's reads with the
+(`TestE2ENativeGuardedWrites`). A machine trap that can never fire is
+dropped before the obligation is formed (2026-09-23,
+`dropUnreachableTraps`): the machine guards a data-dependent shift count
+at the width (`cmp count, #32; b.hs trap`) and the guard's condition
+stood in its trap disjunction, where the Oak side had folded the same
+trap away by the range bound (`asm/range.go`); a comparison against a
+constant whose left side the bound holds below it is constant false and
+leaves the disjunction, and the bound now reads a remainder spelled as a
+subtraction, `x - (x >> k) << k`, the machine's `at % 4` before a byte
+extract. Left in, the false disjunct stood beside the element selects
+in the diagram and the loop trap-domain obligation ran out of nodes: the
+prover's `str_less`, `rname_less`, `str_eq`, and `set_count` prove; the
+bodies that call the first two are still refused, in the call summary,
+for a loop whose entry condition is not reconstructed. Aligning the machine's reads with the
 Oak side's through the proven prefixes, the fast path's move, was tried
 first and is not needed here: the implication decides the unaligned
 obligation. Alongside, the run that merges the paths at their joins
