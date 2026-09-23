@@ -7655,6 +7655,7 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 		}
 		loop = form.loop
 		if lo.concrete == nil {
+			loopsBefore := len(lo.loops)
 			entry, reason, ok := lo.lowerCondition(form.original)
 			if !ok {
 				return reason, false
@@ -7662,6 +7663,10 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 			if entry.kind == termConst && entry.value == 0 {
 				return "", true
 			}
+			// The entry test lowered the condition once; the summary
+			// lowers it again, and a callee's loops in it are the
+			// summary's events, not the test's.
+			lo.loops = lo.loops[:loopsBefore]
 			return lo.loopEvent(loop)
 		}
 	}
@@ -7669,13 +7674,19 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 		if iteration > loopBudget || (lo.concrete != nil && iteration > witnessLoopBudget) {
 			return "a loop beyond the verifier's unrolling budget", false
 		}
+		loopsBefore := len(lo.loops)
 		cond, reason, ok := lo.lowerCondition(loop.Condition)
 		if !ok {
 			return reason, false
 		}
 		if cond.kind != termConst {
 			// Data-dependent: summarize the loop once and continue after it
-			// on fresh loop-carried symbols.
+			// on fresh loop-carried symbols. The test lowered the condition
+			// once; the summary lowers it again, and a callee's loops in
+			// it (`while b > base && rname_less(…)`, the prover's
+			// fn_callees) are the summary's events, not the test's — kept,
+			// the Oak side counted one loop more than the machine.
+			lo.loops = lo.loops[:loopsBefore]
 			return lo.loopEvent(loop)
 		}
 		if cond.value == 0 {

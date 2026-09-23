@@ -3282,8 +3282,24 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// memory on both sides, where the marker — dropped again below for an
 	// unwritten leaf, but captured by the condition's term meanwhile —
 	// left the two conditions provably unequal.
+	// The event takes its index before its condition is lowered: a call
+	// in the condition (`while b > base && rname_less(…)`, the prover's
+	// fn_callees) inlines a callee whose own loops are numbered after this
+	// one and nest under the enclosing loop, as the machine side numbers
+	// and nests them — it meets the call in the header before this loop's
+	// body — where numbered first they took this loop's index and their
+	// fresh symbols collided with its.
+	lo.loops = append(lo.loops, ev)
+	registered := true
+	unregister := func() {
+		if registered {
+			lo.loops = lo.loops[:len(lo.loops)-1]
+			registered = false
+		}
+	}
 	cond, reason, ok := lo.lowerCondition(loop.Condition)
 	if !ok {
+		unregister()
 		return reason, false
 	}
 	ev.headerTrap = disjoinTraps(lo.traps)
@@ -3307,6 +3323,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	ev.cond = truncate(cond, 1)
 	entryCond, entryKnown := ev.entryCondition()
 	if !entryKnown {
+		unregister()
 		return "the loop's entry condition could not be reconstructed", false
 	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
@@ -3323,7 +3340,6 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			guardMarker(lo.writes[span][:before[span]], entryCond)
 		}
 	}
-	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
 	ev.bodyTrap = disjoinTraps(lo.traps)
