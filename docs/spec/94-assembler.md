@@ -8403,7 +8403,18 @@ declared count the length; the stores are compared in `decideSpans` as a
 span parameter's are, and a callee's stores to it reach the caller
 through the summary, which lowers the callee over the caller's write
 log. `TestE2ENativeGlobalArrayProven` proves a byte buffer's writer, a
-caller of two writes, and a loop summing the buffer. Only arrays of
+caller of two writes, and a loop summing the buffer. A loop whose body
+stores through such an array — `write_bytes` filling `out_buf` through
+`write_byte` — marks it as loop memory on both sides as it marks a
+writable parameter (2026-09-23; `summarizeLoop` over the function's
+globals, `loopEvent` over the lowering's), where before the machine side
+refused the body's store "through a span that is not a writable
+parameter"; and a callee's own large arrays (`write_flush`'s `chunk`, its
+frame, gone at return) leave the caller's write log when the summary
+returns, since a caller's loop read them as stores through a span it did
+not know. `write_bytes`, `write_str`, `write_lit`, `write_span`,
+`write_names_of`, and `step_binding` prove; four more of the family stop
+at the loop-event budget. Only arrays of
 integer scalars qualify; a top-level record, or an array of records,
 stays trusted. Alongside, fifteen bodies (`solve`, `project`, `ts_sum`,
 the `sat_*` and `sr_*` walkers) stopped at "instruction ldp": a record
