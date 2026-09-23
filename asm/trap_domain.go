@@ -89,7 +89,7 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	check := func(premise, machineTrap, oakTrap *term) bool {
-		machine, oak := trapOrFalse(substitute(machineTrap, sigma)), trapOrFalse(oakTrap)
+		machine, oak := dropUnreachableTraps(trapOrFalse(substitute(machineTrap, sigma))), trapOrFalse(oakTrap)
 		bad := binaryTerm("and", machine, notTerm(oak))
 		if holds, decided := implies(premise, bad, constTerm(0, 1)); decided && holds {
 			return true
@@ -149,6 +149,46 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 		return "root trap-domain obligation around the loops is not proven", false
 	}
 	return "", true
+}
+
+// dropUnreachableTraps removes from a trap disjunction the comparisons
+// against a constant that the range bound (asm/range.go) shows never
+// hold: the machine guards a data-dependent shift count at the width
+// (`cmp count, #32; b.hs trap`) and the guard's condition enters its trap
+// domain, where the Oak side folded the same trap away by the bound
+// (`((x & 3) << 3) < 32` for a byte extract, the prover's str_less). Left
+// in, the constant-false disjunct still stood in the diagram beside the
+// element selects and the obligation ran out of nodes.
+func dropUnreachableTraps(t *term) *term {
+	disjuncts := disjunctsOf(t)
+	kept := make([]*term, 0, len(disjuncts))
+	for _, d := range disjuncts {
+		if d.kind == termCmp && d.right != nil && d.right.kind == termConst {
+			bound := maxValue(d.left)
+			switch d.op {
+			case "hs", "cs":
+				if bound < d.right.value {
+					continue // never at least the constant
+				}
+			case "hi":
+				if bound <= d.right.value {
+					continue // never above the constant
+				}
+			}
+		}
+		kept = append(kept, d)
+	}
+	if len(kept) == len(disjuncts) {
+		return t
+	}
+	if len(kept) == 0 {
+		return constTerm(0, 1)
+	}
+	out := kept[0]
+	for _, d := range kept[1:] {
+		out = binaryTerm("or", out, d)
+	}
+	return out
 }
 
 // verifyTrapDomain admits a non-loop value/effect proof only after proving
