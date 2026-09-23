@@ -9608,6 +9608,24 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 // over pure comparisons of parameters evaluation order is unobservable, so
 // the strict and/or is the same function.
 func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool) {
+	// A block in condition position — a parenthesized condition `(a &&
+	// b) ? { … }` (the prover's address_owner), or an inlined predicate's
+	// body with its bindings before the test (`!has_mark(…)` in
+	// type_refs): its statements run, and its last expression is the
+	// condition, as aggregateValue reads a block.
+	if block, isBlock := expr.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) > 0 {
+		stmts := block.Block.Statements
+		last, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+		if !isExpr || last.Expression == nil {
+			return nil, "a block condition that does not end in an expression", false
+		}
+		for _, stmt := range stmts[:len(stmts)-1] {
+			if reason, ok := lo.runStatement(stmt); !ok {
+				return nil, reason, false
+			}
+		}
+		return lo.lowerCondition(last.Expression)
+	}
 	infix, isInfix := expr.(*ast.InfixExpression)
 	if !isInfix {
 		// A literal condition (`true ? { … }`, a scope idiom): its bit.

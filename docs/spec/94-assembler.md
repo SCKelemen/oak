@@ -6828,7 +6828,12 @@ model is the conditional itself (`Oak.ConstantConditions.select_true`,
 `select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
 `scope` and `pick` — no branch, select, or conditional label —
 `TestE2ENativeConstantConditions` proves both and agrees with the C
-backend.
+backend. A block in condition position reads as its last expression
+after its statements run (2026-09-23): a parenthesized condition `(a &&
+b) ? { … }` is a block of one expression, and an inlined predicate's body
+— `!has_mark(…)` with the callee's bindings before its test — is a block
+of several; both were refused as "a condition that is not a comparison
+(*ast.BlockExpression)", five of the prover's bodies among them.
 
 **Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
 `spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
