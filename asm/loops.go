@@ -1280,9 +1280,20 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		// its results afresh (probing); the slots a callee writes through
 		// an address it was handed are not discovered here — the summary
 		// proper lists them (summarizeCallInLoop).
+		// The probe leaves no loop events behind: a call in the body is
+		// summarized here too, before the loop's index is on the stack,
+		// and its callee's loops would stand at the top level beside the
+		// body run's own — the prover's add_carry showed 41 machine events
+		// against the Oak side's 21 and was refused for it.
+		loopsBefore, sitesBefore := len(x.loops), x.sites
+		x.sites = make(map[string]loopSite, len(sitesBefore))
+		for site, rec := range sitesBefore {
+			x.sites[site] = rec
+		}
 		x.probing = true
 		ends, _, ok := x.runBody(shape, probe, nil)
 		x.probing = false
+		x.loops, x.sites = x.loops[:loopsBefore], sitesBefore
 		if ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
