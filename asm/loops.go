@@ -1122,12 +1122,16 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 					return nil, "a frame slot written in a loop body at a width other than 4 or a multiple of 8 bytes, or unaligned", false
 				}
 				for _, piece := range pieces {
-					for other, otherSize := range writtenSlots {
-						if other < addr+piece && addr < other+otherSize && (other != addr || otherSize != piece) {
-							return nil, "frame slots written at overlapping addresses in a loop body", false
-						}
+					// Slots written at two widths — a record zeroed by
+					// 8-byte stores whose one element is then written as a
+					// word (the prover's pop_count) — are carried at the
+					// finer, 4-byte granularity: the frame model splits and
+					// assembles slots either way (storeSlot, loadSlot), and
+					// the summary reads a carried slot through loadSlot.
+					// Only an unaligned overlap is refused.
+					if !noteWrittenSlot(writtenSlots, addr, piece) {
+						return nil, "frame slots written at overlapping addresses in a loop body", false
 					}
-					writtenSlots[addr] = piece
 					addr += piece
 				}
 			}
@@ -3552,6 +3556,47 @@ func itemsMayStore(items []Item) bool {
 		}
 	}
 	return false
+}
+
+// noteWrittenSlot records a written frame piece (4 bytes, or 8 aligned to
+// 8) among the loop's carried slots, at the finer granularity where it
+// meets one of the other width: an 8-byte entry an aligned 4-byte piece
+// falls in splits into its halves, and an 8-byte piece over 4-byte entries
+// adds the halves it lacks. It reports false for an overlap that neither
+// rule covers.
+func noteWrittenSlot(slots map[int64]int64, addr, piece int64) bool {
+	if piece != 4 && piece != 8 {
+		return false
+	}
+	halves := func(at int64) {
+		if _, has := slots[at]; !has {
+			slots[at] = 4
+		}
+		if _, has := slots[at+4]; !has {
+			slots[at+4] = 4
+		}
+	}
+	for other, otherSize := range slots {
+		if other >= addr+piece || addr >= other+otherSize {
+			continue // disjoint
+		}
+		if other == addr && otherSize == piece {
+			return true // the same slot again
+		}
+		switch {
+		case otherSize == 8 && piece == 4 && other%8 == 0 && (addr == other || addr == other+4):
+			delete(slots, other)
+			halves(other)
+			return true
+		case otherSize == 4 && piece == 8 && addr%8 == 0 && (other == addr || other == addr+4):
+			halves(addr)
+			return true
+		default:
+			return false
+		}
+	}
+	slots[addr] = piece
+	return true
 }
 
 // leafRefs lists an aggregate's scalar leaves by access path, as leafTerms
