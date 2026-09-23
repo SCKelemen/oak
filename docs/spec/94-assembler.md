@@ -1765,7 +1765,13 @@ is not probed), and carries each changed slot at its width; the coupling
 pairs the array's lanes singly with byte slots, or packed when the
 machine holds the array as words (`TestVerifyFrameArrayLoop`: a
 sixteen-byte tail copy proven under both layouts, the store at a fixed
-index refuted). **The search, conflict-directed.** With sixteen tail
+index refuted). Slots a body writes at two widths — a record zeroed by
+8-byte stores whose one element is then written as a word, the prover's
+`pop_count` — are carried at the finer, 4-byte granularity
+(`noteWrittenSlot`, 2026-09-23): the frame model splits and assembles
+slots either way and the summary reads a carried slot through
+`loadSlot`, so only an unaligned overlap is still refused as "frame
+slots written at overlapping addresses"; five bodies were. **The search, conflict-directed.** With sixteen tail
 slots between an accumulator and the register it was wrongly paired
 with, chronological backtracking re-enumerated the tail on every
 failure; the search now returns the depths a refutation depended on —
