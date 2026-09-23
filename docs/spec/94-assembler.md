@@ -9545,7 +9545,14 @@ in a probing mode where a call clobbers the caller-saved registers and
 binds its results afresh, summarizing nothing (`pathExecutor.probing`);
 bodies with inner loops are still not probed. The slots a callee writes
 through an address it was handed are not discovered by the probe — the
-summary proper lists them — so the discovery is conservative.
+summary proper lists them — so the discovery is conservative. The probe
+also leaves no loop events and no call-site records behind (2026-09-23):
+a call the body run reached was still summarized by the probe, before the
+loop's index was on the stack, so the callee's loops stood at the top
+level beside the body run's own, and the prover's `add_carry` was refused
+with 41 machine events against the Oak side's 21 — 28 of the prover's
+bodies were refused this way. The events the probe records are dropped
+and the call-site records restored when it returns.
 
 **Header values spelled apart (2026-09-17).** A coupling candidate is an
 equality when the two sides' header values are one term, else an affine
