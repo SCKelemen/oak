@@ -10884,6 +10884,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
+	for name := range lo.localSpans {
+		// The callee's own large arrays (its frame, gone at return): their
+		// logs are not the caller's memory — left in, a caller's loop
+		// summary read them as stores through a span it does not know
+		// (write_flush's chunk inside write_bytes).
+		delete(state.writes, name)
+	}
 	for _, borrow := range frameBorrows {
 		if reason, ok := borrow.writeBack(state, lo); !ok {
 			return fmt.Sprintf("a call to %s: %s", name, reason), false

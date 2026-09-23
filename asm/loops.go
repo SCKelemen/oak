@@ -1421,6 +1421,17 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		// writable parameter's is (frameSpanAccess).
 		writtenSpans = append(writtenSpans, name)
 	}
+	for name, global := range x.fn.Globals {
+		// A writable top-level array the executor reads as a span
+		// (bindGlobalAddress): the loop's memory as a parameter's is — a
+		// body that fills it through a callee (the prover's write_byte
+		// into out_buf) stores through it like any span.
+		if _, _, _, isArray := globalArrayShape(global); isArray {
+			if _, isSpan := x.spans[name]; isSpan {
+				writtenSpans = append(writtenSpans, name)
+			}
+		}
+	}
 	sort.Strings(writtenSpans)
 	// The machine side of the same rule: a body with no store and no call
 	// leaves the memories alone, and marking one would make its reads
@@ -1535,6 +1546,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for _, end := range ends {
 		for span, log := range end.state.writes {
 			if !storedSpans[span] && len(log) > len(freshState.writes[span]) {
+				if os.Getenv("OAK_VERIFY_TRACE") != "" {
+					fmt.Fprintf(os.Stderr, "verify: loop body stored through %s; stored spans %v; written %v\n", span, storedSpans, writtenSpans)
+				}
 				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
 			}
 		}
@@ -3249,6 +3263,22 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// recognize marks everything, as before.
 	storedSpans := make([]string, 0, len(lo.writableSpans))
 	contracts := map[string]spanContract{}
+	if bodyMayStore(loop.Body) {
+		// The program's writable top-level arrays, spans named by the
+		// global (declareGlobalArrays): a body that fills one — through a
+		// callee, the prover's write_byte into out_buf — stores through
+		// it like a parameter, and the machine side marks it the same
+		// (summarizeLoop, the function's Globals).
+		for name, global := range lo.globals {
+			if _, _, _, isArray := globalArrayShape(global); !isArray || lo.writableSpans[name] {
+				continue
+			}
+			if contract, isSpan := lo.spans[name]; isSpan && lo.tableLens[name] > 0 {
+				contracts[name] = contract
+				storedSpans = append(storedSpans, name)
+			}
+		}
+	}
 	for span := range lo.writableSpans {
 		if !bodyMayStore(loop.Body) {
 			break
