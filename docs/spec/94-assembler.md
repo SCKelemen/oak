@@ -3418,7 +3418,14 @@ one). The Oak side inlines the same calls with the same alias
 (`enterCall`), so both sides' logs agree in their spelling. Second, a
 unit callee's loop whose count is a constant argument (`ap_lits(le, ew,
 lo, hi, u32(1))`) unrolls inside the summary, since the summary lowers the
-callee's body under the argument substitution. Third, `ab_push` shifts by
+callee's body under the argument substitution. A callee's loop events
+belong to their call site, one call instruction (2026-09-23): a second
+path through the same instruction merges its events with the first's,
+and two calls on one source line — `c ? f(…) | g(…)`, `f(…) || g(…)` —
+are two sites, where keyed by the line they were one, the second's loops
+merged into the first's or stood as an unrolled instance, and eight of
+the prover's bodies were refused for a loop count that was not the Oak
+side's. Third, `ab_push` shifts by
 `(at % 4) * 8` — a data-dependent count, which the verifier refused
 because Oak traps at the width where the machine wraps. A syntactic range
 bound (asm/range.go: constants, masks, products and sums by constants,
