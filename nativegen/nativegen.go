@@ -1409,6 +1409,13 @@ type generator struct {
 	// enclosing expression's result and not yet written holds nothing, and
 	// the checker refuses a spill that reads it).
 	defined map[int]bool
+	// definedAt is the defined set arriving at a label not yet placed,
+	// intersected over every branch to it: at the label a register is
+	// defined only where every incoming path defined it (a conditional's
+	// result register, written in one arm, is not yet written in the
+	// other, whose call would spill it unwritten — the checker's "unbound
+	// register read", the prover's operand).
+	definedAt map[string]map[int]bool
 	// tables are the program's constant tables (Lane.Tables), read
 	// through their data symbols' addresses.
 	tables map[string]GlobalArray
@@ -4274,6 +4281,7 @@ func (g *generator) emitInstruction(ins asm.Instruction) {
 	if g.terminated {
 		return
 	}
+	g.noteWrite(ins.Mnemonic, ins.Operands)
 	g.liveFlags = ""
 	if forwarded, keep := g.forward(ins); keep {
 		g.items = append(g.items, forwarded)
@@ -4286,8 +4294,38 @@ func (g *generator) emitInstruction(ins asm.Instruction) {
 			g.flagsTo[sym.Name] = ""
 		}
 	}
+	switch ins.Mnemonic {
+	case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
+		if sym, isSym := ins.Operands[len(ins.Operands)-1].(asm.Symbol); isSym {
+			g.noteDefinedAt(sym.Name)
+		}
+	}
 	if ins.Mnemonic == "b" || ins.Mnemonic == "ret" || ins.Mnemonic == "brk" {
 		g.terminated = true
+	}
+}
+
+// noteDefinedAt records the defined set a branch carries to label: the
+// intersection over the branches to it.
+func (g *generator) noteDefinedAt(label string) {
+	if g.definedAt == nil {
+		g.definedAt = map[string]map[int]bool{}
+	}
+	arriving, seen := g.definedAt[label]
+	if !seen {
+		arriving = make(map[int]bool, len(g.defined))
+		for r, ok := range g.defined {
+			if ok {
+				arriving[r] = true
+			}
+		}
+		g.definedAt[label] = arriving
+		return
+	}
+	for r := range arriving {
+		if !g.defined[r] {
+			delete(arriving, r)
+		}
 	}
 }
 
@@ -4308,6 +4346,7 @@ func (g *generator) branchFlags(cond, label, compare string) {
 	} else if known != compare {
 		g.flagsTo[label] = ""
 	}
+	g.noteDefinedAt(label)
 	g.items = append(g.items, asm.Instruction{Mnemonic: "b.", Cond: cond, Operands: []asm.Operand{asm.Symbol{Name: label}}, Line: g.line})
 }
 
@@ -4329,6 +4368,21 @@ func (g *generator) label(name string) {
 	g.liveFlags = ""
 	if g.terminated && g.reuseFlags {
 		g.liveFlags = g.flagsTo[name]
+	}
+	// The defined registers at the label: what every path arriving here
+	// defined — the branches' (definedAt) and the fall-through's, unless
+	// the label follows an unconditional transfer and nothing falls in.
+	if arriving, seen := g.definedAt[name]; seen {
+		if g.terminated {
+			g.defined = arriving
+		} else {
+			for r := range g.defined {
+				if !arriving[r] {
+					delete(g.defined, r)
+				}
+			}
+		}
+		delete(g.definedAt, name)
 	}
 	g.items = append(g.items, asm.Label{Name: name, Line: g.line})
 	g.terminated = false
@@ -4394,12 +4448,14 @@ func (g *generator) alloc(typ scalar) (int, error) {
 		if !ok {
 			return 0, unsupported("an expression deeper than the scratch registers")
 		}
+		delete(g.defined, r) // a fresh register holds nothing until written
 		g.live = append(g.live, r)
 		g.peakScratch = scratchHigh - scratchLow + 1 // every scratch register held, and more
 		return r, nil
 	}
 	r := (*pool)[len(*pool)-1]
 	*pool = (*pool)[:len(*pool)-1]
+	delete(g.defined, r) // a fresh register holds nothing until written
 	g.live = append(g.live, r)
 	g.notePeak()
 	return r, nil
@@ -4460,6 +4516,7 @@ func (g *generator) overflowScratch() (int, bool) {
 func (g *generator) put(item asm.Item) {
 	g.liveFlags = ""
 	if ins, isIns := item.(asm.Instruction); isIns {
+		g.noteWrite(ins.Mnemonic, ins.Operands) // an instruction built elsewhere writes like one built here
 		forwarded, keep := g.forward(ins)
 		if !keep {
 			return

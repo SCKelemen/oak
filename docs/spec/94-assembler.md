@@ -3005,7 +3005,14 @@ global (`T_PIPE: u32 = 17`) was not in the subset, and the build failed on
 four functions the seam checker refused — real backend bugs the checker
 found, exactly as §9 promised: a call spilled every live scratch register,
 including ones allocated for an enclosing expression's result and not yet
-written (`f(b) || (b >= 97 && …)`: a read of an uninitialized register),
+written (`f(b) || (b >= 97 && …)`: a read of an uninitialized register;
+and since 2026-09-23 the written set is a path's: it is recorded at every
+branch and, at a label, is what every arriving path wrote — a
+conditional's result register written in one arm was still counted
+written in the other, whose call spilled it unwritten, the prover's
+`operand` and four more bodies; a freshly allocated register holds
+nothing; and an instruction built apart from the emitter records its
+write like one built there),
 and a function whose one arm placed its result in `x0` — the base of a span
 parameter — before its other arm walked the span (the checker's span facts
 flow in text order, so the write ended the span). Now: a typed scalar
