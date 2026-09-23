@@ -10415,8 +10415,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.writes = cloneWrites(state.writes)
 	// The callee's loop events take the indices this call site's events
 	// took the first time the site was reached (loopSite): a second path
-	// through the same call merges its events with the first's below.
-	callSite := fmt.Sprintf("call@%d", instr.Line)
+	// through the same call merges its events with the first's below. A
+	// site is one call instruction (x.callAt): keyed by the source line,
+	// two calls on one line — `c ? f(…) | g(…)`, `f(…) || g(…)` — shared a
+	// site, the second's loops merged into the first's or stood as an
+	// unrolled instance, and the machine side's loop count was not the
+	// Oak side's (the prover's variable_node, is_float_lean).
+	callSite := fmt.Sprintf("call@%d", x.callAt)
 	priorSite, siteSeen := x.sites[callSite]
 	if siteSeen && !priorSite.diverged(state.path) {
 		// The same path reaching the call again (an unrolled counted
