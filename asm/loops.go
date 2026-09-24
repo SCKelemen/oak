@@ -1002,6 +1002,23 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// chunk call, the call's argument and its result, with no move
 	// between the iterations once the registers are reallocated.
 	callCarried := x.callCarriedResults(shape, resultRegs)
+	// A register's own spill around a call in the header (`while k < n &&
+	// !f(…)`: `str x7, [sp, #o]; bl f; ldr x7, [sp, #o]`) is no header
+	// write: the reload restores the value, a loop variable's — counted as
+	// a temporary, the counter homed there fell out of the carried set
+	// while the condition read it (the prover's ts_array).
+	headerSpills := map[string]bool{}
+	for at := shape.header + 1; at < shape.bodyStart && at < len(x.items); at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || !isFrameSpill(instr) || !isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) < 2 {
+			continue
+		}
+		if src, isReg := instr.Operands[0].(Register); isReg {
+			if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem {
+				headerSpills[fmt.Sprintf("%d:%d", src.Num, mem.Offset)] = true
+			}
+		}
+	}
 	for at := shape.header + 1; at < shape.bodyEnd; at++ {
 		instr, isInstr := x.items[at].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
@@ -1024,6 +1041,11 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			continue // a body write: loop-carried unless a header temporary
 		}
 		if dest, isReg := instr.Operands[0].(Register); isReg && !dest.ZeroRegister() && dest.Class != ClassV {
+			if isFrameSpill(instr) && len(instr.Operands) >= 2 {
+				if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && headerSpills[fmt.Sprintf("%d:%d", dest.Num, mem.Offset)] {
+					continue // the register's own spill reloaded
+				}
+			}
 			headerWritten[dest.Num] = true
 		}
 	}

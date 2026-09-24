@@ -2120,7 +2120,13 @@ at the other's, its header value never read by the body
 (`mentionsElsewhere`) — is scratch on both before the summaries merge.
 A **register reloaded from its own spill slot** (`str x14, [sp, #576]`
 … `ldr x14`) is no 64-bit write of it: a register the body otherwise
-writes as w stays a 32-bit variable on every path. With the loops
+writes as w stays a 32-bit variable on every path. The same holds in the
+loop header (2026-09-24): a call in the condition (`while k < n &&
+!f(…)`) spills a live home before it and reloads it after, and the
+reload counted as a header write, so the header's temporaries took the
+loop's counter out of the carried set while the condition read it
+("the loop's entry condition could not be reconstructed", the prover's
+`ts_array` and five more). With the loops
 paired, both functions reached the coupling and ended undecided, for
 one reason: `found` and `off` both start at zero, so either register
 fits either variable at the header, and the wrong pairing could not be
