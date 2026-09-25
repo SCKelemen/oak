@@ -18,11 +18,14 @@ open option
 open exception
 open Unpredictable
 open Register
+open MemType
 open MemOp
+open Fault
+open DeviceType
 open Constraint
 open AccType
 
-/-- Type quantifiers: k_ex4382_ : Bool, k_ex4381_ : Bool -/
+/-- Type quantifiers: k_ex4757_ : Bool, k_ex4756_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -336,6 +339,141 @@ def num_of_MemOp (arg_ : MemOp) : Int :=
   | .MemOp_STORE => 1
   | .MemOp_PREFETCH => 2
 
+def undefined_MemType (_ : Unit) : SailM MemType := do
+  (internal_pick [MemType_Normal, MemType_Device])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 1 -/
+def MemType_of_num (arg_ : Nat) : MemType :=
+  match arg_ with
+  | 0 => MemType_Normal
+  | _ => MemType_Device
+
+def num_of_MemType (arg_ : MemType) : Int :=
+  match arg_ with
+  | .MemType_Normal => 0
+  | .MemType_Device => 1
+
+def undefined_DeviceType (_ : Unit) : SailM DeviceType := do
+  (internal_pick [DeviceType_GRE, DeviceType_nGRE, DeviceType_nGnRE, DeviceType_nGnRnE])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 3 -/
+def DeviceType_of_num (arg_ : Nat) : DeviceType :=
+  match arg_ with
+  | 0 => DeviceType_GRE
+  | 1 => DeviceType_nGRE
+  | 2 => DeviceType_nGnRE
+  | _ => DeviceType_nGnRnE
+
+def num_of_DeviceType (arg_ : DeviceType) : Int :=
+  match arg_ with
+  | .DeviceType_GRE => 0
+  | .DeviceType_nGRE => 1
+  | .DeviceType_nGnRE => 2
+  | .DeviceType_nGnRnE => 3
+
+def undefined_Fault (_ : Unit) : SailM Fault := do
+  (internal_pick
+    [Fault_None, Fault_AccessFlag, Fault_Alignment, Fault_Background, Fault_Domain, Fault_Permission, Fault_Translation, Fault_AddressSize, Fault_SyncExternal, Fault_SyncExternalOnWalk, Fault_SyncParity, Fault_SyncParityOnWalk, Fault_AsyncParity, Fault_AsyncExternal, Fault_Debug, Fault_TLBConflict, Fault_BranchTarget, Fault_HWUpdateAccessFlag, Fault_Lockdown, Fault_Exclusive, Fault_ICacheMaint])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 20 -/
+def Fault_of_num (arg_ : Nat) : Fault :=
+  match arg_ with
+  | 0 => Fault_None
+  | 1 => Fault_AccessFlag
+  | 2 => Fault_Alignment
+  | 3 => Fault_Background
+  | 4 => Fault_Domain
+  | 5 => Fault_Permission
+  | 6 => Fault_Translation
+  | 7 => Fault_AddressSize
+  | 8 => Fault_SyncExternal
+  | 9 => Fault_SyncExternalOnWalk
+  | 10 => Fault_SyncParity
+  | 11 => Fault_SyncParityOnWalk
+  | 12 => Fault_AsyncParity
+  | 13 => Fault_AsyncExternal
+  | 14 => Fault_Debug
+  | 15 => Fault_TLBConflict
+  | 16 => Fault_BranchTarget
+  | 17 => Fault_HWUpdateAccessFlag
+  | 18 => Fault_Lockdown
+  | 19 => Fault_Exclusive
+  | _ => Fault_ICacheMaint
+
+def num_of_Fault (arg_ : Fault) : Int :=
+  match arg_ with
+  | .Fault_None => 0
+  | .Fault_AccessFlag => 1
+  | .Fault_Alignment => 2
+  | .Fault_Background => 3
+  | .Fault_Domain => 4
+  | .Fault_Permission => 5
+  | .Fault_Translation => 6
+  | .Fault_AddressSize => 7
+  | .Fault_SyncExternal => 8
+  | .Fault_SyncExternalOnWalk => 9
+  | .Fault_SyncParity => 10
+  | .Fault_SyncParityOnWalk => 11
+  | .Fault_AsyncParity => 12
+  | .Fault_AsyncExternal => 13
+  | .Fault_Debug => 14
+  | .Fault_TLBConflict => 15
+  | .Fault_BranchTarget => 16
+  | .Fault_HWUpdateAccessFlag => 17
+  | .Fault_Lockdown => 18
+  | .Fault_Exclusive => 19
+  | .Fault_ICacheMaint => 20
+
+def undefined_MemAttrHints (_ : Unit) : SailM MemAttrHints := do
+  (pure { attrs := ← (undefined_bitvector 2)
+          hints := ← (undefined_bitvector 2)
+          transient := ← (undefined_bool ()) })
+
+def undefined_MemoryAttributes (_ : Unit) : SailM MemoryAttributes := do
+  (pure { typ := ← (undefined_MemType ())
+          device := ← (undefined_DeviceType ())
+          inner := ← (undefined_MemAttrHints ())
+          outer := ← (undefined_MemAttrHints ())
+          tagged := ← (undefined_bool ())
+          shareable := ← (undefined_bool ())
+          outershareable := ← (undefined_bool ()) })
+
+def undefined_FullAddress (_ : Unit) : SailM FullAddress := do
+  (pure { address := ← (undefined_bitvector 52)
+          NS := ← (undefined_bitvector 1) })
+
+def undefined_FaultRecord (_ : Unit) : SailM FaultRecord := do
+  (pure { typ := ← (undefined_Fault ())
+          acctype := ← (undefined_AccType ())
+          ipaddress := ← (undefined_FullAddress ())
+          s2fs1walk := ← (undefined_bool ())
+          write := ← (undefined_bool ())
+          level := ← (undefined_int ())
+          extflag := ← (undefined_bitvector 1)
+          secondstage := ← (undefined_bool ())
+          domain := ← (undefined_bitvector 4)
+          errortype := ← (undefined_bitvector 2)
+          debugmoe := ← (undefined_bitvector 4) })
+
+def undefined_MPAMinfo (_ : Unit) : SailM MPAMinfo := do
+  (pure { mpam_ns := ← (undefined_bitvector 1)
+          partid := ← (undefined_bitvector 16)
+          pmg := ← (undefined_bitvector 8) })
+
+def undefined_AddressDescriptor (_ : Unit) : SailM AddressDescriptor := do
+  (pure { fault := ← (undefined_FaultRecord ())
+          memattrs := ← (undefined_MemoryAttributes ())
+          paddress := ← (undefined_FullAddress ())
+          vaddress := ← (undefined_bitvector 64) })
+
+def undefined_AccessDescriptor (_ : Unit) : SailM AccessDescriptor := do
+  (pure { acctype := ← (undefined_AccType ())
+          mpam := ← (undefined_MPAMinfo ())
+          page_table_walk := ← (undefined_bool ())
+          secondstage := ← (undefined_bool ())
+          s2fs1walk := ← (undefined_bool ())
+          level := ← (undefined_int ()) })
+
 def undefined_ProcState (_ : Unit) : SailM ProcState := do
   (pure { N := ← (undefined_bitvector 1)
           Z := ← (undefined_bitvector 1)
@@ -377,8 +515,8 @@ def aget_X {width : _} (n : Nat) : SailM (BitVec width) := do
 /-- Type quantifiers: size : Nat, k_sign_extend : Bool, Rt : Nat, k_sixty_four : Bool, k_acq_rel :
   Bool, size ∈ {1, 2, 4, 8} ∧ 0 ≤ Rt ∧ Rt ≤ 31 -/
 def MakeLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixty_four : Bool) (acq_rel : Bool) : SailM (BitVec 11) := do
-  assert ((size == 1) || ((size == 2) || ((size == 4) || (size == 8)))) "str_execution.sail:231.56-231.57"
-  assert ((0 ≤b Rt) && (Rt ≤b 31)) "str_execution.sail:232.29-232.30"
+  assert ((size == 1) || ((size == 2) || ((size == 4) || (size == 8)))) "str_execution.sail:310.56-310.57"
+  assert ((0 ≤b Rt) && (Rt ≤b 31)) "str_execution.sail:311.29-311.30"
   let sz ← (( do (undefined_bitvector 2) ) : SailM (BitVec 2) )
   let sz : (BitVec 2) :=
     match size with
@@ -401,10 +539,12 @@ def MakeLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixt
     else 0#1
   (pure (((((1#1 +++ sz) +++ ext) +++ (__GetSlice_int 5 Rt 0)) +++ sf) +++ ar))
 
-/-- Type quantifiers: k_ex4626_ : Bool, k_ex4625_ : Bool, k_ex4624_ : Bool, size : Nat, Rt : Nat, size
+/-- Type quantifiers: k_ex5044_ : Bool, k_ex5043_ : Bool, k_ex5042_ : Bool, size : Nat, Rt : Nat, size
   ∈ {1, 2, 4, 8} ∧ 0 ≤ Rt ∧ Rt ≤ 31 -/
 def AArch64_SetLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixty_four : Bool) (acq_rel : Bool) : SailM Unit := do
-  if ((((← readReg PSTATE).EL == EL0) || ((← readReg PSTATE).EL == EL1)) : Bool)
+  if ((← do
+    if ((← readReg PSTATE).EL == EL0) then pure true
+    else pure ((← readReg PSTATE).EL == EL1)) : Bool)
   then
     writeReg __LSISyndrome (← (MakeLSInstructionSyndrome size sign_extend Rt sixty_four acq_rel))
   else (pure ())
@@ -430,7 +570,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
     then
       (do
         let c ← (boundaries.ConstrainUnpredictable Unpredictable_WBOVERLAPLD)
-        assert ((c == Constraint_WBSUPPRESS) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:324.113-324.114"
+        assert ((c == Constraint_WBSUPPRESS) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:403.113-403.114"
         let (wb_unknown, wback) ← (( do
           match c with
           | .Constraint_WBSUPPRESS =>
@@ -446,7 +586,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
               (pure (wb_unknown, wback)))
           | _ =>
             (do
-              assert false "Pattern match failure at str_execution.sail:325.8-338.9"
+              assert false "Pattern match failure at str_execution.sail:404.8-417.9"
               throw Error.Exit) ) : SailM (Bool × Bool) )
         (pure (c, wb_unknown, wback)))
     else (pure (c, wb_unknown, wback)) ) : SailM (Constraint × Bool × Bool) )
@@ -455,7 +595,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
     then
       (do
         let c ← (boundaries.ConstrainUnpredictable Unpredictable_WBOVERLAPST)
-        assert ((c == Constraint_NONE) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:342.107-342.108"
+        assert ((c == Constraint_NONE) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:421.107-421.108"
         match c with
         | .Constraint_NONE => (pure false)
         | .Constraint_UNKNOWN => (pure true)
@@ -466,7 +606,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
             (pure rt_unknown))
         | _ =>
           (do
-            assert false "Pattern match failure at str_execution.sail:343.8-356.9"
+            assert false "Pattern match failure at str_execution.sail:422.8-435.9"
             throw Error.Exit))
     else (pure rt_unknown) ) : SailM Bool )
   let address ← (( do
@@ -531,8 +671,14 @@ def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (address : (B
   let value_name := value_name__arg
   let iswrite := true
   let value_name ← (( do
-    if (((((← (memory.HaveNV2Ext ())) && (acctype == AccType_NV2REGISTER)) && ((BitVec.join1 [(BitVec.access
-                 (← readReg SCTLR_EL2) 25)]) == 1#1)) || (← (memory.BigEndian ()))) : Bool)
+    if ((← do
+      let nvEndian ← do
+        if (← memory.HaveNV2Ext ()) then
+          if (acctype == AccType_NV2REGISTER) then
+            pure ((BitVec.join1 [(BitVec.access (← readReg SCTLR_EL2) 25)]) == 1#1)
+          else pure false
+        else pure false
+      if nvEndian then pure true else memory.BigEndian ()) : Bool)
     then
       (do
         (memory.BigEndianReverse value_name))
@@ -550,14 +696,14 @@ def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (address : (B
   if ((! atomic) : Bool)
   then
     (do
-      assert (size >b 1) "str_execution.sail:451.23-451.24"
+      assert (size >b 1) "str_execution.sail:530.23-530.24"
       (memory.AArch64_aset_MemSingle address 1 acctype aligned (BitVec.slice value_name 0 8))
       let aligned ← (( do
         if ((! aligned) : Bool)
         then
           (do
             let c ← (boundaries.ConstrainUnpredictable Unpredictable_DEVPAGE2)
-            assert ((c == Constraint_FAULT) || (c == Constraint_NONE)) "str_execution.sail:455.63-455.64"
+            assert ((c == Constraint_FAULT) || (c == Constraint_NONE)) "str_execution.sail:534.63-534.64"
             if ((c == Constraint_NONE) : Bool)
             then (pure true)
             else (pure aligned))
@@ -580,6 +726,37 @@ def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (address : (B
           (memory.AArch64_aset_MemSingle (BitVec.addInt address 8) 8 acctype aligned
             (BitVec.slice value_name 64 64)))
       else (memory.AArch64_aset_MemSingle address size acctype aligned value_name))
+
+def IsFault (addrdesc : AddressDescriptor) : Bool :=
+  (addrdesc.fault.typ != Fault_None)
+
+/-- Type quantifiers: size : Nat, k_wasaligned : Bool, size ∈ {1, 2, 4, 8, 16} -/
+def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) (address : (BitVec 64)) (size : Nat) (acctype : AccType) (wasaligned : Bool) (value_name : (BitVec (8 * size))) : SailM Unit := do
+  assert ((size == 1) || ((size == 2) || ((size == 4) || ((size == 8) || (size == 16))))) "str_execution.sail:591.69-591.70"
+  assert (address == (← (memory.Align__1 address size))) "str_execution.sail:592.42-592.43"
+  let memaddrdesc ← (( do (undefined_AddressDescriptor ()) ) : SailM AddressDescriptor )
+  let iswrite := true
+  let memaddrdesc ← do (single.AArch64_TranslateAddress address acctype iswrite wasaligned size)
+  if ((IsFault memaddrdesc) : Bool)
+  then (single.AArch64_Abort address memaddrdesc.fault)
+  else (pure ())
+  if (memaddrdesc.memattrs.shareable : Bool)
+  then (single.ClearExclusiveByAddress memaddrdesc.paddress (← (single.ProcessorID ())) size)
+  else (pure ())
+  let accdesc ← do (single.CreateAccessDescriptor acctype)
+  if ((← (boundaries.HaveMTEExt ())) : Bool)
+  then
+    (do
+      if ((← (single.AccessIsTagChecked (← (boundaries.ZeroExtend__0 address 64)) acctype)) : Bool)
+      then
+        (do
+          let ptag ← do (single.TransformTag (← (boundaries.ZeroExtend__0 address 64)))
+          if ((! (← (single.CheckTag memaddrdesc ptag iswrite))) : Bool)
+          then (single.TagCheckFail (← (boundaries.ZeroExtend__0 address 64)) iswrite)
+          else (pure ()))
+      else (pure ()))
+  else (pure ())
+  (single.aset__Mem memaddrdesc size accdesc value_name)
 
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg _R (← (undefined_vector 31 (← (undefined_bitvector 64))))

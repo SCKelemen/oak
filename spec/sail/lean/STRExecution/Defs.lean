@@ -38,6 +38,75 @@ inductive MemOp where | MemOp_LOAD | MemOp_STORE | MemOp_PREFETCH
   deriving BEq, Inhabited, Repr
   open MemOp
 
+inductive MemType where | MemType_Normal | MemType_Device
+  deriving BEq, Inhabited, Repr
+  open MemType
+
+inductive DeviceType where | DeviceType_GRE | DeviceType_nGRE | DeviceType_nGnRE | DeviceType_nGnRnE
+  deriving BEq, Inhabited, Repr
+  open DeviceType
+
+inductive Fault where | Fault_None | Fault_AccessFlag | Fault_Alignment | Fault_Background | Fault_Domain | Fault_Permission | Fault_Translation | Fault_AddressSize | Fault_SyncExternal | Fault_SyncExternalOnWalk | Fault_SyncParity | Fault_SyncParityOnWalk | Fault_AsyncParity | Fault_AsyncExternal | Fault_Debug | Fault_TLBConflict | Fault_BranchTarget | Fault_HWUpdateAccessFlag | Fault_Lockdown | Fault_Exclusive | Fault_ICacheMaint
+  deriving BEq, Inhabited, Repr
+  open Fault
+
+structure MemAttrHints where
+  attrs : (BitVec 2)
+  hints : (BitVec 2)
+  transient : Bool
+  deriving BEq, Inhabited, Repr
+
+structure MemoryAttributes where
+  typ : MemType
+  device : DeviceType
+  inner : MemAttrHints
+  outer : MemAttrHints
+  tagged : Bool
+  shareable : Bool
+  outershareable : Bool
+  deriving BEq, Inhabited, Repr
+
+structure FullAddress where
+  address : (BitVec 52)
+  NS : (BitVec 1)
+  deriving BEq, Inhabited, Repr
+
+structure FaultRecord where
+  typ : Fault
+  acctype : AccType
+  ipaddress : FullAddress
+  s2fs1walk : Bool
+  write : Bool
+  level : Int
+  extflag : (BitVec 1)
+  secondstage : Bool
+  domain : (BitVec 4)
+  errortype : (BitVec 2)
+  debugmoe : (BitVec 4)
+  deriving BEq, Inhabited, Repr
+
+structure MPAMinfo where
+  mpam_ns : (BitVec 1)
+  partid : (BitVec 16)
+  pmg : (BitVec 8)
+  deriving BEq, Inhabited, Repr
+
+structure AddressDescriptor where
+  fault : FaultRecord
+  memattrs : MemoryAttributes
+  paddress : FullAddress
+  vaddress : (BitVec 64)
+  deriving BEq, Inhabited, Repr
+
+structure AccessDescriptor where
+  acctype : AccType
+  mpam : MPAMinfo
+  page_table_walk : Bool
+  secondstage : Bool
+  s2fs1walk : Bool
+  level : Int
+  deriving BEq, Inhabited, Repr
+
 inductive exception where
   | Error_Undefined (_ : Unit)
   | Error_See (_ : String)

@@ -39,6 +39,28 @@ func replaceOne(s, from, to string) string {
 	return strings.Replace(s, from, to, 1)
 }
 
+// Sail 0.20.2 preserves short-circuiting in its interpreter/Lem backend, but
+// its Lean exporter emits nested actions in Boolean operands; Lean lifts
+// those actions eagerly. Normalize exactly these two audited conditions.
+// The whole raw output pin below makes additional effectful sites fail closed.
+const rawSyndromeCondition = `if ((((← readReg PSTATE).EL == EL0) || ((← readReg PSTATE).EL == EL1)) : Bool)`
+
+const guardedSyndromeCondition = `if ((← do
+    if ((← readReg PSTATE).EL == EL0) then pure true
+    else pure ((← readReg PSTATE).EL == EL1)) : Bool)`
+
+const rawMemoryCondition = `if (((((← (memory.HaveNV2Ext ())) && (acctype == AccType_NV2REGISTER)) && ((BitVec.join1 [(BitVec.access
+                 (← readReg SCTLR_EL2) 25)]) == 1#1)) || (← (memory.BigEndian ()))) : Bool)`
+
+const guardedMemoryCondition = `if ((← do
+      let nvEndian ← do
+        if (← memory.HaveNV2Ext ()) then
+          if (acctype == AccType_NV2REGISTER) then
+            pure ((BitVec.join1 [(BitVec.access (← readReg SCTLR_EL2) 25)]) == 1#1)
+          else pure false
+        else pure false
+      if nvEndian then pure true else memory.BigEndian ()) : Bool)`
+
 // Sources are hashed before this extractor runs. Declarations must be unique;
 // the next top-level declaration (not a closing brace) determines their end.
 func declaration(source, kind, name string) string {
@@ -104,6 +126,12 @@ func main() {
 	for _, name := range []string{"AccType", "Unpredictable", "Constraint", "MemOp"} {
 		add("aarch_types.sail", "enum", name)
 	}
+	for _, name := range []string{"MemType", "DeviceType", "Fault"} {
+		add("aarch_types.sail", "enum", name)
+	}
+	for _, name := range []string{"MemAttrHints", "MemoryAttributes", "FullAddress", "FaultRecord", "MPAMinfo", "AddressDescriptor", "AccessDescriptor"} {
+		add("aarch_types.sail", "struct", name)
+	}
 	add("prelude.sail", "union", "exception")
 	add("aarch_types.sail", "struct", "ProcState")
 	for _, name := range []string{"_R", "PSTATE", "__LSISyndrome", "SCTLR_EL2"} {
@@ -152,11 +180,35 @@ func main() {
 		{"aarch64.sail", "AArch64_aset_MemSingle"},
 	} {
 		spec := declaration(sources[cut.source], "val", cut.name)
-		fragment.WriteString(replaceOne(spec, "val "+cut.name+" :", "val "+cut.name+" = impure { lean: \"memory."+cut.name+"\" } :"))
+		local := cut.name
+		if local == "AArch64_aset_MemSingle" {
+			local = "oak_memory_aset_MemSingle"
+		}
+		fragment.WriteString(replaceOne(spec, "val "+cut.name+" :", "val "+local+" = impure { lean: \"memory."+cut.name+"\" } :"))
 	}
-	fragment.WriteString("overload Align = {Align__1}\noverload MemSingle = {AArch64_aset_MemSingle}\n\n")
+	fragment.WriteString("overload Align = {Align__1}\noverload MemSingle = {oak_memory_aset_MemSingle}\n\n")
 	add("aarch64.sail", "val", "aset_Mem")
 	add("aarch64.sail", "function", "aset_Mem")
+	add("aarch_mem.sail", "val", "IsFault")
+	add("aarch_mem.sail", "function", "IsFault")
+	for _, cut := range []struct{ source, name string }{
+		{"aarch_mem.sail", "AArch64_TranslateAddress"},
+		{"aarch_mem.sail", "AArch64_Abort"},
+		{"aarch64.sail", "ProcessorID"},
+		{"aarch64.sail", "ClearExclusiveByAddress"},
+		{"aarch_mem.sail", "CreateAccessDescriptor"},
+		{"aarch_mem.sail", "AccessIsTagChecked"},
+		{"aarch_mem.sail", "TransformTag"},
+		{"aarch_mem.sail", "CheckTag"},
+		{"aarch_mem.sail", "TagCheckFail"},
+		{"aarch_mem.sail", "aset__Mem"},
+	} {
+		spec := declaration(sources[cut.source], "val", cut.name)
+		fragment.WriteString(replaceOne(spec, "val "+cut.name+" :", "val "+cut.name+" = impure { lean: \"single."+cut.name+"\" } :"))
+	}
+	fragment.WriteString("overload _Mem = {aset__Mem}\n\n")
+	add("aarch64.sail", "val", "AArch64_aset_MemSingle")
+	add("aarch64.sail", "function", "AArch64_aset_MemSingle")
 	fragmentSource := strings.TrimRight(fragment.String(), "\n") + "\n"
 	tmp, err := os.MkdirTemp("", "oak-str-execution-")
 	must(err)
@@ -173,12 +225,20 @@ func main() {
 	defs = replaceOne(defs, "import Sail\n", "import Sail\n\nnamespace STRExecution\n") + "\nend STRExecution\n"
 	generated := read(filepath.Join(tmp, "out/Out.lean"))
 	rawGenerated := generated
+	// A new compiler output needs an explicit re-audit of every Boolean site;
+	// matching only the known expressions would silently admit a third site.
+	if fmt.Sprintf("%x", sha256.Sum256([]byte(rawGenerated))) != "47322214a3899a5ced90c989aa3926697d31b7e6027f2fa8795b3c783fb7d831" {
+		panic("pinned raw STR execution Lean output changed")
+	}
+	generated = replaceOne(generated, rawSyndromeCondition, guardedSyndromeCondition)
+	generated = replaceOne(generated, rawMemoryCondition, guardedMemoryCondition)
 	generated = replaceOne(generated, "import Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n",
 		"import STRExecution.Defs\nimport STRExecution.Interface\n")
 	generated = replaceOne(generated, "namespace Out.Functions", "namespace STRExecution.Functions\n\nopen PreSail")
 	generated = replaceOne(generated, "end Out.Functions", "end STRExecution.Functions")
 	generated = replaceOne(generated, "def "+instruction+" ", "def "+instruction+" (boundaries : Boundaries) ")
 	generated = replaceOne(generated, "def aset_Mem ", "def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) ")
+	generated = replaceOne(generated, "def AArch64_aset_MemSingle ", "def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) ")
 	outputs := map[string]string{
 		"str_execution.sail":               fragmentSource,
 		"str_execution_vector.sail":        vector,
@@ -199,11 +259,11 @@ func main() {
 }
 
 const fragmentPrelude = `/* Generated by str_execution_regen.go from the pinned original model.
- * The instruction, aset_Mem, types, exceptions, reads and syndrome functions
+ * The instruction, aset_Mem, AArch64_aset_MemSingle, types, exceptions, reads and syndrome functions
  * are copied intact. Unimplemented callees are EXPLICIT arbitrary impure
  * Lean callbacks, not implementations, success stubs, or architecture axioms.
- * Lean framing adds explicit callback parameters only; it does not edit
- * either generated body. This is not full architectural execution.
+ * Lean framing adds callback parameters and normalizes two pinned Boolean
+ * conditions to preserve short-circuiting. This is not full architectural execution.
  * UInt/Zeros/__GetSlice_int adapt the original old prelude to modern Sail.
  * The pinned modern vector prelude renames only its unused signed function
  * declaration to oak_signed_compat, avoiding a clash with Arm's signed local.

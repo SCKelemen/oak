@@ -35,7 +35,7 @@ structure Boundaries where
 /-- Explicit callees of the complete original aset_Mem body. They retain
 arbitrary effects/failures; in particular alignment is not assumed successful
 and endian reversal is not assumed pure. The generated SCTLR_EL2 read is
-concrete and retained even for the normal-access theorem.
+concrete and guarded by the original short-circuit control structure.
 Width/count constraints erased by Sail are supplied only for proved entries. -/
 structure MemoryBoundaries where
   HaveNV2Ext : Unit → SailM Bool
@@ -44,5 +44,22 @@ structure MemoryBoundaries where
   AArch64_CheckAlignment : BitVec 64 → Int → AccType → Bool → SailM Bool
   Align__1 : {width : Nat} → BitVec width → Int → SailM (BitVec width)
   AArch64_aset_MemSingle : {width : Nat} → BitVec 64 → Nat → AccType → Bool → BitVec width → SailM Unit
+
+/-- Explicit deeper callees of the complete original MemSingle body. Full
+address/fault/access descriptors are retained; no VA-to-PA cast substitutes for
+translation. Abort and TagCheckFail are arbitrary actions: if one returns
+normally, the original body continues. No architectural non-return premise is
+silently installed. These callbacks do not establish full-state refinement. -/
+structure MemSingleBoundaries where
+  AArch64_TranslateAddress : BitVec 64 → AccType → Bool → Bool → Int → SailM AddressDescriptor
+  AArch64_Abort : BitVec 64 → FaultRecord → SailM Unit
+  ProcessorID : Unit → SailM Int
+  ClearExclusiveByAddress : FullAddress → Int → Int → SailM Unit
+  CreateAccessDescriptor : AccType → SailM AccessDescriptor
+  AccessIsTagChecked : BitVec 64 → AccType → SailM Bool
+  TransformTag : BitVec 64 → SailM (BitVec 4)
+  CheckTag : AddressDescriptor → BitVec 4 → Bool → SailM Bool
+  TagCheckFail : BitVec 64 → Bool → SailM Unit
+  aset__Mem : AddressDescriptor → (size : Nat) → AccessDescriptor → BitVec (8 * size) → SailM Unit
 
 end STRExecution

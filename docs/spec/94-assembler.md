@@ -1185,12 +1185,19 @@ the [slice notes](../../spec/sail/STR_EXECUTION.md).
 
 `STRMemoryBridge.lean` further connects this STR entry to the complete original
 `aset_Mem` body, with a checked 64-bit/eight-byte binding. Its aligned normal
-path preserves the feature, SCTLR_EL2 read, endian, alignment, and MemSingle
-sequence and all callback effects/failures. Even the normal path's generated
-SCTLR_EL2 read requires post-query initialization. Unaligned first-byte partial
-failure is also retained, without assuming transactional stores. Actual
-endian/alignment callees, MemSingle, translation, full-state/event refinement,
-and ordering remain open (§126).
+path preserves the feature, endian, alignment, and MemSingle sequence and all
+callback effects/failures. A discovered Sail-to-Lean Boolean-lifting mismatch
+is repaired at exactly two pinned generated conditions: normal access now
+correctly skips SCTLR_EL2, and the NV2 endian branch can skip BigEndian.
+The independent raw-output gate admits only these explicit repairs and framing.
+Unaligned first-byte partial failure is retained without transactional stores.
+`STRMemSingleBridge.lean` extends the conditional execution boundary through
+the original MemSingle body, preserving full translation/fault descriptors,
+exclusive clearing, tag actions and the final arbitrary `_Mem` result.
+Returning abort/tag-failure callbacks do not silently halt execution. Actual
+deeper callees, translation, full-state/event refinement, and ordering remain
+open (§126); source retention plus a finite exporter repair is not general
+Sail compiler verification.
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model

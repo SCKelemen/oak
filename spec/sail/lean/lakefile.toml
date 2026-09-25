@@ -15,11 +15,15 @@
 # explicit callee boundaries; it does not discharge translation or ordering.
 # `STRMemoryBridge` composes the original memory wrapper with this STR entry,
 # preserving its prefix/callee effects without implementing translation.
+# `STRShortCircuit` checks the conditional-action normalization needed at two
+# pinned sites where the uncorrected Sail Lean export lifts effects eagerly.
+# `STRMemSingleBridge` extends the conditional boundary through the original
+# MemSingle body, retaining arbitrary translation/fault/tag/exclusive/RAM cuts.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRMemoryBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -50,6 +54,12 @@ name = "STRExecutionBridge"
 
 [[lean_lib]]
 name = "STRMemoryBridge"
+
+[[lean_lib]]
+name = "STRMemSingleBridge"
+
+[[lean_lib]]
+name = "STRShortCircuit"
 
 [[require]]
 name = "Sail"

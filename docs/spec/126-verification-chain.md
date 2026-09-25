@@ -828,19 +828,32 @@ for the exact compatibility adaptations and outstanding composition work.
 `aset_Mem` body in the same generated state. An explicit width-checked binding
 connects the instruction's callback to the concrete callee; the STR64 theorem
 discharges its 64-bit/eight-byte check. The aligned normal path retains the
-feature query, actual SCTLR_EL2 read, endian query/conversion, alignment check,
+feature query, endian query/conversion, alignment check,
 and final `MemSingle` callback in order, including all intermediate state
-changes. The pinned export reads SCTLR_EL2 even for normal access with NV2
-false: a missing post-query entry fails before the endian query. This runtime
-initialization error is not a proved architectural fault.
+changes. Two exact generated Boolean conditions are explicitly repaired after
+discovering that Sail 0.20.2's Lean output eagerly lifts effects from otherwise
+short-circuiting operands. Normal access correctly skips SCTLR_EL2; a true
+NV2-register endian branch skips BigEndian. The syndrome's EL0/EL1 condition
+is similarly guarded. The entire raw function export is pinned and independent
+framing/mutation gates admit only these two repairs. This is not a general
+compiler-correctness or old/new-prelude proof.
 
 The final memory callback remains arbitrary, with its exact success/error
 state; earlier failures and an unaligned first-byte write-then-fail also have
 checked rules. Thus this boundary supplies no transactional-failure assumption
-for widening/reordering stores. Endian/alignment implementations, MemSingle,
-translation, physical-memory routing, full-state refinement and events/CAT
-remain open. Source/alias/callback/framing mutation gates and standard-axiom
-checks protect both retained bodies; no instruction body is rewritten.
+for widening/reordering stores. `STRMemSingleBridge.lean` now composes through
+the complete original MemSingle body under arbitrary deeper callbacks. It
+retains the size/alignment assertions, full address/fault/access descriptors,
+translation before abort handling, shareability-dependent ProcessorID then
+exclusive clearing, the three distinct tag-path ZeroExtend actions, and the
+final `_Mem` result. Abort/TagCheckFail callbacks that return normally permit
+the original body to continue; no architectural non-return axiom is assumed.
+
+Endian/alignment and deeper MemSingle implementations, real translation,
+physical-memory routing, full-state refinement and events/CAT remain open.
+Whole-source/type/alias/callback/framing mutation gates and standard-axiom
+checks protect the conditional boundary. Original Sail bodies are unchanged;
+the two generated Lean condition repairs are explicit compatibility changes.
 
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span

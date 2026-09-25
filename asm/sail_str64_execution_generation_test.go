@@ -15,6 +15,33 @@ import (
 
 const sailSTRExecutionName = "memory_single_general_immediate_signed_postidx"
 
+// Independently specified semantic repairs, not imported from the generator.
+// Every other byte of the raw function bodies must survive framing unchanged.
+const strRawSyndromeCondition = `if ((((← readReg PSTATE).EL == EL0) || ((← readReg PSTATE).EL == EL1)) : Bool)`
+const strGuardedSyndromeCondition = `if ((← do
+    if ((← readReg PSTATE).EL == EL0) then pure true
+    else pure ((← readReg PSTATE).EL == EL1)) : Bool)`
+const strRawMemoryCondition = `if (((((← (memory.HaveNV2Ext ())) && (acctype == AccType_NV2REGISTER)) && ((BitVec.join1 [(BitVec.access
+                 (← readReg SCTLR_EL2) 25)]) == 1#1)) || (← (memory.BigEndian ()))) : Bool)`
+const strGuardedMemoryCondition = `if ((← do
+      let nvEndian ← do
+        if (← memory.HaveNV2Ext ()) then
+          if (acctype == AccType_NV2REGISTER) then
+            pure ((BitVec.join1 [(BitVec.access (← readReg SCTLR_EL2) 25)]) == 1#1)
+          else pure false
+        else pure false
+      if nvEndian then pure true else memory.BigEndian ()) : Bool)`
+
+func auditSTRExecutionRawBooleanCoverage(raw string) error {
+	// The reviewed raw export contains exactly the two effectful Boolean
+	// conditions above. A different export needs a fresh semantic audit.
+	const reviewed = "47322214a3899a5ced90c989aa3926697d31b7e6027f2fa8795b3c783fb7d831"
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(raw))); got != reviewed {
+		return fmt.Errorf("raw STR export changed: re-audit short-circuit sites (%s)", got)
+	}
+	return nil
+}
+
 func auditSTRExecutionVectorPrelude(raw, compat string) error {
 	const originalHash = "73855de7cdfbef3cc5ba22b64478d1ae031ad56fdc80a4dedc8fdfbb4db1218b"
 	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(raw))); got != originalHash {
@@ -58,9 +85,10 @@ func TestSailSTRExecutionPreludeExactAndMutated(t *testing.T) {
 }
 
 // Independently reconstruct the only permitted edits to raw Sail output.
-// Namespace/import/runtime-open framing and explicit callback binders may change;
-// neither the instruction/callee bodies nor the generated register helpers may change.
-// This is a source-fidelity check, not a correctness proof of Sail's backend.
+// Namespace/import/runtime-open framing, explicit callback binders, and exactly
+// two short-circuit repairs may change. This is not a general correctness proof
+// of Sail's backend. The generation test also independently pins the whole raw
+// output so new Boolean sites cannot silently evade the finite repair audit.
 func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string) error {
 	replace := func(source, from, to string) (string, error) {
 		if count := strings.Count(source, from); count != 1 {
@@ -78,11 +106,14 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 	}
 	expected := rawFunctions
 	for _, edit := range [][2]string{
+		{strRawSyndromeCondition, strGuardedSyndromeCondition},
+		{strRawMemoryCondition, strGuardedMemoryCondition},
 		{"import Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n", "import STRExecution.Defs\nimport STRExecution.Interface\n"},
 		{"namespace Out.Functions", "namespace STRExecution.Functions\n\nopen PreSail"},
 		{"end Out.Functions", "end STRExecution.Functions"},
 		{"def " + sailSTRExecutionName + " ", "def " + sailSTRExecutionName + " (boundaries : Boundaries) "},
 		{"def aset_Mem ", "def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) "},
+		{"def AArch64_aset_MemSingle ", "def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) "},
 	} {
 		expected, err = replace(expected, edit[0], edit[1])
 		if err != nil {
@@ -90,7 +121,7 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 		}
 	}
 	if functions != expected {
-		return fmt.Errorf("generated STR functions changed beyond imports, namespace/runtime open, and callback binders")
+		return fmt.Errorf("generated STR functions changed beyond framing and the two audited short-circuit repairs")
 	}
 	return nil
 }
@@ -99,11 +130,15 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 	const rawDefs = "import Sail\ninductive Register where | _R\n"
 	const defs = "import Sail\n\nnamespace STRExecution\ninductive Register where | _R\n\nend STRExecution\n"
 	const raw = "import Sail\nimport Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n" +
+		strRawSyndromeCondition + "\n" + strRawMemoryCondition + "\n" +
 		"namespace Out.Functions\ndef " + sailSTRExecutionName + " (n : Nat) : SailM Unit := do\n" +
-		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (n : Nat) : SailM Unit := memory.store n\nend Out.Functions\n"
+		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (n : Nat) : SailM Unit := memory.store n\n" +
+		"def AArch64_aset_MemSingle (n : Nat) : SailM Unit := single.store n\nend Out.Functions\n"
 	const framed = "import Sail\nimport STRExecution.Defs\nimport STRExecution.Interface\n" +
+		strGuardedSyndromeCondition + "\n" + strGuardedMemoryCondition + "\n" +
 		"namespace STRExecution.Functions\n\nopen PreSail\ndef " + sailSTRExecutionName + " (boundaries : Boundaries) (n : Nat) : SailM Unit := do\n" +
-		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (n : Nat) : SailM Unit := memory.store n\nend STRExecution.Functions\n"
+		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (n : Nat) : SailM Unit := memory.store n\n" +
+		"def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) (n : Nat) : SailM Unit := single.store n\nend STRExecution.Functions\n"
 	if err := auditSTRExecutionLeanFraming(rawDefs, raw, defs, framed); err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +150,16 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 		"missing_binder":        strings.Replace(framed, " (boundaries : Boundaries)", "", 1),
 		"memory_stub":           strings.Replace(framed, "memory.store n", "pure ()", 1),
 		"missing_memory_binder": strings.Replace(framed, " (memory : MemoryBoundaries)", "", 1),
+		"missing_single_binder": strings.Replace(framed, " (single : MemSingleBoundaries)", "", 1),
+		"single_stub":           strings.Replace(framed, "single.store n", "pure ()", 1),
+		"eager_syndrome":        strings.Replace(framed, strGuardedSyndromeCondition, strRawSyndromeCondition, 1),
+		"eager_memory":          strings.Replace(framed, strGuardedMemoryCondition, strRawMemoryCondition, 1),
+		"skip_nv_query":         strings.Replace(framed, "if (← memory.HaveNV2Ext ())", "if false", 1),
+		"skip_acctype_guard":    strings.Replace(framed, "if (acctype == AccType_NV2REGISTER)", "if true", 1),
+		"wrong_sctlr_bit":       strings.Replace(framed, "(← readReg SCTLR_EL2) 25", "(← readReg SCTLR_EL2) 24", 1),
+		"duplicate_endian":      strings.Replace(framed, "then pure true else memory.BigEndian ()", "then memory.BigEndian () else memory.BigEndian ()", 1),
+		"skip_endian":           strings.Replace(framed, "else memory.BigEndian ()", "else pure false", 1),
+		"wrong_syndrome_el":     strings.Replace(framed, "then pure true", "then pure false", 1),
 		"different_import":      strings.Replace(framed, "import Sail", "import FakeRuntime", 1),
 		"extra_definition":      framed + "def extra := true\n",
 	} {
@@ -128,6 +173,8 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 		{strings.Replace(defs, "_R", "other", 1), rawDefs, raw},
 		{defs, rawDefs + "import Sail\n", raw},
 		{defs, rawDefs, raw + "def " + sailSTRExecutionName + " (n : Nat) := n\n"},
+		{defs, rawDefs, raw + strRawMemoryCondition},
+		{defs, rawDefs, strings.Replace(raw, strRawSyndromeCondition, "true", 1)},
 	} {
 		if err := auditSTRExecutionLeanFraming(mutant.rawDefs, mutant.raw, mutant.defs, framed); err == nil {
 			t.Fatal("changed definitions or ambiguous transformation marker was admitted")
@@ -187,8 +234,24 @@ func TestSailSTRExecutionGenerationCurrent(t *testing.T) {
 		string(read(root, "str_execution_vector.sail"))); err != nil {
 		t.Fatal(err)
 	}
+	raw := string(read(out, "raw/Out.lean"))
+	if err := auditSTRExecutionRawBooleanCoverage(raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutant := range []string{
+		raw + "\ndef newEffect := do pure (false && (← memory.BigEndian ()))\n",
+		strings.Replace(raw, strRawMemoryCondition, "if true", 1),
+		strings.Replace(raw, strRawSyndromeCondition, strRawMemoryCondition, 1),
+	} {
+		if mutant == raw {
+			t.Fatal("Boolean coverage mutation did not change raw output")
+		}
+		if err := auditSTRExecutionRawBooleanCoverage(mutant); err == nil {
+			t.Fatal("unreviewed raw Boolean export admitted")
+		}
+	}
 	if err := auditSTRExecutionLeanFraming(
-		string(read(out, "raw/Out/Defs.lean")), string(read(out, "raw/Out.lean")),
+		string(read(out, "raw/Out/Defs.lean")), raw,
 		string(read(root, "lean/STRExecution/Defs.lean")), string(read(root, "lean/STRExecution/Generated.lean"))); err != nil {
 		t.Fatal(err)
 	}

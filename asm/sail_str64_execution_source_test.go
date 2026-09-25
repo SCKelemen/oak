@@ -166,7 +166,7 @@ func sailSTRExecutionDeclaration(source, kind, name string) (string, error) {
 		return "", fmt.Errorf("%s %s declaration count = %d, want 1", kind, name, len(starts))
 	}
 	start, tail := starts[0][0], starts[0][1]
-	next := regexp.MustCompile(`(?m)^(?:val|function|register|type|enum|struct|overload|let)[ \t]`).FindIndex(mask[tail:])
+	next := regexp.MustCompile(`(?m)^(?:val|function|register|type|enum|struct|overload|let|union)[ \t]`).FindIndex(mask[tail:])
 	end := len(active)
 	if next != nil {
 		end = tail + next[0]

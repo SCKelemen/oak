@@ -18,6 +18,13 @@ var sailSTRMemoryCuts = []struct{ file, name string }{
 	{"aarch64.sail", "AArch64_aset_MemSingle"},
 }
 
+func sailSTRMemoryCutName(name string) string {
+	if name == "AArch64_aset_MemSingle" {
+		return "oak_memory_aset_MemSingle"
+	}
+	return name
+}
+
 // This audits exact source retention and closure wiring, not translation,
 // callback refinement, architectural events, or a memory-ordering theorem.
 func auditSailSTRMemoryExecution(source string, originals map[string]string) error {
@@ -64,17 +71,18 @@ func auditSailSTRMemoryExecution(source string, originals map[string]string) err
 		if strings.Count(original, marker) != 1 {
 			return fmt.Errorf("ambiguous original memory boundary: %s", cut.name)
 		}
-		want := strings.Replace(original, marker, "val "+cut.name+` = impure { lean: "memory.`+cut.name+`" } :`, 1)
-		if err := exact("val", cut.name, want); err != nil {
+		local := sailSTRMemoryCutName(cut.name)
+		want := strings.Replace(original, marker, "val "+local+` = impure { lean: "memory.`+cut.name+`" } :`, 1)
+		if err := exact("val", local, want); err != nil {
 			return err
 		}
-		if regexp.MustCompile(`(?m)^[ \t]*function[ \t]+(?:clause[ \t]+)?` + regexp.QuoteMeta(cut.name) + `(?:[ \t\r\n]|\()`).MatchString(active) {
+		if regexp.MustCompile(`(?m)^[ \t]*function[ \t]+(?:clause[ \t]+)?` + regexp.QuoteMeta(local) + `(?:[ \t\r\n]|\()`).MatchString(active) {
 			return fmt.Errorf("memory callback %s was replaced with a local body", cut.name)
 		}
 	}
 	for _, binding := range []struct{ name, body string }{
 		{"Align", "overload Align = {Align__1}"},
-		{"MemSingle", "overload MemSingle = {AArch64_aset_MemSingle}"},
+		{"MemSingle", "overload MemSingle = {oak_memory_aset_MemSingle}"},
 		{"Mem", "overload Mem = {aget_Mem, oak_instruction_aset_Mem}"},
 	} {
 		if err := exact("overload", binding.name, binding.body); err != nil {
@@ -119,7 +127,7 @@ func TestSailSTRExecutionMemoryExactAndMutated(t *testing.T) {
 		{"short_split", "(size - 1)", "(size - 2)"},
 		{"wrong_whole_value_size", "MemSingle(address, size, acctype, aligned) = value_name", "MemSingle(address, 1, acctype, aligned) = slice(value_name, 0, 8)"},
 		{"instruction_cut_bypassed", "overload Mem = {aget_Mem, oak_instruction_aset_Mem}", "overload Mem = {aget_Mem, aset_Mem}"},
-		{"wrong_mem_single", "overload MemSingle = {AArch64_aset_MemSingle}", "overload MemSingle = {oak_instruction_aset_Mem}"},
+		{"wrong_mem_single", "overload MemSingle = {oak_memory_aset_MemSingle}", "overload MemSingle = {oak_instruction_aset_Mem}"},
 		{"wrong_register_width", "register SCTLR_EL2 : bits(64)", "register SCTLR_EL2 : bits(32)"},
 	} {
 		mutants[mutation.name] = strings.Replace(source, mutation.old, mutation.replacement, 1)
@@ -134,13 +142,14 @@ func TestSailSTRExecutionMemoryExactAndMutated(t *testing.T) {
 		mutants[kind+"_trailing_effect"] = strings.Replace(source, decl, strings.TrimSpace(decl)+";\nthrow()\n", 1)
 	}
 	for _, cut := range sailSTRMemoryCuts {
-		decl, err := sailSTRExecutionDeclaration(source, "val", cut.name)
+		local := sailSTRMemoryCutName(cut.name)
+		decl, err := sailSTRExecutionDeclaration(source, "val", local)
 		if err != nil {
 			t.Fatal(err)
 		}
 		mutants[cut.name+"_wrong_callback"] = strings.Replace(source, `"memory.`+cut.name+`"`, `"memory.wrong"`, 1)
 		mutants[cut.name+"_duplicate"] = source + "\n" + decl
-		mutants[cut.name+"_local_stub"] = source + "\nfunction " + cut.name + " () = { () }\n"
+		mutants[cut.name+"_local_stub"] = source + "\nfunction " + local + " () = { () }\n"
 	}
 	for name, mutant := range mutants {
 		t.Run(name, func(t *testing.T) {

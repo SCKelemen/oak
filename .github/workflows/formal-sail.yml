@@ -167,10 +167,10 @@ jobs:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailSyndrome(ProcState|Registers|Make|Set)ExactAndMutated$' -count=1 -v
 
-      - name: Check retained STR execution source, callback wiring, and generation
+      - name: Check retained STR and MemSingle source, callback wiring, and generation
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=5m
+        run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=10m
 
   lem-ram-traces:
     name: Arm Lem RAM request traces

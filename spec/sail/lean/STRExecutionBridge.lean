@@ -115,12 +115,12 @@ theorem set64_initialized (state : State) (pstate : ProcState) (rt : Fin 32)
     (initialized : state.regs.get? Register.PSTATE = some pstate) :
     (AArch64_SetLSInstructionSyndrome 8 false rt.val true false).run state =
       .ok () (syndromeState state pstate rt) := by
-  by_cases low : (pstate.EL == 0#2 || pstate.EL == 1#2) = true
+  by_cases el0 : pstate.EL = 0#2 <;> by_cases el1 : pstate.EL = 1#2
   all_goals simp [AArch64_SetLSInstructionSyndrome, make64, syndromeState, EL0, EL1,
     readReg, writeReg, EStateM.run, Bind.bind, Pure.pure,
     MonadState.get, getThe, MonadStateOf.get, modify, modifyGet,
     MonadStateOf.modifyGet, EStateM.modifyGet, EStateM.bind, EStateM.pure,
-    EStateM.get, initialized, low]
+    EStateM.get, initialized, el0, el1]
 
 theorem set64_missing (state : State) (rt : Fin 32)
     (missing : state.regs.get? Register.PSTATE = none) :

@@ -1,13 +1,14 @@
 import STRExecutionBridge
+import STRShortCircuit
 
 /-!
 The original aset_Mem body, in the same generated state as STR. These
 theorems retain the order and effects of arbitrary endian/alignment/callee
 callbacks; they do not prove the callbacks implement Arm translation or RAM.
-The normal aligned size-eight domain still performs the generated SCTLR_EL2
-read before its endian query; Boolean simplification does not erase effects.
-This is a fact about the adapted export, not a cross-backend Boolean/effect
-refinement. Some originally pure callees are explicit impure cuts here.
+Two pinned exporter conditions are explicitly normalized to preserve Sail's
+short-circuiting: normal accesses skip SCTLR_EL2, while a true NV2 endian
+condition skips BigEndian. This is not full original-model refinement;
+some originally pure callees remain arbitrary explicit impure cuts here.
 -/
 
 namespace STRExecution.MemoryBridge
@@ -37,13 +38,12 @@ def endianStep (memory : MemoryBoundaries) (big : Bool) (data : BitVec 64) : Sai
   if big then memory.BigEndianReverse data else pure data
 
 /-- Feature, endian, conversion, and alignment states are kept distinct.
-SCTLR_EL2 must be initialized after the feature query. No callback purity or
-store-success premise is used. -/
+Normal accesses do not read SCTLR_EL2. No callback purity, unrelated register
+initialization, or store-success premise is used. -/
 theorem aligned64_run (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterNV afterEndian afterConversion afterAlignment : State)
-    (address data converted sctlr : BitVec 64) (nv big : Bool)
+    (address data converted : BitVec 64) (nv big : Bool)
     (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .ok big afterEndian)
     (conversionRun : (endianStep memory big data).run afterEndian = .ok converted afterConversion)
     (alignmentRun : (memory.AArch64_CheckAlignment address 8 .AccType_NORMAL true).run
@@ -53,8 +53,7 @@ theorem aligned64_run (boundaries : Boundaries) (memory : MemoryBoundaries)
   have normal : (AccType.AccType_NORMAL == AccType.AccType_NV2REGISTER) = false := rfl
   cases nv <;> cases big <;>
     simp_all [aset_Mem, endianStep, undefined_bool_eq, undefined_constraint_eq,
-      readReg, EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure,
-      MonadState.get, getThe, MonadStateOf.get, EStateM.get]
+      EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure]
 
 theorem normal64_nv_error (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterNV : State) (address data : BitVec 64) (error : Sail.Error exception)
@@ -63,46 +62,85 @@ theorem normal64_nv_error (boundaries : Boundaries) (memory : MemoryBoundaries)
       .error error afterNV := by
   simp_all [aset_Mem, EStateM.run, Bind.bind, EStateM.bind]
 
-/-- The generated read is eager even when NV2 is false and the access is
-normal. Failure precedes BigEndian and all later callbacks. -/
-theorem normal64_missing_sctlr (boundaries : Boundaries) (memory : MemoryBoundaries)
-    (state afterNV : State) (address data : BitVec 64) (nv : Bool)
-    (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
+/-- The register is required only after a true NV2 query on NV2REGISTER.
+Failure precedes BigEndian and all later callbacks. -/
+theorem nvregister64_missing_sctlr (boundaries : Boundaries) (memory : MemoryBoundaries)
+    (state afterNV : State) (address data : BitVec 64)
+    (nvRun : (memory.HaveNV2Ext ()).run state = .ok true afterNV)
     (missing : afterNV.regs.get? Register.SCTLR_EL2 = none) :
-    (aset_Mem boundaries memory address 8 .AccType_NORMAL data).run state =
+    (aset_Mem boundaries memory address 8 .AccType_NV2REGISTER data).run state =
       .error .Unreachable afterNV := by
+  have same : (AccType.AccType_NV2REGISTER == AccType.AccType_NV2REGISTER) = true := rfl
   simp_all [aset_Mem, readReg, EStateM.run, Bind.bind, EStateM.bind,
+    Pure.pure,
     MonadState.get, getThe, MonadStateOf.get, EStateM.get,
     MonadExcept.throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
 theorem normal64_endian_error (boundaries : Boundaries) (memory : MemoryBoundaries)
-    (state afterNV afterEndian : State) (address data sctlr : BitVec 64) (nv : Bool)
+    (state afterNV afterEndian : State) (address data : BitVec 64) (nv : Bool)
     (error : Sail.Error exception)
     (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .error error afterEndian) :
     (aset_Mem boundaries memory address 8 .AccType_NORMAL data).run state =
       .error error afterEndian := by
+  have normal : (AccType.AccType_NORMAL == AccType.AccType_NV2REGISTER) = false := rfl
+  cases nv <;> simp_all [aset_Mem, EStateM.run, Bind.bind, EStateM.bind,
+    Pure.pure, EStateM.pure]
+
+/-- A false feature query also skips the register for NV2REGISTER accesses. -/
+theorem nvdisabled64_endian_error (boundaries : Boundaries) (memory : MemoryBoundaries)
+    (state afterNV afterEndian : State) (address data : BitVec 64) (acctype : AccType)
+    (error : Sail.Error exception)
+    (nvRun : (memory.HaveNV2Ext ()).run state = .ok false afterNV)
+    (endianRun : (memory.BigEndian ()).run afterNV = .error error afterEndian) :
+    (aset_Mem boundaries memory address 8 acctype data).run state =
+      .error error afterEndian := by
+  simp_all [aset_Mem, EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure]
+
+/-- When the NV2 endian branch is true, the endian query is not evaluated.
+Conversion failure retains its state, without any premise on BigEndian. -/
+theorem nvregister64_conversion_error (boundaries : Boundaries) (memory : MemoryBoundaries)
+    (state afterNV afterConversion : State) (address data sctlr : BitVec 64)
+    (error : Sail.Error exception)
+    (nvRun : (memory.HaveNV2Ext ()).run state = .ok true afterNV)
+    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
+    (endianBit : Sail.BitVec.join1 [Sail.BitVec.access sctlr 25] = (1#1))
+    (conversionRun : (memory.BigEndianReverse data).run afterNV = .error error afterConversion) :
+    (aset_Mem boundaries memory address 8 .AccType_NV2REGISTER data).run state =
+      .error error afterConversion := by
+  have same : (AccType.AccType_NV2REGISTER == AccType.AccType_NV2REGISTER) = true := rfl
+  simp_all [aset_Mem, readReg, EStateM.run, Bind.bind, EStateM.bind,
+    Pure.pure, EStateM.pure, MonadState.get, getThe, MonadStateOf.get, EStateM.get]
+
+theorem nvregister64_endian_error (boundaries : Boundaries) (memory : MemoryBoundaries)
+    (state afterNV afterEndian : State) (address data sctlr : BitVec 64)
+    (error : Sail.Error exception)
+    (nvRun : (memory.HaveNV2Ext ()).run state = .ok true afterNV)
+    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
+    (endianBit : Sail.BitVec.join1 [Sail.BitVec.access sctlr 25] ≠ (1#1))
+    (endianRun : (memory.BigEndian ()).run afterNV = .error error afterEndian) :
+    (aset_Mem boundaries memory address 8 .AccType_NV2REGISTER data).run state =
+      .error error afterEndian := by
+  have same : (AccType.AccType_NV2REGISTER == AccType.AccType_NV2REGISTER) = true := rfl
   simp_all [aset_Mem, readReg, EStateM.run, Bind.bind, EStateM.bind,
     Pure.pure, EStateM.pure, MonadState.get, getThe, MonadStateOf.get, EStateM.get]
 
 theorem normal64_conversion_error (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterNV afterEndian afterConversion : State)
-    (address data sctlr : BitVec 64) (nv : Bool) (error : Sail.Error exception)
+    (address data : BitVec 64) (nv : Bool) (error : Sail.Error exception)
     (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .ok true afterEndian)
     (conversionRun : (memory.BigEndianReverse data).run afterEndian = .error error afterConversion) :
     (aset_Mem boundaries memory address 8 .AccType_NORMAL data).run state =
       .error error afterConversion := by
-  simp_all [aset_Mem, readReg, EStateM.run, Bind.bind, EStateM.bind,
-    Pure.pure, EStateM.pure, MonadState.get, getThe, MonadStateOf.get, EStateM.get]
+  have normal : (AccType.AccType_NORMAL == AccType.AccType_NV2REGISTER) = false := rfl
+  cases nv <;> simp_all [aset_Mem, EStateM.run, Bind.bind, EStateM.bind,
+    Pure.pure, EStateM.pure]
 
 theorem normal64_alignment_error (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterNV afterEndian afterConversion afterAlignment : State)
-    (address data converted sctlr : BitVec 64) (nv big : Bool) (error : Sail.Error exception)
+    (address data converted : BitVec 64) (nv big : Bool) (error : Sail.Error exception)
     (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .ok big afterEndian)
     (conversionRun : (endianStep memory big data).run afterEndian = .ok converted afterConversion)
     (alignmentRun : (memory.AArch64_CheckAlignment address 8 .AccType_NORMAL true).run
@@ -111,17 +149,15 @@ theorem normal64_alignment_error (boundaries : Boundaries) (memory : MemoryBound
       .error error afterAlignment := by
   have normal : (AccType.AccType_NORMAL == AccType.AccType_NV2REGISTER) = false := rfl
   cases nv <;> cases big <;>
-    simp_all [aset_Mem, endianStep, undefined_bool_eq, readReg,
-      EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure,
-      MonadState.get, getThe, MonadStateOf.get, EStateM.get]
+    simp_all [aset_Mem, endianStep, undefined_bool_eq,
+      EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure]
 
 /-- An unaligned path can perform a byte write and then fail. No later
 byte, constraint query, or whole-value replacement is licensed by this result. -/
 theorem unaligned64_first_error (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterNV afterEndian afterConversion afterAlignment afterByte : State)
-    (address data converted sctlr : BitVec 64) (nv big : Bool) (error : Sail.Error exception)
+    (address data converted : BitVec 64) (nv big : Bool) (error : Sail.Error exception)
     (nvRun : (memory.HaveNV2Ext ()).run state = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .ok big afterEndian)
     (conversionRun : (endianStep memory big data).run afterEndian = .ok converted afterConversion)
     (alignmentRun : (memory.AArch64_CheckAlignment address 8 .AccType_NORMAL true).run
@@ -133,8 +169,7 @@ theorem unaligned64_first_error (boundaries : Boundaries) (memory : MemoryBounda
   have normal : (AccType.AccType_NORMAL == AccType.AccType_NV2REGISTER) = false := rfl
   cases nv <;> cases big <;>
     simp_all [aset_Mem, endianStep, undefined_bool_eq, undefined_constraint_eq,
-      readReg, PreSail.assert, EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure,
-      MonadState.get, getThe, MonadStateOf.get, EStateM.get]
+      PreSail.assert, EStateM.run, Bind.bind, EStateM.bind, Pure.pure, EStateM.pure]
 
 /-- Install the original callee in the instruction's explicit cut. The check
 rejects widths outside the erased source relation; it is not a claim that the
@@ -159,12 +194,11 @@ after the actual syndrome update. The final callback result remains arbitrary. -
 theorem str64_aligned_run (boundaries : Boundaries) (memory : MemoryBoundaries)
     (state afterFeature afterNV afterEndian afterConversion afterAlignment : State)
     (bank : Bank) (pstate : ProcState) (rn : Fin 31) (rt : Fin 32)
-    (offset converted sctlr : BitVec 64) (nv big : Bool)
+    (offset converted : BitVec 64) (nv big : Bool)
     (featureRun : (featurePrefix boundaries).run state = .ok () afterFeature)
     (bankPresent : afterFeature.regs.get? Register._R = some bank)
     (pstatePresent : afterFeature.regs.get? Register.PSTATE = some pstate)
     (nvRun : (memory.HaveNV2Ext ()).run (syndromeState afterFeature pstate rt) = .ok nv afterNV)
-    (registerPresent : afterNV.regs.get? Register.SCTLR_EL2 = some sctlr)
     (endianRun : (memory.BigEndian ()).run afterNV = .ok big afterEndian)
     (conversionRun : (endianStep memory big (xValue bank rt)).run afterEndian = .ok converted afterConversion)
     (alignmentRun : (memory.AArch64_CheckAlignment (bank[rn.val] + offset) 8 .AccType_NORMAL true).run
@@ -177,7 +211,7 @@ theorem str64_aligned_run (boundaries : Boundaries) (memory : MemoryBoundaries)
     offset bankPresent pstatePresent, bindMemory64]
   exact aligned64_run boundaries memory (syndromeState afterFeature pstate rt)
     afterNV afterEndian afterConversion afterAlignment (bank[rn.val] + offset)
-    (xValue bank rt) converted sctlr nv big nvRun registerPresent endianRun conversionRun alignmentRun
+    (xValue bank rt) converted nv big nvRun endianRun conversionRun alignmentRun
 
 namespace Examples
 
@@ -205,27 +239,58 @@ private def bump (state : State) (n : Nat) : State :=
 
 private def nvOnly : MemoryBoundaries :=
   { poisoned with
-    HaveNV2Ext := fun _ state => .ok false (bump state 1) }
+    HaveNV2Ext := fun _ state => .ok false (bump state 1)
+    BigEndian := fun _ state => .error (.User (.Error_SError true)) (bump state 2) }
 
-/-- Even NV2=false cannot hide the missing register read. The poisoned
-BigEndian callback is never reached, and the feature query's effect survives. -/
+/-- A normal access skips the absent register and reaches the endian action.
+Both callbacks' effects and the endian action's distinct error survive. -/
 theorem missing_register_after_query (boundaries : Boundaries) :
     (aset_Mem boundaries nvOnly (0x1000#64) 8 .AccType_NORMAL (0x42#64)).run empty =
-      .error .Unreachable (bump empty 1) := by
-  exact normal64_missing_sctlr boundaries nvOnly empty (bump empty 1)
-    (0x1000#64) (0x42#64) false (by rfl) (by simp [bump, empty])
+      .error (.User (.Error_SError true)) (bump empty 3) := by
+  exact normal64_endian_error boundaries nvOnly empty (bump empty 1) (bump empty 3)
+    (0x1000#64) (0x42#64) false (.User (.Error_SError true)) (by rfl) (by rfl)
 
 private def removesRegister : MemoryBoundaries :=
   { poisoned with
     HaveNV2Ext := fun _ state => .ok true { (bump state 1) with regs := ∅ } }
 
-/-- Initial register presence is not enough: the feature callback can erase
-it before the generated read. The error retains the callback's modified state. -/
+/-- On the NV2REGISTER path, initial presence is not enough: the query can
+erase the required register. Its modified state is retained on failure. -/
 theorem query_erases_initialized_register (boundaries : Boundaries) :
-    (aset_Mem boundaries removesRegister (0x1000#64) 8 .AccType_NORMAL (0x42#64)).run initial =
+    (aset_Mem boundaries removesRegister (0x1000#64) 8 .AccType_NV2REGISTER (0x42#64)).run initial =
       .error .Unreachable (bump empty 1) := by
-  exact normal64_missing_sctlr boundaries removesRegister initial (bump empty 1)
-    (0x1000#64) (0x42#64) true (by rfl) (by simp [bump, empty])
+  exact nvregister64_missing_sctlr boundaries removesRegister initial (bump empty 1)
+    (0x1000#64) (0x42#64) (by rfl) (by simp [bump, empty])
+
+theorem nvdisabled_skips_missing_register (boundaries : Boundaries) :
+    (aset_Mem boundaries nvOnly (0x1000#64) 8 .AccType_NV2REGISTER (0x42#64)).run empty =
+      .error (.User (.Error_SError true)) (bump empty 3) := by
+  exact nvdisabled64_endian_error boundaries nvOnly empty (bump empty 1) (bump empty 3)
+    (0x1000#64) (0x42#64) .AccType_NV2REGISTER (.User (.Error_SError true)) (by rfl) (by rfl)
+
+private def nvEndian : MemoryBoundaries :=
+  { poisoned with
+    HaveNV2Ext := fun _ state => .ok true (bump state 1)
+    BigEndianReverse := fun _ state => .error (.User (.Error_SError false)) (bump state 4) }
+
+private def nvInitial : State :=
+  { empty with regs := empty.regs.insert Register.SCTLR_EL2 (0x2000000#64) }
+
+theorem nv_endian_skips_poisoned_query (boundaries : Boundaries) :
+    (aset_Mem boundaries nvEndian (0x1000#64) 8 .AccType_NV2REGISTER (0x42#64)).run nvInitial =
+      .error (.User (.Error_SError false)) (bump nvInitial 5) := by
+  exact nvregister64_conversion_error boundaries nvEndian nvInitial (bump nvInitial 1)
+    (bump nvInitial 5) (0x1000#64) (0x42#64) (0x2000000#64) (.User (.Error_SError false))
+    (by rfl) (by simp [bump, nvInitial]) (by decide) (by rfl)
+
+theorem nv_clear_endian_bit_reaches_query (boundaries : Boundaries) :
+    (aset_Mem boundaries
+      { nvOnly with HaveNV2Ext := fun _ state => .ok true (bump state 1) }
+      (0x1000#64) 8 .AccType_NV2REGISTER (0x42#64)).run initial =
+      .error (.User (.Error_SError true)) (bump initial 3) := by
+  exact nvregister64_endian_error boundaries _ initial (bump initial 1) (bump initial 3)
+    (0x1000#64) (0x42#64) (0#64) (.User (.Error_SError true))
+    (by rfl) (by simp [bump, initial]) (by decide) (by rfl)
 
 private def writeThenFail {width : Nat} (address : BitVec 64) (size : Nat)
     (acctype : AccType) (aligned : Bool) (value : BitVec width) : SailM Unit := fun state =>
@@ -244,6 +309,20 @@ private def effectful (big aligned : Bool) : MemoryBoundaries :=
       else .error .Unreachable state
     AArch64_aset_MemSingle := writeThenFail }
 
+/-- Both values of the feature query leave a normal access independent of
+SCTLR_EL2; the final callback still writes a byte and reports its own error. -/
+theorem normal_missing_register_reaches_store (boundaries : Boundaries) (nv : Bool) :
+    (aset_Mem boundaries
+      { effectful false true with HaveNV2Ext := fun _ state => .ok nv (bump state 1) }
+      (0x1000#64) 8 .AccType_NORMAL (0x42#64)).run empty =
+      .error (.User (.Error_SError false))
+        { (bump empty 11) with mem := empty.mem.insert 0x1000 (0x42#8) } := by
+  rw [aligned64_run boundaries _ empty (bump empty 1)
+    (bump empty 3) (bump empty 3) (bump empty 11)
+    (0x1000#64) (0x42#64) (0x42#64) nv false
+    (by rfl) (by rfl) (by rfl) (by rfl)]
+  rfl
+
 /-- Conversion and alignment effects are visible to the final callback;
 its byte mutation survives an SError result. This is a test callback's
 effect, not a claim about Arm RAM or architectural exception handling. -/
@@ -253,8 +332,8 @@ theorem converted_store_partial_failure (boundaries : Boundaries) :
         { (bump initial 15) with mem := initial.mem.insert 0x1000 (0x43#8) } := by
   rw [aligned64_run boundaries (effectful true true) initial (bump initial 1)
     (bump initial 3) (bump initial 7) (bump initial 15)
-    (0x1000#64) (0x42#64) (0x43#64) (0#64) false true
-    (by rfl) (by simp [bump, initial]) (by rfl) (by rfl) (by rfl)]
+    (0x1000#64) (0x42#64) (0x43#64) false true
+    (by rfl) (by rfl) (by rfl) (by rfl)]
   rfl
 
 private def installsRegister : MemoryBoundaries :=
@@ -262,16 +341,16 @@ private def installsRegister : MemoryBoundaries :=
     HaveNV2Ext := fun _ state => .ok false
       { (bump state 1) with regs := state.regs.insert Register.SCTLR_EL2 (0#64) } }
 
-/-- Conversely, an initially absent entry can be installed by the query.
-Only its post-state must satisfy the initialization premise. -/
+/-- An unrelated register installed by the query is preserved even though
+the normal-access path does not read it. -/
 theorem query_installs_missing_register (boundaries : Boundaries) :
     (aset_Mem boundaries installsRegister (0x1000#64) 8 .AccType_NORMAL (0x42#64)).run empty =
       .error (.User (.Error_SError false))
         { (bump initial 11) with mem := initial.mem.insert 0x1000 (0x42#8) } := by
   rw [aligned64_run boundaries installsRegister empty (bump initial 1)
     (bump initial 3) (bump initial 3) (bump initial 11)
-    (0x1000#64) (0x42#64) (0x42#64) (0#64) false false
-    (by rfl) (by simp [bump, initial]) (by rfl) (by rfl) (by rfl)]
+    (0x1000#64) (0x42#64) (0x42#64) false false
+    (by rfl) (by rfl) (by rfl) (by rfl)]
   rfl
 
 /-- The unaligned first byte fails before ConstrainUnpredictable, for
@@ -283,9 +362,7 @@ theorem unaligned_partial_failure (boundaries : Boundaries) :
   apply unaligned64_first_error boundaries (effectful false false) initial (bump initial 1)
     (bump initial 3) (bump initial 3) (bump initial 11)
     { (bump initial 11) with mem := initial.mem.insert 0x1001 (0x42#8) }
-    (0x1001#64) (0x42#64) (0x42#64) (0#64) false false (.User (.Error_SError false))
-  · rfl
-  · simp [bump, initial]
+    (0x1001#64) (0x42#64) (0x42#64) false false (.User (.Error_SError false))
   all_goals rfl
 
 private def alignmentFailure : MemoryBoundaries :=
@@ -299,9 +376,7 @@ theorem alignment_failure_before_store (boundaries : Boundaries) :
       .error (.User (.Error_ExceptionTaken ())) (bump initial 11) := by
   apply normal64_alignment_error boundaries alignmentFailure initial (bump initial 1)
     (bump initial 3) (bump initial 3) (bump initial 11)
-    (0x1001#64) (0x42#64) (0x42#64) (0#64) false false (.User (.Error_ExceptionTaken ()))
-  · rfl
-  · simp [bump, initial]
+    (0x1001#64) (0x42#64) (0x42#64) false false (.User (.Error_ExceptionTaken ()))
   all_goals rfl
 
 theorem erased_width_mismatch_rejected (boundaries : Boundaries) (memory : MemoryBoundaries)
@@ -315,9 +390,9 @@ end Examples
 /-- info: 'STRExecution.MemoryBridge.aligned64_run' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in
 #print axioms aligned64_run
-/-- info: 'STRExecution.MemoryBridge.normal64_missing_sctlr' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'STRExecution.MemoryBridge.nvregister64_missing_sctlr' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in
-#print axioms normal64_missing_sctlr
+#print axioms nvregister64_missing_sctlr
 /-- info: 'STRExecution.MemoryBridge.normal64_alignment_error' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in
 #print axioms normal64_alignment_error
@@ -336,5 +411,20 @@ end Examples
 /-- info: 'STRExecution.MemoryBridge.Examples.unaligned_partial_failure' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in
 #print axioms Examples.unaligned_partial_failure
+/-- info: 'STRExecution.MemoryBridge.nvregister64_conversion_error' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms nvregister64_conversion_error
+/-- info: 'STRExecution.MemoryBridge.Examples.normal_missing_register_reaches_store' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms Examples.normal_missing_register_reaches_store
+/-- info: 'STRExecution.MemoryBridge.Examples.nv_endian_skips_poisoned_query' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms Examples.nv_endian_skips_poisoned_query
+/-- info: 'STRExecution.MemoryBridge.Examples.nv_clear_endian_bit_reaches_query' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms Examples.nv_clear_endian_bit_reaches_query
+/-- info: 'STRExecution.MemoryBridge.Examples.nvdisabled_skips_missing_register' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms Examples.nvdisabled_skips_missing_register
 
 end STRExecution.MemoryBridge
