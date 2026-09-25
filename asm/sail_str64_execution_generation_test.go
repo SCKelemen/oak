@@ -58,8 +58,8 @@ func TestSailSTRExecutionPreludeExactAndMutated(t *testing.T) {
 }
 
 // Independently reconstruct the only permitted edits to raw Sail output.
-// Namespace/import/runtime-open framing and one explicit callback binder may change;
-// neither the instruction body nor the generated register helpers may change.
+// Namespace/import/runtime-open framing and explicit callback binders may change;
+// neither the instruction/callee bodies nor the generated register helpers may change.
 // This is a source-fidelity check, not a correctness proof of Sail's backend.
 func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string) error {
 	replace := func(source, from, to string) (string, error) {
@@ -82,6 +82,7 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 		{"namespace Out.Functions", "namespace STRExecution.Functions\n\nopen PreSail"},
 		{"end Out.Functions", "end STRExecution.Functions"},
 		{"def " + sailSTRExecutionName + " ", "def " + sailSTRExecutionName + " (boundaries : Boundaries) "},
+		{"def aset_Mem ", "def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) "},
 	} {
 		expected, err = replace(expected, edit[0], edit[1])
 		if err != nil {
@@ -89,7 +90,7 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 		}
 	}
 	if functions != expected {
-		return fmt.Errorf("generated STR functions changed beyond imports, namespace/runtime open, and callback binder")
+		return fmt.Errorf("generated STR functions changed beyond imports, namespace/runtime open, and callback binders")
 	}
 	return nil
 }
@@ -99,21 +100,23 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 	const defs = "import Sail\n\nnamespace STRExecution\ninductive Register where | _R\n\nend STRExecution\n"
 	const raw = "import Sail\nimport Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n" +
 		"namespace Out.Functions\ndef " + sailSTRExecutionName + " (n : Nat) : SailM Unit := do\n" +
-		"  boundaries.check n\n  boundaries.store n\nend Out.Functions\n"
+		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (n : Nat) : SailM Unit := memory.store n\nend Out.Functions\n"
 	const framed = "import Sail\nimport STRExecution.Defs\nimport STRExecution.Interface\n" +
 		"namespace STRExecution.Functions\n\nopen PreSail\ndef " + sailSTRExecutionName + " (boundaries : Boundaries) (n : Nat) : SailM Unit := do\n" +
-		"  boundaries.check n\n  boundaries.store n\nend STRExecution.Functions\n"
+		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (n : Nat) : SailM Unit := memory.store n\nend STRExecution.Functions\n"
 	if err := auditSTRExecutionLeanFraming(rawDefs, raw, defs, framed); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutant := range map[string]string{
-		"erased_check":     strings.Replace(framed, "  boundaries.check n\n", "", 1),
-		"success_stub":     strings.Replace(framed, "boundaries.store n", "pure ()", 1),
-		"different_index":  strings.Replace(framed, "boundaries.store n", "boundaries.store 0", 1),
-		"post_mem_effect":  strings.Replace(framed, "end STRExecution.Functions", "  boundaries.check n\nend STRExecution.Functions", 1),
-		"missing_binder":   strings.Replace(framed, " (boundaries : Boundaries)", "", 1),
-		"different_import": strings.Replace(framed, "import Sail", "import FakeRuntime", 1),
-		"extra_definition": framed + "def extra := true\n",
+		"erased_check":          strings.Replace(framed, "  boundaries.check n\n", "", 1),
+		"success_stub":          strings.Replace(framed, "boundaries.store n", "pure ()", 1),
+		"different_index":       strings.Replace(framed, "boundaries.store n", "boundaries.store 0", 1),
+		"post_mem_effect":       strings.Replace(framed, "end STRExecution.Functions", "  boundaries.check n\nend STRExecution.Functions", 1),
+		"missing_binder":        strings.Replace(framed, " (boundaries : Boundaries)", "", 1),
+		"memory_stub":           strings.Replace(framed, "memory.store n", "pure ()", 1),
+		"missing_memory_binder": strings.Replace(framed, " (memory : MemoryBoundaries)", "", 1),
+		"different_import":      strings.Replace(framed, "import Sail", "import FakeRuntime", 1),
+		"extra_definition":      framed + "def extra := true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := auditSTRExecutionLeanFraming(rawDefs, raw, defs, mutant); err == nil {

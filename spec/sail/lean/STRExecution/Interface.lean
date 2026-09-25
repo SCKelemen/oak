@@ -32,4 +32,17 @@ structure Boundaries where
   SignExtend__0 : {width : Nat} → BitVec width → (size : Int) → SailM (BitVec size.toNat)
   ZeroExtend__0 : {width : Nat} → BitVec width → (size : Int) → SailM (BitVec size.toNat)
 
+/-- Explicit callees of the complete original aset_Mem body. They retain
+arbitrary effects/failures; in particular alignment is not assumed successful
+and endian reversal is not assumed pure. The generated SCTLR_EL2 read is
+concrete and retained even for the normal-access theorem.
+Width/count constraints erased by Sail are supplied only for proved entries. -/
+structure MemoryBoundaries where
+  HaveNV2Ext : Unit → SailM Bool
+  BigEndian : Unit → SailM Bool
+  BigEndianReverse : {width : Nat} → BitVec width → SailM (BitVec width)
+  AArch64_CheckAlignment : BitVec 64 → Int → AccType → Bool → SailM Bool
+  Align__1 : {width : Nat} → BitVec width → Int → SailM (BitVec width)
+  AArch64_aset_MemSingle : {width : Nat} → BitVec 64 → Nat → AccType → Bool → BitVec width → SailM Unit
+
 end STRExecution

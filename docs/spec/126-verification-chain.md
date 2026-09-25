@@ -814,7 +814,7 @@ state. The complete post-memory writeback tail is retained and discharged for
 this no-writeback case, not silently omitted by extraction.
 
 This is not yet real-callee or full-state refinement: the separate register
-type contains only the bank, PSTATE, and syndrome, and its full original
+type contains only the bank, PSTATE, syndrome, and now SCTLR_EL2, and its full original
 exception union differs from the earlier `Out` export. Real memory/feature
 callees need a typed state lifting or larger export. Decoder/PostDecode, SP,
 translation/faults, architectural events, and CAT/BBM ordering remain open.
@@ -823,6 +823,24 @@ it does not certify all generic callback domains. Required whole-source,
 callback-wiring, prelude-adaptation, and raw-output framing/freshness gates
 guard the new export. See the [slice boundary and regeneration notes](../../spec/sail/STR_EXECUTION.md)
 for the exact compatibility adaptations and outstanding composition work.
+
+`STRMemoryBridge.lean` now composes that instruction with the complete original
+`aset_Mem` body in the same generated state. An explicit width-checked binding
+connects the instruction's callback to the concrete callee; the STR64 theorem
+discharges its 64-bit/eight-byte check. The aligned normal path retains the
+feature query, actual SCTLR_EL2 read, endian query/conversion, alignment check,
+and final `MemSingle` callback in order, including all intermediate state
+changes. The pinned export reads SCTLR_EL2 even for normal access with NV2
+false: a missing post-query entry fails before the endian query. This runtime
+initialization error is not a proved architectural fault.
+
+The final memory callback remains arbitrary, with its exact success/error
+state; earlier failures and an unaligned first-byte write-then-fail also have
+checked rules. Thus this boundary supplies no transactional-failure assumption
+for widening/reordering stores. Endian/alignment implementations, MemSingle,
+translation, physical-memory routing, full-state refinement and events/CAT
+remain open. Source/alias/callback/framing mutation gates and standard-axiom
+checks protect both retained bodies; no instruction body is rewritten.
 
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span

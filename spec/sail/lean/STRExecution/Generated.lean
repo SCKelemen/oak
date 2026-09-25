@@ -22,7 +22,7 @@ open MemOp
 open Constraint
 open AccType
 
-/-- Type quantifiers: k_ex3739_ : Bool, k_ex3738_ : Bool -/
+/-- Type quantifiers: k_ex4382_ : Bool, k_ex4381_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -377,8 +377,8 @@ def aget_X {width : _} (n : Nat) : SailM (BitVec width) := do
 /-- Type quantifiers: size : Nat, k_sign_extend : Bool, Rt : Nat, k_sixty_four : Bool, k_acq_rel :
   Bool, size ∈ {1, 2, 4, 8} ∧ 0 ≤ Rt ∧ Rt ≤ 31 -/
 def MakeLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixty_four : Bool) (acq_rel : Bool) : SailM (BitVec 11) := do
-  assert ((size == 1) || ((size == 2) || ((size == 4) || (size == 8)))) "str_execution.sail:229.56-229.57"
-  assert ((0 ≤b Rt) && (Rt ≤b 31)) "str_execution.sail:230.29-230.30"
+  assert ((size == 1) || ((size == 2) || ((size == 4) || (size == 8)))) "str_execution.sail:231.56-231.57"
+  assert ((0 ≤b Rt) && (Rt ≤b 31)) "str_execution.sail:232.29-232.30"
   let sz ← (( do (undefined_bitvector 2) ) : SailM (BitVec 2) )
   let sz : (BitVec 2) :=
     match size with
@@ -401,7 +401,7 @@ def MakeLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixt
     else 0#1
   (pure (((((1#1 +++ sz) +++ ext) +++ (__GetSlice_int 5 Rt 0)) +++ sf) +++ ar))
 
-/-- Type quantifiers: k_ex3981_ : Bool, k_ex3980_ : Bool, k_ex3979_ : Bool, size : Nat, Rt : Nat, size
+/-- Type quantifiers: k_ex4626_ : Bool, k_ex4625_ : Bool, k_ex4624_ : Bool, size : Nat, Rt : Nat, size
   ∈ {1, 2, 4, 8} ∧ 0 ≤ Rt ∧ Rt ≤ 31 -/
 def AArch64_SetLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixty_four : Bool) (acq_rel : Bool) : SailM Unit := do
   if ((((← readReg PSTATE).EL == EL0) || ((← readReg PSTATE).EL == EL1)) : Bool)
@@ -430,7 +430,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
     then
       (do
         let c ← (boundaries.ConstrainUnpredictable Unpredictable_WBOVERLAPLD)
-        assert ((c == Constraint_WBSUPPRESS) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:322.113-322.114"
+        assert ((c == Constraint_WBSUPPRESS) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:324.113-324.114"
         let (wb_unknown, wback) ← (( do
           match c with
           | .Constraint_WBSUPPRESS =>
@@ -446,7 +446,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
               (pure (wb_unknown, wback)))
           | _ =>
             (do
-              assert false "Pattern match failure at str_execution.sail:323.8-336.9"
+              assert false "Pattern match failure at str_execution.sail:325.8-338.9"
               throw Error.Exit) ) : SailM (Bool × Bool) )
         (pure (c, wb_unknown, wback)))
     else (pure (c, wb_unknown, wback)) ) : SailM (Constraint × Bool × Bool) )
@@ -455,7 +455,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
     then
       (do
         let c ← (boundaries.ConstrainUnpredictable Unpredictable_WBOVERLAPST)
-        assert ((c == Constraint_NONE) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:340.107-340.108"
+        assert ((c == Constraint_NONE) || ((c == Constraint_UNKNOWN) || ((c == Constraint_UNDEF) || (c == Constraint_NOP)))) "str_execution.sail:342.107-342.108"
         match c with
         | .Constraint_NONE => (pure false)
         | .Constraint_UNKNOWN => (pure true)
@@ -466,7 +466,7 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
             (pure rt_unknown))
         | _ =>
           (do
-            assert false "Pattern match failure at str_execution.sail:341.8-354.9"
+            assert false "Pattern match failure at str_execution.sail:343.8-356.9"
             throw Error.Exit))
     else (pure rt_unknown) ) : SailM Bool )
   let address ← (( do
@@ -526,10 +526,66 @@ def memory_single_general_immediate_signed_postidx (boundaries : Boundaries) (ac
       else (boundaries.aset_X n address))
   else (pure ())
 
+/-- Type quantifiers: size : Nat, (8 * size) ≥ 0 ∧ size ∈ {1, 2, 4, 8, 16} -/
+def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (address : (BitVec 64)) (size : Nat) (acctype : AccType) (value_name__arg : (BitVec (8 * size))) : SailM Unit := do
+  let value_name := value_name__arg
+  let iswrite := true
+  let value_name ← (( do
+    if (((((← (memory.HaveNV2Ext ())) && (acctype == AccType_NV2REGISTER)) && ((BitVec.join1 [(BitVec.access
+                 (← readReg SCTLR_EL2) 25)]) == 1#1)) || (← (memory.BigEndian ()))) : Bool)
+    then
+      (do
+        (memory.BigEndianReverse value_name))
+    else (pure value_name) ) : SailM (BitVec (8 * size)) )
+  let aligned ← (( do (undefined_bool ()) ) : SailM Bool )
+  let aligned ← (memory.AArch64_CheckAlignment address size acctype iswrite)
+  let atomic ← (( do (undefined_bool ()) ) : SailM Bool )
+  let atomic ← (( do
+    if (((size != 16) || (! ((acctype == AccType_VEC) || (acctype == AccType_VECSTREAM)))) : Bool)
+    then (pure aligned)
+    else
+      (do
+        (pure (address == (← (memory.Align__1 address 8))))) ) : SailM Bool )
+  let c ← (( do (undefined_Constraint ()) ) : SailM Constraint )
+  if ((! atomic) : Bool)
+  then
+    (do
+      assert (size >b 1) "str_execution.sail:451.23-451.24"
+      (memory.AArch64_aset_MemSingle address 1 acctype aligned (BitVec.slice value_name 0 8))
+      let aligned ← (( do
+        if ((! aligned) : Bool)
+        then
+          (do
+            let c ← (boundaries.ConstrainUnpredictable Unpredictable_DEVPAGE2)
+            assert ((c == Constraint_FAULT) || (c == Constraint_NONE)) "str_execution.sail:455.63-455.64"
+            if ((c == Constraint_NONE) : Bool)
+            then (pure true)
+            else (pure aligned))
+        else (pure aligned) ) : SailM Bool )
+      let loop_i_lower := 1
+      let loop_i_upper := (size -i 1)
+      let mut loop_vars := ()
+      for i in [loop_i_lower:loop_i_upper:1]i do
+        let () := loop_vars
+        loop_vars ← do
+          (memory.AArch64_aset_MemSingle (BitVec.addInt address i) 1 acctype aligned
+            (BitVec.slice value_name (8 *i i) 8))
+      (pure loop_vars))
+  else
+    (do
+      if (((size == 16) && ((acctype == AccType_VEC) || (acctype == AccType_VECSTREAM))) : Bool)
+      then
+        (do
+          (memory.AArch64_aset_MemSingle address 8 acctype aligned (BitVec.slice value_name 0 64))
+          (memory.AArch64_aset_MemSingle (BitVec.addInt address 8) 8 acctype aligned
+            (BitVec.slice value_name 64 64)))
+      else (memory.AArch64_aset_MemSingle address size acctype aligned value_name))
+
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg _R (← (undefined_vector 31 (← (undefined_bitvector 64))))
   writeReg PSTATE (← (undefined_ProcState ()))
   writeReg __LSISyndrome (← (undefined_bitvector 11))
+  writeReg SCTLR_EL2 (← (undefined_bitvector 64))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
   (initialize_registers ())

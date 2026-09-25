@@ -1183,6 +1183,15 @@ translation/faults, events, and ordering remain open. Whole-source and
 raw-generated-output gates protect this conditional boundary; see §126 and
 the [slice notes](../../spec/sail/STR_EXECUTION.md).
 
+`STRMemoryBridge.lean` further connects this STR entry to the complete original
+`aset_Mem` body, with a checked 64-bit/eight-byte binding. Its aligned normal
+path preserves the feature, SCTLR_EL2 read, endian, alignment, and MemSingle
+sequence and all callback effects/failures. Even the normal path's generated
+SCTLR_EL2 read requires post-query initialization. Unaligned first-byte partial
+failure is also retained, without assuming transactional stores. Actual
+endian/alignment callees, MemSingle, translation, full-state/event refinement,
+and ordering remain open (§126).
+
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
 for owned-array/span write-back. It preserves byte presence separately from

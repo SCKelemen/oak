@@ -79,6 +79,7 @@ structure ProcState where
   deriving BEq, Inhabited, Repr
 
 inductive Register : Type where
+  | SCTLR_EL2
   | __LSISyndrome
   | PSTATE
   | _R
@@ -86,6 +87,7 @@ inductive Register : Type where
 open Register
 
 abbrev RegisterType : Register → Type
+  | .SCTLR_EL2 => (BitVec 64)
   | .__LSISyndrome => (BitVec 11)
   | .PSTATE => ProcState
   | ._R => (Vector (BitVec 64) 31)
@@ -94,6 +96,8 @@ instance : Inhabited (RegisterRef RegisterType ProcState) where
   default := .Reg PSTATE
 instance : Inhabited (RegisterRef RegisterType (BitVec 11)) where
   default := .Reg __LSISyndrome
+instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
+  default := .Reg SCTLR_EL2
 instance : Inhabited (RegisterRef RegisterType (Vector (BitVec 64) 31)) where
   default := .Reg _R
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception

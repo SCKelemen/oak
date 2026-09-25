@@ -68,7 +68,7 @@ var sailSTRExecutionCuts = []struct{ file, name string }{
 var sailSTRExecutionOverloads = []struct{ name, text string }{
 	{"X", "overload X = {aget_X, aset_X}"},
 	{"SP", "overload SP = {aget_SP, aset_SP}"},
-	{"Mem", "overload Mem = {aget_Mem, aset_Mem}"},
+	{"Mem", "overload Mem = {aget_Mem, oak_instruction_aset_Mem}"},
 	{"SignExtend", "overload SignExtend = {SignExtend__0}"},
 	{"ZeroExtend", "overload ZeroExtend = {ZeroExtend__0}"},
 }
@@ -320,6 +320,7 @@ func auditSailSTRExecutionCutWiring(source string, originals map[string]string) 
 		return err
 	}
 	for _, cut := range sailSTRExecutionCuts {
+		local := sailSTRInstructionCutName(cut.name)
 		signature, err := sailSTRExecutionDeclaration(originals[cut.file], "val", cut.name)
 		if err != nil {
 			return err
@@ -329,14 +330,14 @@ func auditSailSTRExecutionCutWiring(source string, originals map[string]string) 
 			return fmt.Errorf("unexpected original cut signature: %s", cut.name)
 		}
 		want := strings.Replace(signature, marker,
-			"val "+cut.name+` = impure { lean: "boundaries.`+cut.name+`" } :`, 1)
-		if err := exact("val", cut.name, want); err != nil {
+			"val "+local+` = impure { lean: "boundaries.`+cut.name+`" } :`, 1)
+		if err := exact("val", local, want); err != nil {
 			return err
 		}
 		// No empty, successful, or other local implementation may silently
 		// replace an explicit cut; also reject multiple/scattered bodies.
 		body := regexp.MustCompile(`(?m)^[ \t]*function[ \t]+(?:clause[ \t]+)?` +
-			regexp.QuoteMeta(cut.name) + `(?:[ \t\r\n]|\()`)
+			regexp.QuoteMeta(local) + `(?:[ \t\r\n]|\()`)
 		if body.MatchString(active) {
 			return fmt.Errorf("explicit cut %s has a local implementation", cut.name)
 		}
@@ -360,6 +361,13 @@ func auditSailSTRExecutionCutWiring(source string, originals map[string]string) 
 	return nil
 }
 
+func sailSTRInstructionCutName(name string) string {
+	if name == "aset_Mem" {
+		return "oak_instruction_aset_Mem"
+	}
+	return name
+}
+
 func TestSailArmSTR64ExecutionCutWiringExactAndMutated(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join("..", "spec", "sail", "str_execution.sail"))
 	if err != nil {
@@ -374,7 +382,8 @@ func TestSailArmSTR64ExecutionCutWiringExactAndMutated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cut := range sailSTRExecutionCuts {
-		declaration, err := sailSTRExecutionDeclaration(source, "val", cut.name)
+		local := sailSTRInstructionCutName(cut.name)
+		declaration, err := sailSTRExecutionDeclaration(source, "val", local)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -382,8 +391,8 @@ func TestSailArmSTR64ExecutionCutWiringExactAndMutated(t *testing.T) {
 			"wrong_callback":   strings.Replace(source, `"boundaries.`+cut.name+`"`, `"boundaries.aset_Mem_wrong"`, 1),
 			"commented_only":   strings.Replace(source, declaration, "/*\n"+declaration+"\n*/", 1),
 			"duplicate_val":    source + "\n" + declaration,
-			"local_body":       source + "\nfunction " + cut.name + " () = { () }\n",
-			"two_local_bodies": source + "\nfunction " + cut.name + " () = { () }\nfunction " + cut.name + " () = { () }\n",
+			"local_body":       source + "\nfunction " + local + " () = { () }\n",
+			"two_local_bodies": source + "\nfunction " + local + " () = { () }\nfunction " + local + " () = { () }\n",
 		} {
 			t.Run(cut.name+"/"+name, func(t *testing.T) {
 				if mutant == source {

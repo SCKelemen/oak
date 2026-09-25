@@ -13,11 +13,13 @@
 # PSTATE-dependent register effect, not exception entry or instruction execution.
 # `STRExecutionBridge` retains the complete original instruction body with
 # explicit callee boundaries; it does not discharge translation or ordering.
+# `STRMemoryBridge` composes the original memory wrapper with this STR entry,
+# preserving its prefix/callee effects without implementing translation.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRMemoryBridge"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -45,6 +47,9 @@ leanOptions.weak.linter.style.nameCheck = false
 
 [[lean_lib]]
 name = "STRExecutionBridge"
+
+[[lean_lib]]
+name = "STRMemoryBridge"
 
 [[require]]
 name = "Sail"
