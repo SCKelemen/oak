@@ -23,9 +23,10 @@ open MemOp
 open Fault
 open DeviceType
 open Constraint
+open ArchVersion
 open AccType
 
-/-- Type quantifiers: k_ex4757_ : Bool, k_ex4756_ : Bool -/
+/-- Type quantifiers: k_ex5375_ : Bool, k_ex5374_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -539,7 +540,7 @@ def MakeLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixt
     else 0#1
   (pure (((((1#1 +++ sz) +++ ext) +++ (__GetSlice_int 5 Rt 0)) +++ sf) +++ ar))
 
-/-- Type quantifiers: k_ex5044_ : Bool, k_ex5043_ : Bool, k_ex5042_ : Bool, size : Nat, Rt : Nat, size
+/-- Type quantifiers: k_ex5662_ : Bool, k_ex5661_ : Bool, k_ex5660_ : Bool, size : Nat, Rt : Nat, size
   ∈ {1, 2, 4, 8} ∧ 0 ≤ Rt ∧ Rt ≤ 31 -/
 def AArch64_SetLSInstructionSyndrome (size : Nat) (sign_extend : Bool) (Rt : Nat) (sixty_four : Bool) (acq_rel : Bool) : SailM Unit := do
   if ((← do
@@ -696,14 +697,14 @@ def aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (address : (B
   if ((! atomic) : Bool)
   then
     (do
-      assert (size >b 1) "str_execution.sail:530.23-530.24"
+      assert (size >b 1) "str_execution.sail:531.23-531.24"
       (memory.AArch64_aset_MemSingle address 1 acctype aligned (BitVec.slice value_name 0 8))
       let aligned ← (( do
         if ((! aligned) : Bool)
         then
           (do
             let c ← (boundaries.ConstrainUnpredictable Unpredictable_DEVPAGE2)
-            assert ((c == Constraint_FAULT) || (c == Constraint_NONE)) "str_execution.sail:534.63-534.64"
+            assert ((c == Constraint_FAULT) || (c == Constraint_NONE)) "str_execution.sail:535.63-535.64"
             if ((c == Constraint_NONE) : Bool)
             then (pure true)
             else (pure aligned))
@@ -732,8 +733,8 @@ def IsFault (addrdesc : AddressDescriptor) : Bool :=
 
 /-- Type quantifiers: size : Nat, k_wasaligned : Bool, size ∈ {1, 2, 4, 8, 16} -/
 def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) (address : (BitVec 64)) (size : Nat) (acctype : AccType) (wasaligned : Bool) (value_name : (BitVec (8 * size))) : SailM Unit := do
-  assert ((size == 1) || ((size == 2) || ((size == 4) || ((size == 8) || (size == 16))))) "str_execution.sail:591.69-591.70"
-  assert (address == (← (memory.Align__1 address size))) "str_execution.sail:592.42-592.43"
+  assert ((size == 1) || ((size == 2) || ((size == 4) || ((size == 8) || (size == 16))))) "str_execution.sail:592.69-592.70"
+  assert (address == (← (memory.Align__1 address size))) "str_execution.sail:593.42-593.43"
   let memaddrdesc ← (( do (undefined_AddressDescriptor ()) ) : SailM AddressDescriptor )
   let iswrite := true
   let memaddrdesc ← do (single.AArch64_TranslateAddress address acctype iswrite wasaligned size)
@@ -758,6 +759,53 @@ def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries)
   else (pure ())
   (single.aset__Mem memaddrdesc size accdesc value_name)
 
+def undefined_ArchVersion (_ : Unit) : SailM ArchVersion := do
+  (internal_pick [ARMv8p0, ARMv8p1, ARMv8p2, ARMv8p3, ARMv8p4, ARMv8p5])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 5 -/
+def ArchVersion_of_num (arg_ : Nat) : ArchVersion :=
+  match arg_ with
+  | 0 => ARMv8p0
+  | 1 => ARMv8p1
+  | 2 => ARMv8p2
+  | 3 => ARMv8p3
+  | 4 => ARMv8p4
+  | _ => ARMv8p5
+
+def num_of_ArchVersion (arg_ : ArchVersion) : Int :=
+  match arg_ with
+  | .ARMv8p0 => 0
+  | .ARMv8p1 => 1
+  | .ARMv8p2 => 2
+  | .ARMv8p3 => 3
+  | .ARMv8p4 => 4
+  | .ARMv8p5 => 5
+
+def HasArchVersion (version : ArchVersion) : SailM Bool := do
+  (do
+    let through1 ← do
+      if version == ARMv8p0 then pure true
+      else if version == ARMv8p1 then readReg __v81_implemented else pure false
+    let through2 ← do
+      if through1 then pure true
+      else if version == ARMv8p2 then readReg __v82_implemented else pure false
+    let through3 ← do
+      if through2 then pure true
+      else if version == ARMv8p3 then readReg __v83_implemented else pure false
+    let through4 ← do
+      if through3 then pure true
+      else if version == ARMv8p4 then readReg __v84_implemented else pure false
+    if through4 then pure true
+    else if version == ARMv8p5 then readReg __v85_implemented else pure false)
+
+def HaveNV2Ext (_ : Unit) : SailM Bool := do
+  (HasArchVersion ARMv8p4)
+
+/-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
+def ZeroExtend__0 (x : (BitVec k_M)) (N : Int) : SailM (BitVec N) := do
+  assert (N ≥b (Sail.BitVec.length x)) "str_execution.sail:644.18-644.19"
+  (pure ((Zeros (N -i (Sail.BitVec.length x))) +++ x))
+
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg _R (← (undefined_vector 31 (← (undefined_bitvector 64))))
   writeReg PSTATE (← (undefined_ProcState ()))
@@ -765,6 +813,11 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg SCTLR_EL2 (← (undefined_bitvector 64))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
+  writeReg __v85_implemented true
+  writeReg __v84_implemented true
+  writeReg __v83_implemented true
+  writeReg __v82_implemented true
+  writeReg __v81_implemented true
   (initialize_registers ())
 
 end STRExecution.Functions

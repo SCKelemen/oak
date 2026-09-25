@@ -22,6 +22,9 @@ func sailSTRMemoryCutName(name string) string {
 	if name == "AArch64_aset_MemSingle" {
 		return "oak_memory_aset_MemSingle"
 	}
+	if name == "HaveNV2Ext" {
+		return "oak_memory_HaveNV2Ext"
+	}
 	return name
 }
 
@@ -81,6 +84,7 @@ func auditSailSTRMemoryExecution(source string, originals map[string]string) err
 		}
 	}
 	for _, binding := range []struct{ name, body string }{
+		{"HaveNV2Ext", "overload HaveNV2Ext = {oak_memory_HaveNV2Ext}"},
 		{"Align", "overload Align = {Align__1}"},
 		{"MemSingle", "overload MemSingle = {oak_memory_aset_MemSingle}"},
 		{"Mem", "overload Mem = {aget_Mem, oak_instruction_aset_Mem}"},

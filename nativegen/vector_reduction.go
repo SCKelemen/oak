@@ -219,8 +219,15 @@ func vectorizedReduction(red reductionLoop, suffix string, lanes int64) []ast.St
 		zeros[k] = literal(0)
 	}
 	array := vectorName(red.acc, 'l'-'0')
+	arrayToken := tok
+	if suffix == "u32x4" {
+		// Eligibility metadata only: the ARM64 emitter independently checks
+		// the complete private-array combine and keeps this AST as its proof
+		// reference. Integer SIMD's public API is unchanged.
+		arrayToken = markHorizontalReduction(arrayToken)
+	}
 	out = append(out, &ast.VariableDeclaration{
-		Token: tok, Name: ident(array), Type: arrayType(),
+		Token: arrayToken, Name: ident(array), Type: arrayType(),
 		Value: &ast.ArrayLiteral{Token: tok, Type: arrayType(), Elements: zeros},
 	})
 	spanOf := func() ast.Expression {

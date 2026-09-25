@@ -1187,8 +1187,9 @@ the [slice notes](../../spec/sail/STR_EXECUTION.md).
 `aset_Mem` body, with a checked 64-bit/eight-byte binding. Its aligned normal
 path preserves the feature, endian, alignment, and MemSingle sequence and all
 callback effects/failures. A discovered Sail-to-Lean Boolean-lifting mismatch
-is repaired at exactly two pinned generated conditions: normal access now
+is repaired at exactly three pinned generated expressions: normal access now
 correctly skips SCTLR_EL2, and the NV2 endian branch can skip BigEndian.
+The concrete HasArchVersion query also preserves its guarded flag reads.
 The independent raw-output gate admits only these explicit repairs and framing.
 Unaligned first-byte partial failure is retained without transactional stores.
 `STRMemSingleBridge.lean` extends the conditional execution boundary through
@@ -1197,7 +1198,11 @@ exclusive clearing, tag actions and the final arbitrary `_Mem` result.
 Returning abort/tag-failure callbacks do not silently halt execution. Actual
 deeper callees, translation, full-state/event refinement, and ordering remain
 open (§126); source retention plus a finite exporter repair is not general
-Sail compiler verification.
+Sail compiler verification. `STRConcreteHelpers.lean` binds actual NV2-query
+and zero-extension bodies: the exported query requires only the selected
+configuration register at its call state, and 64-to-64 extension preserves
+the full VA and state. Exported configuration registers are not assertions
+about hardware features; real translation/MTE/RAM and ordering remain open.
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
@@ -5631,6 +5636,26 @@ accumulators as the shape has lanes (`Oak.Reduction.vector16_eq` over
 `u32` lanes, `vector8_eq` over `u64` ones, with their `_sum` corollaries),
 and the verifier proves the assembly against the rewritten body, the
 lanes coupled as packs to the halves of their registers.
+
+**In-register u32 combine (2026-09-25).** The ARM64 lowering now recognizes
+the compiler-generated private four-lane scratch-array combine and emits
+`addv sTmp, vSource.4s`, `umov wTmp, vTmp.s[0]`, and the scalar accumulator
+add. The source vector remains intact. Eligibility requires a private marker,
+the exact u32 array/store/lane-add shape, and no other array references anywhere
+in the function; user-written lookalikes, escapes, other widths and floats
+keep their existing lowering. The public SIMD API is unchanged. The verifier
+still receives the original array-store/read AST, and independently proves
+the new machine body; no admission rule or assumed identity was added.
+Free-vector/free-seed proofs and wrong-lane, omitted-seed, and live-source
+clobber mismatches cover the local lowering, with tail/overflow correctness
+checked by the independent four-language harness.
+
+On the unchanged reduction input, the selected proven `sum32` shrinks from
+80 to 66 instructions and from a 160-byte to a 144-byte frame. `sum64` remains
+51 instructions/160 bytes; its checked ADDP lowering is still future work.
+These are static measurements, not timings or a ±8% parity claim. See
+`benchmarks/native/results/horizontal-reduction-2026-09-25.json` for artifact
+provenance, target-profile limits, and stage2 regression validation.
 
 Four accumulators, not one, because a single vector accumulator is one
 loop-carried chain: measured over 2^20 `u32` elements, one `simd.U32x4`

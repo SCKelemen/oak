@@ -41,7 +41,7 @@ func replaceOne(s, from, to string) string {
 
 // Sail 0.20.2 preserves short-circuiting in its interpreter/Lem backend, but
 // its Lean exporter emits nested actions in Boolean operands; Lean lifts
-// those actions eagerly. Normalize exactly these two audited conditions.
+// those actions eagerly. Normalize exactly these three audited expressions.
 // The whole raw output pin below makes additional effectful sites fail closed.
 const rawSyndromeCondition = `if ((((← readReg PSTATE).EL == EL0) || ((← readReg PSTATE).EL == EL1)) : Bool)`
 
@@ -60,6 +60,24 @@ const guardedMemoryCondition = `if ((← do
           else pure false
         else pure false
       if nvEndian then pure true else memory.BigEndian ()) : Bool)`
+
+const rawArchVersionExpression = `(pure ((((((version == ARMv8p0) || ((version == ARMv8p1) && (← readReg __v81_implemented))) || ((version == ARMv8p2) && (← readReg __v82_implemented))) || ((version == ARMv8p3) && (← readReg __v83_implemented))) || ((version == ARMv8p4) && (← readReg __v84_implemented))) || ((version == ARMv8p5) && (← readReg __v85_implemented))))`
+
+const guardedArchVersionExpression = `(do
+    let through1 ← do
+      if version == ARMv8p0 then pure true
+      else if version == ARMv8p1 then readReg __v81_implemented else pure false
+    let through2 ← do
+      if through1 then pure true
+      else if version == ARMv8p2 then readReg __v82_implemented else pure false
+    let through3 ← do
+      if through2 then pure true
+      else if version == ARMv8p3 then readReg __v83_implemented else pure false
+    let through4 ← do
+      if through3 then pure true
+      else if version == ARMv8p4 then readReg __v84_implemented else pure false
+    if through4 then pure true
+    else if version == ARMv8p5 then readReg __v85_implemented else pure false)`
 
 // Sources are hashed before this extractor runs. Declarations must be unique;
 // the next top-level declaration (not a closing brace) determines their end.
@@ -166,9 +184,12 @@ func main() {
 			// original callee body under its original name in the same state.
 			local = "oak_instruction_aset_Mem"
 		}
+		if local == "ZeroExtend__0" {
+			local = "oak_instruction_ZeroExtend__0"
+		}
 		fragment.WriteString(replaceOne(spec, "val "+cut.name+" :", "val "+local+" = impure { lean: \"boundaries."+cut.name+"\" } :"))
 	}
-	fragment.WriteString("overload X = {aget_X, aset_X}\noverload SP = {aget_SP, aset_SP}\noverload Mem = {aget_Mem, oak_instruction_aset_Mem}\noverload SignExtend = {SignExtend__0}\noverload ZeroExtend = {ZeroExtend__0}\n\n")
+	fragment.WriteString("overload X = {aget_X, aset_X}\noverload SP = {aget_SP, aset_SP}\noverload Mem = {aget_Mem, oak_instruction_aset_Mem}\noverload SignExtend = {SignExtend__0}\noverload ZeroExtend = {oak_instruction_ZeroExtend__0}\n\n")
 	add("aarch64.sail", "val", instruction)
 	add("aarch64.sail", "function", instruction)
 	for _, cut := range []struct{ source, name string }{
@@ -184,9 +205,12 @@ func main() {
 		if local == "AArch64_aset_MemSingle" {
 			local = "oak_memory_aset_MemSingle"
 		}
+		if local == "HaveNV2Ext" {
+			local = "oak_memory_HaveNV2Ext"
+		}
 		fragment.WriteString(replaceOne(spec, "val "+cut.name+" :", "val "+local+" = impure { lean: \"memory."+cut.name+"\" } :"))
 	}
-	fragment.WriteString("overload Align = {Align__1}\noverload MemSingle = {oak_memory_aset_MemSingle}\n\n")
+	fragment.WriteString("overload Align = {Align__1}\noverload MemSingle = {oak_memory_aset_MemSingle}\noverload HaveNV2Ext = {oak_memory_HaveNV2Ext}\n\n")
 	add("aarch64.sail", "val", "aset_Mem")
 	add("aarch64.sail", "function", "aset_Mem")
 	add("aarch_mem.sail", "val", "IsFault")
@@ -209,6 +233,16 @@ func main() {
 	fragment.WriteString("overload _Mem = {aset__Mem}\n\n")
 	add("aarch64.sail", "val", "AArch64_aset_MemSingle")
 	add("aarch64.sail", "function", "AArch64_aset_MemSingle")
+	// Keep existing callers on their explicit cuts. These later declarations
+	// export the actual callees for separately proved record instantiations.
+	add("aarch_types.sail", "enum", "ArchVersion")
+	for _, name := range []string{"__v85_implemented", "__v84_implemented", "__v83_implemented", "__v82_implemented", "__v81_implemented"} {
+		add("aarch_mem.sail", "register configuration", name)
+	}
+	for _, name := range []string{"HasArchVersion", "HaveNV2Ext", "ZeroExtend__0"} {
+		add("aarch_mem.sail", "val", name)
+		add("aarch_mem.sail", "function", name)
+	}
 	fragmentSource := strings.TrimRight(fragment.String(), "\n") + "\n"
 	tmp, err := os.MkdirTemp("", "oak-str-execution-")
 	must(err)
@@ -226,12 +260,13 @@ func main() {
 	generated := read(filepath.Join(tmp, "out/Out.lean"))
 	rawGenerated := generated
 	// A new compiler output needs an explicit re-audit of every Boolean site;
-	// matching only the known expressions would silently admit a third site.
-	if fmt.Sprintf("%x", sha256.Sum256([]byte(rawGenerated))) != "47322214a3899a5ced90c989aa3926697d31b7e6027f2fa8795b3c783fb7d831" {
+	// matching only the known expressions would silently admit another site.
+	if fmt.Sprintf("%x", sha256.Sum256([]byte(rawGenerated))) != "232dab067cacb31824c8a2ac5a5f76435f7ecb5db9f7e328e5fb2626494ffb62" {
 		panic("pinned raw STR execution Lean output changed")
 	}
 	generated = replaceOne(generated, rawSyndromeCondition, guardedSyndromeCondition)
 	generated = replaceOne(generated, rawMemoryCondition, guardedMemoryCondition)
+	generated = replaceOne(generated, rawArchVersionExpression, guardedArchVersionExpression)
 	generated = replaceOne(generated, "import Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n",
 		"import STRExecution.Defs\nimport STRExecution.Interface\n")
 	generated = replaceOne(generated, "namespace Out.Functions", "namespace STRExecution.Functions\n\nopen PreSail")
@@ -262,7 +297,7 @@ const fragmentPrelude = `/* Generated by str_execution_regen.go from the pinned 
  * The instruction, aset_Mem, AArch64_aset_MemSingle, types, exceptions, reads and syndrome functions
  * are copied intact. Unimplemented callees are EXPLICIT arbitrary impure
  * Lean callbacks, not implementations, success stubs, or architecture axioms.
- * Lean framing adds callback parameters and normalizes two pinned Boolean
+ * Lean framing adds callback parameters and normalizes three pinned Boolean
  * conditions to preserve short-circuiting. This is not full architectural execution.
  * UInt/Zeros/__GetSlice_int adapt the original old prelude to modern Sail.
  * The pinned modern vector prelude renames only its unused signed function

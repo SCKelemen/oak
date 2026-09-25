@@ -48,7 +48,7 @@
  * The instruction, aset_Mem, AArch64_aset_MemSingle, types, exceptions, reads and syndrome functions
  * are copied intact. Unimplemented callees are EXPLICIT arbitrary impure
  * Lean callbacks, not implementations, success stubs, or architecture axioms.
- * Lean framing adds callback parameters and normalizes two pinned Boolean
+ * Lean framing adds callback parameters and normalizes three pinned Boolean
  * conditions to preserve short-circuiting. This is not full architectural execution.
  * UInt/Zeros/__GetSlice_int adapt the original old prelude to modern Sail.
  * The pinned modern vector prelude renames only its unused signed function
@@ -374,14 +374,14 @@ val Prefetch = impure { lean: "boundaries.Prefetch" } : (bits(64), bits(5)) -> u
 val SignExtend__0 = impure { lean: "boundaries.SignExtend__0" } : forall ('M : Int) ('N : Int), 'M >= 0.
   (bits('M), int('N)) -> bits('N) effect {escape}
 
-val ZeroExtend__0 = impure { lean: "boundaries.ZeroExtend__0" } : forall ('M : Int) ('N : Int), 'M >= 0.
+val oak_instruction_ZeroExtend__0 = impure { lean: "boundaries.ZeroExtend__0" } : forall ('M : Int) ('N : Int), 'M >= 0.
   (bits('M), int('N)) -> bits('N) effect {escape}
 
 overload X = {aget_X, aset_X}
 overload SP = {aget_SP, aset_SP}
 overload Mem = {aget_Mem, oak_instruction_aset_Mem}
 overload SignExtend = {SignExtend__0}
-overload ZeroExtend = {ZeroExtend__0}
+overload ZeroExtend = {oak_instruction_ZeroExtend__0}
 
 val memory_single_general_immediate_signed_postidx : forall 'datasize 'n ('postindex : Bool) 'regsize ('signed : Bool) 't ('wback : Bool),
   ('n >= 0 & 'n <= 31 | not(not('n == 31))) & ('t >= 0 & 't <= 31 & 'datasize in {8, 16, 32, 64}).
@@ -488,7 +488,7 @@ function memory_single_general_immediate_signed_postidx (acctype, datasize, memo
     }
 }
 
-val HaveNV2Ext = impure { lean: "memory.HaveNV2Ext" } : unit -> bool
+val oak_memory_HaveNV2Ext = impure { lean: "memory.HaveNV2Ext" } : unit -> bool
 
 val BigEndian = impure { lean: "memory.BigEndian" } : unit -> bool effect {escape, rreg, undef}
 
@@ -506,6 +506,7 @@ val oak_memory_aset_MemSingle = impure { lean: "memory.AArch64_aset_MemSingle" }
 
 overload Align = {Align__1}
 overload MemSingle = {oak_memory_aset_MemSingle}
+overload HaveNV2Ext = {oak_memory_HaveNV2Ext}
 
 val aset_Mem : forall 'size,
   8 * 'size >= 0 & 'size in {1, 2, 4, 8, 16}.
@@ -610,4 +611,36 @@ function AArch64_aset_MemSingle (address, size, acctype, wasaligned, value_name)
     };
     _Mem(memaddrdesc, size, accdesc) = value_name;
     return()
+}
+
+enum ArchVersion = {ARMv8p0, ARMv8p1, ARMv8p2, ARMv8p3, ARMv8p4, ARMv8p5}
+
+register configuration __v85_implemented : bool = true
+
+register configuration __v84_implemented : bool = true
+
+register configuration __v83_implemented : bool = true
+
+register configuration __v82_implemented : bool = true
+
+register configuration __v81_implemented : bool = true
+
+val HasArchVersion : ArchVersion -> bool
+
+function HasArchVersion version = {
+    ((((version == ARMv8p0 | version == ARMv8p1 & __v81_implemented) | version == ARMv8p2 & __v82_implemented) | version == ARMv8p3 & __v83_implemented) | version == ARMv8p4 & __v84_implemented) | version == ARMv8p5 & __v85_implemented
+}
+
+val HaveNV2Ext : unit -> bool
+
+function HaveNV2Ext () = {
+    HasArchVersion(ARMv8p4)
+}
+
+val ZeroExtend__0 : forall ('M : Int) ('N : Int), 'M >= 0.
+  (bits('M), int('N)) -> bits('N) effect {escape}
+
+function ZeroExtend__0 (x, N) = {
+    assert(N >= 'M);
+    Zeros(N - 'M) @ x
 }

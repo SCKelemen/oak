@@ -70,7 +70,7 @@ var sailSTRExecutionOverloads = []struct{ name, text string }{
 	{"SP", "overload SP = {aget_SP, aset_SP}"},
 	{"Mem", "overload Mem = {aget_Mem, oak_instruction_aset_Mem}"},
 	{"SignExtend", "overload SignExtend = {SignExtend__0}"},
-	{"ZeroExtend", "overload ZeroExtend = {ZeroExtend__0}"},
+	{"ZeroExtend", "overload ZeroExtend = {oak_instruction_ZeroExtend__0}"},
 }
 
 // Keep string contents and token boundaries: compactSail alone would erase
@@ -364,6 +364,9 @@ func auditSailSTRExecutionCutWiring(source string, originals map[string]string) 
 func sailSTRInstructionCutName(name string) string {
 	if name == "aset_Mem" {
 		return "oak_instruction_aset_Mem"
+	}
+	if name == "ZeroExtend__0" {
+		return "oak_instruction_ZeroExtend__0"
 	}
 	return name
 }

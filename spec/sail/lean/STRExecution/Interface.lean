@@ -13,6 +13,9 @@ bit width and byte count are independent here because the generated generic
 body does not carry its proof that 8 * (datasize / 8) = datasize. The proved
 STR64 entry fixes these to 64 bits and 8 bytes. Real-callee instantiation must
 respect these domains; this record itself does not establish that refinement.
+The HaveNV2Ext and ZeroExtend__0 slots remain arbitrary after their original
+bodies are exported. STRConcreteHelpers installs them explicitly and proves
+the selected configuration-register and fixed-width entry obligations.
 -/
 
 namespace STRExecution

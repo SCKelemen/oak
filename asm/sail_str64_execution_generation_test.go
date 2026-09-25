@@ -32,10 +32,27 @@ const strGuardedMemoryCondition = `if ((← do
         else pure false
       if nvEndian then pure true else memory.BigEndian ()) : Bool)`
 
+const strRawArchVersionExpression = `(pure ((((((version == ARMv8p0) || ((version == ARMv8p1) && (← readReg __v81_implemented))) || ((version == ARMv8p2) && (← readReg __v82_implemented))) || ((version == ARMv8p3) && (← readReg __v83_implemented))) || ((version == ARMv8p4) && (← readReg __v84_implemented))) || ((version == ARMv8p5) && (← readReg __v85_implemented))))`
+const strGuardedArchVersionExpression = `(do
+    let through1 ← do
+      if version == ARMv8p0 then pure true
+      else if version == ARMv8p1 then readReg __v81_implemented else pure false
+    let through2 ← do
+      if through1 then pure true
+      else if version == ARMv8p2 then readReg __v82_implemented else pure false
+    let through3 ← do
+      if through2 then pure true
+      else if version == ARMv8p3 then readReg __v83_implemented else pure false
+    let through4 ← do
+      if through3 then pure true
+      else if version == ARMv8p4 then readReg __v84_implemented else pure false
+    if through4 then pure true
+    else if version == ARMv8p5 then readReg __v85_implemented else pure false)`
+
 func auditSTRExecutionRawBooleanCoverage(raw string) error {
-	// The reviewed raw export contains exactly the two effectful Boolean
+	// The reviewed raw export contains exactly the three effectful Boolean
 	// conditions above. A different export needs a fresh semantic audit.
-	const reviewed = "47322214a3899a5ced90c989aa3926697d31b7e6027f2fa8795b3c783fb7d831"
+	const reviewed = "232dab067cacb31824c8a2ac5a5f76435f7ecb5db9f7e328e5fb2626494ffb62"
 	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(raw))); got != reviewed {
 		return fmt.Errorf("raw STR export changed: re-audit short-circuit sites (%s)", got)
 	}
@@ -86,7 +103,7 @@ func TestSailSTRExecutionPreludeExactAndMutated(t *testing.T) {
 
 // Independently reconstruct the only permitted edits to raw Sail output.
 // Namespace/import/runtime-open framing, explicit callback binders, and exactly
-// two short-circuit repairs may change. This is not a general correctness proof
+// three short-circuit repairs may change. This is not a general correctness proof
 // of Sail's backend. The generation test also independently pins the whole raw
 // output so new Boolean sites cannot silently evade the finite repair audit.
 func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string) error {
@@ -108,6 +125,7 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 	for _, edit := range [][2]string{
 		{strRawSyndromeCondition, strGuardedSyndromeCondition},
 		{strRawMemoryCondition, strGuardedMemoryCondition},
+		{strRawArchVersionExpression, strGuardedArchVersionExpression},
 		{"import Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n", "import STRExecution.Defs\nimport STRExecution.Interface\n"},
 		{"namespace Out.Functions", "namespace STRExecution.Functions\n\nopen PreSail"},
 		{"end Out.Functions", "end STRExecution.Functions"},
@@ -121,7 +139,7 @@ func auditSTRExecutionLeanFraming(rawDefs, rawFunctions, defs, functions string)
 		}
 	}
 	if functions != expected {
-		return fmt.Errorf("generated STR functions changed beyond framing and the two audited short-circuit repairs")
+		return fmt.Errorf("generated STR functions changed beyond framing and the three audited short-circuit repairs")
 	}
 	return nil
 }
@@ -130,12 +148,12 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 	const rawDefs = "import Sail\ninductive Register where | _R\n"
 	const defs = "import Sail\n\nnamespace STRExecution\ninductive Register where | _R\n\nend STRExecution\n"
 	const raw = "import Sail\nimport Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n" +
-		strRawSyndromeCondition + "\n" + strRawMemoryCondition + "\n" +
+		strRawSyndromeCondition + "\n" + strRawMemoryCondition + "\n" + strRawArchVersionExpression + "\n" +
 		"namespace Out.Functions\ndef " + sailSTRExecutionName + " (n : Nat) : SailM Unit := do\n" +
 		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (n : Nat) : SailM Unit := memory.store n\n" +
 		"def AArch64_aset_MemSingle (n : Nat) : SailM Unit := single.store n\nend Out.Functions\n"
 	const framed = "import Sail\nimport STRExecution.Defs\nimport STRExecution.Interface\n" +
-		strGuardedSyndromeCondition + "\n" + strGuardedMemoryCondition + "\n" +
+		strGuardedSyndromeCondition + "\n" + strGuardedMemoryCondition + "\n" + strGuardedArchVersionExpression + "\n" +
 		"namespace STRExecution.Functions\n\nopen PreSail\ndef " + sailSTRExecutionName + " (boundaries : Boundaries) (n : Nat) : SailM Unit := do\n" +
 		"  boundaries.check n\n  boundaries.store n\ndef aset_Mem (boundaries : Boundaries) (memory : MemoryBoundaries) (n : Nat) : SailM Unit := memory.store n\n" +
 		"def AArch64_aset_MemSingle (boundaries : Boundaries) (memory : MemoryBoundaries) (single : MemSingleBoundaries) (n : Nat) : SailM Unit := single.store n\nend STRExecution.Functions\n"
@@ -154,6 +172,12 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 		"single_stub":           strings.Replace(framed, "single.store n", "pure ()", 1),
 		"eager_syndrome":        strings.Replace(framed, strGuardedSyndromeCondition, strRawSyndromeCondition, 1),
 		"eager_memory":          strings.Replace(framed, strGuardedMemoryCondition, strRawMemoryCondition, 1),
+		"eager_version":         strings.Replace(framed, strGuardedArchVersionExpression, strRawArchVersionExpression, 1),
+		"wrong_version_flag":    strings.Replace(framed, "readReg __v84_implemented", "readReg __v85_implemented", 1),
+		"skip_version_guard":    strings.Replace(framed, "if version == ARMv8p4", "if true", 1),
+		"drop_version_read":     strings.Replace(framed, "readReg __v84_implemented", "pure true", 1),
+		"drop_prior_or_result":  strings.Replace(framed, "if through3 then pure true", "if false then pure true", 1),
+		"read_later_flag":       strings.Replace(framed, "if through4 then pure true", "if through4 then readReg __v85_implemented", 1),
 		"skip_nv_query":         strings.Replace(framed, "if (← memory.HaveNV2Ext ())", "if false", 1),
 		"skip_acctype_guard":    strings.Replace(framed, "if (acctype == AccType_NV2REGISTER)", "if true", 1),
 		"wrong_sctlr_bit":       strings.Replace(framed, "(← readReg SCTLR_EL2) 25", "(← readReg SCTLR_EL2) 24", 1),
@@ -174,7 +198,9 @@ func TestSailSTRExecutionLeanFramingExactAndMutated(t *testing.T) {
 		{defs, rawDefs + "import Sail\n", raw},
 		{defs, rawDefs, raw + "def " + sailSTRExecutionName + " (n : Nat) := n\n"},
 		{defs, rawDefs, raw + strRawMemoryCondition},
+		{defs, rawDefs, raw + strRawArchVersionExpression},
 		{defs, rawDefs, strings.Replace(raw, strRawSyndromeCondition, "true", 1)},
+		{defs, rawDefs, strings.Replace(raw, strRawArchVersionExpression, "pure true", 1)},
 	} {
 		if err := auditSTRExecutionLeanFraming(mutant.rawDefs, mutant.raw, mutant.defs, framed); err == nil {
 			t.Fatal("changed definitions or ambiguous transformation marker was admitted")
@@ -242,6 +268,7 @@ func TestSailSTRExecutionGenerationCurrent(t *testing.T) {
 		raw + "\ndef newEffect := do pure (false && (← memory.BigEndian ()))\n",
 		strings.Replace(raw, strRawMemoryCondition, "if true", 1),
 		strings.Replace(raw, strRawSyndromeCondition, strRawMemoryCondition, 1),
+		strings.Replace(raw, strRawArchVersionExpression, "pure true", 1),
 	} {
 		if mutant == raw {
 			t.Fatal("Boolean coverage mutation did not change raw output")

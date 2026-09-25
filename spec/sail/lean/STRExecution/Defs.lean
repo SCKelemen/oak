@@ -147,7 +147,16 @@ structure ProcState where
   M : (BitVec 5)
   deriving BEq, Inhabited, Repr
 
+inductive ArchVersion where | ARMv8p0 | ARMv8p1 | ARMv8p2 | ARMv8p3 | ARMv8p4 | ARMv8p5
+  deriving BEq, Inhabited, Repr
+  open ArchVersion
+
 inductive Register : Type where
+  | __v81_implemented
+  | __v82_implemented
+  | __v83_implemented
+  | __v84_implemented
+  | __v85_implemented
   | SCTLR_EL2
   | __LSISyndrome
   | PSTATE
@@ -156,6 +165,11 @@ inductive Register : Type where
 open Register
 
 abbrev RegisterType : Register → Type
+  | .__v81_implemented => Bool
+  | .__v82_implemented => Bool
+  | .__v83_implemented => Bool
+  | .__v84_implemented => Bool
+  | .__v85_implemented => Bool
   | .SCTLR_EL2 => (BitVec 64)
   | .__LSISyndrome => (BitVec 11)
   | .PSTATE => ProcState
@@ -167,6 +181,8 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 11)) where
   default := .Reg __LSISyndrome
 instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
   default := .Reg SCTLR_EL2
+instance : Inhabited (RegisterRef RegisterType Bool) where
+  default := .Reg __v85_implemented
 instance : Inhabited (RegisterRef RegisterType (Vector (BitVec 64) 31)) where
   default := .Reg _R
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception

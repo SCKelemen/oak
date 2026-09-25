@@ -814,7 +814,8 @@ state. The complete post-memory writeback tail is retained and discharged for
 this no-writeback case, not silently omitted by extraction.
 
 This is not yet real-callee or full-state refinement: the separate register
-type contains only the bank, PSTATE, syndrome, and now SCTLR_EL2, and its full original
+type contains only the bank, PSTATE, syndrome, SCTLR_EL2, and five version
+configuration flags, and its full original
 exception union differs from the earlier `Out` export. Real memory/feature
 callees need a typed state lifting or larger export. Decoder/PostDecode, SP,
 translation/faults, architectural events, and CAT/BBM ordering remain open.
@@ -830,12 +831,13 @@ connects the instruction's callback to the concrete callee; the STR64 theorem
 discharges its 64-bit/eight-byte check. The aligned normal path retains the
 feature query, endian query/conversion, alignment check,
 and final `MemSingle` callback in order, including all intermediate state
-changes. Two exact generated Boolean conditions are explicitly repaired after
+changes. Three exact generated Boolean expressions are explicitly repaired after
 discovering that Sail 0.20.2's Lean output eagerly lifts effects from otherwise
 short-circuiting operands. Normal access correctly skips SCTLR_EL2; a true
 NV2-register endian branch skips BigEndian. The syndrome's EL0/EL1 condition
-is similarly guarded. The entire raw function export is pinned and independent
-framing/mutation gates admit only these two repairs. This is not a general
+is similarly guarded, as is the concrete HasArchVersion query. The entire raw
+function export is pinned and independent framing/mutation gates admit only
+these three repairs. This is not a general
 compiler-correctness or old/new-prelude proof.
 
 The final memory callback remains arbitrary, with its exact success/error
@@ -853,7 +855,18 @@ Endian/alignment and deeper MemSingle implementations, real translation,
 physical-memory routing, full-state refinement and events/CAT remain open.
 Whole-source/type/alias/callback/framing mutation gates and standard-axiom
 checks protect the conditional boundary. Original Sail bodies are unchanged;
-the two generated Lean condition repairs are explicit compatibility changes.
+the three generated Lean expression repairs are explicit compatibility changes.
+
+`STRConcreteHelpers.lean` additionally binds the actual original HaveNV2Ext
+and ZeroExtend__0 bodies. The feature closure retains all five configuration
+declarations, which this exporter represents as mutable Boolean registers:
+only the selected v8.4 flag is required for NV2, at the query state, with
+true/false/missing cases distinguished. Default true values do not prove
+hardware capabilities or old/new configuration correspondence. The binding
+does not initialize or reset state. The 64-to-64 extension theorem discharges
+the three tag-path extension actions without assuming arbitrary callbacks
+pure; their full virtual address is retained. MTE/tag/translation/RAM and
+architectural ordering remain open.
 
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span

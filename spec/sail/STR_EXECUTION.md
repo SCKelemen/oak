@@ -18,8 +18,9 @@ for the unselected instruction branches. No callback has a default successful
 implementation. The 64-bit/8-byte theorem supplies the source constraints
 erased from the generic Lean export.
 
-The generated register set contains `_R`, `PSTATE`, `__LSISyndrome`, and
-`SCTLR_EL2`, not the full architectural register set or `__defaultRAM` selector.
+The generated register set contains `_R`, `PSTATE`, `__LSISyndrome`,
+`SCTLR_EL2`, and the five version-configuration flags, not the full
+architectural register set or `__defaultRAM` selector.
 The sequential runtime has a byte map, but that alone does not implement Arm
 memory. This is a separate generated model from
 `Out`, with a distinct register type and full original exception union.
@@ -56,12 +57,13 @@ Lem output. In particular, the previous uncorrected export read `SCTLR_EL2`
 even for a normal access. A proof about that export alone was not proof of the
 original source semantics.
 
-The generator now repairs exactly two pinned conditions with explicit nested
-monadic `if` expressions: the syndrome's EL0/EL1 test and the memory wrapper's
-NV2/access-type/SCTLR/endian test. The latter skips the register read unless
+The generator now repairs exactly three pinned expressions with explicit nested
+monadic `if` expressions: the syndrome's EL0/EL1 test, the memory wrapper's
+NV2/access-type/SCTLR/endian test, and the concrete `HasArchVersion` query.
+The memory test skips the register read unless
 both guards hold, and skips `BigEndian` when the NV2 endian branch is true.
 The whole raw function export is hash-pinned; any new output requires a fresh
-Boolean-site audit. Independent tests reconstruct both repairs and reject
+Boolean-site audit. Independent tests reconstruct all three repairs and reject
 guard removal, duplicate/omitted callbacks, wrong register bits, and any other
 body edits. This is a finite compatibility repair, not a verified Sail compiler
 or a general old/new-prelude refinement. Real-callee and full-state
@@ -104,6 +106,32 @@ remain distinct effectful actions. Callback errors preserve their exact
 partial state. These are sequential-runtime properties, not atomicity,
 architectural fault delivery, or ordering theorems.
 
+## Concrete feature and extension helpers
+
+`lean/STRConcreteHelpers.lean` installs the retained original `HaveNV2Ext`
+and `ZeroExtend__0` bodies in explicit callback-record bindings. The old
+arbitrary callbacks remain available under local declarations
+`oak_memory_HaveNV2Ext` and `oak_instruction_ZeroExtend__0`; their overloads
+are independently audited. Thus the earlier conditional theorems remain
+about arbitrary actions, not silently changed to concrete implementations.
+
+The full feature closure includes original `HasArchVersion`, `ArchVersion`,
+and the five `register configuration` declarations with true defaults.
+Sail 0.20.2's Lean export represents these inputs as stateful Boolean
+registers. The query theorem requires the actual `__v84_implemented` value
+at the query state, preserves that state, and permits either true or false.
+Missing initialization is a runtime error. Other version flags need not
+exist; ARMv8p0 reads none. This is an explicit configuration-state adaptation,
+not a proof of the old pure configuration semantics or of Apple's features.
+The binding never runs the global initializer, which would also overwrite
+architectural registers.
+
+The original extension assertion `N >= M` and zero-prefix concatenation are
+retained. The 64-to-64 theorem preserves every virtual-address bit and state.
+Consequently the tag path's three original extension calls can use the same
+VA without assuming arbitrary callbacks pure. Translation, tag operations,
+and faults themselves remain unimplemented callbacks.
+
 Remaining obligations include decoder/PostDecode execution, SP paths, actual
 MTE/endian/alignment and deeper MemSingle callees, translation/faults, physical
 memory routing, full-state refinement, architectural events and CAT/BBM
@@ -123,7 +151,7 @@ The generator hashes the four upstream source files before extracting whole
 declarations. `--output-dir DIR` writes a separate export plus raw Sail output
 for comparison; it does not change the committed files. The only Lean framing
 changes are imports/namespaces, opening `PreSail`, adding the explicit
-`Boundaries`/`MemoryBoundaries`/`MemSingleBoundaries` parameters, and the two
+`Boundaries`/`MemoryBoundaries`/`MemSingleBoundaries` parameters, and the three
 short-circuit repairs described above. All other raw function-body bytes are
 retained unchanged.
 Independent tests compare the whole raw/framed artifacts, regenerate every
