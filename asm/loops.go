@@ -4146,6 +4146,45 @@ func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
 func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
+	// The coupling first under reach conditions abstracted: each loop's
+	// condition for being reached — on the Oak side the arm it sits in, on
+	// the machine side the path to the call it came through — is a fresh
+	// one-bit symbol in the coupling's premises. A proof for every value
+	// of the symbol is a proof for the reach term, so a proven verdict
+	// stands; any other verdict of that run is discarded, and the full
+	// premises decide. Over a nest of loops called under table lookups
+	// (literals.oak's count, thirty-two loops) the reach terms are what
+	// the diagrams ran out on; the OS pilots' walkers need them, and keep
+	// them through the second run.
+	if hasReachConditions(exec.loops, lowering.loops) {
+		if verdict := verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, true); verdict.Kind == VerdictProven {
+			return verdict
+		}
+	}
+	return verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, false)
+}
+
+// abstractAttemptShare is the fraction of the proof's allowances the
+// reach-abstracted first attempt of a loop proof may spend (verifyLoops).
+const abstractAttemptShare = 16
+
+// hasReachConditions reports whether any loop event carries a reach
+// condition the coupling's premises would conjoin.
+func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
+	for _, ev := range asmLoops {
+		if ev != nil && ev.reached != nil {
+			return true
+		}
+	}
+	for _, ev := range oakLoops {
+		if ev != nil && ev.oakPath != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
 	// A scalar result is one term a side; a record result through memory
 	// is its words (verifyChunk): one coupling proves them all. asmTerm
 	// stands for "there is a result".
@@ -4301,7 +4340,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	evidence := func(reason string) Verdict {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on %d concrete inputs (evidence, not proof: %s)", fn.Name, checked, reason)}
 	}
+	reachSymbol := func(k int) *term { return paramTerm(fmt.Sprintf("reach#%d", k+1), 1) }
 	widthOfName := func(name string) int {
+		if strings.HasPrefix(name, "reach#") {
+			return 1
+		}
 		var k int
 		var reg string
 		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
@@ -4332,6 +4375,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// condition, a summarized call) spent hours in a thousand of them.
 	couplingWork := couplingWorkBudget
 	budget := &nodeBudget{remaining: proofNodes, loop: true}
+	if abstractReach {
+		// The abstracted attempt is a first try, kept only if it proves:
+		// a sixteenth of the allowances, so a search it cannot finish ends
+		// early and the full premises get the proof's own budget. Proofs
+		// under the abstraction are found cheaply (row_named, signed_marks);
+		// the ones it misses spent minutes before the full run began.
+		couplingWork /= abstractAttemptShare
+		budget.remaining /= abstractAttemptShare
+	}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
@@ -4492,7 +4544,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if reached == nil {
 			return exit
 		}
-		reached = truncate(substitute(reached, sigma), 1)
+		if abstractReach {
+			reached = reachSymbol(k)
+		} else {
+			reached = truncate(substitute(reached, sigma), 1)
+		}
 		return binaryTerm("or", notTerm(reached), binaryTerm("and", reached, exit))
 	}
 	// bodyPremise of event k: its invariant — and its guard only when
@@ -4507,7 +4563,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		if reached := asmLoops[k].reached; reached != nil {
 			// The machine's summary holds where the path reached the loop.
-			premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+			if abstractReach {
+				premise = binaryTerm("and", premise, reachSymbol(k))
+			} else {
+				premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+			}
 		}
 		// The loops before this one at the same level ran or left their
 		// symbols at their header values: this loop's header values and
@@ -4533,7 +4593,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
 			if reached := asmLoops[at].reached; reached != nil {
-				premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+				if abstractReach {
+					premise = binaryTerm("and", premise, reachSymbol(at))
+				} else {
+					premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
+				}
 			}
 		}
 		for _, child := range children[k] {

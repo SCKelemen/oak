@@ -5082,7 +5082,19 @@ compared: the two sides hold the same summary of the same body, its values
 couple by identity, and the call's result stands under each side's own
 path in the terms the verdict compares. Carrying the caller's path — a
 select over sixteen lanes in `literals.oak`'s `verify_first` — into every
-premise of the nest cost the proof five seconds of six (2026-09-23). Counted loops past the 64-trip
+premise of the nest cost the proof five seconds of six (2026-09-23). A loop proof is first tried with every
+loop's reach condition — the Oak arm it sits in, the machine's path to
+the call it came through — replaced in the coupling's premises by a
+fresh one-bit symbol, under a sixteenth of the proof's allowances
+(2026-09-25, `verifyLoops`): a proof for every value of the symbol is a
+proof for the reach term, so a proven verdict stands, and any other
+verdict of that attempt is discarded and the full premises decide. The
+reach terms are what the diagrams ran out on in a nest called under
+table lookups; the prover's `row_named` and `signed_marks` prove this
+way, and the cap keeps the attempts that cannot finish cheap (five
+percent more verification time over the prover's 141 hardest bodies,
+where the uncapped attempt cost forty-three), while the OS walkers,
+which need their reach facts, keep them through the second run. Counted loops past the 64-trip
 unrolling limit use the same per-leaf markers on both sides; the Oak
 lowering treats the record-span root as memory rather than a carried
 local, and an inlined callee's parameter resolves through its alias to
