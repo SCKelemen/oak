@@ -5125,7 +5125,14 @@ table lookups; the prover's `row_named` and `signed_marks` prove this
 way, and the cap keeps the attempts that cannot finish cheap (five
 percent more verification time over the prover's 141 hardest bodies,
 where the uncapped attempt cost forty-three), while the OS walkers,
-which need their reach facts, keep them through the second run. Counted loops past the 64-trip
+which need their reach facts, keep them through the second run. A deep nest, thirteen loop events or
+more, gives the attempt the whole allowance (`deepNestLoops`): the
+scanner's step functions (thirteen loops) and `count` and `find_from`
+(thirty-two) finish the coupling only under it, and their reach terms
+are what the full premises cannot decide. With the trap obligations
+below they prove again, after ten days as evidence; the prover's own
+deep nests pay for the attempt, eleven percent more verification time
+over its 141 hardest bodies, and gain nothing. Counted loops past the 64-trip
 unrolling limit use the same per-leaf markers on both sides; the Oak
 lowering treats the record-span root as memory rather than a carried
 local, and an inlined callee's parameter resolves through its alias to
@@ -8696,7 +8703,14 @@ extract. Left in, the false disjunct stood beside the element selects
 in the diagram and the loop trap-domain obligation ran out of nodes: the
 prover's `str_less`, `rname_less`, `str_eq`, and `set_count` prove; the
 bodies that call the first two are still refused, in the call summary,
-for a loop whose entry condition is not reconstructed. Aligning the machine's reads with the
+for a loop whose entry condition is not reconstructed. An end is decided first against the source traps of at most
+4,096 nodes, under an allowance of its own (2026-09-25, `smallTraps`):
+implying some of the disjuncts implies them all, and the machine's ends
+are usually small comparisons each matching one small source trap (`80 >
+len(tables) - 16` against `96 > len(tables)`) where one source trap is a
+path through a nest (3.9 million nodes in `count`'s root obligation),
+and the shared allowance had been spent on it before a ninety-node end
+was reached. Aligning the machine's reads with the
 Oak side's through the proven prefixes, the fast path's move, was tried
 first and is not needed here: the implication decides the unaligned
 obligation. Alongside, the run that merges the paths at their joins
