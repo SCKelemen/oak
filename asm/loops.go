@@ -4168,6 +4168,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 // reach-abstracted first attempt of a loop proof may spend (verifyLoops).
 const abstractAttemptShare = 16
 
+// deepNestLoops is the loop-event count from which a loop proof's
+// reach-abstracted attempt spends the whole allowance (verifyLoops).
+const deepNestLoops = 13
+
 // hasReachConditions reports whether any loop event carries a reach
 // condition the coupling's premises would conjoin.
 func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
@@ -4381,8 +4385,16 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		// early and the full premises get the proof's own budget. Proofs
 		// under the abstraction are found cheaply (row_named, signed_marks);
 		// the ones it misses spent minutes before the full run began.
-		couplingWork /= abstractAttemptShare
-		budget.remaining /= abstractAttemptShare
+		share := abstractAttemptShare
+		if len(asmLoops) >= deepNestLoops {
+			// A deep nest — the scanner's step functions, thirteen loops;
+			// count and find_from, thirty-two — needs the whole allowance
+			// to finish the attempt, and its reach terms are what the full
+			// premises cannot decide: the attempt is its proof.
+			share = 1
+		}
+		couplingWork /= share
+		budget.remaining /= share
 	}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
@@ -5173,11 +5185,13 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// under an allowance of their own: the coupling search may have spent
 	// the shared one on the pairings it tried, and an obligation that is
 	// cheap on its own was then left undecided (the prover's le_init).
-	trapBudget := &nodeBudget{remaining: proofNodes, loop: true}
-	trapImplies := func(premise, a, b *term) (bool, bool) {
-		return impliesEqualWithin(premise, a, b, widthOfName, trapBudget)
+	newTrapImplies := func() func(premise, a, b *term) (bool, bool) {
+		trapBudget := &nodeBudget{remaining: proofNodes, loop: true}
+		return func(premise, a, b *term) (bool, bool) {
+			return impliesEqualWithin(premise, a, b, widthOfName, trapBudget)
+		}
 	}
-	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, trapImplies); !ok {
+	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, newTrapImplies); !ok {
 		return evidence(reason)
 	}
 	// The iterations' stores: each event's two sides store through the

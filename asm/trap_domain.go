@@ -76,7 +76,7 @@ func firstIterationTrap(ev *loopEvent, lastLoop int) (*term, bool) {
 // decideLoopTrapDomains uses the selected coupling, but no machine path
 // condition, no !machineTrap premise, and no loop exit premise. Its
 // deliberately stronger source-only premises avoid circular admission.
-func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[string]*term, implies func(*term, *term, *term) (bool, bool)) (string, bool) {
+func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[string]*term, newImplies func() func(*term, *term, *term) (bool, bool)) (string, bool) {
 	if !source.trapDomainTracked {
 		return "source loop traps were not collected", false
 	}
@@ -88,6 +88,32 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 		typed = constTerm(1, 1)
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	// smallTraps is the disjunction of a trap term's disjuncts of at most
+	// smallTrapNodes nodes: implying it implies the whole, and a machine
+	// end is usually one of them (`len(tables) < 16` against `16 >
+	// len(tables)`), where one large source trap (a path through a nest of
+	// loops, four million nodes in literals.oak's count) ran the diagram out.
+	smallTraps := func(t *term) (*term, bool) {
+		all := disjunctsOf(t)
+		var out *term
+		for _, d := range all {
+			if termSize(d, map[*term]int{}) > smallTrapNodes {
+				continue
+			}
+			if out == nil {
+				out = d
+			} else {
+				out = binaryTerm("or", out, d)
+			}
+		}
+		return out, out != nil && len(all) > 1
+	}
+	// The shared allowance decides the obligations as before; an end's
+	// first try against the small source traps decides under an allowance
+	// of its own, since those terms are small and the shared one may be
+	// spent by a large source trap met earlier (a ninety-node end of
+	// literals.oak's count came back undecided with nothing left).
+	implies := newImplies()
 	check := func(premise, machineTrap, oakTrap *term) bool {
 		machine, oak := dropUnreachableTraps(trapOrFalse(substitute(machineTrap, sigma))), trapOrFalse(oakTrap)
 		bad := binaryTerm("and", machine, notTerm(oak))
@@ -108,6 +134,11 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 				// diagrams over a walker's end ran for minutes.
 				if sourceTrapOnPath(path, oak) {
 					continue
+				}
+				if small, some := smallTraps(oak); some {
+					if holds, decided := newImplies()(path, small, constTerm(1, 1)); decided && holds {
+						continue
+					}
 				}
 				if holds, decided := implies(path, oak, constTerm(1, 1)); decided && holds {
 					continue
@@ -190,6 +221,10 @@ func dropUnreachableTraps(t *term) *term {
 	}
 	return out
 }
+
+// smallTrapNodes bounds the source trap disjuncts a machine trap end is
+// first decided against (decideLoopTrapDomains).
+const smallTrapNodes = 4096
 
 // verifyTrapDomain admits a non-loop value/effect proof only after proving
 // that every excluded machine-trap input also traps in the source. The
