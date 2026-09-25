@@ -21,11 +21,13 @@
 # MemSingle body, retaining arbitrary translation/fault/tag/exclusive/RAM cuts.
 # `STRConcreteHelpers` binds original NV2 and zero-extension helpers under
 # explicit configuration-register premises, not assumptions about hardware.
+# `MemoryEventProjection` preserves ordered request occurrences from a supplied
+# prompt-event view; it does not prove the view adapter or CAT classification.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge", "STRConcreteHelpers"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge", "STRConcreteHelpers", "MemoryEventProjection"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -65,6 +67,9 @@ name = "STRShortCircuit"
 
 [[lean_lib]]
 name = "STRConcreteHelpers"
+
+[[lean_lib]]
+name = "MemoryEventProjection"
 
 [[require]]
 name = "Sail"

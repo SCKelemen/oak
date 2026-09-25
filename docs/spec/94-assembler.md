@@ -5650,12 +5650,30 @@ Free-vector/free-seed proofs and wrong-lane, omitted-seed, and live-source
 clobber mismatches cover the local lowering, with tail/overflow correctness
 checked by the independent four-language harness.
 
-On the unchanged reduction input, the selected proven `sum32` shrinks from
-80 to 66 instructions and from a 160-byte to a 144-byte frame. `sum64` remains
-51 instructions/160 bytes; its checked ADDP lowering is still future work.
+In that initial batch, on the unchanged reduction input, proven `sum32` shrank from
+80 to 66 instructions and from a 160-byte to a 144-byte frame. `sum64` remained
+51 instructions/160 bytes in that recorded baseline.
 These are static measurements, not timings or a ±8% parity claim. See
 `benchmarks/native/results/horizontal-reduction-2026-09-25.json` for artifact
 provenance, target-profile limits, and stage2 regression validation.
+
+**u64 and leaf-home follow-up (2026-09-25).** The same private matcher now
+also recognizes the exact two-lane u64 combine, emitting scalar `addp dTmp,
+vSource.2d`, `umov xTmp, vTmp.d[0]`, and the scalar seed addition. The verifier
+models only that two-operand D/2D form, reads both halves before writing, and
+clears the destination's upper half. Other ADDP forms remain unsupported by
+this new rule. Exact pinned Sail declaration audits and hardware differential
+cases guard the reviewed semantics; neither is a new kernel-checked ASL
+refinement or proof of SIMD-enable trap admission.
+
+Together with preferring existing unused leaf vector argument homes (§9.af),
+both unchanged reduction inputs now select zero-frame bodies: `sum32` is 58
+instructions and `sum64` is 37. Both remain Proven against the original
+rewritten scratch-array AST and pass all 112 four-language correctness cases.
+The public SIMD interface, floating-point reduction policy, and proof
+admission rules are unchanged. These are again static observations only;
+`benchmarks/native/results/arm64-reduction-ordering-2026-09-25.json` records
+the build provenance, regression gates, and remaining proof boundaries.
 
 Four accumulators, not one, because a single vector accumulator is one
 loop-carried chain: measured over 2^20 `u32` elements, one `simd.U32x4`
@@ -9455,6 +9473,15 @@ increment) for the vector file; v0 is left for the result. Nothing is
 saved: a leaf makes no call. A home released at a local's last use
 returns to its pool. The registers taken are declared as clobbers and
 `Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+
+As of 2026-09-25, these existing unused argument homes are preferred before
+callee-saved and scratch homes, avoiding unnecessary d8–d15 save/restore
+traffic in small leaf functions. The pool still excludes every incoming
+float/vector argument and v0, and calling functions retain their existing
+policy. No frame layout or proof-admission rule changes: the existing checked
+callee-save trimming and empty-frame elision handle frames that become empty.
+Free-input vector-result/mixed-parameter proofs, exhausted-pool and nested-scope
+reuse tests cover the allocation priority in `nativegen/leaf_vector_homes_test.go`.
 
 The validator's loop goes from forty q-register frame accesses to none,
 its whole body from forty-one to one, and both bodies still prove (the

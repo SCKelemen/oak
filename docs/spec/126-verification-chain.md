@@ -1023,6 +1023,27 @@ evidence for the selected wrapper/state interface, not a kernel-checked
 Lean/Lem state refinement, allocation/ownership authority, dynamic ASL trace,
 concurrent ordering, completion, or page-table publication.
 
+`MemoryEventProjection.lean` adds a kernel-checked conditional projection of
+a **supplied** prompt-event view. It recognizes exact selector-read/plain
+EA/plain-data triples, checks lossless reconstruction, and retains absolute
+source positions, selector responses, PA, size, payload, and acknowledgement.
+Concatenation offsets the right-hand positions by the left trace's length;
+even identical same-address writes remain distinct occurrences. A separate,
+externally supplied expected-call list detects erased or reordered differing
+calls. Swapping identical calls is not observable without further identity
+evidence. A failed scan retains already matched triples and the next unmatched
+position, not an invented architectural exception.
+
+This is not a verified Lem importer or a proof that an instruction produced
+the supplied trace. Selector and payload types are abstract: no width,
+defined-bit, byte-count, or initialization check is implicit. False write
+acknowledgements remain accepted by structural projection. A distinct
+successful-replay contract requires both valid projection and caller-supplied
+state replay evidence; it does not derive those premises. Architectural write
+commitment, CAT W/TTD classification, coherence, translation/cacheability,
+invalidation scope, and the Lean/Lem tag-state relation remain open. This
+projection licenses no optimizer reordering.
+
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
 `Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly

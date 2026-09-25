@@ -127,6 +127,8 @@ func siliconVectorCases() []siliconCase {
 	both("addv 16b", "addv b0, v1.16b")
 	both("addv 8h", "addv h0, v1.8h")
 	both("addv 4s", "addv s0, v1.4s")
+	both("addp scalar 2d", "addp d0, v1.2d")
+	both("addp scalar alias", "addp d1, v1.2d\n mov v0.16b, v1.16b")
 	both("cnt 16b", "cnt v0.16b, v1.16b")
 	both("cnt 8b", "cnt v0.8b, v1.8b")
 	both("fmov d from x", "fmov d0, x1")

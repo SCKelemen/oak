@@ -220,7 +220,7 @@ func vectorizedReduction(red reductionLoop, suffix string, lanes int64) []ast.St
 	}
 	array := vectorName(red.acc, 'l'-'0')
 	arrayToken := tok
-	if suffix == "u32x4" {
+	if suffix == "u32x4" || suffix == "u64x2" {
 		// Eligibility metadata only: the ARM64 emitter independently checks
 		// the complete private-array combine and keeps this AST as its proof
 		// reference. Integer SIMD's public API is unchanged.

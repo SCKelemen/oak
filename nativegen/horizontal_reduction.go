@@ -8,7 +8,7 @@ import (
 // Lexer token kinds are nonnegative. This private, clone-stable marker cannot
 // arise from source spelling; it licenses recognition, never proof admission.
 const horizontalReductionToken token.TokenKind = -1
-const horizontalReductionContext = "oak.native.horizontal.u32"
+const horizontalReductionContext = "oak.native.horizontal.unsigned"
 
 func markHorizontalReduction(tok token.Token) token.Token {
 	tok.TokenKind = horizontalReductionToken
@@ -20,13 +20,14 @@ func markHorizontalReduction(tok token.Token) token.Token {
 type horizontalCombine struct {
 	vector *ast.Identifier
 	acc    *ast.Identifier
+	elem   scalar
 }
 
 // horizontalReduction recognizes only the compiler-generated three-statement
 // private-array combine. The array must have no other references anywhere in
 // the function: not even an escaping span or a later same-named declaration.
 // No source AST is changed; asm.Verify still compares against its array store
-// and four scalar reads. ADDV is wrapping u32 addition, not an FP reassociation.
+// and scalar lane reads. ADDV/ADDP are wrapping integer sums, not FP reassociation.
 func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombine, bool) {
 	no := horizontalCombine{}
 	if g.rvLane || g.fn == nil || len(stmts) < 3 {
@@ -39,11 +40,15 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 		return no, false
 	}
 	elem, count, ok := arrayOf(decl.Type)
-	if !ok || elem != scalars["u32"] || count != 4 {
+	if !ok || !((elem == scalars["u32"] && count == 4) || (elem == scalars["u64"] && count == 2)) {
 		return no, false
 	}
+	shape, memberName := vecShapes["U32x4"], "store_u32x4"
+	if elem == scalars["u64"] {
+		shape, memberName = vecShapes["U64x2"], "store_u64x2"
+	}
 	init, ok := decl.Value.(*ast.ArrayLiteral)
-	if !ok || len(init.Elements) != 4 {
+	if !ok || int64(len(init.Elements)) != count {
 		return no, false
 	}
 	initElem, initCount, ok := arrayOf(init.Type)
@@ -65,7 +70,7 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 		return no, false
 	}
 	member, ok := simdCallee(store.Function)
-	if !ok || member != "store_u32x4" || !isHorizontalZero(store.Arguments[1]) {
+	if !ok || member != memberName || !isHorizontalZero(store.Arguments[1]) {
 		return no, false
 	}
 	span, ok := store.Arguments[0].(*ast.InvocationExpression)
@@ -77,7 +82,7 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 		return no, false
 	}
 	vector, ok := store.Arguments[2].(*ast.Identifier)
-	if !ok || g.types[vector.Value] != vecShapes["U32x4"] {
+	if !ok || g.types[vector.Value] != shape {
 		return no, false
 	}
 	assign, ok := stmts[2].(*ast.AssignmentStatement)
@@ -99,13 +104,13 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 			return false
 		}
 		at, ok := index.Index.(*ast.IntegerLiteral)
-		if !ok || at.Value != lane || lane >= 4 {
+		if !ok || at.Value != lane || lane >= count {
 			return false
 		}
 		lane++
 		return true
 	}
-	if !tree(sum.Right) || lane != 4 {
+	if !tree(sum.Right) || lane != count {
 		return no, false
 	}
 	for _, param := range g.fn.Parameters {
@@ -122,7 +127,7 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 	if owned != 3 {
 		return no, false
 	}
-	// The exact group accounts for six mentions. The reflective identifier
+	// The exact group accounts for a declaration, borrow, and each lane. The identifier
 	// walk includes binding positions, callees, types, and nested syntax;
 	// any additional occurrence (even a shared AST pointer) refuses fusion.
 	uses := 0
@@ -131,10 +136,10 @@ func (g *generator) horizontalReduction(stmts []ast.Statement) (horizontalCombin
 			uses++
 		}
 	})
-	if uses != 6 {
+	if int64(uses) != count+2 {
 		return no, false
 	}
-	return horizontalCombine{vector: vector, acc: assign.Name}, true
+	return horizontalCombine{vector: vector, acc: assign.Name, elem: elem}, true
 }
 
 func isHorizontalZero(expr ast.Expression) bool {
@@ -149,15 +154,21 @@ func isHorizontalZero(expr ast.Expression) bool {
 }
 
 func (g *generator) lowerHorizontalReduction(combine horizontalCombine) error {
-	shape, elem := vecShapes["U32x4"], scalars["u32"]
+	elem := combine.elem
+	shape, view, mnemonic := vecShapes["U32x4"], scalars["f32"], "addv"
+	if elem == scalars["u64"] {
+		shape, view, mnemonic = vecShapes["U64x2"], scalars["f64"], "addp"
+	} else if elem != scalars["u32"] {
+		return Unsupported{"horizontal reduction requires u32 or u64"}
+	}
 	source, fixed, err := g.vecOperand(combine.vector, shape)
 	if err != nil {
 		return err
 	}
 	defer g.vecRelease(source, fixed)
-	// Never reduce into the source home: ADDV zeroes its remaining lanes,
+	// Never reduce into the source home: ADDV/ADDP zero their remaining lanes,
 	// and the vector may remain live after the scalar accumulator update.
-	tmp, err := g.alloc(scalars["f32"])
+	tmp, err := g.alloc(view)
 	if err != nil {
 		return err
 	}
@@ -174,9 +185,13 @@ func (g *generator) lowerHorizontalReduction(combine horizontalCombine) error {
 	if !seedFixed {
 		defer g.release(seed)
 	}
-	g.emit("addv", vr(tmp-vecBase, scalars["f32"]), vreg(source-vecBase, "4s"))
-	g.emit("umov", wr(result), laneReg(tmp-vecBase, "s", 0))
-	g.emit("add", wr(result), wr(seed), wr(result))
+	g.emit(mnemonic, vr(tmp-vecBase, view), vreg(source-vecBase, shape.arr()))
+	lane := "s"
+	if elem == scalars["u64"] {
+		lane = "d"
+	}
+	g.emit("umov", reg(result, elem), laneReg(tmp-vecBase, lane, 0))
+	g.emit("add", reg(result, elem), reg(seed, elem), reg(result, elem))
 	g.assignVar(combine.acc.Value, result) // releases result, as ordinary assignment does
 	g.killLoopFacts(combine.acc.Value)
 	return nil

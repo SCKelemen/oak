@@ -1526,7 +1526,7 @@ type generator struct {
 	vecHomes     int
 	// leafHomesV (Lane.VectorHomes, leaves): the vector argument registers
 	// no parameter occupies, v1–v7, as homes for a leaf's vector locals
-	// once the callee-saved and scratch homes are taken; leafVecHomes
+	// before taking callee-saved or scratch homes; leafVecHomes
 	// counts them (reported).
 	leafHomesV    []int
 	leafPoolBuilt bool
@@ -5502,11 +5502,18 @@ func (g *generator) declare(name string, s scalar) int64 {
 	offset := int64(-1)
 	r := -1
 	if s.isVec {
-		// A vector local: a callee-saved vector register when the function
-		// makes no call (a callee may clobber their upper halves), else a
-		// sixteen-byte, sixteen-aligned frame slot.
+		// Prefer a leaf's unused argument registers under VectorHomes:
+		// no call can clobber them and no callee-save traffic is needed.
+		// Calling functions cannot keep full vectors in d8–d15 homes:
+		// a callee may clobber their upper halves.
 		g.usedFloat = true
 		switch {
+		case !g.hasCalls && g.leafVectorPool() > 0:
+			// The pool excludes every incoming float/vector argument and
+			// v0 (the result), and retains the existing release discipline.
+			r, g.leafHomesV = g.leafHomesV[0], g.leafHomesV[1:]
+			g.homesUsedV[r] = true
+			g.leafVecHomes++
 		case !g.hasCalls && len(g.freeCalleeV) > 0:
 			r, g.freeCalleeV = g.freeCalleeV[len(g.freeCalleeV)-1], g.freeCalleeV[:len(g.freeCalleeV)-1]
 		case !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1:
@@ -5524,14 +5531,6 @@ func (g *generator) declare(name string, s scalar) int64 {
 			r, g.callerHomesV = g.callerHomesV[0], g.callerHomesV[1:]
 			g.homesUsedV[r] = true
 			g.vecHomes++
-		case !g.hasCalls && g.leafVectorPool() > 0:
-			// A leaf's vector local in an argument register no parameter
-			// occupies (Lane.VectorHomes), as the scalar leaf homes in
-			// x2–x7: nothing to save, no call to clobber it. v0 is left
-			// out for the result.
-			r, g.leafHomesV = g.leafHomesV[0], g.leafHomesV[1:]
-			g.homesUsedV[r] = true
-			g.leafVecHomes++
 		case len(g.freeSlots16) > 0:
 			offset, g.freeSlots16 = g.freeSlots16[len(g.freeSlots16)-1], g.freeSlots16[:len(g.freeSlots16)-1]
 		default:

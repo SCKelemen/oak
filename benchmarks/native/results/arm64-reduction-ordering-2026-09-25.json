@@ -1,0 +1,111 @@
+{
+  "schema": "oak-arm64-reduction-ordering-validation-v1",
+  "date_utc": "2026-09-25T15:38:35.629611+00:00",
+  "state": "proof-and-correctness-passed-timing-pending",
+  "compiler_branch": "specification",
+  "compiler_revision": "2bb3366965165434837cf545b3cf867974a50e01",
+  "compiler_dirty": true,
+  "changes": {
+    "u64_combine": "Extend the compiler-private exact scratch-array matcher to two u64 lanes; emit scalar ADDP Dtmp,Vsource.2d, UMOV Xtmp,Vtmp.d[0], then scalar seed addition. Preserve the source vector and original rewritten AST verifier reference.",
+    "scalar_addp_semantics": "Only the two-operand D/2D form acquires checker semantics: read both halves before writing, wrapping u64 addition, zero upper destination half. Other vector/SVE forms remain unsupported by this rule. No proof-admission relaxation.",
+    "leaf_homes": "Prefer the existing optional leafVectorPool before callee-saved vector homes. Incoming float/vector arguments and v0 remain excluded; release, clobber, calling-function, RV64, and frame-layout policies are unchanged.",
+    "ordering_projection": "New MemoryEventProjection Lean module conditionally preserves exact read/EA/data request triples, payloads, acknowledgements, absolute positions, multiplicity, and concatenation. The raw adapter/provenance and expected-call list are supplied premises, not generated Arm traces."
+  },
+  "provenance": {
+    "note": "Dirty build includes this batch. Actual nonstandard compiler build inputs were hashed before and after preparation and required unchanged; this is not a clean-checkout timing benchmark.",
+    "compiler_build_input_count": 476,
+    "compiler_input_map_sha256": "be8ba8ed4fce69d7c95cb45616b91bb8df6927a932ee45e665f8748e0f51c4f4",
+    "compiler_input_map_digest_recipe": "sha256 of jq -cS '.compiler_source_sha256' prepared.json, including trailing newline",
+    "tracked_diff_sha256_at_prepare_start": "adbffe4a735c4632b88e1ac6236f7f97286fd4828de6daa3b58ed9087551b124",
+    "selected_production_sources_sha256": {
+      "asm/verify_vector.go": "26f8950613f86fc530d4680be3ad2e04d0b494d6d4b22c22a43300fe3434c62c",
+      "nativegen/horizontal_reduction.go": "2b185433911d1d129460c1b9dc08e6606e1f5e23176479c72328eece350654cb",
+      "nativegen/nativegen.go": "b76c2e7a84d285975bfe21861d8946f21d40084c3448eff355c19ffd9452fee5",
+      "nativegen/vector_reduction.go": "a9d2f4a4f0c41a6c0af29db9f5228c9dc8abe3a1d92f7360b0acae2c367a462b"
+    },
+    "artifact_directory": "/private/tmp/oak-arm64-parallel.yLwJXi",
+    "manifest": "/private/tmp/oak-arm64-parallel.yLwJXi/four-way/prepared.json",
+    "manifest_sha256": "7843c260d0373770749ca10214929a0f3b1c19e3b51367d99d15f1e22eab1380",
+    "artifacts_sha256": {
+      "kernels.o": "b1f070a4e7f553a6ecc06a0fb67e2ed19c26523635d82e1e9db4c53b5ef61af9",
+      "kernels.c": "97c7ab74571d6da649ffa75c8af22cd14c3631c0259880718131503ea4db22da",
+      "runner": "275171b030d724ffccc9809860190f8a047e732ef786e74c510b15066e88861c",
+      "runner.disassembly": "509f1628760b67fd03a9b0df15e22376dbc524c75d40a57ae13457e1119c72ef"
+    }
+  },
+  "four_way_validation": {
+    "previous_batch": "benchmarks/native/results/horizontal-reduction-2026-09-25.json",
+    "original_readiness_baseline": "benchmarks/native/results/four-way-readiness-2026-09-25.json",
+    "prepare_command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache python3 benchmarks/native/four_way/run.py prepare --artifacts /private/tmp/oak-arm64-parallel.yLwJXi/four-way --rustc /Users/sam/.rustup/toolchains/1.91.1-aarch64-apple-darwin/bin/rustc",
+    "native_bodies": {"sum32": "proven", "sum64": "proven"},
+    "correctness_rows_passed": 112,
+    "lengths": [0, 1, 3, 4, 7, 8, 15, 16, 31, 32, 511, 512, 513, 4096],
+    "widths": [32, 64],
+    "oracle": "All four implementations agree with the C and independent Python arbitrary-precision modular oracles.",
+    "profile": "Unchanged sources/flags: independent C and Rust generic, Zig macOS baseline resolving to apple_m1 with NEON, macOS13 deployment minimum, no LTO. Not identical feature sets or best-M4 tuning. Exact tools, hashes, commands and correctness rows are retained in prepared.json.",
+    "harness_unit_test_command": "python3 -m unittest discover -s benchmarks/native/four_way -v",
+    "harness_unit_tests_passed": 12
+  },
+  "static_observations_not_performance_results": {
+    "method": "Count instruction lines within each named function in final runner disassembly, including all paths. Not dynamic counts or cycles; zero-frame bodies contain no SP movement or frame accesses.",
+    "previous_oak_instructions": {"sum32": 66, "sum64": 51},
+    "previous_oak_frames_bytes": {"sum32": 144, "sum64": 160},
+    "function_instructions": {"oak_sum32": 58, "oak_sum64": 37, "c_sum32": 34, "c_sum64": 34, "rust_sum32": 34, "rust_sum64": 34, "zig_sum32": 14, "zig_sum64": 14},
+    "stack_frames_bytes": {"oak_sum32": 0, "oak_sum64": 0, "c_sum32": 0, "c_sum64": 0, "rust_sum32": 0, "rust_sum64": 0, "zig_sum32": 16, "zig_sum64": 16},
+    "note": "Both Oak reductions now avoid scratch-array traffic and callee-saved vector saves/restores. Changes were validated together; these counts do not isolate a runtime speedup or establish plus-or-minus8-percent parity."
+  },
+  "validation": {
+    "nativegen": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 go test ./nativegen -count=1", "result": "passed, final suite including live-float ABI regression", "package_seconds": 21.913},
+    "compiler_simd": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 go test ./compiler -run '^(TestE2ENativeVectorReduction|TestE2ENativeReductionLivenessTails|TestE2ENativeFloatSimd)$' -count=1 -timeout=10m", "result": "passed", "package_seconds": 198.553},
+    "compiler_vector_homes": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 go test ./compiler -run '^TestE2ENativeVectorHomes$' -count=1 -timeout=10m", "result": "passed", "package_seconds": 4.420},
+    "focused_checker": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 go test ./asm ./nativegen -run '^(TestVerifyScalarADDP|TestScalarADDP.*|TestHorizontalReduction.*|TestLeafVector.*)$' -count=1", "result": "passed", "coverage": "Free halves/seed, aliasing, zero high half, live source preservation; wrong lane/seed/narrow add mismatch; unsupported forms and unbound read refusal; all 1024 register encodings; both-width privacy/escape near misses and allocator-exhaustion cleanup."},
+    "silicon": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 go test ./asm -run '^TestSiliconDifferential$' -count=1 -v", "result": "passed", "bodies": 565, "inputs_per_body": 60},
+    "pinned_sail_addp": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_REQUIRE_ORACLES=1 go test ./asm -run '^TestScalarADDPPinnedSailContract$' -count=1 -v", "result": "passed", "exact_declarations": ["vector_reduce_add_sisd_decode", "vector_reduce_add_sisd", "Reduce", "aset_V"]},
+    "lean": {"command": "cd spec/sail/lean && lake build", "result": "passed", "jobs": 61, "new_projection_axiom_guards": 18, "new_projection_regression_examples": 18},
+    "lem_traces": {"command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_REQUIRE_ORACLES=1 go test ./asm -run '^TestSailLem(RAMTraces|WriteMemoryTraces|StateReplay)$' -count=1 -timeout=10m", "result": "passed including compiled source/runtime mutation assertions", "package_seconds": 261.657, "scope": "Existing original-model executable oracles, not a kernel proof that the new Lean projection imports these traces."}
+  },
+  "stage2_regression": {
+    "baseline_report": "benchmarks/native/results/horizontal-reduction-2026-09-25.json",
+    "os_revision_before_and_after": "08ec15d87bd5670e0a1151a81067a4010f62946f",
+    "source_hashes_before_and_after": {
+      "pilots/oak/stage2.oak": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+      "pilots/oak/stage2_native_shim.c": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+      "core/src/stage2_native_conformance.zig": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01"
+    },
+    "emit_command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 OAK_OPT_REPORT=1 go run ./benchmarks/native/emit /Users/sam/os/os/pilots/oak/stage2.oak /private/tmp/oak-arm64-parallel.yLwJXi/stage2",
+    "selected_proven": 20,
+    "selected_witnessed": 0,
+    "selected_trusted": 0,
+    "c_fallback_bodies": 0,
+    "verdict_checks": 22,
+    "verdict_cache_hits": 0,
+    "verdict_note": "Fresh checks include rejected alternatives, not extra selected functions.",
+    "object_sha256": "8730ec885f0de3aedd7798d12fdca5266fb6aae98a5db3183ac3b08d99297336",
+    "generated_c_sha256": "4657abc267d83a07002dcf9da19f93367f8efbc6d4a0bae57a5111659d94de7f",
+    "object_and_c_identical_to_previous_batch": true,
+    "text_bytes": 3544,
+    "conformance_command": "zig test /Users/sam/os/os/core/src/stage2_native_conformance.zig /Users/sam/os/os/pilots/oak/stage2_native_shim.c /private/tmp/oak-arm64-parallel.yLwJXi/stage2.c /private/tmp/oak-arm64-parallel.yLwJXi/stage2.o -lc --cache-dir /private/tmp/oak-arm64-parallel.yLwJXi/zig-cache --global-cache-dir /private/tmp/oak-arm64-parallel.yLwJXi/zig-global-cache -femit-bin=/private/tmp/oak-arm64-parallel.yLwJXi/stage2-conformance",
+    "conformance_tests_passed": 8,
+    "emission_log_sha256": "2ca70704c126f34c0a8bee18df0074ce0edd332f6556a7df96ddbaeec4a7bd58",
+    "conformance_log_sha256": "44472a7dd8df5d21730fd0d24165d65b71e4f573646fc43b37abfe4f6c95112b",
+    "downstream_compiler_pin": "ad9880d80764d4a7dd239fd3797da4e37bef0068",
+    "os_sources_or_pin_changed_by_this_work": false
+  },
+  "timing": null,
+  "host": {
+    "cpu": "Apple M4 Max",
+    "logical_cpus": 16,
+    "load_average_at_prepare": [311.8056640625, 284.25537109375, 279.927734375],
+    "isolation": "not isolated; zero timing samples"
+  },
+  "proof_boundaries": [
+    "The native checker extension is grounded by exact pinned Sail declarations and hardware differentials, not a new kernel-checked ADDP/ASL refinement or proof of FP/AdvSIMD enable checks.",
+    "MemoryEventProjection consumes a supplied observation adapter and trace. It does not prove original-model trace production, adapter soundness, full-state correspondence, or architectural commitment.",
+    "Selector/payload types are abstract; no initialization, width, byte-count or defined-bit facts are implicit. Structural projection accepts false acknowledgements; SuccessfulReplay is an explicit stronger caller-supplied contract.",
+    "CAT W/TTD classification, coherence, translation/cacheability, invalidation scope, Lean/Lem tag-state refinement and publication remain open. No optimizer reordering permission follows from the new theorem."
+  ],
+  "next": [
+    "Connect supplied observations to an audited executable/raw-model adapter while retaining occurrence identity and explicit success/state premises.",
+    "Investigate remaining reduction loop/tail overhead with unchanged proof admission; measure only on a quiet host and with separately recorded matched Apple-Silicon profiles."
+  ]
+}
