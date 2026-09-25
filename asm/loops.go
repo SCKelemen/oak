@@ -5105,7 +5105,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence(fmt.Sprintf("the conditions for reaching loop %d were not proven equal", k+1))
 		}
 	}
-	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, implies); !ok {
+	// The trap-domain obligations are decided after the coupling is fixed,
+	// under an allowance of their own: the coupling search may have spent
+	// the shared one on the pairings it tried, and an obligation that is
+	// cheap on its own was then left undecided (the prover's le_init).
+	trapBudget := &nodeBudget{remaining: proofNodes, loop: true}
+	trapImplies := func(premise, a, b *term) (bool, bool) {
+		return impliesEqualWithin(premise, a, b, widthOfName, trapBudget)
+	}
+	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, trapImplies); !ok {
 		return evidence(reason)
 	}
 	// The iterations' stores: each event's two sides store through the
@@ -6355,6 +6363,14 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// implication's allowance it was witness-checked after sixteen,
 		// the rules and splits tried and failed.
 		budget = &nodeBudget{remaining: loopProofNodeBudget}
+	}
+	// One term on both sides holds under any premise, before any budget
+	// is charged: a proof whose coupling spent the shared allowance still
+	// decides `0 = 0` (a loop's trap-domain obligation with no machine
+	// trap), where the budget checks below returned undecided without
+	// looking.
+	if equalTerms(a, b) {
+		return true, true
 	}
 	key := decisionKey{premise, a, b, depth}
 	if r, seen := budget.decided[key]; seen {
