@@ -803,6 +803,27 @@ across checkout locations, without rewriting generated output or weakening
 the byte-for-byte freshness check. No compiler pin or verified-admission
 boundary changes are part of this dependency proof.
 
+`STRExecutionBridge.lean` now advances from those dependency adapters to the
+**complete original instruction body**, in a separate generated slice. For
+the non-SP, no-writeback STR64 case, its callee-parametric theorem factors the
+generated body into the actual feature prefix, original register reads and
+syndrome update, and an explicit arbitrary memory callback. Feature callbacks
+may mutate state or fail; initialization premises apply to their resulting
+state. Memory success or failure preserves the callback's exact resulting
+state. The complete post-memory writeback tail is retained and discharged for
+this no-writeback case, not silently omitted by extraction.
+
+This is not yet real-callee or full-state refinement: the separate register
+type contains only the bank, PSTATE, and syndrome, and its full original
+exception union differs from the earlier `Out` export. Real memory/feature
+callees need a typed state lifting or larger export. Decoder/PostDecode, SP,
+translation/faults, architectural events, and CAT/BBM ordering remain open.
+The theorem fixes the erased width/count relation to 64 bits and eight bytes;
+it does not certify all generic callback domains. Required whole-source,
+callback-wiring, prelude-adaptation, and raw-output framing/freshness gates
+guard the new export. See the [slice boundary and regeneration notes](../../spec/sail/STR_EXECUTION.md)
+for the exact compatibility adaptations and outstanding composition work.
+
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span
 write-back. Every byte's optional lookup is exact, and the total byte view

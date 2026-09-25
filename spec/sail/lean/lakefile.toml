@@ -11,11 +11,13 @@
 # generated state, plus an operand-only STR adapter (not instruction execution).
 # `SyndromeBridge` proves the original load/store syndrome dependency and its
 # PSTATE-dependent register effect, not exception entry or instruction execution.
+# `STRExecutionBridge` retains the complete original instruction body with
+# explicit callee boundaries; it does not discharge translation or ordering.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -36,6 +38,13 @@ name = "RegisterBridge"
 
 [[lean_lib]]
 name = "SyndromeBridge"
+
+[[lean_lib]]
+name = "STRExecution"
+leanOptions.weak.linter.style.nameCheck = false
+
+[[lean_lib]]
+name = "STRExecutionBridge"
 
 [[require]]
 name = "Sail"

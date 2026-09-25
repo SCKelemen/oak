@@ -1173,6 +1173,16 @@ ordering remain open. Required upstream/local source-mutation gates and
 standard-axiom checks cover the new module. Sail regeneration uses a relative
 temporary input filename to keep assertion locations reproducible (§126).
 
+`STRExecutionBridge.lean` additionally proves a callee-parametric execution
+theorem for the complete original STR body, with its real register reads and
+syndrome update. For non-SP, no-writeback STR64, arbitrary feature callbacks
+precede those reads, and the arbitrary memory callback retains its exact
+success/failure state. This separate reduced-state export does not instantiate
+the real callees or prove their full-state refinement. Decoder/PostDecode,
+translation/faults, events, and ordering remain open. Whole-source and
+raw-generated-output gates protect this conditional boundary; see §126 and
+the [slice notes](../../spec/sail/STR_EXECUTION.md).
+
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
 for owned-array/span write-back. It preserves byte presence separately from

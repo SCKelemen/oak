@@ -143,7 +143,7 @@ jobs:
       - name: Fetch the Sail Lean support library at its pinned revision
         run: sh spec/sail/setup.sh
 
-      - name: Build the Arm bridges (semantics, register reads, RAM, and span state)
+      - name: Build the Arm bridges (semantics, STR boundaries, registers, RAM, and spans)
         working-directory: spec/sail/lean
         run: lake build
 
@@ -166,6 +166,11 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailSyndrome(ProcState|Registers|Make|Set)ExactAndMutated$' -count=1 -v
+
+      - name: Check retained STR execution source, callback wiring, and generation
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=5m
 
   lem-ram-traces:
     name: Arm Lem RAM request traces
