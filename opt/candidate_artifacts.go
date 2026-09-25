@@ -407,7 +407,7 @@ func (pipeline *candidateArtifactPipeline) choose(validated []Validated, order [
 
 			best := 0
 			for index := 1; index < len(values); index++ {
-				if values[index].verdict.Outcome > values[best].verdict.Outcome {
+				if values[index].verdict.Outcome > values[best].verdict.Outcome || (values[index].verdict.Outcome == values[best].verdict.Outcome && entries[index].rank < entries[best].rank) {
 					best = index
 				}
 			}
@@ -469,7 +469,9 @@ func candidateMaterializationVersion(function, recipe string, candidate *Candida
 
 func candidateSelectionRevision(entries []candidateSelectionEntry) string {
 	digest := sha256.New()
-	writeArtifactDigestPart(digest, "oak.search.selection.v1")
+	// v2 breaks equal-outcome ties by the final frontier rank, not validation
+	// chronology: a post-verdict fallback may precede its parent in cost order.
+	writeArtifactDigestPart(digest, "oak.search.selection.v2")
 	for _, entry := range entries {
 		writeArtifactDigestPart(digest, entry.nodes.candidate.String())
 		writeArtifactDigestPart(digest, strconv.Itoa(entry.rank))

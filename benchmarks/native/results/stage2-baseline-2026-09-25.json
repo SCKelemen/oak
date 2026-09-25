@@ -1,0 +1,282 @@
+{
+  "date_local": "2026-09-25",
+  "recorded_at_utc": "2026-09-25T11:56:06Z",
+  "purpose": "Non-timing native page-table baseline after synchronizing specification; identify a bounded, proof-gated optimization without promoting the downstream compiler pin.",
+  "compiler_revision": "fab1e1ad499a8d4eb761cab92578d0238c087cf0",
+  "compiler_branch": "specification",
+  "compiler_worktree_clean_at_start": true,
+  "os_revision": "5731686055fbe94c5168dafde9c34ab35a7ef4a9",
+  "os_worktree_clean_before_and_after_conformance": true,
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "source_unchanged_since": "results/stage2-record-base-closure-2026-09-18.json",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "downstream_pin": {
+    "observed_path": "SCKelemen/os .github/actions/oak/action.yml",
+    "observed_revision": "ad9880d80764d4a7dd239fd3797da4e37bef0068",
+    "changed_by_this_work": false,
+    "historical_pin_and_tallies": "The old 3479370e pin and 18/2 versus 15/4 comparison are historical, not current measurements. This report does not validate or promote a pin."
+  },
+  "host": {
+    "os": "Darwin 25.3.0 arm64",
+    "macos": "26.3.1 (a), build 25D771280a",
+    "processor_model": null,
+    "processor_model_note": "The sandbox denied sysctl machdep.cpu.brand_string; do not infer a newly verified processor model from older M4 Max reports."
+  },
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64",
+    "zig": "0.16.0"
+  },
+  "build": {
+    "command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache OAK_VERIFY_CACHE=0 OAK_OPT_REPORT=1 go run ./benchmarks/native/emit /Users/sam/os/os/pilots/oak/stage2.oak /private/tmp/oak-stage2-baseline.WI5JCV/stage2",
+    "emitter": "Existing benchmarks/native/emit/main.go; compiler.EmitNative with native bodies and native assembler, including helper expansion.",
+    "target": "darwin/arm64 Mach-O companion object",
+    "opt_skip": null,
+    "native_only": null,
+    "verdict_cache_hits": 0,
+    "verdict_checks": 22,
+    "selected_bodies": 20,
+    "selected_proven": 20,
+    "selected_witnessed": 0,
+    "selected_trusted": 0,
+    "c_fallback_bodies": 0,
+    "verdict_count_note": "22 fresh verdict checks include rejected alternatives; they are not 22 selected functions. The final native-backend diagnostics contain 20 selected proven functions."
+  },
+  "artifact": {
+    "object_sha256": "a3ba91f8583daa623030a52845423eddcab62155dd77f984f49bf79c7c299b84",
+    "generated_c_sha256": "4657abc267d83a07002dcf9da19f93367f8efbc6d4a0bae57a5111659d94de7f",
+    "object_bytes": 5032,
+    "text_bytes": 3708,
+    "relocation_entries": 27,
+    "encoded_instructions": 927,
+    "measurement": "llvm-objdump --macho --section-headers, --reloc, and --disassemble; count every instruction including prologues, epilogues, and traps.",
+    "global_storage": "The companion object references st and trans_result. Its generated C supplies their definitions; clang -O2 compilation and llvm-nm show only those two external definitions, with zero __text bytes and no C function definitions.",
+    "object_boundary_note": "The companion-only object is not directly size-comparable to earlier oak build -native -o stage2.o hosted single-object artifacts. No whole-object size improvement is claimed."
+  },
+  "selected_instruction_counts": {
+    "cell": 4,
+    "page_desc": 7,
+    "table_desc": 3,
+    "page_pa": 3,
+    "pa_index": 4,
+    "reset": 141,
+    "alloc_table": 153,
+    "free_table": 20,
+    "check_range": 41,
+    "walk_leaf": 119,
+    "map_page": 134,
+    "unmap_page": 164,
+    "translate": 64,
+    "get_root_pa": 15,
+    "get_trans_result": 4,
+    "get_free_count": 9,
+    "get_in_use": 12,
+    "get_high_water": 9,
+    "get_mapped_pages": 9,
+    "get_entry_count": 12
+  },
+  "comparison_to_recorded_closure_baseline": {
+    "reference": "results/stage2-record-base-closure-2026-09-18.json",
+    "text_bytes_then": 3892,
+    "text_bytes_now": 3708,
+    "text_bytes_delta": -184,
+    "walk_leaf_instructions_then": 123,
+    "walk_leaf_instructions_now": 119,
+    "walk_leaf_instructions_delta": -4,
+    "relocations_then_and_now": 27,
+    "interpretation": "A cumulative static comparison on unchanged source, not a controlled single-transform experiment or a runtime result. The old compiler was not rebuilt in this run."
+  },
+  "focused_oak_tests": {
+    "command": "go test ./compiler -run '^Test(E2ENativeStage2AllocTableProven|NativeLargeBlockedFillBacksOffUnprovenRotation)$' -count=1 -v -timeout=8m",
+    "passed": [
+      "TestE2ENativeStage2AllocTableProven",
+      "TestNativeLargeBlockedFillBacksOffUnprovenRotation"
+    ]
+  },
+  "conformance": {
+    "command": "zig test /Users/sam/os/os/core/src/stage2_native_conformance.zig /Users/sam/os/os/pilots/oak/stage2_native_shim.c /private/tmp/oak-stage2-baseline.WI5JCV/stage2.c /private/tmp/oak-stage2-baseline.WI5JCV/stage2.o -lc --cache-dir /private/tmp/oak-stage2-baseline.WI5JCV/zig-cache --global-cache-dir /private/tmp/oak-stage2-baseline.WI5JCV/zig-global-cache -femit-bin=/private/tmp/oak-stage2-baseline.WI5JCV/stage2-conformance",
+    "passed": 8,
+    "native_differential_cases": [
+      "Native stage2 versus Zig over PRNG operation streams",
+      "Independent native regimes conform and remain isolated"
+    ],
+    "imported_zig_oracle_cases": [
+      "Map/translate/unmap round trip, both geometries",
+      "Unaligned and out-of-range rejection, both geometries",
+      "Pool exhaustion",
+      "Shadow-model translation property, both geometries",
+      "Fuzz map/unmap operation stream",
+      "Atomic 16 KiB-shaped granule map/unmap, both geometries"
+    ],
+    "fuzz_note": "The runner reports one fuzz test found; no separate sustained fuzz campaign was performed.",
+    "initial_attempt": "Linking only the companion object and unchanged shim failed on missing st/trans_result definitions. Including the emitter's generated C corrected the artifact composition; no source was patched and no pre-generated vendored C was substituted.",
+    "output_sha256": "44472a7dd8df5d21730fd0d24165d65b71e4f573646fc43b37abfe4f6c95112b"
+  },
+  "alloc_table_rotation_ablation": {
+    "scope": "One-function diagnostic, not a whole-module performance or conformance comparison.",
+    "environment": {
+      "OAK_VERIFY_CACHE": "0",
+      "OAK_OPT_REPORT": "1",
+      "OAK_NATIVE_ONLY": "alloc_table",
+      "OAK_OPT_SKIP": "rotate-loops"
+    },
+    "selected_candidate": "strength-reduce+unroll-fills+hoist-invariants+schedule+reallocate+trim-callee-saves+elide-redundant-guards+late-cleanup",
+    "verdict": "proven",
+    "proof": "Two data-dependent loops coupled inductively, including st and s.entry_count, s.free_count, s.high_water, s.pages.",
+    "verdict_cache_hits": 0,
+    "verdict_checks": 1,
+    "instructions_default": 153,
+    "instructions_without_rotation": 128,
+    "main_loop_instructions_default": 22,
+    "main_loop_instructions_without_rotation": 21,
+    "main_loop_words_per_trip": 4,
+    "main_loop_individual_store_guards_in_both": 4,
+    "total_guards_default": 18,
+    "total_guards_without_rotation": 8,
+    "estimated_stalls_default": 31,
+    "estimated_stalls_without_rotation": 29,
+    "static_cost_default": 2018.2,
+    "static_cost_without_rotation": 1920.2,
+    "object_sha256": "8c5f990f1699bc028593e9fd87ee295db4d16937335f7f29d6d853a3f68ac17d",
+    "report_sha256": "ed04a019c06a4f61a52a8013ef549fa21f5734dfae4bf32467e2f5974bd912c7",
+    "default_rejected_candidate": "The cheaper rotated 128-instruction candidate is trusted, not proven: the Oak body has a data-dependent loop but the asm body does not. The default search correctly falls back to a proven body."
+  },
+  "whole_module_rotation_ablation": {
+    "configuration": "Same baseline compiler/emitter, OAK_VERIFY_CACHE=0, OAK_OPT_REPORT=1, OAK_OPT_SKIP=rotate-loops; no OAK_NATIVE_ONLY filter.",
+    "purpose": "Non-timing diagnostic control, not a proposed global disabling of rotation.",
+    "selected_proven": 20,
+    "selected_witnessed": 0,
+    "selected_trusted": 0,
+    "verdict_cache_hits": 0,
+    "verdict_checks": 20,
+    "alloc_table_instructions": 128,
+    "reset_instructions": 125,
+    "all_other_selected_instruction_counts": "Unchanged from the default baseline.",
+    "text_bytes": 3544,
+    "object_bytes": 4864,
+    "object_sha256": "06d7461af6bfc296fe72d4edc9034bdb513627b2a230209dde620bbb15dcf425",
+    "report_sha256": "edadc8c4fa249831735728d1d54ed9ef94cf0b881caa7a4ac4bac26bd49d1355",
+    "conformance_passed": 8,
+    "conformance_command": "Same unchanged harness/shim/cache flags as the baseline, substituting newly emitted stage2-all-no-rotation.c and stage2-all-no-rotation.o, with a separate conformance output binary.",
+    "conformance_output_sha256": "44472a7dd8df5d21730fd0d24165d65b71e4f573646fc43b37abfe4f6c95112b"
+  },
+  "implemented_candidate": {
+    "base_revision": "fab1e1ad499a8d4eb761cab92578d0238c087cf0",
+    "source_state": "Dirty working-tree candidate: base revision plus the bounded post-verdict fallback in opt/search.go and compiler/native_search.go. Not an unmodified HEAD build.",
+    "production_diff_sha256_at_build": "8739cf2323b543da18c6ad659e758832405f56ff04d2b31652b97f0f753dc248",
+    "production_diff_command": "git diff -- compiler/native_search.go opt/search.go | shasum -a 256",
+    "production_file_sha256_at_build": {
+      "opt/search.go": "cf3b926035e15d60230baeff14856bf490cf695b0cfc6215f46c782e51117eef",
+      "compiler/native_search.go": "348a93e631f4755d34f5389d4561014c87d7e297adbd2e52e84e4d7a442f63c4"
+    },
+    "measurement_stage": "Initial candidate measurement before independent-review follow-up. The subsequent rank tie-break and strict generic budget corrections are recorded separately; these hashes identify the exact initial build, not the final integrated compiler.",
+    "policy": "At most one additional proposal per function after a Trusted/Witnessed validation, only while a non-identity validation slot remains. The native driver clones only AArch64 blocked-fill rotated configurations, drops rotation, retains downstream flags, and sends the new body through the ordinary materialization, deduplication, checker, cost, and semantic-verifier pipeline. No recursive fallback or expanded validation budget.",
+    "command": "Same baseline emitter/environment, with output stem /private/tmp/oak-stage2-baseline.WI5JCV/stage2-candidate; no OAK_OPT_SKIP or OAK_NATIVE_ONLY settings.",
+    "selected_bodies": 20,
+    "selected_proven": 20,
+    "selected_witnessed": 0,
+    "selected_trusted": 0,
+    "c_fallback_bodies": 0,
+    "verdict_cache_hits": 0,
+    "verdict_checks_baseline_and_candidate": 22,
+    "candidates_considered_and_lowered_baseline": 1330,
+    "candidates_considered_and_lowered_candidate": 1332,
+    "fallback_proposals": 2,
+    "changed_selected_bodies": {
+      "alloc_table": {
+        "instructions_before": 153,
+        "instructions_after": 128,
+        "main_loop_instructions_before": 22,
+        "main_loop_instructions_after": 21,
+        "ordered_scalar_stores_per_main_trip": 4,
+        "individual_store_guards_per_main_trip": 4,
+        "total_guards_before": 18,
+        "total_guards_after": 8,
+        "estimated_stalls_before": 31,
+        "estimated_stalls_after": 29,
+        "static_cost_before": 2018.2,
+        "static_cost_after": 1920.2,
+        "frame_bytes_before_and_after": 80,
+        "verdict": "proven"
+      },
+      "reset": {
+        "instructions_before": 141,
+        "instructions_after": 125,
+        "inner_main_loop_instructions_before": 26,
+        "inner_main_loop_instructions_after": 25,
+        "ordered_scalar_stores_per_inner_main_trip": 4,
+        "individual_store_guards_per_inner_main_trip": 4,
+        "total_guards_before": 13,
+        "total_guards_after": 6,
+        "estimated_stalls_before": 10,
+        "estimated_stalls_after": 7,
+        "static_cost_before": 538626.5,
+        "static_cost_after": 519927.5,
+        "frame_bytes_before_and_after": 96,
+        "verdict": "proven"
+      }
+    },
+    "all_other_bodies": "Their encoded instruction words are unchanged; object addresses shift with the two smaller bodies.",
+    "encoded_instructions_before": 927,
+    "encoded_instructions_after": 886,
+    "text_bytes_before": 3708,
+    "text_bytes_after": 3544,
+    "object_bytes_before": 5032,
+    "object_bytes_after": 4864,
+    "relocation_entries_before_and_after": 27,
+    "artifact_comparison": "These before/after sizes use the same companion-object boundary, unlike the older hosted-single-object comparison above.",
+    "object_sha256": "8730ec885f0de3aedd7798d12fdca5266fb6aae98a5db3183ac3b08d99297336",
+    "generated_c_sha256": "4657abc267d83a07002dcf9da19f93367f8efbc6d4a0bae57a5111659d94de7f",
+    "report_sha256": "2ca70704c126f34c0a8bee18df0074ce0edd332f6556a7df96ddbaeec4a7bd58",
+    "disassembly_sha256": "179a753e0fe8f6a444007f9bf794cf23dd20c9b4610a1547a79088138a8ba9cf",
+    "control_note": "The global-no-rotation diagnostic has the same counts but is not byte-identical: its independently searched reset uses a different arithmetic configuration. The implemented candidate does not globally disable rotation.",
+    "conformance_passed": 8,
+    "conformance_command": "Same unchanged harness/shim/cache flags as baseline, substituting newly emitted stage2-candidate.c and stage2-candidate.o, with a separate conformance output binary.",
+    "conformance_output_sha256": "44472a7dd8df5d21730fd0d24165d65b71e4f573646fc43b37abfe4f6c95112b",
+    "tests_passed": [
+      "go test ./opt -count=1 -timeout=3m (complete package)",
+      "TestNativeFillValidationFallbackClonesOnlyRotation",
+      "TestNativeFillValidationFallbackScope",
+      "TestNativeLargeBlockedFillBacksOffUnprovenRotation (fresh proof, <=128 instructions, and rejected-rotation/fallback diagnostics)",
+      "TestE2ENativeStage2AllocTableProven",
+      "TestE2ENativeStage2ReplicaProvenUnderEscalatedBudget"
+    ]
+  },
+  "independent_review_followup": {
+    "equal_outcome_selection": "Both Search's local best candidate and the artifact chooser now use final ordered-frontier rank on equal verdict strength. This allows a cheaper post-verdict candidate to beat its previously validated parent while preserving identity-last policy.",
+    "selection_artifact_revision": "oak.search.selection.v2",
+    "strict_validation_budget": "Post-loop gated recovery skips any unvalidated ungated candidate once the budget is exhausted, choosing an already validated candidate such as the reserved identity. This also closes the pre-existing extra-validation case without a dynamic proposal.",
+    "regressions": [
+      "Trusted and Witnessed parent cost5, fallback cost3, and equal-outcome identity choose the fallback, independent of validation chronology.",
+      "Identity remains last on equal verdict strength even when its static cost is1.",
+      "Budget3 with two trusted gated candidates and an unvalidated ungated fallback validates only those two plus identity, never a fourth body.",
+      "The older ungated-selection test now explicitly allocates budget4 for the four validations it historically expected."
+    ],
+    "integrated_pilot_measurement": "Pending final integration/rebase at the time of this review record; do not relabel the initial dirty-build hashes as final-source measurements."
+  },
+  "next_optimization": {
+    "proposal": "Preserve an unrotated blocked-fill alternative through scheduling, allocation, callee-save trimming, and redundant-guard elimination when a cheaper rotated sibling fails verification.",
+    "evidence": "The same compiler and source already prove the 128-instruction unrotated alloc_table with rotation withheld, versus the default 153-instruction fallback. This indicates a candidate-search opportunity; the exact pruning mechanism has not been proved here.",
+    "boundaries": [
+      "Keep normal rotation available elsewhere; do not globally disable it as the implementation.",
+      "Require the existing semantic verifier to prove each newly selected body; do not turn the rejected rotated verdict into an admission.",
+      "Retain ordered scalar STRs and individual record-field guards; do not infer STP authority or consolidate partial-failure guards from final-state equality.",
+      "Validate byte-store effects, trap prefixes, invalid inputs, and the unchanged native differential suite before changing selection."
+    ],
+    "implemented": true,
+    "remaining": "The original rotated blocked-fill candidate still lacks a proof. This change recovers independently proven unrotated downstream work; it does not repair that verifier gap or establish a runtime gain."
+  },
+  "raw_artifacts": {
+    "temporary_directory": "/private/tmp/oak-stage2-baseline.WI5JCV",
+    "emitter_report_sha256": "b7eda280f76374c711f25d65ab08fca1118de7e88948982a0bab1031ab6a8cbb",
+    "disassembly_sha256": "4a2ddd651a145401458fa9dfd68faa852b370563aaa3f7cdd631dd9103042171",
+    "retention": "Temporary artifacts are not a permanent archive; the commands, source hashes, and structured observations are recorded here for reproduction."
+  },
+  "claim_boundary": "Proven means the existing Oak native checker/verifier's per-body result. This report does not establish original Arm ASL instruction execution, translation/fault equivalence, CAT memory ordering, private-memory custody, BBM publication, or end-to-end formal verification.",
+  "runtime": {
+    "reported": false,
+    "reason": "This task ran static code/proof diagnostics and conformance while parallel proof/build work was active. No timing benchmark or C/Rust/Zig performance-parity claim was attempted."
+  }
+}

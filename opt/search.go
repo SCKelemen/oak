@@ -73,6 +73,14 @@ type Driver interface {
 	Validate(c *Candidate) Verdict
 }
 
+// ValidationFallbackDriver optionally proposes one alternative after a trusted
+// or witnessed candidate. It must return a fresh configuration, not mutate c or
+// reuse its body/verdict. Search admits and validates the proposal normally,
+// within the existing budget; a proposal is never authority to accept a body.
+type ValidationFallbackDriver interface {
+	ValidationFallback(c *Candidate, verdict Verdict) *Candidate
+}
+
 // Search is the bounded candidate search of one region
 // (docs/notes/optimizer-search-2026-09.md §6, §15):
 //
@@ -250,8 +258,69 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 	sort.SliceStable(order, func(i, j int) bool { return cheaper(order[i], order[j]) })
 	order = append(order, identity)
 	sel.Frontier = order
+	// Validation order can differ from cost order when a fallback is inserted
+	// after its parent was judged. Equal-strength verdicts follow the current
+	// frontier rank, which deliberately keeps the identity last.
+	rank := func(candidate *Candidate) int {
+		for index, current := range order {
+			if current == candidate {
+				return index
+			}
+		}
+		return len(order)
+	}
 	validated := map[*Candidate]bool{}
 	unproven := map[string]*Candidate{} // shapes validated without a proof, by the form that was
+	// At most one additional proposal per region, and never recursively from
+	// that proposal. The ordinary beam and reserved identity slot are unchanged.
+	fallbackProposed := false
+	proposeFallback := func(c *Candidate, verdict Verdict) error {
+		driver, ok := d.(ValidationFallbackDriver)
+		if !ok || fallbackProposed || len(sel.Validations) >= budget-1 || (verdict.Outcome != Trusted && verdict.Outcome != Witnessed) {
+			return nil
+		}
+		next := driver.ValidationFallback(c, verdict)
+		if next == nil {
+			return nil
+		}
+		fallbackProposed = true
+		if next == c || next.IsIdentity() {
+			// Do not rematerialize the just-validated candidate in place;
+			// the existing identity already owns the reserved last slot.
+			return nil
+		}
+		sel.Considered++
+		nodes, err := pipeline.materialize(next)
+		if err != nil {
+			s.Report.Missed(function, "validation-fallback", fmt.Sprintf("the %s form did not lower: %v", next.Name(), err))
+			return nil
+		}
+		sel.Materialized++
+		if _, duplicate := seen[next.Key]; duplicate {
+			return nil
+		}
+		seen[next.Key] = next
+		nodes, findings, err := s.check(function, next, pipeline, nodes, rounds)
+		if err != nil {
+			return err
+		}
+		if len(findings) > 0 {
+			s.Report.Missed(function, "validation-fallback", fmt.Sprintf("the checker did not admit the %s form: %s", next.Name(), findings[0]))
+			return nil
+		}
+		seen[next.Key] = next
+		next.Metrics, next.Cost, err = pipeline.measureAndCost(nodes)
+		if err != nil {
+			return err
+		}
+		artifacts[next] = nodes
+		order = append(order[:len(order)-1], next)
+		sort.SliceStable(order, func(i, j int) bool { return cheaper(order[i], order[j]) })
+		order = append(order, identity)
+		sel.Frontier = order
+		s.Report.Analysis(function, "validation-fallback", fmt.Sprintf("the %s form was proposed after %s was judged %s; ordinary admission, cost, and validation budget apply", next.Name(), c.Name(), verdict.Outcome))
+		return nil
+	}
 	pick := func() *Candidate {
 		var fallback *Candidate
 		for _, c := range order {
@@ -281,7 +350,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 		}
 		sel.Validations = append(sel.Validations, Validated{Candidate: c, Verdict: verdict})
 		v := &sel.Validations[len(sel.Validations)-1]
-		if best == nil || verdict.Outcome > best.Verdict.Outcome {
+		if best == nil || verdict.Outcome > best.Verdict.Outcome || (verdict.Outcome == best.Verdict.Outcome && rank(v.Candidate) < rank(best.Candidate)) {
 			best = v
 		}
 		if verdict.Outcome == Proven {
@@ -289,6 +358,9 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			break
 		}
 		unproven[s.shape(c)] = c
+		if err := proposeFallback(c, verdict); err != nil {
+			return nil, err
+		}
 	}
 	if proved == nil {
 		validated[identity] = true
@@ -298,7 +370,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 		}
 		sel.Validations = append(sel.Validations, Validated{Candidate: identity, Verdict: verdict})
 		v := &sel.Validations[len(sel.Validations)-1]
-		if best == nil || verdict.Outcome > best.Verdict.Outcome {
+		if best == nil || verdict.Outcome > best.Verdict.Outcome || (verdict.Outcome == best.Verdict.Outcome && rank(v.Candidate) < rank(best.Candidate)) {
 			best = v
 		}
 	}
@@ -333,6 +405,12 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				}
 			}
 			if replacement == nil {
+				if len(sel.Validations) >= budget {
+					// A post-verdict proposal may be an ungated body we did
+					// not reach in cost order. Do not give it an extra slot;
+					// the already-validated identity remains a safe fallback.
+					continue
+				}
 				verdict, err := pipeline.validate(artifacts[c])
 				if err != nil {
 					return nil, err
