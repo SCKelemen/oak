@@ -8645,6 +8645,21 @@ followed it (`sourceTrapOnPath`, below) bring it to 573, 212, 166 at
 62ce8b44, and both walkers are fully proven again (stage2 twenty of
 twenty, addr_space twenty-nine of twenty-nine).
 
+**Locals assigned in a chained conditional's arms are carried
+(2026-09-18).** `TestE2ENativeGuardLines`'s `count_hits` — the search whose
+two element reads the checker's surviving ceiling now elides — had
+been evidence since it was written: the Oak side of
+its search loop carried `found` but not `lo` and `hi`, assigned in the
+second and third arms of `k == target ? { found = true } | k < target ?
+{ lo = mid + 1 } | { hi = mid }`, because a chained conditional's else
+arm is a conditional itself and the summarizer's walk of a loop body's
+assignments (`assignedLocals`, `assignedFieldPaths`) looked only into
+block arms; the loop's continue condition then compared the machine's
+`lo < hi`, carried in two registers, with the Oak side's entry values
+`0 < len(keys)`, and every coupling was refuted. The walk now follows a
+conditional arm into its own arms, and `count_hits` is proven with its
+two nested loops coupled inductively (hits, p, hi, lo, found).
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

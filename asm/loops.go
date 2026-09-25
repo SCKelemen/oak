@@ -3686,12 +3686,25 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 		case *ast.ExpressionStatement:
 			// A statement-level conditional assigns in its arms.
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				for _, arm := range match.Arms {
-					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-						assignedLocals(block.Block, into)
-					}
-				}
+				assignedLocalsInArms(match, into)
 			}
+		}
+	}
+}
+
+// assignedLocalsInArms walks a conditional's arms: a block arm's
+// statements, and a chained conditional's arm (`a ? X | b ? Y | Z`, whose
+// else arm is the conditional `b ? Y | Z`) through its own arms — the
+// search loop's `lo` and `hi`, assigned in the second and third arms,
+// were not carried, and the loop's continue condition compared the
+// machine's `lo < hi` with the Oak side's entry values.
+func assignedLocalsInArms(match *ast.MatchExpression, into map[string]bool) {
+	for _, arm := range match.Arms {
+		switch body := arm.Body.(type) {
+		case *ast.BlockExpression:
+			assignedLocals(body.Block, into)
+		case *ast.MatchExpression:
+			assignedLocalsInArms(body, into)
 		}
 	}
 }
@@ -3717,12 +3730,20 @@ func assignedFieldPaths(body *ast.BlockStatement, into map[string][]string) {
 			assignedFieldPaths(s.Body, into)
 		case *ast.ExpressionStatement:
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				for _, arm := range match.Arms {
-					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-						assignedFieldPaths(block.Block, into)
-					}
-				}
+				assignedFieldPathsInArms(match, into)
 			}
+		}
+	}
+}
+
+// assignedFieldPathsInArms is assignedLocalsInArms for assignedFieldPaths.
+func assignedFieldPathsInArms(match *ast.MatchExpression, into map[string][]string) {
+	for _, arm := range match.Arms {
+		switch body := arm.Body.(type) {
+		case *ast.BlockExpression:
+			assignedFieldPaths(body.Block, into)
+		case *ast.MatchExpression:
+			assignedFieldPathsInArms(body, into)
 		}
 	}
 }
