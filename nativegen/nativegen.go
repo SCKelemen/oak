@@ -7789,6 +7789,13 @@ func (g *generator) retargetLast(r, v int) bool {
 	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
 	ins.Operands = operands
 	g.items[n-1] = ins
+	// The rewritten instruction writes the home, not the scratch: the
+	// written set follows it, or a home assigned this way (`depth: u32 =
+	// 0` as `mov w16, wzr`) read as unwritten and a later call's spill of
+	// it was inconsistent — the checker's unbound register read in the
+	// prover's pattern_text.
+	delete(g.defined, r)
+	g.noteWrite(ins.Mnemonic, ins.Operands)
 	g.forget(r)
 	g.forget(v)
 	return true
