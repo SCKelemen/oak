@@ -3055,7 +3055,12 @@ conditional's result register written in one arm was still counted
 written in the other, whose call spilled it unwritten, the prover's
 `operand` and four more bodies; a freshly allocated register holds
 nothing; and an instruction built apart from the emitter records its
-write like one built there),
+write like one built there; and an instruction retargeted onto a
+variable's home — `mov w9, wzr` rewritten to `mov w16, wzr` for `depth:
+u32 = 0`, the store folded into the value's last instruction — records
+its write on the home, where the rewrite left the home unwritten in the
+set and a later call's spill of it inconsistent, the prover's
+`pattern_text`),
 and a function whose one arm placed its result in `x0` — the base of a span
 parameter — before its other arm walked the span (the checker's span facts
 flow in text order, so the write ended the span). Now: a typed scalar
