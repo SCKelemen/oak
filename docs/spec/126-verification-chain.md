@@ -1044,6 +1044,17 @@ commitment, CAT W/TTD classification, coherence, translation/cacheability,
 invalidation scope, and the Lean/Lem tag-state relation remain open. This
 projection licenses no optimizer reordering.
 
+The separate [Stateright pilot](../../spec/stateright/README.md) explores a
+bounded hand-written remap/reclamation protocol with two observers and one
+remap. Four missing-synchronization variants must produce replayable stale
+accesses; the safe policy must satisfy three safety and three nonvacuity
+checks. Complete Stateright exploration is cross-checked against a full-Eq
+reachable-state traversal, with no successful partial-search outcome.
+Its publication/quiescence/acknowledgement contracts are explicit assumptions,
+not DSB/TLBI implementations or an ARM weak-memory overapproximation. It adds
+neither a model-to-Oak refinement proof nor optimizer authority. Linking its
+counterexamples to actual Sail/CAT executions remains separate work.
+
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is
 `Never` with no BBM warning; the unmaintained case is `Sometimes` with exactly

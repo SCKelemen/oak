@@ -1,0 +1,46 @@
+name: Bounded protocol model checking
+
+on:
+  push:
+    branches: [specification]
+    paths:
+      - 'spec/stateright/**'
+      - '.github/workflows/model-check.yml'
+  pull_request:
+    branches: [specification]
+    paths:
+      - 'spec/stateright/**'
+      - '.github/workflows/model-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: spec/stateright
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.91.1 --profile minimal --component rustfmt --component clippy
+      - name: Fetch exactly the locked dependencies
+        run: cargo +1.91.1 fetch --locked
+      - name: Check formatting and warnings
+        run: |
+          cargo +1.91.1 fmt --all --check
+          cargo +1.91.1 clippy --locked --offline --all-targets -- -D warnings
+      - name: Check the finite protocol, mutants, coverage, and trace replay
+        run: cargo +1.91.1 test --locked --offline
+      - name: Record completed searches and replayed counterexamples
+        run: cargo +1.91.1 run --locked --offline --release > report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bounded-remap-model
+          path: |
+            spec/stateright/report.json
+            spec/stateright/Cargo.lock
+          if-no-files-found: error
