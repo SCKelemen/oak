@@ -5130,7 +5130,14 @@ table lookups; the prover's `row_named` and `signed_marks` prove this
 way, and the cap keeps the attempts that cannot finish cheap (five
 percent more verification time over the prover's 141 hardest bodies,
 where the uncapped attempt cost forty-three), while the OS walkers,
-which need their reach facts, keep them through the second run. A deep nest, thirteen loop events or
+which need their reach facts, keep them through the second run. One iteration is decided under both
+sides' reach conditions, the machine's path to the loop and the Oak arm
+it sits in (2026-09-29, `reachedBoth`): the Oak side's values after an
+iteration are guarded by that arm, and with the machine's condition
+alone a valuation satisfied the premise with the arm false and refuted a
+correct pairing, eleven of the prover's bodies ending in the search's
+fallback "no register is an affine image". Assuming both is assuming
+either, since the coupling proves the two equal or refuses. A deep nest, thirteen loop events or
 more, gives the attempt the whole allowance (`deepNestLoops`): the
 scanner's step functions (thirteen loops) and `count` and `find_from`
 (thirty-two) finish the coupling only under it, and their reach terms
