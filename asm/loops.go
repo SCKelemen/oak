@@ -4589,19 +4589,35 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// (assuming the Oak guard would make any asm guard it implies look
 	// equal) — the invariants and guards of its ancestors, and its
 	// children's exit premises.
+	// reachedBoth is where event k runs: the machine's path to it and the
+	// Oak arm it sits in. The Oak side's values after an iteration are
+	// guarded by that arm, so with the machine's condition alone a
+	// valuation satisfied the premise with the arm false and refuted a
+	// correct pairing (the prover's count_candidates, the coupling's "no
+	// register is an affine image" fallback). Assuming both is assuming
+	// either: the coupling proves the two equal below, or refuses.
+	reachedBoth := func(k int, sigma map[string]*term) *term {
+		out := constTerm(1, 1)
+		if abstractReach {
+			if asmLoops[k].reached != nil || oakLoops[k].oakPath != nil {
+				out = reachSymbol(k)
+			}
+			return out
+		}
+		if reached := asmLoops[k].reached; reached != nil {
+			out = binaryTerm("and", out, truncate(substitute(reached, sigma), 1))
+		}
+		if reached := oakLoops[k].oakPath; reached != nil {
+			out = binaryTerm("and", out, truncate(substitute(reached, sigma), 1))
+		}
+		return out
+	}
 	bodyPremise := func(k int, sigma map[string]*term, underGuard bool) *term {
 		premise := substitute(invariants[k], sigma)
 		if underGuard {
 			premise = binaryTerm("and", premise, truncate(substitute(oakLoops[k].cond, sigma), 1))
 		}
-		if reached := asmLoops[k].reached; reached != nil {
-			// The machine's summary holds where the path reached the loop.
-			if abstractReach {
-				premise = binaryTerm("and", premise, reachSymbol(k))
-			} else {
-				premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
-			}
-		}
+		premise = binaryTerm("and", premise, reachedBoth(k, sigma))
 		// The loops before this one at the same level ran or left their
 		// symbols at their header values: this loop's header values and
 		// continue condition may read them (under the coupling, an asm
@@ -4625,13 +4641,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		}
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
-			if reached := asmLoops[at].reached; reached != nil {
-				if abstractReach {
-					premise = binaryTerm("and", premise, reachSymbol(at))
-				} else {
-					premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
-				}
-			}
+			premise = binaryTerm("and", premise, reachedBoth(at, sigma))
 		}
 		for _, child := range children[k] {
 			premise = binaryTerm("and", premise, eventPostcondition(child, sigma))
