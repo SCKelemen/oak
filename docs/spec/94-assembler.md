@@ -8770,13 +8770,30 @@ when the array value's elements are all such parameters
 when the field's leaves are (`recordArrayMemory`; a store into a record
 argument is refused, so they stay the parameters). A constant index is
 the leaf itself, as before; the trap on the index precedes the read on
-both sides. The read is an atom of the linear form (`pick` proves as
+both sides. The rule is the record argument's field only (a memory
+named by a field path): an array parameter's own elements (`block[k]`
+of BLAKE3's `block: [64]u8`) the machine reads as frame slots or span
+elements and folds, and the first form of the rule read them as a
+memory on the Oak side alone, which cost `blake3_update` its coupling
+(`TestE2ENativeBlake3PackageAgreesWithReference`). The read is an atom of the linear form (`pick` proves as
 `1*a.at[i]`, `pair` as `1*a.at[i + 1] + 1*a.at[i]`) and a block of the
 blaster's select abstraction, two reads at one linear index one block
 (`TestVerifyRecordArgumentArrayAsMemory`,
 `TestE2ENativeRecordArrayMemory`, whose `count_set` loops over the
 reads). `shift_const` proves under the model in 1.4 s a form where it
-was evidence; the family's tally follows below.
+was evidence. Tallied on the plain bodies at a2418aa1: 590 proven, 236
+evidence, 125 trusted of 951 identity forms (573, 212, 166 at
+62ce8b44, upstream's loop-summarizer increments of the week between
+sharing the gain); of the family, `not_bits`, `shift_const`,
+`shift_right_arith`, and `permute_bits` cross to proven, while
+`add_carry`, `add_bits`, `mux_bits`, `shift_barrel`,
+`count_leading_zeros`, and `pop_count` stop at "the loops' terms hold
+over 840,000 nodes, past the coupling's budget of 250,000" — the
+result `out: Bits`, sixty-four leaves each a conditional over the
+loop's index per iteration — and `pointwise`, `rotate_right`, and
+`load_bits` at the coupling search's budgets: the write side of the
+family, the local record's array field as a memory of its own, is the
+next step.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module

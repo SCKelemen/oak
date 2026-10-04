@@ -5533,6 +5533,10 @@ type oakLocal struct {
 	width  int
 	signed bool
 	agg    *oakValue
+	// param: the aggregate is a parameter's own (paramAggregate), not a
+	// local's copy of one: a record argument's array field is read as a
+	// memory (elementUnderIndexTerm) where a copy's is the frame's.
+	param bool
 }
 
 // oakType is the shape of a local: a scalar, a declared record, a tagged
@@ -6269,7 +6273,7 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 			if !ok {
 				return nil, reason, false
 			}
-			return lo.elementUnderIndexTerm(owner, viewIndex(view, index), view.length)
+			return lo.elementUnderIndexTerm(owner, viewIndex(view, index), view.length, false)
 		}
 		base, reason, ok := lo.placeIn(e.Left, read)
 		if !ok {
@@ -6294,7 +6298,7 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 			if !read {
 				return nil, "an array element at a data-dependent index", false
 			}
-			return lo.elementUnderIndex(base, e.Index)
+			return lo.elementUnderIndex(base, e.Index, lo.rootIsParam(e.Left))
 		}
 		if k < 0 || k >= base.typ.length {
 			return nil, fmt.Sprintf("the index %d past [%d]", k, base.typ.length), false
@@ -6457,18 +6461,19 @@ func (lo *oakLowering) assignRecordSpanElement(s *ast.IndexAssignmentStatement) 
 // elementUnderIndex reads an array element at a symbolic index: the
 // elements merged leaf by leaf under `index == k`, and the index at or past
 // the length recorded as a trap obligation (the bounds check Oak keeps).
-func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expression) (*oakValue, string, bool) {
+func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expression, paramField bool) (*oakValue, string, bool) {
 	index, reason, ok := lo.lower(indexExpr, 32)
 	if !ok {
 		return nil, reason, false
 	}
-	return lo.elementUnderIndexTerm(base, index, nil)
+	return lo.elementUnderIndexTerm(base, index, nil, paramField)
 }
 
 // elementUnderIndexTerm is elementUnderIndex at an index term; bound, when
 // given, is a view's length, the index checked against it as the view's
-// own bounds check (the owner's is the view's construction guard).
-func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound *term) (*oakValue, string, bool) {
+// own bounds check (the owner's is the view's construction guard);
+// paramField marks an array that is a parameter's own field.
+func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound *term, paramField bool) (*oakValue, string, bool) {
 	if len(base.elems) == 0 {
 		return nil, "an element of an empty array", false
 	}
@@ -6479,7 +6484,7 @@ func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound 
 	if lo.witnessTrapped {
 		return nil, "an index past the array's length on this input", false
 	}
-	if memory, isMemory := leafMemoryOf(base.elems); isMemory && index.kind != termConst {
+	if memory, isMemory := leafMemoryOf(base.elems); paramField && isMemory && index.kind != termConst {
 		// A large array whose elements are the leaf parameters of one
 		// memory (a record argument's `a.at`, sixty-four words of the
 		// prover's Bits) read at a symbolic index is a read of that
@@ -6493,6 +6498,22 @@ func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound 
 		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
 	}
 	return out, "", true
+}
+
+// rootIsParam reports an access path (`state.block`, `a.at`) rooted at a
+// parameter's own aggregate rather than a local's.
+func (lo *oakLowering) rootIsParam(e ast.Expression) bool {
+	for {
+		switch n := e.(type) {
+		case *ast.Identifier:
+			local, isLocal := lo.locals[n.Value]
+			return isLocal && local.param
+		case *ast.IndexExpression:
+			e = n.Left
+		default:
+			return false
+		}
+	}
 }
 
 // spanArrayFieldElements is the element count from which an array whose
@@ -6519,6 +6540,15 @@ func leafMemoryOf(elems []*oakValue) (string, bool) {
 				return "", false
 			}
 			memory = elem.scalar.name[:bracket]
+			if !strings.Contains(memory, ".") {
+				// An array field of a record argument (`a.at`), which the
+				// machine side reads the same way (recordArrayMemory); an
+				// array parameter's own elements (`block[k]` of a `block:
+				// [64]u8`) the machine reads as frame slots or span
+				// elements and folds, and a read of them as a memory on
+				// this side alone cost BLAKE3's update its coupling.
+				return "", false
+			}
 		}
 		if elem.scalar.name != spanElemName(memory, int64(k)) {
 			return "", false
@@ -6764,7 +6794,7 @@ func (x *pathExecutor) bindAggregateArgument(lo *oakLowering, param *ast.Functio
 	if !ok {
 		return 0, fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
 	}
-	lo.locals[param.Name.Value] = &oakLocal{agg: value}
+	lo.locals[param.Name.Value] = &oakLocal{agg: value, param: true}
 	return len(chunks), "", true
 }
 
@@ -6798,7 +6828,7 @@ func (x *pathExecutor) frameRecordArgument(lo *oakLowering, param *ast.FunctionP
 	if !ok {
 		return fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
 	}
-	lo.locals[param.Name.Value] = &oakLocal{agg: value}
+	lo.locals[param.Name.Value] = &oakLocal{agg: value, param: true}
 	return "", true
 }
 
@@ -6943,7 +6973,7 @@ func (lo *oakLowering) bindAggregateParams(sig *ast.FunctionStatement) {
 			if lo.locals == nil {
 				lo.locals = map[string]*oakLocal{}
 			}
-			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg, param: true}
 		}
 	}
 }
@@ -10707,7 +10737,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			if !ok {
 				return fmt.Sprintf("a call to %s: parameter %s: %s", name, param.Name.Value, reason), false
 			}
-			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg, param: true}
 		case argSpan:
 			// A span argument: the {base, len} pair of one of the caller's
 			// span parameters, whole — the callee's parameter is an alias
