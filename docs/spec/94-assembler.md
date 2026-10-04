@@ -8755,6 +8755,29 @@ block arms; the loop's continue condition then compared the machine's
 conditional arm into its own arms, and `count_hits` is proven with its
 two nested loops coupled inductively (hits, p, hi, lo, found).
 
+**A record argument's large array field is a memory (2026-10-04).** The
+prover's `Bits` family passes `a: Bits` (`at: [64]u32`) by reference and
+reads `a.at[i]`; both sides folded the read over the field's sixty-four
+leaves (`(i eq 0) ? a.at[0] : (i eq 1) ? a.at[1] : …`), and a loop's
+obligation over two such reads (`shift_const`'s `a.at[i - k]`,
+`a.at[i + k]`) exceeded every diagram at the implication's allowance. An
+indexed read of an array whose elements are the leaf parameters of one
+memory — at least `spanArrayFieldElements` (64) of them, `a.at[0]`,
+`a.at[1]`, … — is now a read of that memory (`termSelect` over `a.at`),
+by one rule on both sides: the Oak lowering's `elementUnderIndexTerm`
+when the array value's elements are all such parameters
+(`leafMemoryOf`), and the executor's load through a record argument
+when the field's leaves are (`recordArrayMemory`; a store into a record
+argument is refused, so they stay the parameters). A constant index is
+the leaf itself, as before; the trap on the index precedes the read on
+both sides. The read is an atom of the linear form (`pick` proves as
+`1*a.at[i]`, `pair` as `1*a.at[i + 1] + 1*a.at[i]`) and a block of the
+blaster's select abstraction, two reads at one linear index one block
+(`TestVerifyRecordArgumentArrayAsMemory`,
+`TestE2ENativeRecordArrayMemory`, whose `count_set` loops over the
+reads). `shift_const` proves under the model in 1.4 s a form where it
+was evidence; the family's tally follows below.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

@@ -4623,15 +4623,24 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 					return "an indexed load through a record argument without a dominating constant index guard", false
 				}
 			}
-			for k := last; k >= first; k-- {
-				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
-				if !okLeaf {
-					return "an indexed load through a record argument cutting through a field", false
-				}
-				if value == nil {
-					value = leaf
-				} else {
-					value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+			if memory, isMemory := x.recordArrayMemory(record.leaves, prefix, baseOffset+mem.Offset, stride, length, size); isMemory && index.kind != termConst {
+				// A large array field read at a symbolic index is a read
+				// of the memory its leaves are the elements of — the Oak
+				// side's rule for the same array (elementUnderIndexTerm),
+				// a store into a record argument being refused, so the
+				// leaves are the parameters throughout.
+				value = selectTerm(memory, index, int(size)*8)
+			} else {
+				for k := last; k >= first; k-- {
+					leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
+					if !okLeaf {
+						return "an indexed load through a record argument cutting through a field", false
+					}
+					if value == nil {
+						value = leaf
+					} else {
+						value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+					}
 				}
 			}
 		} else {
@@ -6470,11 +6479,69 @@ func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound 
 	if lo.witnessTrapped {
 		return nil, "an index past the array's length on this input", false
 	}
+	if memory, isMemory := leafMemoryOf(base.elems); isMemory && index.kind != termConst {
+		// A large array whose elements are the leaf parameters of one
+		// memory (a record argument's `a.at`, sixty-four words of the
+		// prover's Bits) read at a symbolic index is a read of that
+		// memory, as the machine side reads the argument (load): the
+		// fold over its leaves was a sixty-four-way select that every
+		// diagram of a loop's obligation over two of them exceeded.
+		return &oakValue{typ: base.typ.elem, scalar: selectTerm(memory, index, base.typ.elem.width)}, "", true
+	}
 	out := base.elems[len(base.elems)-1].copy()
 	for k := len(base.elems) - 2; k >= 0; k-- {
 		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
 	}
 	return out, "", true
+}
+
+// spanArrayFieldElements is the element count from which an array whose
+// elements are the leaf parameters of one memory is read at a symbolic
+// index as that memory (elementUnderIndexTerm, recordArrayMemory) rather
+// than as a fold over the leaves.
+const spanArrayFieldElements = 64
+
+// leafMemoryOf reports the memory whose elements the scalars are, in
+// order: `m[0]`, `m[1]`, … (spanElemName) for one m, at least
+// spanArrayFieldElements of them, every one a parameter of one width.
+func leafMemoryOf(elems []*oakValue) (string, bool) {
+	if len(elems) < spanArrayFieldElements {
+		return "", false
+	}
+	var memory string
+	for k, elem := range elems {
+		if elem == nil || elem.scalar == nil || elem.scalar.kind != termParam || elem.scalar.width != elems[0].scalar.width {
+			return "", false
+		}
+		if k == 0 {
+			bracket := strings.LastIndexByte(elem.scalar.name, '[')
+			if bracket <= 0 {
+				return "", false
+			}
+			memory = elem.scalar.name[:bracket]
+		}
+		if elem.scalar.name != spanElemName(memory, int64(k)) {
+			return "", false
+		}
+	}
+	return memory, true
+}
+
+// recordArrayMemory is leafMemoryOf for a record argument's array field:
+// the field at offset with length elements of stride bytes, each a leaf
+// parameter of the field's memory (the field's prefix, `a.at`), read
+// whole at size bytes.
+func (x *pathExecutor) recordArrayMemory(leaves []compositeLeaf, memory string, offset, stride, length, size int64) (string, bool) {
+	if length < spanArrayFieldElements || size != stride {
+		return "", false
+	}
+	for k := int64(0); k < length; k++ {
+		leaf, ok := x.recordBytes(leaves, offset+k*stride, size)
+		if !ok || leaf.kind != termParam || leaf.name != spanElemName(memory, k) || leaf.width != int(size)*8 {
+			return "", false
+		}
+	}
+	return memory, true
 }
 
 // assignUnderIndex executes `arr[i] = e` at a symbolic index: the value is
