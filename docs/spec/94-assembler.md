@@ -8822,7 +8822,16 @@ through the log (`resultSpanStore`), and a span argument into the area
 aliases the span as one into a local array does. The result's chunks
 read the spans at constant indices. `TestE2ENativeResultSpan`'s two
 bodies prove "the span memory it writes (out.at) … all 32 result
-chunks" where their leaves exceeded the budget. An initialized slot
+chunks" where their leaves exceeded the budget. Tallied on the plain
+bodies at 6ca43a67: 593 proven, 233 evidence, 125 trusted of 951
+identity forms (590, 236, 125 at a2418aa1); of the family `load_bits`,
+`pointwise`, and `rotate_right` cross to proven, ten of sixteen now,
+and the six left — `add_carry` and `add_bits` (the Bits inside a `Sum`
+built in the frame), `mux_bits`, `shift_barrel`, `count_leading_zeros`,
+and `pop_count` (a slot assigned whole from a call each iteration) —
+stop at "the loops' terms hold over 840,000 nodes": the frame-held
+record's array field, and a whole assignment of sixty-four elements per
+iteration, are the family's next two steps. An initialized slot
 (`next: Blake3State = state`) keeps the leaf model: under the span the
 copy of the parameter into the field coupled past the search's budget,
 where the leaves prove BLAKE3's update
