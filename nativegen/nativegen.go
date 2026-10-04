@@ -1330,9 +1330,12 @@ type generator struct {
 	// returnSlot names the record local built in the result area itself
 	// (docs/spec/94-assembler.md §9 "Copies at the boundary"), "" for none.
 	returnSlot string
-	usedX8     bool
-	temps      int
-	head       string // the loop header a tail self-call jumps to
+	// returnSlotPlaced is the return slot once declareRecord has placed it
+	// in the result area (asm.Function.ResultSlot).
+	returnSlotPlaced string
+	usedX8           bool
+	temps            int
+	head             string // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -2710,6 +2713,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
+	out.ResultSlot = g.returnSlotPlaced
 	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
@@ -4893,6 +4897,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 		// closes the function (docs/spec/94-assembler.md §9 "Copies at
 		// the boundary"; Oak.BoundaryCopies.build_in_place).
 		rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+		g.returnSlotPlaced = name
 	}
 	g.bindRecord(name, rec)
 	return rec
@@ -4923,63 +4928,7 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 // are excluded because their initializer fills frame storage; array
 // literals remain candidates under arrayDeclarationStorage's additional
 // type, extent, and whole-assignment guards.
-func returnSlotLocal(fn *ast.FunctionStatement) string {
-	block, isBlock := fn.Body.(*ast.BlockExpression)
-	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
-		return ""
-	}
-	stmts := block.Block.Statements
-	tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
-	if !isExpr || tail.Discard {
-		return ""
-	}
-	ident, isIdent := tail.Expression.(*ast.Identifier)
-	if !isIdent {
-		return ""
-	}
-	name := ident.Value
-	for _, p := range fn.Parameters {
-		if p.Name != nil && p.Name.Value == name {
-			return ""
-		}
-	}
-	topLevel := false
-	for _, stmt := range stmts[:len(stmts)-1] {
-		decl, isDecl := stmt.(*ast.VariableDeclaration)
-		if !isDecl || decl.Name == nil || decl.Name.Value != name {
-			continue
-		}
-		if decl.Type == nil || decl.Type.String() != fn.ReturnType.String() {
-			return ""
-		}
-		if _, isLiteral := decl.Value.(*ast.RecordLiteral); isLiteral {
-			return ""
-		}
-		topLevel = true
-	}
-	if !topLevel {
-		return ""
-	}
-	declarations, ok := 0, true
-	walk(fn.Body, func(n ast.Node) {
-		switch e := n.(type) {
-		case *ast.VariableDeclaration:
-			if e.Name != nil && e.Name.Value == name {
-				declarations++
-			}
-		case *ast.PrefixExpression:
-			if e.Operator == "&" {
-				if root, has := pathRoot(e.Right); has && root == name {
-					ok = false
-				}
-			}
-		}
-	})
-	if declarations != 1 || !ok {
-		return ""
-	}
-	return name
-}
+func returnSlotLocal(fn *ast.FunctionStatement) string { return asm.ReturnSlotLocal(fn) }
 
 // lowerSpanDeclaration lowers `w: []T = subslice(v, s, n)` / `w: [*]T = …`
 // / `w: []T = v`: the local span takes a callee-saved register pair (so it

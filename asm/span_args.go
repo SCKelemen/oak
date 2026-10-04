@@ -21,6 +21,9 @@ type frameBorrow struct {
 	// (nil for scalars) — each element's leaf lives at its offset inside
 	// the element, read and written back at the leaf's width.
 	leaves []compositeLeaf
+	// exec routes a write-back into a result span (the result area's
+	// large array field) to the span's log (resultSpanStore).
+	exec *pathExecutor
 }
 
 // leafBytes is the frame bytes a leaf occupies: a Bool leaf is its 4-byte
@@ -118,20 +121,26 @@ func (x *pathExecutor) frameArrayArgument(state *symbolicState, lo *oakLowering,
 			agg.elems[i] = value
 		}
 		lo.locals[param] = &oakLocal{agg: agg}
-		return frameBorrow{param: param, addr: addr, n: n, elem: elem, writable: writable, leaves: leaves}, "", true
+		return frameBorrow{param: param, addr: addr, n: n, elem: elem, writable: writable, leaves: leaves, exec: x}, "", true
 	}
 	if int64(elemType.width) != elem*8 {
 		return refuse("elements without a scalar model at the span's width")
 	}
 	for i := int64(0); i < n; i++ {
-		value, has := state.loadSlot(addr+i*elem, elem)
+		// An element inside a result span (the result area's large array
+		// field) is read through the span's log, as the Oak side reads
+		// it; else the frame slot.
+		value, has := x.resultSpanLoad(state, addr+i*elem, elem)
+		if !has {
+			value, has = state.loadSlot(addr+i*elem, elem)
+		}
 		if !has {
 			return refuse(fmt.Sprintf("element %d is not in the frame", i))
 		}
 		agg.elems[i] = &oakValue{typ: elemType, scalar: truncate(value, elemType.width)}
 	}
 	lo.locals[param] = &oakLocal{agg: agg}
-	return frameBorrow{param: param, addr: addr, n: n, elem: elem, writable: writable}, "", true
+	return frameBorrow{param: param, addr: addr, n: n, elem: elem, writable: writable, exec: x}, "", true
 }
 
 // writeBack stores a writable borrow's final contents into the caller's
@@ -162,12 +171,18 @@ func (b frameBorrow) writeBack(state *symbolicState, lo *oakLowering) (string, b
 				if !has {
 					continue // a union payload's leaf the value does not carry
 				}
+				if b.exec != nil && b.exec.resultSpanStore(state, base+leaf.offset, leafBytes(leaf), adaptWidth(t, leaf.width)) {
+					continue
+				}
 				state.storeSlot(base+leaf.offset, zeroExtend(adaptWidth(t, leaf.width), int(leafBytes(leaf))*8), leafBytes(leaf))
 			}
 			continue
 		}
 		if element.scalar == nil {
 			return fmt.Sprintf("the span parameter %s has an element without a value", b.param), false
+		}
+		if b.exec != nil && b.exec.resultSpanStore(state, b.addr+int64(i)*b.elem, b.elem, element.scalar) {
+			continue
 		}
 		state.storeSlot(b.addr+int64(i)*b.elem, truncate(element.scalar, int(b.elem)*8), b.elem)
 	}

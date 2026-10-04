@@ -8795,6 +8795,42 @@ loop's index per iteration — and `pointwise`, `rotate_right`, and
 family, the local record's array field as a memory of its own, is the
 next step.
 
+**A result record's large array field is a span memory (2026-10-04).**
+The write side of the Bits family: `out: Bits` is built in the caller's
+result area (the return slot, `asm/return_slot.go`, which the backend
+records as `Function.ResultSlot` when it places the local there), and
+its sixty-four words were sixty-four leaves of the result, each a
+conditional over the loop's index per iteration, until "the loops'
+terms hold over 840,000 nodes, past the coupling's budget". When the
+slot is declared value-less, each array field of the result record with
+at least `spanArrayFieldElements` integer elements is a span memory
+named `<local>.<field>` on both sides: the executor keeps a frame span
+at the field's entry-relative address in the result area
+(`resultSpanAt`, `frameSpanAccess`), its memory the caller's unknown
+until the backend's fill has written every element with zero, when the
+log collapses to the zero marker (`collapseZeroFill`); the Oak lowering
+declares the field a local span, zero at entry, and routes the field's
+indexed reads and writes through its log (`declareReturnSlot`,
+`spanBackedElement`, `assignSpanBackedElement`), a whole read — the
+result, a copy, a call's argument — materializing the elements at their
+constant indices (`materialized`). A wide access over narrow elements
+(an eight-byte copy over a byte array) splits into or joins the
+elements' bytes; a call summary's record or span argument held in the
+result area reads the span element by element rather than unpacking
+chunks (`unpackFrameAggregate`, `resultSpanLoad`), writes back into it
+through the log (`resultSpanStore`), and a span argument into the area
+aliases the span as one into a local array does. The result's chunks
+read the spans at constant indices. `TestE2ENativeResultSpan`'s two
+bodies prove "the span memory it writes (out.at) … all 32 result
+chunks" where their leaves exceeded the budget. An initialized slot
+(`next: Blake3State = state`) keeps the leaf model: under the span the
+copy of the parameter into the field coupled past the search's budget,
+where the leaves prove BLAKE3's update
+(`TestE2ENativeBlake3PackageAgreesWithReference`); and the first form of
+the rule, keyed on the return-slot rule alone, met a body the backend
+had built in the frame after all (`sha256_update`), so the backend's own
+record of the placement is what both sides read.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

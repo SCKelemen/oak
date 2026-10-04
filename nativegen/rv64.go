@@ -461,6 +461,7 @@ func compileRV64Body(fn *ast.FunctionStatement, functions map[string]*ast.Functi
 	}
 	out := &asm.Function{Name: NativeSymbolFor(asm.ArchRV64, fn), Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
+	out.ResultSlot = g.returnSlotPlaced
 	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
