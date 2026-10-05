@@ -1766,10 +1766,11 @@ type Lane struct {
 	// the verifier judge the cleaned body; the compiler keeps the
 	// uncleaned lowering where they refuse it.
 	Cleanup bool
-	// PostScheduleCleanup reruns the same block-local copy and branch cleanup
-	// after scheduling and the final global-address/forwarding passes. It is a
-	// separate candidate so the pre-schedule and uncleaned forms remain
-	// available to the whole-body verifier.
+	// PostScheduleCleanup reruns block-local cleanup after allocation and the
+	// final machine passes, then removes branches to adjacent alias labels. It
+	// is a separate candidate so the earlier cleaned form remains available to
+	// the whole-body verifier. The historical name predates the unscheduled
+	// final-cleanup case.
 	PostScheduleCleanup bool
 	// Globals are the program's mutable top-level scalars a body may
 	// address (docs/spec/94-assembler.md §9, the OS pilot's N3), by Oak
@@ -2206,7 +2207,7 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 	if lane.ElideGlobalLoadMasks && lane.ForwardGlobalLoads && lane.Schedule {
 		elidedGlobalLoadMasks[out] = elideGlobalLoadMasks(out)
 	}
-	if lane.PostScheduleCleanup && lane.Schedule {
+	if lane.PostScheduleCleanup {
 		postScheduledCleanup[out] = postScheduleCleanup(out)
 	}
 	if lane.RescheduleRecordBaseCarriers && reusedRecordBaseDestinations[out] > 0 {
@@ -2217,6 +2218,9 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 		if moved > 0 {
 			rescheduledRecordBaseCarriers[out] = moved
 		}
+	}
+	if lane.PostScheduleCleanup {
+		postScheduledCleanup[out] += postScheduleAliasLabelCleanup(out)
 	}
 	return out, nil
 }

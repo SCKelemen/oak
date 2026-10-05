@@ -294,8 +294,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			if tr.Name() == TransformGlobalLoadMasks {
 				parentLane.ForwardGlobalLoads = true
 			} else if tr.Name() == TransformPostScheduleCleanup {
-				parentLane.Schedule = true
-				parentLane.ElideGlobalLoadMasks = true
+				parentLane.Cleanup = true
 			} else if tr.Name() == TransformTrimCalleeSaves {
 				parentLane.Reallocate = true
 			} else if tr.Name() == TransformRecordBaseCarriers {

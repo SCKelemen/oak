@@ -1,0 +1,83 @@
+{
+  "date_local": "2026-10-05",
+  "recorded_at_utc": "2026-10-05T18:01:24Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "79c5e56f7732eb436e661504498a3af02bfb96ee",
+  "candidate": "baseline plus verifier-gated final adjacent-alias-label cleanup after ordinary cleanup and record-base rescheduling, with fill-unrolled candidates excluded to preserve their established validation fallback",
+  "baseline_configuration": "untouched baseline revision compiler with its default optimizer search",
+  "os_revision": "f446728beec6093bf10e82e04c32a3cb807aa78c",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {"go": "go1.27.1 darwin/arm64", "zig": "0.16.0"},
+  "compiler_binary_sha256": {
+    "baseline": "5776c63e222e430df43a2ab20bad553d462de286f643052116087b3a841976f3",
+    "candidate": "259c7c0a5d38588ea04ceef93cd83af54158c449bcacfb5639c3bc1ebbaaa5bf"
+  },
+  "object_sha256": {
+    "baseline": "8730ec885f0de3aedd7798d12fdca5266fb6aae98a5db3183ac3b08d99297336",
+    "candidate": "921fece333f187a071745d40c92990a4175a52488b678e5f9b2d173de55d0bda"
+  },
+  "object_bytes": {"baseline": 4864, "candidate": 4856, "delta": -8},
+  "text_bytes": {"baseline": 3544, "candidate": 3536, "delta": -8},
+  "relocation_entries": {"baseline": 27, "candidate": 27, "delta": 0},
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "translate": {
+      "instructions_before": 64, "instructions_after": 63,
+      "branches_before": 10, "branches_after": 10,
+      "estimated_stalls_before": 11, "estimated_stalls_after": 11,
+      "static_cost_before": 100.0, "static_cost_after": 99.0,
+      "cleanup_sites_added": 1, "verdict": "proven"
+    },
+    "walk_leaf": {
+      "instructions_before": 119, "instructions_after": 118,
+      "branches_before": 15, "branches_after": 14,
+      "estimated_stalls_before": 18, "estimated_stalls_after": 18,
+      "static_cost_before": 197.0, "static_cost_after": 196.0,
+      "cleanup_sites_added": 1, "verdict": "proven"
+    }
+  },
+  "proof_fallback_regression": {
+    "body": "reset",
+    "baseline_selected_cost": 519927.5,
+    "candidate_selected_cost": 519927.5,
+    "baseline_selected_verdict": "proven",
+    "candidate_selected_verdict": "proven",
+    "resolution": "post-schedule-cleanup does not compose with fill unrolling until the bounded search can retain its established unrotated proof fallback"
+  },
+  "summary": {
+    "selected_instructions_removed": 2,
+    "selected_branches_removed": 1,
+    "estimated_stalls_removed": 0,
+    "static_cost_removed": 2.0,
+    "text_bytes_removed": 8,
+    "object_bytes_removed": 8,
+    "interpretation": "Most September alias branches are already removed by later upstream cleanup. The final child still removes one branch from walk_leaf and one final copy from translate without weakening any selected verdict or displacing reset's proven optimized fallback."
+  },
+  "differential_tests": {
+    "passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "final host load averages were 164 to 179, so no runtime samples were taken"
+  }
+}

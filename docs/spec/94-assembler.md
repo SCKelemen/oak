@@ -6683,15 +6683,17 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
-**Post-schedule cleanup (2026-09-17, AArch64 lane).** Scheduling and the final
+**Post-schedule cleanup (2026-09-17, broadened 2026-09-18, AArch64 lane).** Scheduling and the final
 scalar-global passes above can expose copies after the ordinary late cleanup
 has run. The separate `post-schedule-cleanup` candidate reruns the same
 block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
-rule: the five rules, whole-function general-register liveness, control-flow
+rule: the six rules, whole-function general-register liveness, control-flow
 boundaries, and refusal conditions specified by "Late copy and branch cleanup"
-remain unchanged. The candidate is eligible only after scheduling and
-normalized scalar-global forwarding, so unrelated functions do not acquire a
-second no-op search branch. Its pre-cleanup parent remains selectable.
+remain unchanged. The 2026-09-18 ordered phase registers this transform after
+ordinary `late-cleanup` and makes it eligible after cleanup. That order is what
+lets the one-way phase search reach the separately checked final child for
+unscheduled bodies and bodies without normalized scalar-global forwarding. Its
+earlier cleaned parent remains selectable.
 
 The rerun is non-neutral and **verdict-gated**. The seam checker checks the
 rewritten machine body, and the unchanged whole-body verifier remains the
@@ -6710,6 +6712,29 @@ alignment (5944→5912), and 27 unchanged relocations. All five OS differential
 tests pass. Runtime is not reported from the heavily loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
+
+The 2026-09-18 final cleanup increment adds a branch rule over adjacent alias
+labels: `b L`, followed only by labels including `L`, falls through to the same
+instruction and loses the branch. It never crosses an alignment or instruction.
+Keeping this rule in the separately verdict-gated final child avoids perturbing
+register allocation. Materialization v32 separates the new cleanup recipe from
+earlier cached bodies. Against the untouched `4dac5e05` compiler, the fresh
+stage-2 pilot removes 17 branches from four selected proven bodies: `map_page`
+139→136, `translate` 76→71, `unmap_page` 172→168, and `walk_leaf` 123→118
+instructions. `alloc_table` keeps its proven parent rather than a smaller
+trusted scheduled form. Mach-O `__text` shrinks by 68 bytes and the aligned
+object by 72 bytes, all 27 relocations remain, and both objects pass all eight
+current OS conformance tests. Exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-09-18.json`.
+
+Revalidation at `79c5e56f` (2026-10-05) leaves two selected sites after later
+cleanup work: one final copy in `translate` and one alias-label branch in
+`walk_leaf`, both proven, for 8 bytes less Mach-O text/object and 27 unchanged
+relocations. The child refuses a fill-unrolled parent: composing it there used
+the bounded validation slots before `reset`'s established unrotated proof
+fallback, while refusing it preserves the same optimized proven body as the
+baseline. All eight OS conformance tests pass; exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-10-05.json`.
 
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame
