@@ -9873,6 +9873,10 @@ word's rule existed), so the sides meet syntactically:
 loop of `sha256_update` preserves its state words. Among a slot's
 coupling candidates an equality whose header is not a constant now ranks
 first and an image with a symbolic offset last.
+A narrow view of a parameter under a covering mask (`byte and 0xff` at
+32 bits) becomes the view zero-extended, the form its widened counterpart
+reduces to, so declared-width equality still meets the two views of one
+byte (2026-10-05).
 
 **Probing a body that calls (2026-09-17).** The slots a store at a
 data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its

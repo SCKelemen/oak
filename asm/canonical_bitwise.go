@@ -8,6 +8,12 @@ package asm
 // Oak.BitwiseCanonical proves the algebra; it is not a refinement of this
 // Go implementation or of the caller's source/architectural semantics.
 func canonicalBitwise(t, left, right *term) *term {
+	if t.op == "and" && left != nil && right != nil && left.kind == termParam && left.width < t.width && right.width == t.width && right.kind == termConst && isLowOnes(right.value) && left.declaredWidth() <= left.width && significantBits(left) <= lowOnesCount(right.value) {
+		// A narrow view of a parameter under a covering mask is the view
+		// zero-extended, the spelling its widened counterpart reduces to
+		// below; otherwise the two views of one byte stop meeting.
+		return zeroExtend(left, t.width)
+	}
 	if left == nil || right == nil || left.width != t.width || right.width != t.width {
 		return nil
 	}
