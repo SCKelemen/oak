@@ -474,7 +474,7 @@ column unchanged or improved.
    without its three divides and two multiplies; timing rows deferred to
    a quiet host.
 2. **Vector locals in registers across calls** (landed 2026-09-15,
-   `94-assembler.md` §9.ad): homes in v16–v31 saved around a call only
+   `94-assembler.md` §9.ao): homes in v16–v31 saved around a call only
    when live after it; the checker now forgets v16–v31 at a call (a gap
    closed) and the verifier reloads a saved vector lane for lane. Read
    off the fixture, not the kernels: the helper expansion has flattened

@@ -3589,7 +3589,7 @@ func (c *checker) clobberCallerSaved() {
 	}
 	// The callee owns every vector register but d8–d15's low halves; a
 	// value kept in v16–v31 across the call must be reloaded before it is
-	// read (docs/spec/94-assembler.md §9.ad).
+	// read (docs/spec/94-assembler.md §9.ao).
 	for num := 0; num <= 31; num++ {
 		if !calleeSavedVector(num) {
 			delete(c.writtenV, num)
@@ -4050,7 +4050,7 @@ func (c *checker) call(instr Instruction) {
 	}
 	// The callee owns every vector register but d8–d15's low halves; a
 	// value kept in v16–v31 across the call must be reloaded before it is
-	// read (docs/spec/94-assembler.md §9.ad).
+	// read (docs/spec/94-assembler.md §9.ao).
 	for num := 0; num <= 31; num++ {
 		if !calleeSavedVector(num) {
 			delete(c.writtenV, num)

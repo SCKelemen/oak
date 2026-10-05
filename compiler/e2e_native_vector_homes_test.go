@@ -9,7 +9,7 @@ import (
 )
 
 // Vector locals in registers across calls (docs/spec/94-assembler.md
-// §9.ad, the optimization system's second increment): a calling function's
+// §9.ao, the optimization system's second increment): a calling function's
 // vector locals live in v16–v31 and are saved around a call only when live
 // after it, instead of in sixteen-byte slots reloaded at every use. The
 // shapes: a vector live across a scalar call, one dead before the call, a
@@ -71,7 +71,7 @@ many: (b: []u8, n: u32) -> u32 {
 
 // A leaf with twenty-four vector locals live at once: past the eight
 // callee-saved and twelve scratch homes, the argument registers v1–v7 no
-// parameter occupies take the rest (docs/spec/94-assembler.md §9.ad).
+// parameter occupies take the rest (docs/spec/94-assembler.md §9.ao).
 wide_leaf: (b: []u8) -> u32 {
   a0: simd.U8x16 = simd.load_u8x16(b, u32(0))
   a1: simd.U8x16 = simd.load_u8x16(b, u32(1))
