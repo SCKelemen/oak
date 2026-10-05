@@ -8445,6 +8445,12 @@ func blastCulprits(bl *blaster, t *term, maxReports int) int {
 				}
 			}
 			fmt.Fprintf(os.Stderr, "verify: culprit: kind %d op %q width %d, %d term nodes, operands%s: %s\n", u.kind, u.op, u.width, n, kinds, u.stringBounded(&show))
+			if dump := os.Getenv("OAK_VERIFY_CULPRIT_DUMP"); dump != "" {
+				if f, err := os.OpenFile(dump, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+					fmt.Fprintf(f, "order %q params %v\nculprit (%d term nodes):\n%s\n\n", bl.label, bl.params, n, u.String())
+					f.Close()
+				}
+			}
 		}
 	}
 	walk(t)
