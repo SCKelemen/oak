@@ -1,0 +1,192 @@
+package asm
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/SCKelemen/oak/ast"
+)
+
+func TestFiniteCallApplicationDoesNotImportCalleeLoops(t *testing.T) {
+	callee, err := parseSignatureWithBody("sum_to: (n: u32) -> u32 { acc: u32 = u32(0)\n i: u32 = u32(0)\n while i < n { acc = acc + i\n i = i + u32(1) }\n acc }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := "caller: (n: u32) -> u32"
+	unit, errs := ParseUnit("call_application.oakasm", decl+" = {\n bind w0 = n\n clobber x29, x30\n frame 16\n sub sp, sp, #16\n stp x29, x30, [sp]\n bl sum_to\n ldp x29, x30, [sp]\n add sp, sp, #16\n ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, err := parseSignature(decl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := unit.Functions[0]
+	fn.Callees = map[string]*ast.FunctionStatement{"sum_to": callee}
+	if findings := Check(fn, sig, map[string]bool{"sum_to": true}); len(findings) != 0 {
+		t.Fatalf("checker: %v", findings)
+	}
+	result, exec, reason, ok := executeBodyChunk(fn, sig, nil, 0, 0)
+	if !ok {
+		t.Fatalf("execute call application: %s", reason)
+	}
+	if result == nil || exec == nil || len(exec.loops) != 0 {
+		t.Fatalf("call application imported %d callee loops", len(exec.loops))
+	}
+	spec, err := parseSignatureWithBody(decl + " = sum_to(n)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := Verify(fn, sig, spec.Body)
+	if verdict.Kind != VerdictProven || !strings.Contains(verdict.Message, "sum_to") {
+		t.Fatalf("finite looping callee: got %s: %s", verdict.Kind, verdict.Message)
+	}
+}
+
+func TestFiniteCallLowersToApplication(t *testing.T) {
+	callee, err := parseSignatureWithBody("mix: (a: u32, b: u16) -> u32 { out: u32 = a\n i: u32 = u32(0)\n while i < u32(b) { out = out ^ i\n i = i + u32(1) }\n out }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := parseSignatureWithBody("caller: (x: u32, y: u16) -> u32 = mix(x, y)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(caller)
+	lo.functions = map[string]*ast.FunctionStatement{"mix": callee}
+	result, reason, ok := lo.lower(caller.Body, 32)
+	if !ok {
+		t.Fatalf("lower finite call: %s", reason)
+	}
+	if result.kind != termApply || result.name != "call:mix:result" || len(result.args) != 2 {
+		t.Fatalf("finite call term = %#v", result)
+	}
+	if result.args[0].kind != termParam || result.args[0].name != "x" || result.args[1].kind != termParam || result.args[1].name != "y" {
+		t.Fatalf("finite call arguments = %#v", result.args)
+	}
+}
+
+func TestSmallStraightLineCallStaysExpanded(t *testing.T) {
+	callee, err := parseSignatureWithBody("inc: (a: u32) -> u32 = a + u32(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := parseSignatureWithBody("caller: (x: u32) -> u32 = inc(x)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(caller)
+	lo.functions = map[string]*ast.FunctionStatement{"inc": callee}
+	result, reason, ok := lo.lower(caller.Body, 32)
+	if !ok {
+		t.Fatalf("lower small call: %s", reason)
+	}
+	if result.kind == termApply {
+		t.Fatalf("small straight-line call became an application: %#v", result)
+	}
+}
+
+func TestWideStraightLineCallUsesApplication(t *testing.T) {
+	calleeParams := make([]string, 16)
+	callerParams := make([]string, 16)
+	arguments := make([]string, 16)
+	for i := range calleeParams {
+		calleeParams[i] = fmt.Sprintf("p%d: u32", i)
+		callerParams[i] = fmt.Sprintf("x%d: u32", i)
+		arguments[i] = fmt.Sprintf("x%d", i)
+	}
+	callee, err := parseSignatureWithBody("wide: (" + strings.Join(calleeParams, ", ") + ") -> u32 = p0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := parseSignatureWithBody("caller: (" + strings.Join(callerParams, ", ") + ") -> u32 = wide(" + strings.Join(arguments, ", ") + ")")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(caller)
+	lo.functions = map[string]*ast.FunctionStatement{"wide": callee}
+	result, reason, ok := lo.lower(caller.Body, 32)
+	if !ok {
+		t.Fatalf("lower wide call: %s", reason)
+	}
+	if result.kind != termApply || len(result.args) != 16 {
+		t.Fatalf("wide straight-line call term = %#v", result)
+	}
+}
+
+func TestCallApplicationEligibilityFailsClosed(t *testing.T) {
+	parse := func(source string) *ast.FunctionStatement {
+		t.Helper()
+		fn, err := parseSignatureWithBody(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fn
+	}
+
+	t.Run("borrowed memory", func(t *testing.T) {
+		fn := parse("read: (v: []u32) -> u32 = v[0]")
+		lo := newLowering(fn)
+		if lo.finiteCallApplication(fn, map[string]bool{}) {
+			t.Fatal("a borrowed-memory callee was application-eligible")
+		}
+	})
+
+	t.Run("mutable global", func(t *testing.T) {
+		fn := parse("read: (a: u32) -> u32 = g + a")
+		lo := newLowering(fn)
+		lo.globals = map[string]Global{"g": {Size: 4}}
+		if lo.finiteCallApplication(fn, map[string]bool{}) {
+			t.Fatal("a mutable-global callee was application-eligible")
+		}
+	})
+
+	t.Run("declared effect", func(t *testing.T) {
+		fn := parse("effectful: (a: u32) -> u32 = a")
+		fn.Effects = []*ast.EffectName{{Namespace: "Host", Name: "Write"}}
+		lo := newLowering(fn)
+		if lo.finiteCallApplication(fn, map[string]bool{}) {
+			t.Fatal("an effectful callee was application-eligible")
+		}
+	})
+
+	t.Run("unknown invocation", func(t *testing.T) {
+		fn := parse("unknown: (a: u32) -> u32 = mystery(a)")
+		lo := newLowering(fn)
+		if lo.finiteCallApplication(fn, map[string]bool{}) {
+			t.Fatal("an unknown invocation was application-eligible")
+		}
+	})
+
+	t.Run("foreign transitive call", func(t *testing.T) {
+		foreign := parse("host: (a: u32) -> u32 = a")
+		foreign.ExternSymbol = "host"
+		outer := parse("outer: (a: u32) -> u32 = host(a)")
+		lo := newLowering(outer)
+		lo.functions = map[string]*ast.FunctionStatement{"host": foreign}
+		if lo.finiteCallApplication(outer, map[string]bool{}) {
+			t.Fatal("a callee reaching a foreign call was application-eligible")
+		}
+	})
+}
+
+func TestApplicationLeavesFollowDeclaredOrder(t *testing.T) {
+	u8 := &oakType{kind: oakScalar, width: 8}
+	u16 := &oakType{kind: oakScalar, width: 16}
+	typ := &oakType{kind: oakRecord, fields: []oakField{{name: "second", typ: u16}, {name: "first", typ: u8}}}
+	second := paramTerm("second", 16)
+	first := paramTerm("first", 8)
+	value := &oakValue{typ: typ, fields: map[string]*oakValue{
+		"first":  {typ: u8, scalar: first},
+		"second": {typ: u16, scalar: second},
+	}}
+	var got []*term
+	bits := 0
+	if !appendApplicationLeaves(value, typ, &got, &bits) {
+		t.Fatal("finite record did not flatten")
+	}
+	if len(got) != 2 || got[0] != second || got[1] != first || bits != 24 {
+		t.Fatalf("flattened leaves = %#v, bits=%d", got, bits)
+	}
+}
