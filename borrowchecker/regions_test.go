@@ -123,14 +123,23 @@ func TestCallerBindingFromInlineViewAndBlockScope(t *testing.T) {
 	}
 }
 
-func TestCallerBindingFromSpanArgumentFailsClosed(t *testing.T) {
-	// A span cannot be the region source of a read-only result in this
-	// increment: the result would be a view coexisting with a writable span.
+func TestCallerBindingFromSpanArgumentSuspendsTheSpan(t *testing.T) {
+	// Increment 5: a span may be the region source of a read-only result.
+	// The result reborrows the span, which is suspended while it lives.
 	src := "fn frame(buf: []u8, at: u32) -> []u8 { subslice(buf, at, 2) }\n" +
-		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\ns: [*]u8 = span(&data)\nf: []u8 = frame(s, 1)\nf[0] }"
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\ns: [*]u8 = span(&data)\nf: []u8 = frame(s, 1)\ns[0] = 9\nf[0] }"
 	bc := checkSource(t, src)
-	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
-		t.Fatalf("span argument produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
+	if got := countDiagnosticsWithCode(bc, string(CodeBorrowSuspended)); got != 1 {
+		t.Fatalf("span write while the returned view lives produced %d OAK-B0107, want 1: %#v", got, bc.Diagnostics())
+	}
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 0 {
+		t.Fatalf("unexpected OAK-B0113: %#v", bc.Diagnostics())
+	}
+	clean := "fn frame(buf: []u8, at: u32) -> []u8 { subslice(buf, at, 2) }\n" +
+		"fn use() -> u8 { data: [4]u8 = [4]u8{ 1, 2, 3, 4 }\ns: [*]u8 = span(&data)\nf: []u8 = frame(s, 1)\nf[0] }"
+	bc = checkSource(t, clean)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("a view from a span argument must be clean, got %#v", bc.Diagnostics())
 	}
 }
 
@@ -153,7 +162,6 @@ func TestExplicitRegionSignatureValidation(t *testing.T) {
 	cases := map[string]string{
 		"names no parameter":   "orphan[R]: (a: []u8): View[u8, R] = a",
 		"names two parameters": "both[R]: (a: View[u8, R], b: View[u8, R]): View[u8, R] = a",
-		"view from span":       "narrow[R]: (a: Span[u8, R]): View[u8, R] = a",
 	}
 	for name, src := range cases {
 		bc := checkSource(t, src)
@@ -163,6 +171,19 @@ func TestExplicitRegionSignatureValidation(t *testing.T) {
 		if got := countDiagnosticsWithCode(bc, string(CodeBorrowEscape)); got != 0 {
 			t.Fatalf("%s: an invalid region signature must not also report OAK-B0109: %#v", name, bc.Diagnostics())
 		}
+	}
+}
+
+func TestExplicitRegionViewFromSpan(t *testing.T) {
+	src := "narrow[R]: (a: Span[u8, R]): View[u8, R] = subslice(a, 0, 1)"
+	bc := checkSource(t, src)
+	if len(bc.Diagnostics()) != 0 {
+		t.Fatalf("a view result from a span region must validate, got %#v", bc.Diagnostics())
+	}
+	wrong := "widen[R]: (a: View[u8, R]): Span[u8, R] = a"
+	bc = checkSource(t, wrong)
+	if got := countDiagnosticsWithCode(bc, string(CodeReturnedBorrowRegion)); got != 1 {
+		t.Fatalf("span from a view region produced %d OAK-B0113, want 1: %#v", got, bc.Diagnostics())
 	}
 }
 
