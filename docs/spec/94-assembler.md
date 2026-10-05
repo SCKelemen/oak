@@ -8857,8 +8857,9 @@ passed by reference read fresh frame bytes where its stores had gone to
 the span, a false disagreement on the witnesses. `TestE2ENativeFrameSpan`
 proves `carry_add` (a Sum around the frame-held Bits) and `ones_of` (the
 Bits passed to a callee), and `TestE2ENativeRecordWords`'s `add_bits`
-through `add_carry` again. The prover's six remaining Bits bodies are
-not the field's: `mux_bits` writes `out.at[i] = bdd_ite(l, mem, c,
+through `add_carry` again. The prover's tally at d3eba6be stands where
+the result-area model left it, 593 proven, 233 evidence, 125 trusted:
+the six remaining Bits bodies are not the field's: `mux_bits` writes `out.at[i] = bdd_ite(l, mem, c,
 t.at[i], e.at[i])`, and the callee summarized inside the loop brings
 eighteen loop events a side — its hash probes and allocations — whose
 terms the trace (`OAK_VERIFY_TRACE`, "loop terms") puts at 218,000
