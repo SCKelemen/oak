@@ -343,9 +343,10 @@ Two or more candidate parameters, or none, require the explicit form.
 The same elision holds for spans: a `[*]T` return with exactly one `[*]T`
 parameter of that element type. Nothing is inferred from the body; the
 signature is the contract the caller sees, and the body is checked against
-it. A region names exactly one parameter; a view result cannot come from a
-span region (that would place a read-only borrow beside a writable one on
-one owner), and a span result cannot come from a view region.
+it. A region names exactly one parameter; a span result cannot come from
+a view region. A view result may come from a span region (increment 5):
+at the caller it suspends the span while it lives, so no read-only borrow
+ever stands beside a usable writable one on one owner.
 
 ### The callee's obligation
 
@@ -417,7 +418,7 @@ Subslices carry the region-coordinate translation of section 7 unchanged.
 
 ### Increments
 
-All three increments below are implemented; the list records the order
+All the increments below are implemented; the list records the order
 they landed and the shape each admits.
 
 1. Elided single-candidate view returns: a `[]T` return
@@ -472,6 +473,26 @@ they landed and the shape each admits.
    more. Strings and unions of borrows are outside the path form and fail
    closed. This is what a derived decoder needs to hand back views
    (`71-codecs.md` §13a); executed there in both realizations.
+
+5. A view result from a span region, including an array field of one of
+   the span's elements (2026-10-05). `run[R]: (s: Span[Ring, R], dom:
+   u32): View[u64, R]` may return `view(&s[dom].slots)[lo:hi]`: the
+   callee's result traces through the element field to the span
+   parameter (`elementFieldBase`), and at the caller the bound result is
+   a reborrow of the span argument — the subslice reborrow of section 7 —
+   that suspends the span while it lives (`OAK-B0107` on any use of it),
+   its view type making it read-only (a store through it is a type
+   error). A ring buffer's consumer reads its visible run in place and
+   releases it after the view's block ends, with no copy: the returned
+   view's base is the slots' own storage. The OS pilot's ring
+   (OAK-REQUEST #15) is the case; field-disjoint borrows (holding the view
+   while writing another field of the same element) are not part of this
+   increment. Executed in both realizations and the interpreter
+   (`compiler/e2e_region_view_from_span_test.go`), with the span written
+   while the view lives, a write through the view, and views of a local or
+   another parameter rejected. The proof is `Oak.Escape.reborrow_wf` for
+   the caller's reborrow, unchanged: the derived borrow is the existing
+   subslice reborrow, read-only by its type.
 
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the
