@@ -220,6 +220,17 @@ type guardState struct {
 	sums     map[int]sumFact
 	upper    map[int]upperFact
 	mid      map[int]midFact
+	// written, writtenV, writtenP: the registers initialized on every
+	// path arriving here. These belong in the label's state for the same
+	// reason every fact above does, and were read linearly before: the
+	// walk visits items in textual order, so a call sitting between a
+	// branch and the label it jumps to cleared the caller-saved registers
+	// for the code after the label, on a path that never reaches it. That
+	// refused bodies whose reads are dominated by their writes
+	// (docs/spec/94-assembler.md §9.an).
+	written  map[int]bool
+	writtenV map[int]bool
+	writtenP map[int]bool
 	// flags: NZCV was produced on every path arriving here (a cmp, subs,
 	// adds, or another producer with no call or entry between), so a
 	// b.cond right after the label consumes flags a dominating producer
@@ -244,7 +255,7 @@ func (img *spanImage) equal(other *spanImage) bool {
 }
 
 func newGuardState() *guardState {
-	return &guardState{spans: map[int]*spanImage{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}, regions: map[int]region{}, pages: map[int]string{}, addrs: map[int]string{}, slack: map[int]slackFact{}, slotIdx: map[int64]idxFact{}, le: map[int]int{}, diff: map[int]diffFact{}, sub: map[int]subFact{}, lenEqual: map[int]int{}, sums: map[int]sumFact{}, upper: map[int]upperFact{}, mid: map[int]midFact{}}
+	return &guardState{spans: map[int]*spanImage{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}, regions: map[int]region{}, pages: map[int]string{}, addrs: map[int]string{}, slack: map[int]slackFact{}, slotIdx: map[int64]idxFact{}, le: map[int]int{}, diff: map[int]diffFact{}, sub: map[int]subFact{}, lenEqual: map[int]int{}, sums: map[int]sumFact{}, upper: map[int]upperFact{}, mid: map[int]midFact{}, written: map[int]bool{}, writtenV: map[int]bool{}, writtenP: map[int]bool{}}
 }
 
 func (c *checker) guardSnapshot() *guardState {
@@ -267,6 +278,9 @@ func (c *checker) guardSnapshot() *guardState {
 	gs.sums = copyMap(c.sumFacts)
 	gs.upper = copyMap(c.upper)
 	gs.mid = copyMap(c.mid)
+	gs.written = copyMap(c.written)
+	gs.writtenV = copyMap(c.writtenV)
+	gs.writtenP = copyMap(c.writtenP)
 	gs.flags = c.flagsValid
 	return gs
 }
@@ -296,6 +310,9 @@ func (c *checker) applyGuards(gs *guardState) {
 	c.sumFacts = copyMap(gs.sums)
 	c.upper = copyMap(gs.upper)
 	c.mid = copyMap(gs.mid)
+	c.written = copyMap(gs.written)
+	c.writtenV = copyMap(gs.writtenV)
+	c.writtenP = copyMap(gs.writtenP)
 	c.pendingCmp = cmpFact{}
 	c.pendingCcmp = ccmpFact{}
 	c.flagsValid = gs.flags
@@ -358,6 +375,11 @@ func meetGuards(a, b *guardState) *guardState {
 	out.lenEqual = meetMap(a.lenEqual, b.lenEqual)
 	out.sums = meetMap(a.sums, b.sums)
 	out.mid = meetMap(a.mid, b.mid)
+	// A register counts as initialized after the label only when every
+	// path into it initialized the register.
+	out.written = meetMap(a.written, b.written)
+	out.writtenV = meetMap(a.writtenV, b.writtenV)
+	out.writtenP = meetMap(a.writtenP, b.writtenP)
 	for reg, u := range a.upper {
 		if b.holdsUpper(reg, u) {
 			out.upper[reg] = u
@@ -626,7 +648,8 @@ func (gs *guardState) equal(other *guardState) bool {
 	return equalMap(gs.idx, other.idx) && equalMap(gs.frame, other.frame) && equalMap(gs.consts, other.consts) &&
 		equalMap(gs.regions, other.regions) && equalMap(gs.pages, other.pages) && equalMap(gs.addrs, other.addrs) &&
 		equalMap(gs.slack, other.slack) && equalMap(gs.slotIdx, other.slotIdx) && equalMap(gs.le, other.le) && equalMap(gs.diff, other.diff) && equalMap(gs.sub, other.sub) &&
-		equalMap(gs.lenEqual, other.lenEqual) && equalMap(gs.sums, other.sums) && equalMap(gs.upper, other.upper) && equalMap(gs.mid, other.mid)
+		equalMap(gs.lenEqual, other.lenEqual) && equalMap(gs.sums, other.sums) && equalMap(gs.upper, other.upper) && equalMap(gs.mid, other.mid) &&
+		equalMap(gs.written, other.written) && equalMap(gs.writtenV, other.writtenV) && equalMap(gs.writtenP, other.writtenP)
 }
 
 type checker struct {
