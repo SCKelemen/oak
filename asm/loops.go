@@ -6277,21 +6277,36 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 		count(t.right)
 		count(t.cond)
 	}
-	for _, side := range [][]*loopEvent{asmLoops, oakLoops} {
-		for _, ev := range side {
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	for k, side := range [][]*loopEvent{asmLoops, oakLoops} {
+		for j, ev := range side {
+			before := len(visited)
 			count(ev.cond)
 			count(ev.headerTrap)
 			count(ev.bodyTrap)
+			afterConds := len(visited)
 			for _, name := range ev.vars {
 				count(ev.header[name])
 				count(ev.next[name])
 			}
+			afterVars := len(visited)
 			for _, writes := range ev.writes {
 				for _, w := range writes {
 					count(w.index)
 					count(w.value)
 					count(w.guard)
 				}
+			}
+			if trace {
+				sideName := "asm"
+				if k == 1 {
+					sideName = "oak"
+				}
+				writes := 0
+				for _, log := range ev.writes {
+					writes += len(log)
+				}
+				fmt.Fprintf(os.Stderr, "verify: loop terms: %s loop %d: conditions +%d, %d vars +%d, %d writes +%d nodes\n", sideName, j+1, afterConds-before, len(ev.vars), afterVars-afterConds, writes, len(visited)-afterVars)
 			}
 		}
 	}

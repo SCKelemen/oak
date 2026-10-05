@@ -8840,6 +8840,52 @@ the rule, keyed on the return-slot rule alone, met a body the backend
 had built in the frame after all (`sha256_update`), so the backend's own
 record of the placement is what both sides read.
 
+**A frame record's large array field is a span memory (2026-10-05).**
+The result-area model above left the family's bodies whose Bits lives in
+the frame: `add_carry` builds `out` and returns it inside `Sum { bits:
+out, carry }`, `pop_count` fills a value-less `one: Bits` and hands it to
+a callee. The backend now names a frame record's large array fields as
+frame objects of their own (`local.field`, bindRecord, as an owned
+array's object), and both sides declare those of a value-less local as
+span memories by the one rule of the result area (the executor's frame
+spans, the Oak lowering's `declareSpanFields`); a record literal or a
+call argument that takes the local whole materializes the elements. The
+call summary's bindings, write-backs, and aliases of an argument held in
+the frame look the memory up in both kinds of span (`spanRegionAt`): the
+first form consulted the result area alone, and a caller's `x: Bits`
+passed by reference read fresh frame bytes where its stores had gone to
+the span, a false disagreement on the witnesses. `TestE2ENativeFrameSpan`
+proves `carry_add` (a Sum around the frame-held Bits) and `ones_of` (the
+Bits passed to a callee), and `TestE2ENativeRecordWords`'s `add_bits`
+through `add_carry` again. The prover's tally at d3eba6be stands where
+the result-area model left it, 593 proven, 233 evidence, 125 trusted:
+the six remaining Bits bodies are not the field's: `mux_bits` writes `out.at[i] = bdd_ite(l, mem, c,
+t.at[i], e.at[i])`, and the callee summarized inside the loop brings
+eighteen loop events a side — its hash probes and allocations — whose
+terms the trace (`OAK_VERIFY_TRACE`, "loop terms") puts at 218,000
+nodes of stores on the machine side and 302,000 nodes of the callee's
+traps under their paths on the Oak side before the coupling begins;
+`add_carry`, `shift_barrel`, `count_leading_zeros`, and `pop_count` call
+`apply`, `mux_bits`, and `add_bits` the same way. A callee taken at its
+contract — its result and its effect on the spans it writes one fresh
+unknown a call on both sides, as an extern binding's result is — would
+summarize these in a few nodes, but a call's result is a function of
+every argument and of the memory it reads, which the term language
+cannot name: a `select` takes one index, and one unknown per call site
+inside a loop body would equate the iterations' results. The primitive
+is an n-ary uninterpreted application with its congruence in the
+blaster (equal arguments, equal results) — the term the floating-point
+operations already are (`termFloat`, asm/floats_ops.go,
+Oak.Uninterpreted.ackermann_sound), given a call's own operation name
+and, beside its arguments, a token for the memory the callee reads,
+which is the open design question (a per-call marker in the span's log
+on both sides names the memory after the call but not the caller's own
+stores between two calls); the step after the loop summarizer's own
+work on callee loops (#603–#615). The coupling-search bucket shares the
+cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
+and reach the search through their callees' (`rstr`, `sb_str`,
+`t_binary`).
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

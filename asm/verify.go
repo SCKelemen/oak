@@ -2388,7 +2388,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	var frameSpans []frameSpan
 	zeroSpans, localSpans := map[string]bool{}, map[string]bool{}
 	for _, obj := range fn.FrameObjects {
-		if obj.Name == "" || obj.Elem <= 0 || obj.Size/obj.Elem <= largeArrayElements {
+		if obj.Name == "" || obj.Elem <= 0 {
+			continue
+		}
+		if local := frameSpanLocal(obj.Name); local != "" {
+			// A record local's large array field (bindRecord): a span
+			// when the local is declared value-less, as the Oak side
+			// declares it (declareSpanFields).
+			if obj.Size/obj.Elem < spanArrayFieldElements || !localValueless(sig, local) {
+				continue
+			}
+		} else if obj.Size/obj.Elem <= largeArrayElements {
 			continue
 		}
 		if _, shadowed := spans[obj.Name]; shadowed {
@@ -5395,8 +5405,11 @@ var oakComparisons = map[string][2]string{
 // and the span/view parameters with their element widths.
 type oakLowering struct {
 	// returnSlot names the local the body builds in the result area
-	// (ReturnSlotLocal); its large array fields are span memories.
-	returnSlot string
+	// (ReturnSlotLocal); its large array fields are span memories, as
+	// are those of the frame locals in spanFieldLocals (the backend's
+	// named frame objects, `local.field`).
+	returnSlot      string
+	spanFieldLocals map[string]bool
 	// breakForms caches the flag form of each loop whose body breaks
 	// (asm/break_form.go); breakNames refuses two such loops on one line.
 	breakForms map[*ast.WhileStatement]*breakForm
@@ -7481,8 +7494,8 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		}
 		return "", true
 	}
-	if s.Name.Value == lo.returnSlot && typ.kind == oakRecord {
-		if handled, reason, ok := lo.declareReturnSlot(s, typ); handled {
+	if (s.Name.Value == lo.returnSlot || lo.spanFieldLocals[s.Name.Value]) && typ.kind == oakRecord {
+		if handled, reason, ok := lo.declareSpanFields(s, typ); handled {
 			return reason, ok
 		}
 	}
@@ -7501,16 +7514,17 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 	return "", true
 }
 
-// declareReturnSlot declares the local the body builds in the result
-// area when its record has large array fields: each such field is a span
-// memory `<local>.<field>`, zero at entry (the backend fills the result
-// area's record, docs/spec/90-backend.md §6), its elements read and
-// written through the log where sixty-four loop-carried leaves each a
-// conditional over the loop's index exceeded the coupling's term budget
-// (the prover's Bits family); the other fields stay leaves. The machine
-// side reads the result area's field the same way (resultSpanFields,
-// frameSpanAccess).
-func (lo *oakLowering) declareReturnSlot(s *ast.VariableDeclaration, typ *oakType) (handled bool, reason string, ok bool) {
+// declareSpanFields declares a record local whose large array fields are
+// span memories `<local>.<field>`: the local the body builds in the
+// result area (ResultSlot) and a frame local whose fields the backend
+// named as frame objects of their own (spanFieldLocals), both declared
+// value-less — zero at entry, the backend's fill (docs/spec/90-backend.md
+// §6) — their elements read and written through the log where sixty-four
+// loop-carried leaves each a conditional over the loop's index exceeded
+// the coupling's term budget (the prover's Bits family); the other fields
+// stay leaves. The machine side reads the fields the same way
+// (resultSpanFields, the frame objects, frameSpanAccess).
+func (lo *oakLowering) declareSpanFields(s *ast.VariableDeclaration, typ *oakType) (handled bool, reason string, ok bool) {
 	var spanFields []oakField
 	for _, f := range typ.fields {
 		if f.typ != nil && f.typ.kind == oakArray && f.typ.elem != nil && f.typ.elem.kind == oakScalar && !f.typ.elem.float && f.typ.elem.width >= 8 && f.typ.length >= spanArrayFieldElements {
@@ -10362,7 +10376,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && only != fn.Name {
+	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
 		return Verdict{Kind: VerdictTrusted, Message: "skipped under OAK_VERIFY_ONLY"}
@@ -11145,13 +11159,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				// term, as a derived span of a parameter is; the callee's
 				// reads and writes land in the caller's log.
 				if addr, isFrame := frameAddressOf(base); isFrame {
-					// A result span (the result area's large array field)
-					// before the frame's own.
-					fs, off, in := x.resultSpanAt(addr)
-					if !in {
-						fs, off, in = x.frameSpanAt(addr + state.disp)
-					}
-					if in && fs.elem == arg.elem && off%fs.elem == 0 {
+					if fs, off, in := x.spanRegionAt(state, addr); in && fs.elem == arg.elem && off%fs.elem == 0 {
 						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 						lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 						if lo.spanAlias == nil {
@@ -11577,6 +11585,14 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
 	lowering.returnSlot = fn.ResultSlot
+	for _, obj := range fn.FrameObjects {
+		if local := frameSpanLocal(obj.Name); local != "" && obj.Elem > 0 && obj.Size/obj.Elem >= spanArrayFieldElements {
+			if lowering.spanFieldLocals == nil {
+				lowering.spanFieldLocals = map[string]bool{}
+			}
+			lowering.spanFieldLocals[local] = true
+		}
+	}
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
 	return lowering
@@ -12908,7 +12924,7 @@ func collapseZeroFill(state *symbolicState, fs frameSpan) {
 // address outside every result span, or off the element grid, is not
 // this case.
 func (x *pathExecutor) resultSpanLoad(state *symbolicState, addr, size int64) (*term, bool) {
-	fs, off, in := x.resultSpanAt(addr)
+	fs, off, in := x.spanRegionAt(state, addr)
 	if !in || off%fs.elem != 0 || size%fs.elem != 0 || off+size > fs.size {
 		return nil, false
 	}
@@ -12934,7 +12950,7 @@ func (x *pathExecutor) resultSpanLoad(state *symbolicState, addr, size int64) (*
 // value's bytes little-endian. False when the address is outside every
 // result span or off the element grid.
 func (x *pathExecutor) resultSpanStore(state *symbolicState, addr, size int64, value *term) bool {
-	fs, off, in := x.resultSpanAt(addr)
+	fs, off, in := x.spanRegionAt(state, addr)
 	if !in || off%fs.elem != 0 || size%fs.elem != 0 || off+size > fs.size {
 		return false
 	}
@@ -12947,4 +12963,27 @@ func (x *pathExecutor) resultSpanStore(state *symbolicState, addr, size int64, v
 		state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(off/fs.elem+e), 32), truncate(part, width), nil)
 	}
 	return true
+}
+
+// spanRegionAt reports the span memory an entry-relative frame address
+// falls in — a result span (the result area's large array field) or a
+// frame span (an owned array's or a frame record's field's object) —
+// and the byte offset within it: the one lookup the call summary's
+// bindings, write-backs, and aliases use for an argument held in either.
+func (x *pathExecutor) spanRegionAt(state *symbolicState, addr int64) (frameSpan, int64, bool) {
+	if fs, off, in := x.resultSpanAt(addr); in {
+		return fs, off, true
+	}
+	return x.frameSpanAt(addr + state.disp)
+}
+
+// verifyOnlyNames reports name among OAK_VERIFY_ONLY's comma-separated
+// unit names (one solver build verifies several bodies under trace).
+func verifyOnlyNames(only, name string) bool {
+	for _, each := range strings.Split(only, ",") {
+		if strings.TrimSpace(each) == name {
+			return true
+		}
+	}
+	return false
 }

@@ -4920,6 +4920,19 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
 	g.promoteFields(name, rec)
+	if name != "" && !rec.inReg && rec.layout != nil {
+		// A large array field of a frame record is a frame object of its
+		// own, named `local.field`: the verifier reads it as a span
+		// memory of the local (asm.Function.FrameObjects, as an owned
+		// array's object; docs/spec/94-assembler.md §9).
+		for _, fieldName := range rec.layout.order {
+			f := rec.layout.fields[fieldName]
+			if f.kind != fieldArray || f.length < asm.SpanArrayFieldElements || f.typ.isFloat || f.typ.isBool || f.typ.isVec || f.length <= 0 || f.size%f.length != 0 {
+				continue
+			}
+			g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: rec.offset + f.offset, Size: f.size, Name: name + "." + fieldName, Elem: f.size / f.length})
+		}
+	}
 }
 
 // returnSlotLocal selects a record or array local for the result area:
