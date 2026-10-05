@@ -825,7 +825,7 @@ In order of payoff, each reusing a surface that exists:
   admits and the Oak assembler encodes, 573 of them proven equal to
   their Oak bodies (193 evidence, 198 trusted, no disagreement, the
   plain bodies tallied with the optimizer's transforms skipped; 951
-  identity forms at 6ca43a67, 593 proven, 233 evidence, 125 trusted,
+  identity forms at 1e47c540, 598 proven, 228 evidence, 125 trusted,
   the independent trap-domain obligations of 2026-09-17 decided end by
   end and a record's large array fields read and written as memories,
   `94-assembler.md` §9) — their results, the package cells they write, and,

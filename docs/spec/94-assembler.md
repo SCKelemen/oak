@@ -8969,6 +8969,20 @@ Equality and inequality are now the conjunction of the bits'
 agreements, and those conjunctions grow from the deepest literal up,
 one node a step: 382 and 22,581 (`TestReservedShapeBlast`, which pins
 both bounds). The decisions' budgets are unchanged; what they buy is.
+With that, `ident`'s proof reached the premise's other construct, and
+the probe's descent (`blastCulprits`) named it: `le.state_at + 9 ==
+le.strs_at + (ew[k] << 1)`, an adder equality whose one operand is a
+read's value. A read's block of variables interleaves with the
+parameters' bits only while the read is among the first `selectSlots`
+distinct reads of the decision — eight — and `ident`'s premise reads
+`ew` and the loop's memory at nine addresses, so the ninth block
+trailed every parameter and the adder across them was exponential
+under every order (a million nodes against 13,626 interleaved,
+`TestSelectSlotInterleaving`). A proof's diagrams now interleave
+sixty-four reads (`proofSelectSlots`); the CNF export keeps eight, the
+numbering the Lean replay pins. Tallied at 1e47c540, the equality alone:
+598 proven, 228 evidence, 125 trusted (593, 233, 125 before) — `ap_lits`,
+`args_finish`, `cnf_variable`, `pool_push_pool`, and `px_intern` cross.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module

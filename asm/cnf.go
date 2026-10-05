@@ -228,6 +228,7 @@ func newCNFBlaster(params []string, widths map[string]int) *blaster {
 	bl := newBlaster(params, widths)
 	bl.bdd = nil
 	bl.cnf = newCNFBuilder()
+	bl.slots = selectSlots // the export's variable numbering, pinned by the Lean replay
 	return bl
 }
 

@@ -21,7 +21,9 @@ type blaster struct {
 	bdd *bdd
 	// cnf, when set, replaces the diagram engine with the clause engine
 	// (asm/cnf.go): the same lowering, Tseitin clauses instead of nodes.
-	cnf    *cnfBuilder
+	cnf *cnfBuilder
+	// slots overrides proofSelectSlots (the CNF export's pinned numbering).
+	slots  int
 	params []string       // parameter order
 	index  map[string]int // parameter -> position
 	widths map[string]int // parameter -> declared width
@@ -239,10 +241,31 @@ func newBlockedBlaster(params []string, widths map[string]int, groupOf func(stri
 // adjacent — what keeps adders linear-size). Further reads take variables
 // past every interleaved bit, where an adder over them may exceed the
 // budget (a labeled evidence verdict, never a false proof).
-const selectSlots = 8
+// selectSlots is the number of distinct element reads whose blocks
+// interleave with the parameters' bits in the CNF export's numbering,
+// which the Lean replay pins; a proof's diagrams interleave
+// proofSelectSlots of them: reads past the interleaved ones trail every
+// parameter in a block of their own, and an adder across a trailing
+// block and the parameters (ident's `le.state_at + 9 == le.strs_at +
+// (ew[k] << 1)`, the ninth read of its premise) is exponential where the
+// interleaved one is linear (TestSelectSlotInterleaving: 13,626 nodes
+// against the budget).
+const (
+	selectSlots      = 8
+	proofSelectSlots = 64
+)
+
+// selectSlots is the blaster's interleaved read count: the CNF export's
+// pinned numbering (slots set by the exporter), else a proof's.
+func (bl *blaster) selectSlots() int {
+	if bl.slots != 0 {
+		return bl.slots
+	}
+	return proofSelectSlots
+}
 
 // stride is the number of interleaved operands: parameters plus select slots.
-func (bl *blaster) stride() int { return len(bl.params) + selectSlots }
+func (bl *blaster) stride() int { return len(bl.params) + bl.selectSlots() }
 
 // variableIndex is the ordering position of parameter bit j: interleaved
 // across the parameters, or within its root's block under the grouped order.
@@ -251,7 +274,7 @@ func (bl *blaster) variableIndex(param string, bit int) int {
 	if bl.grouped {
 		size := bl.groupSize[param]
 		if base := bl.groupBase[param]; base == bl.lastBase {
-			size += selectSlots // the last block carries the select slots
+			size += bl.selectSlots() // the last block carries the select slots
 		}
 		v = bl.groupBase[param] + bit*size + bl.groupPos[param]
 	} else {
@@ -266,16 +289,16 @@ func (bl *blaster) variableIndex(param string, bit int) int {
 // last block's), past every parameter bit after them.
 func (bl *blaster) selectVariable(slot, bit int) int {
 	if bl.grouped {
-		size := bl.lastSize + selectSlots
-		if slot < selectSlots {
+		size := bl.lastSize + bl.selectSlots()
+		if slot < bl.selectSlots() {
 			return bl.lastBase + bit*size + bl.lastSize + slot
 		}
-		return bl.lastBase + 64*size + (slot-selectSlots)*64 + bit
+		return bl.lastBase + 64*size + (slot-bl.selectSlots())*64 + bit
 	}
-	if slot < selectSlots {
+	if slot < bl.selectSlots() {
 		return bit*bl.stride() + len(bl.params) + slot
 	}
-	return 64*bl.stride() + (slot-selectSlots)*64 + bit
+	return 64*bl.stride() + (slot-bl.selectSlots())*64 + bit
 }
 
 // selectBits abstracts a select as fresh variables — one block per distinct
