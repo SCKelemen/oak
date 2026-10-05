@@ -8929,6 +8929,24 @@ either proof boundary by being mistaken for an older node. Calls do not use
 the term yet: a summary must add a sound token for every memory state the
 callee can read, including caller stores between two dynamic applications.
 Until that token lands, the six Bits bodies retain their expanded summaries.
+**Equality bit by bit, conjunctions from the deepest literal up
+(2026-10-05).** The study of the coupling-search bucket began with
+`ident`: its loop proof spent its whole allowance before the callee
+loop's continue conditions came up, every implication's premise
+exceeding the decision's budget, and the probe (`OAK_VERIFY_PREMISE_PROBE`
+under trace: each conjunct of the premise blasted alone) named the
+conjunct: `lean_reserved(rs_name(…))`, fifty-two comparisons of a
+name's two 64-bit words against constants under its length — a
+disjunction of points that is a few thousand nodes as a function in any
+order. The blaster built each `eq` as the difference's zero test
+through the subtractor's borrow chain, and grew that zero test, the
+bitwise equality of the consistency constraint, and every such
+conjunction from the shallowest literal down, re-creating the whole
+path a step: a 128-bit point cost 4,288 nodes and the shape 518,445.
+Equality and inequality are now the conjunction of the bits'
+agreements, and those conjunctions grow from the deepest literal up,
+one node a step: 382 and 22,581 (`TestReservedShapeBlast`, which pins
+both bounds). The decisions' budgets are unchanged; what they buy is.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module

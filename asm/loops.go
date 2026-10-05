@@ -7811,6 +7811,18 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 	pBits := bl.blast(premise)
 	stage("the premise")
 	if pBits == nil {
+		if trace && bl.bdd.exceeded && os.Getenv("OAK_VERIFY_PREMISE_PROBE") != "" {
+			// Which conjunct of the premise the diagrams cannot hold:
+			// each alone, under a fresh diagram of the decision's budget.
+			for k, c := range conjunctsOf(premise) {
+				probe := newBlaster(bl.params, bl.widths)
+				probe.bdd = newBDD(loopDecisionNodeBudget)
+				bits := probe.blast(c)
+				n, _ := dagNodes(1<<20, c)
+				show := 160
+				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded, c.stringBounded(&show))
+			}
+		}
 		return false, false
 	}
 	if pBits[0] != bddTrue {
