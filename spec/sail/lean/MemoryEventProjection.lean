@@ -2,8 +2,10 @@ import Std
 
 /-!
 Conditional projection of a SUPPLIED prompt-event view, not an Arm execution
-model or an exporter. The existing audited Lem harness runs the original
-generated __WriteMemory and observes E_read_reg, E_write_ea, E_write_mem.
+model or an exporter. The audited Lem harness runs the original generated
+__WriteMemory and observes E_read_reg, E_write_ea, E_write_mem. Its companion
+memory_trace_export.ml now feeds concrete observations to this projector in
+an executable Go/Lean regression test; that adapter is not kernel-verified.
 There is no kernel-verified raw Lem trace importer here. The caller must supply
 and justify its observation adapter and the independently expected call list.
 

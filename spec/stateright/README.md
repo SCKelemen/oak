@@ -102,8 +102,11 @@ negative controls, validation, and the remaining architectural gaps.
 
 `spec/sail/lean/MemoryEventProjection.lean` preserves occurrences in a supplied
 request view. This pilot does not supply that missing original-model trace
-provenance. Nor does it classify events as CAT W/TTD or prove coherence,
-translation, invalidation scope, context synchronization, or publication.
+provenance. A separate [executable Lem-to-Lean regression](../sail/lem/MEMORY_TRACE_EXPORT.md)
+checks concrete original-wrapper request samples, but does not implement this
+protocol or prove its contracts. Nor does it classify events as CAT W/TTD or
+prove coherence, translation, invalidation scope, context synchronization,
+or publication.
 
 The official-model tests in `semir/aarch64_herd_test.go` remain a separate
 oracle, including the pinned synchronized/unsynchronized AArch64-BBM catalogue

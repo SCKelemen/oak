@@ -131,6 +131,35 @@ func checkedSailMemoryFragment(t *testing.T, oracle sailLemOracle) string {
 	return fragment
 }
 
+// Build the same source-audited fragment for request assertions and export.
+// The caller supplies a checked-in harness, never an external input program.
+func buildSailLemMemoryHarness(t *testing.T, oracle sailLemOracle, fragment, name string, harness []byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	for file, contents := range map[string][]byte{
+		"memory_effects.sail": []byte(fragment), "aarch64_extras.lem": oracle.armExtras,
+		name + ".ml": harness,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, file), contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{oracle.sail, "memory_effects.sail", "--no-memo-z3", "--lem", "--lem-lib", "Aarch64_extras", "--lem-output-dir", dir, "-o", "oak_memory"},
+		{oracle.lem, "-ocaml", "-lib", oracle.library, "-outdir", dir,
+			filepath.Join(oracle.library, "sail2_string.lem"), filepath.Join(oracle.library, "sail2_undefined.lem"),
+			"aarch64_extras.lem", "oak_memory_types.lem", "oak_memory.lem"},
+		{oracle.ocamlfind, "ocamlopt", "-package", "libsail", "-linkpkg", "-open", "Libsail",
+			"sail2_string.ml", "sail2_undefined.ml", "aarch64_extras.ml", "oak_memory_types.ml", "oak_memory.ml", name + ".ml", "-o", name},
+	} {
+		out, err := oracle.run(t, dir, args[0], args[1:]...)
+		if err != nil {
+			t.Fatalf("oracle must generate and build, including mutants: %v\n%s", err, out)
+		}
+	}
+	return filepath.Join(dir, name)
+}
+
 func TestSailLemWriteMemoryTraces(t *testing.T) {
 	oracle := newSailLemOracle(t)
 	fragment := checkedSailMemoryFragment(t, oracle)
@@ -154,29 +183,8 @@ func TestSailLemWriteMemoryTraces(t *testing.T) {
 				}
 				input = strings.Replace(input, tc.old, tc.replacement, 1)
 			}
-			dir := t.TempDir()
-			for name, contents := range map[string][]byte{
-				"memory_effects.sail": []byte(input), "aarch64_extras.lem": oracle.armExtras,
-				"write_memory_trace_test.ml": harness,
-			} {
-				if err := os.WriteFile(filepath.Join(dir, name), contents, 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, args := range [][]string{
-				{oracle.sail, "memory_effects.sail", "--no-memo-z3", "--lem", "--lem-lib", "Aarch64_extras", "--lem-output-dir", dir, "-o", "oak_memory"},
-				{oracle.lem, "-ocaml", "-lib", oracle.library, "-outdir", dir,
-					filepath.Join(oracle.library, "sail2_string.lem"), filepath.Join(oracle.library, "sail2_undefined.lem"),
-					"aarch64_extras.lem", "oak_memory_types.lem", "oak_memory.lem"},
-				{oracle.ocamlfind, "ocamlopt", "-package", "libsail", "-linkpkg", "-open", "Libsail",
-					"sail2_string.ml", "sail2_undefined.ml", "aarch64_extras.ml", "oak_memory_types.ml", "oak_memory.ml", "write_memory_trace_test.ml", "-o", "write_memory_trace_test"},
-			} {
-				out, err := oracle.run(t, dir, args[0], args[1:]...)
-				if err != nil {
-					t.Fatalf("oracle must generate and build, including mutants: %v\n%s", err, out)
-				}
-			}
-			out, err := oracle.run(t, dir, filepath.Join(dir, "write_memory_trace_test"))
+			binary := buildSailLemMemoryHarness(t, oracle, input, "write_memory_trace_test", harness)
+			out, err := oracle.run(t, filepath.Dir(binary), binary)
 			if tc.old == "" {
 				if err != nil || strings.TrimSpace(string(out)) != "Arm Lem WriteMemory traces: 99 checks passed" {
 					t.Fatalf("official wrapper trace oracle: %v\n%s", err, out)

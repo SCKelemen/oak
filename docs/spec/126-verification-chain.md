@@ -1044,6 +1044,17 @@ commitment, CAT W/TTD classification, coherence, translation/cacheability,
 invalidation scope, and the Lean/Lem tag-state relation remain open. This
 projection licenses no optimizer reordering.
 
+An [executable Lem-to-Lean regression](../../spec/sail/lem/MEMORY_TRACE_EXPORT.md)
+now feeds this projector requests observed from the generated original
+`__WriteMemory` prompt constructors, rather than only handwritten Lean views.
+Two two-write fixtures preserve repeated addresses, byte order, selector
+responses (including undefined bits), and true/false acknowledgements.
+Their exported views are kernel-checked against independent expected calls
+and occurrences; malformed input, trace corruption, and four generated
+source mutants must fail. The exporter, parser, and code generator remain
+unverified glue, so this is not a universal original-execution provenance
+theorem. The requests still have no proved CAT classification or ordering.
+
 The separate [Stateright pilot](../../spec/stateright/README.md) explores a
 bounded hand-written remap/reclamation protocol with two observers and one
 remap. Four missing-synchronization variants must produce replayable stale
