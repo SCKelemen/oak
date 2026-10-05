@@ -7820,7 +7820,11 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 				bits := probe.blast(c)
 				n, _ := dagNodes(1<<20, c)
 				show := 160
-				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded, c.stringBounded(&show))
+				exceeded := bits == nil || probe.bdd.exceeded
+				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), exceeded, c.stringBounded(&show))
+				if exceeded {
+					blastCulprits(bl, c, 2)
+				}
 			}
 		}
 		return false, false
@@ -8391,4 +8395,58 @@ func spanEqualSplitting(premise *term, name string, elemWidth int, oakMemory, as
 		}
 	}
 	return allEqual, true
+}
+
+// blastCulprits descends a term the diagrams cannot hold and reports the
+// deepest subterms that still exceed the decision's budget alone while
+// every operand of theirs blasts within it: the construct that costs,
+// not the conjunct around it (OAK_VERIFY_PREMISE_PROBE under trace).
+func blastCulprits(bl *blaster, t *term, maxReports int) int {
+	cost := func(u *term) (int, bool) {
+		probe := newBlaster(bl.params, bl.widths)
+		probe.bdd = newBDD(loopDecisionNodeBudget)
+		bits := probe.blast(u)
+		return len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded
+	}
+	reported := 0
+	seen := map[*term]bool{}
+	var walk func(u *term)
+	walk = func(u *term) {
+		if u == nil || seen[u] || reported >= maxReports {
+			return
+		}
+		seen[u] = true
+		if _, exceeded := cost(u); !exceeded {
+			return
+		}
+		childExceeds := false
+		children := []*term{u.cond, u.left, u.right}
+		for _, arg := range u.args {
+			children = append(children, arg)
+		}
+		for _, c := range children {
+			if c == nil {
+				continue
+			}
+			if _, exceeded := cost(c); exceeded {
+				childExceeds = true
+				walk(c)
+			}
+		}
+		if !childExceeds && reported < maxReports {
+			reported++
+			n, _ := dagNodes(1<<20, u)
+			show := 240
+			kinds := ""
+			for _, c := range children {
+				if c != nil {
+					nodes, _ := cost(c)
+					kinds += fmt.Sprintf(" [%d nodes]", nodes)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "verify: culprit: kind %d op %q width %d, %d term nodes, operands%s: %s\n", u.kind, u.op, u.width, n, kinds, u.stringBounded(&show))
+		}
+	}
+	walk(t)
+	return reported
 }
