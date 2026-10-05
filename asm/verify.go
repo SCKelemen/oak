@@ -10376,7 +10376,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && only != fn.Name {
+	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
 		return Verdict{Kind: VerdictTrusted, Message: "skipped under OAK_VERIFY_ONLY"}
@@ -12975,4 +12975,15 @@ func (x *pathExecutor) spanRegionAt(state *symbolicState, addr int64) (frameSpan
 		return fs, off, true
 	}
 	return x.frameSpanAt(addr + state.disp)
+}
+
+// verifyOnlyNames reports name among OAK_VERIFY_ONLY's comma-separated
+// unit names (one solver build verifies several bodies under trace).
+func verifyOnlyNames(only, name string) bool {
+	for _, each := range strings.Split(only, ",") {
+		if strings.TrimSpace(each) == name {
+			return true
+		}
+	}
+	return false
 }

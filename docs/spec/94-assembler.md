@@ -8874,8 +8874,17 @@ every argument and of the memory it reads, which the term language
 cannot name: a `select` takes one index, and one unknown per call site
 inside a loop body would equate the iterations' results. The primitive
 is an n-ary uninterpreted application with its congruence in the
-blaster (equal arguments, equal results), the step after the loop
-summarizer's own work on callee loops (#603–#615).
+blaster (equal arguments, equal results) — the term the floating-point
+operations already are (`termFloat`, asm/floats_ops.go,
+Oak.Uninterpreted.ackermann_sound), given a call's own operation name
+and, beside its arguments, a token for the memory the callee reads,
+which is the open design question (a per-call marker in the span's log
+on both sides names the memory after the call but not the caller's own
+stores between two calls); the step after the loop summarizer's own
+work on callee loops (#603–#615). The coupling-search bucket shares the
+cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
+and reach the search through their callees' (`rstr`, `sb_str`,
+`t_binary`).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
