@@ -1876,7 +1876,15 @@ func (ev *loopEvent) mentionsElsewhere(name string) bool {
 		if t.kind == termParam && t.name == symbol.name {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	if walk(ev.cond) || walk(ev.headerTrap) || walk(ev.bodyTrap) {
 		return true
@@ -3117,7 +3125,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
-	case termSelect, termFloat, termQuant:
+	case termSelect, termFloat, termApply, termQuant:
 		return t.width <= 32
 	case termIte:
 		return upperClear(t.left, declared) && upperClear(t.right, declared)
@@ -5654,7 +5662,15 @@ func termContainsSelect(t *term) bool {
 			return false
 		}
 		seen[t] = true
-		return t.kind == termSelect || visit(t.cond) || visit(t.left) || visit(t.right)
+		if t.kind == termSelect || visit(t.cond) || visit(t.left) || visit(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if visit(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return visit(t)
 }
@@ -6204,7 +6220,8 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 	cond := restoreLoopEntryMemories(t.cond, ev, memo, valid)
 	left := restoreLoopEntryMemories(t.left, ev, memo, valid)
 	right := restoreLoopEntryMemories(t.right, ev, memo, valid)
-	if cond == t.cond && left == t.left && right == t.right {
+	args, argsChanged := rewriteTermArgs(t.args, func(arg *term) *term { return restoreLoopEntryMemories(arg, ev, memo, valid) })
+	if cond == t.cond && left == t.left && right == t.right && !argsChanged {
 		// Nothing below reads a loop memory: the node stands, shared.
 		// Copying it anyway copied the whole graph once per call — an
 		// inner loop event of every inlined callee, on a body whose
@@ -6216,6 +6233,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 	out := *t
 	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
+	out.args = args
 	memo[t] = &out
 	return &out
 }
@@ -6247,6 +6265,16 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 			args = append(args, substituteMemo(t.cond, sigma, memo))
 		}
 		rebuilt := floatTerm(t.op, t.width, args...)
+		memo[t] = rebuilt
+		return rebuilt
+	}
+	if t.kind == termApply {
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term { return substituteMemo(arg, sigma, memo) })
+		if !changed {
+			memo[t] = t
+			return t
+		}
+		rebuilt := applyTerm(t.name, t.width, args...)
 		memo[t] = rebuilt
 		return rebuilt
 	}
@@ -6294,6 +6322,9 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 		count(t.left)
 		count(t.right)
 		count(t.cond)
+		for _, arg := range t.args {
+			count(arg)
+		}
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	for k, side := range [][]*loopEvent{asmLoops, oakLoops} {
@@ -6761,7 +6792,15 @@ func hasLargeBranch(t *term) bool {
 		if t.kind == termIte && t.cond.kind != termConst && !isLookupStep(t.cond, sizes) && termSize(t.left, sizes)+termSize(t.right, sizes) >= largeBranch {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -7055,10 +7094,12 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 			}
 		}
 		cond, left, right := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
-		if cond != t.cond || left != t.left || right != t.right {
+		args, argsChanged := rewriteTermArgs(t.args, rewrite)
+		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copy := *t
 			copy.kbDone, copy.sigBits = false, 0
 			copy.cond, copy.left, copy.right = cond, left, right
+			copy.args = args
 			out = &copy
 		}
 		memo[t] = out
@@ -7128,6 +7169,11 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 		out := t
 		switch t.kind {
 		case termConst, termParam:
+		case termApply:
+			args, changed := rewriteTermArgs(t.args, rewrite)
+			if changed {
+				out = applyTerm(t.name, t.width, args...)
+			}
 		case termIte:
 			if isLookupStep(t.cond, sizes) {
 				// A table lookup's step (`index = k`) is never settled by a
@@ -7308,6 +7354,9 @@ func splitCondition(a, b *term) *term {
 		walk(t.cond)
 		walk(t.left)
 		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	walk(a)
 	walk(b)
@@ -7325,6 +7374,9 @@ func termSize(t *term, memo map[*term]int) int {
 		return n
 	}
 	n := min(termSizeCap, 1+termSize(t.cond, memo)+termSize(t.left, memo)+termSize(t.right, memo))
+	for _, arg := range t.args {
+		n = min(termSizeCap, n+termSize(arg, memo))
+	}
 	memo[t] = n
 	return n
 }
@@ -7352,7 +7404,15 @@ func dagNodes(limit int, terms ...*term) (int, bool) {
 		if len(seen) > limit {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, t := range terms {
 		if walk(t) {
@@ -7498,6 +7558,16 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 		if a.name == b.name && pair(a.left, b.left) {
 			return true, true
 		}
+	case termApply:
+		if a.name != b.name || len(a.args) != len(b.args) {
+			return false, false
+		}
+		for i := range a.args {
+			if a.args[i].width != b.args[i].width || !pair(a.args[i], b.args[i]) {
+				return false, false
+			}
+		}
+		return true, true
 	}
 	return false, false
 }
@@ -7521,6 +7591,12 @@ func spineOf(t *term, depth int) string {
 		return fmt.Sprintf("ite(%s, %s, %s)", spineOf(t.cond, depth-1), spineOf(t.left, depth-1), spineOf(t.right, depth-1))
 	case termCmp:
 		return fmt.Sprintf("(%s %s %s)", spineOf(t.left, depth-1), t.op, spineOf(t.right, depth-1))
+	case termApply:
+		parts := make([]string, len(t.args))
+		for i, arg := range t.args {
+			parts[i] = spineOf(arg, depth-1)
+		}
+		return fmt.Sprintf("%s:%d(%s)", t.name, t.width, strings.Join(parts, ", "))
 	}
 	return fmt.Sprintf("%s%d(%s, %s)", t.op, t.width, spineOf(t.left, depth-1), spineOf(t.right, depth-1))
 }
@@ -7753,6 +7829,18 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 	pBits := bl.blast(premise)
 	stage("the premise")
 	if pBits == nil {
+		if trace && bl.bdd.exceeded && os.Getenv("OAK_VERIFY_PREMISE_PROBE") != "" {
+			// Which conjunct of the premise the diagrams cannot hold:
+			// each alone, under a fresh diagram of the decision's budget.
+			for k, c := range conjunctsOf(premise) {
+				probe := newBlaster(bl.params, bl.widths)
+				probe.bdd = newBDD(loopDecisionNodeBudget)
+				bits := probe.blast(c)
+				n, _ := dagNodes(1<<20, c)
+				show := 160
+				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded, c.stringBounded(&show))
+			}
+		}
 		return false, false
 	}
 	if pBits[0] != bddTrue {
@@ -8005,7 +8093,15 @@ func mentions(t *term, name string) bool {
 		if t.kind == termParam && t.name == name {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -8193,6 +8289,15 @@ func renameLoopMemory(t *term, from string, entryLog []*spanWrite, base string, 
 			copied := *t
 			copied.left = index
 			out = &copied
+		} else {
+			out = t
+		}
+	case termApply:
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term {
+			return renameLoopMemory(arg, from, entryLog, base, width, memo)
+		})
+		if changed {
+			out = applyTerm(t.name, t.width, args...)
 		} else {
 			out = t
 		}

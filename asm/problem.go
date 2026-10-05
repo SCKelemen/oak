@@ -103,6 +103,9 @@ func ExportProblems(sig *ast.FunctionStatement, functions map[string]*ast.Functi
 	if undecided != nil {
 		return nil, undecided.Message, false
 	}
+	if theoremHasGeneralApplication(lowered.claim, lowered.traps) {
+		return nil, "the theorem contains an n-ary application outside the Oak solver's serialized vocabulary", false
+	}
 	var problems []Problem
 	for _, bl := range lowered.blasters() {
 		problems = append(problems, serializeProblem(bl, lowered.claim, lowered.traps, budget, orderNames[bl.label]))
@@ -150,6 +153,9 @@ func ExportProblem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	if undecided != nil {
 		return Problem{}, undecided.Message, false
 	}
+	if theoremHasGeneralApplication(lowered.claim, lowered.traps) {
+		return Problem{}, "the theorem contains an n-ary application outside the Oak solver's serialized vocabulary", false
+	}
 	var bl *blaster
 	switch order {
 	case "blocks":
@@ -162,6 +168,38 @@ func ExportProblem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		bl = newBlaster(lowered.names, lowered.widths)
 	}
 	return serializeProblem(bl, lowered.claim, lowered.traps, budget, order), "", true
+}
+
+func theoremHasGeneralApplication(claim *term, traps []*term) bool {
+	seen := map[*term]bool{}
+	var visit func(*term) bool
+	visit = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termApply {
+			return true
+		}
+		if visit(t.cond) || visit(t.left) || visit(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if visit(arg) {
+				return true
+			}
+		}
+		return false
+	}
+	if visit(claim) {
+		return true
+	}
+	for _, trap := range traps {
+		if visit(trap) {
+			return true
+		}
+	}
+	return false
 }
 
 func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order string) Problem {

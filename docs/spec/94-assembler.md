@@ -6683,15 +6683,17 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
-**Post-schedule cleanup (2026-09-17, AArch64 lane).** Scheduling and the final
+**Post-schedule cleanup (2026-09-17, broadened 2026-09-18, AArch64 lane).** Scheduling and the final
 scalar-global passes above can expose copies after the ordinary late cleanup
 has run. The separate `post-schedule-cleanup` candidate reruns the same
 block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
-rule: the five rules, whole-function general-register liveness, control-flow
+rule: the six rules, whole-function general-register liveness, control-flow
 boundaries, and refusal conditions specified by "Late copy and branch cleanup"
-remain unchanged. The candidate is eligible only after scheduling and
-normalized scalar-global forwarding, so unrelated functions do not acquire a
-second no-op search branch. Its pre-cleanup parent remains selectable.
+remain unchanged. The 2026-09-18 ordered phase registers this transform after
+ordinary `late-cleanup` and makes it eligible after cleanup. That order is what
+lets the one-way phase search reach the separately checked final child for
+unscheduled bodies and bodies without normalized scalar-global forwarding. Its
+earlier cleaned parent remains selectable.
 
 The rerun is non-neutral and **verdict-gated**. The seam checker checks the
 rewritten machine body, and the unchanged whole-body verifier remains the
@@ -6710,6 +6712,29 @@ alignment (5944→5912), and 27 unchanged relocations. All five OS differential
 tests pass. Runtime is not reported from the heavily loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
+
+The 2026-09-18 final cleanup increment adds a branch rule over adjacent alias
+labels: `b L`, followed only by labels including `L`, falls through to the same
+instruction and loses the branch. It never crosses an alignment or instruction.
+Keeping this rule in the separately verdict-gated final child avoids perturbing
+register allocation. Materialization v32 separates the new cleanup recipe from
+earlier cached bodies. Against the untouched `4dac5e05` compiler, the fresh
+stage-2 pilot removes 17 branches from four selected proven bodies: `map_page`
+139→136, `translate` 76→71, `unmap_page` 172→168, and `walk_leaf` 123→118
+instructions. `alloc_table` keeps its proven parent rather than a smaller
+trusted scheduled form. Mach-O `__text` shrinks by 68 bytes and the aligned
+object by 72 bytes, all 27 relocations remain, and both objects pass all eight
+current OS conformance tests. Exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-09-18.json`.
+
+Revalidation at `79c5e56f` (2026-10-05) leaves two selected sites after later
+cleanup work: one final copy in `translate` and one alias-label branch in
+`walk_leaf`, both proven, for 8 bytes less Mach-O text/object and 27 unchanged
+relocations. The child refuses a fill-unrolled parent: composing it there used
+the bounded validation slots before `reset`'s established unrotated proof
+fallback, while refusing it preserves the same optimized proven body as the
+baseline. All eight OS conformance tests pass; exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-10-05.json`.
 
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame
@@ -8885,6 +8910,43 @@ work on callee loops (#603–#615). The coupling-search bucket shares the
 cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
 and reach the search through their callees' (`rstr`, `sb_str`,
 `t_binary`).
+
+**The n-ary application term (2026-10-05).** The verifier term language
+now has that general `termApply`: a stable application namespace includes
+the semantic name, result width, arity, and every argument width, while its
+ordered argument slice is unbounded. Witness execution gives it one fixed,
+deterministic interpretation; that interpretation is evidence only. The BDD
+decision flattens the arguments' bits into the existing select-abstraction
+table, whose Ackermann constraint proves exactly the required congruence.
+`Oak.Uninterpreted.ackermann_nary_sound` generalizes the table soundness
+argument to an arbitrary ordered argument list, and
+`shared_nary_application` states its congruence law.
+Structural equality, canonicalization, loop substitution and memory
+restoration, parameter and memory-read discovery, term sizing, and evaluator
+numbering all traverse every argument. Native proof-certificate replay and
+the serialized Oak solver refuse the new kind explicitly, so it cannot cross
+either proof boundary by being mistaken for an older node. Calls do not use
+the term yet: a summary must add a sound token for every memory state the
+callee can read, including caller stores between two dynamic applications.
+Until that token lands, the six Bits bodies retain their expanded summaries.
+**Equality bit by bit, conjunctions from the deepest literal up
+(2026-10-05).** The study of the coupling-search bucket began with
+`ident`: its loop proof spent its whole allowance before the callee
+loop's continue conditions came up, every implication's premise
+exceeding the decision's budget, and the probe (`OAK_VERIFY_PREMISE_PROBE`
+under trace: each conjunct of the premise blasted alone) named the
+conjunct: `lean_reserved(rs_name(…))`, fifty-two comparisons of a
+name's two 64-bit words against constants under its length — a
+disjunction of points that is a few thousand nodes as a function in any
+order. The blaster built each `eq` as the difference's zero test
+through the subtractor's borrow chain, and grew that zero test, the
+bitwise equality of the consistency constraint, and every such
+conjunction from the shallowest literal down, re-creating the whole
+path a step: a 128-bit point cost 4,288 nodes and the shape 518,445.
+Equality and inequality are now the conjunction of the bits'
+agreements, and those conjunctions grow from the deepest literal up,
+one node a step: 382 and 22,581 (`TestReservedShapeBlast`, which pins
+both bounds). The decisions' budgets are unchanged; what they buy is.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module

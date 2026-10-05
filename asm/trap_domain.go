@@ -549,6 +549,11 @@ func settleBySpelling(t *term, facts []*term) *term {
 					out = binaryTerm(t.op, left, right)
 				}
 			}
+		case termApply:
+			args, changed := rewriteTermArgs(t.args, walk)
+			if changed {
+				out = applyTerm(t.name, t.width, args...)
+			}
 		}
 		memo[t] = out
 		return out

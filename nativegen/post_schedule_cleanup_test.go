@@ -28,7 +28,36 @@ func TestPostScheduleCleanupForwardsFinalCopy(t *testing.T) {
 	}
 }
 
-func TestPostScheduleCleanupCandidateRequiresParents(t *testing.T) {
+func TestPostScheduleCleanupRemovesAliasLabelBranch(t *testing.T) {
+	unit, errs := asm.ParseUnit("post.oakasm", "f: () -> u32 = {\n  clobber w9\n  b target\nalias:\ntarget:\n  mov w0, w9\n  ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := unit.Functions[0]
+	if removed := postScheduleAliasLabelCleanup(fn); removed != 1 || strings.Contains(Describe(fn), "b target") {
+		t.Fatalf("alias-label branch cleanup removed %d:\n%s", removed, Describe(fn))
+	}
+
+	unit, errs = asm.ParseUnit("post.oakasm", "f: () -> u32 = {\n  clobber w9\n  b target\nmiddle:\n  b target\ntarget:\n  mov w0, w9\n  ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn = unit.Functions[0]
+	if removed := postScheduleAliasLabelCleanup(fn); removed != 2 || strings.Contains(Describe(fn), "b target") {
+		t.Fatalf("alias-label cleanup must close a newly adjacent branch (%d removed):\n%s", removed, Describe(fn))
+	}
+
+	unit, errs = asm.ParseUnit("post.oakasm", "f: () -> u32 = {\n  clobber w9\n  b target\nalias:\n  align 8\ntarget:\n  mov w0, w9\n  ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn = unit.Functions[0]
+	if removed := postScheduleAliasLabelCleanup(fn); removed != 0 || !strings.Contains(Describe(fn), "b target") {
+		t.Fatalf("alignment must end the alias-label run (%d removed):\n%s", removed, Describe(fn))
+	}
+}
+
+func TestPostScheduleCleanupCandidateRequiresParent(t *testing.T) {
 	transform, found := Registry().Lookup(TransformPostScheduleCleanup)
 	if !found {
 		t.Fatal("missing post-schedule cleanup candidate")
@@ -38,22 +67,33 @@ func TestPostScheduleCleanupCandidateRequiresParents(t *testing.T) {
 	}
 	plain := opt.Identity(PlainLane(Lane{Arch: asm.ArchArm64}))
 	if transform.Apply(plain) != nil {
-		t.Fatal("post-schedule cleanup must wait for its parents")
+		t.Fatal("post-schedule cleanup must wait for ordinary cleanup")
 	}
 	parentLane := plain.Config.(Lane)
-	parentLane.Schedule = true
+	parentLane.Cleanup = true
+	parentLane.UnrollFills = true
 	if transform.Apply(opt.Identity(parentLane)) != nil {
-		t.Fatal("post-schedule cleanup applied without normalized forwarding")
+		t.Fatal("post-schedule cleanup must preserve the fill validation fallback")
 	}
-	parentLane.Schedule = false
-	parentLane.ElideGlobalLoadMasks = true
-	if transform.Apply(opt.Identity(parentLane)) != nil {
-		t.Fatal("post-schedule cleanup applied without scheduling")
-	}
-	parentLane.Schedule = true
+	parentLane.UnrollFills = false
 	next := transform.Apply(opt.Identity(parentLane))
 	if next == nil || !next.Config.(Lane).PostScheduleCleanup ||
 		PlainLane(Lane{PostScheduleCleanup: true}).PostScheduleCleanup {
 		t.Fatal("post-schedule cleanup toggle or identity fallback")
+	}
+}
+
+func TestPostScheduleCleanupFollowsOrdinaryCleanup(t *testing.T) {
+	cleanup, post := -1, -1
+	for i, transform := range Transforms() {
+		switch transform.Name() {
+		case TransformCleanup:
+			cleanup = i
+		case TransformPostScheduleCleanup:
+			post = i
+		}
+	}
+	if cleanup < 0 || post < 0 || cleanup >= post {
+		t.Fatalf("transform order cleanup=%d post-schedule=%d", cleanup, post)
 	}
 }

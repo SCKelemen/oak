@@ -350,24 +350,23 @@ func (bl *blaster) consistency() int {
 		return cons
 	}
 	equalBits := func(a, b []int) int {
+		// Deepest literal first (condition's eq): one node a step.
 		eq := bddTrue
 		n := len(a)
 		if len(b) < n {
 			n = len(b)
 		}
-		for i := 0; i < n; i++ {
+		for i := len(a) - 1; i >= n; i-- {
+			eq = bl.apply(opAnd, eq, bl.not(a[i]))
+		}
+		for i := len(b) - 1; i >= n; i-- {
+			eq = bl.apply(opAnd, eq, bl.not(b[i]))
+		}
+		for i := n - 1; i >= 0; i-- {
 			eq = bl.apply(opAnd, eq, bl.not(bl.apply(opXor, a[i], b[i])))
 			if bl.bdd.exceeded {
 				return eq
 			}
-		}
-		// A wider side's extra bits are zero: the values agree only when
-		// those are zero too.
-		for i := n; i < len(a); i++ {
-			eq = bl.apply(opAnd, eq, bl.not(a[i]))
-		}
-		for i := n; i < len(b); i++ {
-			eq = bl.apply(opAnd, eq, bl.not(b[i]))
 		}
 		return eq
 	}
@@ -538,6 +537,20 @@ func (bl *blaster) blastUncached(t *term) []int {
 			idx = append(idx, bits...)
 		}
 		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width, nil)
+	case termApply:
+		operandBits := 0
+		for _, arg := range t.args {
+			operandBits += arg.width
+		}
+		idx := make([]int, 0, operandBits)
+		for _, arg := range t.args {
+			bits := bl.blast(arg)
+			if bits == nil {
+				return nil
+			}
+			idx = append(idx, bits...)
+		}
+		return bl.selectBits(applicationSpan(t.name, t.width, t.args), idx, t.width, nil)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM
@@ -701,6 +714,28 @@ func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 func (bl *blaster) condition(code string, left, right []int) int {
 	b := bl
 	kind, bare := splitFlagsKind(code)
+	if kind == "" && (bare == "eq" || bare == "ne") {
+		// Equality bit by bit: the difference's zero test built the
+		// subtractor's borrow chain, quadratic in the width — a 64-bit
+		// comparison against a constant allocated some four thousand
+		// diagram nodes, and lean_reserved's fifty of them half a million,
+		// where the conjunction of the bits' agreements is linear.
+		// From the most significant bit down: the orders place a word's
+		// bits at increasing positions, and a conjunction grown from the
+		// deepest literal up adds one node a step where one grown from
+		// the shallowest re-created the whole path a step (quadratic).
+		eq := bddTrue
+		for i := len(left) - 1; i >= 0; i-- {
+			eq = b.apply(opAnd, eq, b.not(b.apply(opXor, left[i], right[i])))
+			if b.exceeded() {
+				return eq
+			}
+		}
+		if bare == "ne" {
+			return b.not(eq)
+		}
+		return eq
+	}
 	var result []int
 	var c, v int
 	msb := len(left) - 1
@@ -727,8 +762,8 @@ func (bl *blaster) condition(code string, left, right []int) int {
 	}
 	n := result[msb]
 	z := bddTrue
-	for _, bit := range result {
-		z = b.apply(opAnd, z, b.not(bit))
+	for i := len(result) - 1; i >= 0; i-- { // deepest literal first (condition's eq)
+		z = b.apply(opAnd, z, b.not(result[i]))
 	}
 	nEqV := b.not(b.apply(opXor, n, v))
 	switch bare {

@@ -395,6 +395,47 @@ intentionally unreported because the final host load average was 185–237.
 
 [Static observations and provenance](results/stage2-record-base-closure-2026-09-18.json).
 
+## OS stage-2: remove alias-label branch chains, 2026-09-18
+
+The verifier-gated final `post-schedule-cleanup` child now treats consecutive
+labels as aliases for one instruction address: an unconditional branch to any
+label in that adjacent run disappears, while an alignment or instruction ends
+the run. Registering the child after ordinary cleanup makes it reachable for
+cleaned bodies outside the fill-unrolling family, including bodies without
+scheduling or scalar-global forwarding. The untouched `4dac5e05` compiler is
+the control, and both
+artifacts used fresh verification with zero of 22 verdicts from cache.
+
+| Selected body | Instructions | Branches | Static cost | New cleanup sites | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `map_page` | 139 → 136 | 23 → 20 | 227.0 → 224.0 | 3 | proven |
+| `translate` | 76 → 71 | 15 → 10 | 112.0 → 107.0 | 5 | proven |
+| `unmap_page` | 172 → 168 | 33 → 29 | 281.5 → 277.5 | 4 | proven |
+| `walk_leaf` | 123 → 118 | 19 → 14 | 201.0 → 196.0 | 5 | proven |
+
+The 17 removed instructions are all redundant unconditional branches.
+`alloc_table`'s smaller scheduled form remains `trusted`, so the search
+correctly keeps its 159-instruction proven parent. Mach-O `__text` shrinks by
+68 bytes (3892→3824), the aligned object by 72 bytes (5416→5344), and all 27
+relocations remain. Both objects pass all eight current OS stage-2 conformance
+tests. Runtime is intentionally unreported because final host load averages
+were 152–323.
+
+[Static observations and provenance](results/stage2-alias-label-cleanup-2026-09-18.json).
+
+Revalidated against `79c5e56f` on 2026-10-05, later upstream cleanup has
+absorbed most of those aliases. The final child still removes one instruction
+from `translate` (64→63, cost 100→99) and one branch from `walk_leaf` (119→118,
+15→14 branches, cost 197→196); both stay proven. Mach-O text and object size
+shrink 8 bytes, all 27 relocations remain, and all eight conformance tests pass
+with zero of 22 verdicts cached. The candidate is not composed with fill
+unrolling: doing so displaced `reset`'s established unrotated validation
+fallback under the three-candidate proof budget. The eligibility guard keeps
+the same proven optimized `reset` (cost 519927.5) as the baseline. Runtime is
+unreported at load averages 164–179.
+
+[Current-head static observations and provenance](results/stage2-alias-label-cleanup-2026-10-05.json).
+
 ## OS stage-2: reschedule live record-base carriers, 2026-09-17
 
 The verifier-gated `reschedule-record-base-carriers` child reruns the existing
