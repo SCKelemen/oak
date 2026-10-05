@@ -1939,7 +1939,7 @@ inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
 the callee's `k`, `same` as themselves) in three seconds — alongside
 `longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
 same module at that point: the functions with more than eight vector
-parameters (`classify` and its callers — taken the same day, §9.ah) and,
+parameters (`classify` and its callers — taken the same day, §9.ap) and,
 as evidence or trusted, `groups_of` (budget), `build` (an expression
 statement in a loop body), `verify_count` (an inner loop summarized per
 path past the event budget) — the last two proven below.
@@ -9456,7 +9456,7 @@ A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
 
-### 9.ad Vector homes across calls (2026-09-15)
+### 9.ao Vector homes across calls (2026-09-15)
 
 The second increment of the optimization system (`90-backend.md` §16).
 A function that makes calls keeps its vector locals in the caller-saved
@@ -9713,7 +9713,7 @@ upward — the scalar leaf homes in x2–x7 (§9, the twenty-second
 increment) for the vector file; v0 is left for the result. Nothing is
 saved: a leaf makes no call. A home released at a local's last use
 returns to its pool. The registers taken are declared as clobbers and
-`Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+`Lane.VectorHomes` gates the shape with the same fallback as §9.ao.
 
 As of 2026-09-25, these existing unused argument homes are preferred before
 callee-saved and scratch homes, avoiding unnecessary d8–d15 save/restore
@@ -9775,7 +9775,7 @@ the verifier taking callees at their bodies. The compiler reports every body's s
 and obligation: `layer A — strength reduction ×2 decided at the bit
 level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
 
-### 9.ah The vector class of the argument layout (2026-09-15)
+### 9.ap The vector class of the argument layout (2026-09-15)
 
 A function with more than eight floating-point or vector parameters
 stayed with the C backend: the register contract passes eight, in v0–v7,
