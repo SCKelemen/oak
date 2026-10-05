@@ -8840,6 +8840,25 @@ the rule, keyed on the return-slot rule alone, met a body the backend
 had built in the frame after all (`sha256_update`), so the backend's own
 record of the placement is what both sides read.
 
+**A frame record's large array field is a span memory (2026-10-05).**
+The result-area model above left the family's bodies whose Bits lives in
+the frame: `add_carry` builds `out` and returns it inside `Sum { bits:
+out, carry }`, `pop_count` fills a value-less `one: Bits` and hands it to
+a callee. The backend now names a frame record's large array fields as
+frame objects of their own (`local.field`, bindRecord, as an owned
+array's object), and both sides declare those of a value-less local as
+span memories by the one rule of the result area (the executor's frame
+spans, the Oak lowering's `declareSpanFields`); a record literal or a
+call argument that takes the local whole materializes the elements. The
+call summary's bindings, write-backs, and aliases of an argument held in
+the frame look the memory up in both kinds of span (`spanRegionAt`): the
+first form consulted the result area alone, and a caller's `x: Bits`
+passed by reference read fresh frame bytes where its stores had gone to
+the span, a false disagreement on the witnesses. `TestE2ENativeFrameSpan`
+proves `carry_add` (a Sum around the frame-held Bits) and `ones_of` (the
+Bits passed to a callee), and `TestE2ENativeRecordWords`'s `add_bits`
+through `add_carry` again.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

@@ -102,22 +102,42 @@ type resultSpanField struct {
 	signed bool
 }
 
-// returnSlotValueless reports the return-slot local declared without an
-// initializer (`out: Bits`): zero at entry, the backend's fill of the
-// result area. A slot built from an initializer (`next: State = state`)
-// keeps the leaf model, under which BLAKE3's update proves; its copy of
-// the parameter into the span coupled past the search's budget.
-func returnSlotValueless(sig *ast.FunctionStatement, slot string) bool {
-	if slot == "" || sig == nil {
+// SpanArrayFieldElements is spanArrayFieldElements for the backend: the
+// element count from which it names a record local's array field as a
+// frame object of its own (`local.field`), which the verifier reads as a
+// span memory when the local is declared value-less.
+const SpanArrayFieldElements = spanArrayFieldElements
+
+// localValueless reports a local declared without an initializer (`out:
+// Bits`): zero at entry, the backend's fill. A local built from an
+// initializer (`next: State = state`) keeps the leaf model, under which
+// BLAKE3's update proves; its copy of the parameter into the span
+// coupled past the search's budget.
+func localValueless(sig *ast.FunctionStatement, name string) bool {
+	if name == "" || sig == nil {
 		return false
 	}
 	valueless := false
 	walkASTNodes(sig.Body, func(n ast.Node) {
-		if decl, isDecl := n.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == slot && decl.Value == nil {
+		if decl, isDecl := n.(*ast.VariableDeclaration); isDecl && decl.Name != nil && decl.Name.Value == name && decl.Value == nil {
 			valueless = true
 		}
 	})
 	return valueless
+}
+
+// returnSlotValueless is localValueless for the return slot.
+func returnSlotValueless(sig *ast.FunctionStatement, slot string) bool {
+	return localValueless(sig, slot)
+}
+
+// frameSpanLocal is the local a frame object named `local.field` belongs
+// to, "" for an array local's own object.
+func frameSpanLocal(name string) string {
+	if dot := strings.IndexByte(name, '.'); dot > 0 {
+		return name[:dot]
+	}
+	return ""
 }
 
 // resultSpanFields lists the result record's span fields for a body whose
