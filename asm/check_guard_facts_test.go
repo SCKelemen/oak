@@ -397,3 +397,56 @@ func TestCheckerSlackOutlivesLengthRegister(t *testing.T) {
 		})
 	}
 }
+
+// The initialized registers are a label fact (docs/spec/94-assembler.md
+// §9.an). The walk visits items in textual order, so a call sitting
+// between a branch and the label it jumps to used to clear the
+// caller-saved registers for the code after the label, on a path that
+// never reaches it. The reject case is the one that matters: a label a
+// path really does reach without the write still refuses.
+func TestCheckerWrittenSetMeetsAtLabels(t *testing.T) {
+	decl := "pick: (v: []u8, i: u32) -> u32"
+	symbols := map[string]bool{"helper": true}
+	prologue := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x19, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  str x19, [sp, #16]\n  mov x19, x0\n"
+	epilogue := "done:\n  ldr x19, [sp, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"
+	t.Run("a call on a path that does not reach the label leaves it initialized", func(t *testing.T) {
+		// w9 is written before the branch; the call that clears it is on
+		// the other path, so the read after the label is dominated by the
+		// write and must be admitted.
+		body := prologue + "  mov w9, #7\n  cmp w2, #0\n  b.ne later\n  bl helper\n  b done\nlater:\n  mov w0, w9\n  b done\n" + epilogue
+		unit, errs := ParseUnit("written.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, _ := parseSignature(decl)
+		if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+			t.Fatalf("must pass: %v", findings)
+		}
+	})
+	t.Run("a path that reaches the label without the write still refuses", func(t *testing.T) {
+		// The second arrival at the label comes from before the write, so
+		// the meet drops w9 and the read is refused.
+		body := prologue + "  cmp w2, #0\n  b.ne later\n  mov w9, #7\n  cmp w2, #1\n  b.ne later\n  b done\nlater:\n  mov w0, w9\n  b done\n" + epilogue
+		unit, errs := ParseUnit("written.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, _ := parseSignature(decl)
+		findings := Check(unit.Functions[0], sig, symbols)
+		if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "before any write") {
+			t.Fatalf("want an uninitialized read, got: %v", findings)
+		}
+	})
+	t.Run("a call on every path into the label clears it", func(t *testing.T) {
+		body := prologue + "  mov w9, #7\n  bl helper\n  cmp w2, #0\n  b.ne later\n  b later\nlater:\n  mov w0, w9\n  b done\n" + epilogue
+		unit, errs := ParseUnit("written.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, _ := parseSignature(decl)
+		findings := Check(unit.Functions[0], sig, symbols)
+		if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "before any write") {
+			t.Fatalf("want an uninitialized read, got: %v", findings)
+		}
+	})
+}

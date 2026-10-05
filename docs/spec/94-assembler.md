@@ -10281,3 +10281,78 @@ case the checker is right and the renaming has moved a read above its
 def, or the written set is lost at that label for another reason.
 Reading the label's arrivals in the reallocated body against the original
 settles it in one pass.
+
+### 9.an The initialized registers are a label fact (2026-10-05)
+
+§9.am left a question: both remaining refusal classes were dominated by
+forms containing the register-reallocation transform, and either those
+bodies were wrong — reading registers never written, with the checker
+stopping a miscompile — or the checker could not follow the renaming.
+The answer is the second, and the way to it was to stop reasoning about
+the transform and measure the body.
+
+Take the refused body of `buffer_read_into` from the dump, build its
+control-flow graph, and ask whether the register the checker objects to
+is written on every path into the label where the read sits. It is. The
+label has exactly one predecessor and that predecessor writes the
+register two instructions earlier. The body is correct; the refusal is
+not.
+
+The cause is that `c.written` — and `writtenV`, `writtenP` — were not in
+`guardState`. Every other fact the checker carries is snapshotted at a
+label and met across that label's predecessors; the initialized set was
+updated linearly as `walk` visited items in **textual** order. In this
+body a call sits textually between the branch to the label and the label
+itself, on a path that does not reach it. `clobberCallerSaved` deletes
+the caller-saved registers from the set, and the walk then falls into the
+label with it already cleared.
+
+So the three sets join the label state, snapshotted with the rest and met
+by intersection: a register counts as initialized after a label only when
+every path into it initialized the register.
+
+**This was a soundness hole, not only a precision one, and that is the
+part worth reading twice.** Textual order fails in both directions. A
+write on a path that does not reach a label was also credited to it:
+`TestCheckerWrittenSetMeetsAtLabels` includes a body whose second arrival
+at a label comes from before the write, and the checker admitted it
+before this change — a read of a register uninitialized on that path,
+passed as verified. The intersection closes that at the same time as it
+stops the spurious refusals, which is what a meet should have been doing
+from the start.
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`68b3b6d9`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted | 32289 | **32219** |
+| refused candidate forms | 146 | **107** |
+| uninitialized-read refusals | 52 | **12** |
+| trap branches emitted | 717 | **716** |
+
+Four bodies are shorter and one is three instructions longer
+(`normalize_push`), for 70 net. `buffer_read_into`, the case this section
+was read from, goes from 72 instructions to 50. No body gains a trap
+branch, none stops being lowered natively, and all 335 units keep their
+verdicts. The twelve uninitialized-read refusals that remain are a
+smaller question for another day; the base-not-placed class, 73 of them,
+is untouched by this and is now the largest left.
+
+The repository's own test suite supplied the first casualty, and it is
+the best evidence for the change. `TestCheckIndexUnderEqualLength` builds
+a body that compares two spans' lengths, branches to the exit when they
+differ, then zeroes a counter and loops; the exit returns the counter.
+The inequality branch reaches that return before the counter is ever
+written, so that path returned an uninitialized register, and the
+checker admitted it because the write appears earlier in the text than
+the label. The fixture now zeroes the counter before the comparison,
+which is what it meant to do, and still tests the length-equality fact it
+was written for.
+
+The method is the same one §9.am recorded and is now two for two: group
+the refusals by the transform that produced them to find where to look,
+then compute the property over the body's own graph rather than arguing
+about the transform. Both times the transform was innocent and the thing
+it exposed was a declaration or a fact that did not travel.

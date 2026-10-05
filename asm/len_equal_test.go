@@ -13,7 +13,12 @@ import (
 // second access is refused.
 func TestCheckIndexUnderEqualLength(t *testing.T) {
 	decl := "dot_pair: (a: []u32, b: []u32) -> u32"
-	body := "  bind x0, w1 = a\n  bind x2, w3 = b\n  clobber x9, x10, x11\n  cmp w1, w3\n  b.ne done\n  mov w9, wzr\nloop:\n  cmp w9, w1\n  b.hs done\n  ldr w10, [x0, w9, uxtw #2]\n  ldr w11, [x2, w9, uxtw #2]\n  add w10, w10, w11\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, w9\n  ret"
+	// The counter is zeroed before the equality test rather than after
+	// it: `b.ne done` reaches the return, which reads the counter, so a
+	// write only the fall-through performs leaves that path reading an
+	// uninitialized register (docs/spec/94-assembler.md §9.an — the
+	// initialized registers meet at a label).
+	body := "  bind x0, w1 = a\n  bind x2, w3 = b\n  clobber x9, x10, x11\n  mov w9, wzr\n  cmp w1, w3\n  b.ne done\nloop:\n  cmp w9, w1\n  b.hs done\n  ldr w10, [x0, w9, uxtw #2]\n  ldr w11, [x2, w9, uxtw #2]\n  add w10, w10, w11\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, w9\n  ret"
 	unit, errs := ParseUnit("v.oakasm", decl+" = {\n"+body+"\n}\n")
 	if len(errs) != 0 {
 		t.Fatal(errs)
