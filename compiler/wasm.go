@@ -101,7 +101,7 @@ func emitStructuredWasmGraph(ctx context.Context, description target.Description
 	key := opt.ArtifactKey{Kind: opt.ArtifactChecked, Name: "wasm.checked-structured-cfg",
 		Version: opt.DeriveArtifactVersion("oak.wasm.checked-structured-cfg.v1", inputs...)}
 	module, report, err := runEmissionGraph(ctx, description, key, owned, emissionBackend[[]wasm.FunctionInput, wasm.Module]{
-		name: "wasm", materializeRevision: "oak.wasm.encode.v8/" + wasm.Profile,
+		name: "wasm", materializeRevision: "oak.wasm.encode.v9/" + wasm.Profile,
 		admissionRevision: "oak.wasm.manifest-admission.v1/" + check.Validator + "/" + check.CoreSpecRevision,
 		materialize: func(_ context.Context, _ target.Description, input []wasm.FunctionInput) (wasm.Module, error) {
 			return wasm.EncodeStructuredCandidate(input)

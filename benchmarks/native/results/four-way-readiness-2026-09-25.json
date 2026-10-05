@@ -1,0 +1,102 @@
+{
+  "schema": "oak-four-way-readiness-v1",
+  "date_utc": "2026-09-25T13:13:57.366739+00:00",
+  "state": "correctness-passed-timing-pending",
+  "compiler_revision": "6b66f6b1294fd7f6e5eaaeff120c53ddafb9ce12",
+  "compiler_dirty": true,
+  "provenance": {
+    "note": "Emitter embeds vcs.modified=true: concurrent proof/test/docs/workflow edits plus new benchmark files were present. This is not a clean-checkout build. Actual nonstandard compiler build inputs and benchmark sources were hashed before and after preparation and were unchanged.",
+    "compiler_build_input_count": 475,
+    "compiler_input_map_sha256": "ae158af56d3b516677f5e0331a90b1fd48b772f8c7239a44e2fab0091a2f8c86",
+    "compiler_input_map_digest_recipe": "sha256 of jq -cS '.compiler_source_sha256' prepared.json, including trailing newline",
+    "tracked_diff_sha256_at_prepare_start": "a818530a358ff7caba3db9d02f9c8b1a6e52500a86b028a782c4a381d94adfe4",
+    "selected_production_sources_sha256": {
+      "compiler/native_search.go": "348a93e631f4755d34f5389d4561014c87d7e297adbd2e52e84e4d7a442f63c4",
+      "opt/search.go": "496ecfc2017147b951f534be8546a28c74261d89dbfc29734406d1021e345d57",
+      "opt/candidate_artifacts.go": "4ed94c0c692809ca32f6fd1ccfbcaa74cf6285b8633e95cc47a549f5f08332f4"
+    },
+    "source_sha256": {
+      "benchmarks/native/paired_loads/sums.oak": "e3f684551d833aac777518e9bb421d050eb154d66610779c37dc5df223fa640f",
+      "benchmarks/native/four_way/run.py": "8eaa1e569607640564b191bc4adad9b9050817ab2ab54a0b3f2171805ebb9e01",
+      "benchmarks/native/four_way/test_run.py": "bdec948cbb70b00e884efb38093eced3c454fb87df624431322e04b87b25a11a",
+      "benchmarks/native/four_way/runner.c": "fb8e9b487a48ad0843afd75ae0229dee620d4465a41bc099786709ab04cb1679",
+      "benchmarks/native/four_way/sums.rs": "428d90aed05d2375fadeaab29396cb3176ea97f7a1058b2d6435c1abc72abe43",
+      "benchmarks/native/four_way/sums.zig": "52092dac010528a95612e27097b855f13cf8fddd7299509cebbc506a4cb35986"
+    },
+    "artifact_directory": "/private/tmp/oak-four-way.ZCEkvz/build-ready",
+    "manifest": "/private/tmp/oak-four-way.ZCEkvz/build-ready/prepared.json",
+    "manifest_sha256": "60a54588ec14e50d6d2e9685b0b1a9eb3beffec8b2941bbf62bf2db92dce0fc7",
+    "artifacts_sha256": {
+      "emit": "ea473cfee502d25f9fd0824ff6cf3ab06c4f1f27e73b84858fd2cbeaac285d83",
+      "kernels.c": "97c7ab74571d6da649ffa75c8af22cd14c3631c0259880718131503ea4db22da",
+      "kernels.o": "37258fa7bac95ed0b311325a34e4f2b97761b59f1455f396812b98b58bf47558",
+      "c.o": "ccb38b36ee128b04e454a21ee2903c08da0c15d8e00303edf58a37a5a7415def",
+      "rust.o": "52c96f1296d09aaa8ae37efb33863dbfa65ca496c878c16a932d444bbe210a9e",
+      "zig.o": "6c1900cb8b03c641d96edf961a57944cf3b530c6288ea9b78abe48f3adc89a39",
+      "runner": "79501e41bfb8fa30129649b17bfec26b3f812a58eda3389cd0370fb80116187e",
+      "runner.disassembly": "e15d3232edfe584733403a9a75e339721c682bc279923312c40af23c26cb2300",
+      "command-1.stderr": "faf6cefa613077f5ee80bee4cae73db57c4fdeaa031c4247c02a70b89fb6d672",
+      "command-4.stderr": "c029f9042e95e6fc5a8ccac748d94d0fd7446b64ff5b7887e4b6d8d5acf06c3c"
+    }
+  },
+  "host": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpus": 16,
+    "load_average_at_prepare": [196.95361328125, 160.3642578125, 112.76806640625],
+    "isolation": "not isolated; parallel proof work and other host activity",
+    "timing_samples": 0
+  },
+  "tools": {
+    "cc": {"path": "/usr/bin/clang", "version": "Apple clang 21.0.0 (clang-2100.1.1.101)", "sha256": "a961f78075d8e7621ef4f5d764c64ef8a41bf66c0a98ab5cb6ca39b85ce31c93"},
+    "rustc": {"path": "/Users/sam/.rustup/toolchains/1.91.1-aarch64-apple-darwin/bin/rustc", "version": "rustc 1.91.1 (ed61e7d7e 2025-11-07)", "sha256": "f556cd7caa76d85ff0e777ba8e96552b33b4e0ea0dda8fbe6cde1d23b6c4df27"},
+    "zig": {"path": "/opt/homebrew/Cellar/zig/0.16.0_1/bin/zig", "version": "0.16.0", "sha256": "747a9b519198afe71ad190a2387ce28cee879894d7ebc4e34c042b3ebf623c08"},
+    "go": {"path": "/opt/homebrew/Cellar/go/1.26.0/libexec/bin/go", "version": "go1.27.1 darwin/arm64", "sha256": "86345c198ca5a9ca856a5914cb130c83c4894cafc32a85b9676232b09c08736b"}
+  },
+  "comparison_profile": {
+    "implementations": ["oak-native", "independent-c", "rust", "zig"],
+    "source": "unchanged paired_loads/sums.oak with handwritten comparator reductions",
+    "semantics": "unsigned sums modulo 2^32/2^64, initialized aligned input, u32 length",
+    "abi": "ARM64 C ABI pointer/u32 view, 16 bytes; checked C layout and shared runner",
+    "c_flags": ["-std=c11", "-O3", "-mcpu=generic", "-mmacosx-version-min=13.0", "-fno-lto", "-ffp-contract=off", "-fno-fast-math"],
+    "rust_flags": ["--edition=2021", "--crate-type=lib", "--emit=obj", "-C", "opt-level=3", "-C", "target-cpu=generic", "-C", "panic=abort", "-C", "lto=off"],
+    "rust_deployment_environment": {"MACOSX_DEPLOYMENT_TARGET": "13.0"},
+    "zig_flags": ["build-obj", "-O", "ReleaseFast", "-target", "aarch64-macos.13.0", "-mcpu=baseline", "-fno-lto", "-fllvm", "--verbose-llvm-cpu-features"],
+    "zig_resolved_cpu": "apple_m1",
+    "zig_neon_enabled": true,
+    "oak_environment": {"OAK_VERIFY_CACHE": "0", "OAK_NATIVE_ONLY": "sum32,sum64", "OAK_NATIVE_DUMP": "selected"},
+    "note": "One shared executable/C harness, separate process per CLI observation, no LTO. C is independently compiled handwritten code, not Oak-generated C. Targets are explicit generic/macOS-baseline profiles, not identical feature sets or best M4 tuning. Zig emitted scalar loops despite NEON availability."
+  },
+  "validation": {
+    "prepare_command": "env GOCACHE=/private/tmp/oak-blake3.7hZU4I/go-cache python3 benchmarks/native/four_way/run.py prepare --artifacts /private/tmp/oak-four-way.ZCEkvz/build-ready --rustc /Users/sam/.rustup/toolchains/1.91.1-aarch64-apple-darwin/bin/rustc",
+    "unit_test_command": "python3 -m unittest discover -s benchmarks/native/four_way -v",
+    "unit_tests_passed": 12,
+    "native_bodies": {"sum32": "proven", "sum64": "proven"},
+    "correctness_rows_passed": 112,
+    "lengths": [0, 1, 3, 4, 7, 8, 15, 16, 31, 32, 511, 512, 513, 4096],
+    "widths": [32, 64],
+    "oracle": "shared C input/oracle plus independent Python arbitrary-precision modular oracle; all four outputs matched",
+    "runner_negative_checks": "width31, elements1048577, and check-mode calls2 each exited2; zero-length Oak check returned zero",
+    "timing": null,
+    "proof_scope": "Existing Oak native semantic checker Proven gates for these two bodies; not a complete source-to-ARM-ASL, formal ABI, or memory-ordering proof."
+  },
+  "static_observations_not_performance_results": {
+    "instruction_count_method": "Count disassembled instruction lines within each named function; includes all branch paths, excludes other functions; not dynamic instruction count or cycles.",
+    "function_instructions": {"oak_sum32": 80, "oak_sum64": 51, "c_sum32": 34, "c_sum64": 34, "rust_sum32": 34, "rust_sum64": 34, "zig_sum32": 14, "zig_sum64": 14},
+    "stack_frames_bytes": {"oak_sum32": 160, "oak_sum64": 160, "c_sum32": 0, "c_sum64": 0, "rust_sum32": 0, "rust_sum64": 0, "zig_sum32": 16, "zig_sum64": 16},
+    "observation": "Oak vector reductions use callee-saved SIMD registers and a stack-mediated horizontal reduction; C/Rust use stackless vector loops and ADDV/ADDP horizontal reductions. Zig uses scalar loops for this profile.",
+    "bounded_next_optimization_to_investigate": "Prove an in-register horizontal-reduction alternative for Oak sum32 under the existing modular semantics and checker. Do not relax proof admission or infer speedup from the smaller code shape; validate on the prepared boundary cases and quiet-host timings."
+  },
+  "attempt_history": [
+    {"path": "/private/tmp/oak-four-way.ZCEkvz/build", "result": "All builds/checks completed, but manifest correctly withheld after broad all-Go fingerprint changed due to concurrent unrelated proof-test/regenerator edits. Refined fingerprint to actual emitter build dependencies. Initial link also warned Zig default macOS26.3.1 versus clang26.0; final profile explicitly targets13.0."},
+    {"path": "/private/tmp/oak-four-way.ZCEkvz/build-final", "result": "112 checks and two Proven bodies passed with actual dependency fingerprint and matched deployment minimum. Superseded only to retain Zig CPU/NEON diagnostics and final harness hashes."},
+    {"path": "/private/tmp/oak-four-way.ZCEkvz/build-ready", "result": "Final preparation passed; complete successful manifest retained; no timings."},
+    {"tool_probe": "/opt/homebrew/bin/rustc --version", "result": "Default Homebrew Rust1.93.0 aborted with missing LLVM symbol (exit134); selected working installed Rust1.91.1 explicitly. No comparator silently dropped."}
+  ],
+  "remaining": [
+    "Wait for quiet host and no parallel builds, then explicitly opt into measurement with immutable prepared artifacts and load/CPU checks.",
+    "Add a separately recorded matched Apple-M4-tuned comparator profile and investigate Zig scalar lowering before any best-code comparison.",
+    "Broaden beyond two reductions to representative memory/page-table/hash/control-flow workloads; this report establishes no plus-or-minus8-percent parity result."
+  ],
+  "scope": "Only new benchmark harness/tests/documentation/report files. No production compiler, OS source, compiler pin, worktree, or commits changed by this track."
+}

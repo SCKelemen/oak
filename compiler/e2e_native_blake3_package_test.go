@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/diagnostic"
 )
 
 // The whole hash package through the native backend, hashing inputs of
@@ -73,15 +75,25 @@ case_%d: (): Bool {
 		"oak.mod":  "module example.com/native_blake3_package\noak 0.1.0\n",
 		"main.oak": src.String(),
 	})
+	var updateVerdict string
+	const updatePrefix = "native backend: asm unit hash__blake3_uupdate: "
+	native := New().WithPackageDir(root).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" && strings.HasPrefix(d.Message, updatePrefix) {
+			updateVerdict = strings.TrimPrefix(d.Message, updatePrefix)
+		}
+	})
 	for _, lane := range []struct {
 		name string
 		comp Compilation
 	}{
-		{"native", New().WithPackageDir(root).WithNativeBodies().WithNativeAsm()},
+		{"native", native},
 		{"c", New().WithPackageDir(root)},
 	} {
 		if _, code, abnormal := buildAndRunFrom(t, "blake3_package_"+lane.name, lane.comp); abnormal || code != 42 {
 			t.Fatalf("%s backend: blake3 over %v bytes disagrees with the reference: code=%d abnormal=%v", lane.name, sizes, code, abnormal)
+		}
+		if lane.name == "native" && !strings.HasPrefix(updateVerdict, "proven equal") {
+			t.Fatalf("the complete BLAKE3 update must remain proven: %s", updateVerdict)
 		}
 	}
 }

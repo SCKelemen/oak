@@ -1129,7 +1129,8 @@ consecutive bytes in the sequential byte map, preserves all other memory and
 non-memory state, and composes with the selected break/make arguments under
 both endian choices. The 52-bit PA footprint cannot wrap the 56-bit call
 address. A generic runtime theorem includes arbitrary register/choice types;
-the generated fragment contains a RAM selector and the general-register bank. This runtime
+the generated fragment contains a RAM selector, the general-register bank,
+`PSTATE`, and the load/store syndrome register. This runtime
 ignores `defaultRAM`, so the proof establishes no RAM namespace or custody.
 Mutation gates check the external binding and wrapper, and separately pin the
 Lem backend's plain-write requests without claiming a Lean-to-Lem/CAT bridge.
@@ -1153,11 +1154,55 @@ failure, and XZR zero without any bank read. The source width/index domain is
 retained explicitly in the theorems. Its non-SP STR operand adapter composes
 these reads and matches the existing pure request, deriving the X0/XZR and
 X0/X2 pairs from the bank. It is not the original instruction body and makes
-no `Mem` call: SP, PostDecode, syndrome updates, translation, faults, register
+no `Mem` call: SP, PostDecode, the instruction's syndrome call, translation, faults, register
 provenance and architectural events remain open. A checked wrapping-address
 example records the 64-bit arithmetic; it supplies no physical-address
 translation by truncation. Upstream/local source-mutation gates pin the exact
 bank, getter, and overload, and the existing Sail CI builds the proof (§126).
+
+`SyndromeBridge.lean` retains and proves the original syndrome maker/setter,
+with the complete Arm `ProcState` record and actual `PSTATE`/`__LSISyndrome`
+register entries. It proves the six encoded fields for supported sizes and
+registers, EL0/EL1's exact syndrome-only update, EL2/EL3's unchanged full state,
+and missing-PSTATE failure. Original assertions and the undefined initializer
+remain; the proof uses the generated trivial choice source. A dependency-only
+adapter composes the register reads and setter, including the EL2 no-op; it is
+not generated STR execution and makes no `Mem` call. Exception/ESR construction,
+PostDecode, SP/MTE handling, translation/faults, architectural events and
+ordering remain open. Required upstream/local source-mutation gates and
+standard-axiom checks cover the new module. Sail regeneration uses a relative
+temporary input filename to keep assertion locations reproducible (§126).
+
+`STRExecutionBridge.lean` additionally proves a callee-parametric execution
+theorem for the complete original STR body, with its real register reads and
+syndrome update. For non-SP, no-writeback STR64, arbitrary feature callbacks
+precede those reads, and the arbitrary memory callback retains its exact
+success/failure state. This separate reduced-state export does not instantiate
+the real callees or prove their full-state refinement. Decoder/PostDecode,
+translation/faults, events, and ordering remain open. Whole-source and
+raw-generated-output gates protect this conditional boundary; see §126 and
+the [slice notes](../../spec/sail/STR_EXECUTION.md).
+
+`STRMemoryBridge.lean` further connects this STR entry to the complete original
+`aset_Mem` body, with a checked 64-bit/eight-byte binding. Its aligned normal
+path preserves the feature, endian, alignment, and MemSingle sequence and all
+callback effects/failures. A discovered Sail-to-Lean Boolean-lifting mismatch
+is repaired at exactly three pinned generated expressions: normal access now
+correctly skips SCTLR_EL2, and the NV2 endian branch can skip BigEndian.
+The concrete HasArchVersion query also preserves its guarded flag reads.
+The independent raw-output gate admits only these explicit repairs and framing.
+Unaligned first-byte partial failure is retained without transactional stores.
+`STRMemSingleBridge.lean` extends the conditional execution boundary through
+the original MemSingle body, preserving full translation/fault descriptors,
+exclusive clearing, tag actions and the final arbitrary `_Mem` result.
+Returning abort/tag-failure callbacks do not silently halt execution. Actual
+deeper callees, translation, full-state/event refinement, and ordering remain
+open (§126); source retention plus a finite exporter repair is not general
+Sail compiler verification. `STRConcreteHelpers.lean` binds actual NV2-query
+and zero-extension bodies: the exported query requires only the selected
+configuration register at its call state, and 64-to-64 extension preserves
+the full VA and state. Exported configuration registers are not assertions
+about hardware features; real translation/MTE/RAM and ordering remain open.
 
 The `SpanRefinement` section of the same bridge now relates that generated
 eight-byte effect to `Oak.SpanArguments.storeBytes`, the existing byte model
@@ -1751,7 +1796,13 @@ is not probed), and carries each changed slot at its width; the coupling
 pairs the array's lanes singly with byte slots, or packed when the
 machine holds the array as words (`TestVerifyFrameArrayLoop`: a
 sixteen-byte tail copy proven under both layouts, the store at a fixed
-index refuted). **The search, conflict-directed.** With sixteen tail
+index refuted). Slots a body writes at two widths — a record zeroed by
+8-byte stores whose one element is then written as a word, the prover's
+`pop_count` — are carried at the finer, 4-byte granularity
+(`noteWrittenSlot`, 2026-09-23): the frame model splits and assembles
+slots either way and the summary reads a carried slot through
+`loadSlot`, so only an unaligned overlap is still refused as "frame
+slots written at overlapping addresses"; five bodies were. **The search, conflict-directed.** With sixteen tail
 slots between an accumulator and the register it was wrongly paired
 with, chronological backtracking re-enumerated the tail on every
 failure; the search now returns the depths a refutation depended on —
@@ -2009,7 +2060,14 @@ compares. The arm rule itself takes conditions that are each other's
 economies of the decision: **small sides are decided without the
 premise first** (`g < n` against `¬(g ≥ n)` under a conjunction of four
 inner loops' exit facts over their element reads, which cost every order
-its budget for nothing); the premise's **conjuncts sharing no symbol**
+its budget for nothing; up to four hundred term nodes since 2026-09-22,
+where sixty-four left out `verify_first`'s `m & bucket_bit(j)`, a
+sixteen-lane select whose sides agree on their own and whose premise —
+grown by the callee reach conditions and children's postconditions of
+2026-09-16 — ran every order out at a million nodes); a **valuation
+refutes no obligation with one term on both sides** (the viability pass
+walked an outer loop's premise of thirty-one postconditions for `g + 1`
+against `g + 1`); the premise's **conjuncts sharing no symbol**
 with the sides, even through other conjuncts, are dropped for a first
 attempt (`relevantPremise`, a weaker premise so a proof under it is a
 proof); a coupling's **offset that normalizes to a constant**
@@ -2093,7 +2151,13 @@ at the other's, its header value never read by the body
 (`mentionsElsewhere`) — is scratch on both before the summaries merge.
 A **register reloaded from its own spill slot** (`str x14, [sp, #576]`
 … `ldr x14`) is no 64-bit write of it: a register the body otherwise
-writes as w stays a 32-bit variable on every path. With the loops
+writes as w stays a 32-bit variable on every path. The same holds in the
+loop header (2026-09-24): a call in the condition (`while k < n &&
+!f(…)`) spills a live home before it and reloads it after, and the
+reload counted as a header write, so the header's temporaries took the
+loop's counter out of the carried set while the condition read it
+("the loop's entry condition could not be reconstructed", the prover's
+`ts_array` and five more). With the loops
 paired, both functions reached the coupling and ended undecided, for
 one reason: `found` and `off` both start at zero, so either register
 fits either variable at the header, and the wrong pairing could not be
@@ -2984,7 +3048,19 @@ global (`T_PIPE: u32 = 17`) was not in the subset, and the build failed on
 four functions the seam checker refused — real backend bugs the checker
 found, exactly as §9 promised: a call spilled every live scratch register,
 including ones allocated for an enclosing expression's result and not yet
-written (`f(b) || (b >= 97 && …)`: a read of an uninitialized register),
+written (`f(b) || (b >= 97 && …)`: a read of an uninitialized register;
+and since 2026-09-23 the written set is a path's: it is recorded at every
+branch and, at a label, is what every arriving path wrote — a
+conditional's result register written in one arm was still counted
+written in the other, whose call spilled it unwritten, the prover's
+`operand` and four more bodies; a freshly allocated register holds
+nothing; and an instruction built apart from the emitter records its
+write like one built there; and an instruction retargeted onto a
+variable's home — `mov w9, wzr` rewritten to `mov w16, wzr` for `depth:
+u32 = 0`, the store folded into the value's last instruction — records
+its write on the home, where the rewrite left the home unwritten in the
+set and a later call's spill of it inconsistent, the prover's
+`pattern_text`),
 and a function whose one arm placed its result in `x0` — the base of a span
 parameter — before its other arm walked the span (the checker's span facts
 flow in text order, so the write ended the span). Now: a typed scalar
@@ -3397,7 +3473,25 @@ one). The Oak side inlines the same calls with the same alias
 (`enterCall`), so both sides' logs agree in their spelling. Second, a
 unit callee's loop whose count is a constant argument (`ap_lits(le, ew,
 lo, hi, u32(1))`) unrolls inside the summary, since the summary lowers the
-callee's body under the argument substitution. Third, `ab_push` shifts by
+callee's body under the argument substitution. A callee's loop events
+belong to their call site, one call instruction (2026-09-23): a second
+path through the same instruction merges its events with the first's,
+and two calls on one source line — `c ? f(…) | g(…)`, `f(…) || g(…)` —
+are two sites, where keyed by the line they were one, the second's loops
+merged into the first's or stood as an unrolled instance, and eight of
+the prover's bodies were refused for a loop count that was not the Oak
+side's. And a loop whose condition calls a function with a loop (`while
+b > base && rname_less(…)`, the prover's insertion sorts) numbers that
+callee's loops after its own event and nests them under the enclosing
+loop, as the machine side does when it meets the call in the header: the
+Oak side took the event's index before lowering the condition but
+registered the event after it, so the callee's loop took the same index
+and their fresh symbols collided ("the loop's entry condition could not
+be reconstructed", seven bodies), and the while's entry test, which
+lowers the condition once before the summary lowers it again, left the
+callee's loops behind as events of their own (one loop more than the
+machine). Both are gone (2026-09-23): `rname_less` and `str_less` prove
+inside their callers, and the callers reach verdicts. Third, `ab_push` shifts by
 `(at % 4) * 8` — a data-dependent count, which the verifier refused
 because Oak traps at the width where the machine wraps. A syntactic range
 bound (asm/range.go: constants, masks, products and sums by constants,
@@ -3947,9 +4041,23 @@ seventh: a bit tested by mask, compare, and branch — `and xT, xS,
 #(1<<k); cmp xT, #0; b.ne L` with xT dead after — is `tbnz xS, #k, L`,
 `tbz` for `b.eq`, refused when the target's block reads the flags; the
 eighth: a zero moved into a register only to be stored is the zero
-register stored; and the branch rule sees through a run of labels —
-`b endif` before `else:` `endif:` is a fall-through. The OS walkers'
-status conditionals and descriptor tests spent these at every level): a copy read once by the next instruction is
+register stored, the scheduler's independent instructions between them
+kept; and the branch rule sees through a run of labels — `b endif` before
+`else:` `endif:` is a fall-through. The OS walkers' status conditionals
+and descriptor tests spent these at every level). Before the rules, and
+alternating with them to a fixpoint, a constant branch fold
+(`nativegen/const_branches.go`): a forward propagation of the constants
+`movz`, `movk`, and moves from the zero register leave in the general
+registers — a label knows a register when every predecessor knows the
+same value, a call forgets the caller-saved ones — folds `cmp wR, #k;
+b.cond L` where R is known (taken: `b L`; not: both go, when no later
+instruction reads the compare's flags), threads `b L` whose target block
+begins with such a compare that the edge's state decides (the block's
+leading moves travel with the jump), and drops the blocks nothing then
+reaches. The walkers' status byte, set to 1 and compared with 1 at each
+level after a conditional clear, keeps no compare on either path:
+`translate` goes from 84 to 78 instructions on the stage2 replica
+(`nativegen/const_branches_test.go`): a copy read once by the next instruction is
 forwarded into that instruction's reads (a W copy only into W reads, the
 zero register and sp never forwarded, a call's implicit argument read
 never renamed); a definition of the retargetable set copied once to a
@@ -5003,7 +5111,40 @@ is unguarded on the machine's path and guarded by `ok` on the Oak side,
 and the two agree exactly there (the OS pilot's `alloc_table`). A callee's
 loop taken from its Oak body at a call summary is reached where the
 machine's path reached the call and the callee's own arm holds, and the
-premises assume both (`walk_leaf` calling `alloc_table` under `create`). Counted loops past the 64-trip
+premises assume both (`walk_leaf` calling `alloc_table` under `create`) —
+for a loop that stores, whose entry memories agree only there. A callee
+loop that stores nothing carries no reach condition and its reach is not
+compared: the two sides hold the same summary of the same body, its values
+couple by identity, and the call's result stands under each side's own
+path in the terms the verdict compares. Carrying the caller's path — a
+select over sixteen lanes in `literals.oak`'s `verify_first` — into every
+premise of the nest cost the proof five seconds of six (2026-09-23). A loop proof is first tried with every
+loop's reach condition — the Oak arm it sits in, the machine's path to
+the call it came through — replaced in the coupling's premises by a
+fresh one-bit symbol, under a sixteenth of the proof's allowances
+(2026-09-25, `verifyLoops`): a proof for every value of the symbol is a
+proof for the reach term, so a proven verdict stands, and any other
+verdict of that attempt is discarded and the full premises decide. The
+reach terms are what the diagrams ran out on in a nest called under
+table lookups; the prover's `row_named` and `signed_marks` prove this
+way, and the cap keeps the attempts that cannot finish cheap (five
+percent more verification time over the prover's 141 hardest bodies,
+where the uncapped attempt cost forty-three), while the OS walkers,
+which need their reach facts, keep them through the second run. One iteration is decided under both
+sides' reach conditions, the machine's path to the loop and the Oak arm
+it sits in (2026-09-29, `reachedBoth`): the Oak side's values after an
+iteration are guarded by that arm, and with the machine's condition
+alone a valuation satisfied the premise with the arm false and refuted a
+correct pairing, eleven of the prover's bodies ending in the search's
+fallback "no register is an affine image". Assuming both is assuming
+either, since the coupling proves the two equal or refuses. A deep nest, thirteen loop events or
+more, gives the attempt the whole allowance (`deepNestLoops`): the
+scanner's step functions (thirteen loops) and `count` and `find_from`
+(thirty-two) finish the coupling only under it, and their reach terms
+are what the full premises cannot decide. With the trap obligations
+below they prove again, after ten days as evidence; the prover's own
+deep nests pay for the attempt, eleven percent more verification time
+over its 141 hardest bodies, and gain nothing. Counted loops past the 64-trip
 unrolling limit use the same per-leaf markers on both sides; the Oak
 lowering treats the record-span root as memory rather than a carried
 local, and an inlined callee's parameter resolves through its alias to
@@ -5264,9 +5405,20 @@ see the unrolled shape. A pure instruction (a constant, a global's address, an e
 address, arithmetic) whose sources the loop never writes is hoisted, its
 destination renamed to a scratch register the whole function never names
 and its readers in the block renamed with it — either the old destination
-is written again in the same block, or no instruction anywhere in the
-loop reads it, the exit tests and the next iteration's header included,
-so no path reaches a reader through the old name. A copy of a register
+is written again in the same block, or no reader the old name can reach
+is left: a walk over the body's blocks from the block's successors (the
+fall-through, a branch's target in the body, the back edge into the exit
+tests and the body's first block) that stops where a block writes the
+register before reading it, so a read in another block that every path
+writes first (the join after two arms that each set `w9`) does not pin
+the value to its register (2026-09-22; before, any read outside the block
+did, which left two of `next_pending`'s five field bases in the loop). Two
+hoisted instructions that compute the same value — the same mnemonic,
+destination class, and source operands as the body spells them after the
+earlier renames — hold it once: the second disappears and its readers
+take the first's name (`shared`; the five field bases of one record are
+one `movz #80`, one `umaddl`, and four offsets, in six registers rather
+than fourteen). A copy of a register
 (`mov wD, wS`, `add xD, xS, #0`) is propagated instead of moved when the
 source holds until the copy's last reader: its readers take the source
 and the copy disappears; a copy of the zero register makes `str xzr`. The
@@ -5289,8 +5441,12 @@ x24` before a `bl`, and the linked program faulted where the verifier's
 witnesses had not reached). A hoisted value takes a scratch register the
 function never names, or one of the callee-saved registers the lowering
 reserves for the pass: the first lowering reports the values it could
-not place, and the second reserves that many (four at most), saved and
-restored with the variables'. A loop that calls hoists nothing into a
+not place — a value it could not place and every value that would have
+followed it, so the count covers the chain behind a missed constant, not
+its first instruction — and the second reserves that many, bounded only
+by the callee-saved registers left after the parameters, saved and
+restored with the variables'; the reserve yields to every other taker
+("The register budget" below), so it only ever holds what would sit idle. A loop that calls hoists nothing into a
 scratch register (a call clobbers every one); its copies still propagate
 and its guard still peels, and its reserved registers survive the call.
 A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
@@ -5500,6 +5656,44 @@ accumulators as the shape has lanes (`Oak.Reduction.vector16_eq` over
 and the verifier proves the assembly against the rewritten body, the
 lanes coupled as packs to the halves of their registers.
 
+**In-register u32 combine (2026-09-25).** The ARM64 lowering now recognizes
+the compiler-generated private four-lane scratch-array combine and emits
+`addv sTmp, vSource.4s`, `umov wTmp, vTmp.s[0]`, and the scalar accumulator
+add. The source vector remains intact. Eligibility requires a private marker,
+the exact u32 array/store/lane-add shape, and no other array references anywhere
+in the function; user-written lookalikes, escapes, other widths and floats
+keep their existing lowering. The public SIMD API is unchanged. The verifier
+still receives the original array-store/read AST, and independently proves
+the new machine body; no admission rule or assumed identity was added.
+Free-vector/free-seed proofs and wrong-lane, omitted-seed, and live-source
+clobber mismatches cover the local lowering, with tail/overflow correctness
+checked by the independent four-language harness.
+
+In that initial batch, on the unchanged reduction input, proven `sum32` shrank from
+80 to 66 instructions and from a 160-byte to a 144-byte frame. `sum64` remained
+51 instructions/160 bytes in that recorded baseline.
+These are static measurements, not timings or a ±8% parity claim. See
+`benchmarks/native/results/horizontal-reduction-2026-09-25.json` for artifact
+provenance, target-profile limits, and stage2 regression validation.
+
+**u64 and leaf-home follow-up (2026-09-25).** The same private matcher now
+also recognizes the exact two-lane u64 combine, emitting scalar `addp dTmp,
+vSource.2d`, `umov xTmp, vTmp.d[0]`, and the scalar seed addition. The verifier
+models only that two-operand D/2D form, reads both halves before writing, and
+clears the destination's upper half. Other ADDP forms remain unsupported by
+this new rule. Exact pinned Sail declaration audits and hardware differential
+cases guard the reviewed semantics; neither is a new kernel-checked ASL
+refinement or proof of SIMD-enable trap admission.
+
+Together with preferring existing unused leaf vector argument homes (§9.af),
+both unchanged reduction inputs now select zero-frame bodies: `sum32` is 58
+instructions and `sum64` is 37. Both remain Proven against the original
+rewritten scratch-array AST and pass all 112 four-language correctness cases.
+The public SIMD interface, floating-point reduction policy, and proof
+admission rules are unchanged. These are again static observations only;
+`benchmarks/native/results/arm64-reduction-ordering-2026-09-25.json` records
+the build provenance, regression gates, and remaining proof boundaries.
+
 Four accumulators, not one, because a single vector accumulator is one
 loop-carried chain: measured over 2^20 `u32` elements, one `simd.U32x4`
 runs at 0.18 ns an element against the scalar unrolling's 0.16, two at
@@ -5591,8 +5785,15 @@ recipe v9. Cost-only recurrence hints recognize smaller-vector cleanup as
 bounded: a stride-8 loop followed by stride-4 and scalar loops suggests at
 most one vector-cleanup trip and three scalar trips. Bounded `MaxTrips`
 values count trips, so the cost model must not divide them by stride a
-second time. Metric/cost artifact revisions are v2. These estimates confer
-no semantic authority. `benchmarks/native/exact_fma/README.md` records the
+second time. A guard's branch into the trap block is not an exit the exact
+count reads (2026-09-21, `machine/exact_trips.go`): it aborts the function
+on an invalid input and every trip runs it alike, so a counted loop keeps
+its exact trips with its guards in place and is charged the same trips
+once a proof removes them — read as an early exit, the guard made a
+guarded body cost half of the same body without the guards, and the
+search kept the OS virq scan's four redundant span guards per element
+although their elision fired and the checker admitted it. Metric/cost
+artifact revisions are v2. These estimates confer no semantic authority. `benchmarks/native/exact_fma/README.md` records the
 one-vector control, timings, code-size tradeoffs, and rejected experiments.
 
 **Fold vectorization (2026-09-16, AArch64 lane; `nativegen/vector_fold.go`,
@@ -6625,6 +6826,34 @@ are general: the taken path of `b.cond` after a compare knows what the
 fall-through of `b.inverse` would, so a `b.hi header` back edge carries
 the slack fact as `b.lo header` carries the index fact.
 
+**Loops that break (2026-09-20, both lanes; `asm/break_form.go`,
+`loopShape.breaks`).** A `while` whose body leaves it early — Oak's
+`break` (`85-discipline.md` §3a), lowered as a branch from the body to
+the loop's exit label — was refused on both sides: the recognizer's body
+may branch only within itself, and the Oak lowering met a statement it did
+not lower. Both sides now summarize such a loop as the loop that carries a
+one-bit flag, which is what a `break` is once the exit is not a jump:
+`#brk` is 0 at the header, an iteration that breaks sets it (the machine
+side reads a body path ending at the exit label as that iteration; the
+Oak side rewrites the body once, `break` to `#brk = true` and the
+statements after the statement that broke under `!#brk`), and the
+continue condition reads it first — `!#brk && c` — so the exit tests and
+their traps are not evaluated after a break. The coupling pairs the two
+flags (`#brk@L↔#brk`, L the loop's line). A counted loop with a break is
+summarized rather than unrolled on both sides: unrolled, the machine forks
+at the break and each path keeps a constant counter, where the Oak side's
+merged selects lose the count. The Oak side lowers a loop's condition
+before placing its memory markers, as the machine evaluates its exit
+tests before marking: a condition reading a leaf the body never stores
+(`while i < s[dom].count`, the body storing `s[dom].slots`) read the
+marker on one side and the entry memory on the other. The OS pilots'
+scans (`grant`, `timer`) wrote a done flag into the loop condition by
+hand for want of a verified `break`; the two shapes now prove alike, and
+so does an early `return` from inside a loop, which the parser lowers to
+this flag form (`10-syntax.md` §2e; `compiler/e2e_native_return_test.go`)
+(`compiler/e2e_native_break_test.go`: a counted scan, a span search, a
+store before and after the break, a nested loop's break, on both lanes).
+
 **Two copies removed (2026-09-15).** A widening from a narrow unsigned
 type to a wide one wrote `mov wR, wR` to clear the upper half; a value a
 w instruction just computed has it clear already, so only a value that
@@ -6686,7 +6915,8 @@ a length, a subslice's guard — so `let x = a in f x` is `f a`
 (`Oak.SpanForward.let_forward`); a lowering the rewrite makes unsupported
 falls back to the body before it, and the verifier reads the body as
 written. And the callee-saved registers the second lowering pass reserves
-for the loop invariants (up to four) yield to a declaration that would
+for the loop invariants (as many as it wanted, of those left after the
+parameters) yield to a declaration that would
 otherwise refuse the body or fall to a slot: a span local's pair, an
 overflowing scratch, a scalar's home take them back (`reclaimReserve`,
 `takeCalleePair`), and the pass hoists into what remains.
@@ -6710,7 +6940,12 @@ model is the conditional itself (`Oak.ConstantConditions.select_true`,
 `select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
 `scope` and `pick` — no branch, select, or conditional label —
 `TestE2ENativeConstantConditions` proves both and agrees with the C
-backend.
+backend. A block in condition position reads as its last expression
+after its statements run (2026-09-23): a parenthesized condition `(a &&
+b) ? { … }` is a block of one expression, and an inlined predicate's body
+— `!has_mark(…)` with the callee's bindings before its test — is a block
+of several; both were refused as "a condition that is not a comparison
+(*ast.BlockExpression)", five of the prover's bodies among them.
 
 **Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
 `spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
@@ -7166,6 +7401,22 @@ spans inside loop bodies (23 and 14 bodies), which need the span memory
 carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
+
+**A call's result register as a loop variable (2026-09-18).** The
+result registers of a summarized call were temporaries without
+exception, and a value that travels through the call's argument and
+result register with no move between the iterations was therefore no
+loop variable at all: `crc32c_update` with its registers reallocated
+keeps `state` in w0 into `crc32c_chunk` and out of it, the summarizer
+read the header's value for w0 at every iteration, `state` had no
+pairing, and every optimized form of the body was set aside as
+witnessed while the identity was kept. A call's result register the
+body reads before it writes — a call reads its argument registers, an
+instruction its sources and memory bases (`callCarriedResults`) — is
+now a loop-carried register at the callee's result width; one the body
+consumes stays a temporary. The rotated, fused, scheduled, reallocated
+form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
+Pinned: `compiler/e2e_native_call_result_carried_test.go`.
 
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
@@ -7979,6 +8230,28 @@ still faces the same guard and preservation implications under the same
 budgets. This avoids rebuilding a large unresolved expression at each
 intervening search depth.
 
+**Declared-width equality through shared terms (2026-09-18).** The restored
+BLAKE3 chaining-value slots all find their identity pairings. The first
+preservation implication still exhausted the diagram budget: its canonical
+terms differed only at the 64 block bytes, read at 32 bits on the Oak side
+and eight on the machine side, with the same eight-bit declarations.
+`equalTermsAtDeclaredWidths` checks the shared term pairs structurally,
+allowing same-name parameter views only when they retain the same declared
+bits. It leaves every operation's result width intact. Comparisons and
+float operations also require equal operand widths; quantifiers use strict
+structural equality because a bound name may shadow the declaration.
+The rule neither rewrites terms nor changes global structural identity.
+
+`TestImpliesEqualDeclaredByteViewsInSharedDAG` proves the reduced shared
+arithmetic graph within 2,000 proof nodes, where the previous decider ran
+out. Changed output bits, discarded high bits, signed comparisons, float
+conversions, unknown bounds and quantifier shadowing remain distinct. The
+full update now proves all four nested loops within the normal budgets.
+The search also stops when its shared diagram or implication allowance
+runs out, preserving that cause instead of continuing until the candidate
+limit hides it. The equality rule alone leaves the native update unchanged;
+measurements and validation are in `benchmarks/native/results/blake3-declared-equality-2026-09-18.json`.
+
 **The machine traps only where Oak traps — checked (2026-09-16).** The
 domain of the comparison excluded the inputs on which the machine
 trapped, on the claim that Oak traps there too, on the same guard; the
@@ -8242,7 +8515,18 @@ declared count the length; the stores are compared in `decideSpans` as a
 span parameter's are, and a callee's stores to it reach the caller
 through the summary, which lowers the callee over the caller's write
 log. `TestE2ENativeGlobalArrayProven` proves a byte buffer's writer, a
-caller of two writes, and a loop summing the buffer. Only arrays of
+caller of two writes, and a loop summing the buffer. A loop whose body
+stores through such an array — `write_bytes` filling `out_buf` through
+`write_byte` — marks it as loop memory on both sides as it marks a
+writable parameter (2026-09-23; `summarizeLoop` over the function's
+globals, `loopEvent` over the lowering's), where before the machine side
+refused the body's store "through a span that is not a writable
+parameter"; and a callee's own large arrays (`write_flush`'s `chunk`, its
+frame, gone at return) leave the caller's write log when the summary
+returns, since a caller's loop read them as stores through a span it did
+not know. `write_bytes`, `write_str`, `write_lit`, `write_span`,
+`write_names_of`, and `step_binding` prove; four more of the family stop
+at the loop-event budget. Only arrays of
 integer scalars qualify; a top-level record, or an array of records,
 stays trusted. Alongside, fifteen bodies (`solve`, `project`, `ts_sum`,
 the `sat_*` and `sr_*` walkers) stopped at "instruction ldp": a record
@@ -8418,7 +8702,27 @@ traps' guards from the path's facts and prunes the reads' chains under
 them before any diagram; only an end the implication leaves undecided
 goes to the flat decision. `protocol_line_done`'s ends every one prove
 by implication and the body is proven write by write again
-(`TestE2ENativeGuardedWrites`). Aligning the machine's reads with the
+(`TestE2ENativeGuardedWrites`). A machine trap that can never fire is
+dropped before the obligation is formed (2026-09-23,
+`dropUnreachableTraps`): the machine guards a data-dependent shift count
+at the width (`cmp count, #32; b.hs trap`) and the guard's condition
+stood in its trap disjunction, where the Oak side had folded the same
+trap away by the range bound (`asm/range.go`); a comparison against a
+constant whose left side the bound holds below it is constant false and
+leaves the disjunction, and the bound now reads a remainder spelled as a
+subtraction, `x - (x >> k) << k`, the machine's `at % 4` before a byte
+extract. Left in, the false disjunct stood beside the element selects
+in the diagram and the loop trap-domain obligation ran out of nodes: the
+prover's `str_less`, `rname_less`, `str_eq`, and `set_count` prove; the
+bodies that call the first two are still refused, in the call summary,
+for a loop whose entry condition is not reconstructed. An end is decided first against the source traps of at most
+4,096 nodes, under an allowance of its own (2026-09-25, `smallTraps`):
+implying some of the disjuncts implies them all, and the machine's ends
+are usually small comparisons each matching one small source trap (`80 >
+len(tables) - 16` against `96 > len(tables)`) where one source trap is a
+path through a nest (3.9 million nodes in `count`'s root obligation),
+and the shared allowance had been spent on it before a ninety-node end
+was reached. Aligning the machine's reads with the
 Oak side's through the proven prefixes, the fast path's move, was tried
 first and is not needed here: the implication decides the unaligned
 obligation. Alongside, the run that merges the paths at their joins
@@ -8435,6 +8739,152 @@ OS pilot; the per-end decision and the fact-pruned respelling that
 followed it (`sourceTrapOnPath`, below) bring it to 573, 212, 166 at
 62ce8b44, and both walkers are fully proven again (stage2 twenty of
 twenty, addr_space twenty-nine of twenty-nine).
+
+**Locals assigned in a chained conditional's arms are carried
+(2026-09-18).** `TestE2ENativeGuardLines`'s `count_hits` — the search whose
+two element reads the checker's surviving ceiling now elides — had
+been evidence since it was written: the Oak side of
+its search loop carried `found` but not `lo` and `hi`, assigned in the
+second and third arms of `k == target ? { found = true } | k < target ?
+{ lo = mid + 1 } | { hi = mid }`, because a chained conditional's else
+arm is a conditional itself and the summarizer's walk of a loop body's
+assignments (`assignedLocals`, `assignedFieldPaths`) looked only into
+block arms; the loop's continue condition then compared the machine's
+`lo < hi`, carried in two registers, with the Oak side's entry values
+`0 < len(keys)`, and every coupling was refuted. The walk now follows a
+conditional arm into its own arms, and `count_hits` is proven with its
+two nested loops coupled inductively (hits, p, hi, lo, found).
+
+**A record argument's large array field is a memory (2026-10-04).** The
+prover's `Bits` family passes `a: Bits` (`at: [64]u32`) by reference and
+reads `a.at[i]`; both sides folded the read over the field's sixty-four
+leaves (`(i eq 0) ? a.at[0] : (i eq 1) ? a.at[1] : …`), and a loop's
+obligation over two such reads (`shift_const`'s `a.at[i - k]`,
+`a.at[i + k]`) exceeded every diagram at the implication's allowance. An
+indexed read of an array whose elements are the leaf parameters of one
+memory — at least `spanArrayFieldElements` (64) of them, `a.at[0]`,
+`a.at[1]`, … — is now a read of that memory (`termSelect` over `a.at`),
+by one rule on both sides: the Oak lowering's `elementUnderIndexTerm`
+when the array value's elements are all such parameters
+(`leafMemoryOf`), and the executor's load through a record argument
+when the field's leaves are (`recordArrayMemory`; a store into a record
+argument is refused, so they stay the parameters). A constant index is
+the leaf itself, as before; the trap on the index precedes the read on
+both sides. The rule is the record argument's field only (a memory
+named by a field path): an array parameter's own elements (`block[k]`
+of BLAKE3's `block: [64]u8`) the machine reads as frame slots or span
+elements and folds, and the first form of the rule read them as a
+memory on the Oak side alone, which cost `blake3_update` its coupling
+(`TestE2ENativeBlake3PackageAgreesWithReference`). The read is an atom of the linear form (`pick` proves as
+`1*a.at[i]`, `pair` as `1*a.at[i + 1] + 1*a.at[i]`) and a block of the
+blaster's select abstraction, two reads at one linear index one block
+(`TestVerifyRecordArgumentArrayAsMemory`,
+`TestE2ENativeRecordArrayMemory`, whose `count_set` loops over the
+reads). `shift_const` proves under the model in 1.4 s a form where it
+was evidence. Tallied on the plain bodies at a2418aa1: 590 proven, 236
+evidence, 125 trusted of 951 identity forms (573, 212, 166 at
+62ce8b44, upstream's loop-summarizer increments of the week between
+sharing the gain); of the family, `not_bits`, `shift_const`,
+`shift_right_arith`, and `permute_bits` cross to proven, while
+`add_carry`, `add_bits`, `mux_bits`, `shift_barrel`,
+`count_leading_zeros`, and `pop_count` stop at "the loops' terms hold
+over 840,000 nodes, past the coupling's budget of 250,000" — the
+result `out: Bits`, sixty-four leaves each a conditional over the
+loop's index per iteration — and `pointwise`, `rotate_right`, and
+`load_bits` at the coupling search's budgets: the write side of the
+family, the local record's array field as a memory of its own, is the
+next step.
+
+**A result record's large array field is a span memory (2026-10-04).**
+The write side of the Bits family: `out: Bits` is built in the caller's
+result area (the return slot, `asm/return_slot.go`, which the backend
+records as `Function.ResultSlot` when it places the local there), and
+its sixty-four words were sixty-four leaves of the result, each a
+conditional over the loop's index per iteration, until "the loops'
+terms hold over 840,000 nodes, past the coupling's budget". When the
+slot is declared value-less, each array field of the result record with
+at least `spanArrayFieldElements` integer elements is a span memory
+named `<local>.<field>` on both sides: the executor keeps a frame span
+at the field's entry-relative address in the result area
+(`resultSpanAt`, `frameSpanAccess`), its memory the caller's unknown
+until the backend's fill has written every element with zero, when the
+log collapses to the zero marker (`collapseZeroFill`); the Oak lowering
+declares the field a local span, zero at entry, and routes the field's
+indexed reads and writes through its log (`declareReturnSlot`,
+`spanBackedElement`, `assignSpanBackedElement`), a whole read — the
+result, a copy, a call's argument — materializing the elements at their
+constant indices (`materialized`). A wide access over narrow elements
+(an eight-byte copy over a byte array) splits into or joins the
+elements' bytes; a call summary's record or span argument held in the
+result area reads the span element by element rather than unpacking
+chunks (`unpackFrameAggregate`, `resultSpanLoad`), writes back into it
+through the log (`resultSpanStore`), and a span argument into the area
+aliases the span as one into a local array does. The result's chunks
+read the spans at constant indices. `TestE2ENativeResultSpan`'s two
+bodies prove "the span memory it writes (out.at) … all 32 result
+chunks" where their leaves exceeded the budget. Tallied on the plain
+bodies at 6ca43a67: 593 proven, 233 evidence, 125 trusted of 951
+identity forms (590, 236, 125 at a2418aa1); of the family `load_bits`,
+`pointwise`, and `rotate_right` cross to proven, ten of sixteen now,
+and the six left — `add_carry` and `add_bits` (the Bits inside a `Sum`
+built in the frame), `mux_bits`, `shift_barrel`, `count_leading_zeros`,
+and `pop_count` (a slot assigned whole from a call each iteration) —
+stop at "the loops' terms hold over 840,000 nodes": the frame-held
+record's array field, and a whole assignment of sixty-four elements per
+iteration, are the family's next two steps. An initialized slot
+(`next: Blake3State = state`) keeps the leaf model: under the span the
+copy of the parameter into the field coupled past the search's budget,
+where the leaves prove BLAKE3's update
+(`TestE2ENativeBlake3PackageAgreesWithReference`); and the first form of
+the rule, keyed on the return-slot rule alone, met a body the backend
+had built in the frame after all (`sha256_update`), so the backend's own
+record of the placement is what both sides read.
+
+**A frame record's large array field is a span memory (2026-10-05).**
+The result-area model above left the family's bodies whose Bits lives in
+the frame: `add_carry` builds `out` and returns it inside `Sum { bits:
+out, carry }`, `pop_count` fills a value-less `one: Bits` and hands it to
+a callee. The backend now names a frame record's large array fields as
+frame objects of their own (`local.field`, bindRecord, as an owned
+array's object), and both sides declare those of a value-less local as
+span memories by the one rule of the result area (the executor's frame
+spans, the Oak lowering's `declareSpanFields`); a record literal or a
+call argument that takes the local whole materializes the elements. The
+call summary's bindings, write-backs, and aliases of an argument held in
+the frame look the memory up in both kinds of span (`spanRegionAt`): the
+first form consulted the result area alone, and a caller's `x: Bits`
+passed by reference read fresh frame bytes where its stores had gone to
+the span, a false disagreement on the witnesses. `TestE2ENativeFrameSpan`
+proves `carry_add` (a Sum around the frame-held Bits) and `ones_of` (the
+Bits passed to a callee), and `TestE2ENativeRecordWords`'s `add_bits`
+through `add_carry` again. The prover's tally at d3eba6be stands where
+the result-area model left it, 593 proven, 233 evidence, 125 trusted:
+the six remaining Bits bodies are not the field's: `mux_bits` writes `out.at[i] = bdd_ite(l, mem, c,
+t.at[i], e.at[i])`, and the callee summarized inside the loop brings
+eighteen loop events a side — its hash probes and allocations — whose
+terms the trace (`OAK_VERIFY_TRACE`, "loop terms") puts at 218,000
+nodes of stores on the machine side and 302,000 nodes of the callee's
+traps under their paths on the Oak side before the coupling begins;
+`add_carry`, `shift_barrel`, `count_leading_zeros`, and `pop_count` call
+`apply`, `mux_bits`, and `add_bits` the same way. A callee taken at its
+contract — its result and its effect on the spans it writes one fresh
+unknown a call on both sides, as an extern binding's result is — would
+summarize these in a few nodes, but a call's result is a function of
+every argument and of the memory it reads, which the term language
+cannot name: a `select` takes one index, and one unknown per call site
+inside a loop body would equate the iterations' results. The primitive
+is an n-ary uninterpreted application with its congruence in the
+blaster (equal arguments, equal results) — the term the floating-point
+operations already are (`termFloat`, asm/floats_ops.go,
+Oak.Uninterpreted.ackermann_sound), given a call's own operation name
+and, beside its arguments, a token for the memory the callee reads,
+which is the open design question (a per-call marker in the span's log
+on both sides names the memory after the call but not the caller's own
+stores between two calls); the step after the loop summarizer's own
+work on callee loops (#603–#615). The coupling-search bucket shares the
+cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
+and reach the search through their callees' (`rstr`, `sb_str`,
+`t_binary`).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -9181,6 +9631,15 @@ saved: a leaf makes no call. A home released at a local's last use
 returns to its pool. The registers taken are declared as clobbers and
 `Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
 
+As of 2026-09-25, these existing unused argument homes are preferred before
+callee-saved and scratch homes, avoiding unnecessary d8–d15 save/restore
+traffic in small leaf functions. The pool still excludes every incoming
+float/vector argument and v0, and calling functions retain their existing
+policy. No frame layout or proof-admission rule changes: the existing checked
+callee-save trimming and empty-frame elision handle frames that become empty.
+Free-input vector-result/mixed-parameter proofs, exhausted-pool and nested-scope
+reuse tests cover the allocation priority in `nativegen/leaf_vector_homes_test.go`.
+
 The validator's loop goes from forty q-register frame accesses to none,
 its whole body from forty-one to one, and both bodies still prove (the
 three data-dependent loops coupled inductively as before). The fixture
@@ -9428,7 +9887,14 @@ in a probing mode where a call clobbers the caller-saved registers and
 binds its results afresh, summarizing nothing (`pathExecutor.probing`);
 bodies with inner loops are still not probed. The slots a callee writes
 through an address it was handed are not discovered by the probe — the
-summary proper lists them — so the discovery is conservative.
+summary proper lists them — so the discovery is conservative. The probe
+also leaves no loop events and no call-site records behind (2026-09-23):
+a call the body run reached was still summarized by the probe, before the
+loop's index was on the stack, so the callee's loops stood at the top
+level beside the body run's own, and the prover's `add_carry` was refused
+with 41 machine events against the Oak side's 21 — 28 of the prover's
+bodies were refused this way. The events the probe records are dropped
+and the call-site records restored when it returns.
 
 **Header values spelled apart (2026-09-17).** A coupling candidate is an
 equality when the two sides' header values are one term, else an affine
@@ -9857,3 +10323,96 @@ first would be a bug of the same family as this section's, the second a
 gap of the §9.al family. Deciding it needs the reallocated body of one
 case read against its original, which is the next piece of work, and it
 should be done before either class is called out of subset.
+
+One hypothesis is already ruled out, which narrows that work. The obvious
+candidate was that reallocation renames the web holding a parameter and
+leaves the body's `bind` behind, so the entry register is never written.
+It does not: `Web.pin` pins any web with a def whose instruction is nil —
+"holds a value at entry" — and pins a call's arguments, results and
+clobbers besides, so the registers the ABI delivers keep their colours
+(`machine/webs.go`). Whatever loses the written set, it is not the entry
+binding.
+
+The case to start from, read off the dump of `buffer_read_into`: the
+refusal is a `cmp w10, #1` at a label whose only visible predecessor is a
+branch two instructions after `ldr w10, [sp, #104]` writes it. Either
+that label has a second predecessor arriving without the write, in which
+case the checker is right and the renaming has moved a read above its
+def, or the written set is lost at that label for another reason.
+Reading the label's arrivals in the reallocated body against the original
+settles it in one pass.
+
+### 9.an The initialized registers are a label fact (2026-10-05)
+
+§9.am left a question: both remaining refusal classes were dominated by
+forms containing the register-reallocation transform, and either those
+bodies were wrong — reading registers never written, with the checker
+stopping a miscompile — or the checker could not follow the renaming.
+The answer is the second, and the way to it was to stop reasoning about
+the transform and measure the body.
+
+Take the refused body of `buffer_read_into` from the dump, build its
+control-flow graph, and ask whether the register the checker objects to
+is written on every path into the label where the read sits. It is. The
+label has exactly one predecessor and that predecessor writes the
+register two instructions earlier. The body is correct; the refusal is
+not.
+
+The cause is that `c.written` — and `writtenV`, `writtenP` — were not in
+`guardState`. Every other fact the checker carries is snapshotted at a
+label and met across that label's predecessors; the initialized set was
+updated linearly as `walk` visited items in **textual** order. In this
+body a call sits textually between the branch to the label and the label
+itself, on a path that does not reach it. `clobberCallerSaved` deletes
+the caller-saved registers from the set, and the walk then falls into the
+label with it already cleared.
+
+So the three sets join the label state, snapshotted with the rest and met
+by intersection: a register counts as initialized after a label only when
+every path into it initialized the register.
+
+**This was a soundness hole, not only a precision one, and that is the
+part worth reading twice.** Textual order fails in both directions. A
+write on a path that does not reach a label was also credited to it:
+`TestCheckerWrittenSetMeetsAtLabels` includes a body whose second arrival
+at a label comes from before the write, and the checker admitted it
+before this change — a read of a register uninitialized on that path,
+passed as verified. The intersection closes that at the same time as it
+stops the spurious refusals, which is what a meet should have been doing
+from the start.
+
+Measured on the stdlib-bearing program against the commit this branch
+started from (`68b3b6d9`), with the verdict cache off, counted over the
+emitted bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted | 32289 | **32219** |
+| refused candidate forms | 146 | **107** |
+| uninitialized-read refusals | 52 | **12** |
+| trap branches emitted | 717 | **716** |
+
+Four bodies are shorter and one is three instructions longer
+(`normalize_push`), for 70 net. `buffer_read_into`, the case this section
+was read from, goes from 72 instructions to 50. No body gains a trap
+branch, none stops being lowered natively, and all 335 units keep their
+verdicts. The twelve uninitialized-read refusals that remain are a
+smaller question for another day; the base-not-placed class, 73 of them,
+is untouched by this and is now the largest left.
+
+The repository's own test suite supplied the first casualty, and it is
+the best evidence for the change. `TestCheckIndexUnderEqualLength` builds
+a body that compares two spans' lengths, branches to the exit when they
+differ, then zeroes a counter and loops; the exit returns the counter.
+The inequality branch reaches that return before the counter is ever
+written, so that path returned an uninitialized register, and the
+checker admitted it because the write appears earlier in the text than
+the label. The fixture now zeroes the counter before the comparison,
+which is what it meant to do, and still tests the length-equality fact it
+was written for.
+
+The method is the same one §9.am recorded and is now two for two: group
+the refusals by the transform that produced them to find where to look,
+then compute the property over the body's own graph rather than arguing
+about the transform. Both times the transform was innocent and the thing
+it exposed was a declaration or a fact that did not travel.

@@ -40,8 +40,10 @@ type CallEdge struct {
 }
 
 // BuildCallGraph draws the graph of the program's functions: every
-// invocation of a program function by name is an edge, and the root
-// calls `main` and every exported function.
+// mention of a program function by name is an edge (a call's with its
+// site), a dispatch clause's realizations are edges from the dispatching
+// function, and the root calls `main`, every exported function, and every
+// kernel.
 func BuildCallGraph(functions map[string]*ast.FunctionStatement) *CallGraph {
 	g := &CallGraph{Root: &CallNode{Name: "<root>"}, Nodes: map[string]*CallNode{}}
 	names := make([]string, 0, len(functions))
@@ -55,23 +57,42 @@ func BuildCallGraph(functions map[string]*ast.FunctionStatement) *CallGraph {
 	sort.Strings(names)
 	for _, name := range names {
 		node := g.Nodes[name]
-		if node.Fn.Exported || name == "main" {
+		if node.Fn.Exported || node.Fn.Kernel || name == "main" {
 			g.addEdge(g.Root, nil, node)
+		}
+		// A dispatch clause names its realizations: the program selects one
+		// at startup, so each is reached where the dispatching function is.
+		for _, slot := range node.Fn.Dispatch {
+			if slot != nil {
+				if callee, known := g.Nodes[slot.Realization]; known {
+					g.addEdge(node, nil, callee)
+				}
+			}
 		}
 		if node.Fn.Body == nil {
 			continue
 		}
-		walk(node.Fn.Body, func(n ast.Node) {
-			call, isCall := n.(*ast.InvocationExpression)
-			if !isCall {
-				return
+		// Every identifier naming a function is an edge, a call's with its
+		// site: a function used as a value reaches its callee the same,
+		// and the reflective walk (walkNodes) sees inside function literals
+		// and every other node the statement walk leaves out. Sound over
+		// the program as written; a name shadowed by a local is an edge
+		// too, which only over-approximates.
+		called := map[*ast.Identifier]*ast.InvocationExpression{}
+		walkNodes(node.Fn.Body, func(n ast.Node) {
+			if call, isCall := n.(*ast.InvocationExpression); isCall {
+				if ident, isIdent := call.Function.(*ast.Identifier); isIdent {
+					called[ident] = call
+				}
 			}
-			ident, isIdent := call.Function.(*ast.Identifier)
+		})
+		walkNodes(node.Fn.Body, func(n ast.Node) {
+			ident, isIdent := n.(*ast.Identifier)
 			if !isIdent {
 				return
 			}
 			if callee, known := g.Nodes[ident.Value]; known {
-				g.addEdge(node, call, callee)
+				g.addEdge(node, called[ident], callee)
 			}
 		})
 	}

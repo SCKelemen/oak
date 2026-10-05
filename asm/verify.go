@@ -2388,7 +2388,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	var frameSpans []frameSpan
 	zeroSpans, localSpans := map[string]bool{}, map[string]bool{}
 	for _, obj := range fn.FrameObjects {
-		if obj.Name == "" || obj.Elem <= 0 || obj.Size/obj.Elem <= largeArrayElements {
+		if obj.Name == "" || obj.Elem <= 0 {
+			continue
+		}
+		if local := frameSpanLocal(obj.Name); local != "" {
+			// A record local's large array field (bindRecord): a span
+			// when the local is declared value-less, as the Oak side
+			// declares it (declareSpanFields).
+			if obj.Size/obj.Elem < spanArrayFieldElements || !localValueless(sig, local) {
+				continue
+			}
+		} else if obj.Size/obj.Elem <= largeArrayElements {
 			continue
 		}
 		if _, shadowed := spans[obj.Name]; shadowed {
@@ -2429,6 +2439,18 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			}
 			state.regs[8] = frameAddressTerm(resultAreaBase)
 			resultArea = leaves
+			// The result record's large array fields: span memories of
+			// the local the body builds in the result area, as the Oak
+			// side declares them (declareLocal), their memory unknown at
+			// entry until the fill writes every element (frameSpanAccess).
+			for _, field := range resultSpanFields(fn, sig, fn.ResultSlot) {
+				if _, shadowed := spans[field.name]; shadowed {
+					continue
+				}
+				spans[field.name] = field.elem
+				localSpans[field.name] = true
+				frameSpans = append(frameSpans, frameSpan{name: field.name, offset: resultAreaBase + field.offset, size: field.size, elem: field.elem, entry: true})
+			}
 		}
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
@@ -3163,6 +3185,9 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 // forge one. A byte that lies inside no frame slot at all (a read outside
 // the declared frame) is still refused.
 func (x *pathExecutor) loadFrame(state *symbolicState, addr, size int64) (*term, bool) {
+	if value, ok := x.resultSpanLoad(state, addr, size); ok {
+		return value, true
+	}
 	if value, ok := state.loadSlot(addr, size); ok {
 		return value, true
 	}
@@ -3330,6 +3355,13 @@ func (x *pathExecutor) resultAreaChunks(state *symbolicState) ([]*term, string, 
 					continue
 				}
 				size := (int64(leaf.width) + 7) / 8
+				if fs, off, in := x.resultSpanAt(resultAreaBase + leaf.offset); in && size == fs.elem && off%fs.elem == 0 {
+					// An element of a result span: the log at its index
+					// over the unknown entry memory (zero once the fill
+					// is complete, collapseZeroFill).
+					index := constTerm(uint64(off/fs.elem), 32)
+					return truncate(memoryAt(state.writes[fs.name], index, selectTerm(fs.name, index, int(fs.elem)*8)), width)
+				}
 				value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
 				if !ok {
 					missing = name
@@ -3356,6 +3388,9 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 		return "a frame address moved by pre/post-index", false
 	}
 	addr := base + mem.Offset
+	if fs, off, in := x.resultSpanAt(addr); in {
+		return x.frameSpanAccess(instr, state, fs, off, mem)
+	}
 	if fs, off, in := x.frameSpanAt(addr + state.disp); in {
 		return x.frameSpanAccess(instr, state, fs, off, mem)
 	}
@@ -3793,7 +3828,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// against a budget of eight events — so it is summarized
 				// as a loop like a data-dependent one, and the Oak side
 				// summarizes the same loop (lowerWhile).
-				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && x.summarizeCounted(shape, instr, state) {
+				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && (shape.breaks || x.summarizeCounted(shape, instr, state)) {
 					return x.loopEvent(shape, instr, state)
 				}
 				if cond.value != 0 {
@@ -4623,15 +4658,24 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 					return "an indexed load through a record argument without a dominating constant index guard", false
 				}
 			}
-			for k := last; k >= first; k-- {
-				leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
-				if !okLeaf {
-					return "an indexed load through a record argument cutting through a field", false
-				}
-				if value == nil {
-					value = leaf
-				} else {
-					value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+			if memory, isMemory := x.recordArrayMemory(record.leaves, prefix, baseOffset+mem.Offset, stride, length, size); isMemory && index.kind != termConst {
+				// A large array field read at a symbolic index is a read
+				// of the memory its leaves are the elements of — the Oak
+				// side's rule for the same array (elementUnderIndexTerm),
+				// a store into a record argument being refused, so the
+				// leaves are the parameters throughout.
+				value = selectTerm(memory, index, int(size)*8)
+			} else {
+				for k := last; k >= first; k-- {
+					leaf, okLeaf := x.recordBytes(record.leaves, baseOffset+mem.Offset+k*stride, size)
+					if !okLeaf {
+						return "an indexed load through a record argument cutting through a field", false
+					}
+					if value == nil {
+						value = leaf
+					} else {
+						value = iteTerm(truncate(cmpTerm("eq", index, constTerm(uint64(k), 32)), 1), leaf, value)
+					}
 				}
 			}
 		} else {
@@ -5360,9 +5404,19 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params map[string]int
-	signed map[string]bool
-	spans  map[string]spanContract
+	// returnSlot names the local the body builds in the result area
+	// (ReturnSlotLocal); its large array fields are span memories, as
+	// are those of the frame locals in spanFieldLocals (the backend's
+	// named frame objects, `local.field`).
+	returnSlot      string
+	spanFieldLocals map[string]bool
+	// breakForms caches the flag form of each loop whose body breaks
+	// (asm/break_form.go); breakNames refuses two such loops on one line.
+	breakForms map[*ast.WhileStatement]*breakForm
+	breakNames map[string]*ast.WhileStatement
+	params     map[string]int
+	signed     map[string]bool
+	spans      map[string]spanContract
 	// writableSpans names the function's `[*]T` parameters: the spans a
 	// loop body may store through, which take a loop's memory marker on
 	// both sides (loopEvent, summarizeLoop).
@@ -5520,6 +5574,10 @@ type oakLocal struct {
 	width  int
 	signed bool
 	agg    *oakValue
+	// param: the aggregate is a parameter's own (paramAggregate), not a
+	// local's copy of one: a record argument's array field is read as a
+	// memory (elementUnderIndexTerm) where a copy's is the frame's.
+	param bool
 }
 
 // oakType is the shape of a local: a scalar, a declared record, a tagged
@@ -5566,13 +5624,39 @@ type oakValue struct {
 	scalar *term
 	fields map[string]*oakValue
 	elems  []*oakValue
+	// span names the local span memory that holds this array's elements
+	// (a result record's large array field, declareReturnSlot): reads
+	// and writes go through lo.writes[span], and a whole read
+	// materializes the elements (materialized).
+	span string
+}
+
+// hasSpan reports a span-backed array anywhere in the value.
+func (v *oakValue) hasSpan() bool {
+	if v == nil {
+		return false
+	}
+	if v.span != "" {
+		return true
+	}
+	for _, field := range v.fields {
+		if field.hasSpan() {
+			return true
+		}
+	}
+	for _, elem := range v.elems {
+		if elem.hasSpan() {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *oakValue) copy() *oakValue {
 	if v == nil {
 		return nil
 	}
-	out := &oakValue{typ: v.typ, scalar: v.scalar}
+	out := &oakValue{typ: v.typ, scalar: v.scalar, span: v.span}
 	if v.fields != nil {
 		out.fields = make(map[string]*oakValue, len(v.fields))
 		for name, field := range v.fields {
@@ -5840,6 +5924,7 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 		if !ok {
 			return nil, reason, false
 		}
+		place = lo.materialized(place)
 		if !sameType(place.typ, typ) {
 			return nil, fmt.Sprintf("%s is not a %s", expr.String(), typ.name), false
 		}
@@ -6256,7 +6341,7 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 			if !ok {
 				return nil, reason, false
 			}
-			return lo.elementUnderIndexTerm(owner, viewIndex(view, index), view.length)
+			return lo.elementUnderIndexTerm(owner, viewIndex(view, index), view.length, false)
 		}
 		base, reason, ok := lo.placeIn(e.Left, read)
 		if !ok {
@@ -6276,12 +6361,22 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 		if base.typ.kind != oakArray {
 			return nil, fmt.Sprintf("an index into %s (not an array)", e.Left.String()), false
 		}
+		if base.span != "" {
+			if !read {
+				return nil, "an element of a span-backed array as a place", false
+			}
+			index, reason, ok := lo.lower(e.Index, 32)
+			if !ok {
+				return nil, reason, false
+			}
+			return lo.spanBackedElement(base, index)
+		}
 		k, isConst := lo.constantIndexValue(e.Index)
 		if !isConst {
 			if !read {
 				return nil, "an array element at a data-dependent index", false
 			}
-			return lo.elementUnderIndex(base, e.Index)
+			return lo.elementUnderIndex(base, e.Index, lo.rootIsParam(e.Left))
 		}
 		if k < 0 || k >= base.typ.length {
 			return nil, fmt.Sprintf("the index %d past [%d]", k, base.typ.length), false
@@ -6444,18 +6539,19 @@ func (lo *oakLowering) assignRecordSpanElement(s *ast.IndexAssignmentStatement) 
 // elementUnderIndex reads an array element at a symbolic index: the
 // elements merged leaf by leaf under `index == k`, and the index at or past
 // the length recorded as a trap obligation (the bounds check Oak keeps).
-func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expression) (*oakValue, string, bool) {
+func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expression, paramField bool) (*oakValue, string, bool) {
 	index, reason, ok := lo.lower(indexExpr, 32)
 	if !ok {
 		return nil, reason, false
 	}
-	return lo.elementUnderIndexTerm(base, index, nil)
+	return lo.elementUnderIndexTerm(base, index, nil, paramField)
 }
 
 // elementUnderIndexTerm is elementUnderIndex at an index term; bound, when
 // given, is a view's length, the index checked against it as the view's
-// own bounds check (the owner's is the view's construction guard).
-func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound *term) (*oakValue, string, bool) {
+// own bounds check (the owner's is the view's construction guard);
+// paramField marks an array that is a parameter's own field.
+func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound *term, paramField bool) (*oakValue, string, bool) {
 	if len(base.elems) == 0 {
 		return nil, "an element of an empty array", false
 	}
@@ -6466,11 +6562,94 @@ func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound 
 	if lo.witnessTrapped {
 		return nil, "an index past the array's length on this input", false
 	}
+	if memory, isMemory := leafMemoryOf(base.elems); paramField && isMemory && index.kind != termConst {
+		// A large array whose elements are the leaf parameters of one
+		// memory (a record argument's `a.at`, sixty-four words of the
+		// prover's Bits) read at a symbolic index is a read of that
+		// memory, as the machine side reads the argument (load): the
+		// fold over its leaves was a sixty-four-way select that every
+		// diagram of a loop's obligation over two of them exceeded.
+		return &oakValue{typ: base.typ.elem, scalar: selectTerm(memory, index, base.typ.elem.width)}, "", true
+	}
 	out := base.elems[len(base.elems)-1].copy()
 	for k := len(base.elems) - 2; k >= 0; k-- {
 		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
 	}
 	return out, "", true
+}
+
+// rootIsParam reports an access path (`state.block`, `a.at`) rooted at a
+// parameter's own aggregate rather than a local's.
+func (lo *oakLowering) rootIsParam(e ast.Expression) bool {
+	for {
+		switch n := e.(type) {
+		case *ast.Identifier:
+			local, isLocal := lo.locals[n.Value]
+			return isLocal && local.param
+		case *ast.IndexExpression:
+			e = n.Left
+		default:
+			return false
+		}
+	}
+}
+
+// spanArrayFieldElements is the element count from which an array whose
+// elements are the leaf parameters of one memory is read at a symbolic
+// index as that memory (elementUnderIndexTerm, recordArrayMemory) rather
+// than as a fold over the leaves.
+const spanArrayFieldElements = 64
+
+// leafMemoryOf reports the memory whose elements the scalars are, in
+// order: `m[0]`, `m[1]`, … (spanElemName) for one m, at least
+// spanArrayFieldElements of them, every one a parameter of one width.
+func leafMemoryOf(elems []*oakValue) (string, bool) {
+	if len(elems) < spanArrayFieldElements {
+		return "", false
+	}
+	var memory string
+	for k, elem := range elems {
+		if elem == nil || elem.scalar == nil || elem.scalar.kind != termParam || elem.scalar.width != elems[0].scalar.width {
+			return "", false
+		}
+		if k == 0 {
+			bracket := strings.LastIndexByte(elem.scalar.name, '[')
+			if bracket <= 0 {
+				return "", false
+			}
+			memory = elem.scalar.name[:bracket]
+			if !strings.Contains(memory, ".") {
+				// An array field of a record argument (`a.at`), which the
+				// machine side reads the same way (recordArrayMemory); an
+				// array parameter's own elements (`block[k]` of a `block:
+				// [64]u8`) the machine reads as frame slots or span
+				// elements and folds, and a read of them as a memory on
+				// this side alone cost BLAKE3's update its coupling.
+				return "", false
+			}
+		}
+		if elem.scalar.name != spanElemName(memory, int64(k)) {
+			return "", false
+		}
+	}
+	return memory, true
+}
+
+// recordArrayMemory is leafMemoryOf for a record argument's array field:
+// the field at offset with length elements of stride bytes, each a leaf
+// parameter of the field's memory (the field's prefix, `a.at`), read
+// whole at size bytes.
+func (x *pathExecutor) recordArrayMemory(leaves []compositeLeaf, memory string, offset, stride, length, size int64) (string, bool) {
+	if length < spanArrayFieldElements || size != stride {
+		return "", false
+	}
+	for k := int64(0); k < length; k++ {
+		leaf, ok := x.recordBytes(leaves, offset+k*stride, size)
+		if !ok || leaf.kind != termParam || leaf.name != spanElemName(memory, k) || leaf.width != int(size)*8 {
+			return "", false
+		}
+	}
+	return memory, true
 }
 
 // assignUnderIndex executes `arr[i] = e` at a symbolic index: the value is
@@ -6723,12 +6902,42 @@ func (x *pathExecutor) frameRecordArgument(lo *oakLowering, param *ast.FunctionP
 		}
 		chunks[k] = value
 	}
-	value, ok := unpackAggregate(typ, leaves, chunks)
+	value, ok := x.unpackFrameAggregate(state, typ, leaves, addr, chunks)
 	if !ok {
 		return fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
 	}
 	lo.locals[param.Name.Value] = &oakLocal{agg: value}
 	return "", true
+}
+
+// unpackFrameAggregate is unpackAggregate for a record held in the frame
+// at addr whose leaves may lie in a result span: such a leaf is the
+// span's element read through the log, as the Oak side reads it, rather
+// than the bytes of a chunk shifted back out (which the two sides' terms
+// then spelled differently for one byte).
+func (x *pathExecutor) unpackFrameAggregate(state *symbolicState, typ *oakType, leaves []compositeLeaf, addr int64, chunks []*term) (*oakValue, bool) {
+	byName := map[string]compositeLeaf{}
+	for _, leaf := range leaves {
+		byName[leaf.name] = leaf
+	}
+	return aggregateFrom(typ, "", func(name string, leafType *oakType) *term {
+		leaf, has := byName[name]
+		if !has {
+			return nil
+		}
+		if value, inSpan := x.resultSpanLoad(state, addr+leaf.offset, leafBytes(leaf)); inSpan {
+			return adaptWidth(truncate(value, leaf.width), leafType.width)
+		}
+		k := leaf.offset / 8
+		if k < 0 || int(k) >= len(chunks) {
+			return nil
+		}
+		shifted := chunks[k]
+		if shift := (leaf.offset - 8*k) * 8; shift > 0 {
+			shifted = binaryTerm("shr", shifted, constTerm(uint64(shift), 64))
+		}
+		return adaptWidth(truncate(shifted, leaf.width), leafType.width)
+	})
 }
 
 // aggregateAtOffset builds a callee's aggregate parameter from the leaves
@@ -6872,7 +7081,7 @@ func (lo *oakLowering) bindAggregateParams(sig *ast.FunctionStatement) {
 			if lo.locals == nil {
 				lo.locals = map[string]*oakLocal{}
 			}
-			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg, param: true}
 		}
 	}
 }
@@ -7285,6 +7494,11 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		}
 		return "", true
 	}
+	if (s.Name.Value == lo.returnSlot || lo.spanFieldLocals[s.Name.Value]) && typ.kind == oakRecord {
+		if handled, reason, ok := lo.declareSpanFields(s, typ); handled {
+			return reason, ok
+		}
+	}
 	if s.Value == nil {
 		// Value-less storage is zero (docs/spec/90-backend.md §6): an
 		// array's elements, a record's fields, a sum's tag and payloads,
@@ -7297,6 +7511,168 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		return reason, false
 	}
 	lo.locals[s.Name.Value] = &oakLocal{agg: value}
+	return "", true
+}
+
+// declareSpanFields declares a record local whose large array fields are
+// span memories `<local>.<field>`: the local the body builds in the
+// result area (ResultSlot) and a frame local whose fields the backend
+// named as frame objects of their own (spanFieldLocals), both declared
+// value-less — zero at entry, the backend's fill (docs/spec/90-backend.md
+// §6) — their elements read and written through the log where sixty-four
+// loop-carried leaves each a conditional over the loop's index exceeded
+// the coupling's term budget (the prover's Bits family); the other fields
+// stay leaves. The machine side reads the fields the same way
+// (resultSpanFields, the frame objects, frameSpanAccess).
+func (lo *oakLowering) declareSpanFields(s *ast.VariableDeclaration, typ *oakType) (handled bool, reason string, ok bool) {
+	var spanFields []oakField
+	for _, f := range typ.fields {
+		if f.typ != nil && f.typ.kind == oakArray && f.typ.elem != nil && f.typ.elem.kind == oakScalar && !f.typ.elem.float && f.typ.elem.width >= 8 && f.typ.length >= spanArrayFieldElements {
+			spanFields = append(spanFields, f)
+		}
+	}
+	if len(spanFields) == 0 || s.Value != nil {
+		// An initialized slot (`next: State = state`) keeps the leaf
+		// model (returnSlotValueless, the machine side's rule).
+		return false, "", true
+	}
+	agg := zeroValue(typ)
+	if lo.zeroSpans == nil {
+		lo.zeroSpans, lo.localSpans, lo.localSpanWidths = map[string]bool{}, map[string]bool{}, map[string]int{}
+	}
+	if lo.tableLens == nil {
+		lo.tableLens = map[string]int64{}
+	}
+	if lo.writes == nil {
+		lo.writes = map[string][]*spanWrite{}
+	}
+	for _, f := range spanFields {
+		name := s.Name.Value + "." + f.name
+		lo.spans[name] = spanContract{elemWidth: f.typ.elem.width, signed: f.typ.elem.signed}
+		lo.tableLens[name] = f.typ.length
+		lo.localSpans[name] = true
+		lo.localSpanWidths[name] = f.typ.elem.width
+		lo.writableSpans[name] = true
+		// Zero, as the backend's fill leaves the result area
+		// (collapseZeroFill on the machine side).
+		lo.zeroSpans[name] = true
+		lo.writes[name] = []*spanWrite{{memory: zeroMemory}}
+		agg.fields[f.name] = &oakValue{typ: f.typ, span: name}
+	}
+	lo.locals[s.Name.Value] = &oakLocal{agg: agg}
+	return true, "", true
+}
+
+// assignAggregate stores a value into an aggregate local under the path:
+// a span-backed field takes the value's elements in order through its
+// log, every other leaf its value under the path condition.
+func (lo *oakLowering) assignAggregate(target, value *oakValue) (string, bool) {
+	value = lo.materialized(value)
+	if target.span != "" {
+		return lo.writeLocalSpanWhole(target.span, target.typ, value)
+	}
+	if target.scalar != nil {
+		if value == nil || value.scalar == nil {
+			return "a scalar leaf without a value", false
+		}
+		next := adaptWidth(value.scalar, target.typ.width)
+		if lo.path != nil {
+			next = iteTerm(truncate(lo.path, 1), next, target.scalar)
+		}
+		target.scalar = next
+		return "", true
+	}
+	for name, field := range target.fields {
+		if value == nil || value.fields[name] == nil {
+			return fmt.Sprintf("the field %s without a value", name), false
+		}
+		if reason, ok := lo.assignAggregate(field, value.fields[name]); !ok {
+			return reason, false
+		}
+	}
+	for k, elem := range target.elems {
+		if value == nil || k >= len(value.elems) {
+			return fmt.Sprintf("element %d without a value", k), false
+		}
+		if reason, ok := lo.assignAggregate(elem, value.elems[k]); !ok {
+			return reason, false
+		}
+	}
+	return "", true
+}
+
+// materialized is the value with every span-backed array read whole:
+// each element through the log at its constant index (localSpanValue's
+// read), so copies, calls, and the result take the elements as values.
+func (lo *oakLowering) materialized(v *oakValue) *oakValue {
+	if v == nil || !v.hasSpan() {
+		return v
+	}
+	if v.span != "" {
+		contract := lo.spans[v.span]
+		out := &oakValue{typ: v.typ, elems: make([]*oakValue, v.typ.length)}
+		for k := int64(0); k < v.typ.length; k++ {
+			index := constTerm(uint64(k), 32)
+			out.elems[k] = &oakValue{typ: v.typ.elem, scalar: memoryAt(lo.writes[v.span], index, lo.spanEntry(v.span, index, contract.elemWidth))}
+		}
+		return out
+	}
+	out := &oakValue{typ: v.typ, scalar: v.scalar}
+	if v.fields != nil {
+		out.fields = make(map[string]*oakValue, len(v.fields))
+		for name, field := range v.fields {
+			out.fields[name] = lo.materialized(field)
+		}
+	}
+	if v.elems != nil {
+		out.elems = make([]*oakValue, len(v.elems))
+		for k, elem := range v.elems {
+			out.elems[k] = lo.materialized(elem)
+		}
+	}
+	return out
+}
+
+// spanBackedElement reads element index of a span-backed array: the
+// index trap, then the log.
+func (lo *oakLowering) spanBackedElement(base *oakValue, index *term) (*oakValue, string, bool) {
+	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	if lo.witnessTrapped {
+		return nil, "an index past the array's length on this input", false
+	}
+	contract := lo.spans[base.span]
+	return &oakValue{typ: base.typ.elem, scalar: memoryAt(lo.writes[base.span], index, lo.spanEntry(base.span, index, contract.elemWidth))}, "", true
+}
+
+// spanEntry is a span-backed field's element before any write: zero for
+// a value-less local (the log starts at the zero marker, which memoryAt
+// honors), else the unknown entry memory, the element the machine side
+// reads (resultAreaChunks).
+func (lo *oakLowering) spanEntry(span string, index *term, width int) *term {
+	if lo.zeroSpans[span] {
+		return constTerm(0, width)
+	}
+	return selectTerm(span, index, width)
+}
+
+// assignSpanBackedElement executes `out.at[i] = e` on a span-backed array:
+// the index trap, then a write of the value at the element width under
+// the path.
+func (lo *oakLowering) assignSpanBackedElement(base *oakValue, indexExpr, value ast.Expression) (string, bool) {
+	index, reason, ok := lo.lower(indexExpr, 32)
+	if !ok {
+		return reason, false
+	}
+	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	if lo.witnessTrapped {
+		return "an index past the array's length on this input", false
+	}
+	width := base.typ.elem.width
+	v, reason, ok := lo.lower(value, width)
+	if !ok {
+		return reason, false
+	}
+	lo.writes = appendWrite(lo.writes, base.span, index, truncate(v, width), lo.path)
 	return "", true
 }
 
@@ -7546,6 +7922,15 @@ func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
 		return lo.writeLocalSpanWhole(s.Name.Value, typ, value)
 	}
 	local, isLocal := lo.locals[s.Name.Value]
+	if isLocal && local.agg != nil && local.agg.hasSpan() {
+		// The result record with span-backed fields: the value's elements
+		// through the fields' logs, its other leaves under the path.
+		value, reason, ok := lo.aggregateValue(s.Value, local.agg.typ)
+		if !ok {
+			return reason, false
+		}
+		return lo.assignAggregate(local.agg, value)
+	}
 	if !isLocal {
 		return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
 	}
@@ -7613,6 +7998,12 @@ func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, b
 		}
 	}
 	if index := s.Target; index != nil && !index.Dot {
+		if field, isField := index.Left.(*ast.IndexExpression); isField && field.Dot {
+			// `out.at[i] = e` on the result record's span-backed field.
+			if base, _, ok := lo.placeOf(index.Left); ok && base.span != "" {
+				return lo.assignSpanBackedElement(base, index.Index, s.Value)
+			}
+		}
 		if _, isConst := lo.constantIndexValue(index.Index); !isConst {
 			base, reason, ok := lo.placeOf(index.Left)
 			if !ok {
@@ -7634,17 +8025,55 @@ func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, b
 // lowerWhile unrolls a counted loop: the condition must fold to a
 // constant before every iteration.
 func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
+	form, has, reason := lo.breakForm(loop)
+	if reason != "" {
+		return reason, false
+	}
+	if has {
+		// A body with `break`: the loop with the carried flag
+		// (breakForm), its declaration lowered right before it. A
+		// symbolic run summarizes it whether or not it is counted — the
+		// machine side does too (its executor's branch handling), since
+		// an unrolled iteration's break leaves the counter a select the
+		// Oak side cannot count with — unless its condition is false at
+		// entry. A witness run unrolls it: the flag is concrete there.
+		if reason, ok := lo.declareLocal(form.decl); !ok {
+			return reason, false
+		}
+		loop = form.loop
+		if lo.concrete == nil {
+			loopsBefore := len(lo.loops)
+			entry, reason, ok := lo.lowerCondition(form.original)
+			if !ok {
+				return reason, false
+			}
+			if entry.kind == termConst && entry.value == 0 {
+				return "", true
+			}
+			// The entry test lowered the condition once; the summary
+			// lowers it again, and a callee's loops in it are the
+			// summary's events, not the test's.
+			lo.loops = lo.loops[:loopsBefore]
+			return lo.loopEvent(loop)
+		}
+	}
 	for iteration := 0; ; iteration++ {
 		if iteration > loopBudget || (lo.concrete != nil && iteration > witnessLoopBudget) {
 			return "a loop beyond the verifier's unrolling budget", false
 		}
+		loopsBefore := len(lo.loops)
 		cond, reason, ok := lo.lowerCondition(loop.Condition)
 		if !ok {
 			return reason, false
 		}
 		if cond.kind != termConst {
 			// Data-dependent: summarize the loop once and continue after it
-			// on fresh loop-carried symbols.
+			// on fresh loop-carried symbols. The test lowered the condition
+			// once; the summary lowers it again, and a callee's loops in
+			// it (`while b > base && rname_less(…)`, the prover's
+			// fn_callees) are the summary's events, not the test's — kept,
+			// the Oak side counted one loop more than the machine.
+			lo.loops = lo.loops[:loopsBefore]
 			return lo.loopEvent(loop)
 		}
 		if cond.value == 0 {
@@ -8629,7 +9058,16 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		if !ok {
 			return nil, reason, false
 		}
-		bound[param.Name.Value] = &oakLocal{agg: value}
+		// An argument naming a parameter's own aggregate passes it on
+		// (the callee reads its array fields as memories, as the machine
+		// side's summary binds the caller's record parameter).
+		fromParam := false
+		if ident, isIdent := arg.(*ast.Identifier); isIdent {
+			if local, isLocal := lo.locals[ident.Value]; isLocal {
+				fromParam = local.param
+			}
+		}
+		bound[param.Name.Value] = &oakLocal{agg: value, param: fromParam}
 	}
 	// The caller's package-global cells are the callee's too — the same
 	// locals, so the callee's assignments are the caller's final values —
@@ -8853,13 +9291,27 @@ type frameSpan struct {
 	name         string
 	offset, size int64
 	elem         int64
+	// entry: offset is an entry-relative frame address (the result area's
+	// field, resultSpanFields) rather than sp-relative (a frame object).
+	entry bool
+}
+
+// resultSpanAt reports the result-area span an entry-relative address
+// falls in and the byte offset within it.
+func (x *pathExecutor) resultSpanAt(addr int64) (frameSpan, int64, bool) {
+	for _, fs := range x.frameSpans {
+		if fs.entry && addr >= fs.offset && addr < fs.offset+fs.size {
+			return fs, addr - fs.offset, true
+		}
+	}
+	return frameSpan{}, 0, false
 }
 
 // frameSpanAt reports the large array an sp-relative address falls in
 // and the byte offset within it.
 func (x *pathExecutor) frameSpanAt(spRel int64) (frameSpan, int64, bool) {
 	for _, fs := range x.frameSpans {
-		if spRel >= fs.offset && spRel < fs.offset+fs.size {
+		if !fs.entry && spRel >= fs.offset && spRel < fs.offset+fs.size {
 			return fs, spRel - fs.offset, true
 		}
 	}
@@ -8932,10 +9384,21 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 				for e := int64(0); e < size/fs.elem; e++ {
 					state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(at/fs.elem+e), 32), constTerm(0, width), nil)
 				}
+			case size%fs.elem == 0 && mem.Index == nil:
+				// A wide store over narrow elements (a record's 8-byte
+				// copy over a byte array, BLAKE3's `next = state`): each
+				// element takes its bytes of the value, little-endian.
+				for e := int64(0); e < size/fs.elem; e++ {
+					part := truncate(binaryTerm("shr", value, constTerm(uint64(e*int64(width)), value.width)), width)
+					state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(at/fs.elem+e), 32), part, nil)
+				}
 			default:
 				return fmt.Sprintf("a %d-byte store into the %d-byte elements of the array %s", size, fs.elem, fs.name), false
 			}
 			at += size
+		}
+		if fs.entry {
+			collapseZeroFill(state, fs)
 		}
 		return "", true
 	}
@@ -8943,8 +9406,30 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 		return fmt.Sprintf("an access to the array %s outside the modeled subset (%s)", fs.name, instr.Mnemonic), false
 	}
 	size := memorySize(instr.Mnemonic, regs[0].Class) / int64(len(regs))
-	if size != fs.elem {
+	if size != fs.elem && (size%fs.elem != 0 || mem.Index != nil) {
 		return fmt.Sprintf("a %d-byte load of the %d-byte elements of the array %s", size, fs.elem, fs.name), false
+	}
+	if size != fs.elem {
+		// A wide load over narrow elements (a record's 8-byte copy out
+		// of a byte array): the elements' bytes side by side,
+		// little-endian.
+		for k, reg := range regs {
+			var value *term
+			for e := int64(0); e < size/fs.elem; e++ {
+				at := constTerm(uint64(off/fs.elem+int64(k)*(size/fs.elem)+e), 32)
+				part := zeroExtend(x.noteRead(fs.name, len(state.writes[fs.name]), at, memoryAt(state.writes[fs.name], at, x.element(fs.name, at, width))), int(size)*8)
+				if e > 0 {
+					part = binaryTerm("shl", part, constTerm(uint64(e*int64(width)), int(size)*8))
+				}
+				if value == nil {
+					value = part
+				} else {
+					value = binaryTerm("or", value, part)
+				}
+			}
+			state.write(reg, zeroExtend(value, widthOf(reg.Class)))
+		}
+		return "", true
 	}
 	for k, reg := range regs {
 		// A pair load's second register reads the next element.
@@ -9566,6 +10051,24 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 // over pure comparisons of parameters evaluation order is unobservable, so
 // the strict and/or is the same function.
 func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool) {
+	// A block in condition position — a parenthesized condition `(a &&
+	// b) ? { … }` (the prover's address_owner), or an inlined predicate's
+	// body with its bindings before the test (`!has_mark(…)` in
+	// type_refs): its statements run, and its last expression is the
+	// condition, as aggregateValue reads a block.
+	if block, isBlock := expr.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) > 0 {
+		stmts := block.Block.Statements
+		last, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+		if !isExpr || last.Expression == nil {
+			return nil, "a block condition that does not end in an expression", false
+		}
+		for _, stmt := range stmts[:len(stmts)-1] {
+			if reason, ok := lo.runStatement(stmt); !ok {
+				return nil, reason, false
+			}
+		}
+		return lo.lowerCondition(last.Expression)
+	}
 	infix, isInfix := expr.(*ast.InfixExpression)
 	if !isInfix {
 		// A literal condition (`true ? { … }`, a scope idiom): its bit.
@@ -9873,7 +10376,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && only != fn.Name {
+	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
 		return Verdict{Kind: VerdictTrusted, Message: "skipped under OAK_VERIFY_ONLY"}
@@ -10384,8 +10887,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.writes = cloneWrites(state.writes)
 	// The callee's loop events take the indices this call site's events
 	// took the first time the site was reached (loopSite): a second path
-	// through the same call merges its events with the first's below.
-	callSite := fmt.Sprintf("call@%d", instr.Line)
+	// through the same call merges its events with the first's below. A
+	// site is one call instruction (x.callAt): keyed by the source line,
+	// two calls on one line — `c ? f(…) | g(…)`, `f(…) || g(…)` — shared a
+	// site, the second's loops merged into the first's or stood as an
+	// unrolled instance, and the machine side's loop count was not the
+	// Oak side's (the prover's variable_node, is_float_lean).
+	callSite := fmt.Sprintf("call@%d", x.callAt)
 	priorSite, siteSeen := x.sites[callSite]
 	if siteSeen && !priorSite.diverged(state.path) {
 		// The same path reaching the call again (an unrolled counted
@@ -10575,7 +11083,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			if !ok {
 				return fmt.Sprintf("a call to %s: parameter %s: %s", name, param.Name.Value, reason), false
 			}
-			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg, param: true}
 		case argSpan:
 			// A span argument: the {base, len} pair of one of the caller's
 			// span parameters, whole — the callee's parameter is an alias
@@ -10651,7 +11159,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				// term, as a derived span of a parameter is; the callee's
 				// reads and writes land in the caller's log.
 				if addr, isFrame := frameAddressOf(base); isFrame {
-					if fs, off, in := x.frameSpanAt(addr + state.disp); in && fs.elem == arg.elem && off%fs.elem == 0 {
+					if fs, off, in := x.spanRegionAt(state, addr); in && fs.elem == arg.elem && off%fs.elem == 0 {
 						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 						lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 						if lo.spanAlias == nil {
@@ -10769,6 +11277,15 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		// store before the loop inside `ok ? { … }` is unguarded on the
 		// machine's side and guarded by ok on the Oak side, and the two
 		// agree exactly there (walk_leaf calling alloc_table).
+		if len(ev.entry) == 0 && len(ev.writes) == 0 {
+			// A loop that stores nothing couples on its values alone: the
+			// same summary stands on both sides, and the call's result is
+			// under each side's own path in the terms the verdict compares.
+			// The caller's path — a select over sixteen lanes in
+			// literals.oak's verify_first — would only weigh on every
+			// premise of the nest (docs/spec/94-assembler.md §8).
+			continue
+		}
 		ev.reached = ev.oakPath
 		if callPath := state.pathCondition(); callPath != nil {
 			if ev.reached != nil {
@@ -10810,6 +11327,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
+	for name := range lo.localSpans {
+		// The callee's own large arrays (its frame, gone at return): their
+		// logs are not the caller's memory — left in, a caller's loop
+		// summary read them as stores through a span it does not know
+		// (write_flush's chunk inside write_bytes).
+		delete(state.writes, name)
+	}
 	for _, borrow := range frameBorrows {
 		if reason, ok := borrow.writeBack(state, lo); !ok {
 			return fmt.Sprintf("a call to %s: %s", name, reason), false
@@ -10883,6 +11407,12 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			cell := leaf.width
 			if cell == 1 {
 				cell = 32
+			}
+			if fs, off, in := x.resultSpanAt(memResultBase + leaf.offset); in && off%fs.elem == 0 && int64(leaf.width) == fs.elem*8 {
+				// A leaf inside a result span (the caller's `next =
+				// f(next)` into the area it builds): the span's log.
+				state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(off/fs.elem), 32), truncate(adaptWidth(t, leaf.width), leaf.width), nil)
+				continue
 			}
 			state.storeSlot(memResultBase+leaf.offset, zeroExtend(adaptWidth(t, leaf.width), cell), int64(cell/8))
 		}
@@ -11054,6 +11584,15 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.declareTables(fn.Tables)
 	lowering.declareGlobalArrays(fn.Globals)
 	lowering.concrete = concrete
+	lowering.returnSlot = fn.ResultSlot
+	for _, obj := range fn.FrameObjects {
+		if local := frameSpanLocal(obj.Name); local != "" && obj.Elem > 0 && obj.Size/obj.Elem >= spanArrayFieldElements {
+			if lowering.spanFieldLocals == nil {
+				lowering.spanFieldLocals = map[string]bool{}
+			}
+			lowering.spanFieldLocals[local] = true
+		}
+	}
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
 	return lowering
@@ -12343,4 +12882,108 @@ func describeEnv(names []string, env map[string]uint64) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", name, env[name]))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// collapseZeroFill replaces a result span's log by the zero marker once
+// the log is nothing but zero stores at constant indices covering every
+// element: the backend's fill of a value-less record in the result area
+// (`stp xzr, xzr` over its words) has defined the whole memory, and the
+// Oak side's declaration starts at the marker (declareReturnSlot). Until
+// then the entry memory is the caller's, unknown.
+func collapseZeroFill(state *symbolicState, fs frameSpan) {
+	log := state.writes[fs.name]
+	length := fs.size / fs.elem
+	if int64(len(log)) < length {
+		return
+	}
+	covered := make([]bool, length)
+	count := int64(0)
+	for _, w := range log {
+		if w.memory != "" || w.guard != nil || w.index.kind != termConst || w.value.kind != termConst || w.value.value != 0 {
+			return
+		}
+		k := int64(w.index.value & mask(32))
+		if k < 0 || k >= length {
+			return
+		}
+		if !covered[k] {
+			covered[k] = true
+			count++
+		}
+	}
+	if count == length {
+		state.writes[fs.name] = []*spanWrite{{memory: zeroMemory}}
+	}
+}
+
+// resultSpanLoad reads size bytes at an entry-relative address inside a
+// result span (resultSpanFields) as the elements' bytes side by side,
+// little-endian, each through the log: the call summary's binding of a
+// record argument held in the result area (frameRecordArgument) and
+// every other reader of the area's slots see the span's contents. An
+// address outside every result span, or off the element grid, is not
+// this case.
+func (x *pathExecutor) resultSpanLoad(state *symbolicState, addr, size int64) (*term, bool) {
+	fs, off, in := x.spanRegionAt(state, addr)
+	if !in || off%fs.elem != 0 || size%fs.elem != 0 || off+size > fs.size {
+		return nil, false
+	}
+	width := int(fs.elem) * 8
+	var value *term
+	for e := int64(0); e < size/fs.elem; e++ {
+		at := constTerm(uint64(off/fs.elem+e), 32)
+		part := zeroExtend(x.noteRead(fs.name, len(state.writes[fs.name]), at, memoryAt(state.writes[fs.name], at, x.element(fs.name, at, width))), int(size)*8)
+		if e > 0 {
+			part = binaryTerm("shl", part, constTerm(uint64(e*int64(width)), int(size)*8))
+		}
+		if value == nil {
+			value = part
+		} else {
+			value = binaryTerm("or", value, part)
+		}
+	}
+	return value, true
+}
+
+// resultSpanStore logs a store of size bytes at an entry-relative address
+// inside a result span (resultSpanFields): one write per element, a wide
+// value's bytes little-endian. False when the address is outside every
+// result span or off the element grid.
+func (x *pathExecutor) resultSpanStore(state *symbolicState, addr, size int64, value *term) bool {
+	fs, off, in := x.spanRegionAt(state, addr)
+	if !in || off%fs.elem != 0 || size%fs.elem != 0 || off+size > fs.size {
+		return false
+	}
+	width := int(fs.elem) * 8
+	for e := int64(0); e < size/fs.elem; e++ {
+		part := value
+		if e > 0 {
+			part = binaryTerm("shr", zeroExtend(value, int(size)*8), constTerm(uint64(e*int64(width)), int(size)*8))
+		}
+		state.writes = appendWrite(state.writes, fs.name, constTerm(uint64(off/fs.elem+e), 32), truncate(part, width), nil)
+	}
+	return true
+}
+
+// spanRegionAt reports the span memory an entry-relative frame address
+// falls in — a result span (the result area's large array field) or a
+// frame span (an owned array's or a frame record's field's object) —
+// and the byte offset within it: the one lookup the call summary's
+// bindings, write-backs, and aliases use for an argument held in either.
+func (x *pathExecutor) spanRegionAt(state *symbolicState, addr int64) (frameSpan, int64, bool) {
+	if fs, off, in := x.resultSpanAt(addr); in {
+		return fs, off, true
+	}
+	return x.frameSpanAt(addr + state.disp)
+}
+
+// verifyOnlyNames reports name among OAK_VERIFY_ONLY's comma-separated
+// unit names (one solver build verifies several bodies under trace).
+func verifyOnlyNames(only, name string) bool {
+	for _, each := range strings.Split(only, ",") {
+		if strings.TrimSpace(each) == name {
+			return true
+		}
+	}
+	return false
 }

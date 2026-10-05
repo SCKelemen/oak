@@ -140,6 +140,31 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 	return opt.Verdict{Outcome: outcomeOf(verdict.Kind), Message: verdict.Message, Cached: cached}
 }
 
+// ValidationFallback retains the downstream work of a blocked-fill candidate
+// whose rotated shape the verifier could not prove. Re-lowering without only
+// rotation can recover a provable top-tested body without repeating the beam
+// search. The search still checks, costs, and verifies this independent body;
+// neither the rejected verdict nor the fill law authorizes its admission.
+func (d *nativeDriver) ValidationFallback(c *opt.Candidate, verdict opt.Verdict) *opt.Candidate {
+	if c == nil || (verdict.Outcome != opt.Trusted && verdict.Outcome != opt.Witnessed) {
+		return nil
+	}
+	lane, ok := c.Config.(nativegen.Lane)
+	if !ok || lane.Arch != asm.ArchArm64 || !lane.UnrollFills || !lane.RotateLoops || !c.Has(nativegen.TransformRotate) {
+		return nil
+	}
+	lane.RotateLoops = false
+	next := c.Reconfigured(lane)
+	kept := next.Applied[:0]
+	for _, name := range next.Applied {
+		if name != nativegen.TransformRotate {
+			kept = append(kept, name)
+		}
+	}
+	next.Applied = kept
+	return next
+}
+
 // outcomeOf maps the verifier's verdict kinds onto the search's outcomes.
 func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 	switch kind {

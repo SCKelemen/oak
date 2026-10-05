@@ -343,9 +343,10 @@ Two or more candidate parameters, or none, require the explicit form.
 The same elision holds for spans: a `[*]T` return with exactly one `[*]T`
 parameter of that element type. Nothing is inferred from the body; the
 signature is the contract the caller sees, and the body is checked against
-it. A region names exactly one parameter; a view result cannot come from a
-span region (that would place a read-only borrow beside a writable one on
-one owner), and a span result cannot come from a view region.
+it. A region names exactly one parameter; a span result cannot come from
+a view region. A view result may come from a span region (increment 5):
+at the caller it suspends the span while it lives, so no read-only borrow
+ever stands beside a usable writable one on one owner.
 
 ### The callee's obligation
 
@@ -417,7 +418,7 @@ Subslices carry the region-coordinate translation of section 7 unchanged.
 
 ### Increments
 
-All three increments below are implemented; the list records the order
+All the increments below are implemented; the list records the order
 they landed and the shape each admits.
 
 1. Elided single-candidate view returns: a `[]T` return
@@ -472,6 +473,26 @@ they landed and the shape each admits.
    more. Strings and unions of borrows are outside the path form and fail
    closed. This is what a derived decoder needs to hand back views
    (`71-codecs.md` §13a); executed there in both realizations.
+
+5. A view result from a span region, including an array field of one of
+   the span's elements (2026-10-05). `run[R]: (s: Span[Ring, R], dom:
+   u32): View[u64, R]` may return `view(&s[dom].slots)[lo:hi]`: the
+   callee's result traces through the element field to the span
+   parameter (`elementFieldBase`), and at the caller the bound result is
+   a reborrow of the span argument — the subslice reborrow of section 7 —
+   that suspends the span while it lives (`OAK-B0107` on any use of it),
+   its view type making it read-only (a store through it is a type
+   error). A ring buffer's consumer reads its visible run in place and
+   releases it after the view's block ends, with no copy: the returned
+   view's base is the slots' own storage. The OS pilot's ring
+   (OAK-REQUEST #15) is the case; field-disjoint borrows (holding the view
+   while writing another field of the same element) are not part of this
+   increment. Executed in both realizations and the interpreter
+   (`compiler/e2e_region_view_from_span_test.go`), with the span written
+   while the view lives, a write through the view, and views of a local or
+   another parameter rejected. The proof is `Oak.Escape.reborrow_wf` for
+   the caller's reborrow, unchanged: the derived borrow is the existing
+   subslice reborrow, read-only by its type.
 
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the
@@ -1245,11 +1266,26 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow
-the checker does not perform: a participating binding that is a global (a
-callee could reassign it), a scope that reassigns a participating binding
-(except the loop's trailing increment), a non-literal bound, or a
-condition of any other shape. The true arm of the `?` sugar is the
-fall-through under the check; the false arm receives nothing.
+the checker does not perform: a participating binding that is a global
+*container*, a scope that reassigns a participating binding (except the
+loop's trailing increment), a non-literal bound, or a condition of any
+other shape. The true arm of the `?` sugar is the fall-through under the
+check; the false arm receives nothing.
+
+A cursor that is a global (2026-09-21) — a top-level unsigned scalar
+variable such as a builder's `struct_len` — may stand in a fact's *index*
+position: `ok: Bool = struct_len <= struct_cap - u32(4)` proves
+`structure[struct_len + u32(3)]` under `ok` as it would for a local. The
+dataflow the rule needs is the one the checker already performs for
+locals, plus one kill: a fact over a global dies at any assignment to the
+global and at any call to a program function (a callee may write it) —
+before the statement that calls, and on entry to a loop that calls
+anywhere, whose condition then establishes nothing about globals
+(`typechecker/extents.go` globalIndexBinding, killGlobalIndexFacts).
+Scalar constructors, conversions, `len`, `span`, `view`, `subslice`, and
+`assert` are not program calls. A widening of a bounded index keeps its
+bound: `free_stack[u32(i)]` under `i < max_pages` for `i: u16` is proven
+(widenedIndex; the widening is the identity on the value).
 
 In the emitted C a proven access is `( v ).base[ i ]` or `regs[ i ]`; an
 unproven one keeps `oak_view_index_*`, `oak_span_index_*`, `oak_index`, or

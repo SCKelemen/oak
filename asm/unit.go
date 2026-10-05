@@ -120,6 +120,13 @@ type Function struct {
 	// (docs/spec/94-assembler.md §9). Set by the native backend; nil when
 	// there are none.
 	FrameObjects []FrameObject
+	// ResultSlot names the record local the backend built in the caller's
+	// result area itself (nativegen's return slot: the body's tail is the
+	// local, declared once with the result type), "" when the result is
+	// copied out of the frame at the end. The verifier reads the result
+	// area's large array fields as that local's span memories on both
+	// sides (asm/return_slot.go, resultSpanFields).
+	ResultSlot string
 	// Externs are the program's extern bindings (`name: (…): c.T effects
 	// {…} = c.extern("symbol")`), by Oak name, for the verifier's
 	// lowering of a call to one (lowerExternCall): a fresh result under

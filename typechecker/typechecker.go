@@ -594,6 +594,10 @@ type TypeChecker struct {
 	// boolFacts remembers, per Bool binding, the extent facts of the
 	// condition assigned to it (typechecker/extents.go).
 	boolFacts map[string][]extentFact
+	// globalIndexNames are the top-level scalar variables admitted as
+	// index participants of extent facts (typechecker/extents.go
+	// globalIndexBinding); a call to a program function kills their facts.
+	globalIndexNames map[string]bool
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[tokenKey]string
@@ -5594,6 +5598,19 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// earlier statement of the body executes again after the assignment
 	// (typechecker/extents.go).
 	conditionFacts := tc.loopConditionFacts(stmt)
+	if len(tc.globalIndexNames) > 0 && containsProgramCall(stmt) {
+		// A call anywhere in the loop may write a global index on some
+		// iteration before the condition is re-evaluated: the enclosing
+		// facts over globals die, and the condition establishes none.
+		tc.killFacts(tc.globalIndexNames)
+		kept := conditionFacts[:0:0]
+		for _, fact := range conditionFacts {
+			if !fact.dependsOn(tc.globalIndexNames) {
+				kept = append(kept, fact)
+			}
+		}
+		conditionFacts = kept
+	}
 	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts), tc.upperBoundsSurviving(stmt, conditionFacts))
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
@@ -5633,6 +5650,9 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 	mark := len(tc.extentFacts)
 	defer tc.popExtentFacts(mark)
 	for i, stmt := range block.Statements {
+		// A statement that calls a program function may have a global
+		// index written under it: the facts over globals die first.
+		tc.killGlobalIndexFacts(stmt)
 		tc.checkStatement(stmt)
 		tc.killFactsAfterStatement(stmt)
 		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {

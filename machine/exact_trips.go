@@ -20,7 +20,13 @@ func (f *Function) exactLoopTrips(loop *Loop, dom *Dominance, siteWeb map[site]*
 		inside[block] = true
 	}
 	// Exactly one external edge, no alternate entries, and no terminal or
-	// call/system effect which could bypass the counted recurrence.
+	// call/system effect which could bypass the counted recurrence. A
+	// guard's branch into the trap block is not an exit the count sees: it
+	// aborts the function on an invalid input, and every trip runs the
+	// guard alike, so a guarded counted loop trips as often as the same
+	// loop with its guards proven away — the cost that decides between the
+	// two must not read the guard as the loop ending early (the OS page
+	// walkers' scans kept their redundant guards on that reading).
 	var exitFrom, exitTo *Block
 	for _, block := range loop.Blocks {
 		for _, pred := range block.Preds {
@@ -33,6 +39,9 @@ func (f *Function) exactLoopTrips(loop *Loop, dom *Dominance, siteWeb map[site]*
 		}
 		for _, succ := range block.Succs {
 			if !inside[succ] {
+				if isTrapBlock(succ) {
+					continue
+				}
 				if exitFrom != nil {
 					return 0
 				}
@@ -45,7 +54,7 @@ func (f *Function) exactLoopTrips(loop *Loop, dom *Dominance, siteWeb map[site]*
 			}
 		}
 	}
-	if exitFrom == nil || len(exitFrom.Succs) != 2 || len(exitFrom.Instrs) < 2 {
+	if exitFrom == nil || len(exitFrom.Instrs) < 2 || len(loopSuccessors(exitFrom)) != 2 {
 		return 0
 	}
 	// Removing the unique latch edge must leave a DAG. This excludes child
@@ -204,4 +213,21 @@ func (f *Function) exactTripStart(instruction *Instr, class asm.RegClass) (uint6
 		return 0, false
 	}
 	return uint64(value), true
+}
+
+// isTrapBlock reports a block that only traps: the target of the body's
+// guards (`b.hs trap`), whose first instruction is the trap.
+func isTrapBlock(block *Block) bool {
+	return block != nil && len(block.Instrs) > 0 && block.Instrs[0].Trap
+}
+
+// loopSuccessors is a block's successors without the trap block.
+func loopSuccessors(block *Block) []*Block {
+	var out []*Block
+	for _, succ := range block.Succs {
+		if !isTrapBlock(succ) {
+			out = append(out, succ)
+		}
+	}
+	return out
 }

@@ -223,9 +223,13 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 		name := stmt.Parameters[i].Name.Value
 		switch pt := fn.Parameters[i].(type) {
 		case *typechecker.ArrayType:
-			if contract.kind == returnsView && !pt.IsSlice {
-				return invalid(fmt.Sprintf("function %q returns a view from region %s, but parameter %q gives that region a span", stmt.Name.Value, displayRegion(sig.Return), name),
-					"a read-only result cannot be derived from a writable span in this increment; return a span, or take a view")
+			// A view result may come from a span region (section 8c,
+			// increment 5): at the caller it is a read-only reborrow of the
+			// argument span, which suspends the span while the view lives,
+			// so no write can reach what the view reads.
+			if contract.kind == returnsView && !pt.IsSlice && !pt.IsSpan {
+				return invalid(fmt.Sprintf("function %q returns a view from region %s, but parameter %q is neither a view nor a span", stmt.Name.Value, displayRegion(sig.Return), name),
+					"a view result borrows a view or span parameter")
 			}
 			if contract.kind == returnsSpan && !pt.IsSpan {
 				return invalid(fmt.Sprintf("function %q returns a span from region %s, but parameter %q gives that region a read-only view", stmt.Name.Value, displayRegion(sig.Return), name),
@@ -634,6 +638,14 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 				if owner := bc.extractOwnerName(e.Arguments[0]); owner != "" {
 					return map[string]bool{owner: true}, true
 				}
+				// `view(&s[i].slots)`: an array field of one element of a
+				// tracked sequence borrows that sequence's owner (the ring's
+				// slots behind a span parameter).
+				if base, isElementField := elementFieldBase(e.Arguments[0]); isElementField {
+					if info, tracked := bc.activeBorrows[base]; tracked {
+						return map[string]bool{info.owner: true}, true
+					}
+				}
 			}
 			return nil, false
 		case "subslice", "view_as", "span_as":
@@ -791,7 +803,11 @@ func (bc *BorrowChecker) bindRegionCall(call *ast.InvocationExpression, targetVa
 	derive := func(name string, kind borrowKind) bool {
 		count := 0
 		for _, source := range sources {
-			if source.kind != kind {
+			// A span source yields a view result as a reborrow that
+			// suspends the span while it lives; the result's view type
+			// makes it read-only (the typechecker refuses stores through
+			// a view), so the borrow keeps its parent's kind.
+			if source.kind != kind && !(kind == BorrowView && source.kind == BorrowSpan) {
 				continue
 			}
 			borrowName := name

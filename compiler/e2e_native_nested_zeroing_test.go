@@ -113,7 +113,10 @@ func TestE2ENativeNestedZeroingLoopProven(t *testing.T) {
 	if !strings.Contains(joined, "asm unit reset: proven equal to its Oak body") {
 		t.Errorf("reset must be proven at the scale that unrolls:\n%s", joined)
 	}
-	if !strings.Contains(joined, "reset: 1 element guard(s) elided under the checker's own facts") {
-		t.Errorf("reset's inlined cell index must carry the two loop bounds into native lowering:\n%s", joined)
+	// The inlined cell index carries the two loop bounds, and the two
+	// widened u16 indices (`free_stack[u32(i)]`, `entry_count[u32(i)]`)
+	// carry the counter's (docs/spec/50-borrowing.md, widened index).
+	if !strings.Contains(joined, "reset: 3 element guard(s) elided under the checker's own facts") {
+		t.Errorf("reset's inlined cell index and widened indices must carry the loop bounds into native lowering:\n%s", joined)
 	}
 }

@@ -25,6 +25,8 @@ name: Formal Verification (Sail)
 #     backend, preserving the selector read before the memory requests
 #     and replay those requests using Sail's original register/memory state
 #     functions; neither replay alone certifies execution or Arm ordering
+#     and kernel-check exported original prompt requests with the Lean
+#     occurrence projector; the exporter/parser remain executable glue
 #   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
 #     RISC-V C emulator (the riscv/sail-riscv release binary)
 #   - asm/rv64_qemu_test.go: the same units under QEMU
@@ -143,7 +145,7 @@ jobs:
       - name: Fetch the Sail Lean support library at its pinned revision
         run: sh spec/sail/setup.sh
 
-      - name: Build the Arm bridges (semantics, register reads, RAM, and span state)
+      - name: Build the Arm bridges (semantics, STR boundaries, registers, RAM, and spans)
         working-directory: spec/sail/lean
         run: lake build
 
@@ -161,6 +163,16 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailGeneralRegister(Bank|Read)ExactAndMutated$' -count=1 -v
+
+      - name: Check original Arm syndrome declarations and mutation rejection
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailSyndrome(ProcState|Registers|Make|Set)ExactAndMutated$' -count=1 -v
+
+      - name: Check retained STR and MemSingle source, callback wiring, and generation
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=10m
 
   lem-ram-traces:
     name: Arm Lem RAM request traces
@@ -210,10 +222,20 @@ jobs:
         with:
           go-version: '1.27.1'
 
-      - name: Check RAM, generated wrapper, and model-state replay with mutants
+      - name: Install pinned Lean for the observed request projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/lean" +leanprover/lean4:v4.33.1 --version
+
+      - name: Check RAM, generated wrapper, state replay, and observed projection with mutants
         env:
           OAK_REQUIRE_ORACLES: "1"
-        run: go test ./asm -run '^TestSail(LemRAMTraces|LemWriteMemoryTraces|LemStateReplay|MemoryEffectFragmentExactAndMutated)$' -count=1 -v -timeout=10m
+        run: go test ./asm -run '^TestSail(LemRAMTraces|LemWriteMemoryTraces|LemStateReplay|MemoryEffectFragmentExactAndMutated|LemMemoryExportParser|LemMemoryTraceProjection)$' -count=1 -v -timeout=10m
 
   rv64-bridge:
     name: RV64 bridge against the Sail export

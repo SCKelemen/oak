@@ -69,7 +69,18 @@ type loopShape struct {
 	// first, so the summary over "entry tests and header tests" is the
 	// machine's loop. Empty when entryEnd <= entryStart.
 	entryStart, entryEnd int
+	// breaks marks a body that leaves the loop before its back edge — a
+	// branch inside the body to exitLabel, Oak's `break`. The summary
+	// carries a one-bit variable for it (breakVar): an iteration that
+	// breaks sets it and the continue condition reads it first, which is
+	// the loop the Oak side lowers `break` to (asm/verify.go breakForm).
+	breaks bool
 }
+
+// breakVar names the carried flag of a loop whose body breaks, on both
+// sides: 0 at the header, 1 after an iteration that broke, read first in
+// the continue condition so the exit tests are not evaluated again.
+const breakVar = "#brk"
 
 // globalStateValue is a package cell's value in a symbolic state: a write on
 // the path, or the declared entry value when the sparse state has no entry.
@@ -365,6 +376,7 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 		exitIndex := exits[0]
 		cmpIndex := -1
 		bodyWhy := ""
+		hasBreak := false
 		for i := bodyStart; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
 			if !isInstr {
@@ -379,7 +391,10 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 				bodyWhy = "the body calls or returns (" + instr.Mnemonic + ")"
 			case "b", "j", "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
-				if !ok || target >= back {
+				if ok && target == exitLabel {
+					// A break: the body leaves to the loop's own exit label.
+					hasBreak = true
+				} else if !ok || target >= back {
 					// A guard's branch to the trap block is not an exit: the
 					// path it takes delivers no result (docs/spec/94-assembler.md §8).
 					if !ok || !isTrapBlock(items, target) || isUnconditionalJump(instr.Mnemonic) {
@@ -400,7 +415,7 @@ func findLoopsIn(function, arch string, items []Item, labels map[string]int, cal
 			reject(back, bodyWhy)
 			continue
 		}
-		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart}
+		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal, testStart: header + 1, testEnd: bodyStart, breaks: hasBreak}
 		// The entry-only tests right before the header: exits too, met
 		// first.
 		shape.entryStart, shape.entryEnd = invariantEntryTests(items, labels, header, exitLabel, header, back), header
@@ -981,6 +996,29 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	if x.arch == ArchRV64 {
 		resultRegs = []int{10, 11}
 	}
+	// … unless the body reads the result register before it writes it:
+	// then the header's value flows into the iteration and the register
+	// carries a loop variable — `state` in w0 through crc32c_update's
+	// chunk call, the call's argument and its result, with no move
+	// between the iterations once the registers are reallocated.
+	callCarried := x.callCarriedResults(shape, resultRegs)
+	// A register's own spill around a call in the header (`while k < n &&
+	// !f(…)`: `str x7, [sp, #o]; bl f; ldr x7, [sp, #o]`) is no header
+	// write: the reload restores the value, a loop variable's — counted as
+	// a temporary, the counter homed there fell out of the carried set
+	// while the condition read it (the prover's ts_array).
+	headerSpills := map[string]bool{}
+	for at := shape.header + 1; at < shape.bodyStart && at < len(x.items); at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || !isFrameSpill(instr) || !isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) < 2 {
+			continue
+		}
+		if src, isReg := instr.Operands[0].(Register); isReg {
+			if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem {
+				headerSpills[fmt.Sprintf("%d:%d", src.Num, mem.Offset)] = true
+			}
+		}
+	}
 	for at := shape.header + 1; at < shape.bodyEnd; at++ {
 		instr, isInstr := x.items[at].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
@@ -988,6 +1026,13 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
 			for _, reg := range resultRegs {
+				if width, carried := callCarried[reg]; carried {
+					if !written[reg] {
+						allW[reg] = width == 32
+					}
+					written[reg] = true
+					continue
+				}
 				headerWritten[reg] = true
 			}
 			continue
@@ -996,6 +1041,11 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			continue // a body write: loop-carried unless a header temporary
 		}
 		if dest, isReg := instr.Operands[0].(Register); isReg && !dest.ZeroRegister() && dest.Class != ClassV {
+			if isFrameSpill(instr) && len(instr.Operands) >= 2 {
+				if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && headerSpills[fmt.Sprintf("%d:%d", dest.Num, mem.Offset)] {
+					continue // the register's own spill reloaded
+				}
+			}
 			headerWritten[dest.Num] = true
 		}
 	}
@@ -1094,12 +1144,16 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 					return nil, "a frame slot written in a loop body at a width other than 4 or a multiple of 8 bytes, or unaligned", false
 				}
 				for _, piece := range pieces {
-					for other, otherSize := range writtenSlots {
-						if other < addr+piece && addr < other+otherSize && (other != addr || otherSize != piece) {
-							return nil, "frame slots written at overlapping addresses in a loop body", false
-						}
+					// Slots written at two widths — a record zeroed by
+					// 8-byte stores whose one element is then written as a
+					// word (the prover's pop_count) — are carried at the
+					// finer, 4-byte granularity: the frame model splits and
+					// assembles slots either way (storeSlot, loadSlot), and
+					// the summary reads a carried slot through loadSlot.
+					// Only an unaligned overlap is refused.
+					if !noteWrittenSlot(writtenSlots, addr, piece) {
+						return nil, "frame slots written at overlapping addresses in a loop body", false
 					}
-					writtenSlots[addr] = piece
 					addr += piece
 				}
 			}
@@ -1252,9 +1306,20 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		// its results afresh (probing); the slots a callee writes through
 		// an address it was handed are not discovered here — the summary
 		// proper lists them (summarizeCallInLoop).
+		// The probe leaves no loop events behind: a call in the body is
+		// summarized here too, before the loop's index is on the stack,
+		// and its callee's loops would stand at the top level beside the
+		// body run's own — the prover's add_carry showed 41 machine events
+		// against the Oak side's 21 and was refused for it.
+		loopsBefore, sitesBefore := len(x.loops), x.sites
+		x.sites = make(map[string]loopSite, len(sitesBefore))
+		for site, rec := range sitesBefore {
+			x.sites[site] = rec
+		}
 		x.probing = true
 		ends, _, ok := x.runBody(shape, probe, nil)
 		x.probing = false
+		x.loops, x.sites = x.loops[:loopsBefore], sitesBefore
 		if ok {
 			for _, end := range ends {
 				for addr, slot := range end.state.frame {
@@ -1328,6 +1393,23 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		return nil, reason, false
 	}
 	ev.cond = cond
+	if shape.breaks {
+		// The break flag: 0 at the header, set by an iteration that
+		// broke (the merge below), read before the exit tests — an
+		// iteration that broke evaluates them no more, and neither do
+		// their traps.
+		fresh := paramTerm(ev.freshName(breakVar), 1)
+		x.declared[fresh.name] = 1
+		ev.vars = append(ev.vars, breakVar)
+		ev.width[breakVar] = 1
+		ev.header[breakVar] = constTerm(0, 1)
+		ev.fresh[breakVar] = fresh
+		notBroken := binaryTerm("xor", fresh, constTerm(1, 1))
+		ev.cond = binaryTerm("and", notBroken, truncate(cond, 1))
+		if ev.headerTrap != nil {
+			ev.headerTrap = binaryTerm("and", notBroken, truncate(ev.headerTrap, 1))
+		}
+	}
 	// A header temporary the body reads — the exit test's operand setup,
 	// such as the zero-extended index `slli z, i, 32; srli z, z, 32; bgeu
 	// z, norm` whose z the RV64 lane's elided element access then scales
@@ -1364,6 +1446,17 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		// A large owned array declared as a span: the loop's memory as a
 		// writable parameter's is (frameSpanAccess).
 		writtenSpans = append(writtenSpans, name)
+	}
+	for name, global := range x.fn.Globals {
+		// A writable top-level array the executor reads as a span
+		// (bindGlobalAddress): the loop's memory as a parameter's is — a
+		// body that fills it through a callee (the prover's write_byte
+		// into out_buf) stores through it like any span.
+		if _, _, _, isArray := globalArrayShape(global); isArray {
+			if _, isSpan := x.spans[name]; isSpan {
+				writtenSpans = append(writtenSpans, name)
+			}
+		}
 	}
 	sort.Strings(writtenSpans)
 	// The machine side of the same rule: a body with no store and no call
@@ -1479,6 +1572,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for _, end := range ends {
 		for span, log := range end.state.writes {
 			if !storedSpans[span] && len(log) > len(freshState.writes[span]) {
+				if os.Getenv("OAK_VERIFY_TRACE") != "" {
+					fmt.Fprintf(os.Stderr, "verify: loop body stored through %s; stored spans %v; written %v\n", span, storedSpans, writtenSpans)
+				}
 				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
 			}
 		}
@@ -1506,13 +1602,22 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		delete(ev.writes, span)
 		delete(ev.entry, span)
 	}
+	valueOfVar := func(end bodyEnd, name string) *term {
+		if name == breakVar {
+			if end.broke {
+				return constTerm(1, 1)
+			}
+			return constTerm(0, 1)
+		}
+		return end.valueOfVar(name, freshState)
+	}
 	for _, name := range ev.vars {
-		merged := ends[len(ends)-1].valueOfVar(name, freshState)
+		merged := valueOfVar(ends[len(ends)-1], name)
 		if merged == nil {
 			return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
 		}
 		for i := len(ends) - 2; i >= 0; i-- {
-			value := ends[i].valueOfVar(name, freshState)
+			value := valueOfVar(ends[i], name)
 			if value == nil {
 				return nil, "a loop-carried value is no longer known at the end of a body path: " + name, false
 			}
@@ -2203,6 +2308,7 @@ const (
 type bodyEnd struct {
 	cond  *term
 	state *symbolicState
+	broke bool // the path left the body through a break (loopShape.breaks)
 }
 
 // valueOf is a register's value at the end of the path; a register the
@@ -2274,6 +2380,86 @@ func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
 		}
 	}
 	return false
+}
+
+// callCarriedResults finds the result registers of the body's summarized
+// calls that the body reads before it writes them (a call reads its
+// argument registers; an ordinary instruction its source operands and
+// memory bases), with the callee's result width: the value at the header
+// reaches the iteration, so the register carries a loop variable rather
+// than a temporary the call leaves. A call the summary cannot resolve
+// claims nothing.
+func (x *pathExecutor) callCarriedResults(shape loopShape, resultRegs []int) map[int]int {
+	carried := map[int]int{}
+	writtenSoFar := map[int]bool{}
+	readFirst := map[int]bool{}
+	noteRead := func(reg Register) {
+		if reg.Class != ClassV && !reg.ZeroRegister() && !writtenSoFar[reg.Num] {
+			readFirst[reg.Num] = true
+		}
+	}
+	argBase := 0
+	if x.arch == ArchRV64 {
+		argBase = 10
+	}
+	for at := shape.bodyStart; at < shape.bodyEnd; at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
+			sym, isSym := instr.Operands[0].(Symbol)
+			if !isSym || x.fn == nil {
+				return nil
+			}
+			callee, resolved := ResolveNativeCallee(x.arch, sym.Name, x.fn.Callees)
+			if !resolved {
+				return nil
+			}
+			var classes []ArgClass
+			for _, arg := range classifyArguments(callee.Parameters, x.fn.Composites) {
+				if arg.problem != "" || arg.param.Variadic {
+					return nil
+				}
+				if arg.kind == argVector && x.arch == ArchRV64 {
+					continue
+				}
+				classes = append(classes, arg.class)
+			}
+			places, _ := LayoutArguments(classes, x.fn.PackedStackArgs)
+			for _, place := range places {
+				if place.OnStack || place.Vector {
+					continue
+				}
+				for k := 0; k < place.Regs; k++ {
+					noteRead(Register{Class: ClassX, Num: argBase + place.Reg + k})
+				}
+			}
+			width, _, ok := contractBits(callee.ReturnType)
+			for _, reg := range resultRegs {
+				if readFirst[reg] && ok && width > 0 && !writtenSoFar[reg] {
+					carried[reg] = width
+				}
+				writtenSoFar[reg] = true
+			}
+			continue
+		}
+		reads := instr.Operands
+		writes := false
+		if !(isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic)) {
+			reads = instr.Operands[1:]
+			writes = true
+		}
+		for _, reg := range registerOperands(reads) {
+			noteRead(reg)
+		}
+		if writes {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class != ClassV && !dest.ZeroRegister() {
+				writtenSoFar[dest.Num] = true
+			}
+		}
+	}
+	return carried
 }
 
 // hasInnerLoop reports a recognized inner loop exit inside the body.
@@ -2655,6 +2841,11 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 			if target >= shape.bodyStart && target < shape.bodyEnd {
 				return false, ""
 			}
+			if shape.breaks && target == shape.exitLabel {
+				// A break: the path ends here, an iteration that sets the
+				// break flag (the end below reads pc at the exit label).
+				return false, ""
+			}
 			if isTrapBlock(x.items, target) {
 				recordLoopTrap(traps, cond, constTerm(1, 1))
 				dropped = true
@@ -2698,7 +2889,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 				}
 				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				inner, isLoopExit := x.loopExits[pc]
-				if branch.kind == termConst && !(isLoopExit && branch.value == 0 && x.summarizeCounted(inner, instr, st)) {
+				if branch.kind == termConst && !(isLoopExit && branch.value == 0 && (inner.breaks || x.summarizeCounted(inner, instr, st))) {
 					if branch.value != 0 {
 						if outside, reason := leaves(target); outside {
 							if reason != "" {
@@ -2906,7 +3097,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState, traps **te
 			// the body's range would not have been taken): an end.
 			arrived(cur.group)
 		}
-		ends = append(ends, bodyEnd{cond: cond, state: st})
+		ends = append(ends, bodyEnd{cond: cond, state: st, broke: shape.breaks && pc == shape.exitLabel})
 	}
 	return ends, "", true
 }
@@ -3098,6 +3289,22 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// recognize marks everything, as before.
 	storedSpans := make([]string, 0, len(lo.writableSpans))
 	contracts := map[string]spanContract{}
+	if bodyMayStore(loop.Body) {
+		// The program's writable top-level arrays, spans named by the
+		// global (declareGlobalArrays): a body that fills one — through a
+		// callee, the prover's write_byte into out_buf — stores through
+		// it like a parameter, and the machine side marks it the same
+		// (summarizeLoop, the function's Globals).
+		for name, global := range lo.globals {
+			if _, _, _, isArray := globalArrayShape(global); !isArray || lo.writableSpans[name] {
+				continue
+			}
+			if contract, isSpan := lo.spans[name]; isSpan && lo.tableLens[name] > 0 {
+				contracts[name] = contract
+				storedSpans = append(storedSpans, name)
+			}
+		}
+	}
 	for span := range lo.writableSpans {
 		if !bodyMayStore(loop.Body) {
 			break
@@ -3124,6 +3331,35 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		storedSpans = append(storedSpans, span)
 	}
 	sort.Strings(storedSpans)
+	// The condition is lowered before the markers are placed, as the
+	// machine side evaluates its exit tests (headerCondition) before
+	// marking: a condition reading a leaf the body never stores (`while i
+	// < s[dom].count`, the body storing `s[dom].slots`) reads the entry
+	// memory on both sides, where the marker — dropped again below for an
+	// unwritten leaf, but captured by the condition's term meanwhile —
+	// left the two conditions provably unequal.
+	// The event takes its index before its condition is lowered: a call
+	// in the condition (`while b > base && rname_less(…)`, the prover's
+	// fn_callees) inlines a callee whose own loops are numbered after this
+	// one and nest under the enclosing loop, as the machine side numbers
+	// and nests them — it meets the call in the header before this loop's
+	// body — where numbered first they took this loop's index and their
+	// fresh symbols collided with its.
+	lo.loops = append(lo.loops, ev)
+	registered := true
+	unregister := func() {
+		if registered {
+			lo.loops = lo.loops[:len(lo.loops)-1]
+			registered = false
+		}
+	}
+	cond, reason, ok := lo.lowerCondition(loop.Condition)
+	if !ok {
+		unregister()
+		return reason, false
+	}
+	ev.headerTrap = disjoinTraps(lo.traps)
+	lo.traps = nil
 	before := map[string]int{}
 	ev.entry = map[string][]*spanWrite{}
 	for _, span := range storedSpans {
@@ -3140,15 +3376,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
-	cond, reason, ok := lo.lowerCondition(loop.Condition)
-	if !ok {
-		return reason, false
-	}
-	ev.headerTrap = disjoinTraps(lo.traps)
-	lo.traps = nil
 	ev.cond = truncate(cond, 1)
 	entryCond, entryKnown := ev.entryCondition()
 	if !entryKnown {
+		unregister()
 		return "the loop's entry condition could not be reconstructed", false
 	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
@@ -3165,7 +3396,6 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			guardMarker(lo.writes[span][:before[span]], entryCond)
 		}
 	}
-	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
 	ev.bodyTrap = disjoinTraps(lo.traps)
@@ -3308,6 +3538,8 @@ func bodyMayStore(body *ast.BlockStatement) bool {
 		case *ast.WhileStatement:
 			expr(v.Condition)
 			block(v.Body)
+		case *ast.BreakStatement:
+			// A break stores nothing (its loop's flag form is a local).
 		default:
 			stores = true
 		}
@@ -3346,6 +3578,47 @@ func itemsMayStore(items []Item) bool {
 		}
 	}
 	return false
+}
+
+// noteWrittenSlot records a written frame piece (4 bytes, or 8 aligned to
+// 8) among the loop's carried slots, at the finer granularity where it
+// meets one of the other width: an 8-byte entry an aligned 4-byte piece
+// falls in splits into its halves, and an 8-byte piece over 4-byte entries
+// adds the halves it lacks. It reports false for an overlap that neither
+// rule covers.
+func noteWrittenSlot(slots map[int64]int64, addr, piece int64) bool {
+	if piece != 4 && piece != 8 {
+		return false
+	}
+	halves := func(at int64) {
+		if _, has := slots[at]; !has {
+			slots[at] = 4
+		}
+		if _, has := slots[at+4]; !has {
+			slots[at+4] = 4
+		}
+	}
+	for other, otherSize := range slots {
+		if other >= addr+piece || addr >= other+otherSize {
+			continue // disjoint
+		}
+		if other == addr && otherSize == piece {
+			return true // the same slot again
+		}
+		switch {
+		case otherSize == 8 && piece == 4 && other%8 == 0 && (addr == other || addr == other+4):
+			delete(slots, other)
+			halves(other)
+			return true
+		case otherSize == 4 && piece == 8 && addr%8 == 0 && (other == addr || other == addr+4):
+			halves(addr)
+			return true
+		default:
+			return false
+		}
+	}
+	slots[addr] = piece
+	return true
 }
 
 // leafRefs lists an aggregate's scalar leaves by access path, as leafTerms
@@ -3413,12 +3686,25 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 		case *ast.ExpressionStatement:
 			// A statement-level conditional assigns in its arms.
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				for _, arm := range match.Arms {
-					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-						assignedLocals(block.Block, into)
-					}
-				}
+				assignedLocalsInArms(match, into)
 			}
+		}
+	}
+}
+
+// assignedLocalsInArms walks a conditional's arms: a block arm's
+// statements, and a chained conditional's arm (`a ? X | b ? Y | Z`, whose
+// else arm is the conditional `b ? Y | Z`) through its own arms — the
+// search loop's `lo` and `hi`, assigned in the second and third arms,
+// were not carried, and the loop's continue condition compared the
+// machine's `lo < hi` with the Oak side's entry values.
+func assignedLocalsInArms(match *ast.MatchExpression, into map[string]bool) {
+	for _, arm := range match.Arms {
+		switch body := arm.Body.(type) {
+		case *ast.BlockExpression:
+			assignedLocals(body.Block, into)
+		case *ast.MatchExpression:
+			assignedLocalsInArms(body, into)
 		}
 	}
 }
@@ -3444,12 +3730,20 @@ func assignedFieldPaths(body *ast.BlockStatement, into map[string][]string) {
 			assignedFieldPaths(s.Body, into)
 		case *ast.ExpressionStatement:
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				for _, arm := range match.Arms {
-					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-						assignedFieldPaths(block.Block, into)
-					}
-				}
+				assignedFieldPathsInArms(match, into)
 			}
+		}
+	}
+}
+
+// assignedFieldPathsInArms is assignedLocalsInArms for assignedFieldPaths.
+func assignedFieldPathsInArms(match *ast.MatchExpression, into map[string][]string) {
+	for _, arm := range match.Arms {
+		switch body := arm.Body.(type) {
+		case *ast.BlockExpression:
+			assignedFieldPaths(body.Block, into)
+		case *ast.MatchExpression:
+			assignedFieldPathsInArms(body, into)
 		}
 	}
 }
@@ -3873,6 +4167,49 @@ func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
 func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
+	// The coupling first under reach conditions abstracted: each loop's
+	// condition for being reached — on the Oak side the arm it sits in, on
+	// the machine side the path to the call it came through — is a fresh
+	// one-bit symbol in the coupling's premises. A proof for every value
+	// of the symbol is a proof for the reach term, so a proven verdict
+	// stands; any other verdict of that run is discarded, and the full
+	// premises decide. Over a nest of loops called under table lookups
+	// (literals.oak's count, thirty-two loops) the reach terms are what
+	// the diagrams ran out on; the OS pilots' walkers need them, and keep
+	// them through the second run.
+	if hasReachConditions(exec.loops, lowering.loops) {
+		if verdict := verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, true); verdict.Kind == VerdictProven {
+			return verdict
+		}
+	}
+	return verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, false)
+}
+
+// abstractAttemptShare is the fraction of the proof's allowances the
+// reach-abstracted first attempt of a loop proof may spend (verifyLoops).
+const abstractAttemptShare = 16
+
+// deepNestLoops is the loop-event count from which a loop proof's
+// reach-abstracted attempt spends the whole allowance (verifyLoops).
+const deepNestLoops = 13
+
+// hasReachConditions reports whether any loop event carries a reach
+// condition the coupling's premises would conjoin.
+func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
+	for _, ev := range asmLoops {
+		if ev != nil && ev.reached != nil {
+			return true
+		}
+	}
+	for _, ev := range oakLoops {
+		if ev != nil && ev.oakPath != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
 	// A scalar result is one term a side; a record result through memory
 	// is its words (verifyChunk): one coupling proves them all. asmTerm
 	// stands for "there is a result".
@@ -4028,7 +4365,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	evidence := func(reason string) Verdict {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on %d concrete inputs (evidence, not proof: %s)", fn.Name, checked, reason)}
 	}
+	reachSymbol := func(k int) *term { return paramTerm(fmt.Sprintf("reach#%d", k+1), 1) }
 	widthOfName := func(name string) int {
+		if strings.HasPrefix(name, "reach#") {
+			return 1
+		}
 		var k int
 		var reg string
 		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
@@ -4059,6 +4400,23 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// condition, a summarized call) spent hours in a thousand of them.
 	couplingWork := couplingWorkBudget
 	budget := &nodeBudget{remaining: proofNodes, loop: true}
+	if abstractReach {
+		// The abstracted attempt is a first try, kept only if it proves:
+		// a sixteenth of the allowances, so a search it cannot finish ends
+		// early and the full premises get the proof's own budget. Proofs
+		// under the abstraction are found cheaply (row_named, signed_marks);
+		// the ones it misses spent minutes before the full run began.
+		share := abstractAttemptShare
+		if len(asmLoops) >= deepNestLoops {
+			// A deep nest — the scanner's step functions, thirteen loops;
+			// count and find_from, thirty-two — needs the whole allowance
+			// to finish the attempt, and its reach terms are what the full
+			// premises cannot decide: the attempt is its proof.
+			share = 1
+		}
+		couplingWork /= share
+		budget.remaining /= share
+	}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
@@ -4219,7 +4577,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if reached == nil {
 			return exit
 		}
-		reached = truncate(substitute(reached, sigma), 1)
+		if abstractReach {
+			reached = reachSymbol(k)
+		} else {
+			reached = truncate(substitute(reached, sigma), 1)
+		}
 		return binaryTerm("or", notTerm(reached), binaryTerm("and", reached, exit))
 	}
 	// bodyPremise of event k: its invariant — and its guard only when
@@ -4227,15 +4589,35 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// (assuming the Oak guard would make any asm guard it implies look
 	// equal) — the invariants and guards of its ancestors, and its
 	// children's exit premises.
+	// reachedBoth is where event k runs: the machine's path to it and the
+	// Oak arm it sits in. The Oak side's values after an iteration are
+	// guarded by that arm, so with the machine's condition alone a
+	// valuation satisfied the premise with the arm false and refuted a
+	// correct pairing (the prover's count_candidates, the coupling's "no
+	// register is an affine image" fallback). Assuming both is assuming
+	// either: the coupling proves the two equal below, or refuses.
+	reachedBoth := func(k int, sigma map[string]*term) *term {
+		out := constTerm(1, 1)
+		if abstractReach {
+			if asmLoops[k].reached != nil || oakLoops[k].oakPath != nil {
+				out = reachSymbol(k)
+			}
+			return out
+		}
+		if reached := asmLoops[k].reached; reached != nil {
+			out = binaryTerm("and", out, truncate(substitute(reached, sigma), 1))
+		}
+		if reached := oakLoops[k].oakPath; reached != nil {
+			out = binaryTerm("and", out, truncate(substitute(reached, sigma), 1))
+		}
+		return out
+	}
 	bodyPremise := func(k int, sigma map[string]*term, underGuard bool) *term {
 		premise := substitute(invariants[k], sigma)
 		if underGuard {
 			premise = binaryTerm("and", premise, truncate(substitute(oakLoops[k].cond, sigma), 1))
 		}
-		if reached := asmLoops[k].reached; reached != nil {
-			// The machine's summary holds where the path reached the loop.
-			premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
-		}
+		premise = binaryTerm("and", premise, reachedBoth(k, sigma))
 		// The loops before this one at the same level ran or left their
 		// symbols at their header values: this loop's header values and
 		// continue condition may read them (under the coupling, an asm
@@ -4259,9 +4641,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		for at := oakLoops[k].parent - 1; at >= 0; at = oakLoops[at].parent - 1 {
 			premise = binaryTerm("and", premise, binaryTerm("and", substitute(invariants[at], sigma), truncate(substitute(oakLoops[at].cond, sigma), 1)))
-			if reached := asmLoops[at].reached; reached != nil {
-				premise = binaryTerm("and", premise, truncate(substitute(reached, sigma), 1))
-			}
+			premise = binaryTerm("and", premise, reachedBoth(at, sigma))
 		}
 		for _, child := range children[k] {
 			premise = binaryTerm("and", premise, eventPostcondition(child, sigma))
@@ -4619,6 +4999,21 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
+	searchStopped := func() bool {
+		switch {
+		case budget.remaining <= 0:
+			failure = "the loop proof's diagram budget ran out in the coupling search"
+		case budget.calls > implicationCallLimit:
+			failure = "the loop proof's implication budget ran out in the coupling search"
+		case couplingWork <= 0:
+			failure = "the coupling search exceeded its valuation work budget"
+		case visited > searchBudget:
+			failure = "the coupling search exceeded its budget"
+		default:
+			return false
+		}
+		return true
+	}
 	// The search is conflict-directed: a failure below returns the depths
 	// its refutation depended on, and a level whose choice is not among
 	// them passes the failure up without trying its other candidates (the
@@ -4627,11 +5022,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
-		if couplingWork <= 0 {
-			visited = searchBudget + 1
-		}
-		if visited > searchBudget {
-			failure = "the coupling search exceeded its budget"
+		if searchStopped() {
 			return false, nil
 		}
 		if i == len(slots) {
@@ -4718,11 +5109,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
-			if couplingWork <= 0 {
-				visited = searchBudget + 1
-			}
-			if visited > searchBudget {
-				failure = "the coupling search exceeded its budget"
+			if searchStopped() {
 				return false, nil
 			}
 			if !conflict[i] {
@@ -4793,6 +5180,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// a nested event is compared while its parent iteration is active.
 	for k, oakEv := range oakLoops {
 		asmEv := asmLoops[k]
+		if asmEv.oakDerived && len(asmEv.entry) == 0 && len(asmEv.writes) == 0 {
+			// A callee's loop that stores nothing carries no reach condition
+			// (summarizeCall): the same summary on both sides, its values
+			// coupled below, its result under each side's path in the terms.
+			continue
+		}
 		premise := constTerm(1, 1)
 		if oakEv.parent > 0 {
 			premise = binaryTerm("and", premise, bodyPremise(oakEv.parent-1, sigma, true))
@@ -4837,7 +5230,17 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return evidence(fmt.Sprintf("the conditions for reaching loop %d were not proven equal", k+1))
 		}
 	}
-	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, implies); !ok {
+	// The trap-domain obligations are decided after the coupling is fixed,
+	// under an allowance of their own: the coupling search may have spent
+	// the shared one on the pairings it tried, and an obligation that is
+	// cheap on its own was then left undecided (the prover's le_init).
+	newTrapImplies := func() func(premise, a, b *term) (bool, bool) {
+		trapBudget := &nodeBudget{remaining: proofNodes, loop: true}
+		return func(premise, a, b *term) (bool, bool) {
+			return impliesEqualWithin(premise, a, b, widthOfName, trapBudget)
+		}
+	}
+	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, newTrapImplies); !ok {
 		return evidence(reason)
 	}
 	// The iterations' stores: each event's two sides store through the
@@ -5892,21 +6295,36 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 		count(t.right)
 		count(t.cond)
 	}
-	for _, side := range [][]*loopEvent{asmLoops, oakLoops} {
-		for _, ev := range side {
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	for k, side := range [][]*loopEvent{asmLoops, oakLoops} {
+		for j, ev := range side {
+			before := len(visited)
 			count(ev.cond)
 			count(ev.headerTrap)
 			count(ev.bodyTrap)
+			afterConds := len(visited)
 			for _, name := range ev.vars {
 				count(ev.header[name])
 				count(ev.next[name])
 			}
+			afterVars := len(visited)
 			for _, writes := range ev.writes {
 				for _, w := range writes {
 					count(w.index)
 					count(w.value)
 					count(w.guard)
 				}
+			}
+			if trace {
+				sideName := "asm"
+				if k == 1 {
+					sideName = "oak"
+				}
+				writes := 0
+				for _, log := range ev.writes {
+					writes += len(log)
+				}
+				fmt.Fprintf(os.Stderr, "verify: loop terms: %s loop %d: conditions +%d, %d vars +%d, %d writes +%d nodes\n", sideName, j+1, afterConds-before, len(ev.vars), afterVars-afterConds, writes, len(visited)-afterVars)
 			}
 		}
 	}
@@ -6088,6 +6506,14 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// the rules and splits tried and failed.
 		budget = &nodeBudget{remaining: loopProofNodeBudget}
 	}
+	// One term on both sides holds under any premise, before any budget
+	// is charged: a proof whose coupling spent the shared allowance still
+	// decides `0 = 0` (a loop's trap-domain obligation with no machine
+	// trap), where the budget checks below returned undecided without
+	// looking.
+	if equalTerms(a, b) {
+		return true, true
+	}
 	key := decisionKey{premise, a, b, depth}
 	if r, seen := budget.decided[key]; seen {
 		return r.holds, r.decided // met before, under another parent
@@ -6135,6 +6561,9 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
 	a, b = pushNarrowArithmetic(a), pushNarrowArithmetic(b)
 	a, b = normalizeLowMaskChain(a), normalizeLowMaskChain(b)
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
+		return true, true
+	}
 	boolean := map[*term]bool{}
 	if premise.kind != termConst && booleanValued(a, boolean) && booleanValued(b, boolean) {
 		// A post-case premise often states the small guards whose conjunction
@@ -6158,7 +6587,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
 		}
 	}
-	if equalTerms(a, b) {
+	if equalTermsAtDeclaredWidths(a, b, widthOf) {
 		return true, true // the same term on both sides: no diagram needed
 	}
 	if equalReductions(a, b) {
@@ -6949,6 +7378,14 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int, work *int)
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	if equalTerms(a, b) {
+		// One term on both sides: no valuation tells them apart, and the
+		// passes would only walk the premise — twenty thousand nodes of
+		// an outer loop's children's postconditions (literals.oak's
+		// count, thirty-two loops) against a three-node `g + 1` on each
+		// side — and spend the search's work for nothing.
+		return false
+	}
 	mentioned := map[string]bool{}
 	visited := map[*term]bool{}
 	collectParamsVisited(premise, mentioned, visited)
@@ -7174,8 +7611,14 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 }
 
 // smallSides is the size, in term nodes, up to which an implication's two
-// sides are first decided without the premise.
-const smallSides = 64
+// sides are first decided without the premise. Four hundred takes in a
+// guard over a sixteen-lane select (`m & bucket_bit(j)` in literals.oak's
+// verify_first, 141 and 151 nodes): the sides agree on their own, and
+// under the premise — the inner loops' exit facts, a callee's reach
+// condition, the children's postconditions — every order ran out of
+// diagram (2026-09-22; the proof had held at sixty-four until #537 grew
+// the premise).
+const smallSides = 400
 
 // relevantPremise keeps the premise's conjuncts that can bear on a = b:
 // those mentioning a symbol of a or b, and, to a fixpoint, those sharing

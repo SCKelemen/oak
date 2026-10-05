@@ -12,7 +12,7 @@
  * `spec/lean/Oak/ArmASL.lean` is proved equal.
  *
  * The adaptations, all listed here, make the fragment self-contained and
- * pure except for the explicitly retained RAM wrappers and register reads; none
+ * pure except for the explicitly retained RAM wrappers and register effects; none
  * changes a computed value:
  *   - `UInt`/`SInt`/`__GetSlice_int`/`IsZero`/`Zeros` come from Arm's
  *     prelude, written against Sail 0.8; they are restated over the Sail
@@ -38,6 +38,10 @@
  *   - `_R` and `aget_X` retain the official general-register bank and
  *     accessor, including the bank-free register-31 zero branch and the
  *     legacy effect annotation (inferred by the modern Sail compiler).
+ *   - `ProcState`, `PSTATE`, `__LSISyndrome`, `EL0`/`EL1`, and the two
+ *     load/store syndrome functions retain their original declarations,
+ *     assertions, undefined initializer and register effects. This is a
+ *     dependency of STR, not the instruction or its exception path.
  */
 
 default Order dec
@@ -75,6 +79,82 @@ val aget_X : forall 'width 'n,
 function aget_X (width, n) = if n != 31 then slice(_R[n], 0, width) else Zeros(width)
 
 overload X = {aget_X}
+
+/* Full aarch_types.sail record, not an EL-only replacement. */
+struct ProcState = {
+  N : bits(1),
+  Z : bits(1),
+  C : bits(1),
+  V : bits(1),
+  D : bits(1),
+  A : bits(1),
+  I : bits(1),
+  F : bits(1),
+  PAN : bits(1),
+  UAO : bits(1),
+  DIT : bits(1),
+  TCO : bits(1),
+  BTYPE : bits(2),
+  SS : bits(1),
+  IL : bits(1),
+  EL : bits(2),
+  nRW : bits(1),
+  SP : bits(1),
+  Q : bits(1),
+  GE : bits(4),
+  SSBS : bits(1),
+  IT : bits(8),
+  J : bits(1),
+  T : bits(1),
+  E : bits(1),
+  M : bits(5)
+}
+
+/* aarch_mem.sail declarations. */
+register PSTATE : ProcState
+register __LSISyndrome : bits(11)
+let EL1 : bits(2) = 0b01
+let EL0 : bits(2) = 0b00
+
+/* Unchanged aarch64.sail syndrome functions. */
+val MakeLSInstructionSyndrome : forall 'size ('sign_extend : Bool) 'Rt ('sixty_four : Bool) ('acq_rel : Bool),
+  ('size in {1, 2, 4, 8} & 0 <= 'Rt & 'Rt <= 31).
+  (int('size), bool('sign_extend), int('Rt), bool('sixty_four), bool('acq_rel)) -> bits(11) effect {escape, undef}
+
+function MakeLSInstructionSyndrome (size, sign_extend, Rt, sixty_four, acq_rel) = {
+    assert(size == 1 | size == 2 | size == 4 | size == 8);
+    assert(0 <= Rt & Rt <= 31);
+    sz : bits(2) = undefined : bits(2);
+    match size {
+      1 => {
+          sz = 0b00
+      },
+      2 => {
+          sz = 0b01
+      },
+      4 => {
+          sz = 0b10
+      },
+      8 => {
+          sz = 0b11
+      }
+    };
+    let sz = sz;
+    let ext = if sign_extend then 0b1 else 0b0;
+    let sf = if sixty_four then 0b1 else 0b0;
+    let ar = if acq_rel then 0b1 else 0b0;
+    ((((0b1 @ sz) @ ext) @ __GetSlice_int(5, Rt, 0)) @ sf) @ ar
+}
+
+val AArch64_SetLSInstructionSyndrome : forall 'size 'Rt,
+  ('size in {1, 2, 4, 8} & 0 <= 'Rt & 'Rt <= 31).
+  (int('size), bool, int('Rt), bool, bool) -> unit effect {escape, rreg, undef, wreg}
+
+function AArch64_SetLSInstructionSyndrome (size, sign_extend, Rt, sixty_four, acq_rel) = {
+    if PSTATE.EL == EL0 | PSTATE.EL == EL1 then {
+        __LSISyndrome = MakeLSInstructionSyndrome(size, sign_extend, Rt, sixty_four, acq_rel)
+    }
+}
 
 /* aarch_mem.sail */
 val IsZero : forall ('N : Int), 'N >= 0. bits('N) -> bool

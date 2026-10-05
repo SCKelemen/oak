@@ -25,10 +25,13 @@ reload the page together after updating; stale v0 reports are not accepted.
 Single returning blocks, acyclic CFGs up to 127 blocks, one pre-test loop with
 an acyclic body up to 124 blocks, and nested reducible source loops/conditionals
 omit the dispatcher/PC local. Raw unmatched or irreducible CFGs keep the dispatch
-baseline. See the
+baseline. On raw-CFG emission paths, pure single-use same-block SSA expressions
+also emit directly on Wasm's operand stack and their unused locals disappear;
+shared, cross-block, trapping and effectful values remain locals. See the
 [measured fixture sizes](../docs/spec/91-wasm.md#four-block-conditionals-with-a-join) and
 [preliminary engine timings](../benchmarks/wasm/README.md). This does not reduce
-the Go compiler payload or establish a general browser runtime speedup.
+the Go compiler payload or establish a general browser runtime speedup; the
+stack-expression runtime samples were neutral/inconclusive despite smaller bytes.
 
 “Compile only” produces a downloadable module without executing it or requiring
 `main`. Artifact information includes the compiler's target and DAG provenance.

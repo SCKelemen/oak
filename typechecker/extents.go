@@ -213,6 +213,186 @@ func (tc *TypeChecker) localBinding(name string) bool {
 	return bound
 }
 
+// globalIndexBinding admits a top-level unsigned scalar variable as an
+// index participant (docs/spec/50-borrowing.md, "a cursor that is a
+// global"): a guard on it establishes a fact exactly as on a local, and the
+// fact dies at any assignment to it (killFacts, as for a local) and at any
+// call to a program function (killGlobalIndexFacts: a callee may write
+// it). The name is remembered so the call kill knows what to kill. A
+// global never stands in a container position through this rule.
+func (tc *TypeChecker) globalIndexBinding(name string) bool {
+	if tc.globalEnv == nil || tc.env == tc.globalEnv || strings.Contains(name, ".") {
+		return false
+	}
+	scheme, isGlobal := tc.globalEnv.Get(name)
+	if !isGlobal || scheme == nil {
+		return false
+	}
+	prim, isPrim := scheme.Type.(*PrimitiveType)
+	if !isPrim {
+		return false
+	}
+	switch normalizePrimitiveName(prim.Name) {
+	case "u8", "u16", "u32", "u64":
+	default:
+		return false
+	}
+	if tc.globalIndexNames == nil {
+		tc.globalIndexNames = map[string]bool{}
+	}
+	tc.globalIndexNames[name] = true
+	return true
+}
+
+// killGlobalIndexFacts kills every fact a global index participates in
+// when node calls a program function, which may write the global.
+func (tc *TypeChecker) killGlobalIndexFacts(node ast.Node) {
+	if len(tc.globalIndexNames) > 0 && containsProgramCall(node) {
+		tc.killFacts(tc.globalIndexNames)
+	}
+}
+
+// containsProgramCall reports a call to a program function anywhere in
+// node — not a scalar constructor, a conversion, `len`, `span`, `view`,
+// `subslice`, or `assert`, none of which writes a global. Unknown node
+// kinds count as calls: the rule fails closed.
+func containsProgramCall(node ast.Node) bool {
+	switch n := node.(type) {
+	case nil:
+		return false
+	case *ast.BlockStatement:
+		for _, stmt := range n.Statements {
+			if containsProgramCall(stmt) {
+				return true
+			}
+		}
+		return false
+	case *ast.BlockExpression:
+		return containsProgramCall(n.Block)
+	case *ast.UnsafeBlock:
+		return containsProgramCall(n.Body)
+	case *ast.ExpressionStatement:
+		return containsProgramCall(n.Expression)
+	case *ast.AssignmentStatement:
+		return containsProgramCall(n.Value)
+	case *ast.VariableDeclaration:
+		return n.Value != nil && containsProgramCall(n.Value)
+	case *ast.IndexAssignmentStatement:
+		return containsProgramCall(n.Target) || containsProgramCall(n.Value)
+	case *ast.WhileStatement:
+		return containsProgramCall(n.Condition) || containsProgramCall(n.Body)
+	case *ast.IfStatement:
+		return containsProgramCall(n.Condition) || containsProgramCall(n.Consequence) || (n.Alternative != nil && containsProgramCall(n.Alternative))
+	case *ast.BreakStatement:
+		return false
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.Boolean, *ast.StringLiteral:
+		return false
+	case *ast.InfixExpression:
+		return containsProgramCall(n.Left) || containsProgramCall(n.Right)
+	case *ast.PrefixExpression:
+		return containsProgramCall(n.Right)
+	case *ast.IndexExpression:
+		return containsProgramCall(n.Left) || (n.Index != nil && containsProgramCall(n.Index))
+	case *ast.MatchExpression:
+		if containsProgramCall(n.Scrutinee) {
+			return true
+		}
+		for _, arm := range n.Arms {
+			if arm != nil && containsProgramCall(arm.Body) {
+				return true
+			}
+		}
+		return false
+	case *ast.InvocationExpression:
+		if isProgramCall(n) {
+			return true
+		}
+		for _, arg := range n.Arguments {
+			if containsProgramCall(arg) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// isProgramCall reports a call that may run program code: anything but a
+// scalar constructor, a conversion, or one of the checker's own builtins.
+func isProgramCall(call *ast.InvocationExpression) bool {
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return true
+	}
+	switch normalizePrimitiveName(ident.Value) {
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "Bool":
+		return false
+	}
+	if _, _, _, isConversion := ConversionParts(ident.Value); isConversion {
+		return false
+	}
+	switch ident.Value {
+	case "len", "span", "view", "subslice", "assert", "cap":
+		return false
+	}
+	return true
+}
+
+// widenedIndex reads `u32(i)` / `u64(i)` / `u16(i)` over a binding of a
+// narrower or equal unsigned type: the widening is the identity on the
+// value (20-types.md §11.1), so a bound on the binding is the same bound
+// on the index and the discharge law is the binding's own.
+func (tc *TypeChecker) widenedIndex(expr ast.Expression) (ast.Expression, bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false
+	}
+	target, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	targetBits := unsignedBits(normalizePrimitiveName(target.Value))
+	if targetBits == 0 {
+		return nil, false
+	}
+	arg, isArg := call.Arguments[0].(*ast.Identifier)
+	if !isArg {
+		return nil, false
+	}
+	var scheme *TypeScheme
+	if tc.env != nil {
+		scheme, _ = tc.env.Get(arg.Value)
+	}
+	if scheme == nil && tc.globalEnv != nil {
+		scheme, _ = tc.globalEnv.Get(arg.Value)
+	}
+	if scheme == nil {
+		return nil, false
+	}
+	prim, isPrim := scheme.Type.(*PrimitiveType)
+	if !isPrim {
+		return nil, false
+	}
+	if bits := unsignedBits(normalizePrimitiveName(prim.Name)); bits == 0 || bits > targetBits {
+		return nil, false
+	}
+	return arg, true
+}
+
+func unsignedBits(name string) int {
+	switch name {
+	case "u8":
+		return 8
+	case "u16":
+		return 16
+	case "u32":
+		return 32
+	case "u64":
+		return 64
+	}
+	return 0
+}
+
 // globalStaticArray reports whether name is a top-level owned array of
 // static extent: its length is a fact of the program, so it may stand in a
 // fact's container position (docs/spec/50-borrowing.md, elision over
@@ -731,7 +911,7 @@ func (tc *TypeChecker) factsFromConditionAs(cond ast.Expression, earlier []exten
 
 	local := func(names ...string) bool {
 		for _, name := range names {
-			if !tc.localBinding(name) {
+			if !tc.localBinding(name) && !tc.globalIndexBinding(name) {
 				return false
 			}
 		}
@@ -1210,6 +1390,11 @@ func (tc *TypeChecker) provenBelow(index ast.Expression, bound int64) bool {
 // whose soundness theorem shows the decision below every live fact's
 // meaning: shape by shape, the cited law.
 func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *ArrayType) bool {
+	if inner, isWidened := tc.widenedIndex(indexExpr); isWidened {
+		// `free_stack[u32(i)]` under `i < max_pages`: the widening keeps
+		// the value and the bound (the OS pilot's u16 counters).
+		return tc.indexUnder(inner, name, arr)
+	}
 	proven := false
 	// lengthAtLeast: the container is known to hold at least n elements —
 	// its declared static extent, or a live min-length fact.

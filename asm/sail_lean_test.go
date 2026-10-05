@@ -37,7 +37,16 @@ func TestSailLeanGenerationCurrent(t *testing.T) {
 		requireOracle(t, "lean-sail support library not checked out (spec/sail/setup.sh)")
 	}
 	out := t.TempDir()
-	cmd := exec.Command(sail, filepath.Join(root, "arm_primitives.sail"), "--lean", "--lean-single-file",
+	// Mirror regen.sh: assertion messages must contain a stable relative
+	// source name, not the developer's or CI runner's absolute checkout path.
+	source, err := os.ReadFile(filepath.Join(root, "arm_primitives.sail"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "arm_primitives.sail"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(sail, "arm_primitives.sail", "--lean", "--lean-single-file",
 		"--lean-output-dir", out, "--lean-lib-path", lib)
 	cmd.Dir = out // sail writes its SMT cache beside the working directory
 	var stderr bytes.Buffer

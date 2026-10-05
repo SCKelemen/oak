@@ -363,6 +363,8 @@ func TestE2ENativeStage2AllocTableProven(t *testing.T) {
 
 func TestNativeLargeBlockedFillBacksOffUnprovenRotation(t *testing.T) {
 	t.Setenv("OAK_NATIVE_ONLY", "alloc_table")
+	t.Setenv("OAK_OPT_SKIP", "")
+	t.Setenv("OAK_VERIFY_CACHE", "0")
 	const source = `
 entries: u32 = u32(2048)
 max_pages: u16 = u16(24)
@@ -421,5 +423,14 @@ alloc_table: (s: [*]Regime, dom: u32): u16 {
 	}
 	if loops := nativegen.RotatedLoops(selected); loops != 0 {
 		t.Fatalf("selected the unproved rotated shape (%d loops)", loops)
+	}
+	if instructions := nativegen.Metrics(selected).Instructions; instructions > 128 {
+		t.Fatalf("lost the independently proven late unrotated fill: %d instructions, want <= 128", instructions)
+	}
+	report := model.Optimizations.String()
+	for _, want := range []string{"validation-fallback", "rotate-loops", "was judged trusted", "schedule", "trim-callee-saves"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("missing fallback/rejected-rotation evidence %q:\n%s", want, report)
+		}
 	}
 }

@@ -534,10 +534,16 @@ func TestSearchTrustedVerdictNeedsUngatedForm(t *testing.T) {
 	// Both together: the gated one goes, the ungated form is kept.
 	report = &Report{}
 	s = newSearch(report, &toggle{name: "b", phase: PhaseCanonical, fires: true}, &gatedToggle{toggle{name: "a", phase: PhaseMachine, fires: true}})
+	// Judging both gated shapes, the ungated form, and the identity needs
+	// four slots; gate recovery must not silently exceed the default three.
+	s.Validations = 4
 	d = &fakeDriver{metrics: map[string]Metrics{"b": {Instructions: 6}, "a": {Instructions: 6}, "b+a": {Instructions: 4}}, verdicts: map[string]Outcome{"b+a": Trusted, "a": Trusted, "b": Trusted, "": Trusted}}
 	sel, _ = s.Run("f", Identity(config{}), NewFacts(), d)
 	if sel.Candidate.Name() != "b" {
 		t.Fatalf("selected %s, want b:\n%s", sel.Candidate.Name(), report.String())
+	}
+	if len(sel.Validations) > s.Validations {
+		t.Fatalf("gated recovery exceeded the explicit budget: %d > %d", len(sel.Validations), s.Validations)
 	}
 	// A witnessed transformed form is evidence and may ship.
 	s = newSearch(nil, &gatedToggle{toggle{name: "a", phase: PhaseCanonical, fires: true}})

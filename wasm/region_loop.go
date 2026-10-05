@@ -62,18 +62,24 @@ func (f *function) regionLoopBody(b *binary, loop regionLoopShape, functions map
 	if err := f.operations(b, f.entry, functions); err != nil {
 		return err
 	}
-	f.edgeValues(b, f.entry.Terminator.True)
+	if err := f.edgeValues(b, f.entry.Terminator.True, functions); err != nil {
+		return err
+	}
 	b.op(0x02, 0x40, 0x03, 0x40) // outer exit block; repeating header loop
 	if err := f.operations(b, loop.header, functions); err != nil {
 		return err
 	}
-	f.get(b, loop.header.Terminator.Condition)
+	if err := f.emitValue(b, loop.header.Terminator.Condition, functions); err != nil {
+		return err
+	}
 	b.op(0x04, 0x40)
 	for i, edge := range []optir.Edge{loop.header.Terminator.True, loop.header.Terminator.False} {
 		if i == 1 {
 			b.op(0x05)
 		}
-		f.edgeValues(b, edge)
+		if err := f.edgeValues(b, edge, functions); err != nil {
+			return err
+		}
 		if edge.Target == loop.exit.ID {
 			b.op(0x0c, 2) // leave if, loop and outer exit block
 		} else {
@@ -86,7 +92,9 @@ func (f *function) regionLoopBody(b *binary, loop regionLoopShape, functions map
 	if err := f.operations(b, loop.exit, functions); err != nil {
 		return err
 	}
-	f.returnValue(b, loop.exit.Terminator)
+	if err := f.returnValue(b, loop.exit.Terminator, functions); err != nil {
+		return err
+	}
 	b.op(0x0b) // function end
 	return nil
 }

@@ -117,9 +117,48 @@ func maxValueOfWith(t *term, memo map[*term]uint64, sub func(*term) uint64) uint
 				return m
 			}
 			return l >> uint(t.right.value%uint64(t.width))
+		case "sub":
+			// A remainder by a power of two spelled as a subtraction,
+			// `x - (x >> k) << k` or `x - (x >> k) * 2^k` (the machine's
+			// `at % 4` before a byte extract's shift count): below 2^k.
+			if k, isRemainder := remainderShift(t.left, t.right); isRemainder {
+				return mask(k) & m
+			}
 		}
 	}
 	return m
+}
+
+// remainderShift recognizes `(x >> k) << k` or `(x >> k) * 2^k` over the
+// same x as minuend, reporting k.
+func remainderShift(x, subtrahend *term) (int, bool) {
+	if subtrahend == nil || subtrahend.kind != termBinary || subtrahend.right == nil || subtrahend.right.kind != termConst {
+		return 0, false
+	}
+	var k uint64
+	switch subtrahend.op {
+	case "shl":
+		k = subtrahend.right.value
+	case "mul":
+		v := subtrahend.right.value
+		if v == 0 || v&(v-1) != 0 {
+			return 0, false
+		}
+		for v > 1 {
+			v >>= 1
+			k++
+		}
+	default:
+		return 0, false
+	}
+	inner := subtrahend.left
+	if inner == nil || inner.kind != termBinary || inner.op != "shr" || inner.right == nil || inner.right.kind != termConst || inner.right.value != k {
+		return 0, false
+	}
+	if k == 0 || k >= 64 || !equalTerms(inner.left, x) {
+		return 0, false
+	}
+	return int(k), true
 }
 
 // bitsBound is the all-ones value covering v's highest set bit.

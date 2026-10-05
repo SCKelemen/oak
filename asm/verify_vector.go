@@ -715,6 +715,24 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 		}
 		state.writeLanes(d, laneExtract(low, high, int(position)), 8)
 		return "", true
+	case "addp":
+		// Scalar ADDP only: pinned Sail aarch64_vector.sail's
+		// vector_reduce_add_sisd_decode fixes esize=64, datasize=128;
+		// Reduce(ADD) adds the two halves modulo 2^64. aarch64.sail's
+		// aset_V zero-extends the scalar write to the whole register.
+		// Read both halves before writing, including when d aliases n.
+		d, okD := reg(0)
+		n, okN := reg(1)
+		if len(ops) != 2 || !okD || !okN || d.Class != ClassV || d.Vec != "d" || d.Lane >= 0 ||
+			n.Class != ClassV || n.Vec != "2d" || n.Lane >= 0 {
+			return refuse()
+		}
+		lanes, bound := state.laneOperands(n, "2d")
+		if !bound {
+			return "unbound vector register read", false
+		}
+		state.writeVec(d.Num, vecFromLow(binaryTerm("add", lanes[0], lanes[1])))
+		return "", true
 	case "umaxv", "uminv", "addv":
 		// A reduction into a scalar view: the rest of the register zeroed.
 		d, okD := reg(0)

@@ -712,7 +712,8 @@ the pinned Sail Lean runtime's actual `write_ram`. For arbitrary prior memory,
 it writes exactly eight consecutive bytes, least-significant byte first,
 preserves memory outside that footprint, and leaves every non-memory state
 field unchanged. A generic runtime theorem also covers arbitrary register and
-choice-state types, beyond the generated fragment's RAM selector and GPR bank.
+choice-state types, beyond the generated fragment's RAM selector, GPR bank,
+processor state, and load/store syndrome registers.
 The selected break/make projections compose with this effect, including Arm's
 pre-call endian conversion; a 52-bit PA plus seven cannot wrap the 56-bit call
 address. This runtime ignores the RAM selector, as another theorem explicitly
@@ -759,12 +760,113 @@ establish that the original instruction executes this adapter. The kernel
 examples cover narrow/high-bit reads, X30/XZR, missing state, aliased operands,
 the largest unsigned immediate, and 64-bit virtual-address wrap. No physical
 address or RAM call is obtained by truncating the result. SP selection,
-PostDecode, syndrome updates, `Mem`, translation, faults, architectural event
+PostDecode, the instruction's syndrome call, `Mem`, translation, faults, architectural event
 identity, and a Lean/Lem register-state refinement remain open. Exact-source
 gates reject altered banks, accessors, continuation effects, and overloads in
 both upstream and local copies; CI requires those gates and the new module.
 Checked axiom reports admit only Lean's standard logical axioms, not `sorry`
 or native-evaluation axioms, for the accessor and its main compositions.
+
+`SyndromeBridge.lean` closes the next individual STR dependency: the original
+`MakeLSInstructionSyndrome` and `AArch64_SetLSInstructionSyndrome`. The full
+26-field `ProcState` record, `PSTATE`, `__LSISyndrome`, and the EL0/EL1 constants
+are retained from the pinned Arm model, not replaced by a supplied privilege
+flag. For all supported byte sizes (1/2/4/8), register numbers 0–31, and three
+Boolean flags, the generated maker returns the exact ISV/SAS/SSE/SRT/SF/AR
+fields with unchanged state. The original assertions and undefined size
+initializer remain; this unchanged-state result uses the export's existing
+trivial choice source, not a general nondeterministic-runtime refinement.
+Out-of-domain size/register examples fail the retained assertions.
+
+The generated setter reads the actual initialized `PSTATE` entry: EL0/EL1
+write exactly the syndrome entry (including insertion when previously absent),
+whereas EL2/EL3 preserve the complete state. Missing `PSTATE` returns the
+unchanged-state runtime `Unreachable` error. All unrelated register lookups,
+including their absence, and all non-register fields are preserved. Checked
+STR64 examples give syndrome `0x77e` for XZR and `0x70a` for X2 at low EL;
+they do not construct an ESR or prove exception handling. A clearly labeled
+`str64GPDependencies` adapter composes the existing operand reads with the
+actual generated setter, including exact EL2 no-op and missing-PSTATE results.
+It is **not the original instruction body**: PostDecode, SP/MTE handling,
+the call to this dependency from the instruction, `Mem`, translation/faults,
+and architectural event/ordering semantics remain open. No RAM address is
+derived by truncating its virtual operand address.
+
+The required CI source gate checks complete upstream/local declarations and
+rejects 41 mutation families, including altered privilege guards, field
+layouts, assertions, register destinations, and appended effects. These are
+source-audit mutants, not compiled runtime mutants. The default Sail Lean
+build includes the new module; checked axiom reports contain only standard
+logical axioms. Regeneration now invokes Sail on a temporary copy under a
+stable relative filename so retained assertion messages are reproducible
+across checkout locations, without rewriting generated output or weakening
+the byte-for-byte freshness check. No compiler pin or verified-admission
+boundary changes are part of this dependency proof.
+
+`STRExecutionBridge.lean` now advances from those dependency adapters to the
+**complete original instruction body**, in a separate generated slice. For
+the non-SP, no-writeback STR64 case, its callee-parametric theorem factors the
+generated body into the actual feature prefix, original register reads and
+syndrome update, and an explicit arbitrary memory callback. Feature callbacks
+may mutate state or fail; initialization premises apply to their resulting
+state. Memory success or failure preserves the callback's exact resulting
+state. The complete post-memory writeback tail is retained and discharged for
+this no-writeback case, not silently omitted by extraction.
+
+This is not yet real-callee or full-state refinement: the separate register
+type contains only the bank, PSTATE, syndrome, SCTLR_EL2, and five version
+configuration flags, and its full original
+exception union differs from the earlier `Out` export. Real memory/feature
+callees need a typed state lifting or larger export. Decoder/PostDecode, SP,
+translation/faults, architectural events, and CAT/BBM ordering remain open.
+The theorem fixes the erased width/count relation to 64 bits and eight bytes;
+it does not certify all generic callback domains. Required whole-source,
+callback-wiring, prelude-adaptation, and raw-output framing/freshness gates
+guard the new export. See the [slice boundary and regeneration notes](../../spec/sail/STR_EXECUTION.md)
+for the exact compatibility adaptations and outstanding composition work.
+
+`STRMemoryBridge.lean` now composes that instruction with the complete original
+`aset_Mem` body in the same generated state. An explicit width-checked binding
+connects the instruction's callback to the concrete callee; the STR64 theorem
+discharges its 64-bit/eight-byte check. The aligned normal path retains the
+feature query, endian query/conversion, alignment check,
+and final `MemSingle` callback in order, including all intermediate state
+changes. Three exact generated Boolean expressions are explicitly repaired after
+discovering that Sail 0.20.2's Lean output eagerly lifts effects from otherwise
+short-circuiting operands. Normal access correctly skips SCTLR_EL2; a true
+NV2-register endian branch skips BigEndian. The syndrome's EL0/EL1 condition
+is similarly guarded, as is the concrete HasArchVersion query. The entire raw
+function export is pinned and independent framing/mutation gates admit only
+these three repairs. This is not a general
+compiler-correctness or old/new-prelude proof.
+
+The final memory callback remains arbitrary, with its exact success/error
+state; earlier failures and an unaligned first-byte write-then-fail also have
+checked rules. Thus this boundary supplies no transactional-failure assumption
+for widening/reordering stores. `STRMemSingleBridge.lean` now composes through
+the complete original MemSingle body under arbitrary deeper callbacks. It
+retains the size/alignment assertions, full address/fault/access descriptors,
+translation before abort handling, shareability-dependent ProcessorID then
+exclusive clearing, the three distinct tag-path ZeroExtend actions, and the
+final `_Mem` result. Abort/TagCheckFail callbacks that return normally permit
+the original body to continue; no architectural non-return axiom is assumed.
+
+Endian/alignment and deeper MemSingle implementations, real translation,
+physical-memory routing, full-state refinement and events/CAT remain open.
+Whole-source/type/alias/callback/framing mutation gates and standard-axiom
+checks protect the conditional boundary. Original Sail bodies are unchanged;
+the three generated Lean expression repairs are explicit compatibility changes.
+
+`STRConcreteHelpers.lean` additionally binds the actual original HaveNV2Ext
+and ZeroExtend__0 bodies. The feature closure retains all five configuration
+declarations, which this exporter represents as mutable Boolean registers:
+only the selected v8.4 flag is required for NV2, at the query state, with
+true/false/missing cases distinguished. Default true values do not prove
+hardware capabilities or old/new configuration correspondence. The binding
+does not initialize or reset state. The 64-to-64 extension theorem discharges
+the three tag-path extension actions without assuming arbitrary callbacks
+pure; their full virtual address is retained. MTE/tag/translation/RAM and
+architectural ordering remain open.
 
 `SpanRefinement` in `MemoryBridge.lean` connects this sequential eight-byte effect to
 the existing `Oak.SpanArguments.storeBytes` model used for owned-array/span
@@ -920,6 +1022,49 @@ well-formed initialization nor architectural provenance. This is executable
 evidence for the selected wrapper/state interface, not a kernel-checked
 Lean/Lem state refinement, allocation/ownership authority, dynamic ASL trace,
 concurrent ordering, completion, or page-table publication.
+
+`MemoryEventProjection.lean` adds a kernel-checked conditional projection of
+a **supplied** prompt-event view. It recognizes exact selector-read/plain
+EA/plain-data triples, checks lossless reconstruction, and retains absolute
+source positions, selector responses, PA, size, payload, and acknowledgement.
+Concatenation offsets the right-hand positions by the left trace's length;
+even identical same-address writes remain distinct occurrences. A separate,
+externally supplied expected-call list detects erased or reordered differing
+calls. Swapping identical calls is not observable without further identity
+evidence. A failed scan retains already matched triples and the next unmatched
+position, not an invented architectural exception.
+
+This is not a verified Lem importer or a proof that an instruction produced
+the supplied trace. Selector and payload types are abstract: no width,
+defined-bit, byte-count, or initialization check is implicit. False write
+acknowledgements remain accepted by structural projection. A distinct
+successful-replay contract requires both valid projection and caller-supplied
+state replay evidence; it does not derive those premises. Architectural write
+commitment, CAT W/TTD classification, coherence, translation/cacheability,
+invalidation scope, and the Lean/Lem tag-state relation remain open. This
+projection licenses no optimizer reordering.
+
+An [executable Lem-to-Lean regression](../../spec/sail/lem/MEMORY_TRACE_EXPORT.md)
+now feeds this projector requests observed from the generated original
+`__WriteMemory` prompt constructors, rather than only handwritten Lean views.
+Two two-write fixtures preserve repeated addresses, byte order, selector
+responses (including undefined bits), and true/false acknowledgements.
+Their exported views are kernel-checked against independent expected calls
+and occurrences; malformed input, trace corruption, and four generated
+source mutants must fail. The exporter, parser, and code generator remain
+unverified glue, so this is not a universal original-execution provenance
+theorem. The requests still have no proved CAT classification or ordering.
+
+The separate [Stateright pilot](../../spec/stateright/README.md) explores a
+bounded hand-written remap/reclamation protocol with two observers and one
+remap. Four missing-synchronization variants must produce replayable stale
+accesses; the safe policy must satisfy three safety and three nonvacuity
+checks. Complete Stateright exploration is cross-checked against a full-Eq
+reachable-state traversal, with no successful partial-search outcome.
+Its publication/quiescence/acknowledgement contracts are explicit assumptions,
+not DSB/TLBI implementations or an ARM weak-memory overapproximation. It adds
+neither a model-to-Oak refinement proof nor optimizer authority. Linking its
+counterexamples to actual Sail/CAT executions remains separate work.
 
 Two checked-in tests are byte-compared with exact blobs in Herdtools7's pinned
 official AArch64-BBM catalogue before execution. The synchronized VMSA case is

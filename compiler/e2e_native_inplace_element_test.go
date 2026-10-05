@@ -97,18 +97,36 @@ main: (): i32 {
 	if function == nil {
 		t.Fatal("missing native translate")
 	}
+	// The element address either consumes its base (`umaddl xB, wI, wK,
+	// xB`, the admission of docs/spec/94-assembler.md "An element address
+	// may consume its inputs") or is folded into the load's register
+	// offset (`ldr xD, [xB, wI, uxtw #3]`, the shape the constant
+	// materialization of 2026-09-17 leaves): either way no separate
+	// address instruction and no copy of the base remain.
 	inPlace := false
 	for _, item := range function.Items {
 		instruction, ok := item.(asm.Instruction)
-		if !ok || instruction.Mnemonic != "umaddl" || len(instruction.Operands) != 4 {
+		if !ok {
 			continue
 		}
-		dest, isDest := instruction.Operands[0].(asm.Register)
-		base, isBase := instruction.Operands[3].(asm.Register)
-		inPlace = inPlace || (isDest && isBase && dest.Num == base.Num)
+		switch instruction.Mnemonic {
+		case "umaddl":
+			if len(instruction.Operands) != 4 {
+				continue
+			}
+			dest, isDest := instruction.Operands[0].(asm.Register)
+			base, isBase := instruction.Operands[3].(asm.Register)
+			inPlace = inPlace || (isDest && isBase && dest.Num == base.Num)
+		case "ldr":
+			if len(instruction.Operands) == 2 {
+				if memory, isMemory := instruction.Operands[1].(asm.Memory); isMemory && memory.Index != nil && memory.Shift == 3 {
+					inPlace = true
+				}
+			}
+		}
 	}
 	if !inPlace {
-		t.Fatalf("allocation must be allowed to consume the span base:\n%s", nativegen.Describe(function))
+		t.Fatalf("the element access must consume its base or fold into the load's register offset:\n%s", nativegen.Describe(function))
 	}
 	_, code, abnormal := buildAndRunFrom(t, "inplace_element", comp)
 	if abnormal || code != 42 {

@@ -1545,6 +1545,31 @@ type BreakStatement struct {
 	Token token.Token // 'break' token
 }
 
+// ReturnStatement is the early return `return e` / `return`
+// (docs/spec/10-syntax.md section 2e). It exists only between parsing a
+// statement and finishing its enclosing function: the parser lowers every
+// return into the function's tail-expression shapes (parser/return.go) —
+// a conditional whose arm yields the value with the rest of the block
+// nested into the other arm, or, inside a loop, a flag and a value cell
+// set before a `break` — so no later phase sees this node. Propagated
+// marks the return the lowering itself places after a loop that
+// returned (`return__done ? { return return__value }`).
+type ReturnStatement struct {
+	BaseNode
+	Token      token.Token // 'return' token
+	Value      Expression  // nil for a bare `return` in a unit function
+	Propagated bool
+}
+
+func (rs *ReturnStatement) statementNode()       {}
+func (rs *ReturnStatement) TokenLiteral() string { return rs.Token.Literal }
+func (rs *ReturnStatement) String() string {
+	if rs.Value == nil {
+		return "return"
+	}
+	return "return " + rs.Value.String()
+}
+
 func (bs *BreakStatement) statementNode()       {}
 func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
 func (bs *BreakStatement) String() string       { return "break" }

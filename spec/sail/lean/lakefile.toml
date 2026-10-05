@@ -9,11 +9,25 @@
 # finite in-range generated wrapper calls, under supplied physical-span premises.
 # `RegisterBridge` proves the copied general-register accessor against the
 # generated state, plus an operand-only STR adapter (not instruction execution).
+# `SyndromeBridge` proves the original load/store syndrome dependency and its
+# PSTATE-dependent register effect, not exception entry or instruction execution.
+# `STRExecutionBridge` retains the complete original instruction body with
+# explicit callee boundaries; it does not discharge translation or ordering.
+# `STRMemoryBridge` composes the original memory wrapper with this STR entry,
+# preserving its prefix/callee effects without implementing translation.
+# `STRShortCircuit` checks the conditional-action normalization needed at three
+# pinned sites where the uncorrected Sail Lean export lifts effects eagerly.
+# `STRMemSingleBridge` extends the conditional boundary through the original
+# MemSingle body, retaining arbitrary translation/fault/tag/exclusive/RAM cuts.
+# `STRConcreteHelpers` binds original NV2 and zero-extension helpers under
+# explicit configuration-register premises, not assumptions about hardware.
+# `MemoryEventProjection` preserves ordered request occurrences from a supplied
+# prompt-event view; it does not prove the view adapter or CAT classification.
 # This package is separate from `spec/lean` so the main specification builds without the Sail
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge", "STRConcreteHelpers", "MemoryEventProjection"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -31,6 +45,31 @@ name = "SpanStateBridge"
 
 [[lean_lib]]
 name = "RegisterBridge"
+
+[[lean_lib]]
+name = "SyndromeBridge"
+
+[[lean_lib]]
+name = "STRExecution"
+leanOptions.weak.linter.style.nameCheck = false
+
+[[lean_lib]]
+name = "STRExecutionBridge"
+
+[[lean_lib]]
+name = "STRMemoryBridge"
+
+[[lean_lib]]
+name = "STRMemSingleBridge"
+
+[[lean_lib]]
+name = "STRShortCircuit"
+
+[[lean_lib]]
+name = "STRConcreteHelpers"
+
+[[lean_lib]]
+name = "MemoryEventProjection"
 
 [[require]]
 name = "Sail"

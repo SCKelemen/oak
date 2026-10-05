@@ -142,7 +142,7 @@ func TestNativeShapesForwarding(t *testing.T) {
 // gives).
 func TestNativeShapesForwardingElidedFormProven(t *testing.T) {
 	var infos []string
-	comp := New().WithSource("forward.oak", nativeForwardingProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+	comp := nativeShapeCompilation("forward.oak", nativeForwardingProgram).WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {
 			infos = append(infos, d.Message)
 		}

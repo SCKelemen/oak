@@ -177,7 +177,7 @@ func TestExactTripsRejectsChangedInstructionShapes(t *testing.T) {
 }
 
 func TestExactTripsRejectsIncompleteControlFlow(t *testing.T) {
-	for _, kind := range []string{"early-exit", "early-return", "early-trap", "conditional-increment", "nested-cycle", "multiple-latches", "multiple-preheaders", "alternate-entry", "undominated-start", "increment-before-top-test"} {
+	for _, kind := range []string{"early-exit", "early-return", "conditional-increment", "nested-cycle", "multiple-latches", "multiple-preheaders", "alternate-entry", "undominated-start", "increment-before-top-test"} {
 		t.Run(kind, func(t *testing.T) {
 			prefix := []asm.Item{ins("mov", w(9), w(31))}
 			body := []asm.Item{ins("add", w(10), w(10), imm(1))}
@@ -189,9 +189,6 @@ func TestExactTripsRejectsIncompleteControlFlow(t *testing.T) {
 			case "early-return":
 				body = append(body, ins("cbz", w(1), sym("early")))
 				extra = []asm.Item{label("early"), ins("ret")}
-			case "early-trap":
-				body = append(body, ins("cbz", w(1), sym("early")))
-				extra = []asm.Item{label("early"), ins("brk", imm(0))}
 			case "conditional-increment":
 				body = append(body, ins("cbz", w(1), sym("latch")))
 				increment = []asm.Item{ins("add", w(9), w(9), imm(1)), label("latch"), ins("b", sym("loop"))}
@@ -250,3 +247,35 @@ func TestExactTripsDoesNotPromoteRemainderOrRV64Hints(t *testing.T) {
 		t.Fatalf("AArch64 exact-trip analysis ran on RV64: %+v", shape)
 	}
 }
+
+// A guard's branch into the trap block is not an exit the count reads: a
+// counted loop whose body checks a bound (`cmp; b.hs trap`) or tests a
+// register into the trap (`cbz`) trips as often as the loop without the
+// guard, and the cost model charges both alike — the choice between a
+// guarded body and one whose guards a proof removed must not read the
+// guard as the loop ending early.
+func TestExactTripsIgnoreTrapExits(t *testing.T) {
+	for _, kind := range []string{"span-guard", "register-trap"} {
+		t.Run(kind, func(t *testing.T) {
+			function := exactTripFixture(false, false, w(9), 0, 16, 1)
+			var guard []asm.Item
+			switch kind {
+			case "span-guard":
+				guard = []asm.Item{ins("cmp", w(2), w(1)), bcond("hs", "trap")}
+			case "register-trap":
+				guard = []asm.Item{ins("cbz", w(1), sym("trap"))}
+			}
+			// The guard goes first in the body; the trap block after the return.
+			items := append([]asm.Item{}, function.Items[:4]...)
+			items = append(items, guard...)
+			items = append(items, function.Items[4:]...)
+			items = append(items, label("trap"), ins("brk", imm(0)))
+			function.Items = items
+			shape := exactTripShape(t, function)
+			if shape == nil || shape.ExactTrips != 16 {
+				t.Fatalf("a guarded counted loop keeps its exact trips: %+v", shape)
+			}
+		})
+	}
+}
+

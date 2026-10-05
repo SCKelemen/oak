@@ -1330,9 +1330,12 @@ type generator struct {
 	// returnSlot names the record local built in the result area itself
 	// (docs/spec/94-assembler.md §9 "Copies at the boundary"), "" for none.
 	returnSlot string
-	usedX8     bool
-	temps      int
-	head       string // the loop header a tail self-call jumps to
+	// returnSlotPlaced is the return slot once declareRecord has placed it
+	// in the result area (asm.Function.ResultSlot).
+	returnSlotPlaced string
+	usedX8           bool
+	temps            int
+	head             string // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -1409,6 +1412,13 @@ type generator struct {
 	// enclosing expression's result and not yet written holds nothing, and
 	// the checker refuses a spill that reads it).
 	defined map[int]bool
+	// definedAt is the defined set arriving at a label not yet placed,
+	// intersected over every branch to it: at the label a register is
+	// defined only where every incoming path defined it (a conditional's
+	// result register, written in one arm, is not yet written in the
+	// other, whose call would spill it unwritten — the checker's "unbound
+	// register read", the prover's operand).
+	definedAt map[string]map[int]bool
 	// tables are the program's constant tables (Lane.Tables), read
 	// through their data symbols' addresses.
 	tables map[string]GlobalArray
@@ -1519,7 +1529,7 @@ type generator struct {
 	vecHomes     int
 	// leafHomesV (Lane.VectorHomes, leaves): the vector argument registers
 	// no parameter occupies, v1–v7, as homes for a leaf's vector locals
-	// once the callee-saved and scratch homes are taken; leafVecHomes
+	// before taking callee-saved or scratch homes; leafVecHomes
 	// counts them (reported).
 	leafHomesV    []int
 	leafPoolBuilt bool
@@ -2405,8 +2415,11 @@ func compileArm64Body(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	}
 	// The loop-invariant pass reports the values it could not hoist for
 	// want of a register (nativegen/licm.go): a second lowering reserves
-	// that many callee-saved registers for them, four at most.
-	reserve := min(wanted, 4)
+	// that many callee-saved registers for them. The reserve is bounded by
+	// the callee-saved registers left after the parameters and yields to
+	// every other taker (variables, field homes, span pairs, overflow
+	// scratch: reclaimReserve), so it only ever holds what would sit idle.
+	reserve := wanted
 	if spare == 0 && reserve == 0 {
 		return first, nil
 	}
@@ -2700,6 +2713,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
+	out.ResultSlot = g.returnSlotPlaced
 	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
@@ -4271,6 +4285,7 @@ func (g *generator) emitInstruction(ins asm.Instruction) {
 	if g.terminated {
 		return
 	}
+	g.noteWrite(ins.Mnemonic, ins.Operands)
 	g.liveFlags = ""
 	if forwarded, keep := g.forward(ins); keep {
 		g.items = append(g.items, forwarded)
@@ -4283,8 +4298,38 @@ func (g *generator) emitInstruction(ins asm.Instruction) {
 			g.flagsTo[sym.Name] = ""
 		}
 	}
+	switch ins.Mnemonic {
+	case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
+		if sym, isSym := ins.Operands[len(ins.Operands)-1].(asm.Symbol); isSym {
+			g.noteDefinedAt(sym.Name)
+		}
+	}
 	if ins.Mnemonic == "b" || ins.Mnemonic == "ret" || ins.Mnemonic == "brk" {
 		g.terminated = true
+	}
+}
+
+// noteDefinedAt records the defined set a branch carries to label: the
+// intersection over the branches to it.
+func (g *generator) noteDefinedAt(label string) {
+	if g.definedAt == nil {
+		g.definedAt = map[string]map[int]bool{}
+	}
+	arriving, seen := g.definedAt[label]
+	if !seen {
+		arriving = make(map[int]bool, len(g.defined))
+		for r, ok := range g.defined {
+			if ok {
+				arriving[r] = true
+			}
+		}
+		g.definedAt[label] = arriving
+		return
+	}
+	for r := range arriving {
+		if !g.defined[r] {
+			delete(arriving, r)
+		}
 	}
 }
 
@@ -4305,6 +4350,7 @@ func (g *generator) branchFlags(cond, label, compare string) {
 	} else if known != compare {
 		g.flagsTo[label] = ""
 	}
+	g.noteDefinedAt(label)
 	g.items = append(g.items, asm.Instruction{Mnemonic: "b.", Cond: cond, Operands: []asm.Operand{asm.Symbol{Name: label}}, Line: g.line})
 }
 
@@ -4326,6 +4372,21 @@ func (g *generator) label(name string) {
 	g.liveFlags = ""
 	if g.terminated && g.reuseFlags {
 		g.liveFlags = g.flagsTo[name]
+	}
+	// The defined registers at the label: what every path arriving here
+	// defined — the branches' (definedAt) and the fall-through's, unless
+	// the label follows an unconditional transfer and nothing falls in.
+	if arriving, seen := g.definedAt[name]; seen {
+		if g.terminated {
+			g.defined = arriving
+		} else {
+			for r := range g.defined {
+				if !arriving[r] {
+					delete(g.defined, r)
+				}
+			}
+		}
+		delete(g.definedAt, name)
 	}
 	g.items = append(g.items, asm.Label{Name: name, Line: g.line})
 	g.terminated = false
@@ -4391,12 +4452,14 @@ func (g *generator) alloc(typ scalar) (int, error) {
 		if !ok {
 			return 0, unsupported("an expression deeper than the scratch registers")
 		}
+		delete(g.defined, r) // a fresh register holds nothing until written
 		g.live = append(g.live, r)
 		g.peakScratch = scratchHigh - scratchLow + 1 // every scratch register held, and more
 		return r, nil
 	}
 	r := (*pool)[len(*pool)-1]
 	*pool = (*pool)[:len(*pool)-1]
+	delete(g.defined, r) // a fresh register holds nothing until written
 	g.live = append(g.live, r)
 	g.notePeak()
 	return r, nil
@@ -4457,6 +4520,7 @@ func (g *generator) overflowScratch() (int, bool) {
 func (g *generator) put(item asm.Item) {
 	g.liveFlags = ""
 	if ins, isIns := item.(asm.Instruction); isIns {
+		g.noteWrite(ins.Mnemonic, ins.Operands) // an instruction built elsewhere writes like one built here
 		forwarded, keep := g.forward(ins)
 		if !keep {
 			return
@@ -4833,6 +4897,7 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 		// closes the function (docs/spec/94-assembler.md §9 "Copies at
 		// the boundary"; Oak.BoundaryCopies.build_in_place).
 		rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+		g.returnSlotPlaced = name
 	}
 	g.bindRecord(name, rec)
 	return rec
@@ -4855,6 +4920,19 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
 	g.promoteFields(name, rec)
+	if name != "" && !rec.inReg && rec.layout != nil {
+		// A large array field of a frame record is a frame object of its
+		// own, named `local.field`: the verifier reads it as a span
+		// memory of the local (asm.Function.FrameObjects, as an owned
+		// array's object; docs/spec/94-assembler.md §9).
+		for _, fieldName := range rec.layout.order {
+			f := rec.layout.fields[fieldName]
+			if f.kind != fieldArray || f.length < asm.SpanArrayFieldElements || f.typ.isFloat || f.typ.isBool || f.typ.isVec || f.length <= 0 || f.size%f.length != 0 {
+				continue
+			}
+			g.frameObjects = append(g.frameObjects, machine.FrameObject{Offset: rec.offset + f.offset, Size: f.size, Name: name + "." + fieldName, Elem: f.size / f.length})
+		}
+	}
 }
 
 // returnSlotLocal selects a record or array local for the result area:
@@ -4863,63 +4941,7 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 // are excluded because their initializer fills frame storage; array
 // literals remain candidates under arrayDeclarationStorage's additional
 // type, extent, and whole-assignment guards.
-func returnSlotLocal(fn *ast.FunctionStatement) string {
-	block, isBlock := fn.Body.(*ast.BlockExpression)
-	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
-		return ""
-	}
-	stmts := block.Block.Statements
-	tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
-	if !isExpr || tail.Discard {
-		return ""
-	}
-	ident, isIdent := tail.Expression.(*ast.Identifier)
-	if !isIdent {
-		return ""
-	}
-	name := ident.Value
-	for _, p := range fn.Parameters {
-		if p.Name != nil && p.Name.Value == name {
-			return ""
-		}
-	}
-	topLevel := false
-	for _, stmt := range stmts[:len(stmts)-1] {
-		decl, isDecl := stmt.(*ast.VariableDeclaration)
-		if !isDecl || decl.Name == nil || decl.Name.Value != name {
-			continue
-		}
-		if decl.Type == nil || decl.Type.String() != fn.ReturnType.String() {
-			return ""
-		}
-		if _, isLiteral := decl.Value.(*ast.RecordLiteral); isLiteral {
-			return ""
-		}
-		topLevel = true
-	}
-	if !topLevel {
-		return ""
-	}
-	declarations, ok := 0, true
-	walk(fn.Body, func(n ast.Node) {
-		switch e := n.(type) {
-		case *ast.VariableDeclaration:
-			if e.Name != nil && e.Name.Value == name {
-				declarations++
-			}
-		case *ast.PrefixExpression:
-			if e.Operator == "&" {
-				if root, has := pathRoot(e.Right); has && root == name {
-					ok = false
-				}
-			}
-		}
-	})
-	if declarations != 1 || !ok {
-		return ""
-	}
-	return name
-}
+func returnSlotLocal(fn *ast.FunctionStatement) string { return asm.ReturnSlotLocal(fn) }
 
 // lowerSpanDeclaration lowers `w: []T = subslice(v, s, n)` / `w: [*]T = …`
 // / `w: []T = v`: the local span takes a callee-saved register pair (so it
@@ -5442,11 +5464,18 @@ func (g *generator) declare(name string, s scalar) int64 {
 	offset := int64(-1)
 	r := -1
 	if s.isVec {
-		// A vector local: a callee-saved vector register when the function
-		// makes no call (a callee may clobber their upper halves), else a
-		// sixteen-byte, sixteen-aligned frame slot.
+		// Prefer a leaf's unused argument registers under VectorHomes:
+		// no call can clobber them and no callee-save traffic is needed.
+		// Calling functions cannot keep full vectors in d8–d15 homes:
+		// a callee may clobber their upper halves.
 		g.usedFloat = true
 		switch {
+		case !g.hasCalls && g.leafVectorPool() > 0:
+			// The pool excludes every incoming float/vector argument and
+			// v0 (the result), and retains the existing release discipline.
+			r, g.leafHomesV = g.leafHomesV[0], g.leafHomesV[1:]
+			g.homesUsedV[r] = true
+			g.leafVecHomes++
 		case !g.hasCalls && len(g.freeCalleeV) > 0:
 			r, g.freeCalleeV = g.freeCalleeV[len(g.freeCalleeV)-1], g.freeCalleeV[:len(g.freeCalleeV)-1]
 		case !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1:
@@ -5464,14 +5493,6 @@ func (g *generator) declare(name string, s scalar) int64 {
 			r, g.callerHomesV = g.callerHomesV[0], g.callerHomesV[1:]
 			g.homesUsedV[r] = true
 			g.vecHomes++
-		case !g.hasCalls && g.leafVectorPool() > 0:
-			// A leaf's vector local in an argument register no parameter
-			// occupies (Lane.VectorHomes), as the scalar leaf homes in
-			// x2–x7: nothing to save, no call to clobber it. v0 is left
-			// out for the result.
-			r, g.leafHomesV = g.leafHomesV[0], g.leafHomesV[1:]
-			g.homesUsedV[r] = true
-			g.leafVecHomes++
 		case len(g.freeSlots16) > 0:
 			offset, g.freeSlots16 = g.freeSlots16[len(g.freeSlots16)-1], g.freeSlots16[:len(g.freeSlots16)-1]
 		default:
@@ -6015,9 +6036,22 @@ func (g *generator) lowerStatementsBefore(stmts []ast.Statement, trailing ast.No
 
 func (g *generator) lowerStatementList(stmts []ast.Statement, functionBody bool, retLabel string, trailing ast.Node) error {
 	release := lastUseOrder(lastUses(stmts, trailing), len(stmts))
-	for i, stmt := range stmts {
+	for i := 0; i < len(stmts); i++ {
+		stmt := stmts[i]
 		last := functionBody && i == len(stmts)-1
 		g.line = statementLine(stmt)
+		if combine, ok := g.horizontalReduction(stmts[i:]); ok {
+			if err := g.lowerHorizontalReduction(combine); err != nil {
+				return err
+			}
+			// All three source statements remain the verifier's reference.
+			// Their operands must stay live until the whole combine finishes.
+			for j := i; j < i+3; j++ {
+				g.releaseNames(release[j])
+			}
+			i += 2
+			continue
+		}
 		if err := g.lowerStatement(stmt, last, retLabel); err != nil {
 			return err
 		}
@@ -7717,6 +7751,13 @@ func (g *generator) retargetLast(r, v int) bool {
 	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
 	ins.Operands = operands
 	g.items[n-1] = ins
+	// The rewritten instruction writes the home, not the scratch: the
+	// written set follows it, or a home assigned this way (`depth: u32 =
+	// 0` as `mov w16, wzr`) read as unwritten and a later call's spill of
+	// it was inconsistent — the checker's unbound register read in the
+	// prover's pattern_text.
+	delete(g.defined, r)
+	g.noteWrite(ins.Mnemonic, ins.Operands)
 	g.forget(r)
 	g.forget(v)
 	return true

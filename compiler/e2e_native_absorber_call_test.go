@@ -66,7 +66,7 @@ main: (): i32 {
 
 func TestNativeShapesAbsorberCallProven(t *testing.T) {
 	var infos []string
-	comp := New().WithSource("absorb.oak", nativeAbsorberCallProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+	comp := nativeShapeCompilation("absorb.oak", nativeAbsorberCallProgram).WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
 		if d.Source == "native" {
 			infos = append(infos, d.Message)
 		}

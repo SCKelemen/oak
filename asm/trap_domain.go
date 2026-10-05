@@ -76,7 +76,7 @@ func firstIterationTrap(ev *loopEvent, lastLoop int) (*term, bool) {
 // decideLoopTrapDomains uses the selected coupling, but no machine path
 // condition, no !machineTrap premise, and no loop exit premise. Its
 // deliberately stronger source-only premises avoid circular admission.
-func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[string]*term, implies func(*term, *term, *term) (bool, bool)) (string, bool) {
+func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[string]*term, newImplies func() func(*term, *term, *term) (bool, bool)) (string, bool) {
 	if !source.trapDomainTracked {
 		return "source loop traps were not collected", false
 	}
@@ -88,8 +88,34 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 		typed = constTerm(1, 1)
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	// smallTraps is the disjunction of a trap term's disjuncts of at most
+	// smallTrapNodes nodes: implying it implies the whole, and a machine
+	// end is usually one of them (`len(tables) < 16` against `16 >
+	// len(tables)`), where one large source trap (a path through a nest of
+	// loops, four million nodes in literals.oak's count) ran the diagram out.
+	smallTraps := func(t *term) (*term, bool) {
+		all := disjunctsOf(t)
+		var out *term
+		for _, d := range all {
+			if termSize(d, map[*term]int{}) > smallTrapNodes {
+				continue
+			}
+			if out == nil {
+				out = d
+			} else {
+				out = binaryTerm("or", out, d)
+			}
+		}
+		return out, out != nil && len(all) > 1
+	}
+	// The shared allowance decides the obligations as before; an end's
+	// first try against the small source traps decides under an allowance
+	// of its own, since those terms are small and the shared one may be
+	// spent by a large source trap met earlier (a ninety-node end of
+	// literals.oak's count came back undecided with nothing left).
+	implies := newImplies()
 	check := func(premise, machineTrap, oakTrap *term) bool {
-		machine, oak := trapOrFalse(substitute(machineTrap, sigma)), trapOrFalse(oakTrap)
+		machine, oak := dropUnreachableTraps(trapOrFalse(substitute(machineTrap, sigma))), trapOrFalse(oakTrap)
 		bad := binaryTerm("and", machine, notTerm(oak))
 		if holds, decided := implies(premise, bad, constTerm(0, 1)); decided && holds {
 			return true
@@ -108,6 +134,11 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 				// diagrams over a walker's end ran for minutes.
 				if sourceTrapOnPath(path, oak) {
 					continue
+				}
+				if small, some := smallTraps(oak); some {
+					if holds, decided := newImplies()(path, small, constTerm(1, 1)); decided && holds {
+						continue
+					}
 				}
 				if holds, decided := implies(path, oak, constTerm(1, 1)); decided && holds {
 					continue
@@ -150,6 +181,50 @@ func decideLoopTrapDomains(exec *pathExecutor, source *oakLowering, sigma map[st
 	}
 	return "", true
 }
+
+// dropUnreachableTraps removes from a trap disjunction the comparisons
+// against a constant that the range bound (asm/range.go) shows never
+// hold: the machine guards a data-dependent shift count at the width
+// (`cmp count, #32; b.hs trap`) and the guard's condition enters its trap
+// domain, where the Oak side folded the same trap away by the bound
+// (`((x & 3) << 3) < 32` for a byte extract, the prover's str_less). Left
+// in, the constant-false disjunct still stood in the diagram beside the
+// element selects and the obligation ran out of nodes.
+func dropUnreachableTraps(t *term) *term {
+	disjuncts := disjunctsOf(t)
+	kept := make([]*term, 0, len(disjuncts))
+	for _, d := range disjuncts {
+		if d.kind == termCmp && d.right != nil && d.right.kind == termConst {
+			bound := maxValue(d.left)
+			switch d.op {
+			case "hs", "cs":
+				if bound < d.right.value {
+					continue // never at least the constant
+				}
+			case "hi":
+				if bound <= d.right.value {
+					continue // never above the constant
+				}
+			}
+		}
+		kept = append(kept, d)
+	}
+	if len(kept) == len(disjuncts) {
+		return t
+	}
+	if len(kept) == 0 {
+		return constTerm(0, 1)
+	}
+	out := kept[0]
+	for _, d := range kept[1:] {
+		out = binaryTerm("or", out, d)
+	}
+	return out
+}
+
+// smallTrapNodes bounds the source trap disjuncts a machine trap end is
+// first decided against (decideLoopTrapDomains).
+const smallTrapNodes = 4096
 
 // verifyTrapDomain admits a non-loop value/effect proof only after proving
 // that every excluded machine-trap input also traps in the source. The
