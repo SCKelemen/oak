@@ -51,6 +51,17 @@ func equalTermsAtDeclaredWidths(a, b *term, widthOf func(string) int) bool {
 			if !sameWidth(a.left, b.left) || !sameWidth(a.right, b.right) || !sameWidth(a.cond, b.cond) {
 				return false
 			}
+		case termApply:
+			if len(a.args) != len(b.args) {
+				return false
+			}
+			for i := range a.args {
+				// Argument widths are part of the application signature; unlike
+				// integer uses of a parameter they may not be adapted here.
+				if a.args[i].width != b.args[i].width || !equal(a.args[i], b.args[i]) {
+					return false
+				}
+			}
 		}
 		result := equal(a.cond, b.cond) && equal(a.left, b.left) && equal(a.right, b.right)
 		memo[key] = result

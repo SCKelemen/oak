@@ -538,6 +538,20 @@ func (bl *blaster) blastUncached(t *term) []int {
 			idx = append(idx, bits...)
 		}
 		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width, nil)
+	case termApply:
+		operandBits := 0
+		for _, arg := range t.args {
+			operandBits += arg.width
+		}
+		idx := make([]int, 0, operandBits)
+		for _, arg := range t.args {
+			bits := bl.blast(arg)
+			if bits == nil {
+				return nil
+			}
+			idx = append(idx, bits...)
+		}
+		return bl.selectBits(applicationSpan(t.name, t.width, t.args), idx, t.width, nil)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM

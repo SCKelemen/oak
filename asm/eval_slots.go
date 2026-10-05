@@ -51,6 +51,9 @@ func (ev *termEvaluator) number(t *term) {
 	ev.number(t.left)
 	ev.number(t.right)
 	ev.number(t.cond)
+	for _, arg := range t.args {
+		ev.number(arg)
+	}
 }
 
 // evaluate is one evaluation of a root over env.

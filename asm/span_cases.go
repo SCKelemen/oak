@@ -105,6 +105,9 @@ func spanSplitConditions(premise *term, terms []*term, limit int) []*term {
 		walk(t.cond)
 		walk(t.left)
 		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	for _, t := range terms {
 		walk(t)
@@ -143,7 +146,15 @@ func readsMemory(t *term) bool {
 		if t.kind == termSelect {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -181,6 +192,11 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 	}
 	out := t
 	switch t.kind {
+	case termApply:
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term { return canonicalLinear(arg, memo) })
+		if changed {
+			out = applyTerm(t.name, t.width, args...)
+		}
 	case termSelect:
 		if index := canonicalLinear(t.left, memo); index != t.left {
 			out = &term{kind: termSelect, width: t.width, name: t.name, left: index}

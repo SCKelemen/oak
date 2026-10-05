@@ -232,7 +232,7 @@ func (r *nativeCNFReplay) term(t *term) ([]int, error) {
 	var out []int
 	switch t.kind {
 	case termConst:
-		if t.name != "" || t.op != "" || t.left != nil || t.right != nil || t.cond != nil || t.declared != 0 {
+		if t.name != "" || t.op != "" || t.left != nil || t.right != nil || t.cond != nil || len(t.args) != 0 || t.declared != 0 {
 			return nil, fmt.Errorf("constant term has nonconstant fields")
 		}
 		if t.width < 64 && t.value>>uint(t.width) != 0 {
@@ -245,7 +245,7 @@ func (r *nativeCNFReplay) term(t *term) ([]int, error) {
 			}
 		}
 	case termParam:
-		if t.name == "" || t.op != "" || t.left != nil || t.right != nil || t.cond != nil || t.value != 0 {
+		if t.name == "" || t.op != "" || t.left != nil || t.right != nil || t.cond != nil || len(t.args) != 0 || t.value != 0 {
 			return nil, fmt.Errorf("parameter term has nonparameter fields")
 		}
 		declared, known := r.bl.widths[t.name]
@@ -273,7 +273,7 @@ func (r *nativeCNFReplay) term(t *term) ([]int, error) {
 			out[bit] = edge
 		}
 	case termBinary:
-		if t.name != "" || t.value != 0 || t.declared != 0 || t.cond != nil || t.left == nil || t.right == nil {
+		if t.name != "" || t.value != 0 || t.declared != 0 || t.cond != nil || len(t.args) != 0 || t.left == nil || t.right == nil {
 			return nil, fmt.Errorf("binary term has malformed fields")
 		}
 		var operation int

@@ -105,6 +105,11 @@ const (
 	// witness, decided as an uninterpreted function (asm/floats_ops.go,
 	// Oak.Uninterpreted).
 	termFloat
+	// termApply is an n-ary uninterpreted application. The name, result
+	// width, arity, argument widths, and argument values identify the
+	// application; the bit-level decider assumes only congruence. It is the
+	// general application primitive used by compact semantic summaries.
+	termApply
 	// termQuant is a bounded quantifier over a fresh parameter (name, its
 	// width in value): op "forall" or "exists", left the 1-bit body
 	// (docs/spec/10-syntax.md section 3e). A witness enumerates the
@@ -983,7 +988,8 @@ type term struct {
 	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
 	left  *term
 	right *term
-	cond  *term // termIte
+	cond  *term   // termIte
+	args  []*term // termApply, in semantic argument order
 	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
 	kbDone  bool
 	kbValue uint64
@@ -1298,6 +1304,14 @@ func sameTerm(a, b *term, budget *int) bool {
 	case termConst, termParam:
 		return true
 	}
+	if len(a.args) != len(b.args) {
+		return false
+	}
+	for i := range a.args {
+		if !sameTerm(a.args[i], b.args[i], budget) {
+			return false
+		}
+	}
 	return sameTerm(a.cond, b.cond, budget) && sameTerm(a.left, b.left, budget) && sameTerm(a.right, b.right, budget)
 }
 
@@ -1393,6 +1407,13 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 			}
 		}
 		return floatEval(t.op, t.width, args, widths) & m
+	case termApply:
+		h := applicationValueStart(t.name, t.width, len(t.args))
+		for _, arg := range t.args {
+			h = applicationValueWord(h, uint64(arg.width))
+			h = applicationValueWord(h, memo.eval(arg, env)&mask(arg.width))
+		}
+		return h & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
@@ -1469,7 +1490,7 @@ func equalTermsMemo(a, b *term, memo map[[2]*term]bool) bool {
 		return known
 	}
 	memo[key] = false // a cycle (there are none) would read as unequal
-	equal := a.kind == b.kind && a.width == b.width && a.name == b.name && a.value == b.value && a.op == b.op &&
+	equal := a.kind == b.kind && a.width == b.width && a.name == b.name && a.value == b.value && a.op == b.op && equalTermArgsMemo(a.args, b.args, memo) &&
 		equalTermsMemo(a.left, b.left, memo) && equalTermsMemo(a.right, b.right, memo) && equalTermsMemo(a.cond, b.cond, memo)
 	memo[key] = equal
 	return equal
@@ -1506,6 +1527,12 @@ func (t *term) stringBounded(budget *int) string {
 			}
 		}
 		return fmt.Sprintf("%s%d(%s)", t.op, t.width, strings.Join(parts, ", "))
+	case termApply:
+		parts := make([]string, len(t.args))
+		for i, arg := range t.args {
+			parts[i] = arg.stringBounded(budget)
+		}
+		return fmt.Sprintf("%s:%d(%s)", t.name, t.width, strings.Join(parts, ", "))
 	}
 	return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 }
@@ -1563,7 +1590,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		}
 		atom := t.selectAtom()
 		return &linearForm{width: w, coeffs: map[string]uint64{atom: 1}, atoms: map[string]*term{atom: t}}
-	case termCmp, termIte, termFloat, termQuant:
+	case termCmp, termIte, termFloat, termApply, termQuant:
 		return nil
 	}
 	switch t.op {
@@ -12314,6 +12341,13 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 		out = t
 	case termFloat, termQuant:
 		out = t // an operation's spelling is its identity; a binder's body stays as built
+	case termApply:
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term { return canonicalMemo(arg, memo, boolean) })
+		if changed {
+			out = applyTerm(t.name, t.width, args...)
+		} else {
+			out = t
+		}
 	default:
 		left, right, cond := canonicalMemo(t.left, memo, boolean), canonicalMemo(t.right, memo, boolean), canonicalMemo(t.cond, memo, boolean)
 		switch t.kind {
@@ -12736,10 +12770,18 @@ func hasUninterpreted(t *term) bool {
 			return false
 		}
 		seen[t] = true
-		if t.kind == termFloat {
+		if t.kind == termFloat || t.kind == termApply {
 			return true
 		}
-		return walk(t.left) || walk(t.right) || walk(t.cond)
+		if walk(t.left) || walk(t.right) || walk(t.cond) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -12837,6 +12879,9 @@ func collectParamsVisited(t *term, into map[string]bool, visited map[*term]bool)
 	collectParamsVisited(t.cond, into, visited)
 	collectParamsVisited(t.left, into, visited)
 	collectParamsVisited(t.right, into, visited)
+	for _, arg := range t.args {
+		collectParamsVisited(arg, into, visited)
+	}
 }
 
 // declaredWidth is the width a parameter's values are bounded by: a scalar

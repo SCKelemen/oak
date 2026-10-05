@@ -8911,6 +8911,25 @@ cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
 and reach the search through their callees' (`rstr`, `sb_str`,
 `t_binary`).
 
+**The n-ary application term (2026-10-05).** The verifier term language
+now has that general `termApply`: a stable application namespace includes
+the semantic name, result width, arity, and every argument width, while its
+ordered argument slice is unbounded. Witness execution gives it one fixed,
+deterministic interpretation; that interpretation is evidence only. The BDD
+decision flattens the arguments' bits into the existing select-abstraction
+table, whose Ackermann constraint proves exactly the required congruence.
+`Oak.Uninterpreted.ackermann_nary_sound` generalizes the table soundness
+argument to an arbitrary ordered argument list, and
+`shared_nary_application` states its congruence law.
+Structural equality, canonicalization, loop substitution and memory
+restoration, parameter and memory-read discovery, term sizing, and evaluator
+numbering all traverse every argument. Native proof-certificate replay and
+the serialized Oak solver refuse the new kind explicitly, so it cannot cross
+either proof boundary by being mistaken for an older node. Calls do not use
+the term yet: a summary must add a sound token for every memory state the
+callee can read, including caller stores between two dynamic applications.
+Until that token lands, the six Bits bodies retain their expanded summaries.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
