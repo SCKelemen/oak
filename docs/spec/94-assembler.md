@@ -8857,7 +8857,24 @@ passed by reference read fresh frame bytes where its stores had gone to
 the span, a false disagreement on the witnesses. `TestE2ENativeFrameSpan`
 proves `carry_add` (a Sum around the frame-held Bits) and `ones_of` (the
 Bits passed to a callee), and `TestE2ENativeRecordWords`'s `add_bits`
-through `add_carry` again.
+through `add_carry` again. The prover's six remaining Bits bodies are
+not the field's: `mux_bits` writes `out.at[i] = bdd_ite(l, mem, c,
+t.at[i], e.at[i])`, and the callee summarized inside the loop brings
+eighteen loop events a side — its hash probes and allocations — whose
+terms the trace (`OAK_VERIFY_TRACE`, "loop terms") puts at 218,000
+nodes of stores on the machine side and 302,000 nodes of the callee's
+traps under their paths on the Oak side before the coupling begins;
+`add_carry`, `shift_barrel`, `count_leading_zeros`, and `pop_count` call
+`apply`, `mux_bits`, and `add_bits` the same way. A callee taken at its
+contract — its result and its effect on the spans it writes one fresh
+unknown a call on both sides, as an extern binding's result is — would
+summarize these in a few nodes, but a call's result is a function of
+every argument and of the memory it reads, which the term language
+cannot name: a `select` takes one index, and one unknown per call site
+inside a loop body would equate the iterations' results. The primitive
+is an n-ary uninterpreted application with its congruence in the
+blaster (equal arguments, equal results), the step after the loop
+summarizer's own work on callee loops (#603–#615).
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
