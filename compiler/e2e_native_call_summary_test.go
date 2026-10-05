@@ -61,3 +61,49 @@ func TestE2ENativeCallSummaries(t *testing.T) {
 		t.Fatalf("program: exit = (%d, abnormal=%v), want 0", exit, abnormal)
 	}
 }
+
+const nativeFiniteCallApplicationProgram = `pub sum_to: (n: u32) -> u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < n {
+    acc = acc + i
+    i = i + u32(1)
+  }
+  acc
+}
+
+pub after_sum: (n: u32) -> u32 = sum_to(n) + u32(1)
+
+main: (): i32 = i32_bits_u32(after_sum(u32(10)) - u32(46))
+`
+
+func TestE2ENativeFiniteCallApplication(t *testing.T) {
+	for _, tname := range []string{"freestanding/arm64", "linux/riscv64"} {
+		tgt, err := target.Parse(tname)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var native []string
+		comp := New().WithSource("call_application.oak", nativeFiniteCallApplicationProgram).WithTarget(tgt).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+			if strings.HasPrefix(d.Message, "native backend: ") {
+				native = append(native, d.Message)
+			}
+		})
+		if _, err := comp.EmitC().Get(); err != nil {
+			t.Fatalf("%s: native build: %v", tname, err)
+		}
+		found := false
+		for _, message := range native {
+			if !strings.Contains(message, "asm unit after_sum:") && !strings.Contains(message, "asm unit after_sum ") {
+				continue
+			}
+			found = true
+			if !strings.Contains(message, "proven") || !strings.Contains(message, "callees taken at their Oak bodies: sum_to") {
+				t.Errorf("%s: finite call application verdict: %s", tname, message)
+			}
+		}
+		if !found {
+			t.Errorf("%s: after_sum: no native verdict:\n%s", tname, strings.Join(native, "\n"))
+		}
+	}
+}

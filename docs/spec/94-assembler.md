@@ -8925,10 +8925,32 @@ Structural equality, canonicalization, loop substitution and memory
 restoration, parameter and memory-read discovery, term sizing, and evaluator
 numbering all traverse every argument. Native proof-certificate replay and
 the serialized Oak solver refuse the new kind explicitly, so it cannot cross
-either proof boundary by being mistaken for an older node. Calls do not use
-the term yet: a summary must add a sound token for every memory state the
-callee can read, including caller stores between two dynamic applications.
-Until that token lands, the six Bits bodies retain their expanded summaries.
+either proof boundary by being mistaken for an older node.
+
+**Finite-value calls use applications (2026-10-05).** A first fail-closed
+consumer now takes an internal call at `call:<callee>:result` (one operation
+per aggregate result leaf) when the verifier itself establishes that the
+callee's complete varying input is finite: scalar, record, tagged-union, or
+fixed-array parameters, flattened in declaration and element order. The gate
+refuses borrowed spans/views, mutable globals and global arrays, effect rows,
+externs, atomics, methods, generics, recursion, vectors, floats, unknown
+invocations, and transitive calls outside the same gate. Immutable declared
+tables may remain implicit in the operation, since their state cannot change
+between applications in one execution. A 4096-bit input ceiling is a
+profitability fallback, not a semantic boundary. Eligible calls become
+applications when their transitive body contains a loop or their finite input
+plus result is at least 512 bits; smaller straight-line calls retain the more
+precise and cheaper expanded term. Machine-call summarization
+and Oak call lowering apply the identical namespace to the identical ordered
+leaves; the caller verdict still records the callee dependency, while the
+callee's internal loop events no longer enter the caller coupling. Every
+refused call follows the prior expanded-summary path. Tests pin the stable
+leaf order, each important refusal, cross-lane scalar call proofs, and a
+data-dependent scalar loop whose caller imports zero callee loops. The six
+Bits bodies still require the open part: a sound argument for every mutable
+memory state a callee reads, including caller stores between two dynamic
+applications.
+
 **Equality bit by bit, conjunctions from the deepest literal up
 (2026-10-05).** The study of the coupling-search bucket began with
 `ident`: its loop proof spent its whole allowance before the callee

@@ -8720,6 +8720,13 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		return nil, reason, false
 	}
 	defer restore()
+	if args, eligible := lo.callApplicationArguments(callee); eligible {
+		result := applyTerm(callApplicationName(name, ""), resultWidth, args...)
+		if resultWidth < width {
+			return extendTerm(result, resultWidth, width, resultSigned), "", true
+		}
+		return truncate(result, width), "", true
+	}
 	// A tail-recursive callee is the loop it compiles to
 	// (docs/spec/85-discipline.md), over its parameters as locals.
 	body := callee.Body
@@ -8879,6 +8886,13 @@ func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.
 		return nil, reason, false
 	}
 	defer restore()
+	if args, eligible := lo.callApplicationArguments(callee); eligible {
+		value, built := callApplicationValue(name, typ, args)
+		if !built {
+			return nil, fmt.Sprintf("a call to %s returning an application value without a complete shape", name), false
+		}
+		return value, "", true
+	}
 	value, reason, ok := lo.aggregateValue(callee.Body, typ)
 	if !ok {
 		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
@@ -11257,7 +11271,19 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	var result *term
 	var aggregate *oakValue
 	var vecLanes []*term
+	applicationArgs, application := lo.callApplicationArguments(callee)
 	switch {
+	case application && aggLeaves != nil:
+		typ, ok := lo.oakTypeOf(callee.ReturnType)
+		if !ok || typ.kind == oakScalar {
+			return fmt.Sprintf("a call to %s returning %s (no application model)", name, typeText(callee.ReturnType)), false
+		}
+		aggregate, ok = callApplicationValue(name, typ, applicationArgs)
+		if !ok {
+			return fmt.Sprintf("a call to %s returning %s (incomplete application model)", name, typeText(callee.ReturnType)), false
+		}
+	case application:
+		result = applyTerm(callApplicationName(name, ""), resultWidth, applicationArgs...)
 	case unit:
 		if reason, ok := lo.lowerUnitBody(body); !ok {
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
