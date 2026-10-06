@@ -59,6 +59,11 @@ type loopShape struct {
 	// conditional branch — taken to continue (tail).
 	testStart, testEnd int
 	tail               bool
+	// entryAtHeader marks the bottom-tested form whose redundant peeled
+	// entry test is absent. The executor may summarize it at the header
+	// only after independently deciding that the tail condition holds on
+	// the actual entry state; concrete witness runs always execute it.
+	entryAtHeader bool
 	// The entry-only tests' item range [entryStart, entryEnd): compares
 	// and branches to the exit label right before the header (before the
 	// entry run of a bottom-tested loop) over registers the loop never
@@ -212,6 +217,20 @@ func writesRegisterIn(items []Item, from, to, reg int) bool {
 // the outer body containing it is examined.
 func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 	return findLoopsIn("", ArchArm64, items, labels, nil)
+}
+
+// headerEnteredLoops selects the bottom-tested loops whose peeled entry
+// test was optimized away. They remain keyed by their tail branch in
+// loopExits; this second index lets the executor consider induction on the
+// one sequential arrival at the body header.
+func headerEnteredLoops(exits map[int]loopShape) map[int]loopShape {
+	entries := map[int]loopShape{}
+	for _, shape := range exits {
+		if shape.entryAtHeader {
+			entries[shape.header] = shape
+		}
+	}
+	return entries
 }
 
 // findLoopsIn is findLoops naming the function for the OAK_VERIFY_TRACE
@@ -470,18 +489,32 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 	if branch.Mnemonic != "b." && branch.Mnemonic != "cbz" && branch.Mnemonic != "cbnz" {
 		return loopShape{}, "a conditional back edge that is not b.cond, cbz, or cbnz", false
 	}
-	// The exit label: the entry test's target, every tail exit's target.
-	if header < 1 {
-		return loopShape{}, "a bottom-tested loop without an entry test", false
+	// The exit label normally comes from the peeled entry test. A loop the
+	// optimizer proves must run once has no such test; admit only its exact
+	// fallthrough label immediately after the conditional back edge. The
+	// executor separately replays the tail comparison at the initial header
+	// state before it may use induction for that form.
+	var exitSym Symbol
+	exitLabel := -1
+	hasEntry := false
+	if header > 0 {
+		if entryLast, isEntry := items[header-1].(Instruction); isEntry && isConditionalBranch(entryLast.Mnemonic) && len(entryLast.Operands) > 0 {
+			if sym, isSym := entryLast.Operands[len(entryLast.Operands)-1].(Symbol); isSym {
+				if target, isLabel := labels[sym.Name]; isLabel && target > back {
+					exitSym, exitLabel, hasEntry = sym, target, true
+				}
+			}
+		}
 	}
-	entryLast, isEntry := items[header-1].(Instruction)
-	if !isEntry || !isConditionalBranch(entryLast.Mnemonic) || len(entryLast.Operands) == 0 {
-		return loopShape{}, "a bottom-tested loop whose entry is not a conditional branch", false
-	}
-	exitSym, isSym := entryLast.Operands[len(entryLast.Operands)-1].(Symbol)
-	exitLabel, isLabel := labels[exitSym.Name]
-	if !isSym || !isLabel || exitLabel <= back {
-		return loopShape{}, "a bottom-tested loop whose entry test does not leave past the back edge", false
+	if !hasEntry {
+		if back+1 >= len(items) {
+			return loopShape{}, "a bottom-tested loop without an entry test or fallthrough exit label", false
+		}
+		fallthroughLabel, isLabel := items[back+1].(Label)
+		if !isLabel || labels[fallthroughLabel.Name] != back+1 {
+			return loopShape{}, "a bottom-tested loop without an entry test or immediate fallthrough exit label", false
+		}
+		exitSym, exitLabel = Symbol{Name: fallthroughLabel.Name}, back+1
 	}
 	// The tail run: back to the first instruction that is not a compare
 	// or a branch to the exit label.
@@ -506,8 +539,17 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		}
 		break
 	}
-	if branch.Mnemonic == "b." && (tailStart == back || (items[back-1].(Instruction).Mnemonic != "cmp" && items[back-1].(Instruction).Mnemonic != "ccmp")) {
-		return loopShape{}, "a conditional back edge whose test is not a compare", false
+	if branch.Mnemonic == "b." {
+		previous, isInstruction := items[back-1].(Instruction)
+		if tailStart == back || !isInstruction || (previous.Mnemonic != "cmp" && previous.Mnemonic != "ccmp") {
+			return loopShape{}, "a conditional back edge whose test is not a compare", false
+		}
+	}
+	if !hasEntry {
+		cmp, isCmp := items[back-1].(Instruction)
+		if branch.Mnemonic != "b." || tailStart != back-1 || !isCmp || cmp.Mnemonic != "cmp" {
+			return loopShape{}, "a bottom-tested loop without an entry test whose tail is not one cmp and b.cond", false
+		}
 	}
 	if header+1 >= tailStart {
 		return loopShape{}, "a bottom-tested loop without a body", false
@@ -515,31 +557,35 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 	// The entry run mirrors the tail run instruction for instruction, the
 	// last branch complemented and leaving to the exit label.
 	n := back + 1 - tailStart
-	if header-n < 0 {
-		return loopShape{}, "a bottom-tested loop whose entry test is shorter than its tail test", false
-	}
-	for k := 0; k < n; k++ {
-		tail, isTail := items[tailStart+k].(Instruction)
-		entry, isEntryInstr := items[header-n+k].(Instruction)
-		if !isTail || !isEntryInstr {
-			return loopShape{}, "a bottom-tested loop whose entry test holds a label", false
+	entryRunStart := header
+	if hasEntry {
+		entryRunStart = header - n
+		if entryRunStart < 0 {
+			return loopShape{}, "a bottom-tested loop whose entry test is shorter than its tail test", false
 		}
-		if k < n-1 {
-			if tail.Mnemonic != entry.Mnemonic || tail.Cond != entry.Cond || describeOperands(tail.Operands) != describeOperands(entry.Operands) {
-				return loopShape{}, "a bottom-tested loop whose entry test differs from its tail test", false
+		for k := 0; k < n; k++ {
+			tail, isTail := items[tailStart+k].(Instruction)
+			entry, isEntryInstr := items[entryRunStart+k].(Instruction)
+			if !isTail || !isEntryInstr {
+				return loopShape{}, "a bottom-tested loop whose entry test holds a label", false
 			}
-			continue
-		}
-		// The last: the back edge against the entry's exit branch.
-		switch tail.Mnemonic {
-		case "b.":
-			if entry.Mnemonic != "b." || tailInverse[tail.Cond] != entry.Cond {
-				return loopShape{}, "a bottom-tested loop whose entry condition is not the tail condition's complement", false
+			if k < n-1 {
+				if tail.Mnemonic != entry.Mnemonic || tail.Cond != entry.Cond || describeOperands(tail.Operands) != describeOperands(entry.Operands) {
+					return loopShape{}, "a bottom-tested loop whose entry test differs from its tail test", false
+				}
+				continue
 			}
-		default:
-			opposite := map[string]string{"cbz": "cbnz", "cbnz": "cbz"}[tail.Mnemonic]
-			if entry.Mnemonic != opposite || len(entry.Operands) != 2 || len(tail.Operands) != 2 || describeOperands(entry.Operands[:1]) != describeOperands(tail.Operands[:1]) {
-				return loopShape{}, "a bottom-tested loop whose entry test is not the complement of its tail test", false
+			// The last: the back edge against the entry's exit branch.
+			switch tail.Mnemonic {
+			case "b.":
+				if entry.Mnemonic != "b." || tailInverse[tail.Cond] != entry.Cond {
+					return loopShape{}, "a bottom-tested loop whose entry condition is not the tail condition's complement", false
+				}
+			default:
+				opposite := map[string]string{"cbz": "cbnz", "cbnz": "cbz"}[tail.Mnemonic]
+				if entry.Mnemonic != opposite || len(entry.Operands) != 2 || len(tail.Operands) != 2 || describeOperands(entry.Operands[:1]) != describeOperands(tail.Operands[:1]) {
+					return loopShape{}, "a bottom-tested loop whose entry test is not the complement of its tail test", false
+				}
 			}
 		}
 	}
@@ -592,7 +638,7 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 	// tail, where the state before the back edge is the next header's, as
 	// a top-tested loop's second header visit is.
 	var exits []int
-	for k := header - n; k < header; k++ {
+	for k := entryRunStart; k < header; k++ {
 		if instr, isInstr := items[k].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
 			exits = append(exits, k)
 		}
@@ -603,15 +649,18 @@ func tailLoopShape(items []Item, labels map[string]int, innerHeaders map[int]int
 		}
 	}
 	// The entry-only tests before the entry run: exits too, met first.
-	entryStart := invariantEntryTests(items, labels, header-n, exitLabel, header, back)
+	entryStart := entryRunStart
+	if hasEntry {
+		entryStart = invariantEntryTests(items, labels, entryRunStart, exitLabel, header, back)
+	}
 	var entryExits []int
-	for at := entryStart; at < header-n; at++ {
+	for at := entryStart; at < entryRunStart; at++ {
 		if instr, isInstr := items[at].(Instruction); isInstr && isConditionalBranch(instr.Mnemonic) {
 			entryExits = append(entryExits, at)
 		}
 	}
 	exits = append(entryExits, exits...)
-	shape := loopShape{header: header, cmp: cmpIndex, exit: exits[0], exitLabel: exitLabel, bodyStart: header + 1, bodyEnd: tailStart, exits: exits, testStart: tailStart, testEnd: back + 1, tail: true, entryStart: entryStart, entryEnd: header - n}
+	shape := loopShape{header: header, cmp: cmpIndex, exit: exits[0], exitLabel: exitLabel, bodyStart: header + 1, bodyEnd: tailStart, exits: exits, testStart: tailStart, testEnd: back + 1, tail: true, entryAtHeader: !hasEntry, entryStart: entryStart, entryEnd: entryRunStart}
 	return shape, "", true
 }
 
@@ -769,6 +818,11 @@ type loopEvent struct {
 	// layout order mean the paths ran the sides of a fork in another
 	// order than the Oak body lowers them (loopsInLayoutOrder).
 	at int
+	// forceSource marks a machine loop summarized at the body header after
+	// its first condition was proved true. The source lowering uses the
+	// same exact induction boundary even when its fixed trip count would
+	// ordinarily be small enough to unroll.
+	forceSource bool
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -945,16 +999,68 @@ func (x *pathExecutor) descends(inner, outer *loopEvent) bool {
 	return false
 }
 
-// loopEvent summarizes the top-level asm loop whose exit branch was just
-// reached with an undecided condition, then continues past the exit.
-func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState) (*term, *pathEffects, string, bool) {
+// loopEvent summarizes a top-level asm loop reached at an undecided exit,
+// or at a header whose initial tail condition was independently proved true,
+// then continues past the exit.
+func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState, forceSource bool) (*term, *pathEffects, string, bool) {
 	post, reason, ok := x.summarizeLoop(shape, exit, state)
 	if !ok {
 		return nil, nil, reason, false
 	}
+	if forceSource {
+		for _, event := range x.loops {
+			if !event.oakDerived && event.at == shape.header {
+				event.forceSource = true
+			}
+		}
+	}
 	// The path continues past the exit: the loop's memory markers and
 	// what the code after the loop stores are its effects.
 	return x.run(shape.exitLabel, post)
+}
+
+// guaranteedTailEntry independently evaluates the simple tail comparison
+// on the state at a header-entered loop. A constant true result proves that
+// replacing the do-while spelling by its while-loop induction is exact on
+// this path. Unknown and false entries execute normally.
+func (x *pathExecutor) guaranteedTailEntry(shape loopShape, state *symbolicState) bool {
+	if x.concrete || !shape.entryAtHeader || shape.testEnd-shape.testStart != 2 {
+		return false
+	}
+	// Small straight-line counted loops remain cheaper to unroll and some
+	// diagnostics intentionally describe their closed term. This entry
+	// shortcut targets the conditional bodies whose repeated joins grow a
+	// select tree; require an actual forward fork inside the body.
+	hasFork := false
+	for at := shape.bodyStart; at < shape.bodyEnd; at++ {
+		instr, isInstruction := x.items[at].(Instruction)
+		if !isInstruction || !isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
+			continue
+		}
+		sym, isSymbol := instr.Operands[len(instr.Operands)-1].(Symbol)
+		if !isSymbol {
+			continue
+		}
+		target, isLabel := x.labels[sym.Name]
+		if isLabel && target > at && target < shape.bodyEnd {
+			hasFork = true
+			break
+		}
+	}
+	if !hasFork {
+		return false
+	}
+	cmp, isCmp := x.items[shape.testStart].(Instruction)
+	back, isBack := x.items[shape.exit].(Instruction)
+	if !isCmp || cmp.Mnemonic != "cmp" || !isBack || back.Mnemonic != "b." {
+		return false
+	}
+	probe := state.clone()
+	if _, ok := step(cmp, probe); !ok {
+		return false
+	}
+	condition, _, ok := branchCondition(back, probe)
+	return ok && condition.kind == termConst && condition.value&1 == 1
 }
 
 // summarizeLoop records the loop event and returns the state past the

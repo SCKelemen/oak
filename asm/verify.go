@@ -2531,6 +2531,7 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 	}
 	exec.hasResult = hasResult
 	exec.loopExits = findLoopsIn(fn.Name, fn.Arch, fn.Items, labels, fn.Callees)
+	exec.loopEntries = headerEnteredLoops(exec.loopExits)
 	if joins {
 		exec.joins = joinPoints(fn.Items, labels)
 	}
@@ -2662,14 +2663,15 @@ type pathExecutor struct {
 	// hasResult: the function delivers a scalar result; false for a unit
 	// function that writes package state, whose paths return unitResult.
 	// cells: the written cells after run, merged across every path.
-	hasResult bool
-	cells     map[string]*term
-	writes    map[string][]*spanWrite // the span memories written after run (asm/effects.go)
-	concrete  bool                    // a witness run: every input is a constant
-	loopExits map[int]loopShape
-	callAt    int          // the item index of the call being summarized (loopEvent.at)
-	loops     []*loopEvent // data-dependent loops met, in creation order
-	loopStack []int        // indices of the loops whose bodies are being executed
+	hasResult   bool
+	cells       map[string]*term
+	writes      map[string][]*spanWrite // the span memories written after run (asm/effects.go)
+	concrete    bool                    // a witness run: every input is a constant
+	loopExits   map[int]loopShape
+	loopEntries map[int]loopShape // guaranteed-entry tail loops, keyed by their body header
+	callAt      int               // the item index of the call being summarized (loopEvent.at)
+	loops       []*loopEvent      // data-dependent loops met, in creation order
+	loopStack   []int             // indices of the loops whose bodies are being executed
 	// sites: the loop events by the site that created them — a loop head
 	// (`loop@<pc>`) or a call whose callee has loops (`call@<line>`) — as
 	// the range of indices the site's events occupy. A site reached again
@@ -3753,7 +3755,15 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 	if x.paths > x.pathLimit() {
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
+	arrivedByBranch := false
 	for ; pc < len(x.items); pc++ {
+		if shape, isEntry := x.loopEntries[pc]; isEntry && !arrivedByBranch && x.guaranteedTailEntry(shape, state) {
+			exit, isInstruction := x.items[shape.exit].(Instruction)
+			if isInstruction {
+				return x.loopEvent(shape, exit, state, true)
+			}
+		}
+		arrivedByBranch = false
 		if n := len(x.stops); n > 0 && pc == x.stops[n-1] {
 			// The join the enclosing fork collects: this path parks here.
 			x.joined = append(x.joined, state)
@@ -3848,6 +3858,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				return nil, nil, "a branch to an unknown label", false
 			}
 			pc = target - 1 // backward: a loop, bounded by the budgets
+			arrivedByBranch = true
 			continue
 		case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 			cond, reason, ok := branchCondition(instr, state)
@@ -3871,10 +3882,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// as a loop like a data-dependent one, and the Oak side
 				// summarizes the same loop (lowerWhile).
 				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && (shape.breaks || x.summarizeCounted(shape, instr, state)) {
-					return x.loopEvent(shape, instr, state)
+					return x.loopEvent(shape, instr, state, false)
 				}
 				if cond.value != 0 {
 					pc = target - 1
+					arrivedByBranch = true
 				}
 				continue
 			}
@@ -3882,7 +3894,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// condition: a data-dependent loop, summarized as a loop event
 			// and continued past its exit on fresh loop-carried symbols.
 			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
-				return x.loopEvent(shape, instr, state)
+				return x.loopEvent(shape, instr, state, false)
 			}
 			if isTrapBlock(x.items, target) {
 				// A guard: the taken side traps, an end under the guard's
@@ -5482,9 +5494,13 @@ type oakLowering struct {
 	// trips each way) is left to the machine comparison's budgets rather
 	// than lowered for minutes.
 	work      int
-	loops     []*loopEvent   // data-dependent loops met, in creation order
-	loopStack []int          // indices of the loops whose bodies are being lowered
-	fresh     map[string]int // loop-carried fresh symbols -> width
+	loops     []*loopEvent // data-dependent loops met, in creation order
+	loopStack []int        // indices of the loops whose bodies are being lowered
+	// forceLoopEvents aligns the source's exact induction boundary with a
+	// machine bottom-tested loop summarized at its proved-true body entry.
+	// Keys are the shared one-based loop-event indices.
+	forceLoopEvents map[int]bool
+	fresh           map[string]int // loop-carried fresh symbols -> width
 	// externSite and externSeq name an extern binding's result: the
 	// source line of the call the outermost inlined callee was entered
 	// at (the machine's `bl` line for a call summary) and the extern
@@ -8121,11 +8137,12 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 		if cond.value == 0 {
 			return "", true
 		}
-		if iteration == 0 && lo.concrete == nil && lo.summarizeCounted(loop) {
-			// A counted loop over a loop, past the unrolling limit:
-			// summarized rather than unrolled, as the machine side
-			// summarizes it (the counted loop's exception in the
-			// executor's branch handling).
+		forceEvent := lo.forceLoopEvents[len(lo.loops)+1]
+		if iteration == 0 && lo.concrete == nil && (forceEvent || lo.summarizeCounted(loop)) {
+			// A counted loop over a loop past the unrolling limit, or a
+			// bottom-tested machine loop whose initial tail condition was
+			// independently proved true: use the same exact induction
+			// boundary on the source side.
 			return lo.loopEvent(loop)
 		}
 		if reason, ok := lo.lowerLoopBody(loop.Body); !ok {
@@ -10625,6 +10642,14 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
+	for _, event := range exec.loops {
+		if event.forceSource {
+			if lowering.forceLoopEvents == nil {
+				lowering.forceLoopEvents = map[int]bool{}
+			}
+			lowering.forceLoopEvents[event.index] = true
+		}
+	}
 	// Loop admission needs path-conditioned source traps in the root,
 	// header, and body scopes, not just concrete witness runs.
 	lowering.trapDomainTracked = len(exec.loops) != 0
