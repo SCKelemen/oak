@@ -139,8 +139,12 @@ not be reported as universal implementation proofs.
 `core/wasm32`. The [Wasm assembler contract](../../docs/spec/91-wasm-assembler-proofs.md)
 lists the exact opcode/immediate domain, unchanged-on-refusal behavior,
 universal Lean encoding laws, production correspondence and independent engine
-tests. The Oak implementation is a bootstrap kernel; module writing, linking,
-implementation refinement and source-to-module verification remain open.
+tests. `Oak.WasmAssemblerExtracted` is generated from the complete Oak source;
+its laws prove buffer admission, preflight capacity, failure preservation,
+LEB writer frames, and the signed floor step. Formal CI checks extraction drift
+and Go/Oak/Lean agreement on shared corpora. The Oak implementation is a
+bootstrap kernel; exact-byte loop refinement, module writing, linking and
+source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 

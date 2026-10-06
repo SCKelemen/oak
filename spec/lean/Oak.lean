@@ -3,6 +3,7 @@ import Oak.WasmLEB
 import Oak.WasmEncoding
 import Oak.WasmInstruction
 import Oak.WasmNumeric
+import Oak.WasmAssemblerLaws
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate

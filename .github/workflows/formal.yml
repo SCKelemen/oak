@@ -56,6 +56,11 @@ jobs:
           OAK_REQUIRE_WASM_LEAN: '1'
         run: go test ./wasm/encoding -run '^TestWasmEncodingMatchesLean$' -count=1 -v
 
+      - name: Check Oak Wasm assembler extraction and correspondence
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./compiler -run '^TestLeanWasmAssembler(Extract|Faithful)$' -count=1 -timeout=20m -v
+
       - name: Set up independent Wasm engine
         uses: actions/setup-node@v4
         with:
