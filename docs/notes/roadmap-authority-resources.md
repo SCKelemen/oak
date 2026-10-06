@@ -6,7 +6,7 @@ planning baseline was `ae5043e`; this reconciliation inspected `4a740ef7`
 and the accompanying resource-boundary changes. Historical increment
 entries below describe supported subsets, not completion of every goal.
 
-Current next work: multiple-region records and borrowed resource aggregates
+Current next work: mutable/ADT multiple-region records and borrowed resource aggregates
 across calls; array-element provenance; broader authority/dependency
 refinement; and a target-specific runtime completion contract. Ordinary
 qualified cross-package borrowed returns already work through module
@@ -342,8 +342,11 @@ device submission) exercise the semantics.
 The original first five increments have implementations in the subsets
 recorded above. The current boundary pass adds module-return regression
 coverage, explicit resource loop convergence, and the trusted completion
-obligations in `92-ffi.md` §2.8.5. It does not establish hardware completion,
-multiple regions per record, or general borrowed aggregate call contracts.
+obligations in `92-ffi.md` §2.8.5. The following increment supports explicit, read-only multiple-region storage
+records with field-specific provenance across calls, nested records, and
+package boundaries (`50-borrowing.md` §8c.6). It does not establish hardware
+completion, mutable multiple-region records, or general borrowed opaque-resource
+aggregate call contracts.
 
 **Definition of done for every safety increment:** state the rule and the
 supported subset; preserve facts through all stages; test valid use and
@@ -354,7 +357,7 @@ implementation refinement only with an explicit correspondence proof.
 
 **Open decisions:** callable ownership variance; default/exported-contract
 inference; per-resource dropping and cleanup policy; partial-move rules;
-multiple-region aggregate contracts; broader extent theory; parallel numeric
+mutable and ADT multiple-region aggregate contracts; broader extent theory; parallel numeric
 reproducibility; and the target-specific implementation and proof of device
 completion. Modes/results already have protocol source spelling and storage
 regions already have explicit and elided forms.

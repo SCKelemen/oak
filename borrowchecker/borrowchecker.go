@@ -213,7 +213,7 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 	}
 	// The function body block: its result's provenance is checked while the
 	// locals it may be bound through are still live.
-	if bc.pendingReturn != nil && bc.currentBlockDepth == 1 && !bc.pendingReturn.checked {
+	if bc.pendingReturn != nil && block == bc.pendingReturn.bodyBlock && !bc.pendingReturn.checked {
 		bc.checkReturnedProvenance((&ast.BlockExpression{Block: block}).Result(), bc.pendingReturn, env)
 	}
 }
@@ -331,6 +331,9 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	// the parameter whose owner outlives the call and is checked by
 	// provenance instead; every other view/span return is rejected.
 	bc.pendingReturn = bc.returnContractFor(stmt, env)
+	if body, ok := stmt.Body.(*ast.BlockExpression); ok && bc.pendingReturn != nil {
+		bc.pendingReturn.bodyBlock = body.Block
+	}
 	if bc.pendingReturn == nil {
 		bc.checkBorrowEscape(stmt, env)
 	}
@@ -614,6 +617,13 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 	// Check if the value expression creates a borrow (check before we register the variable)
 	if vd.Value != nil {
 		bc.checkExpression(vd.Value, env, varName)
+		// Projection and derived expressions must retain a multi-region
+		// record's selected owner even when there is no named aggregate.
+		if isDirectBorrowType(declared) && bc.multipleRegionExpression(vd.Value, env) {
+			if _, tracked := bc.activeBorrows[varName]; !tracked {
+				bc.bindMultipleRegionProjection(vd.Value, varName, env)
+			}
+		}
 	}
 	if _, text := env.CheckedDeclarationType(vd).(*typechecker.StringType); text {
 		valueType := env.CheckedExpressionType(vd.Value)
