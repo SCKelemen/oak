@@ -285,3 +285,83 @@ func TestOakLoopEventLocalDeclaredInArm(t *testing.T) {
 		t.Fatalf("two loop events expected, got %d", len(lo.loops))
 	}
 }
+
+// A rotated fixed-count loop may omit its peeled entry test when the
+// initial condition is statically true. The verifier rechecks that fact
+// from the machine state and starts induction at the body header, before
+// sixteen conditional updates grow a large select tree.
+func TestVerifyGuaranteedEntryTailLoop(t *testing.T) {
+	decl := "scan: (a: u32) -> u32"
+	oak := `{
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(16) {
+    a < i ? { acc = acc + i }
+    i = i + u32(1)
+  }
+  acc
+}`
+	body := `  bind w0 = a
+  clobber w9, w10
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w0, w10
+  b.hs skip
+  add w9, w9, w10
+skip:
+  add w10, w10, #1
+  cmp w10, #16
+  b.lo loop
+done:
+  mov w0, w9
+  ret`
+	unit, errs := ParseUnit("tail.oakasm", decl+" = {\n"+body+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	labels := map[string]int{}
+	for index, item := range unit.Functions[0].Items {
+		if label, isLabel := item.(Label); isLabel {
+			labels[label.Name] = index
+		}
+	}
+	found := false
+	for _, shape := range findLoops(unit.Functions[0].Items, labels) {
+		found = found || shape.entryAtHeader
+	}
+	if !found {
+		t.Fatal("the immediate-fallthrough tail loop was not recognized at its header")
+	}
+	verdict := verifyCase(t, decl, oak, body)
+	if verdict.Kind != VerdictProven || !strings.Contains(verdict.Message, "coupled inductively") {
+		t.Fatalf("the guaranteed-entry tail loop must be proven by induction, got %s: %s", verdict.Kind, verdict.Message)
+	}
+
+	// Structural recognition alone is not authority to skip the first
+	// machine iteration. Here its header condition is false: the do-while
+	// machine executes once while the Oak while executes zero times.
+	zeroOak := `{
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < u32(0) {
+    acc = acc + u32(1)
+    i = i + u32(1)
+  }
+  acc
+}`
+	zeroBody := `  clobber w9, w10
+  mov w9, #0
+  mov w10, #0
+loop:
+  add w9, w9, #1
+  add w10, w10, #1
+  cmp w10, #0
+  b.lo loop
+done:
+  mov w0, w9
+  ret`
+	if wrong := verifyCase(t, "zero: () -> u32", zeroOak, zeroBody); wrong.Kind != VerdictMismatch {
+		t.Fatalf("a false initial condition must not authorize header induction, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}

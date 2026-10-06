@@ -20,6 +20,8 @@ import (
 // finds the peeled test not worth rotating a three-trip remainder.) The C
 // backend's realization is the oracle for the values.
 const nativeRotationProgram = `
+SCAN_N: u32 = u32(16)
+
 fill: (v: [*]u64, x: u64): () {
   i: u32 = 0
   while i < len(v) {
@@ -47,10 +49,21 @@ at_least_once: (n: u32): u32 {
   count
 }
 
+scan_fixed: (a: u32, b: u32, c: u32, d: u32): u32 {
+  best: u32 = SCAN_N
+  i: u32 = u32(0)
+  while i < SCAN_N {
+    take: Bool = (a < i && b != i) || (c == i && d < i)
+    take && (best == SCAN_N || i < best) ? { best = i }
+    i = i + u32(1)
+  }
+  best
+}
+
 main: (): i32 {
   xs: [6]u64 = [u64(5), u64(7), u64(9), u64(0), u64(11), u64(10)]
   fill(span(&xs), u64(7))
-  i32_bits_u32(first_zero(view(&xs)) + at_least_once(u32(0)) + u32(35))
+  i32_bits_u32(first_zero(view(&xs)) + at_least_once(u32(0)) + scan_fixed(u32(0), u32(1), u32(99), u32(0)) + u32(33))
 }
 `
 
@@ -67,6 +80,7 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 		t.Fatal(err)
 	}
 	shapes := map[string]string{}
+	headerEntered := map[string]bool{}
 	for _, f := range model.AsmFunctions {
 		unconditional, conditionalBack := 0, 0
 		labels := map[string]int{}
@@ -88,6 +102,16 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 				unconditional++
 			} else if labels[sym.Name] < i {
 				conditionalBack++
+				header := labels[sym.Name]
+				hasEntryTest := false
+				if header > 0 {
+					if entry, isEntry := f.Items[header-1].(asm.Instruction); isEntry && len(entry.Operands) > 0 {
+						if exit, isExit := entry.Operands[len(entry.Operands)-1].(asm.Symbol); isExit && labels[exit.Name] > i {
+							hasEntryTest = true
+						}
+					}
+				}
+				headerEntered[f.Name] = headerEntered[f.Name] || !hasEntryTest
 			}
 		}
 		// A rotated loop has a conditional back edge and no jump to its
@@ -107,6 +131,9 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 	if shapes["at_least_once"] != "top" {
 		t.Errorf("a disjunction keeps the top-tested shape; shapes %v\n%s", shapes, joined)
 	}
+	if shapes["scan_fixed"] != "bottom" || !headerEntered["scan_fixed"] {
+		t.Errorf("scan_fixed must delete its redundant entry test and keep the proven conditional back edge; shapes %v, header-entered %v\n%s", shapes, headerEntered, joined)
+	}
 	// Every loop each unit ends up with rotates, and the unit is proven.
 	// The count is not pinned: how many loops `fill` becomes is the
 	// vectorizer's business — a map of a constant is now a vector main
@@ -123,7 +150,7 @@ func TestE2ENativeBottomTestedLoops(t *testing.T) {
 		}
 		counts[m[1]] = n
 	}
-	for _, name := range []string{"fill", "first_zero"} {
+	for _, name := range []string{"fill", "first_zero", "scan_fixed"} {
 		if counts[name] < 1 {
 			t.Errorf("%s's loops must all rotate and be proven, got %v; diagnostics:\n%s", name, counts, joined)
 		}

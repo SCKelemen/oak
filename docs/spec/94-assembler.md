@@ -6851,6 +6851,20 @@ are general: the taken path of `b.cond` after a compare knows what the
 fall-through of `b.inverse` would, so a `b.hi header` back edge carries
 the slack fact as `b.lo header` carries the index fact.
 
+When a preceding proof establishes that the loop runs at least once, the
+optimizer may delete the mirrored entry test and leave the body header
+followed by one `cmp; b.cond header` tail and its immediate fallthrough
+exit label. The verifier does not trust that deletion: on the sequential
+arrival at the header it replays the tail compare over the actual machine
+state and starts induction there only when the continuing branch is a
+constant true. Unknown or false entries execute normally, and concrete
+witness runs never take the shortcut. The source lowering is told to use
+the same exact induction boundary, after which the ordinary coupling checks
+the header values, condition, one-step transition, effects, and result. This
+keeps the sixteen-way `virq.next_pending` scan compact and proven instead of
+building its conditional best-so-far update into a billion-node bit term
+(`TestVerifyGuaranteedEntryTailLoop`, 2026-10-06).
+
 **Loops that break (2026-09-20, both lanes; `asm/break_form.go`,
 `loopShape.breaks`).** A `while` whose body leaves it early — Oak's
 `break` (`85-discipline.md` §3a), lowered as a branch from the body to
