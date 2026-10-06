@@ -10529,3 +10529,67 @@ the refusals by the transform that produced them to find where to look,
 then compute the property over the body's own graph rather than arguing
 about the transform. Both times the transform was innocent and the thing
 it exposed was a declaration or a fact that did not travel.
+
+### 9.aq A label is seeded from its predecessors (2026-10-06)
+
+The last two refusal classes, and the end of the series §9.ai opened.
+§9.am found a missing declaration and §9.an found a fact that was not
+carried at labels; this is the same shape once more, in the seeding of
+the dataflow itself.
+
+The fixpoint runs passes until the state assumed at each label equals
+the arrivals. On the first pass there is no assumption to apply, and
+`enterLabel` kept whatever state the textual walk was holding. The
+comment called that the optimistic carry-over. It is pessimistic whenever
+the instructions sitting textually before a label belong to a path that
+does not reach it: the label begins with facts already killed. A loop
+then makes the loss permanent, because the back edge records an arrival
+carrying it and the meet only ever shrinks. Without a loop the next
+forward pass repairs it, which is exactly why only looping bodies were
+affected and why the class read as a property of the reallocation
+transform, which produces loops with rearranged blocks.
+
+The reproduction is 23 lines: a span base in a register, a conditional
+branch to a label, the not-taken path overwriting that base and jumping
+away, and the taken path running a loop that indexes through it. The
+loop's access is refused although nothing on any reaching path touches
+the base. Three checks separate this from every other explanation —
+removing the overwrite admits it, the same shape without a loop is
+admitted, and raising `maxGuardPasses` from 16 to 64 changes nothing, so
+it is not non-convergence.
+
+The first pass now applies the meet of the predecessors already recorded,
+which `enterLabel` has just gathered through `arrive`, and falls back to
+the carry-over only for a label no arrival has reached yet. Later passes
+are untouched.
+
+Measured on the stdlib-bearing program against the commit this branch
+merged (`0c544b24`), with the verdict cache off, counted over the emitted
+bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted | 32108 | **31982** |
+| refused candidate forms | 106 | **18** |
+| base-not-placed refusals | 73 | **0** |
+| uninitialized-read refusals | 12 | **0** |
+| trap branches emitted | 716 | 716 |
+
+Both classes go to nothing. Fifteen bodies are shorter by 207
+instructions and three are longer by 81, for 126 net; the largest are
+`utf8_decode` 459 to 406, `utf8_step` 317 to 282, `utf8_decode_previous`
+158 to 124. No body gains a trap branch, none stops being lowered
+natively, and all 338 units keep their verdicts. The three that grow —
+`id_pool_allocate`, `path_match_chunk`, `url_parse_authority` — are
+bodies whose candidates are now admitted at all, so the search selects
+among forms it previously had to reject; they trade instructions for the
+frame traffic and guards those forms remove.
+
+What the series leaves behind, over §9.ai to here: 18 refused candidate
+forms where there were 280, and every one of the three large classes
+turned out to be one defect rather than a missing capability — a
+declaration that did not match the frame it described, a fact that was
+not carried at labels, and a dataflow seeded from walk order. None was
+found by reasoning about the transforms the refusals pointed at. Each
+was found by grouping the refusals by their cause and then computing the
+property over the body's own control-flow graph.
