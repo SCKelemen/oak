@@ -29,8 +29,8 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Check universal branch model proofs
         working-directory: spec/lean
-        run: lake build Oak.AArch64ConditionalBranch
-      - name: Check production encoder, relocation, and executable bytes
+        run: lake build Oak.AArch64ConditionalBranch Oak.AArch64BranchExecution
+      - name: Check production encoding, relocation, and branch execution
         env:
           OAK_REQUIRE_ARM64_COND19_LEAN: '1'
         run: go test ./asm -run '^TestAArch64(Conditional|LiteralDoesNotUse)' -count=1 -v

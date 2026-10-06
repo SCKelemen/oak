@@ -1534,10 +1534,41 @@ production accept/refuse decisions and function bytes against the model, all
 register numbers and condition fields, dirty-immediate replacement, rejected
 relocations preserving their bytes, and forward/backward references in emitted
 ELF images. This is bounded implementation correspondence, not universal
-refinement of Go or Oak. Condition evaluation, architectural PC and traps,
-fall-through, dynamic branch execution, source-CFG correctness, and complete
-file-format/linker correctness remain separate obligations. Rejection preserves
-the current relocation's bytes; the whole relocation batch is not transactional.
+refinement of Go or Oak. Rejection preserves the current relocation's bytes;
+the whole relocation batch is not transactional.
+
+`Oak.AArch64BranchExecution` adds a no-fault PC/register/NZCV transition
+projection for those five forms. An independent fixed-mask decoder recovers
+the instruction kind, condition/register field, and signed immediate from
+the word. Universal Lean theorems establish encode/decode agreement,
+condition selection, taken PC plus signed offset, sequential fall-through
+PC+4, and preservation of all register and flag values. `relocated_step`
+composes the relocation proof with this transition: every accepted patch
+of a modeled instruction selects the same event and complete projected state
+as the operand-level branch to the resolved target. PC arithmetic uses 64-bit
+bitvectors, including addresses above the signed boundary. Taken versus
+fall-through is recorded explicitly even when the next addresses coincide.
+
+Flag evaluation uses the existing Sail-connected ArmASL `ConditionHolds`;
+the fourteen ordinary assembler predicates agree with it. Conditions AL and
+NV both select the taken path without reading flags. The assembler checker
+and verifier now accept `b.al` and `b.nv` with missing or unknown NZCV and
+treat them as unconditional transfers. CBZ/CBNZ read register 31 as zero;
+W forms discard the upper 32 bits, and zero/nonzero predicates complement
+one another. The production path executor's two continuations are compared
+against Lean on 1,408 actual encoded-word cases: every condition and NZCV
+pattern, and all W/X register numbers at width-sensitive values. Symbolic
+Go tests additionally check all four CBZ/CBNZ forms and reject a false
+always-taken branch contract. The CI lane requires the Lean oracle.
+
+This execution projection assumes a supplied PC, register file, and NZCV,
+and explicitly adopts sequential PC+4 fall-through. It does not execute the
+full Arm `PostDecode`/`BranchTo` machinery, fetch or alignment faults, address
+translation, instrumentation, interrupts, or an architectural fetch loop.
+The Go correspondence checks remain finite evidence, not a universal proof
+of the production verifier. Source-CFG correctness, state provenance,
+complete file-format/linker correctness, and end-to-end architectural
+execution remain separate obligations.
 
 The BBM trap word `BRK #1` has the corresponding software-breakpoint seam.
 `Oak.AArch64BreakpointEncoding` proves its field packing and `0xd4200020`;
