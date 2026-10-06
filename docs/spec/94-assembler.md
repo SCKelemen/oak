@@ -8983,6 +8983,16 @@ sixty-four reads (`proofSelectSlots`); the CNF export keeps eight, the
 numbering the Lean replay pins. Tallied at 1e47c540, the equality alone:
 598 proven, 228 evidence, 125 trusted (593, 233, 125 before) — `ap_lits`,
 `args_finish`, `cnf_variable`, `pool_push_pool`, and `px_intern` cross.
+`ident` itself still stops where it did: the probe's dump reconstructed
+in `TestIdentShapeBlast` puts its premise's conditional at 754,007 nodes
+with every read interleaved — the adder equality `le.state_at + 9 ==
+le.strs_at + (v << 1)` where `v` is a read selected by the lookup's
+outcome `b` (`found == NONE`, the name not empty) costs 223,269 alone,
+`b`'s condition carried into every carry, and the conditional over the
+whole multiplies it. Under `b` and under its negation each side is a
+plain read and the equality is the 13,626-node adder: a case split on
+the condition the premise's reads select by, before the diagram, is the
+step the coupling-search bucket's bodies want next.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
