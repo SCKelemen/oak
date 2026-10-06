@@ -1,2 +1,0 @@
-Option[T]: type = Some: T | None
-value: Option[i32] = Option::Some(42)

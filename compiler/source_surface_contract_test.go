@@ -74,7 +74,8 @@ var sourceSurfaceEvidence = map[string]surfaceEvidence{
 		Reason: "this is a test-runner/tooling surface; its observable contract is generated campaigns/artifacts and runner behavior rather than the exit status of an ordinary Oak program",
 	},
 	"Simulated storage, crashes, scheduling adapters (`SimDisk`, `SimProcess`, `SimSched`)": {
-		Lane: surfaceNative, Files: []string{"compiler/e2e_iosim_read_flip_test.go", "compiler/e2e_testing_samplers_test.go"},
+		Lane: surfaceTooling, Files: []string{"compiler/e2e_iosim_read_flip_test.go", "compiler/e2e_testing_samplers_test.go"},
+		Reason: "the simulator and choice samplers are test infrastructure: they execute through the interpreter and oak test host rather than an ordinary hosted Oak binary",
 	},
 	"Effect clauses `effects { }` / `forbids { }`, effect rows on function types and record fields": {
 		Lane: surfaceStatic, Files: []string{"compiler/e2e_effect_rows_test.go", "compiler/e2e_effects_test.go"},
@@ -105,7 +106,7 @@ var sourceSurfaceEvidence = map[string]surfaceEvidence{
 		Lane: surfaceNative, Files: []string{"compiler/e2e_typestate_test.go", "compiler/e2e_protocol_via_modes_test.go"},
 	},
 	"Parameterized effects": {
-		Lane: surfaceDirection,
+		Lane:   surfaceDirection,
 		Reason: "STABILITY marks this surface direction-only; it is not yet a complete implementation contract that can honestly claim end-to-end execution",
 	},
 	"Kernels (`kernel` declarations, launch descriptors, `reduce.group_tree`), the `tensor` and `reduce` packages": {
@@ -128,7 +129,7 @@ var sourceSurfaceEvidence = map[string]surfaceEvidence{
 		Lane: surfaceNative, Files: []string{"compiler/e2e_io_port_test.go"},
 	},
 	"IO surface beyond the port (io_uring realization, registered buffers, sockets)": {
-		Lane: surfaceDirection,
+		Lane:   surfaceDirection,
 		Reason: "STABILITY explicitly says this increment is designed but has no realization yet; claiming native evidence would be false",
 	},
 	"Floating point beyond `f32`/`f64` arithmetic and the two float vectors": {
@@ -142,21 +143,24 @@ func splitStabilityRow(line string) []string {
 	}
 	var cells []string
 	var cell strings.Builder
+	inCode := false
 	for i := 1; i < len(line); i++ {
 		if line[i] == '\\' && i+1 < len(line) && line[i+1] == '|' {
 			cell.WriteByte('|')
 			i++
 			continue
 		}
-		if line[i] == '|' {
+		if line[i] == '`' {
+			inCode = !inCode
+			cell.WriteByte(line[i])
+			continue
+		}
+		if line[i] == '|' && !inCode {
 			cells = append(cells, strings.TrimSpace(cell.String()))
 			cell.Reset()
 			continue
 		}
 		cell.WriteByte(line[i])
-	}
-	if len(cells) > 0 && cells[len(cells)-1] == "" {
-		cells = cells[:len(cells)-1]
 	}
 	return cells
 }

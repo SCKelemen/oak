@@ -42,8 +42,12 @@ var diagnosticEvidenceOutsideCorpus = map[string]diagnosticEvidence{
 	"OAK-F0113": {File: "compiler/e2e_ffi_fnptr_test.go"},
 	"OAK-F0114": {File: "compiler/e2e_ffi_const_test.go"},
 	"OAK-F0115": {File: "compiler/e2e_ffi_objc_test.go"},
+	"OAK-M0110": {File: "compiler/e2e_modules_test.go"},
+	"OAK-M0113": {File: "compiler/e2e_modules_test.go"},
+	"OAK-M0303": {File: "compiler/e2e_modules_test.go"},
 	"OAK-T0502": {File: "compiler/e2e_measured_test.go"},
 	"OAK-T0601": {File: "compiler/e2e_assert_values_test.go"},
+	"OAK-T0602": {File: "compiler/e2e_refinement_test.go"},
 	"OAK-T0701": {File: "compiler/e2e_guard_wrap_test.go", Reason: "information-severity vet finding; neither default nor strict compilation rejects it"},
 }
 

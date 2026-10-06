@@ -106,6 +106,7 @@ func TestDiagnosticCorpusCoversStableSourceDiagnostics(t *testing.T) {
 		typechecker.CodeExternSignatureNotC,
 		typechecker.CodeExternSymbolInvalid,
 		typechecker.CodeExternOutsideDefinition,
+		typechecker.CodeTheoremShape,
 		string(borrowchecker.CodeBorrowReassign),
 		string(borrowchecker.CodeOwnerUsedDuringSpan),
 		string(borrowchecker.CodeOwnerWrittenDuringView),

@@ -5,4 +5,4 @@ run: (n: u32): Result[u32, Fault] {
   x: u32 = try step(n)
   .Ok(x)
 }
-main: (): i32 = run(u32(42)) ? | .Ok(v) => i32(v) | .Err(_) => 1
+main: (): i32 = run(u32(42)) ? | .Ok(v) => i32_bits_u32(v) | .Err(_) => 1

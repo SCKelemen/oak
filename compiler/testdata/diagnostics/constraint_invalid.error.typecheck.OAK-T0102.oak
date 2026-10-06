@@ -1,4 +1,2 @@
-Flag: type =
-  | On
-  | Off
+Flag: type = u8 where value < u8(2)
 fn [T: Flag] identity(x: T) -> T { x }
