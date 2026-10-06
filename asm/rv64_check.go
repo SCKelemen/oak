@@ -1414,10 +1414,12 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 				delete(c.fwritten, dest.Num)
 				return false
 			}
-			if state.saved {
-				c.errorf(line, "%s is restored from entry-relative %d, but was saved at %d", dest.Text, addr, state.slot)
-				return false
-			}
+			// Any other frame load into a saved register is the body using
+			// it, not a mis-matched restore: once saved, a callee-saved
+			// register may be written freely, and the write handling below
+			// records that it is no longer restored. `ret` refuses a
+			// register written and not restored, which is where that
+			// contract is enforced (docs/spec/94-assembler.md §9.ar).
 		}
 		c.write(dest, line)
 		return false
@@ -1492,10 +1494,13 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 				c.forgetRegister(dest.Num)
 				return false
 			}
-			if state.saved {
-				c.errorf(line, "%s is restored from entry-relative %d, but was saved at %d", dest.Text, addr, state.slot)
-				return false
-			}
+			// Any other frame load into a saved register is the body using
+			// it — the allocator's `lw s1, 92(sp)` to hold a working value —
+			// not a mis-matched restore. Once saved, a callee-saved register
+			// may be written freely; the write handling below requires the
+			// save and records that the register is no longer restored, and
+			// `ret` refuses one written and not restored, which is where the
+			// contract is enforced (docs/spec/94-assembler.md §9.ar).
 		}
 		c.write(dest, line)
 		return false
