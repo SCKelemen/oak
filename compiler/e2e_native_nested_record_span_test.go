@@ -22,9 +22,8 @@ Dom: type = struct { surfaces: [4]Surface, count: u32 }
 // An element bound to a local by value: the eight bytes the machine
 // loads cover two four-byte leaves and match none of them, and the span
 // is no aggregate local, so neither side had it. The value is the
-// element's fields read from their own memories. The element must have
-// no padding, since a byte no leaf covers is not a field and the two
-// sides would not agree on it.
+// element's fields read from their own memories. A byte no leaf covers
+// is padding, read as a fresh value (e2e_native_padded_record_span_test.go).
 Box: type = struct { x: u32, y: u32 }
 Room: type = struct { boxes: [4]Box, n: u32 }
 
