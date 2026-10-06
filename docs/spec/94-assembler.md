@@ -10673,3 +10673,52 @@ not carried at labels, and a dataflow seeded from walk order. None was
 found by reasoning about the transforms the refusals pointed at. Each
 was found by grouping the refusals by their cause and then computing the
 property over the body's own control-flow graph.
+
+### RV64 local branch encoding closure (2026-10-06)
+
+`Oak.RiscVBranchEncoding` proves the next local encoding slice for all six
+32-bit B forms (`beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`) and `jal`:
+
+- Decoding the permuted immediate recovers every signed halfword displacement.
+- B encoding preserves both source registers and its fixed opcode bits; J
+  encoding preserves its destination register and fixed opcode bits.
+- Accepted local offsets have exactly the even signed byte range: B admits
+  `[-4096, 4094]`, J admits `[-1048576, 1048574]`. Decoding an accepted word
+  and adding its displacement to the place reaches the mathematical target.
+- Little-endian serialization and reconstruction preserve every 32-bit word.
+
+The B encoding definitions reuse the thirty-row table already pinned to
+`riscv-opcodes` and bridged to Sail. The J row is separately pinned to the
+production table. Its new packing/decoding proof is internal; this increment
+does not add an external Sail JAL execution theorem. The immediate layout is
+specified by the [RISC-V unprivileged ISA, control-transfer instructions](https://docs.riscv.org/reference/isa/unpriv/rv32.html).
+
+`asm/rv64_branch_encoding_lean_test.go` decodes actual production words across
+every B offset for every register number and branch condition, and every J
+offset. The bounded Lean correspondence corpus covers all seven mnemonics,
+register boundaries, forward/backward/zero offsets, both signed endpoints,
+refusals just beyond them, odd offsets, near-int64 endpoints, and subtraction
+overflow. It also checks actual function-writer bytes against `wordBytes`.
+The formal workflow sets `OAK_REQUIRE_RV64_LEAN=1`, making absence of the
+kernel oracle a failure. The old placement test now calls the actual encoder
+instead of checking only a second table-placement computation.
+
+Both base and compressed encoders use checked int64 subtraction before
+range admission. This prevents an out-of-range mathematical displacement
+from wrapping to a small encodable one. Compressed encodings get regression
+coverage for this refusal, but their bit-permutation proofs remain open.
+
+These are universal proofs of the Lean encoding model plus bounded/exhaustive
+input-domain tests of production Go. They are not a universal Go refinement
+proof. Offset admission does not establish instruction-address alignment or
+executable mappings: individual addresses, branch conditions, JAL's link
+register effect, source CFG/layout correspondence, compression/layout,
+relocations, ELF loading, and end-to-end executable correctness remain
+separate obligations. In particular, two odd model addresses with an even
+difference satisfy the offset predicate; no executability claim follows.
+
+The new bitvector theorems use Lean 4.33.1's standard `bv_decide` path.
+Its native certificate evaluation remains in the trusted base: `#print axioms`
+reports the generated `_native.bv_decide` dependencies, alongside the usual
+Lean logical axioms. Eliminating native evaluation from the proof trust
+boundary remains a separate closure obligation; these proofs do not claim it.

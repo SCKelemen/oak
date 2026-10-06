@@ -29,6 +29,10 @@ jobs:
           /tmp/elan-init -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
+      - name: Check RV64 branch encoding proofs
+        working-directory: spec/lean
+        run: lake build Oak.RiscVBranchEncoding
+
       - name: Build formal specification
         working-directory: spec/lean
         run: lake build
@@ -51,6 +55,11 @@ jobs:
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
         run: go test ./wasm/check -run '^TestWasmLEBMatchesLean$' -count=1 -v
+
+      - name: Check RV64 branch production decisions against Lean
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./asm -run '^TestRV64LocalBranchesMatchLean$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:
