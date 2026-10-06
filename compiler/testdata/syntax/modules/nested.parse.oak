@@ -1,0 +1,3 @@
+module math {
+  answer: (): i32 = 42
+}

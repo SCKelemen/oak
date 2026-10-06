@@ -1,0 +1,5 @@
+main: (): i32 {
+  text: string = "oak"
+  assert(len(text) == u32(3))
+  42
+}

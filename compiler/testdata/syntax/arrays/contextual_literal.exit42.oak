@@ -1,0 +1,4 @@
+main: (): i32 {
+  values: [2]i32 = [40, 2]
+  values[0] + values[1]
+}

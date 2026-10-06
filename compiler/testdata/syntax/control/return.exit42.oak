@@ -1,0 +1,5 @@
+answer: (x: i32): i32 {
+  x > 0 ? { return 42 }
+  0
+}
+main: (): i32 = answer(1)

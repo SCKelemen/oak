@@ -115,5 +115,8 @@ main: (): i32 = 0
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s: want %q, got %v", name, c.want, err)
 		}
+		if name != "duplicate clause" && !strings.Contains(err.Error(), CodeLayoutClaim) {
+			t.Fatalf("%s: layout rejection lacks %s: %v", name, CodeLayoutClaim, err)
+		}
 	}
 }

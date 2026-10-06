@@ -1,0 +1,5 @@
+apply: (f: (i32) -> i32, x: i32): i32 = f(x)
+main: (): i32 {
+  inc := fn(x: i32): i32 = x + 1
+  apply(inc, 41)
+}

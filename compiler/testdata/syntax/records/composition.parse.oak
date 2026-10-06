@@ -1,0 +1,3 @@
+Person: type = { name: string, age: i32 }
+Employee: type = { id: u32 }
+Manager: type = Person & Employee

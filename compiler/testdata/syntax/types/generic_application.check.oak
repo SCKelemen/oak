@@ -1,0 +1,4 @@
+Option[T]: type =
+  | Some: T
+  | None
+value: Option[i32] = .Some(i32(42))

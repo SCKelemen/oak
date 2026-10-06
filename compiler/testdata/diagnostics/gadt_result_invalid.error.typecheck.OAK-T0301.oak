@@ -1,0 +1,4 @@
+Box[T]: type =
+  | Box: T
+Expr[T]: type =
+  | Bad: i64 => Expr[Box[i64]]

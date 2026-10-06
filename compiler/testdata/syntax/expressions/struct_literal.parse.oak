@@ -1,0 +1,1 @@
+value := struct { x: 40, y: 2 }

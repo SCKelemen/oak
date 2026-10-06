@@ -1,0 +1,1 @@
+interface Reader: interface = fn (self) read(buf: [*]u8) -> u32

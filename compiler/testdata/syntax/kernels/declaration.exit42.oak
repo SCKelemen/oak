@@ -1,0 +1,4 @@
+kernel touch: (gid: u32): () = {}
+main: (): i32 {
+  42
+}

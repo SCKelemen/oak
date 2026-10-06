@@ -1,0 +1,1 @@
+putchar: (ch: i32): c.Int = c.extern("putchar")

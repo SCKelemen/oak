@@ -1,0 +1,10 @@
+total: (base: i32, rest: ...i32): i32 {
+  acc: i32 = base
+  i: u32 = 0
+  while i < len(rest) {
+    acc = acc + rest[i]
+    i = i + 1
+  }
+  acc
+}
+main: (): i32 = total(40, 2)

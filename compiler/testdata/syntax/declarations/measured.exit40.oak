@@ -1,0 +1,4 @@
+TILE: u32 (measured: 2, 8) = 4
+DEPTH: i32 (measured: -4, 4) = -1
+tiles: (n: u32): u32 = (n + TILE - 1) / TILE
+main: (): i32 = i32_bits_u32(tiles(16)) * 10 + DEPTH + 1

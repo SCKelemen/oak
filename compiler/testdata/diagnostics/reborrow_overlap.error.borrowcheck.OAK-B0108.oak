@@ -1,0 +1,4 @@
+buf: [16]u8
+parent: [*]u8 = span(&buf)
+left: [*]u8 = parent[0:8]
+mid: [*]u8 = parent[4:12]
