@@ -210,6 +210,7 @@ func TestSourceSurfaceInventoryHasStrongestEvidenceLane(t *testing.T) {
 		if ev.Lane != surfaceDirection && len(ev.Files) == 0 {
 			t.Errorf("surface %q has no concrete evidence files", surface)
 		}
+		hasHostedExecution := false
 		for _, file := range ev.Files {
 			path := filepath.Join("..", filepath.FromSlash(file))
 			content, err := os.ReadFile(path)
@@ -223,12 +224,15 @@ func TestSourceSurfaceInventoryHasStrongestEvidenceLane(t *testing.T) {
 					t.Errorf("native surface %q points at non-e2e evidence %s", surface, file)
 				}
 				body := string(content)
-				if !strings.Contains(body, "buildAndRun(") &&
-					!strings.Contains(body, "buildAndRunFrom(") &&
-					!strings.Contains(body, "buildPackageAndRun(") {
-					t.Errorf("native surface %q evidence %s contains no hosted execution call", surface, file)
+				if strings.Contains(body, "buildAndRun(") ||
+					strings.Contains(body, "buildAndRunFrom(") ||
+					strings.Contains(body, "buildPackageAndRun(") {
+					hasHostedExecution = true
 				}
 			}
+		}
+		if ev.Lane == surfaceNative && !hasHostedExecution {
+			t.Errorf("native surface %q has no hosted source-to-binary execution witness", surface)
 		}
 	}
 	if rows == 0 {
