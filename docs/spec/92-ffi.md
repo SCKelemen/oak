@@ -790,6 +790,37 @@ round trip types (`round_trip`), a device handle only comes from a submit
 (`no_borrow_in_device`, `borrow_state_is_host`), and the wrong-way
 transitions have no derivation.
 
+##### Runtime completion obligation
+
+A custody transition's normal return is the runtime's assertion that the
+resulting state is valid. In particular, `Device -> Host` is a **completion
+boundary**, not a request to begin completion. Before returning it must:
+
+1. identify the submitted allocation, range, device, and operation generation;
+2. establish that every device operation capable of accessing that range has
+   completed or been cancelled and joined, with no later access possible;
+3. perform the target's required ordering, visibility, and cache-coherence
+   operations before CPU access resumes; and
+4. retain the allocation until those obligations have been discharged.
+
+A timeout, a cancellation request, or observing an unrelated queue event does
+not satisfy these conditions. Cancellation may return host custody only after
+quiescence; it need not establish successful computation or valid result data.
+The caller must distinguish custody recovery from successful work.
+
+The current C ABI returns `void` and Oak unconditionally retypes the original
+buffer after a normal return. It cannot express a recoverable failure that
+leaves the buffer in device custody. Such a runtime must keep waiting, use its
+explicit non-returning failure policy, or use a separately designed result
+protocol; it must not return normally and lend premature host authority.
+
+These are trusted extern obligations. The compiler checks state and borrow
+usage, but emits no fence, wait, event validation, or cache maintenance on the
+runtime's behalf. `Oak.BufferCustody` proves the typestate laws only. The
+completion regression includes an intentionally premature runtime that fails
+the program's result check; this negative control makes the trust boundary
+observable, not verified. Target-specific completion refinement remains open.
+
 #### 2.8.6 Buffers in records
 
 **Status: implemented and tested** (`compiler/e2e_buffer_fields_test.go`;
