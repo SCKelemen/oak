@@ -1026,7 +1026,10 @@ collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement
 proofs. The temporal calendar adds exhaustive native Lean conversion checks,
-checked-arithmetic laws, and a shared compiled/interpreted/Lean corpus; its
+checked-arithmetic laws, universal canonical date round trips, valid-result
+contracts for date/time/local-datetime parsers, and kernel-checked buffer frame
+contracts for all six ISO/RFC formatters. Separate calendar and codec corpora
+compare compiled Oak, interpreted Oak, and Lean on identical cases. The proofs'
 native-evaluator and bit-vector-checker trust boundaries are documented in
 [the temporal specification](../docs/spec/114-temporal.md).
 
@@ -1341,8 +1344,10 @@ then days, then the time component.
 `parse_rfc3339_datetime` and `format_rfc3339_datetime` preserve `Z`, `+00:00`, and
 `-00:00` as distinct offset kinds, including RFC 9557's update to their meaning.
 `offset_datetime_to_instant` converts explicitly and can report `Overflowed`.
-All new formatters leave the destination unchanged on error. Existing Go-style
-duration and `Zoned` timestamp APIs retain their behavior.
+All new formatters leave the destination unchanged on error and preserve the
+suffix beyond the returned length on success; these frame contracts are proved
+over the extracted implementation. Existing Go-style duration and `Zoned`
+timestamp APIs retain their behavior.
 
 See [the temporal specification](../docs/spec/114-temporal.md) for the exact
 admitted ISO/RFC profiles, errors, storage contracts, implementation proofs, and

@@ -168,7 +168,8 @@ covers that conversion path.
 its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
 `offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
 are outside the current extractor subset; it is covered by runtime tests.
-The temporal proof entry point, `TimeCalendarLaws.lean`, includes three layers:
+The temporal proof entry point, `TimeCodecLaws.lean`, imports the calendar,
+decimal, and buffer layers:
 
 - Constructor acceptance/rejection, civil structural roundtrip, invalid-input
   rejection, and formatter error atomicity are kernel-checked over the extraction.
@@ -191,6 +192,23 @@ The temporal proof entry point, `TimeCalendarLaws.lean`, includes three layers:
   bounds. Day-addition success also inherits the Gregorian certificates' native
   evaluation trust. An axiom audit distinguishes these dependencies from the
   kernel-only integer guard and non-wrapping sum laws.
+- `TimeDecimalLaws.lean` reconstructs two- and four-digit fields and relates
+  the actual date writer and reader to a ten-byte canonical calendar spelling.
+  Its bounded arithmetic uses `bv_decide` and therefore the pinned native LRAT
+  checker, with native decision axioms.
+- `TimeCodecLaws.lean` proves that every valid date formats canonically and
+  parses back to itself through any ten-byte destination; eleven units of
+  extraction fuel suffice. It also proves that successful date, clock, and
+  local-datetime parses return valid civil values. The clock-validity argument
+  is kernel checked; date/local-datetime validity inherits the Gregorian native
+  certificates through ordinal/week parsing. These are valid-result contracts,
+  not proofs of grammar soundness or completeness.
+- `TimeBufferLaws.lean` proves error atomicity and success frame properties for
+  **all six new formatters**, for arbitrary destinations and extraction fuel.
+  Every returned `Err` preserves the entire destination. Every returned `Ok n`
+  preserves its size and all bytes at indices at least `n`. These are kernel-only
+  control-flow and array proofs; they do not establish prefix contents, output
+  length bounds, or termination with sufficient fuel for every formatter.
 
 `TestLeanTimeCalendarFaithful` builds one deterministic corpus of 1,468 cases
 and compares every returned field and error constructor with an independent Go
@@ -201,8 +219,22 @@ extrema. The day-addition oracle uses unbounded integers to avoid reproducing
 an overflow bug. This corpus checks executable correspondence on these inputs;
 it is not a proof of extraction or compiler correctness.
 
+`TestLeanTimeCodecFaithful` runs **1,320 shared checks** across the same three
+execution paths. It compares every parsed field, exact error constructors,
+canonical text, returned lengths, and entire destination arrays. Go supplies
+independent civil/calendar spellings; a separate unsigned-magnitude oracle
+supplies period/duration spellings, including signed minima. Explicit cases
+cover the declared profile's restrictions instead of assuming Go accepts the
+same grammar. Coverage includes basic/ordinal/week dates, every supported
+fractional width, comma ISO fractions, trailing-zero removal, all three RFC
+zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, and every
+capacity from zero through two bytes beyond each documented maximum. The
+capacity sweep uses maximum-width values; other cases exercise shorter text
+and suffix preservation. This is finite executable evidence, not a universal
+codec or extraction proof.
+
 The focused Temporal library proofs workflow and the main formal workflow
-require these laws and the shared corpus. `OAK_REQUIRE_TIME_LEAN=1` makes a
+require these laws and both shared corpora. `OAK_REQUIRE_TIME_LEAN=1` makes a
 missing Lean toolchain a failure in CI. Fuel, array totalization, and machine
 integer modeling retain the qualifications in `95-extraction.md`.
 
@@ -212,10 +244,12 @@ Open release gates, explicitly not implied by successful tests or extraction:
    proofs if the native-evaluator trust boundary is unacceptable. Prove
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
-2. Prove parser acceptance soundness/completeness for the declared grammar,
-   overflow equivalence, canonical format/parse identity, and all buffer bounds
-   and success/failure frame properties. Extend extraction-faithfulness coverage
-   from calendar operations to codecs and civil-duration arithmetic.
+2. Prove parser grammar soundness/completeness and checked-component overflow
+   equivalence. Extend canonical round-trip proofs beyond dates to clocks,
+   local/RFC datetimes, periods, and durations. Establish successful prefix
+   contents, all output bounds, and sufficient-fuel termination for the remaining
+   formatters, including date round trips through larger destinations. Extend
+   shared executable correspondence to civil-duration arithmetic.
 3. Extend extraction/refinement through checked instant conversion. Preserve
    proofs through compilation, ABI, instruction encoding, and linking on both
    mandatory ARM64 and RV64 targets.
