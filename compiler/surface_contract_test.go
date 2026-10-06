@@ -102,7 +102,7 @@ var statementSurfaceEvidence = map[string][]surfaceEvidence{
 	"PUB":       {native("e2e_modules_test.go", "TestE2EModulesMultiPackageProgram", "pub origin:")},
 	"LBRACE": {
 		native("e2e_statement_ergonomics_test.go", "TestE2EBareBlockStatementScopes", "{\n    y: u32 = 41"),
-		native("e2e_modules_test.go", "TestE2EModulesSelectiveImport", "{ f, g }"),
+		native("e2e_modules_test.go", "TestE2EModulesSelectiveImport", "{ twice, Box, boxed }"),
 	},
 	"IDENT": {
 		native("e2e_test.go", "TestE2EExitCodePassthrough", "main: (): i32 = 42"),
