@@ -215,7 +215,10 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		if !isLabel {
 			return 0, fmt.Errorf("%s reaches only labels within the function (%s)", instr.Mnemonic, sym.Name)
 		}
-		delta := target - pc
+		delta, exact := exactInt64Difference(target, pc)
+		if !exact {
+			return 0, fmt.Errorf("branch to %s displacement overflows int64", sym.Name)
+		}
 		limit := int64(1) << uint(bits-1)
 		if delta%2 != 0 || delta < -limit || delta >= limit {
 			return 0, fmt.Errorf("branch to %s is out of range (%d bytes)", sym.Name, delta)

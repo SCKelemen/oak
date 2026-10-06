@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,24 +85,46 @@ func TestRV64LeanEncodingsMatchTable(t *testing.T) {
 	}
 }
 
-// The placement the Lean `encode` transliterates (word |= (v & mask) << lo)
-// is the encoder's: every listed mnemonic's word for sample operands is the
-// same by both computations.
+// Compare actual production words with the field-placement model used by Lean.
+// These bounded cases are regression evidence, not implementation refinement.
 func TestRV64LeanPlacementMatchesEncoder(t *testing.T) {
-	byName := map[string]rv64Encoding{}
-	for _, enc := range rv64Encodings {
-		byName[enc.Mnemonic] = enc
-	}
+	reg := func(n int) Register { return Register{Class: ClassRV64X, Num: n, Lane: -1} }
 	for _, mnemonic := range leanEncodedMnemonics {
-		enc := byName[mnemonic]
-		word := enc.Value
-		for i, arg := range enc.Args {
-			value := uint64(0x1f-uint64(i)*3) & ((uint64(1) << uint(arg.Hi-arg.Lo+1)) - 1)
-			word |= uint32(value) << uint(arg.Lo)
+		for _, n := range []int{0, 1, 10, 31} {
+			for _, value := range []int64{-2048, -1, 0, 1, 31, 63, 2047} {
+				rd, rs1, rs2 := n, (n+7)%32, (n+19)%32
+				fields := map[string]int64{"rd": int64(rd), "rs1": int64(rs1), "rs2": int64(rs2)}
+				ops := []Operand{reg(rd), reg(rs1), reg(rs2)}
+				delta := value * 2
+				switch mnemonic {
+				case "addi", "slti", "sltiu", "xori", "ori", "andi":
+					ops[2] = Immediate{Value: value}
+					fields["imm12"] = value
+				case "slli", "srli", "srai":
+					if value < 0 || value > 63 {
+						continue
+					}
+					ops[2] = Immediate{Value: value}
+					fields["shamtd"] = value
+				case "beq", "bne", "blt", "bge", "bltu", "bgeu":
+					ops = []Operand{reg(rs1), reg(rs2), Symbol{Name: "target"}}
+					fields["bimm12hi"] = (delta>>12&1)<<6 | delta>>5&63
+					fields["bimm12lo"] = delta>>1&15<<1 | delta>>11&1
+				}
+				enc := rv64Table[mnemonic]
+				want := enc.Value
+				for _, arg := range enc.Args {
+					v, ok := fields[arg.Name]
+					if !ok {
+						t.Fatalf("missing model operand %s", arg.Name)
+					}
+					want |= uint32(uint64(v)&((1<<uint(arg.Hi-arg.Lo+1))-1)) << uint(arg.Lo)
+				}
+				got, err := encodeRV64Instruction(Instruction{Mnemonic: mnemonic, Operands: ops}, 8192, map[string]int64{"target": 8192 + delta})
+				if err != nil || got != want {
+					t.Fatalf("%s n=%d value=%d: production=%#08x, %v; model=%#08x", mnemonic, n, value, got, err, want)
+				}
+			}
 		}
-		if word&enc.Mask != enc.Value {
-			t.Errorf("%s: a field overlaps the fixed bits", mnemonic)
-		}
-		_ = strconv.Itoa
 	}
 }

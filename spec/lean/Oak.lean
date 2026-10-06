@@ -205,6 +205,7 @@ import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance
 import Oak.RiscV
+import Oak.RiscVBranchEncoding
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
