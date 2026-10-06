@@ -373,6 +373,7 @@ func flattenLegacy(text string) string {
 		"buffer.tail_space", "buffer_tail_space",
 		"buffer.append", "buffer_append",
 		"buffer.peek_into", "buffer_peek_into",
+		"buffer.peek", "buffer_peek",
 		"buffer.consume", "buffer_consume",
 		"buffer.read_into", "buffer_read_into",
 		"buffer.compact", "buffer_compact",
