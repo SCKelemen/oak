@@ -187,12 +187,32 @@ and an output span shorter than three words returns `LRAT_CAPACITY` without
 writing it. `TestLRATKernelRawWords` sends raw records directly through the
 compiled Oak implementation, bypassing the Go encoder and allocating driver,
 and compares mutation acceptance with the independent Go checker.
-`Oak.LRATBounds` proves the extracted production `lrat_fits` guard equivalent
-to a mathematical interval bound, with non-wrapping endpoints and in-range
-indices; `TestLRATKernelBoundsExtract` checks the extraction for source drift.
-This is an implementation-linked proof of the guard, not yet a proof of the
-complete word parser, mutable RUP checker, allocating adapters, extraction,
-or compiled ARM64/RV64 executables. Those remain separate kernel obligations.
+The formula-bound `lrat_check_record` wrapper and the raw stream driver share
+`lrat_check_allocated`. Before allocation, they check complete framing and
+require each scratch count to be below 1073741823, so reserving one sentinel
+element and multiplying by four cannot wrap. The stream's body also leaves
+space for its eight header words. Short output spans cause no writes or
+allocations. Allocation failure returns `LRAT_CAPACITY`, frees successful
+allocations, and never constructs an owner from a null pointer. The raw driver
+decodes only complete reads and requires EOF after the declared body, refusing
+trailing bytes as well as words. `TestOakLRATAllocatedEntry` and
+`TestOakLRATRawStreamEntry` exercise these production entry points with count
+boundaries, every truncated byte, and failure at every allocation site; their
+allocator shim checks cleanup and rejects oversized requests deterministically.
+
+`Oak.LRATBounds` proves the extracted production `lrat_fits` and
+`lrat_alloc_fits` guards equivalent to mathematical bounds, with exact
+non-wrapping allocation sizes, endpoints, and indices.
+`TestLRATKernelBoundsExtract` checks the extraction for source drift.
+`TestLRATKernelRUPExtract` pins the complete production `lrat_rup` extraction,
+including its mutable assignment/trail loops. `Oak.LRATRUP` proves the extracted
+rollback loop clears exactly the used trail prefix, preserves all other
+assignments and the trail, and restores zero scratch when every nonzero
+assignment is tracked. Its counter cannot wrap before the declared endpoint.
+These are implementation-linked component proofs. Production propagation
+soundness, the full word-parser/database refinement and their composition with
+formula binding, allocation/FFI semantics, extraction correctness, and compiled
+ARM64/RV64 executables remain separate kernel obligations.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw

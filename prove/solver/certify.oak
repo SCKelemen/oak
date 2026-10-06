@@ -34,15 +34,35 @@ cert_conflicts: (): u32 {
 // independent CNF region, then checks it over scratch sized from its header.
 // out receives status, additions, deletions, including on binding refusal.
 lrat_check_record: (formula: []u32, record: []u32, out: [*]u32): u32 {
-  accepted: u32 = LRAT_FORMULA_MISMATCH
+  accepted: u32 = LRAT_CAPACITY
+  len(out) >= u32(3) ? {
+    accepted = LRAT_FORMULA_MISMATCH
+    out[u32(0)] = accepted
+    out[u32(1)] = u32(0)
+    out[u32(2)] = u32(0)
+    lrat_matches_formula(formula, record) ? {
+      accepted = lrat_check_allocated(record, out)
+    } | { }
+  } | { }
+  accepted
+}
+
+// Shared by the formula-bound wrapper and the raw-record driver. No pointer
+// becomes an owner until all allocations succeed; every successful allocation
+// is freed even when another one fails. free(NULL) is defined by the C ABI.
+lrat_check_allocated: (record: []u32, out: [*]u32): u32 {
+  accepted: u32 = LRAT_CAPACITY
+  len(out) >= u32(3) ? {
   out[u32(0)] = accepted
   out[u32(1)] = u32(0)
   out[u32(2)] = u32(0)
-  lrat_matches_formula(formula, record) ? {
+  ok: Bool = lrat_header_fits(record)
+  ok = ok && lrat_fits(LRAT_HEADER_WORDS, record[u32(3)], len(record))
+  ok = ok && record[u32(4)] == len(record) - LRAT_HEADER_WORDS - record[u32(3)]
+  ok ? {
   ids: u32 = record[u32(5)] + u32(1)
   store_words: u32 = record[u32(6)] + u32(1)
-  vars: u32 = formula[u32(1)] + u32(1)
-  accepted = LRAT_CAPACITY
+  vars: u32 = record[u32(1)] + u32(1)
   unsafe {
     starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
     lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
@@ -50,6 +70,7 @@ lrat_check_record: (formula: []u32, record: []u32, out: [*]u32): u32 {
     store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
     assign_raw: c.Ptr = malloc(c.Size(vars))
     trail_raw: c.Ptr = malloc(c.Size(vars * u32(4)))
+    starts_raw != c.null() && lengths_raw != c.null() && alive_raw != c.null() && store_raw != c.null() && assign_raw != c.null() && trail_raw != c.null() ? {
     starts: Buffer[u32] = c.own[u32](starts_raw, ids)
     lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
     alive: Buffer[u8] = c.own[u8](alive_raw, ids)
@@ -57,13 +78,22 @@ lrat_check_record: (formula: []u32, record: []u32, out: [*]u32): u32 {
     assign: Buffer[u8] = c.own[u8](assign_raw, vars)
     trail: Buffer[u32] = c.own[u32](trail_raw, vars)
     accepted = lrat_check(record, span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), out)
-    free(c.disown(trail))
-    free(c.disown(assign))
-    free(c.disown(store))
-    free(c.disown(alive))
-    free(c.disown(lengths))
-    free(c.disown(starts))
+    released_trail: c.Ptr = c.disown(trail)
+    released_assign: c.Ptr = c.disown(assign)
+    released_store: c.Ptr = c.disown(store)
+    released_alive: c.Ptr = c.disown(alive)
+    released_lengths: c.Ptr = c.disown(lengths)
+    released_starts: c.Ptr = c.disown(starts)
+    } | { }
+    free(trail_raw)
+    free(assign_raw)
+    free(store_raw)
+    free(alive_raw)
+    free(lengths_raw)
+    free(starts_raw)
   }
+  } | { }
+  out[u32(0)] = accepted
   } | { }
   accepted
 }
