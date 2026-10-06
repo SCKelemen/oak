@@ -211,8 +211,8 @@ assignments and the trail, and restores zero scratch when every nonzero
 assignment is tracked. Its counter cannot wrap before the declared endpoint.
 `Oak.LRATRUPSoundness.production_rup_entails` proves that an accepted call to
 the extracted production `lrat_rup` entails its decoded target clause in the
-exact live word database, assuming zero scratch, sufficient assignment
-capacity, and valid declared variables in live clauses. Its proof follows
+exact live word database, assuming zero scratch for declared variables,
+sufficient assignment capacity, and valid declared variables in live clauses. Its proof follows
 target negation, the duplicate-aware clause scan, and the hint loop; it does
 not assume a supplied abstract propagation derivation. The scan's candidate
 counter is proved non-wrapping using its progress invariant.

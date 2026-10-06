@@ -7,7 +7,7 @@ Soundness of the extracted production RUP implementation, pinned to
 duplicate-aware clause scan, and the hint loop preserve agreement with any
 model of the live database that falsifies the target. Consequently acceptance
 entails the decoded target; accepting an empty target refutes that database.
-The calling parser must establish zero scratch and the live-variable invariant.
+The calling parser must establish zero declared-variable scratch and the live-variable invariant.
 This module does not yet prove those invariants over a whole record, memory
 safety of the whole parser, or the correctness of extraction or native code.
 -/
@@ -47,6 +47,7 @@ that model. This is about the actual machine loop and its return status. -/
 theorem target_preserves_model (fuel : Nat) (words : Array UInt32)
     (target_at target_n variables : UInt32) (model : Nat → UInt8)
     (falseTarget : ∀ j : UInt32, j < target_n →
+      ((words.getD (target_at + j).toNat 0) / 2).toNat < variables.toNat →
       model ((words.getD (target_at + j).toNat 0) / 2).toNat =
         falseValue (words.getD (target_at + j).toNat 0))
     (assign : Array UInt8) (trail : Array UInt32)
@@ -69,21 +70,20 @@ theorem target_preserves_model (fuel : Nat) (words : Array UInt32)
       subst settled
       generalize hlit : words.getD (target_at + i).toNat 0 = lit at *
       generalize hvdef : (lit / 2).toNat = v at *
-      have hf : model v = falseValue lit := by
-        have ht := falseTarget i hi
-        rw [hlit, hvdef] at ht
-        exact ht
       by_cases invalid : lit / 2 ≥ variables
       · simp only [lrat_rup.loop1, hi, decide_true, Bool.and_self,
           ite_true, hlit, invalid, Bool.not_false, LRAT_ACCEPTED, LRAT_MALFORMED,
           BEq.beq, Option.pure_def] at run
         exact ih assign trail 1 false used (i + 1) capacity (by intro h; contradiction)
           assign' trail' status' settled' used' i' run
-      · have hv : v < assign.size := by
-          have hvar : (lit / 2).toNat < variables.toNat := by
-            rw [ge_iff_le, UInt32.le_iff_toNat_le] at invalid
-            omega
+      · have hvar : v < variables.toNat := by
+          rw [ge_iff_le, UInt32.le_iff_toNat_le, hvdef] at invalid
           omega
+        have hv : v < assign.size := by omega
+        have hf : model v = falseValue lit := by
+          have ht := falseTarget i hi
+          rw [hlit, hvdef] at ht
+          exact ht hvar
         by_cases fresh : assign.getD v 0 = 0
         · have hmodel : Agrees (assign.setIfInBounds v (falseValue lit)) model := by
             rw [← hf]
@@ -346,6 +346,7 @@ theorem rup_no_countermodel (fuel : Nat) (words : Array UInt32)
     (models : WordModels model starts lengths alive store variables max_id)
     (capacity : variables.toNat ≤ assign.size) (agree : Agrees assign model)
     (falseTarget : ∀ j : UInt32, j < target_n →
+      ((words.getD (target_at + j).toNat 0) / 2).toNat < variables.toNat →
       model ((words.getD (target_at + j).toNat 0) / 2).toNat =
         falseValue (words.getD (target_at + j).toNat 0))
     (starts' lengths' : Array UInt32) (alive' : Array UInt8) (store' : Array UInt32)
@@ -452,7 +453,7 @@ theorem production_rup_entails (fuel : Nat) (words : Array UInt32)
     (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
     (variables max_id : UInt32)
     (capacity : variables.toNat ≤ assign.size)
-    (zero : ∀ v, v < assign.size → assign.getD v 0 = 0)
+    (zero : ∀ v, v < variables.toNat → assign.getD v 0 = 0)
     (valid : LiveVariables starts lengths alive store variables max_id)
     (starts' lengths' : Array UInt32) (alive' : Array UInt8) (store' : Array UInt32)
     (assign' : Array UInt8) (trail' : Array UInt32)
@@ -462,10 +463,23 @@ theorem production_rup_entails (fuel : Nat) (words : Array UInt32)
     RupCheck.SatisfiesClause a (wordClause words target_at target_n) := by
   apply Classical.byContradiction
   intro notTarget
+  -- Unused scratch beyond the declared variables need not be zero. Extend
+  -- the candidate model there to agree with those untouched storage cells.
+  let model : Nat → UInt8 := fun v =>
+    if v < variables.toNat then encodeAssignment a v else assign.getD v 0
+  have wordModels : WordModels model starts lengths alive store variables max_id := by
+    intro id upper lower live
+    obtain ⟨k, hk, bound, holds⟩ := wordModels_of_models a _ _ _ _ _ _ valid models id upper lower live
+    exact ⟨k, hk, bound, by simpa only [model, if_pos bound] using holds⟩
+  have agreement : Agrees assign model := by
+    intro v hv
+    by_cases inside : v < variables.toNat
+    · exact Or.inl (zero v inside)
+    · exact Or.inr (by simp only [model, if_neg inside])
   apply rup_no_countermodel fuel words target_at target_n hints_at hints_n starts lengths alive store assign trail
-    variables max_id (encodeAssignment a) (wordModels_of_models a _ _ _ _ _ _ valid models) capacity
-    (fun v hv => Or.inl (zero v hv)) ?_ starts' lengths' alive' store' assign' trail' accepted
-  intro j hj
+    variables max_id model wordModels capacity agreement ?_ starts' lengths' alive' store' assign' trail' accepted
+  intro j hj bound
+  simp only [model, if_pos bound]
   apply (word_false_iff a _).mp
   intro holds
   exact notTarget ((wordClause_satisfied_iff a words target_at target_n).mpr
@@ -479,7 +493,7 @@ theorem production_empty_unsatisfiable (fuel : Nat) (words : Array UInt32)
     (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
     (variables max_id : UInt32)
     (capacity : variables.toNat ≤ assign.size)
-    (zero : ∀ v, v < assign.size → assign.getD v 0 = 0)
+    (zero : ∀ v, v < variables.toNat → assign.getD v 0 = 0)
     (valid : LiveVariables starts lengths alive store variables max_id)
     (starts' lengths' : Array UInt32) (alive' : Array UInt8) (store' : Array UInt32)
     (assign' : Array UInt8) (trail' : Array UInt32)
@@ -489,6 +503,6 @@ theorem production_empty_unsatisfiable (fuel : Nat) (words : Array UInt32)
   intro a models
   have impossible := production_rup_entails fuel words target_at 0 hints_at hints_n starts lengths alive store
     assign trail variables max_id capacity zero valid starts' lengths' alive' store' assign' trail' accepted a models
-  simpa [RupCheck.SatisfiesClause, wordClause] using impossible
+  simp [RupCheck.SatisfiesClause, wordClause] at impossible
 
 end Oak.LRATRUP
