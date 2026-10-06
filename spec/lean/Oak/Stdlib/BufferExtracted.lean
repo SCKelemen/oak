@@ -44,6 +44,10 @@ def tail_space (cursor : Array Cursor) (capacity : UInt32) (fuel : Nat) : Option
   let (r1, cursor) ← check cursor capacity fuel
   pure ((capacity - (cursor.getD 0 (default : Cursor)).end_), cursor)
 
+def peek (cursor : Array Cursor) (storage : Array UInt8) (fuel : Nat) : Option (Array UInt8 × Array Cursor) := do
+  let (r1, cursor) ← check cursor (storage.size.toUInt32) fuel
+  pure ((storage.extract (cursor.getD 0 (default : Cursor)).start.toNat (cursor.getD 0 (default : Cursor)).end_.toNat), cursor)
+
 def append.loop1 (cursor : Array Cursor) (storage : Array UInt8) (src : Array UInt8) (n : UInt32) (i : UInt32) : Nat → Option (Array UInt8 × UInt32)
   | 0 => none
   | fuel + 1 => do
@@ -193,5 +197,9 @@ def append_byte (state : Builder) (storage : Array UInt8) (value : UInt8) (fuel 
 
 def finish (state : Builder) (fuel : Nat) : Option (Result_u32_Error) := do
   pure (if state.failed then (Result_u32_Error.Err Error.Full) else (Result_u32_Error.Ok state.length))
+
+def drive_peek (cursor : Array Cursor) (storage : Array UInt8) (fuel : Nat) : Option (Array UInt8 × Array Cursor) := do
+  let (r1, cursor) ← peek cursor storage fuel
+  pure (r1, cursor)
 
 end Oak.Stdlib.Buffer

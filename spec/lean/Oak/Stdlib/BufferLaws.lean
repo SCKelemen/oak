@@ -27,6 +27,28 @@ theorem tail_space_valid (cursor : Cursor) (capacity : UInt32) (fuel : Nat)
       some (capacity - cursor.end_, #[cursor]) := by
   simp [tail_space, check, horder, hend]
 
+/-- A valid observation returns exactly the live interval and preserves the cursor.
+This is a contents theorem about the extraction, not a proof of runtime aliasing. -/
+theorem peek_valid (cursor : Cursor) (storage : Array UInt8) (fuel : Nat)
+    (horder : cursor.start ≤ cursor.end_)
+    (hend : cursor.end_ ≤ storage.size.toUInt32) :
+    peek #[cursor] storage fuel =
+      some (storage.extract cursor.start.toNat cursor.end_.toNat, #[cursor]) := by
+  simp [peek, check, horder, hend]
+
+/-- Invalid cursor ordering is refused before any observation is returned. -/
+theorem peek_reversed (cursor : Cursor) (storage : Array UInt8) (fuel : Nat)
+    (horder : ¬ cursor.start ≤ cursor.end_) :
+    peek #[cursor] storage fuel = none := by
+  simp [peek, check, horder]
+
+/-- An end beyond capacity is refused, even when the interval would be empty. -/
+theorem peek_past_end (cursor : Cursor) (storage : Array UInt8) (fuel : Nat)
+    (horder : cursor.start ≤ cursor.end_)
+    (hend : ¬ cursor.end_ ≤ storage.size.toUInt32) :
+    peek #[cursor] storage fuel = none := by
+  simp [peek, check, horder, hend]
+
 /-- Insufficient contiguous tail capacity changes neither cursor nor storage. -/
 theorem append_full_atomic (cursor : Cursor) (storage src : Array UInt8)
     (fuel : Nat)

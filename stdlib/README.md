@@ -348,18 +348,22 @@ sequential. Corrupted cursors trap before operations access storage.
 | `buffer.live_len(cursor, capacity)` | Number of live bytes |
 | `buffer.tail_space(cursor, capacity)` | Available contiguous append space |
 | `buffer.append(cursor, storage, src)` | Appends all source bytes or returns `Full`, unchanged |
+| `buffer.peek(cursor, storage)` | O(1) read-only live interval borrowing the storage view; no copy or consumption |
 | `buffer.peek_into(cursor, storage, dst)` | Fills the whole destination without consuming, or returns `InsufficientData`, unchanged |
 | `buffer.read_into(cursor, storage, dst)` | Exact peek followed by consume on success |
 | `buffer.consume(cursor, capacity, count)` | Advances start, or returns `InsufficientData`, unchanged |
 | `buffer.compact(cursor, storage)` | Moves live bytes to offset zero; returns their count |
 | `buffer.reset(cursor)` | Clears offsets without erasing storage |
 
-Append, peek, read and consume return `Result[u32,buffer.Error]` with the byte
+Append, copying peek/read, and consume return `Result[u32,buffer.Error]` with the byte
 count on success. Supply the actual backing capacity to metadata-only operations.
 Consuming the last live byte resets both offsets. Append never compacts implicitly;
-call compact to reclaim a consumed prefix. Append/read/peek cost O(copied bytes),
+call compact to reclaim a consumed prefix. Append/read/peek_into cost O(copied bytes),
 compact costs O(live bytes), and metadata operations cost O(1). Storage passed to
-append/compact is `[*]u8`; peek/read takes `[]u8` plus a separate mutable destination.
+append/compact is `[*]u8`; copying peek/read takes `[]u8` plus a separate mutable destination.
+`peek` instead returns an O(1) read-only view tied to the storage region. It
+captures the current interval without consuming; writes and compaction remain
+forbidden while that observation lives.
 Use lexical scopes to release a write borrow before creating a read view.
 
 Returning borrowed slices is not yet supported by Oak's borrow checker, so these

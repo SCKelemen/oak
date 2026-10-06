@@ -100,7 +100,9 @@ var leanStdlibPackages = []struct {
 	{name: "bytes", file: "BytesExtracted.lean", namespace: "Oak.Stdlib.Bytes"},
 	{name: "bitset", file: "BitsetExtracted.lean", namespace: "Oak.Stdlib.Bitset"},
 	{name: "endian", file: "EndianExtracted.lean", namespace: "Oak.Stdlib.Endian", deps: []string{"bytes"}},
-	{name: "buffer", file: "BufferExtracted.lean", namespace: "Oak.Stdlib.Buffer"},
+	{name: "buffer", file: "BufferExtracted.lean", namespace: "Oak.Stdlib.Buffer", driver: `
+drive_peek: (cursor: [*]Cursor, storage: []u8): []u8 = peek(cursor, storage)
+`},
 	{name: "array_list", file: "ArrayListExtracted.lean", namespace: "Oak.Stdlib.ArrayList", driver: `
 drive_push_u8: (cursor: [*]Cursor, storage: [*]u8, value: u8): Result[u32, Error] = push[u8](cursor, storage, value)
 drive_get_u8: (cursor: [*]Cursor, storage: []u8, index: u32): Result[u8, Error] = get[u8](cursor, storage, index)
