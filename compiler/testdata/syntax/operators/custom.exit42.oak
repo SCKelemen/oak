@@ -1,0 +1,3 @@
+Box: type = struct { v: i32 }
+operator(+) add: (a: Box, b: Box): Box = Box { v: a.v + b.v }
+main: (): i32 = (Box { v: 40 } + Box { v: 2 }).v

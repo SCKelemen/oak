@@ -1,0 +1,2 @@
+Option[T]: type = Some: T | None
+values: [2]Option[i32] = [2]Option[i32]{ Option::Some(40), Option::Some(2) }

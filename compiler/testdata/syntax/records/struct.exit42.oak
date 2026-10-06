@@ -1,0 +1,5 @@
+Point: type = struct { x: i32, y: i32 }
+main: (): i32 {
+  p: Point = Point { x: 40, y: 2 }
+  p.x + p.y
+}

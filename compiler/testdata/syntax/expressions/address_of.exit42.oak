@@ -1,0 +1,6 @@
+main: (): i32 {
+  data: [1]u8
+  writable: [*]u8 = span(&data)
+  writable[0] = u8(42)
+  i32(writable[0])
+}

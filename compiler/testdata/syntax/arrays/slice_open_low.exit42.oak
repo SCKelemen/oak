@@ -1,0 +1,5 @@
+main: (): i32 {
+  values: [4]u8
+  part: []u8 = values[:2]
+  i32(len(part)) + 40
+}

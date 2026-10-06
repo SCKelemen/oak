@@ -1,0 +1,5 @@
+kernel touch: (gid: u32): () = { _ = gid }
+main: (): i32 {
+  touch(u32(0))
+  42
+}

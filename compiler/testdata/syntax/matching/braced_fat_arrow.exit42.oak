@@ -1,0 +1,4 @@
+main: (): i32 = true ? {
+  | true => 42
+  | false => 0
+}

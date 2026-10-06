@@ -1,0 +1,3 @@
+buf: [16]u8
+left: [*]u8 = span(&buf)
+right: [*]u8 = span(&buf)

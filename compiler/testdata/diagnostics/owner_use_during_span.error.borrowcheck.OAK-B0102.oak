@@ -1,0 +1,3 @@
+buf: [16]u8
+writer: [*]u8 = span(&buf)
+value: u8 = buf[0]

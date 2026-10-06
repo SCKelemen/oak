@@ -1,0 +1,1 @@
+h: { Key: type, hash: (Key) -> u64 } = import("example.com/hello/fnv")

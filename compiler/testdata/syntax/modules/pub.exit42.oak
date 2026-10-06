@@ -1,0 +1,2 @@
+pub answer: (): i32 = 42
+main: (): i32 = answer()
