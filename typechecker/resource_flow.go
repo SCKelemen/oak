@@ -2,6 +2,8 @@ package typechecker
 
 import (
 	"fmt"
+	"maps"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -2637,54 +2639,84 @@ func joinReachable(branches []*resourceflow.Flow, diverged []bool, incoming *res
 	return resourceflow.Join(reachable...)
 }
 
+// resourceLoopFacts are the non-Flow facts consulted by resource transfer.
+// Per-expression result caches are refreshed when the expression is visited;
+// diagnostic provenance and expired local dependencies are not loop inputs.
+type resourceLoopFacts struct {
+	dependents       map[string]map[string]bool
+	scopes           map[string]int
+	mutable          map[string]bool
+	unknown          map[string]bool
+	entry            map[string]entryAuthority
+	owned            map[string]string
+	transferred      map[string]bool
+	callables        map[string]string
+	unknownCallables map[string]bool
+}
+
+func (a *typedResourceAnalysis) loopFacts() resourceLoopFacts {
+	deps, scopes, _ := a.cloneDependents()
+	return resourceLoopFacts{
+		dependents: deps, scopes: scopes,
+		mutable:          maps.Clone(a.mutableDependents),
+		unknown:          maps.Clone(a.unknownResources),
+		entry:            maps.Clone(a.entryModes),
+		owned:            maps.Clone(a.owned),
+		transferred:      maps.Clone(a.transferred),
+		callables:        maps.Clone(a.callableContracts),
+		unknownCallables: maps.Clone(a.unknownCallables),
+	}
+}
+
 func (a *typedResourceAnalysis) whileStatement(stmt *ast.WhileStatement) {
 	if stmt == nil {
 		return
 	}
-	// A loop may execute zero times, so its incoming state participates in
-	// the loop-head fixed point. The lattice has height three; probing a
-	// second iteration is enough to expose re-use/double-consume from a
-	// first-iteration consumption and reaches the conservative fixed point.
-	incoming := a.flow.Clone()
-	incomingDeps, incomingScopes, incomingDecls := a.cloneDependents()
+	// Component height does not bound the height of the product environment:
+	// rebinding can propagate uncertainty one name per traversal. Join each
+	// backedge into the accumulated head and stop only at a stable state.
+	// Join can only discard head aliases or weaken their authority; dependency
+	// sets grow over the finite set of source paths. Fresh loop-local classes
+	// cannot enter the head because they have no incoming-path counterpart.
+	invariant := a.flow.Clone()
 	outerDiverged := a.diverged
 	a.loopExits = append(a.loopExits, nil)
+	var exits []*resourceflow.Flow
 
-	a.diverged = false
-	a.flow = incoming.Clone()
-	a.expression(stmt.Condition)
-	a.block(stmt.Body)
-	oneIteration := a.flow.Clone()
-	oneDiverged := a.diverged
-
-	invariant := oneIteration
-	if !oneDiverged {
-		invariant = resourceflow.Join(incoming, oneIteration)
-	} else {
-		invariant = incoming
-	}
-	a.diverged = false
-	a.flow = invariant.Clone()
-	a.expression(stmt.Condition)
-	a.block(stmt.Body)
-	twoIterations := a.flow.Clone()
-	twoDiverged := a.diverged
-
-	// The loop exits when its condition fails (after zero, one, or two
-	// probed iterations that fell through) or through any break.
-	exits := []*resourceflow.Flow{incoming}
-	if !oneDiverged {
-		exits = append(exits, oneIteration)
-	}
-	if !twoDiverged {
-		exits = append(exits, twoIterations)
+	for {
+		a.flow = invariant.Clone()
+		before := a.loopFacts()
+		deps, scopes, decls := a.cloneDependents()
+		diagnosticsBefore := len(a.tc.Diagnostics())
+		a.diverged = false
+		a.expression(stmt.Condition)
+		// The condition runs even when the body executes zero times.
+		exits = append(exits, a.flow.Clone())
+		a.block(stmt.Body)
+		fallsThrough := !a.diverged
+		next := invariant
+		if fallsThrough {
+			next = resourceflow.Join(invariant, a.flow)
+		}
+		// A dependency from any reachable iteration remains an obligation.
+		a.mergeDependents(deps, scopes, decls)
+		for name, mutable := range before.mutable {
+			if mutable && a.dependents[name] != nil {
+				a.mutableDependents[name] = true
+			}
+		}
+		stable := next.SameState(invariant) && reflect.DeepEqual(before, a.loopFacts())
+		invariant = next
+		// A rejected program needs no further fixed-point exploration. A
+		// body with no backedge contributes only condition and break exits.
+		if stable || !fallsThrough || len(a.tc.Diagnostics()) > diagnosticsBefore {
+			break
+		}
 	}
 	exits = append(exits, a.loopExits[len(a.loopExits)-1]...)
 	a.loopExits = a.loopExits[:len(a.loopExits)-1]
 	a.flow = resourceflow.Join(exits...)
 	a.diverged = outerDiverged
-	// Dependencies established by any iteration, or by none, all survive.
-	a.mergeDependents(incomingDeps, incomingScopes, incomingDecls)
 }
 
 func (a *typedResourceAnalysis) expression(expr ast.Expression) {

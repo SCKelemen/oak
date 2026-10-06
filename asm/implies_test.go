@@ -623,6 +623,14 @@ func TestUnsignedZeroComparisonFoldsBeforeItsBound(t *testing.T) {
 			t.Fatalf("%s used an unsigned subtraction law: %s", code, got)
 		}
 	}
+	hiddenZero := binaryTerm("and", paramTerm("x", 32), zero)
+	comparison := cmpTerm("ls", hiddenZero, bound)
+	if comparison.kind != termCmp {
+		t.Fatalf("comparison folded before zero was exposed: %s", comparison)
+	}
+	if got := canonical(comparison); got.kind != termConst || got.value != 1 || got.width != 32 {
+		t.Fatalf("comparison after exposing zero = %s, want u32(1)", got)
+	}
 }
 
 // Pure scalar status checks can be split into separate post-loop reach facts;

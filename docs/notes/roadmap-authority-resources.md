@@ -1,9 +1,19 @@
 # Roadmap: authority contracts, resources, borrowed results, and predictable optimization
 
-**Status: proposal.** Committed here so every session builds against one
-dependency-ordered plan for the Futhark/Swift-inspired workstream. Nothing
-below is implemented unless marked landed; milestone numbers are scopes,
-not PR numbers. Baseline checked: `specification` at `ae5043e`.
+**Status: implementation roadmap, reconciled 2026-10-06.** Milestones are
+scopes, not PR numbers or claims of universal verification. The original
+planning baseline was `ae5043e`; this reconciliation inspected `4a740ef7`
+and the accompanying resource-boundary changes. Historical increment
+entries below describe supported subsets, not completion of every goal.
+
+Current next work: multiple-region records and borrowed resource aggregates
+across calls; array-element provenance; broader authority/dependency
+refinement; and a target-specific runtime completion contract. Ordinary
+qualified cross-package borrowed returns already work through module
+elaboration and now have explicit positive and negative regression coverage.
+The proposed loop audit did not reproduce an accepted unsafe alias chain:
+the old joins already rejected those controls. Loop traversal now checks
+stability explicitly instead of relying on the two-pass argument.
 
 The arc is **sound authority contracts → composable resource APIs → safe
 borrowed results → predictable optimization**. Swift informs ownership and
@@ -119,8 +129,10 @@ writes — record literals give resource fields the provenance of their
 initializers, paths extend through nested records, projections are uses of
 the field's authority, field and whole-record writes rebind paths, and
 fields without provenance stay untracked and fail closed. Still open:
-array elements (never tracked) and loop-specific fixed points beyond the
-existing two-iteration probe.
+array elements (never tracked) and formal correspondence for the full
+provenance/dependency traversal. The loop audit now iterates to stable
+authority and auxiliary facts; this is implementation coverage, not a new
+formal refinement claim.
 
 ## 4. Checked result provenance, then borrowed returns
 
@@ -220,12 +232,24 @@ way to discharge an obligation on every exit including `break`.
 
 ## 7. Scoped callbacks and shortened borrows
 
+**Implemented subset:** supported capturing callbacks are specialized into
+direct calls with captures as arguments (`compiler/e2e_closures_test.go`),
+including borrowed storage and plain-data aggregates. No closure object is
+required for that shape. Broader capture storage and general last-use borrow
+shortening remain open.
+
 Nonescaping captures with justified stack environments first; callback
 contracts preserve permissions; retention, reentrancy, effects accounted
 for. Then last-use borrow shortening where dataflow proves it, lexical
 fallback otherwise.
 
 ## 8. Symbolic extents and shape obligations
+
+**Implemented subset:** flow-sensitive guards, assertions, exact lengths,
+length aliases, offset/scaled/masked indices, binary-search bounds, and SIMD
+accesses discharge bounds checks (`50-borrowing.md`, extent-facts section).
+`Oak.ExtentsRefinement` covers the selected discharge decision; full traversal
+and general cross-call symbolic shape contracts remain separate work.
 
 Constants, symbolic lengths, equalities, simple inequalities, +/−,
 multiplication by constants; propagation through slicing, splitting,
@@ -287,7 +311,11 @@ states with transition externs (`92-ffi.md` §2.8.5), a record holding a
 buffer as the custody state with a device identity (§2.8.6), and
 `Oak.BufferCustody` as the typestate model; the pilot protocol is the
 `mlrt_submit`/`mlrt_complete` round trip of `compiler/e2e_buffer_custody_test.go`.
-Completion obligations (ordering, visibility, coherence) remain the open half.
+Completion obligations are now explicit at the trusted extern boundary
+(`92-ffi.md` §2.8.5): normal return to Host requires quiescence and the target's
+ordering/visibility/coherence work. The current void ABI cannot return a
+recoverable failure retaining Device custody. Target-specific enforcement
+and refinement remain the open half.
 
 Transferable custody vs concurrent sharing. Pilot one real CPU → device →
 CPU protocol; track reachable storage and dependent borrows; completion
@@ -311,11 +339,11 @@ device submission) exercise the semantics.
 | D | 6 and 8 | predictable exits, usable extent evidence |
 | E | 9 and 10 | measured bulk processing, one verified device transfer |
 
-First five bounded changes: callee-entry permissions and forwarding
-checks; receiver contracts and stable contract identity through module
-transformations; function-value contract preservation and exact
-compatibility; generic/wrapper/interface propagation; binding provenance
-across reassignment and control-flow joins, then projections.
+The original first five increments have implementations in the subsets
+recorded above. The current boundary pass adds module-return regression
+coverage, explicit resource loop convergence, and the trusted completion
+obligations in `92-ffi.md` §2.8.5. It does not establish hardware completion,
+multiple regions per record, or general borrowed aggregate call contracts.
 
 **Definition of done for every safety increment:** state the rule and the
 supported subset; preserve facts through all stages; test valid use and
@@ -324,12 +352,12 @@ projections, wrappers, nested calls; validate emitted C and interpreter
 behavior; run the repository gates; extend the formal model and label
 implementation refinement only with an explicit correspondence proof.
 
-**Open decisions:** ownership surface spelling; receiver notation;
-callable ownership variance; default/exported-contract inference;
-user-visible lifetimes; per-resource dropping and cleanup policy;
-partial-move rules; first borrowed aggregate shapes; the extent theory and
-runtime-proof admission surface; parallel numeric reproducibility;
-target-specific device-transfer obligations.
+**Open decisions:** callable ownership variance; default/exported-contract
+inference; per-resource dropping and cleanup policy; partial-move rules;
+multiple-region aggregate contracts; broader extent theory; parallel numeric
+reproducibility; and the target-specific implementation and proof of device
+completion. Modes/results already have protocol source spelling and storage
+regions already have explicit and elided forms.
 
 ## Asks recorded from the resource work (2026-09-11)
 

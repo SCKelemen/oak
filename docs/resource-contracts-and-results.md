@@ -1,11 +1,42 @@
 # Resource contracts and borrowed results
 
-Design and implementation audit following resource parameter modes and call-local
-exclusivity. This document proposes the next semantic increments; it does not
-enable borrowed returns or freeze source syntax. The normative borrowing rules
-remain in `spec/50-borrowing.md`.
+Implementation audit and design history for resource parameter modes,
+call-local exclusivity, and borrowed results. The normative rules are in
+`spec/50-borrowing.md`; source contracts are in `spec/112-protocols.md` §5.1.
 
-## Current implementation audit
+## Current status, 2026-10-06
+
+Reconciled against `4a740ef7` and the accompanying boundary regression work.
+The older audit and proposal below are retained as history; their missing-feature
+findings must not be used as the current implementation status.
+
+| Boundary | Implemented evidence | Remaining limit |
+| --- | --- | --- |
+| Callee entry and retention | `compiler/resource_callee_authority_test.go`: permissions follow aliases; borrowing cannot hide consumption, upgrades, or uncontracted retention | Unmarked-parameter policy; complete traversal refinement |
+| Function values, function parameters, specialization, receivers | `resource_callable_boundaries_test.go`, `resource_function_type_contracts_test.go`, `resource_receiver_modes_test.go`: preserved modes, exact contract agreement, unknown-call refusal | General variance and inference; no claim about every interface shape |
+| Source and imported authority contracts | `e2e_protocol_via_modes_test.go`: protocol elaboration binds contracts to internal identities; via lines spell modes, callable contracts, and result facts | Abstract boundary and inference extensions require their own acceptance tests |
+| Binding and record provenance | `resource_reassignment_test.go`, `resource_projections_test.go`: rebinding, fields, writes, and conservative joins | Array elements; full formal correspondence |
+| Result facts and dependent authority | Result-contract, borrowed-result, multiple-origin, mutable-reborrow, and borrowed-aggregate tests | Borrowed resource aggregates crossing calls; dependency/suspension refinement |
+| Resource ADT payloads | `resource_adt_payloads_test.go`: inspect, extract, return, specialize | Partial-field moves and declared copyability capability |
+| Required completion | `resource_terminal_obligations_test.go`: terminal states, custody transfer, and defer on exits | Destructor/drop semantics |
+| Storage regions across packages | `e2e_module_regions_test.go`: qualified calls and forwarding retain explicit/elided regions and reject owner writes, suspended-span uses, and local-owner escapes | Multiple-region records and broader sealed/indirect region contracts |
+| Device completion | `spec/92-ffi.md` §2.8.5 specifies normal-return obligations; a premature-runtime negative control exposes the trust boundary | Actual device completion, visibility, coherence, and target refinement remain trusted/open |
+
+Loop analysis now joins backedges until tracked authority and auxiliary facts
+stabilize. A three-state authority component alone does not justify a fixed
+number of whole-environment traversals. The long source-level alias-chain
+controls also reject on the old checker, so they are not evidence of a previously
+accepted exploit. The core product-domain test exercises convergence beyond two
+passes independently. Neither test coverage nor this traversal is a universal
+implementation refinement theorem.
+
+Opaque resource dependencies and storage regions remain distinct. A resource
+result marked fresh does not establish backing-storage lifetime. `via unsafe`
+marks an explicit trusted result claim; checked source bodies otherwise have to
+justify the declared relationship. The compiler checks the supported source
+contracts before permitting their use at callers.
+
+## Historical implementation audit (before subsequent increments)
 
 Audited against specification commit `0c086683a8a02fa9bb96a5a6e0d856942bbe0321`.
 PR #69 merged as `906bff7b575dd114e08a27e7ed9acdad4ef15d80`. Its resource-flow
@@ -47,7 +78,7 @@ new class without reviving the old one, other right-hand sides leave the name
 with unknown provenance, and control-flow joins drop names whose provenance
 differs across paths. Projections and aggregate writes remain conservative.
 
-## Callable contract preservation
+## Original callable-contract proposal (see current status above)
 
 Introduce one checked semantic callable contract, referenced by stable declaration
 identity rather than inferred from source names or mangled-name prefixes. It must
@@ -66,9 +97,9 @@ that produces the specialized signature. Wrappers must either have a checked
 explicit contract or acquire a sound inferred summary. Borrowed parameters cannot
 be forwarded to consuming operations merely because their local bindings are
 live. A borrowed parameter's authority is also a callee-body obligation — now
-enforced for forwarding by `OAK-B0114` (`50-borrowing.md` §9, callee-entry
-authority): a body's calls are checked against the entry authority of the
-parameters and their aliases; retention and escape remain open.
+enforced for forwarding and retention by `OAK-B0114` (`50-borrowing.md` §9,
+callee-entry authority). Checked result contracts supply the permitted return
+cases described in the current status above.
 
 Acceptance cases:
 
@@ -80,7 +111,7 @@ Acceptance cases:
 5. Receiver modes survive method resolution without shifting explicit indices.
 6. Unknown contract information cannot erase an already-known obligation.
 
-## Result provenance and lifetime dependencies
+## Result design rationale and original staging
 
 Result identity, access permission, and lifetime dependency are separate facts.
 The following names are explanatory semantic categories, not proposed keywords.
