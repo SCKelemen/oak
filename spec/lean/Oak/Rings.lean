@@ -116,10 +116,49 @@ def Spsc.runLen (s : Spsc α) : Nat :=
   min (s.tail - s.head) (s.cap - (s.head % s.cap))
 
 theorem runLen_le_count (s : Spsc α) : s.runLen ≤ s.tail - s.head := by
-  simp [Spsc.runLen]
+  exact Nat.min_le_left _ _
 
 theorem runLen_le_wrap_room (s : Spsc α) : s.runLen ≤ s.cap - (s.head % s.cap) := by
-  simp [Spsc.runLen]
+  exact Nat.min_le_right _ _
+
+/-- Bulk consumption cannot advance past the published prefix. -/
+theorem consumeN_wf (s : Spsc α) (n : Nat) (hwf : s.WF)
+    (hn : n ≤ s.tail - s.head) : (s.consumeN n).WF := by
+  obtain ⟨hcap, hht, hbound⟩ := hwf
+  exact ⟨hcap, by simp [Spsc.consumeN]; omega, by simp [Spsc.consumeN]; omega⟩
+
+/-- Every remaining payload still belongs to its original FIFO position. -/
+theorem consumeN_inv (s : Spsc α) (n : Nat) (hinv : s.Inv) :
+    (s.consumeN n).Inv := by
+  intro p hp hlt
+  simp only [Spsc.consumeN] at hp hlt ⊢
+  exact hinv p (by omega) hlt
+
+/-- Cached consumer indices lifted to nonwrapping logical positions. The
+    machine-counter relation remains a separate obligation; see wrapped_difference
+    and the executable rollover regressions. -/
+structure ConsumerWindow where
+  head : Nat
+  tailSeen : Nat
+  tail : Nat
+
+def ConsumerWindow.Valid (s : ConsumerWindow) : Prop :=
+  s.head ≤ s.tailSeen ∧ s.tailSeen ≤ s.tail
+
+/-- Bulk consume must refresh the scalar pop cache, not only advance head. -/
+def ConsumerWindow.consume (s : ConsumerWindow) (n : Nat) : ConsumerWindow :=
+  { s with head := s.head + n, tailSeen := s.tail }
+
+theorem consume_cache_valid (s : ConsumerWindow) (n : Nat)
+    (hv : s.Valid) (hn : n ≤ s.tail - s.head) : (s.consume n).Valid := by
+  simp only [ConsumerWindow.Valid, ConsumerWindow.consume] at *
+  omega
+
+theorem consume_all_cache_empty (s : ConsumerWindow) (hv : s.Valid) :
+    (s.consume (s.tail - s.head)).head =
+      (s.consume (s.tail - s.head)).tailSeen := by
+  simp only [ConsumerWindow.Valid, ConsumerWindow.consume] at *
+  omega
 
 /-- A pop from a non-empty ring returns the item pushed at `head`: FIFO. -/
 theorem pop_returns_pushed (s : Spsc α) (hinv : s.Inv) (hnotempty : s.head < s.tail) :
