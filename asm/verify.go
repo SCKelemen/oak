@@ -12278,7 +12278,7 @@ const witnessVisitBudget = 4000000
 // lowering itself keeps the product, which the refinement model renders
 // (Oak.LoweringRefinement); only the comparison canonicalizes.
 func canonical(t *term) *term {
-	return canonicalMemo(t, map[*term]*term{}, map[*term]bool{})
+	return canonicalMemo(t, newCanonicalTable(), map[*term]bool{})
 }
 
 // compareSmallConditional distributes an equality test over a narrow
@@ -12354,11 +12354,34 @@ func compareSmallConditional(code string, value, constant *term) (*term, bool) {
 	return compare(value), true
 }
 
-func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term {
+// A canonicalTable is canonicalMemo's memo: the canonical form of each
+// term it has seen, and each term's one-bit truncation, built once so the
+// truncation is the same node every time and its canonical form is found
+// in done rather than recomputed through the term's shared subgraph.
+type canonicalTable struct {
+	done map[*term]*term
+	bit  map[*term]*term
+}
+
+func newCanonicalTable() *canonicalTable {
+	return &canonicalTable{done: map[*term]*term{}, bit: map[*term]*term{}}
+}
+
+// bitOf is truncate(t, 1), one node per t.
+func (m *canonicalTable) bitOf(t *term) *term {
+	if b, seen := m.bit[t]; seen {
+		return b
+	}
+	b := truncate(t, 1)
+	m.bit[t] = b
+	return b
+}
+
+func canonicalMemo(t *term, memo *canonicalTable, boolean map[*term]bool) *term {
 	if t == nil {
 		return nil
 	}
-	if done, seen := memo[t]; seen {
+	if done, seen := memo.done[t]; seen {
 		return done
 	}
 	var out *term
@@ -12456,7 +12479,7 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 				// combination of their truncations (`eor w, w, #1` then
 				// the bit: the negation of the bit), so the machine's
 				// negations and the Oak body's meet at one width.
-				out = canonicalMemo(binaryTerm(left.op, truncate(left.left, 1), truncate(left.right, 1)), memo, boolean)
+				out = canonicalMemo(binaryTerm(left.op, memo.bitOf(left.left), memo.bitOf(left.right)), memo, boolean)
 			}
 			if out == nil && t.op == "xor" && t.width == 1 && right.kind == termConst && right.value == 1 && left.kind == termBinary && left.op == "xor" && left.width == 1 && left.right.kind == termConst && left.right.value == 1 {
 				out = left.left // a double negation
@@ -12607,7 +12630,7 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 			out = t
 		}
 	}
-	memo[t] = out
+	memo.done[t] = out
 	return out
 }
 

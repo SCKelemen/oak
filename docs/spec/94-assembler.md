@@ -9989,6 +9989,20 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**A one-bit truncation keeps its operands' sharing (2026-10-06).** The
+canonicalizer reads a wide combination of 1/0 values at one bit as the
+combination of its operands' one-bit truncations, and canonicalizes that.
+Each truncation was a fresh node, so its canonical form was never in the
+memo and the rule fired again on the operands' operands: a shared subgraph
+was walked once per path through it. A guarded scan's unrolled selection
+(the OS's `virq.next_pending` with its enable test as a branch, read by
+`ack_highest` to store through the result) is such a graph, and the trap
+domain decision for the caller's stores ran for hours. The canonical memo
+now carries each term's one-bit truncation, built once per term, so the
+rule meets its own earlier work: the guarded `virq` builds in seconds with
+the flat scan's verdicts (15 proven, 3 witness-checked), and
+`take_highest` in the four-variant repro is proven in a quarter second.
+
 **Covering masks and packed pairs canonicalize away (2026-09-18).** The
 machine spells a 32-bit word it widened as `h and 0xffffffff`, and the
 low word of a pair it packed as `(lo or (hi shl 32)) and 0xffffffff`;

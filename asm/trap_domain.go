@@ -354,7 +354,7 @@ func sourceTrapOnPathDepth(path, oak *term, depth int) bool {
 	// Respelled before pruning: the machine's index masks and the Oak
 	// side's meet only once both are in the one spelling, and the facts
 	// are read from the respelled path.
-	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	cmemo, cbool := newCanonicalTable(), map[*term]bool{}
 	path = respell(canonicalMemo(truncate(path, 1), cmemo, cbool))
 	oak = respell(canonicalMemo(truncate(oak, 1), cmemo, cbool))
 	// Each conjunct of the path is settled by the others (a call
