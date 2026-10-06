@@ -77,6 +77,11 @@ The binary rules retain the [pinned Core reference](https://github.com/WebAssemb
 | `decode_assemble` | Complete instruction sequences round-trip with their order, values and suffix preserved |
 | `Oak.WasmNumeric.signed_division_refines`, `signed_division_traps_iff` | The signed-division guard implements Oak wrapping semantics for every input pair and traps exactly on zero; fixed-width corollaries cover both MIN / -1 cases |
 | `Oak.Target` | Wasm32 is supported only with Core; its metadata is ILP32, container Wasm, native lane absent, and external C driver resolution refused even with an explicit compiler |
+| `Oak.WasmAssembler.signed_next_floor` | The extracted Oak signed step computes mathematical floor division by 128 for every i64, including MIN |
+| `range_guard_iff`, `admitted_store`, `reserve_no_wrap` | The actual subtraction guard admits exactly a mathematical in-bounds range; loop addresses and preflight additions do not wrap |
+| `preflight_bound`, `assemble_success_bound` | The extracted first pass maintains its total-capacity invariant, and every successful assembly reports an extent within the original span |
+| `write_uleb_refuses`, `write_sleb_refuses`, `write_instruction_refuses`, `assemble_failure_atomic` | Rejected footprints and every returned whole-plan failure preserve the complete destination, including late invalid instructions |
+| `write_uleb_frame`, `write_sleb_frame` | Every returning extracted LEB writer preserves the array length and all bytes outside its reported extent |
 
 Encoding recursion decreases the bit-width budget; it is not an execution-fuel
 assumption. Sequence decoding uses a syntactic instruction count. The numeric law assumes already-evaluated integer operands; it does not prove
@@ -84,6 +89,20 @@ local selection or the emitted control structure. These models do not assert
 runtime termination, execute general control flow, or prove guest memory safety. The target model also corrects the existing RISC-V default CPU names
 and places unsupported-target refusal before explicit C-driver selection, as
 the current Go implementation does.
+
+`WasmAssemblerExtracted.lean` is mechanically generated from the entire
+`asm/selfhost/wasm.oak` through the normal type-checked Lean extractor.
+`WasmAssemblerLaws.lean` proves properties of those generated definitions,
+subject to the compiler/extractor correspondence and modeling choices in
+[Lean extraction](95-extraction.md). The source is not duplicated by hand.
+Mutable spans become threaded arrays; the plan and destination must be disjoint.
+The universal writer/frame and preflight laws quantify over arbitrary extraction
+fuel and returning runs. `none` denotes fuel exhaustion, not assembler failure.
+They do not yet prove sufficient fuel for every valid plan, byte content against
+`WasmEncoding`, or the complete instruction/sequence success frame. The
+`admitted_store` law separately discharges the in-bounds, nonwrapping address
+obligation for the LEB loops; the extractor's out-of-bounds-store behavior is
+not used as evidence of runtime safety.
 
 ## Production evidence and gates
 
@@ -101,6 +120,16 @@ the current Go implementation does.
   signed extrema, short destinations and complete destination preservation.
 - `TestE2ESelfHostedWasmLEB`: full-width unsigned/signed encoders are compared
   at every bit transition, including extrema, suffix frames and short-buffer refusal.
+- `TestLeanWasmAssemblerExtract`: regenerates the complete Oak assembler
+  extraction and requires byte-for-byte agreement with the committed module.
+- `TestLeanWasmAssemblerFaithful`: evaluates the extracted size, writer and
+  assembly routines with kernel-checked `decide` claims. It shares instruction,
+  full-width LEB and transaction corpora with the compiled-Oak tests, comparing
+  complete buffers and returned counts/status against the Go encoder. Fuel
+  exhaustion is explicitly distinct from ordinary refusal.
+- `TestE2ESelfHostedWasmTransactions`: the shared whole-plan corpus covers empty
+  and mixed plans, exact fits, short storage, out-of-range offsets and late bad
+  opcodes/immediates; every destination byte is checked.
 - `TestE2ESelfHostedWasmExecution`: an instruction body assembled by compiled
   Oak is placed in a test module, independently validated, and executed by a
   JavaScript Wasm engine on full-width arithmetic inputs. The module envelope
@@ -108,18 +137,20 @@ the current Go implementation does.
 - The existing full Wasm/compiler suite retains exact output-size fixtures,
   branch/loop/call/Bool/trap cases and independent engine validation.
 
-Formal CI requires both Lean production oracles and the Oak execution tests;
+Formal CI requires both Lean production oracles, extraction drift and
+correspondence checks, and the Oak execution tests;
 missing Lean or the independent engine must fail the corresponding gate.
 Axiom inspection of the new universal theorems reports only Lean’s standard
 `propext`, `Classical.choice` and `Quot.sound` where used; there are no proof
-holes or custom axioms. Finite Go/Oak/Lean agreement is not universal implementation refinement.
-The universal claims above are for the named Lean models only.
+holes or custom axioms. Finite Go/Oak/Lean agreement is not universal implementation
+refinement. The universal claims are for the named models and, where stated,
+the mechanically extracted Oak definitions under the extraction boundary above.
 
 ## Remaining parity obligations
 
 | Boundary | Required next work |
 | --- | --- |
-| Implementation refinement | Prove the actual Go/Oak loops, mutable buffers, failure preservation and exact module parser/type-validator correspondence |
+| Implementation refinement | Extend the extracted Oak laws to termination/sufficient fuel, exact byte content, instruction/sequence success frames and model equivalence; prove Go encoder and exact module parser/type-validator correspondence |
 | Decoded semantics | Model values, operand/local/control stacks, calls, traps and module instantiation; connect every admitted numeric/control form |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |

@@ -35,21 +35,8 @@ func TestE2ESelfHostedWasmAssembler(t *testing.T) {
 		expected = append(expected, encoded...)
 	}
 
-	for op := uint32(0); op < 256; op++ {
-		pin(op, 0)
-		pin(op, 1) // nonzero immediates must refuse on every plain instruction
-	}
-	for _, op := range []uint32{2, 3, 4, 12, 13, 16, 32, 33, 34, 65, 66} {
-		for _, v := range []int64{math.MinInt64, math.MinInt32 - 1, math.MinInt32, -8193, -65, -64, -1, 1, 63, 64, 126, 127, 128, 8192, math.MaxInt32, math.MaxInt32 + 1, math.MaxUint32, math.MaxUint32 + 1, math.MaxInt64} {
-			pin(op, v)
-		}
-	}
-	for _, op := range []uint32{256, 258, math.MaxUint32} {
-		pin(op, 0)
-	}
-	rng := rand.New(rand.NewSource(20261006))
-	for i := 0; i < 40; i++ {
-		pin(66, int64(rng.Uint64()))
+	for _, tc := range selfhostWasmInstructionCases() {
+		pin(tc.opcode, tc.immediate)
 	}
 	var s strings.Builder
 	s.Write(core)
@@ -129,15 +116,13 @@ func TestE2ESelfHostedWasmLEB(t *testing.T) {
 	}
 	var values, unsignedSizes, signedSizes []string
 	var expected []byte
-	for shift := uint(0); shift < 64; shift++ {
-		for _, v := range []uint64{1<<shift - 1, 1 << shift, ^uint64(0) - (1<<shift - 1)} {
-			u, s := encoding.AppendUnsigned(nil, v), encoding.AppendSigned(nil, int64(v))
-			values = append(values, fmt.Sprintf("u64(%d)", v))
-			unsignedSizes = append(unsignedSizes, fmt.Sprintf("u32(%d)", len(u)))
-			signedSizes = append(signedSizes, fmt.Sprintf("u32(%d)", len(s)))
-			expected = append(expected, u...)
-			expected = append(expected, s...)
-		}
+	for _, v := range selfhostWasmLEBValues() {
+		u, s := encoding.AppendUnsigned(nil, v), encoding.AppendSigned(nil, int64(v))
+		values = append(values, fmt.Sprintf("u64(%d)", v))
+		unsignedSizes = append(unsignedSizes, fmt.Sprintf("u32(%d)", len(u)))
+		signedSizes = append(signedSizes, fmt.Sprintf("u32(%d)", len(s)))
+		expected = append(expected, u...)
+		expected = append(expected, s...)
 	}
 	var source strings.Builder
 	source.Write(core)
@@ -241,4 +226,135 @@ if(e.main(x,y)!==BigInt.asIntN(64,x*y-65n))throw Error('Oak assembler mismatch')
 	if out, err := engine.Command(ctx, script, base64.StdEncoding.EncodeToString(module)).CombinedOutput(); err != nil {
 		t.Fatalf("Wasm engine: %v\n%s", err, out)
 	}
+}
+
+// Shared with the kernel-checked extraction oracle. Both consumers use the
+// production Go encoder as the byte oracle, including expected refusals.
+type selfhostWasmInstruction struct {
+	opcode    uint32
+	immediate int64
+}
+
+func selfhostWasmInstructionCases() []selfhostWasmInstruction {
+	var cases []selfhostWasmInstruction
+	add := func(op uint32, v int64) { cases = append(cases, selfhostWasmInstruction{op, v}) }
+
+	for op := uint32(0); op < 256; op++ {
+		add(op, 0)
+		add(op, 1)   // nonzero immediates must refuse on every plain instruction
+		add(op, 126) // nested block-type predicates must not admit other opcodes
+	}
+	for _, op := range []uint32{2, 3, 4, 12, 13, 16, 32, 33, 34, 65, 66} {
+		for _, v := range []int64{math.MinInt64, math.MinInt32 - 1, math.MinInt32, -8193, -65, -64, -1, 1, 63, 64, 126, 127, 128, 8192, math.MaxInt32, math.MaxInt32 + 1, math.MaxUint32, math.MaxUint32 + 1, math.MaxInt64} {
+			add(op, v)
+		}
+	}
+	for _, op := range []uint32{256, 258, math.MaxUint32} {
+		add(op, 0)
+	}
+	rng := rand.New(rand.NewSource(20261006))
+	for i := 0; i < 40; i++ {
+		add(66, int64(rng.Uint64()))
+	}
+	return cases
+}
+
+func selfhostWasmLEBValues() []uint64 {
+	var values []uint64
+	for shift := uint(0); shift < 64; shift++ {
+		values = append(values, 1<<shift-1, 1<<shift, ^uint64(0)-(1<<shift-1))
+	}
+	return values
+}
+
+type selfhostWasmPlanCase struct {
+	plan     []encoding.Instruction
+	offset   uint32
+	capacity int
+}
+
+func selfhostWasmPlanCases() []selfhostWasmPlanCase {
+	plans := [][]encoding.Instruction{
+		nil,
+		{{Opcode: 0x0b}},
+		{{Opcode: 0x41, Immediate: math.MinInt32}, {Opcode: 0x42, Immediate: math.MinInt64}, {Opcode: 0x6a}},
+		{{Opcode: 0x02, Immediate: 0x40}, {Opcode: 0x20, Immediate: math.MaxUint32}, {Opcode: 0x0b}},
+		{{Opcode: 0x01}, {Opcode: 0xff}},                                // late invalid opcode
+		{{Opcode: 0x42, Immediate: -65}, {Opcode: 0x20, Immediate: -1}}, // late invalid immediate
+	}
+	var cases []selfhostWasmPlanCase
+	for _, plan := range plans {
+		encoded, _ := encoding.Assemble(plan)
+		for _, pair := range []struct {
+			offset   uint32
+			capacity int
+		}{
+			{0, 0}, {2, 32}, {2, 2 + len(encoded)}, {3, 2 + len(encoded)}, {math.MaxUint32, 32},
+		} {
+			cases = append(cases, selfhostWasmPlanCase{plan, pair.offset, pair.capacity})
+		}
+	}
+	return cases
+}
+
+func (tc selfhostWasmPlanCase) expected() (status, size uint32, dst []byte) {
+	dst = bytes.Repeat([]byte{165}, tc.capacity)
+	encoded, err := encoding.Assemble(tc.plan)
+	if err != nil || uint64(tc.offset)+uint64(len(encoded)) > uint64(tc.capacity) {
+		return 1, 0, dst
+	}
+	copy(dst[tc.offset:], encoded)
+	return 0, uint32(len(encoded)), dst
+}
+
+func (tc selfhostWasmPlanCase) leanPlan() string {
+	var items []string
+	for _, ins := range tc.plan {
+		items = append(items, fmt.Sprintf("{ opcode := %d, immediate := (%d) }", ins.Opcode, ins.Immediate))
+	}
+	return "#[" + strings.Join(items, ",") + "]"
+}
+
+func TestE2ESelfHostedWasmTransactions(t *testing.T) {
+	core, err := os.ReadFile(filepath.Join("..", "asm", "selfhost", "wasm.oak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source strings.Builder
+	source.Write(core)
+	source.WriteString("\nmain: (): i32 {\n")
+	for _, tc := range selfhostWasmPlanCases() {
+		status, size, dst := tc.expected()
+		fmt.Fprintf(&source, " true ? {\n bytes: [%d]u8\n plan: [%d]WasmInstruction", tc.capacity, len(tc.plan))
+		if len(tc.plan) != 0 {
+			source.WriteString(" = [")
+			for i, ins := range tc.plan {
+				if i != 0 {
+					source.WriteString(",")
+				}
+				fmt.Fprintf(&source, "WasmInstruction { opcode: u32(%d), immediate: i64_bits_u64(u64(%d)) }", ins.Opcode, uint64(ins.Immediate))
+			}
+			source.WriteString("]")
+		}
+		fmt.Fprintf(&source, "\n expected: [%d]u8", len(dst))
+		if len(dst) != 0 {
+			source.WriteString(" = [")
+			for i, b := range dst {
+				if i != 0 {
+					source.WriteString(",")
+				}
+				fmt.Fprintf(&source, "u8(%d)", b)
+			}
+			source.WriteString("]")
+		}
+		source.WriteString("\n dst: [*]u8 = span(&bytes)\n i: u32 = 0\n while i < len(dst) { dst[i] = u8(165); i = i + u32(1) }\n")
+		fmt.Fprintf(&source, " result: WasmAssembly = wasm_assemble(dst, u32(%d), view(&plan))\n assert(result.status == u32(%d) && result.size == u32(%d))\n", tc.offset, status, size)
+		source.WriteString(" i = u32(0)\n while i < len(dst) { assert(dst[i] == expected[i]); i = i + u32(1) }\n }\n")
+	}
+	source.WriteString(" 42\n}\n")
+	code, abnormal := buildAndRun(t, "selfhost_wasm_transactions", source.String())
+	if code != 42 || abnormal {
+		t.Fatalf("Oak assembly transaction exit (%d,%v)", code, abnormal)
+	}
+	t.Logf("executed %d shared-corpus transactions with full-buffer comparisons", len(selfhostWasmPlanCases()))
 }
