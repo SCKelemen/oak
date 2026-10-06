@@ -218,6 +218,7 @@ import Oak.BddComplement
 import Oak.RupCheck
 import Oak.LRATBounds
 import Oak.LRATFormulaBinding
+import Oak.ClauseAgreement
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF

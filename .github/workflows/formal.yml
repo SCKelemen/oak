@@ -66,6 +66,11 @@ jobs:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
         run: go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean)$' -count=1 -v
 
+      - name: Check clause-engine agreement policy against Lean
+        env:
+          OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
+        run: go test . -run '^TestClauseAgreement' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 

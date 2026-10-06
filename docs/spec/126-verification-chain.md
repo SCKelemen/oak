@@ -40,6 +40,18 @@ of the decoder, RUP checker, compiler, or source-to-CNF translation. This
 architecture-independent seam supports both required ARM64 and RV64 chains;
 it does not close their machine-level proof obligations.
 
+The Go verification environment also requires exact formula identity or an
+independently checked result for the Go lowering before an Oak certificate
+can advance a row. Equal formula dimensions and raw solver status bits are
+insufficient. Different formulas need a checked LRAT refutation or a validated
+SAT model; an unavailable cross-check preserves the prior result, and
+conflicting checked evidence makes it open. `Oak.ClauseAgreement` proves the
+finite policy's known-evidence and agreement properties, with production
+decision pins and driver fault-injection tests. Its semantic composition
+explicitly assumes sound evidence for the independent database. Neither
+full checker/driver refinement nor source-to-CNF correctness follows from
+this policy model.
+
 ### 2.1 Source → checked program
 
 The type checker, borrow and resource checker, protocol projection, and
