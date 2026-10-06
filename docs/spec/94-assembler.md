@@ -8995,6 +8995,26 @@ plain read and the equality is the 13,626-node adder: a case split on
 the condition the premise's reads select by, before the diagram, is the
 step the coupling-search bucket's bodies want next.
 
+**Premise-selected reads split before the diagram (2026-10-06).** The
+implication decider now recognizes that narrow shape: the same condition
+selects two or more wide values whose complete leaves are symbolic memory
+reads. Before the arm, congruence, or bit-level rules can build a diagram,
+it proves the implication once with the condition and once with its
+negation. Each case structurally prunes the premise and both equality sides
+under that direct fact first; both cases must decide and hold, under the
+existing two-split depth and shared proof-node allowance. Boolean lookup
+trees, a single selected value, and choices with a constant or computed
+alternative do not enter the eager rule. The old post-budget split remains
+the fallback for branches in the equality sides. `TestIdentShapeBlast`
+reconstructs the production guard and pins both the selected condition and
+the exclusions; its implication reaches the split before recursive proof
+rules and decides in about 0.4 s on the development host (about 1.5 s when
+the split followed those rules). A fresh whole-`ident` native probe still did
+not return inside an eight-minute diagnostic window, so this closes the
+measured conditional blow-up but does not claim that `ident` or the package
+tally changed tier; the next probe must name the work remaining after this
+split.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

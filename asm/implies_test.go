@@ -575,6 +575,24 @@ func TestImpliesEqualUsesStructuralFactsBeforeDiagram(t *testing.T) {
 	}
 }
 
+func TestSplitDecideOnStillRefutesAReachableUnequalArm(t *testing.T) {
+	p := paramTerm("p", 1)
+	i := paramTerm("i", 8)
+	x := selectTerm("memory", i, 8)
+	y := selectTerm("memory", binaryTerm("add", i, constTerm(1, 8)), 8)
+	choice := iteTerm(p, x, y)
+	widthOf := func(name string) int {
+		if name == "p" {
+			return 1
+		}
+		return 8
+	}
+	budget := &nodeBudget{remaining: loopProofNodeBudget, loop: true}
+	if holds, decided := splitDecideOn(constTerm(1, 1), choice, x, p, widthOf, budget, 0); !decided || holds {
+		t.Fatalf("split with a reachable unequal arm: holds=%v decided=%v", holds, decided)
+	}
+}
+
 // Pure scalar status checks can be split into separate post-loop reach facts;
 // a factor reading symbolic memory stays atomic so a callee's memory condition
 // is not duplicated through every postcondition.

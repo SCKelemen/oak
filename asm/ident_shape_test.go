@@ -59,4 +59,26 @@ func TestIdentShapeBlast(t *testing.T) {
 	if got := measure("culprit ite(cond, v16, v9)", culprit); got >= loopDecisionNodeBudget {
 		t.Fatalf("ident's culprit exceeds one decision's budget (%d nodes)", got)
 	}
+	if got := premiseSelectCondition(culprit); !equalTerms(got, b) {
+		t.Fatalf("premise split condition = %s, want the shared read selector %s", got, b)
+	}
+	singleChoice := iteTerm(b, lew(at(8)), ew(at(8)))
+	if got := premiseSelectCondition(eq(singleChoice, none)); got != nil {
+		t.Fatalf("one selected read requested an eager split on %s", got)
+	}
+	mixed1 := iteTerm(b, lew(at(8)), none)
+	mixed2 := iteTerm(b, lew(at(9)), none)
+	if got := premiseSelectCondition(and(eq(mixed1, none), eq(mixed2, none))); got != nil {
+		t.Fatalf("non-read alternatives requested an eager split on %s", got)
+	}
+
+	// The equality itself is deliberately tautological only under its
+	// premise. Without fixing b first, the premise and the repeated culprit
+	// together exceed one loop decision's diagram allowance; under each arm
+	// the selected reads are plain reads and the implication decides.
+	premise := eq(culprit, v9)
+	budget := &nodeBudget{remaining: loopProofNodeBudget, loop: true}
+	if holds, decided := impliesEqualWithin(premise, culprit, v9, func(name string) int { return widths[name] }, budget); !decided || !holds {
+		t.Fatalf("split implication: holds=%v decided=%v, budget remaining %d", holds, decided, budget.remaining)
+	}
 }

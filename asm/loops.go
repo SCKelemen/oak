@@ -6664,6 +6664,18 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			return true, true
 		}
 	}
+	if depth == 0 {
+		if cond := premiseSelectCondition(premise); cond != nil {
+			// A premise can be the expensive part of the decision: one guard
+			// selecting several memory reads, one of them beneath an adder, carries
+			// the guard through every carry before the implication is considered.
+			// Split before building that diagram. Both cases are implications under
+			// stronger premises, so this proves (and never guesses) the original.
+			if holds, decided := splitDecideOn(premise, a, b, cond, widthOf, budget, depth); decided {
+				return holds, true
+			}
+		}
+	}
 	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
@@ -6823,12 +6835,26 @@ func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudg
 	if cond == nil {
 		return false, false
 	}
+	return splitDecideOn(premise, a, b, cond, widthOf, budget, depth)
+}
+
+// splitDecideOn is splitDecide on a chosen condition. Before deciding a
+// polarity it rewrites the premise and sides by that direct fact: this is
+// particularly important when the branch being split is inside the premise,
+// which otherwise has to be blasted in full before the BDD can assume the
+// condition that simplifies it.
+func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if depth >= splitDepth || cond == nil {
+		return false, false
+	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "verify: case split at depth %d on %s\n", depth, abbreviate(cond.String(), 150))
 	}
 	c := truncate(cond, 1)
 	for polarity, branch := range []*term{c, binaryTerm("xor", c, constTerm(1, 1))} {
-		holds, decided := impliesEqualDepth(binaryTerm("and", premise, branch), a, b, widthOf, budget, depth+1)
+		pruned := pruneUnderFacts(branch, []*term{premise, a, b})
+		casePremise := canonical(binaryTerm("and", branch, pruned[0]))
+		holds, decided := impliesEqualDepth(casePremise, canonical(pruned[1]), canonical(pruned[2]), widthOf, budget, depth+1)
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: case split depth %d polarity %d: holds=%v decided=%v\n", depth, polarity, holds, decided)
 		}
@@ -6840,6 +6866,82 @@ func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudg
 		}
 	}
 	return true, true
+}
+
+// premiseSelectCondition finds a guard that selects two or more symbolic
+// memory values in a premise. Reusing such a guard beneath arithmetic is a
+// characteristic BDD blow-up: the condition is copied through every result
+// bit (and through every carry for addition), although fixing the guard makes
+// each selected value an ordinary read. A single conditional is left to the
+// normal variable orders; repeated selection is the profitability threshold.
+func premiseSelectCondition(premise *term) *term {
+	type candidate struct {
+		cond       *term
+		selections int
+		width      int
+	}
+	var candidates []candidate
+	byCondition := map[*term]int{}
+	visited := map[*term]bool{}
+	readTreeMemo := map[*term]bool{}
+	readTreeKnown := map[*term]bool{}
+	var selectedReadTree func(*term) bool
+	selectedReadTree = func(t *term) bool {
+		if t == nil {
+			return false
+		}
+		if readTreeKnown[t] {
+			return readTreeMemo[t]
+		}
+		readTreeKnown[t] = true
+		switch t.kind {
+		case termSelect:
+			readTreeMemo[t] = true
+		case termIte:
+			readTreeMemo[t] = selectedReadTree(t.left) && selectedReadTree(t.right)
+		}
+		return readTreeMemo[t]
+	}
+	var walk func(*term)
+	walk = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		if t.kind == termIte && t.width > 1 && t.cond.kind != termConst && !isLookupStep(t.cond, map[*term]int{}) {
+			if selectedReadTree(t.left) && selectedReadTree(t.right) {
+				i, exists := byCondition[t.cond]
+				if !exists {
+					i = len(candidates)
+					byCondition[t.cond] = i
+					candidates = append(candidates, candidate{cond: t.cond})
+				}
+				candidates[i].selections++
+				candidates[i].width += t.width
+			}
+		}
+		walk(t.cond)
+		walk(t.left)
+		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
+	}
+	walk(premise)
+	var best *candidate
+	for i := range candidates {
+		c := &candidates[i]
+		if c.selections < 2 {
+			continue
+		}
+		if best == nil || c.selections > best.selections || c.selections == best.selections && c.width > best.width {
+			best = c
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return best.cond
 }
 
 // splitDepth bounds the case splits nested in one decision.
