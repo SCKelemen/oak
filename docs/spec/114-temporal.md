@@ -168,19 +168,54 @@ covers that conversion path.
 its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
 `offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
 are outside the current extractor subset; it is covered by runtime tests.
-`TimeCalendarLaws.lean` states constructor acceptance/rejection, civil structural
-roundtrip, date-range rejection, invalid-input rejection, and formatter error
-atomicity directly over that extraction. The focused Temporal library proofs
-workflow and the main formal build check those laws. Fuel, array totalization,
-and machine-integer modeling have the qualifications in `95-extraction.md`.
+The temporal proof entry point, `TimeCalendarLaws.lean`, includes three layers:
+
+- Constructor acceptance/rejection, civil structural roundtrip, invalid-input
+  rejection, and formatter error atomicity are kernel-checked over the extraction.
+- `TimeGregorianLaws.lean` checks every one of the 3,652,425 supported epoch
+  days and all 3,720,000 year/month/day slots (years 0–9999, months 1–12,
+  days 1–31). The validity predicate filters impossible dates. The resulting
+  theorems establish both conversion directions, valid output dates, and the
+  supported epoch-day range, for arbitrary fuel. These two finite certificates
+  use **`native_decide`**, which trusts Lean's native evaluator and adds
+  native decision axioms; they are not kernel-only arithmetic proofs. The arguments
+  lifting the finite certificates to arbitrary supported inputs also use
+  bit-vector certificates for the validity predicate's field bounds.
+- `TimeCalendarArithmeticLaws.lean` proves the day-addition guard equivalent to
+  an unbounded integer range check, and proves accepted sums cannot wrap. It also
+  states successful addition and zero-day identity using the Gregorian facts.
+  Reject-policy day preservation is kernel checked. Month-index bounds,
+  validity-field bounds, and bounded day-range lemmas use `bv_decide`; its verified
+  LRAT checker runs through native evaluation in the pinned Lean toolchain and adds native decision axioms.
+  Clamp validity/minimum-day selection and exact Reject behavior use these
+  bounds. Day-addition success also inherits the Gregorian certificates' native
+  evaluation trust. An axiom audit distinguishes these dependencies from the
+  kernel-only integer guard and non-wrapping sum laws.
+
+`TestLeanTimeCalendarFaithful` builds one deterministic corpus of 1,468 cases
+and compares every returned field and error constructor with an independent Go
+calendar oracle in compiled Oak, interpreted Oak, and extracted Lean. It covers
+both conversion directions, day addition, both month-end policies, year zero,
+century exceptions, invalid/high-bit fields, domain edges, and signed integer
+extrema. The day-addition oracle uses unbounded integers to avoid reproducing
+an overflow bug. This corpus checks executable correspondence on these inputs;
+it is not a proof of extraction or compiler correctness.
+
+The focused Temporal library proofs workflow and the main formal workflow
+require these laws and the shared corpus. `OAK_REQUIRE_TIME_LEAN=1` makes a
+missing Lean toolchain a failure in CI. Fuel, array totalization, and machine
+integer modeling retain the qualifications in `95-extraction.md`.
 
 Open release gates, explicitly not implied by successful tests or extraction:
 
-1. Prove Gregorian days/civil bijection, all valid-success ranges, ordinal/week
-   conversion, month policy preservation, and duration carry arithmetic.
+1. Replace the exhaustive Gregorian certificates with kernel-only arithmetic
+   proofs if the native-evaluator trust boundary is unacceptable. Prove
+   ordinal/week conversion, the remaining calendar success laws, and duration
+   carry arithmetic.
 2. Prove parser acceptance soundness/completeness for the declared grammar,
    overflow equivalence, canonical format/parse identity, and all buffer bounds
-   and success/failure frame properties. Add extraction-faithfulness corpora.
+   and success/failure frame properties. Extend extraction-faithfulness coverage
+   from calendar operations to codecs and civil-duration arithmetic.
 3. Extend extraction/refinement through checked instant conversion. Preserve
    proofs through compilation, ABI, instruction encoding, and linking on both
    mandatory ARM64 and RV64 targets.

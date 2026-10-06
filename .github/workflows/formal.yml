@@ -76,8 +76,10 @@ jobs:
           OAK_REQUIRE_SAT_MODEL_LEAN: '1'
         run: go test . -run '^TestOakSATModel' -count=1 -v
 
-      - name: Check extracted standard library against compiled Oak
-        run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
+      - name: Check extracted standard library against compiled and interpreted Oak
+        env:
+          OAK_REQUIRE_TIME_LEAN: '1'
+        run: go test ./compiler -run '^Test(LeanStdlibFaithful|LeanTimeCalendarFaithful)$' -count=1 -timeout=20m -v
 
       - name: Check self-hosted LRAT kernel and production extraction
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -v
