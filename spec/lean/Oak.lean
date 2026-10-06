@@ -11,6 +11,7 @@ import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
+import Oak.LinkerLayout
 import Oak.ObjectRelocation
 import Oak.RV64Relocation
 import Oak.Kernel

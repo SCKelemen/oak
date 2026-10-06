@@ -1,9 +1,9 @@
 # Oak assembler and linker bootstrap core
 
-This is the first Oak implementation slice of roadmap M7/M8. The production
+This is the Oak assembler/linker bootstrap for roadmap M7/M8. The production
 assembler, object reader/writer, and linker still run in Go. These routines
 are compiled by the Go seed; this is not a self-hosted toolchain release.
-The [text object linker contract](../../docs/spec/94-selfhost-linker.md)
+The [object linker contract](../../docs/spec/94-selfhost-linker.md)
 defines this bootstrap profile's admission and mutation rules.
 
 ## Implemented profile
@@ -69,6 +69,30 @@ zero indicates refusal without mutation. Source and destination storage must
 be disjoint, as enforced by the Oak borrow checker. Internal word read/write
 helpers require an in-bounds footprint.
 
+`native_place` is the shared pure placement kernel: checked absolute
+alignment with `u32` extents and `u64` address arithmetic. Text retains its
+four-byte minimum alignment; the helper also admits one- and two-byte data
+alignment. It returns `{status, start, end}` and zeros the offsets on refusal.
+
+`native_link_objects_data` extends the text API with an initialized-data base
+and data/BSS extents. `NativeSymbol.object = 0xffffffff` identifies data;
+`0xfffffffe` identifies BSS immediately following it. Other indices still
+identify text objects, whose count must be below `0xfffffffe`. Data/BSS
+offsets are byte offsets strictly inside their section. These symbols may be
+addressed by kinds 3 and 5, but never used as branch or entry targets. The
+entire data/BSS extent must follow the text without address wrap. The routine
+patches text only; it preserves the same all-or-nothing destination contract.
+
+`elf_data.oak` provides `native_elf_data_layout` and `native_elf_data_image`.
+The pure layout supplies data/BSS addresses before named text relocation. The
+image writer emits two page-separated PT_LOAD segments: RX text and RW
+initialized data followed by BSS. BSS contributes to memory size, not file
+size; a BSS-only RW segment is supported. Text plus the RW memory extent fits
+the `u32` layout domain, and the caller-owned file buffer bounds the image.
+All image admission happens before writing. Callers pass the same text/data
+lengths and base to layout, linking, and emission. There is still no dynamic
+linking, section table, implicit runtime, or allocation.
+
 ## Evidence and limits
 
 - `TestE2ESelfHostedRelocationKernel` compiles and executes the Oak routines on
@@ -89,6 +113,20 @@ helpers require an in-bounds footprint.
   and records call target alignment. `TestRV64PCRelMatchesLean` renders
   production Go decisions as kernel-checked Lean examples in formal CI.
 - Existing ARM64 branch and ADRP+ADD laws remain the ARM64 model anchors.
+- `Oak.LinkerLayout` proves absolute alignment and minimal padding, admitted
+  bounds, disjoint consecutive placements, in-range symbol addresses, and
+  the safety of placement intermediates. Its concrete ordered byte-write
+  transaction model proves refusal preservation, rejection of any out-of-range
+  write including a late one, and preservation beyond the destination extent.
+- `TestE2ESelfHostedPlacement` compares 447 compiled Oak placement decisions
+  with an independent big-integer oracle and kernel-checked Lean examples.
+  Formal CI sets `OAK_REQUIRE_LINKER_LEAN=1`; absence of Lean is an error there.
+- `TestE2ESelfHostedELFData` executes named data/BSS references on ARM64 and
+  RV64, including a BSS-only segment and a BSS cell on a page beyond EOF.
+  Programs check its initial zero value, store/load it, and exit with 42.
+  Independent ELF and instruction-field readers also inspect the image.
+  `TestE2ESelfHostedELFDataAdmission` checks failed-image preservation and
+  preservation past the file extent on success.
 
 These are scoped model proofs and executable correspondence checks. They do
 not yet prove refinement of the Go or Oak implementation, the ELF writer,
@@ -107,10 +145,10 @@ implementation refinement and source-to-module verification remain open.
 ## Remaining M7/M8 work
 
 Port and prove the remaining emitted instruction forms and their decoders;
-extend symbolic object admission/resolution beyond strong text labels; add
-remaining relocations, object readers, data layout, and the Mach-O profile;
-refine the actual Oak kernels
-against their models; bind final image validation to source/ISA certificates
+extend symbolic object admission/resolution beyond strong text/data/BSS labels;
+add remaining relocations, object readers, multi-section data layout, and the
+Mach-O profile; refine the actual Oak kernels against their models;
+bind final image validation to source/ISA certificates
 and the platform's loading/runtime contracts. Both ARM64 and RV64 remain
 mandatory release targets.
 

@@ -111,7 +111,7 @@ jobs:
     - name: Execute Oak-written ARM64 and RV64 ELF images
       env:
         OAK_REQUIRE_SELFHOST_QEMU: '1'
-      run: go test -v ./compiler -run '^TestE2ESelfHosted(RelocationKernel|Objects|ELF)$' -count=1
+      run: go test -v ./compiler -run '^TestE2ESelfHosted(RelocationKernel|Placement|Objects|ELF|ELFData|ELFDataAdmission)$' -count=1
 
   riscv64-memory-refinement:
     name: RISC-V Memory Refinement
