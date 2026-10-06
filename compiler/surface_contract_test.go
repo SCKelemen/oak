@@ -40,27 +40,27 @@ var expressionSurfaceEvidence = map[string][]surfaceEvidence{
 		native("e2e_test.go", "TestE2EExitCodePassthrough", "main: (): i32 = 42"),
 		native("e2e_quantifier_test.go", "TestE2EQuantifiers", "forall (x: u16)"),
 	},
-	"prefix:INT":     {native("e2e_test.go", "TestE2EExitCodePassthrough", "i32 = 42")},
-	"prefix:FLOAT":   {native("e2e_floats_test.go", "TestE2EFloatSemantics", "a: f32 = 0.1")},
-	"prefix:STRING":  {native("e2e_string_equality_test.go", "TestE2EStringEquality", "greet: (): string = \"hi\"")},
-	"prefix:BANG":    {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "!f.masked")},
-	"prefix:NEG":     {native("e2e_statement_ergonomics_test.go", "TestE2ELineStartMinusBeginsStatement", "-x ==")},
-	"prefix:AMP":     {native("e2e_test.go", "TestE2ESpanWritesRoundTrip", "span(&data)")},
-	"prefix:CARET":   {native("e2e_bitwise_test.go", "TestE2ERegisterBitfields", "^hcrFMO")},
-	"prefix:TRUE":    {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "pending: true")},
-	"prefix:FALSE":   {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "masked: false")},
+	"prefix:INT":    {native("e2e_test.go", "TestE2EExitCodePassthrough", "i32 = 42")},
+	"prefix:FLOAT":  {native("e2e_floats_test.go", "TestE2EFloatSemantics", "a: f32 = 0.1")},
+	"prefix:STRING": {native("e2e_string_equality_test.go", "TestE2EStringEquality", "greet: (): string = \"hi\"")},
+	"prefix:BANG":   {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "!f.masked")},
+	"prefix:NEG":    {native("e2e_statement_ergonomics_test.go", "TestE2ELineStartMinusBeginsStatement", "-x ==")},
+	"prefix:AMP":    {native("e2e_test.go", "TestE2ESpanWritesRoundTrip", "span(&data)")},
+	"prefix:CARET":  {native("e2e_bitwise_test.go", "TestE2ERegisterBitfields", "^hcrFMO")},
+	"prefix:TRUE":   {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "pending: true")},
+	"prefix:FALSE":  {native("e2e_test.go", "TestE2EIfStatementsAndLogicalOperators", "masked: false")},
 	"prefix:DOT": {
 		native("e2e_elm_ergonomics_test.go", "TestE2EFirstClassFieldAccessor", ".name"),
 		native("e2e_test.go", "TestE2EADTConstructAndMatch", ".Circle"),
 	},
-	"prefix:LPAREN":  {native("e2e_bitwise_test.go", "TestE2ERegisterBitfields", "(hcr >> 3)")},
-	"prefix:STRUCT":  {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "struct { x: 1 }", "anonymous struct literals are parser compatibility; named structs carry the runtime representation contract")},
-	"prefix:LBRACE":  {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "value := { x: 1 }", "anonymous semantic records intentionally do not promise a byte representation")},
-	"prefix:LBRACK":  {native("e2e_uniform_call_test.go", "TestE2EUniformCallSyntax", "xs: [3]u32 = [7, 8, 9]")},
-	"prefix:FN":      {native("e2e_statement_ergonomics_test.go", "TestE2ETypedFunctionLiterals", "fn(x: u32)")},
-	"prefix:IMPORT":  {native("e2e_modules_test.go", "TestE2EModulesMultiPackageProgram", "geo := import(")},
-	"prefix:TYPE":    {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "Key: type", "type-kind expressions are compile-time module-signature syntax")},
-	"prefix:TRY":     {native("e2e_try_test.go", "TestE2ETryCompiled", "try above(n)")},
+	"prefix:LPAREN": {native("e2e_bitwise_test.go", "TestE2ERegisterBitfields", "(hcr >> 3)")},
+	"prefix:STRUCT": {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "struct { x: 1 }", "anonymous struct literals are parser compatibility; named structs carry the runtime representation contract")},
+	"prefix:LBRACE": {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "value := { x: 1 }", "anonymous semantic records intentionally do not promise a byte representation")},
+	"prefix:LBRACK": {native("e2e_uniform_call_test.go", "TestE2EUniformCallSyntax", "xs: [3]u32 = [7, 8, 9]")},
+	"prefix:FN":     {native("e2e_statement_ergonomics_test.go", "TestE2ETypedFunctionLiterals", "fn(x: u32)")},
+	"prefix:IMPORT": {native("e2e_modules_test.go", "TestE2EModulesMultiPackageProgram", "geo := import(")},
+	"prefix:TYPE":   {parseOnly("surface_contract_test.go", "TestSurfaceStaticExpressionRoutes", "Key: type", "type-kind expressions are compile-time module-signature syntax")},
+	"prefix:TRY":    {native("e2e_try_test.go", "TestE2ETryCompiled", "try above(n)")},
 
 	"infix:SUM":          {native("e2e_test.go", "TestE2EDeclarationFormCallsAndAssertSuccess", "base * factor, 1")},
 	"infix:AMP":          {native("e2e_bitwise_test.go", "TestE2ERegisterBitfields", "hcr & hcrFMO")},
@@ -268,7 +268,7 @@ func mustParseSurface(t *testing.T, name, source string) {
 }
 
 func TestSurfaceLegacyKeywordRoutes(t *testing.T) {
-	mustParseSurface(t, "legacy_type", "type Color: type = Red | Blue\n")
+	mustParseSurface(t, "legacy_type", "type Color: type = u8\n")
 	mustParseSurface(t, "legacy_interface", "interface Reader: interface = fn (self) read(buf: [*]Byte) -> Result[u32, Error]\n")
 }
 

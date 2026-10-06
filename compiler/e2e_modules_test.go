@@ -818,6 +818,15 @@ main: (): i32 = {
 		"main.oak":      "package main\n\nu := import(\"example.com/hello/util\")[u8]\n\nmain: (): i32 = u.f()\n",
 	})
 	expectModuleError(t, root, ".", CodeGenericPackageArity)
+
+	// Arguments must have a stable package-instance identity. An anonymous
+	// semantic record shape is a type expression, but not a nameable atom.
+	root = writeModule(t, map[string]string{
+		"oak.mod":       helloManifest,
+		"pair/pair.oak": "package pair[T, N: u32]\n\npub capacity: (): u32 = N\n",
+		"main.oak":      "package main\n\np := import(\"example.com/hello/pair\")[{ value: u8 }, 3]\n\nmain: (): i32 = i32_bits_u32(p.capacity())\n",
+	})
+	expectModuleError(t, root, ".", CodeGenericPackageArgument)
 }
 
 // Selective imports bind unqualified names through the visibility rule.
