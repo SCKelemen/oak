@@ -8983,7 +8983,8 @@ sixty-four reads (`proofSelectSlots`); the CNF export keeps eight, the
 numbering the Lean replay pins. Tallied at 1e47c540, the equality alone:
 598 proven, 228 evidence, 125 trusted (593, 233, 125 before) — `ap_lits`,
 `args_finish`, `cnf_variable`, `pool_push_pool`, and `px_intern` cross.
-`ident` itself still stops where it did: the probe's dump reconstructed
+The interleaving leaves the tally where the equality put it (598, 228,
+125 at a0e387d3). `ident` itself still stops where it did: the probe's dump reconstructed
 in `TestIdentShapeBlast` puts its premise's conditional at 754,007 nodes
 with every read interleaved — the adder equality `le.state_at + 9 ==
 le.strs_at + (v << 1)` where `v` is a read selected by the lookup's
