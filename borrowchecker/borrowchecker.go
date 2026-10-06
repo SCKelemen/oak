@@ -1140,12 +1140,38 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.recomputeOwnerStatesFromActiveBorrows()
 		}
 	}()
+	// A direct view(&owner) or span(&owner) argument is a borrow for the
+	// duration of this call. When that exact argument supplies the region of
+	// a named borrowed result, bindRegionCall below transfers the borrow into
+	// the result instead; creating a second temporary would make an inline
+	// writable return conflict with itself.
+	var retainedRegionArg ast.Expression
+	if targetVar != "" {
+		if _, arg, _, ok := regionCallResult(call, env); ok {
+			retainedRegionArg = arg
+		}
+	}
 	for i, arg := range call.Arguments {
 		if inner, ok := arg.(*ast.InvocationExpression); ok && isStringViewConversion(inner) {
 			name := fmt.Sprintf("$argument:%d:%p", i, call)
 			bc.checkStringViewCall(inner, env, name)
 			temporaries = append(temporaries, name)
 			continue
+		}
+		if inner, ok := arg.(*ast.InvocationExpression); ok && arg != retainedRegionArg {
+			if ident, isIdent := inner.Function.(*ast.Identifier); isIdent {
+				name := fmt.Sprintf("$argument:%d:%p", i, call)
+				switch ident.Value {
+				case "view":
+					bc.checkViewCall(inner, env, name)
+					temporaries = append(temporaries, name)
+					continue
+				case "span":
+					bc.checkSpanCall(inner, env, name)
+					temporaries = append(temporaries, name)
+					continue
+				}
+			}
 		}
 		// A boundary span (docs/spec/92-ffi.md section 2.5.2) is a read use
 		// of the view's owner, or a write use of the span's owner, for the

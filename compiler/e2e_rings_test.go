@@ -204,7 +204,6 @@ func TestE2ERingsSequential(t *testing.T) {
 	}
 }
 
-
 func TestE2ERingsSpscBatchAndZeroCopy(t *testing.T) {
 	program := `package main
 
@@ -282,8 +281,8 @@ main: (): i32 {
 }
 `
 	_, err := New().WithPackageDir(ringsModule(t, program)).Check().Get()
-	if err == nil || !strings.Contains(err.Error(), "OAK-B0107") {
-		t.Fatalf("consume while zero-copy view lives: %v, want OAK-B0107", err)
+	if err == nil || !strings.Contains(err.Error(), "OAK-B0105") {
+		t.Fatalf("consume while zero-copy view lives: %v, want OAK-B0105", err)
 	}
 }
 
