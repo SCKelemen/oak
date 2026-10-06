@@ -70,4 +70,4 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Check the ring model using the repository toolchain pin
         working-directory: spec/lean
-        run: lake build Oak.Rings
+        run: lake build +Oak.Rings
