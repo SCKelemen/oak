@@ -2208,6 +2208,14 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 		if source == target || source == "" {
 			return inner, nil
 		}
+		sourceBits, sourceSigned, sourceInt := leanIntWidth(source)
+		targetBits, targetSigned, targetInt := leanIntWidth(target)
+		if sourceInt && targetInt && !sourceSigned && targetSigned && sourceBits < targetBits {
+			// Lean only defines unsigned-to-signed reinterpretation at equal
+			// widths. Oak's range-preserving constructor first zero-extends,
+			// then reinterprets at the wider signed width (e.g. u32 -> i64).
+			return fmt.Sprintf("(%s.toUInt%d.to%s)", inner, targetBits, target), nil
+		}
 		return fmt.Sprintf("(%s.to%s)", inner, target), nil
 	}
 	if term, handled, err := em.conversion(callee.Value, call); handled {

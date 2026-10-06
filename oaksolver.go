@@ -553,7 +553,8 @@ cnf_main: (): i32 {
           length > u32(0) ? {
             sat_view: []u32 = view(&sat_arena)
             record: []u32 = subslice(sat_view, sl.record_at, length)
-            accepted: u32 = lrat_check_record(record, variables, span(&checked))
+            formula: []u32 = subslice(region_view, l.clauses_at, LRAT_HEADER_WORDS + literal_words)
+            accepted: u32 = lrat_check_record(formula, record, span(&checked))
             checked[u32(0)] = accepted
             path_buf: [1024]u8
             path_len: u32 = copy_env(c_getenv(c.cstr("OAK_RECORD_FILE\0")), span(&path_buf))

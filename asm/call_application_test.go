@@ -216,3 +216,34 @@ func TestApplicationLeavesFollowDeclaredOrder(t *testing.T) {
 		t.Fatalf("flattened leaves = %#v, bits=%d", got, bits)
 	}
 }
+
+// A standalone law must see the definition of a bounded callee. Congruence
+// alone cannot prove its arithmetic, and an arbitrary application value must
+// never stand in for a real counterexample. Native call summaries keep their
+// separate profitability policy (TestFiniteCallLowersToApplication).
+func TestTheoremExpandsFiniteCallBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name, callee, claim string
+		want                DecisionKind
+	}{
+		{"true", "step: (x: u32) -> u32 { out: u32 = x\n i: u32 = 0\n while i < u32(2) { out = out + u32(1)\n i = i + u32(1) }\n out }", "law: (x: u32) -> Bool = step(x) == x + u32(2)", DecisionProven},
+		{"false", "step: (x: u32) -> u32 { out: u32 = x\n i: u32 = 0\n while i < u32(2) { out = out + u32(1)\n i = i + u32(1) }\n out }", "law: (x: u32) -> Bool = step(x) == x + u32(3)", DecisionRefuted},
+		{"trap", "step: (x: u32) -> u32 { assert(x != u32(0))\n out: u32 = x\n i: u32 = 0\n while i < u32(2) { out = out + u32(1)\n i = i + u32(1) }\n out }", "law: (x: u32) -> Bool = step(x) == x + u32(2)", DecisionRefuted},
+		{"unbounded", "step: (x: u32) -> u32 { i: u32 = 0\n while i < x { i = i + u32(1) }\n i }", "law: (x: u32) -> Bool = step(x) == x", DecisionUndecided},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callee, err := parseSignatureWithBody(tc.callee)
+			if err != nil {
+				t.Fatal(err)
+			}
+			law, err := parseSignatureWithBody(tc.claim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := DecideTheorem(law, map[string]*ast.FunctionStatement{"step": callee})
+			if got.Kind != tc.want {
+				t.Fatalf("got %v: %s, want %v", got.Kind, got.Message, tc.want)
+			}
+		})
+	}
+}

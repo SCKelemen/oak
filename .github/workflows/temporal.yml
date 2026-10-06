@@ -1,0 +1,41 @@
+name: Temporal library proofs
+on:
+  pull_request:
+    branches: [specification]
+    paths:
+      - 'stdlib/time*.oak'
+      - 'stdlib/source.go'
+      - 'spec/lean/Oak/Stdlib/Time*.lean'
+      - 'compiler/*time*test.go'
+      - 'compiler/lean_stdlib_extract_test.go'
+      - 'codegen/lean/**'
+      - '.github/workflows/temporal.yml'
+  push:
+    branches: [specification]
+    paths:
+      - 'stdlib/time*.oak'
+      - 'spec/lean/Oak/Stdlib/Time*.lean'
+      - '.github/workflows/temporal.yml'
+permissions:
+  contents: read
+jobs:
+  temporal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Check temporal extraction drift
+        run: go test ./compiler -run '^TestLeanStdlibExtract/time$' -count=1
+      - name: Install pinned Lean toolchain via elan
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Check implementation laws
+        working-directory: spec/lean
+        run: lake build Oak.Stdlib.TimeCalendarLaws

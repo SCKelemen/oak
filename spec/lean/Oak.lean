@@ -9,6 +9,7 @@ import Oak.AssemblerCalleeIdentity
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.ObjectRelocation
+import Oak.RV64Relocation
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact
@@ -162,6 +163,7 @@ import Oak.Stdlib.TensorExtracted
 import Oak.Stdlib.MathExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
+import Oak.Stdlib.TimeCalendarLaws
 import Oak.Stdlib.UuidExtracted
 import Oak.Stdlib.SortU32Extracted
 import Oak.Stdlib.UnicodeExtracted
@@ -205,6 +207,7 @@ import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance
 import Oak.RiscV
+import Oak.RiscVBranchEncoding
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
@@ -213,6 +216,9 @@ import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.RupCheck
+import Oak.LRATBounds
+import Oak.LRATFormulaBinding
+import Oak.ClauseAgreement
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF

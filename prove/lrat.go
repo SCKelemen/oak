@@ -36,10 +36,50 @@ func CheckLRAT(formula, certificate string) (LRATResult, error) {
 }
 
 // CheckLRATWords checks the checker word protocol against its embedded
-// formula. Exact-formula consumers should use CheckLRAT instead.
+// formula. Exact-formula consumers should use CheckLRATWordsAgainst instead.
 func CheckLRATWords(words []uint32) (LRATResult, error) {
 	result, err := lrat.CheckWords(words)
 	return LRATResult(result), err
+}
+
+// CheckLRATWordsAgainst binds a solver's word record to the caller's formula
+// before checking its proof. Clause order, literal order, and duplicates are
+// significant: LRAT hints name the exact numbered initial database.
+func CheckLRATWordsAgainst(formula string, words []uint32) (LRATResult, error) {
+	expected, err := EncodeLRATWords(formula, "")
+	if err != nil {
+		return LRATResult{}, err
+	}
+	if !LRATWordsMatchFormula(expected, words) {
+		return LRATResult{}, fmt.Errorf("the certificate record does not match the expected formula")
+	}
+	return CheckLRATWords(words)
+}
+
+// LRATWordsMatchFormula compares an independently supplied, proof-free formula
+// record with a certificate record. The allocation hints at words 5..7 are not
+// formula identity. This gate establishes identity and exact framing only;
+// callers must still check the clause syntax and the RUP proof.
+// prove/solver/lrat.oak carries the allocation-free Oak counterpart.
+func LRATWordsMatchFormula(formula, record []uint32) bool {
+	if len(formula) < 8 || len(record) < 8 || formula[0] != LRATMagic || record[0] != LRATMagic {
+		return false
+	}
+	if formula[4] != 0 || uint64(formula[3]) != uint64(len(formula)-8) {
+		return false
+	}
+	if uint64(record[3]) > uint64(len(record)-8) || uint64(record[4]) != uint64(len(record)-8)-uint64(record[3]) {
+		return false
+	}
+	if formula[1] != record[1] || formula[2] != record[2] || formula[3] != record[3] {
+		return false
+	}
+	for i, word := range formula[8:] {
+		if record[8+i] != word {
+			return false
+		}
+	}
+	return true
 }
 
 // LRATStep is one parsed certificate line: an addition of a clause with

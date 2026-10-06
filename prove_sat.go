@@ -171,9 +171,9 @@ func agreeSettled(r prove.Result, settled *asm.Decision) prove.Result {
 // oakClauseRung decides one row through the Oak path: the problem table
 // lowered to clauses in Oak, solved in Oak, the certificate checked in Go
 // and in Oak against the Oak formula, a model confirmed against it. The
-// Go clause engine's lowering (goCNF) is the cross-check: equal variable
-// and clause counts say the two engines agree; otherwise the Go clauses
-// are solved too and the verdicts must match.
+// Go clause engine's lowering (goCNF) is the cross-check: exact initial
+// database identity reuses checked evidence; a different encoding must have
+// its own checked answer. Unchecked or unknown answers cannot advance a row.
 func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF, conflicts int) prove.Result {
 	problem, reason, err := prove.ProblemFor(model, r.Name, "interleaved", asm.NodeBudget)
 	if err != nil || reason != "" {
@@ -184,40 +184,34 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 		r.Detail += "; the certificate rung gave no verdict (" + err.Error() + ")"
 		return r
 	}
+	return reconcileOakClauseRun(r, goCNF, problem, run,
+		func(cnf asm.CNF) (prove.SATOutcome, error) { return runOakSATWithin(cnf, conflicts) }, runOakLRAT)
+}
+
+func reconcileOakClauseRun(r prove.Result, goCNF asm.CNF, problem asm.Problem, run OakClauseRun, solve clauseSolver, checkOak clauseProofChecker) prove.Result {
 	if run.Constant != 0 {
+		if run.Constant != 1 && run.Constant != 2 {
+			r.Detail += "; the clause engine returned an invalid constant outcome"
+			return r
+		}
 		kind := asm.DecisionRefuted
 		message := "the obligation folds to true in Oak's clause engine"
 		if run.Constant == 1 {
 			kind = asm.DecisionProven
 			message = "at the bit level (the obligation folds to a constant, lowered in Oak)"
 		}
-		if goCNF.Settled == nil || (goCNF.Settled.Kind == asm.DecisionProven) != (kind == asm.DecisionProven) {
+		if goCNF.Settled == nil ||
+			(goCNF.Settled.Kind != asm.DecisionProven && goCNF.Settled.Kind != asm.DecisionRefuted) ||
+			(goCNF.Settled.Kind == asm.DecisionProven) != (kind == asm.DecisionProven) {
 			r.Status = prove.Open
 			r.Detail = fmt.Sprintf("the clause engines disagree: Oak folds the obligation to a constant (%s), Go does not", message)
 			return r
 		}
 		return agreeSettled(r, &asm.Decision{Kind: kind, Message: message})
 	}
-	engines := ""
-	switch {
-	case goCNF.Settled == nil && goCNF.Variables == run.Variables && goCNF.Clauses == run.Clauses:
-		engines = "; the Go clause engine agrees"
-	default:
-		// The lowerings differ in shape: solve the Go clauses too and
-		// require the same verdict.
-		goOutcome, err := runOakSATWithin(goCNF, conflicts)
-		switch {
-		case goCNF.Settled != nil:
-			engines = fmt.Sprintf("; the Go clause engine folds the obligation to a constant where Oak's has %d clauses", run.Clauses)
-		case err != nil:
-			engines = fmt.Sprintf("; the Go clause engine's clauses (%d variables, %d clauses) gave no verdict (%v)", goCNF.Variables, goCNF.Clauses, err)
-		case goOutcome.Unsatisfiable == run.Outcome.Unsatisfiable:
-			engines = fmt.Sprintf("; the Go clause engine agrees on the verdict (%d variables, %d clauses against %d, %d)", goCNF.Variables, goCNF.Clauses, run.Variables, run.Clauses)
-		default:
-			r.Status = prove.Open
-			r.Detail = fmt.Sprintf("the clause engines disagree: Oak's clauses are %s, Go's are %s", verdictWord(run.Outcome), verdictWord(goOutcome))
-			return r
-		}
+	if run.Outcome.Satisfiable == run.Outcome.Unsatisfiable {
+		r.Detail += "; the Oak solver gave no unambiguous verdict"
+		return r
 	}
 	switch {
 	case run.Outcome.Unsatisfiable:
@@ -227,7 +221,7 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 		var checked prove.LRATResult
 		goErr := fmt.Errorf("the solver wrote no certificate record")
 		if run.Record != nil {
-			checked, goErr = prove.CheckLRATWords(run.Record)
+			checked, goErr = prove.CheckLRATWordsAgainst(run.Formula, run.Record)
 		}
 		oak := run.OakCheck
 		refusal := ""
@@ -245,6 +239,11 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 			r.Detail += "; the Oak solver's certificate was refused, so its verdict does not count (" + refusal + ")"
 			return r
 		}
+		agreement, engines := checkClauseAgreement(goCNF, run.Formula, clauseUNSAT, solve, checkOak)
+		if agreement != clauseAgrees {
+			return refuseClauseAgreement(r, agreement, engines)
+		}
+		engines = "; " + engines
 		note := fmt.Sprintf("an LRAT certificate of %d steps, lowered to clauses in Oak, checked in Go and in Oak%s", checked.Additions+checked.Deletions, engines)
 		switch r.Status {
 		case prove.Decided:
@@ -276,6 +275,11 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 			r.Detail += "; the Oak solver's model is not a counterexample on the terms (it falsifies only the abstraction of an uninterpreted operation), so its verdict does not count"
 			return r
 		}
+		agreement, engines := checkClauseAgreement(goCNF, run.Formula, clauseSAT, solve, checkOak)
+		if agreement != clauseAgrees {
+			return refuseClauseAgreement(r, agreement, engines)
+		}
+		engines = "; " + engines
 		counterexample := problem.Counterexample(set)
 		switch r.Status {
 		case prove.Refuted:
@@ -291,12 +295,12 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 	return r
 }
 
-func verdictWord(outcome prove.SATOutcome) string {
-	if outcome.Unsatisfiable {
-		return "unsatisfiable"
+func refuseClauseAgreement(r prove.Result, agreement clauseAgreement, detail string) prove.Result {
+	if agreement == clauseDisagrees {
+		r.Status = prove.Open
+		r.Detail = "the clause engines disagree: " + detail
+	} else {
+		r.Detail += "; the certificate rung gave no checked cross-engine verdict (" + detail + ")"
 	}
-	if outcome.Satisfiable {
-		return "satisfiable"
-	}
-	return "undecided"
+	return r
 }

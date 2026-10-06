@@ -172,13 +172,29 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; an `f32` or `f64` is its IEEE 754 bit pattern, with the total operations, comparisons, `min`, `max`, and `total_order` as bit operations (`Oak.FloatBits`) and arithmetic, sqrt, fma, `min_num`/`max_num` beside a NaN, the NaN a `min`/`max` yields, and the conversions as uninterpreted operations (`Oak.Uninterpreted`: decided up to the IEEE operations, no algebraic law assumed; an application whose operand bits are all fixed by the term's structure — a literal, a masked selector — folds to its IEEE value when built, by the known-bits analysis of `Oak.KnownBits`); a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The blast orders the parameters' bits interleaved (bit j of every leaf adjacent, so an adder across parameters stays linear); beside it, when the parameters allow, run a second order with each root parameter's leaves in a block of their own (two aggregates related only through their normal forms are exponential interleaved and linear apart) and a third with the control parameters — those a conditional's guard or a shift count reads — before the data ones (several selectors compared to constants are exponential interleaved and linear once the selections are read first); the orders run together over the same terms and the first to decide within the node budget stops the others, the detail naming it (`parameters in blocks`, `control bits first`). A field or element may be read off a call's or a literal's value, and an array element at a data-dependent index reads as the elements merged under the index (a write, every element under it) with the bounds check as a trap obligation. **By certificate**: the same terms as Tseitin clauses — by the clause engine written in Oak (`prove/solver/cnf.oak`, the diagram engine's own term walk under a mode word, the unique table as its gate memo, the same folds) with `asm/cnf.go` as its Go twin (equal variable and clause counts say the engines agree; otherwise both are solved and the verdicts must match) — the obligation clause "some trap fires or the claim is false", an external SAT solver's `UNSATISFIABLE` verdict counted only with an LRAT certificate that both the Go checker (`prove/lrat.go`) and the checker written in Oak (`prove/solver/lrat.oak`) accept, the detail reading `an LRAT certificate of N steps, checked in Go and in Oak`; a model counts as a counterexample only when the clause engine's own evaluation confirms it (`Oak.RupCheck` states that an accepted certificate refutes its formula; `Oak.Tseitin` states that each gate's clauses hold exactly when the gate variable equals the operation's value, that the engine's folds are identities, and that with every gate determined by the inputs the formula is satisfiable exactly when some input makes the obligation true — the laws the encoder is checked against by truth table, `asm/cnf_test.go`, and against the diagram engine over the corpus; `Oak.SolverLaws` states what the solver relies on for its record to be accepted — the resolvent step is a two-hint chain and is implied by its parents, the replayed reasons in trail order followed by the conflict form a chain from the learned clause's negation, the analysis's marks over a propagation trail give that condition, and the model reconstruction after variable elimination yields a model of the eliminated clauses whenever the resolvents hold). The detail names which, and the case count, BDD node count, or certificate length. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; an `f32` or `f64` is its IEEE 754 bit pattern, with the total operations, comparisons, `min`, `max`, and `total_order` as bit operations (`Oak.FloatBits`) and arithmetic, sqrt, fma, `min_num`/`max_num` beside a NaN, the NaN a `min`/`max` yields, and the conversions as uninterpreted operations (`Oak.Uninterpreted`: decided up to the IEEE operations, no algebraic law assumed; an application whose operand bits are all fixed by the term's structure — a literal, a masked selector — folds to its IEEE value when built, by the known-bits analysis of `Oak.KnownBits`); a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The blast orders the parameters' bits interleaved (bit j of every leaf adjacent, so an adder across parameters stays linear); beside it, when the parameters allow, run a second order with each root parameter's leaves in a block of their own (two aggregates related only through their normal forms are exponential interleaved and linear apart) and a third with the control parameters — those a conditional's guard or a shift count reads — before the data ones (several selectors compared to constants are exponential interleaved and linear once the selections are read first); the orders run together over the same terms and the first to decide within the node budget stops the others, the detail naming it (`parameters in blocks`, `control bits first`). A field or element may be read off a call's or a literal's value, and an array element at a data-dependent index reads as the elements merged under the index (a write, every element under it) with the bounds check as a trap obligation. **By certificate**: the same terms as Tseitin clauses — by the clause engine written in Oak (`prove/solver/cnf.oak`, the diagram engine's own term walk under a mode word, the unique table as its gate memo, the same folds) with `asm/cnf.go` as its Go twin (exact ordered formula identity reuses checked evidence; different formulas require independently checked matching verdicts) — the obligation clause "some trap fires or the claim is false", an external SAT solver's `UNSATISFIABLE` verdict counted only with an LRAT certificate that both the Go checker (`prove/lrat.go`) and the checker written in Oak (`prove/solver/lrat.oak`) accept, the detail reading `an LRAT certificate of N steps, checked in Go and in Oak`; a model counts as a counterexample only when the clause engine's own evaluation confirms it (`Oak.RupCheck` states that an accepted certificate refutes its formula; `Oak.Tseitin` states that each gate's clauses hold exactly when the gate variable equals the operation's value, that the engine's folds are identities, and that with every gate determined by the inputs the formula is satisfiable exactly when some input makes the obligation true — the laws the encoder is checked against by truth table, `asm/cnf_test.go`, and against the diagram engine over the corpus; `Oak.SolverLaws` states what the solver relies on for its record to be accepted — the resolvent step is a two-hint chain and is implied by its parents, the replayed reasons in trail order followed by the conflict form a chain from the learned clause's negation, the analysis's marks over a propagation trail give that condition, and the model reconstruction after variable elimination yields a model of the eliminated clauses whenever the resolvents hold). The detail names which, and the case count, BDD node count, or certificate length. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
 
 The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
-keeps the public compatibility and word-encoding surface.  At the clause
+keeps the public compatibility and word-encoding surface. The Oak kernel
+`prove/solver/lrat.oak` checks caller-owned word views and scratch arrays.
+Its header must describe the whole view, including the complete step suffix;
+all literal words must name declared variables even after a tautology is
+detected. Input counts are checked with subtraction before endpoint addition,
+and an output span shorter than three words returns `LRAT_CAPACITY` without
+writing it. `TestLRATKernelRawWords` sends raw records directly through the
+compiled Oak implementation, bypassing the Go encoder and allocating driver,
+and compares mutation acceptance with the independent Go checker.
+`Oak.LRATBounds` proves the extracted production `lrat_fits` guard equivalent
+to a mathematical interval bound, with non-wrapping endpoints and in-range
+indices; `TestLRATKernelBoundsExtract` checks the extraction for source drift.
+This is an implementation-linked proof of the guard, not yet a proof of the
+complete word parser, mutable RUP checker, allocating adapters, extraction,
+or compiled ARM64/RV64 executables. Those remain separate kernel obligations.
+
+At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
 AND, OR, XOR, and ITE gate records characterize those gates. It composes any
 supplied list with a supplied non-settled final clause and proves the same
@@ -298,9 +314,23 @@ conflicts closes in the corpus while the one needing 1.4 million gives up
 cheaply — and `-conflicts N` sets a flat budget instead; a row past the
 budget keeps the ladder's verdict and says the rung gave no verdict. The solver written in Oak hands its certificate over as the word record it
 kept while learning, not as text: the checker written in Oak checks the
-record in the solver's process and the Go checker reads the same words
-(`prove.CheckLRATWords`), so a certificate is neither printed nor parsed
-on the way; an external solver's certificate is text, checked as before.
+record in the solver's process and the Go checker reads the same words.
+Both paths bind the record to the independently retained formula before
+accepting it: `lrat_matches_formula` compares it with the original CNF
+region in Oak, and `prove.CheckLRATWordsAgainst` compares it with the
+emitted DIMACS formula in Go. Variable count, clause count, and every
+ordered clause word must match; allocation hints are not formula identity.
+The framing checks reject truncation, trailing words, and wrapping lengths.
+A proof for a different embedded formula does not count, even when its
+dimensions match. The word certificate is neither printed nor parsed on
+the way; an external solver's certificate is text, checked as before.
+`Oak.LRATFormulaBinding` models this identity gate and transfers abstract
+RUP acceptance to the expected database under an explicit shared decoder.
+The 64-case raw-word corpus runs through the production Go predicate, the
+compiled Oak predicate and acceptance wrapper, and kernel-replayed Lean
+examples in formal CI. This is bounded correspondence; concrete decoding,
+RUP implementation refinement, source-to-CNF correctness, and native
+compilation of the checker remain separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
@@ -314,6 +344,28 @@ the Go clause engine and the Go checker are the twins, the row saying
 `lowered to clauses in Oak, checked in Go and in Oak; the Go clause
 engine agrees`. An external solver named by `OAK_SAT_SOLVER` takes the Go
 engine's clauses.
+
+The cross-engine agreement check in `-solver sat` (also used by
+`-solver self -cross go`) compares the exact ordered formula after decoding,
+including literal order and multiplicity. Equal dimensions do not establish
+agreement. When the formulas differ, the Go formula is solved independently:
+UNSAT needs a certificate accepted by both checkers with matching step counts;
+SAT needs a model satisfying that formula. A solver error, unknown verdict,
+invalid certificate/model, or checker disagreement gives no new rung verdict
+and preserves the prior ladder result. Conflicting checked verdicts make the
+row `open`. A recognized constant fold can supply the Go result without
+invoking the solver. The standalone `-solver self -cross none` path does not
+run this Go cross-check.
+
+`Oak.ClauseAgreement` models the finite evidence-comparison policy and proves
+that agreement on UNSAT, given sound evidence for the independent expected
+database, entails that database's unsatisfiability. Formal CI kernel-replays
+25 production decisions, including unknown and invalid kinds. Fault-injection
+tests exercise the real driver with same-sized formula substitutions,
+unjustified answers, checker failures, and valid conflicting evidence; a
+separate integration runs the fallback through the real Oak solver/checker.
+The policy theorem and these tests do not universally refine the driver,
+either checker, constant folding, or source-to-CNF translation.
 
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.

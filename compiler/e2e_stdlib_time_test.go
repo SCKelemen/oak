@@ -167,6 +167,7 @@ inst: (nanos: i64): time.Instant = time.instant_nanos(nanos)
 // 100 and stay below 256 so the exit status carries them, and no failure
 // can be mistaken for success).
 type timeChecks struct {
+	prelude string
 	entries []timeCheck
 	pending strings.Builder
 	arrays  int
@@ -209,7 +210,7 @@ func (b *timeChecks) program(n int) string {
 		body.WriteString(e.decls)
 		fmt.Fprintf(&body, "  fail = fail == u32(0) && !(%s) ? { u32(%d) } | { fail }\n", e.cond, 100+i)
 	}
-	return timeTestPrelude + "\nmain: (): i32 {\n  fail: u32 = 0\n" + body.String() +
+	return timeTestPrelude + b.prelude + "\nmain: (): i32 {\n  fail: u32 = 0\n" + body.String() +
 		"  fail == u32(0) ? { i32(42) } | { i32_bits_u32(fail) }\n}\n"
 }
 

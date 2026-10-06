@@ -6748,6 +6748,24 @@ when one member of a pair remains, `stp`/`ldp` become `str`/`ldr` at that
 member's original slot. The frame size and every other offset remain fixed.
 Unknown, unmatched, and multi-return shapes do not transform.
 
+Reallocation now makes the producer side of this cleanup cost-aware for
+AArch64 leaf GPRs: after the allocator's copy-partner hint, a web which
+lowering parked in x19–x28, but which crosses no call, tries an otherwise-free
+x9–x17 before retaining its original register. Register pressure falls back
+to the original coloring, and call-crossing values retain the
+callee-saved-only rule. This allows trimming, and then empty-frame elision, to
+remove complete leaf frames rather than only homes made dead by copy
+propagation.
+
+Fresh uncached OS-pilot revalidation at `da898fa2` proves every selected body
+(stage2 20/20, addr_space 29/29; zero verdict-cache hits). Stage2 `translate`
+falls 63→54 instructions, `map_page` 134→129, and `unmap_page` 164→160;
+`walk_leaf` grows 118→121, so the complete map path is still two instructions
+smaller. Stage2 Mach-O `__text` falls 3536→3436 bytes. On addr_space,
+`translate` falls 81→70 and `__text` 4016→3896 bytes. No runtime result is
+claimed. Artifact hashes and the complete delta table are recorded in
+`benchmarks/native/results/os-leaf-callee-save-eviction-2026-10-06.json`.
+
 This is a non-neutral, **verdict-gated** candidate. The untrimmed reallocated
 body remains selectable, and the unchanged seam checker and whole-body
 verifier authorize the edited ABI scaffold. Materialization v27 keys the lane
@@ -9016,7 +9034,7 @@ reads. Before the arm, congruence, or bit-level rules can build a diagram,
 it proves the implication once with the condition and once with its
 negation. Each case structurally prunes the premise and both equality sides
 under that direct fact first; both cases must decide and hold, under the
-existing two-split depth and shared proof-node allowance. Boolean lookup
+existing bounded split depth and shared proof-node allowance. Boolean lookup
 trees, a single selected value, and choices with a constant or computed
 alternative do not enter the eager rule. The old post-budget split remains
 the fallback for branches in the equality sides. `TestIdentShapeBlast`
@@ -9042,6 +9060,20 @@ from the obligation; `TestUnsignedZeroComparisonFoldsBeforeItsBound` pins the
 four laws, both exclusions, and the canonicalized-zero production path. This
 is the first post-split obstruction, not yet a claim that the whole `ident`
 coupling proves.
+
+The corrected fold moves the production probe past that obstruction. Its next
+failed branch has already discarded two independent selectors and presents a
+third useful guard; allowing three nested exhaustive splits instead of two
+shrinks the final `ident` proof attempt from 29.99 s to 10.75 s on the same
+development host. The proof-wide 16-million-node allowance, the one-million
+nodes per loop implication, and the implication-call bound are unchanged, and
+the complete assembler suite remains at its baseline (88.6 s in the confirming
+run). This is a proof-search reduction, not a tier change: `ident` still ends as
+evidence. The smallest remaining child asks for `k + 1 <= limit` while the
+premise supplies only `k <= limit`; that implication is not valid at equality.
+The surrounding continue conditions may still agree, but proving them requires
+retaining the selecting context or avoiding that over-strong congruence child,
+not an unsigned-successor rewrite.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -10656,6 +10688,54 @@ found by reasoning about the transforms the refusals pointed at. Each
 was found by grouping the refusals by their cause and then computing the
 property over the body's own control-flow graph.
 
+### RV64 local branch encoding closure (2026-10-06)
+
+`Oak.RiscVBranchEncoding` proves the next local encoding slice for all six
+32-bit B forms (`beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`) and `jal`:
+
+- Decoding the permuted immediate recovers every signed halfword displacement.
+- B encoding preserves both source registers and its fixed opcode bits; J
+  encoding preserves its destination register and fixed opcode bits.
+- Accepted local offsets have exactly the even signed byte range: B admits
+  `[-4096, 4094]`, J admits `[-1048576, 1048574]`. Decoding an accepted word
+  and adding its displacement to the place reaches the mathematical target.
+- Little-endian serialization and reconstruction preserve every 32-bit word.
+
+The B encoding definitions reuse the thirty-row table already pinned to
+`riscv-opcodes` and bridged to Sail. The J row is separately pinned to the
+production table. Its new packing/decoding proof is internal; this increment
+does not add an external Sail JAL execution theorem. The immediate layout is
+specified by the [RISC-V unprivileged ISA, control-transfer instructions](https://docs.riscv.org/reference/isa/unpriv/rv32.html).
+
+`asm/rv64_branch_encoding_lean_test.go` decodes actual production words across
+every B offset for every register number and branch condition, and every J
+offset. The bounded Lean correspondence corpus covers all seven mnemonics,
+register boundaries, forward/backward/zero offsets, both signed endpoints,
+refusals just beyond them, odd offsets, near-int64 endpoints, and subtraction
+overflow. It also checks actual function-writer bytes against `wordBytes`.
+The formal workflow sets `OAK_REQUIRE_RV64_LEAN=1`, making absence of the
+kernel oracle a failure. The old placement test now calls the actual encoder
+instead of checking only a second table-placement computation.
+
+Both base and compressed encoders use checked int64 subtraction before
+range admission. This prevents an out-of-range mathematical displacement
+from wrapping to a small encodable one. Compressed encodings get regression
+coverage for this refusal, but their bit-permutation proofs remain open.
+
+These are universal proofs of the Lean encoding model plus bounded/exhaustive
+input-domain tests of production Go. They are not a universal Go refinement
+proof. Offset admission does not establish instruction-address alignment or
+executable mappings: individual addresses, branch conditions, JAL's link
+register effect, source CFG/layout correspondence, compression/layout,
+relocations, ELF loading, and end-to-end executable correctness remain
+separate obligations. In particular, two odd model addresses with an even
+difference satisfy the offset predicate; no executability claim follows.
+
+The new bitvector theorems use Lean 4.33.1's standard `bv_decide` path.
+Its native certificate evaluation remains in the trusted base: `#print axioms`
+reports the generated `_native.bv_decide` dependencies, alongside the usual
+Lean logical axioms. Eliminating native evaluation from the proof trust
+boundary remains a separate closure obligation; these proofs do not claim it.
 ### 9.ar A saved register may be used (RV64, 2026-10-06)
 
 With the AArch64 classes closed by §9.aq, the two lanes compare directly

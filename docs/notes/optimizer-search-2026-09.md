@@ -169,15 +169,26 @@ across it), and recolors the webs nothing pins — entry values, the
 procedure-call contract, reserved registers, dead definitions — with a
 linear scan: a copy partner's register when free (the copy is then
 removed), else its own, else the lowest free register of the pool, which
-is the registers the lowering already wrote, so the frame, the prologue,
-and the epilogue stand as emitted. Ranges crossing a call take
-callee-saved registers only, wide vector webs never v8–v15 across a
-call, and a copy narrower than its source's writes or its destination's
-reads is never removed. A web that finds no register is pinned and
-allocation restarts, so at worst every web keeps the lowering's coloring.
+is the registers the lowering already wrote. AArch64 GPR webs originally
+parked in callee-saved registers but live across no call try a free
+caller-saved register after the copy-partner hint but before retaining their
+original color; this makes their save/restore traffic removable by the later
+ABI-scaffold passes without giving up an available coalescing win. If pressure
+leaves none free, the original color remains the fallback. Ranges crossing a
+call take callee-saved registers only, wide vector webs never v8–v15 across a
+call, and a copy narrower than its source's writes or its destination's reads
+is never removed. A web that finds no register is pinned and allocation
+restarts, so at worst every web keeps the lowering's coloring.
 `nativegen`'s `reallocate` transform runs it as a machine-phase candidate;
 on the vector-homes test bodies the verifier proves every reallocated
 form and the search selects it, two to seventeen copies fewer per body.
+
+Leaf callee-save eviction revalidation (2026-10-06) keeps copy coalescing
+ahead of the new cost hint. On the OS pilots, fresh uncached verification
+proves every selected body. Stage-2 `translate` falls 63→54 instructions and
+the object's `__text` 3536→3436 bytes; `addr_space.translate` falls 81→70 and
+its `__text` 4016→3896 bytes. Exact per-body deltas and artifact hashes are in
+`benchmarks/native/results/os-leaf-callee-save-eviction-2026-10-06.json`.
 
 Second increment: frame-slot promotion (`machine.Promote`), the inverse
 of spilling. A frame slot every access of which is a plain load or store

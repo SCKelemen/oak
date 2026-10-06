@@ -1,0 +1,199 @@
+# Temporal values and ISO text
+
+Status: implemented profile with initial implementation laws; not yet a fully
+proved v1.0 library. Import `time`. The pure source fragment
+`stdlib/time_calendar.oak` is composed with the existing `time.oak` implementation.
+No allocation, host clock, locale, time zone database, or floating-point parsing
+is involved in this profile. Existing time APIs retain their behavior.
+
+## 1. Value model
+
+| Type | Meaning and representation |
+| --- | --- |
+| `Duration` | Signed exact nanoseconds in `i64`; existing API. |
+| `Instant` | Signed Unix-epoch nanoseconds in `i64`; existing approximately 1677–2262 range, without leap-second representation. |
+| `Date` | Proleptic Gregorian calendar date; years 0000–9999 inclusive. |
+| `Time` | Civil clock reading, 00:00:00 through 23:59:59.999999999. |
+| `DateTime` | A `Date` and `Time`, without an offset or time zone. |
+| `Period` | Signed `i32` calendar months, signed `i32` calendar days, and an exact `Duration` time component. |
+| `OffsetDateTime` | A `DateTime`, minutes east of UTC in −1439…1439, and `OffsetKind`. This does not name a time zone. |
+| `WeekDate` | ISO week year 0000–9999, week 1–52/53, weekday 1 (Monday)–7 (Sunday). |
+
+Records are public values, not opaque refinement types. `date_create`,
+`time_of_day`, and `datetime_create` are checked constructors. Operations and
+formatters validate their inputs, including directly constructed records.
+`date_valid`, `time_valid`, `datetime_valid`, and `offset_datetime_valid` expose
+the corresponding predicates. `datetime_civil` is a structural projection;
+`datetime_from_civil` validates the new, narrower civil-year domain.
+
+`OffsetKind` preserves `UtcDesignator` (`Z`/`z`), `Numeric` (including `+00:00`),
+and `UnknownLocal` (`-00:00`). The first and last require offset minutes zero.
+Following RFC 3339 as updated by RFC 9557 section 2, `Z` and `-00:00` identify
+known UTC time without asserting a preferred local offset; `+00:00` preserves
+that assertion. Case and insignificant fractional zeros are not retained.
+`offset_datetime_to_instant` accepts either zero-offset convention. An unknown
+local offset is not an unknown instant. Conversion can return `Overflowed` even
+when the civil text is valid, because `Instant` has a narrower range.
+
+## 2. Arithmetic
+
+`date_epoch_days` and `date_from_epoch_days` use 1970-01-01 as zero; the admitted
+range is −719528 through 2932896 inclusive. `date_add_days` checks the output
+range before addition, including for `i64` extrema.
+
+`date_add_months(date, months, policy)` changes the year/month as a single
+calendar operation. `MonthEnd.Reject` returns `InvalidCivil` if the original day
+does not exist in the destination month. `MonthEnd.Clamp` uses its last day.
+For example, January 31 plus one month in 2024 rejects or becomes February 29.
+Neither policy carries excess days into March. Clamping is not invertible and
+repeated month additions need not equal a single combined addition.
+
+`date_add_period` applies months, then days. A nonzero time component is
+`InvalidDuration`; it is never silently discarded. `datetime_add_period`
+applies months, then days, then the time component. Components may have different
+signs for arithmetic, but a mixed-sign period cannot use the text profile below.
+
+`datetime_add_duration` advances on nominal 86400-second civil days, with exact
+nanosecond carry in either direction. It splits an `i64` duration into days and
+remainder before adding, so an intermediate nanosecond sum cannot overflow.
+This is arithmetic on an unzoned civil value, not DST or leap-second arithmetic.
+`P1D` and `PT24H` are distinct periods even when they produce the same result on
+this nominal calendar. No implicit period-to-duration conversion is supplied.
+
+`date_from_ordinal`, `date_from_week`, and `date_to_week` implement ordinal and
+ISO week conversion. Week 1 contains January 4. Week 53 is admitted only when it
+exists. A valid calendar date whose week-year is outside 0000–9999 returns
+`Overflowed` from `date_to_week` (notably the first days of year 0000).
+
+## 3. Admitted interchange profile
+
+This is a declared subset, not a claim of complete ISO 8601 conformance.
+
+| Function | Accepted input / canonical output |
+| --- | --- |
+| `parse_iso_date` | `YYYY-MM-DD`, `YYYYMMDD`, `YYYY-DDD`, `YYYYDDD`, `YYYY-Www-D`, `YYYYWwwD`; complete dates only. |
+| `format_iso_date` | `YYYY-MM-DD`. |
+| `parse_iso_time` | `HH:MM:SS` with optional `.` or `,` and 1–9 fractional second digits. |
+| `format_iso_time` | `HH:MM:SS`, optional dot and fractional digits, trailing zeros removed. |
+| `parse_iso_datetime` | Extended calendar date, uppercase `T`, extended time; no offset. |
+| `format_iso_datetime` | Canonical extended calendar date/time. |
+| `parse_rfc3339_datetime` | `YYYY-MM-DD(T\|t)HH:MM:SS[.fraction](Z\|z\|±HH:MM)`; 1–9 fractional digits. |
+| `format_rfc3339_datetime` | Uppercase `T`/`Z`, trimmed exact fraction, original offset kind. |
+| `parse_iso_period` | Date/time designators or week-only designator, described below. |
+| `format_iso_period` | Total months, calendar days, then hours/minutes/seconds; zero is `PT0S`. |
+| `parse_iso_duration` | Only `PT` hour/minute/second components; even `P0D` is rejected. |
+| `format_iso_duration` | Signed `PT` hours/minutes/seconds; hours are not converted to calendar days. |
+
+Designator grammar (ASCII, case-sensitive):
+
+```text
+period = [sign] "P" (weeks / components)
+weeks = digits "W"
+components = [digits "Y"] [digits "M"] [digits "D"]
+             ["T" [digits "H"] [digits "M"] [seconds "S"]]
+seconds = digits [("." / ",") 1*9DIGIT]
+sign = "+" / "-"
+```
+
+At least one component is required, and `T` requires a time component. Units
+must occur once in order. Weeks cannot mix with other units. Fractions are
+seconds-only; leading integer digits are required. A leading sign is an explicit
+Oak extension to the unsigned base profile, applied to all components. Embedded
+signs and whitespace are invalid. Years become 12 months and weeks become 7
+calendar days; days are not converted into nanoseconds. Components are checked
+against the final signed field limits while accumulating, with `i64` and `i32`
+negative minima supported. Fractions use integer arithmetic, never rounding.
+
+Examples:
+
+- `P1Y2M3DT4H5M6.000000007S` becomes 14 months, 3 days, 14706000000007 ns.
+- `P2W` formats as `P14D`.
+- `PT24H` stays `PT24H`; `P1D` stays `P1D`.
+- `-PT9223372036.854775808S` represents `i64.min` exactly.
+- `2024-02-29t12:34:56.1200-00:00` formats as
+  `2024-02-29T12:34:56.12-00:00`.
+
+All input must be consumed. RFC 3339 accepts neither comma fractions nor a space
+separator in this profile. Leap seconds, end-of-day `24:00`, fractions beyond
+nanoseconds, expanded years, reduced precision, basic clock forms, interval and
+recurrence expressions, and RFC 9557 bracket annotations are outside this
+profile. In particular, RFC 3339 itself admits longer fractions and contextual
+leap seconds; the library does not claim full acceptance of its grammar.
+
+The original `parse_rfc3339`/`format_rfc3339` still use `Zoned` and `Instant`,
+normalize zero-offset metadata, and honor the existing explicit fraction-width
+formatting API. The new civil API is the metadata-preserving alternative.
+The original `parse_duration`/`format_duration` retain Go-style text.
+
+## 4. Errors, storage, and cost
+
+Existing `TimeError` variants are reused; no exhaustive match is broken.
+
+- `InvalidFormat`: date/time text shape, separators, or fractional precision.
+- `InvalidCivil`: impossible date/time, out-of-domain civil fields, missing week
+  53, or month-end rejection.
+- `InvalidOffset`: malformed numeric RFC offset, magnitude at least a day, or
+  an inconsistent constructed `OffsetDateTime`.
+- `InvalidDuration`: period grammar, mixed-sign serialization, a calendar unit
+  in exact-duration parsing, or a nonzero time component applied to a `Date`.
+- `Overflowed`: representable arithmetic result outside the chosen domain, or
+  a decimal accumulator/component outside its numeric range. A malformed input
+  that overflows while scanning can return this before a later grammar error.
+- `DestinationTooSmall`: output capacity is less than the actual canonical text.
+
+All new formatters validate and build in bounded local arrays before copying.
+On any error, every destination byte is unchanged. On success, only the returned
+prefix is written, and the suffix is unchanged. Capacity maxima are 10 bytes
+for dates, 18 for times, 29 for local datetimes, 35 for RFC timestamps, and 64
+for periods/durations. No alias to local storage escapes. Calendar operations
+are constant work; parsing is O(input length), bounded by numeric overflow and
+precision rejection where applicable; formatting is bounded work and memory.
+
+## 5. Evidence and remaining proof obligations
+
+`compiler/e2e_stdlib_time_iso_test.go` exercises real qualified imports through
+compiled and interpreted execution. It covers grammar/rejection, canonical
+formatting, zero-offset metadata, month-end behavior, signed minima/maxima,
+range edges, and destination preservation. Deterministic random calendars,
+ISO week numbers, and civil-duration additions are compared against Go's
+independent `time` implementation. Duration text is round-tripped across the
+full signed range. Existing time/clock tests remain the compatibility gate.
+
+The Lean emitter also zero-extends unsigned fields before a wider signed
+reinterpretation; this fixes missing Lean conversion methods for valid Oak
+constructors such as `i64(u8)` and `i64(u32)`. The extractor regression suite
+covers that conversion path.
+
+`TimeCalendarExtracted.lean` is generated from the typechecked Oak fragment and
+its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
+`offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
+are outside the current extractor subset; it is covered by runtime tests.
+`TimeCalendarLaws.lean` states constructor acceptance/rejection, civil structural
+roundtrip, date-range rejection, invalid-input rejection, and formatter error
+atomicity directly over that extraction. The focused Temporal library proofs
+workflow and the main formal build check those laws. Fuel, array totalization,
+and machine-integer modeling have the qualifications in `95-extraction.md`.
+
+Open release gates, explicitly not implied by successful tests or extraction:
+
+1. Prove Gregorian days/civil bijection, all valid-success ranges, ordinal/week
+   conversion, month policy preservation, and duration carry arithmetic.
+2. Prove parser acceptance soundness/completeness for the declared grammar,
+   overflow equivalence, canonical format/parse identity, and all buffer bounds
+   and success/failure frame properties. Add extraction-faithfulness corpora.
+3. Extend extraction/refinement through checked instant conversion. Preserve
+   proofs through compilation, ABI, instruction encoding, and linking on both
+   mandatory ARM64 and RV64 targets.
+4. Design explicit leap-second/time-scale and named-zone rule capabilities
+   before accepting contextual leap seconds or zoned calendar arithmetic.
+5. Expand ISO support through individually specified reduced/basic/end-of-day,
+   interval/recurrence, expanded-year, and precision profiles as needed.
+
+## References
+
+- [RFC 3339, sections 4.3 and 5.6–5.7](https://www.rfc-editor.org/rfc/rfc3339.html)
+- [RFC 9557, section 2](https://www.rfc-editor.org/rfc/rfc9557.html#section-2)
+- [ISO 8601-1:2019](https://www.iso.org/standard/70907.html) and
+  [Amendment 1:2022](https://www.iso.org/standard/81801.html)
+- [Gregorian conversion algorithms](https://howardhinnant.github.io/date_algorithms.html),
+  already used by Oak's original civil-time implementation.

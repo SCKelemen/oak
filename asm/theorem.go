@@ -131,6 +131,11 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 		return undecided("no body")
 	}
 	lowering := newLowering(sig)
+	// Standalone theorems need the callee's body, not merely congruence
+	// between opaque applications. Native comparison may summarize the same
+	// call on both sides; a law about its result must expand the definition.
+	// Existing lowering/loop budgets still fail closed.
+	lowering.expandCallApplications = true
 	lowering.functions = functions
 	lowering.guards = guards
 	lowering.records, lowering.adts = decls.Records, decls.ADTs

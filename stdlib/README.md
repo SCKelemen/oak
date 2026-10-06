@@ -348,18 +348,22 @@ sequential. Corrupted cursors trap before operations access storage.
 | `buffer.live_len(cursor, capacity)` | Number of live bytes |
 | `buffer.tail_space(cursor, capacity)` | Available contiguous append space |
 | `buffer.append(cursor, storage, src)` | Appends all source bytes or returns `Full`, unchanged |
+| `buffer.peek(cursor, storage)` | O(1) read-only live interval borrowing the storage view; no copy or consumption |
 | `buffer.peek_into(cursor, storage, dst)` | Fills the whole destination without consuming, or returns `InsufficientData`, unchanged |
 | `buffer.read_into(cursor, storage, dst)` | Exact peek followed by consume on success |
 | `buffer.consume(cursor, capacity, count)` | Advances start, or returns `InsufficientData`, unchanged |
 | `buffer.compact(cursor, storage)` | Moves live bytes to offset zero; returns their count |
 | `buffer.reset(cursor)` | Clears offsets without erasing storage |
 
-Append, peek, read and consume return `Result[u32,buffer.Error]` with the byte
+Append, copying peek/read, and consume return `Result[u32,buffer.Error]` with the byte
 count on success. Supply the actual backing capacity to metadata-only operations.
 Consuming the last live byte resets both offsets. Append never compacts implicitly;
-call compact to reclaim a consumed prefix. Append/read/peek cost O(copied bytes),
+call compact to reclaim a consumed prefix. Append/read/peek_into cost O(copied bytes),
 compact costs O(live bytes), and metadata operations cost O(1). Storage passed to
-append/compact is `[*]u8`; peek/read takes `[]u8` plus a separate mutable destination.
+append/compact is `[*]u8`; copying peek/read takes `[]u8` plus a separate mutable destination.
+`peek` instead returns an O(1) read-only view tied to the storage region. It
+captures the current interval without consuming; writes and compaction remain
+forbidden while that observation lives.
 Use lexical scopes to release a write borrow before creating a read view.
 
 Returning borrowed slices is not yet supported by Oak's borrow checker, so these
@@ -1236,7 +1240,7 @@ and a `Duration { nanos: i64 }` is a signed span. Both cover 1677-09-21 to
 2262-04-11 around the epoch, and every arithmetic step is checked over the
 prelude's `i64_checked_*` rows, so overflow is `Err(Overflowed)`, never a
 wrap. The error type is closed: `TimeError = Overflowed | InvalidCivil |
-InvalidFormat | InvalidOffset | InvalidDuration | DestinationTooSmall`.
+InvalidFormat | InvalidOffset | InvalidDuration | DestinationTooSmall | Unattested`.
 Nothing allocates; text goes into caller-owned spans.
 
 - **Durations**: `duration_nanos/micros/millis/seconds/minutes/hours` (the
@@ -1309,6 +1313,33 @@ trips as properties over the full i64 range.
   source — timeouts, leases, rate limiters, retries — is simulation-testable
   and fuzzable as it stands; `examples/timesim` is the worked consumer and
   `timesim` below drives it.
+
+### ISO dates, periods, and civil timestamps
+
+The same import now provides `Date`, `Time`, `DateTime`, `Period`,
+`OffsetDateTime`, `WeekDate`, and explicit `MonthEnd.Reject/Clamp` arithmetic.
+The new civil APIs support years 0000–9999 independently of `Instant`'s range.
+`parse_iso_date` accepts complete calendar, ordinal, and week dates in basic or
+extended form. `parse_iso_time` and `parse_iso_datetime` handle extended clock
+and local date/time text. Each has a canonical `format_iso_*` counterpart.
+
+`parse_iso_period` preserves calendar months/days separately from its exact time
+component (`P1D` is distinct from `PT24H`). `parse_iso_duration` admits only the
+`PT` units that have an exact elapsed length. Their formatters use integer-only
+nanosecond precision, including the minimum signed duration. Month addition
+requires an explicit reject-or-clamp policy. Period addition applies months,
+then days, then the time component.
+
+`parse_rfc3339_datetime` and `format_rfc3339_datetime` preserve `Z`, `+00:00`, and
+`-00:00` as distinct offset kinds, including RFC 9557's update to their meaning.
+`offset_datetime_to_instant` converts explicitly and can report `Overflowed`.
+All new formatters leave the destination unchanged on error. Existing Go-style
+duration and `Zoned` timestamp APIs retain their behavior.
+
+See [the temporal specification](../docs/spec/114-temporal.md) for the exact
+admitted ISO/RFC profiles, errors, storage contracts, implementation proofs, and
+remaining proof gates. This is a nanosecond profile without leap seconds or
+named zones, not full ISO 8601 acceptance.
 
 ### Interval readings and attestation
 

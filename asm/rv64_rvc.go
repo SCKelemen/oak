@@ -69,7 +69,7 @@ func rvcForm(base Instruction, pc int64, labels map[string]int64, offsets bool) 
 		if !isLabel {
 			return 0, false
 		}
-		return target - pc, true
+		return exactInt64Difference(target, pc)
 	}
 	switch base.Mnemonic {
 	case "addi":

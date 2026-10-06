@@ -94,6 +94,23 @@ separate compression proof/negative tests and
 [measured performance records](../benchmarks/native/README.md#blake3-avoid-copying-the-tree-stack-per-block-2026-09-17)
 retain that distinction. Other rows remain at their recorded snapshot.
 
+## Scoped buffer observation addition, 2026-10-06
+
+`buffer.peek` returns the live interval as a region-indexed read-only view in
+O(1), without allocation or payload copying. Compiled/interpreted tests in
+`compiler/e2e_stdlib_buffer_views_test.go` cover shifted, compacted, and empty
+intervals and cursor independence. Compile-time negatives cover owner writes,
+append/compaction during an observation, and escape from local storage;
+invalid cursors trap before returning a view. `buffer_peek` is the derived
+bootstrap spelling.
+
+The regenerated extraction includes `peek` and a call driver. `BufferLaws.lean`
+proves `peek_valid` (exact extracted contents and unchanged cursor),
+`peek_reversed`, and `peek_past_end`. These are extraction-level theorems:
+Lean's arrays model contents, not runtime pointer aliasing, borrow lifetimes,
+or constant-time execution. The package row's borrow-returning observation
+implementation gap is closed; its implementation-refinement gap remains open.
+
 ## How to read the gaps
 
 Three tiers of evidence appear in the table, and they are not
