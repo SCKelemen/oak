@@ -9104,6 +9104,20 @@ The surrounding continue conditions may still agree, but proving them requires
 retaining the selecting context or avoiding that over-strong congruence child,
 not an unsigned-successor rewrite.
 
+The next proof-search step retains that context directly. When both sides of a
+failed equality are nonconstant Boolean predicates with a large conditional,
+the fallback split now chooses the smaller whole predicate before an internal
+`ite`: one branch assumes the source guard and the other its negation. Value
+equalities and Boolean-to-constant children keep the old largest-internal-arm
+choice. This removes no case and changes no budget. On the same production
+`ident` probe it cuts the final verifier attempt again, from 10.75 s to 5.48 s;
+the full assembler suite took 80.3 s, below the preceding 88--96 s runs.
+`ident` still remains evidence. Its new final leaf is `true = (k < 904)` under
+a 17,074-node premise: the equivalent source guard is retained, but earlier
+selector facts have not simplified that fact's conditional bound to `904`.
+The next seam is therefore propagation among accumulated premise facts, not
+more split depth or a larger diagram budget.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

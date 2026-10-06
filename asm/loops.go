@@ -7544,9 +7544,19 @@ func laneTests(t *term) (lanes []*term, negated bool, ok bool) {
 	return lanes, negated, true
 }
 
-// splitCondition is the condition of the ite in a or b with the largest
-// arms (by shared-node count), nil when neither has a branch.
+// splitCondition chooses the truth value of the smaller whole side for two
+// nonconstant Boolean predicates with a large branch. A guard equality is
+// then proved under the source guard and its negation, retaining the context
+// that selects its otherwise-different internal values. Value equalities and
+// Boolean-to-constant implications keep splitting the largest internal ite.
 func splitCondition(a, b *term) *term {
+	boolean := map[*term]bool{}
+	if a.kind != termConst && b.kind != termConst && booleanValued(a, boolean) && booleanValued(b, boolean) && (hasLargeBranch(a) || hasLargeBranch(b)) {
+		if termSize(a, map[*term]int{}) <= termSize(b, map[*term]int{}) {
+			return a
+		}
+		return b
+	}
 	sizes := map[*term]int{}
 	var best *term
 	bestSize := 0

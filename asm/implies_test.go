@@ -796,3 +796,26 @@ func TestCanonicalZeroTestOfKnownBit(t *testing.T) {
 		t.Fatalf("two-bit zero test was reduced as Boolean: %s", got)
 	}
 }
+
+func TestSplitConditionKeepsWholeBooleanContext(t *testing.T) {
+	p := paramTerm("p", 1)
+	x := paramTerm("x", 32)
+	y := paramTerm("y", 32)
+	largeArm := func(base *term, add uint64) *term {
+		out := base
+		for i := 0; i < largeBranch; i++ {
+			out = binaryTerm("add", out, constTerm(add+uint64(i), 32))
+		}
+		return out
+	}
+	selected := iteTerm(p, largeArm(x, 1), largeArm(y, 1000))
+	left := cmpTerm("lo", x, selected)
+	right := binaryTerm("and", cmpTerm("ne", selected, constTerm(0, 32)), cmpTerm("lo", y, largeArm(selected, 2000)))
+
+	if got := splitCondition(left, right); !equalTerms(got, left) {
+		t.Fatalf("Boolean equality split on %s, want the smaller whole predicate %s", got, left)
+	}
+	if got := splitCondition(left, constTerm(1, left.width)); !equalTerms(got, p) {
+		t.Fatalf("Boolean-to-constant split on %s, want internal selector %s", got, p)
+	}
+}
