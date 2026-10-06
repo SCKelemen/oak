@@ -1,0 +1,77 @@
+{
+  "date_local": "2026-10-06",
+  "host": "Apple arm64",
+  "baseline_revision": "da898fa226ba5750acea1f9401dd163c2cbdc0ab",
+  "candidate": "baseline plus AArch64 non-call-crossing callee-saved GPR eviction after copy-partner coalescing",
+  "os_revision": "d91da6f7c6568a94a176efdb70e49320b2671f6a",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64"
+  },
+  "build": {
+    "candidate": "oak build -native -verify-fresh -o OUT SOURCE",
+    "verify_fresh": true,
+    "verdict_cache_hits": 0
+  },
+  "pilots": {
+    "stage2": {
+      "source": "SCKelemen/os pilots/oak/stage2.oak",
+      "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+      "selected_function_symbols_proven": 20,
+      "verifier_verdicts": 22,
+      "text_bytes": {
+        "baseline": 3536,
+        "candidate": 3436,
+        "delta": -100
+      },
+      "object_bytes": {
+        "baseline": 5056,
+        "candidate": 4960,
+        "delta": -96
+      },
+      "object_sha256": {
+        "baseline": "12441f74c82669aa01d587fae300917d9efa9afbacab3b7a737a1337ffcf1a6a",
+        "candidate": "cbbc29b30901754f732699def54cbf279b56ff69a63fa1b9fdc970c7a6f33a1a"
+      },
+      "changed_selected_bodies": {
+        "reset": { "before": 125, "after": 121, "delta": -4 },
+        "alloc_table": { "before": 128, "after": 122, "delta": -6 },
+        "walk_leaf": { "before": 118, "after": 121, "delta": 3 },
+        "map_page": { "before": 134, "after": 129, "delta": -5 },
+        "unmap_page": { "before": 164, "after": 160, "delta": -4 },
+        "translate": { "before": 63, "after": 54, "delta": -9 }
+      }
+    },
+    "addr_space": {
+      "source": "SCKelemen/os pilots/oak/addr_space.oak",
+      "source_sha256": "9b3f4a617e213ab90d21bc87f83ec9d1641d0b22f1c5a7c18926314495575aba",
+      "selected_function_symbols_proven": 29,
+      "verifier_verdicts": 31,
+      "text_bytes": {
+        "baseline": 4016,
+        "candidate": 3896,
+        "delta": -120
+      },
+      "object_bytes": {
+        "baseline": 6200,
+        "candidate": 6080,
+        "delta": -120
+      },
+      "object_sha256": {
+        "baseline": "7e210014f43bcc8ef6b93e2a62e0f689db9eb57b444ab67f39ed7118e93d006c",
+        "candidate": "66313834cc39645e98a70fb580b53962c2875fa06861677b835cddf537be5f3a"
+      },
+      "changed_selected_bodies": {
+        "page_desc": { "before": 34, "after": 30, "delta": -4 },
+        "reset": { "before": 125, "after": 121, "delta": -4 },
+        "alloc_table": { "before": 128, "after": 122, "delta": -6 },
+        "map_page": { "before": 263, "after": 262, "delta": -1 },
+        "unmap_page": { "before": 164, "after": 160, "delta": -4 },
+        "translate": { "before": 81, "after": 70, "delta": -11 }
+      }
+    }
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "This increment reports verified static code-size results only."
+  }
+}

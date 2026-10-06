@@ -6748,6 +6748,24 @@ when one member of a pair remains, `stp`/`ldp` become `str`/`ldr` at that
 member's original slot. The frame size and every other offset remain fixed.
 Unknown, unmatched, and multi-return shapes do not transform.
 
+Reallocation now makes the producer side of this cleanup cost-aware for
+AArch64 leaf GPRs: after the allocator's copy-partner hint, a web which
+lowering parked in x19–x28, but which crosses no call, tries an otherwise-free
+x9–x17 before retaining its original register. Register pressure falls back
+to the original coloring, and call-crossing values retain the
+callee-saved-only rule. This allows trimming, and then empty-frame elision, to
+remove complete leaf frames rather than only homes made dead by copy
+propagation.
+
+Fresh uncached OS-pilot revalidation at `da898fa2` proves every selected body
+(stage2 20/20, addr_space 29/29; zero verdict-cache hits). Stage2 `translate`
+falls 63→54 instructions, `map_page` 134→129, and `unmap_page` 164→160;
+`walk_leaf` grows 118→121, so the complete map path is still two instructions
+smaller. Stage2 Mach-O `__text` falls 3536→3436 bytes. On addr_space,
+`translate` falls 81→70 and `__text` 4016→3896 bytes. No runtime result is
+claimed. Artifact hashes and the complete delta table are recorded in
+`benchmarks/native/results/os-leaf-callee-save-eviction-2026-10-06.json`.
+
 This is a non-neutral, **verdict-gated** candidate. The untrimmed reallocated
 body remains selectable, and the unchanged seam checker and whole-body
 verifier authorize the edited ABI scaffold. Materialization v27 keys the lane
